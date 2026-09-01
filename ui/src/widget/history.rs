@@ -125,12 +125,33 @@ pub struct HistoryFilter {
     pub apps: Vec<String>,
     /// Stable resource kind (`files.entry`, `word-processor.document`, …).
     pub resource_kinds: Vec<String>,
+    /// Stable resource ids or human labels. Values within this lens are OR.
+    pub resources: Vec<String>,
+    /// Explicit work-group ids or labels. Values within this lens are OR.
+    pub work_groups: Vec<String>,
     /// Selected browse facets. All selected key/value pairs must match.
     pub facets: Vec<ActionFacet>,
+    /// Lets the explorer make legacy/direct edits explicitly browseable
+    /// instead of silently mixing them into semantic lenses.
+    pub classification: HistoryClassification,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HistoryClassification {
+    #[default]
+    Any,
+    Classified,
+    Unclassified,
 }
 
 impl HistoryFilter {
     pub fn matches(&self, entry: &HistoryEntry) -> bool {
+        match self.classification {
+            HistoryClassification::Any => {}
+            HistoryClassification::Classified if entry.context.is_none() => return false,
+            HistoryClassification::Unclassified if entry.context.is_some() => return false,
+            HistoryClassification::Classified | HistoryClassification::Unclassified => {}
+        }
         if !self.authors.is_empty() {
             let needle = entry.author.name.to_lowercase();
             let any = self.authors.iter().any(|a| needle == a.to_lowercase());
@@ -179,16 +200,55 @@ impl HistoryFilter {
                 return false;
             }
         }
+        if !self.resources.is_empty() {
+            let Some(resource) = entry
+                .context
+                .as_ref()
+                .and_then(|context| context.resource.as_ref())
+            else {
+                return false;
+            };
+            if !self.resources.iter().any(|candidate| {
+                candidate.eq_ignore_ascii_case(&resource.id)
+                    || candidate.eq_ignore_ascii_case(&resource.label)
+            }) {
+                return false;
+            }
+        }
+        if !self.work_groups.is_empty() {
+            let Some(group) = entry
+                .context
+                .as_ref()
+                .and_then(|context| context.group.as_ref())
+            else {
+                return false;
+            };
+            if !self.work_groups.iter().any(|candidate| {
+                candidate.eq_ignore_ascii_case(&group.id)
+                    || candidate.eq_ignore_ascii_case(&group.label)
+            }) {
+                return false;
+            }
+        }
         if !self.facets.is_empty() {
             let Some(context) = entry.context.as_ref() else {
                 return false;
             };
-            if !self
+            // Values within one key are alternatives; separate facet keys
+            // intersect. `path:A OR path:B` plus `file-type:Markdown`.
+            for key in self
                 .facets
                 .iter()
-                .all(|facet| context.facets.contains(facet))
+                .map(|facet| facet.key.as_str())
+                .collect::<std::collections::HashSet<_>>()
             {
-                return false;
+                let selected = self.facets.iter().filter(|facet| facet.key == key);
+                if !selected
+                    .into_iter()
+                    .any(|facet| context.facets.contains(facet))
+                {
+                    return false;
+                }
             }
         }
         true
@@ -215,6 +275,24 @@ impl HistoryFilter {
     #[must_use]
     pub fn with_resource_kind(mut self, kind: impl Into<String>) -> Self {
         self.resource_kinds.push(kind.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_resource(mut self, resource: impl Into<String>) -> Self {
+        self.resources.push(resource.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_work_group(mut self, group: impl Into<String>) -> Self {
+        self.work_groups.push(group.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_classification(mut self, classification: HistoryClassification) -> Self {
+        self.classification = classification;
         self
     }
 
@@ -399,7 +477,9 @@ mod tests {
                 "brief.md",
             )
             .with_app("org.qos.Files", "Files")
-            .with_facet(ActionFacet::new("file-type", "Markdown")),
+            .with_group("issue:42", "Launch brief", "issue")
+            .with_facet(ActionFacet::new("file-type", "Markdown"))
+            .with_facet(ActionFacet::new("path", "/work/brief.md")),
         );
         let legacy = entry(OpClass::EditMeta, "Ada", 100);
 
@@ -409,6 +489,16 @@ mod tests {
 
         let by_kind = HistoryFilter::default().with_resource_kind("files.entry");
         assert!(by_kind.matches(&contextual));
+        assert!(
+            HistoryFilter::default()
+                .with_resource("brief.md")
+                .matches(&contextual)
+        );
+        assert!(
+            HistoryFilter::default()
+                .with_work_group("issue:42")
+                .matches(&contextual)
+        );
         let by_type =
             HistoryFilter::default().with_facet(ActionFacet::new("file-type", "Markdown"));
         assert!(by_type.matches(&contextual));
@@ -416,6 +506,23 @@ mod tests {
             !HistoryFilter::default()
                 .with_facet(ActionFacet::new("file-type", "PDF"))
                 .matches(&contextual)
+        );
+        let within_lens_is_or = HistoryFilter::default()
+            .with_facet(ActionFacet::new("file-type", "PDF"))
+            .with_facet(ActionFacet::new("file-type", "Markdown"));
+        assert!(within_lens_is_or.matches(&contextual));
+        let across_lenses_is_and =
+            within_lens_is_or.with_facet(ActionFacet::new("path", "/somewhere/else"));
+        assert!(!across_lenses_is_and.matches(&contextual));
+        assert!(
+            HistoryFilter::default()
+                .with_classification(HistoryClassification::Classified)
+                .matches(&contextual)
+        );
+        assert!(
+            HistoryFilter::default()
+                .with_classification(HistoryClassification::Unclassified)
+                .matches(&legacy)
         );
     }
 
