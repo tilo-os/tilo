@@ -322,6 +322,7 @@ impl Widget for TriStateControl {
             .enumerate()
             .map(|(i, label)| {
                 AccessNode::new(Role::RadioButton)
+                    .with_action_target(format!("segment:{i}"))
                     .with_name(label.clone())
                     .with_state(AccessState {
                         checked: Some(i == self.selected),
@@ -341,6 +342,39 @@ impl Widget for TriStateControl {
                 })
                 .with_children(segments),
         )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [segment] = path else {
+            return None;
+        };
+        self.seg_rects.get(*segment).copied()
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        let Some(index) = target
+            .strip_prefix("segment:")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|index| *index < self.labels.len())
+        else {
+            return false;
+        };
+        if !matches!(
+            action,
+            crate::a11y::Action::Activate | crate::a11y::Action::ToggleCheck
+        ) {
+            return false;
+        }
+        let next = if index == self.selected { 1 } else { index };
+        self.selected = next;
+        self.choice = Some(next);
+        true
     }
 }
 
@@ -607,6 +641,7 @@ impl Widget for ColorSwatchPicker {
             .enumerate()
             .map(|(i, &rgb)| {
                 AccessNode::new(Role::ListItem)
+                    .with_action_target(format!("swatch:{i}"))
                     .with_name(hex(rgb))
                     .with_state(AccessState {
                         selected: self.selected == Some(i),
@@ -625,6 +660,35 @@ impl Widget for ColorSwatchPicker {
                 })
                 .with_children(items),
         )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [swatch] = path else {
+            return None;
+        };
+        self.swatch_rects.get(*swatch).copied()
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        let Some(index) = target
+            .strip_prefix("swatch:")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|index| *index < self.palette.len())
+        else {
+            return false;
+        };
+        if !matches!(action, crate::a11y::Action::Activate) {
+            return false;
+        }
+        self.selected = Some(index);
+        self.choice = Some(index);
+        true
     }
 }
 
@@ -698,6 +762,7 @@ mod tests {
     fn tri_state_click_selects_segment() {
         let mut t = TriStateControl::allow_inherit_deny(); // starts on middle
         lay_out(&mut t);
+        assert_eq!(t.synthetic_accessibility_rect(&[0]), Some(t.seg_rects[0]));
         let p = t.seg_rects[0].center();
         dispatch(&mut t, &cursor_at(p));
         assert!(dispatch(&mut t, &left_press()), "segment click consumed");
@@ -722,9 +787,42 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_segment_and_swatch_actions_use_the_pointer_choice_paths() {
+        let mut tri = TriStateControl::allow_inherit_deny().with_selected(2);
+        assert!(Widget::perform_semantic_action(
+            &mut tri,
+            "segment:0",
+            &crate::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(tri.selected(), 0);
+        assert_eq!(tri.take_choice(), Some(0));
+
+        let mut picker = ColorSwatchPicker::new();
+        assert!(Widget::perform_semantic_action(
+            &mut picker,
+            "swatch:5",
+            &crate::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(picker.take_choice(), Some(5));
+        assert!(
+            Widget::accessibility(&picker).unwrap().children[5]
+                .state
+                .selected
+        );
+    }
+
+    #[test]
     fn swatch_picker_records_clicked_index() {
         let mut p = ColorSwatchPicker::new();
         lay_out(&mut p);
+        assert_eq!(
+            p.synthetic_accessibility_rect(&[5]),
+            Some(p.swatch_rects[5])
+        );
         let c = p.swatch_rects[5].center();
         dispatch(&mut p, &cursor_at(c));
         assert!(dispatch(&mut p, &left_press()), "swatch click consumed");

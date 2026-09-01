@@ -6,7 +6,7 @@
 //!   ([`DiffView`], [`MergeView`]).
 //! * The toolbar's buttons are drawn directly and hit-tested in `handle_event`.
 //! * Opening files goes through the **host** file chooser (the XDG Desktop
-//!   Portal, [`crate::portal`]) — the app never draws its own picker (HIG §5).
+//!   Portal, [`ui::portal`]) — the app never draws its own picker (HIG §5).
 //!   The chosen paths are read and re-seed the active mode (two files → diff;
 //!   the merge demo stays sample-driven since a three-way pick needs three
 //!   roots).
@@ -24,6 +24,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -34,6 +35,28 @@ use crate::merge_view::MergeView;
 use crate::samples;
 
 const TOOLBAR_H: f64 = 48.0;
+
+fn diff_open_request() -> PickRequest {
+    PickRequest::open("Open a file to compare", "Open")
+        .thread_name("diffmerge-portal-open")
+        .filter(
+            FileFilter::new("Text & source")
+                .mimetype("text/plain")
+                .glob("*.txt")
+                .glob("*.md")
+                .glob("*.rs")
+                .glob("*.toml")
+                .glob("*.json")
+                .glob("*.yaml")
+                .glob("*.yml")
+                .glob("*.c")
+                .glob("*.h")
+                .glob("*.py")
+                .glob("*.js")
+                .glob("*.ts"),
+        )
+        .all_files()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -72,7 +95,7 @@ pub struct DiffMergeApp {
     /// worker thread and hands the chosen path back over this channel, drained
     /// once per frame in [`Widget::sync`]. `None` when no picker is in flight —
     /// the app never draws its own picker (HIG §5).
-    portal_rx: Option<crate::portal::PortalChannel>,
+    portal_rx: Option<PortalChannel>,
     /// Files chosen but not yet paired (first of a two-file diff selection).
     pending_left: Option<(String, String)>,
     /// A human-readable reason the last host-portal open failed, surfaced in
@@ -249,8 +272,12 @@ impl DiffMergeApp {
     /// updated by the chip handler for immediate feedback and is reconciled from
     /// the document on the next `sync`.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::DiffmergeAction) {
-        self.actions
-            .dispatch(doc, crate::actions::DIFFMERGE_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::DIFFMERGE_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Diff", "Diff", action),
+        );
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
@@ -272,7 +299,7 @@ impl DiffMergeApp {
 
     /// Ask the host desktop's file chooser to open a file to compare. Per HIG
     /// §5 the app never draws its own picker: the portal round-trip runs on a
-    /// worker thread ([`crate::portal::request_open`]) and the chosen path
+    /// worker thread ([`ui::portal::PickRequest`]) and the chosen path
     /// comes back over a channel drained each frame in [`Self::drain_portal`].
     /// A diff needs two files, so the drain re-fires this once for the right
     /// file after the left is picked. A second request while one is in flight
@@ -282,7 +309,7 @@ impl DiffMergeApp {
             return;
         }
         self.load_error = None;
-        self.portal_rx = Some(crate::portal::request_open());
+        self.portal_rx = Some(diff_open_request().send());
         self.dirty = true;
     }
 
@@ -299,7 +326,7 @@ impl DiffMergeApp {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    crate::portal::PortalOutcome::Opened(path) => {
+                    PortalOutcome::Opened(path) => {
                         // A `true` return means the left file just landed and
                         // the right one is still needed — fire a fresh request.
                         if self.consume_pick(&path) {
@@ -308,11 +335,11 @@ impl DiffMergeApp {
                         self.dirty = true;
                     }
                     // A cancel abandons an in-progress two-file selection.
-                    crate::portal::PortalOutcome::Cancelled => {
+                    PortalOutcome::Cancelled => {
                         self.pending_left = None;
                         self.dirty = true;
                     }
-                    crate::portal::PortalOutcome::Failed(reason) => {
+                    PortalOutcome::Failed(reason) => {
                         self.pending_left = None;
                         self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
                         self.dirty = true;
@@ -630,6 +657,12 @@ impl Widget for DiffMergeApp {
             Mode::Merge => merge_node,
         };
 
+        // `new_with_children` only fails when a child belongs to a different
+        // tree; `content_child` and `content` were just built in this one.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "content_child was just created in this same tree"
+        )]
         let content = taffy
             .new_with_children(
                 Style {
@@ -644,6 +677,10 @@ impl Widget for DiffMergeApp {
             )
             .unwrap();
 
+        #[allow(
+            clippy::unwrap_used,
+            reason = "content was just created in this same tree"
+        )]
         let root = taffy
             .new_with_children(
                 Style {
@@ -663,7 +700,9 @@ impl Widget for DiffMergeApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -843,7 +882,7 @@ impl Widget for DiffMergeApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::portal::{PortalOutcome, inject_for_test};
+    use ui::portal::inject_for_test;
 
     fn app_with_state() -> (DiffMergeApp, ui::State) {
         let mut app = DiffMergeApp::new();
@@ -1002,20 +1041,36 @@ mod tests {
             "the take-a-side choice is recorded in the CRDT"
         );
 
-        // Exactly one undo boundary, bracketed by the host at the pre-action heads.
-        let stashed = Widget::take_committed_action(&mut app).expect("heads stashed for the host");
+        // Exactly one undo boundary, drained and recorded by the host's own
+        // recorder rather than pushed by hand: attribution happens in there,
+        // and undo is author-scoped. The node map is empty because the app
+        // widget is the root here.
+        let local_author = ui::collaboration::local_user_id();
+        let root: *mut dyn Widget = &mut app;
+        assert!(
+            ui::undo::record_dispatched_action(
+                &mut state,
+                root,
+                &std::collections::HashMap::new(),
+                &local_author,
+            ),
+            "the host recorded an undo boundary for the dispatched action"
+        );
+        let entry = state.peek_last_undo().expect("one undo boundary recorded");
         assert_eq!(
-            stashed, before_heads,
+            entry.before, before_heads,
             "bracket starts at the pre-action heads"
         );
-        state.record_committed_action(stashed, None, None);
-        assert!(
-            state.peek_last_undo().is_some(),
-            "one undo boundary recorded"
+        assert_eq!(
+            entry.author.as_ref(),
+            Some(&local_author),
+            "attributed to the local user, so their Ctrl+Z can reach it"
         );
 
         // Ctrl+Z reverts exactly this action.
-        state.undo(None, None).expect("an undo entry to pop");
+        state
+            .undo_as(Some(&local_author), None, None)
+            .expect("an undo entry to pop");
         assert_eq!(
             crate::doc::MergeDoc::merged_text(&state.doc),
             before_merged,

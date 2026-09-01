@@ -11,10 +11,11 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
+use crate::platform::{DialogActionOrder, PlatformConventions};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -81,6 +82,7 @@ pub struct ModalDialog<C: Widget> {
     /// the caret on click. `None` until the first content layout.
     content_taffy: Option<TaffyTree<()>>,
     content_node: Option<NodeId>,
+    platform: PlatformConventions,
 }
 
 impl<C: Widget> ModalDialog<C> {
@@ -102,6 +104,7 @@ impl<C: Widget> ModalDialog<C> {
             last_cursor: Point::ZERO,
             content_taffy: None,
             content_node: None,
+            platform: PlatformConventions::default(),
         }
     }
 
@@ -173,12 +176,29 @@ impl<C: Widget> ModalDialog<C> {
         self
     }
 
+    /// Updates the dialog's size cap after construction. Detached hosts use
+    /// this when their responsive dialog width depends on the live viewport.
+    pub fn set_max_size(&mut self, max_w: f64, max_h: f64) {
+        self.max_w = max_w.max(1.0);
+        self.max_h = max_h.max(1.0);
+        self.recompute_layout();
+    }
+
     pub fn content(&self) -> &C {
         &self.content
     }
 
     pub fn content_mut(&mut self) -> &mut C {
         &mut self.content
+    }
+
+    /// Lay out a dialog embedded by an immediate-mode host that does not mount
+    /// it in the host's retained Taffy tree. The dialog still lays out its own
+    /// content normally; only the full-viewport wrapper is supplied directly.
+    pub fn layout_in(&mut self, viewport: Rect, theme: &Theme, text_renderer: &mut TextRenderer) {
+        self.viewport = viewport;
+        self.recompute_layout();
+        self.place_content(theme, text_renderer);
     }
 
     /// Sets the viewport rect outside a taffy pass and re-centers the box
@@ -202,7 +222,8 @@ impl<C: Widget> ModalDialog<C> {
         let cy = self.viewport.y0 + (self.viewport.height() - h) / 2.0;
         self.rect = Rect::new(cx, cy, cx + w, cy + h);
 
-        // Right-aligned; primary sits rightmost (Western reading order).
+        // Keep the group right-aligned while following the host platform's
+        // semantic primary/secondary order.
         let footer_top = self.rect.y1 - FOOTER_HEIGHT;
         let button_y0 = footer_top + (FOOTER_HEIGHT - ACTION_BUTTON_HEIGHT) / 2.0;
         let button_y1 = button_y0 + ACTION_BUTTON_HEIGHT;
@@ -211,8 +232,18 @@ impl<C: Widget> ModalDialog<C> {
         let primary_x0 = primary_x1 - ACTION_BUTTON_WIDTH;
         let secondary_x1 = primary_x0 - 8.0; // `spacing.s2` gap
         let secondary_x0 = secondary_x1 - ACTION_BUTTON_WIDTH;
-        self.primary_rect = Rect::new(primary_x0, button_y0, primary_x1, button_y1);
-        self.secondary_rect = Rect::new(secondary_x0, button_y0, secondary_x1, button_y1);
+        let right = Rect::new(primary_x0, button_y0, primary_x1, button_y1);
+        let left = Rect::new(secondary_x0, button_y0, secondary_x1, button_y1);
+        match self.platform.dialog_action_order() {
+            DialogActionOrder::PrimaryLast => {
+                self.primary_rect = right;
+                self.secondary_rect = left;
+            }
+            DialogActionOrder::PrimaryFirst => {
+                self.primary_rect = left;
+                self.secondary_rect = right;
+            }
+        }
     }
 
     /// Lays out the inner content between the title bar and the footer.
@@ -266,10 +297,9 @@ impl<C: Widget> ModalDialog<C> {
         self.content_node = Some(content_node);
     }
 
-    /// No-op until the first content layout has run. `handled` is
-    /// intentionally NOT threaded out — the dialog decides consumption at
-    /// its own level (always modal-blocking), and the content only needs
-    /// the event delivered so its state (focus, caret, hover) updates.
+    /// No-op until the first content layout has run. Returns whether the
+    /// content consumed the event; the dialog still blocks propagation at
+    /// its own level, but uses this result before invoking a default action.
     /// `focus_target` IS threaded so an embedded focusable can request focus.
     fn forward_to_content(
         &mut self,
@@ -279,9 +309,9 @@ impl<C: Widget> ModalDialog<C> {
         state: &mut AutoCommit,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
-    ) {
+    ) -> bool {
         let (Some(taffy), Some(node)) = (self.content_taffy.as_ref(), self.content_node) else {
-            return;
+            return false;
         };
         let mut inner_handled = false;
         self.content.handle_event(
@@ -295,6 +325,7 @@ impl<C: Widget> ModalDialog<C> {
             node,
             taffy,
         );
+        inner_handled
     }
 
     pub fn dialog_rect(&self) -> Rect {
@@ -375,7 +406,50 @@ fn draw_action_button(
     );
 }
 
+impl<C: Widget + 'static> ModalDialog<C> {
+    /// Route an event when an immediate-mode host embeds this dialog outside
+    /// its retained widget tree. This is the event-side counterpart to
+    /// [`Self::layout_in`] and removes the need for every app to manufacture a
+    /// throwaway Taffy leaf and focus target.
+    pub fn handle_detached(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if !self.open {
+            return false;
+        }
+        let mut taffy = TaffyTree::new();
+        let Ok(node) = taffy.new_leaf(Style::default()) else {
+            return true;
+        };
+        let mut handled = false;
+        let mut focus_target = None;
+        self.handle_event(
+            event,
+            scale_factor,
+            &modifiers,
+            state,
+            path,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        handled
+    }
+}
+
 impl<C: Widget + 'static> Widget for ModalDialog<C> {
+    fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
+        self.platform = conventions;
+        self.content.set_platform_conventions(conventions);
+        self.recompute_layout();
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         // The dialog holds no CRDT-backed state itself; forward so embedded
         // content widgets still get their sync pass.
@@ -540,6 +614,28 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 }
                 *handled = true;
             }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Enter),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                let content_handled = self.forward_to_content(
+                    event,
+                    scale_factor,
+                    *modifiers,
+                    state,
+                    path,
+                    focus_target,
+                );
+                if !content_handled && let Some(action) = self.primary_action.as_mut() {
+                    (action.on_click)();
+                }
+                *handled = true;
+            }
             WindowEvent::KeyboardInput { .. } => {
                 self.forward_to_content(event, scale_factor, *modifiers, state, path, focus_target);
                 *handled = true;
@@ -700,6 +796,7 @@ mod tests {
     struct CountingContent {
         events: std::rc::Rc<std::cell::Cell<usize>>,
         rect: Rect,
+        consume: bool,
     }
 
     impl Widget for CountingContent {
@@ -750,12 +847,13 @@ mod tests {
             _modifiers: &winit::event::Modifiers,
             _state: &mut AutoCommit,
             _path: &ObjId,
-            _handled: &mut bool,
+            handled: &mut bool,
             _focus_target: &mut Option<NodeId>,
             _node_id: NodeId,
             _taffy: &TaffyTree<()>,
         ) {
             self.events.set(self.events.get().saturating_add(1));
+            *handled = self.consume;
         }
         fn name(&self) -> &'static str {
             "CountingContent"
@@ -860,6 +958,7 @@ mod tests {
         let content = CountingContent {
             events: events.clone(),
             rect: Rect::ZERO,
+            consume: false,
         };
         let mut d = ModalDialog::new("Title", content).open(open);
         let mut taffy = TaffyTree::<()>::new();
@@ -877,6 +976,46 @@ mod tests {
             .unwrap();
         d.apply_layout(&taffy, node, Point::ZERO);
         (d, events)
+    }
+
+    #[test]
+    fn detached_layout_places_dialog_and_content() {
+        let content = CountingContent::default();
+        let mut dialog = ModalDialog::new("Detached", content).open(true);
+        dialog.layout_in(
+            Rect::new(20.0, 30.0, 820.0, 630.0),
+            &Theme::dark(),
+            &mut TextRenderer::new(),
+        );
+
+        assert_eq!(dialog.get_rect(), Rect::new(180.0, 170.0, 660.0, 490.0));
+        assert_ne!(dialog.content().get_rect(), Rect::ZERO);
+
+        dialog.set_max_size(400.0, 200.0);
+        dialog.layout_in(
+            Rect::new(20.0, 30.0, 820.0, 630.0),
+            &Theme::dark(),
+            &mut TextRenderer::new(),
+        );
+        assert_eq!(dialog.get_rect(), Rect::new(220.0, 230.0, 620.0, 430.0));
+    }
+
+    #[test]
+    fn detached_event_path_preserves_modal_dismissal() {
+        let dismissed = Rc::new(Cell::new(false));
+        let flag = Rc::clone(&dismissed);
+        let mut dialog = ModalDialog::new("Detached", TestContent)
+            .on_dismiss(move || flag.set(true))
+            .open(true);
+
+        assert!(dialog.handle_detached(
+            &key_press_event(NamedKey::Escape),
+            1.0,
+            Modifiers::default(),
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert!(dismissed.get());
     }
 
     fn color_fill_count<C: Widget + 'static>(d: &mut ModalDialog<C>) -> usize {
@@ -962,6 +1101,41 @@ mod tests {
             fired.get(),
             "click inside primary_rect must invoke the primary action callback",
         );
+    }
+
+    #[test]
+    fn modal_dialog_enter_invokes_primary_unless_content_consumes_it() {
+        let fired = Rc::new(Cell::new(0usize));
+        let fired_clone = Rc::clone(&fired);
+        let (mut d, _) = laid_out_counting(true);
+        d.primary_action = Some(DialogAction {
+            label: "Save".into(),
+            on_click: Box::new(move || fired_clone.set(fired_clone.get() + 1)),
+        });
+
+        dispatch(&mut d, &key_press_event(NamedKey::Enter));
+        assert_eq!(fired.get(), 1, "Enter invokes the semantic primary action");
+
+        d.content_mut().consume = true;
+        dispatch(&mut d, &key_press_event(NamedKey::Enter));
+        assert_eq!(
+            fired.get(),
+            1,
+            "an editor that consumes Enter suppresses the dialog default"
+        );
+    }
+
+    #[test]
+    fn modal_dialog_action_order_follows_platform_conventions() {
+        use crate::platform::{Platform, PlatformConventions};
+
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let mut dialog = ModalDialog::new("Title", TestContent).with_viewport(viewport);
+        dialog.set_platform_conventions(PlatformConventions::new(Platform::MacOs));
+        assert!(dialog.primary_rect().x0 > dialog.secondary_rect().x0);
+
+        dialog.set_platform_conventions(PlatformConventions::new(Platform::Windows));
+        assert!(dialog.primary_rect().x0 < dialog.secondary_rect().x0);
     }
 
     /// Asserted via the Vello encoding directly so this doesn't depend on

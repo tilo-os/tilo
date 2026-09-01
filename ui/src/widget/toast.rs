@@ -75,6 +75,15 @@ pub enum ToastKind {
     Error,
 }
 
+/// Horizontal placement for a transient card painted inside an app's area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToastAnchor {
+    /// Centre the card horizontally in the available area.
+    BottomCenter,
+    /// Align the card with the area's trailing edge.
+    BottomRight,
+}
+
 /// A single toast entry held by a [`ToastStack`]. Entries are produced
 /// internally by [`ToastStack::push`]; shell code does not construct
 /// `Toast` values directly.
@@ -388,6 +397,8 @@ impl<'a> ToastCard<'a> {
 /// interactive regions against widget-owned rects (no bespoke maths).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ToastCardHit {
+    /// The painted card rect. `Rect::ZERO` when the card was not painted.
+    pub card_rect: Rect,
     /// The dismiss (`X`) button rect. `Rect::ZERO` when `closable` was unset.
     pub close_rect: Rect,
     /// Left/secondary action rect. `Rect::ZERO` when the card has no actions.
@@ -420,6 +431,7 @@ pub fn paint_card(
     if rect.width() <= 0.0 || rect.height() <= 0.0 || a <= 0.0 {
         return hit;
     }
+    hit.card_rect = rect;
     let radius = f64::from(theme.tokens.radii.md);
     let shape = RoundedRect::from_rect(rect, radius);
 
@@ -568,6 +580,55 @@ fn paint_card_actions(
         scene.pop_layer();
     }
     Some(y0 - 4.0)
+}
+
+/// Paint a single-line transient toast near the bottom of `area`.
+///
+/// This is the immediate-mode counterpart to [`ToastStack`], for apps that
+/// already own their notification lifetime. It standardises card sizing,
+/// clipping, and edge spacing while leaving expiry and severity with the
+/// caller. The returned geometry lets callers test or align nearby content
+/// without repeating the sizing rules.
+pub fn paint_transient(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    area: Rect,
+    anchor: ToastAnchor,
+    card: &ToastCard<'_>,
+) -> ToastCardHit {
+    const EDGE_GAP: f64 = 24.0;
+    const HEIGHT: f64 = 48.0;
+    const MIN_WIDTH: f64 = 160.0;
+    let available_width = (area.width() - 2.0 * EDGE_GAP).max(0.0);
+    if available_width == 0.0 || area.height() < HEIGHT + EDGE_GAP {
+        return ToastCardHit::default();
+    }
+
+    let title_size = theme.tokens.typography.scale.sm;
+    let title_width = f64::from(
+        text_renderer
+            .measure_weighted(card.title, title_size, None, TextWeight::Semibold)
+            .0,
+    );
+    let natural_width = title_width + 2.0 * CARD_PAD_X + CARD_ACCENT_BAR_W + 2.0;
+    let width = natural_width
+        .max(MIN_WIDTH.min(available_width))
+        .min(available_width);
+    let x0 = match anchor {
+        ToastAnchor::BottomCenter => area.center().x - width / 2.0,
+        ToastAnchor::BottomRight => area.x1 - EDGE_GAP - width,
+    };
+    let y1 = area.y1 - EDGE_GAP;
+    paint_card(
+        scene,
+        transform,
+        text_renderer,
+        theme,
+        Rect::new(x0, y1 - HEIGHT, x0 + width, y1),
+        card,
+    )
 }
 
 /// Paints the optional dismiss (`X`) button, top-right of `rect`, and
@@ -961,6 +1022,97 @@ mod tests {
         assert!(
             !enc.resources.glyph_runs.is_empty(),
             "the title must push a glyph run into the scene",
+        );
+    }
+
+    #[test]
+    fn transient_cards_share_safe_sizing_but_keep_the_requested_anchor() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let area = Rect::new(10.0, 20.0, 510.0, 320.0);
+        let title = "A deliberately long notification that cannot fit in the available app area";
+
+        let centered = paint_transient(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            area,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new(title, ToastKind::Info),
+        );
+        let trailing = paint_transient(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            area,
+            ToastAnchor::BottomRight,
+            &ToastCard::new(title, ToastKind::Info),
+        );
+
+        assert!(centered.card_rect.width() > 320.0);
+        assert!(centered.card_rect.width() <= area.width() - 48.0);
+        assert_eq!(centered.card_rect.center().x, area.center().x);
+        assert_eq!(trailing.card_rect.x1, area.x1 - 24.0);
+        assert_eq!(centered.card_rect.y1, area.y1 - 24.0);
+    }
+
+    #[test]
+    fn transient_card_honours_a_caller_inset_and_narrow_available_width() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        // The caller has removed 92 px of bottom player chrome from its area.
+        // A narrow content column also cannot accommodate the normal minimum.
+        let area = Rect::new(40.0, 10.0, 190.0, 308.0);
+        let hit = paint_transient(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            area,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new("This title must clip safely", ToastKind::Info),
+        );
+
+        assert_eq!(hit.card_rect.x0, area.x0 + 24.0);
+        assert_eq!(hit.card_rect.x1, area.x1 - 24.0);
+        assert_eq!(hit.card_rect.y1, area.y1 - 24.0);
+        assert!(hit.card_rect.y0 >= area.y0);
+    }
+
+    #[test]
+    fn partial_alpha_keeps_transient_geometry_and_still_paints() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let area = Rect::new(0.0, 0.0, 480.0, 320.0);
+        let mut full_scene = Scene::new();
+        let full = paint_transient(
+            &mut full_scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            area,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new("Backup complete", ToastKind::Success),
+        );
+        let mut faded_scene = Scene::new();
+        let faded = paint_transient(
+            &mut faded_scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            area,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new("Backup complete", ToastKind::Success).alpha(0.35),
+        );
+
+        assert_eq!(faded.card_rect, full.card_rect);
+        assert!(
+            !faded_scene.encoding().draw_tags.is_empty(),
+            "a partially faded card remains visible"
         );
     }
 

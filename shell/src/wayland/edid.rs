@@ -115,6 +115,10 @@ pub fn parse_hdr_display_info(edid: &[u8]) -> HdrDisplayInfo {
 
     // 10-bit fixed-point → x-micro (× 1e6). Value / 1024 is the raw
     // fractional coordinate; multiplied by 1_000_000 gives micro-CIE.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "v: u16, so (u64::from(v) * 1_000_000) / 1024 tops out ~64_003_906, well under u32::MAX"
+    )]
     let to_micro = |v: u16| -> u32 {
         // Do the divide in u64 to avoid intermediate overflow.
         ((u64::from(v) * 1_000_000) / 1024) as u32
@@ -270,12 +274,24 @@ fn parse_hdr_static_metadata_block(body: &[u8], info: &mut HdrDisplayInfo) {
     if let Some(&raw) = body.get(2).filter(|&&b| b != 0) {
         let code = f32::from(raw);
         let max_cd_m2 = 50.0 * 2f32.powf(code / 32.0);
-        info.max_luminance_cd_m2 = max_cd_m2.round().min(10_000.0) as u16;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped to 0.0..=10_000.0 immediately above, so it always fits a non-negative u16"
+        )]
+        let clamped = max_cd_m2.round().min(10_000.0) as u16;
+        info.max_luminance_cd_m2 = clamped;
     }
     if let Some(&raw) = body.get(3).filter(|&&b| b != 0) {
         let code = f32::from(raw);
         let fall_cd_m2 = 50.0 * 2f32.powf(code / 32.0);
-        info.max_frame_average_luminance_cd_m2 = fall_cd_m2.round().min(10_000.0) as u16;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped to 0.0..=10_000.0 immediately above, so it always fits a non-negative u16"
+        )]
+        let clamped = fall_cd_m2.round().min(10_000.0) as u16;
+        info.max_frame_average_luminance_cd_m2 = clamped;
     }
     if let Some(&raw) = body.get(4).filter(|&&b| b != 0) {
         // min is derived from max: min = (max_lum * (code/255)^2) / 100
@@ -283,7 +299,18 @@ fn parse_hdr_static_metadata_block(body: &[u8], info: &mut HdrDisplayInfo) {
         let ratio = f32::from(raw) / 255.0;
         let min_cd_m2 = max_lum * ratio * ratio / 100.0;
         // Convert cd/m² → 1/10000 units (matching Hdr10 metadata).
-        info.min_luminance_micro_cd_m2 = (min_cd_m2 * 10_000.0).round() as u32;
+        // max_lum <= 10_000 (clamped above) and ratio is in 0.0..=1.0, so
+        // min_cd_m2 <= 100.0 and the *10_000.0 product tops out at
+        // 1_000_000 — well under u32::MAX.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "min_cd_m2 is a product/quotient of non-negative factors (see above), so \
+                      it and the *10_000.0 product are never negative, and the product tops out \
+                      at 1_000_000 — well under u32::MAX"
+        )]
+        let micro = (min_cd_m2 * 10_000.0).round() as u32;
+        info.min_luminance_micro_cd_m2 = micro;
     }
 
     // Whenever a display advertises PQ or HLG, it must be a
@@ -448,7 +475,7 @@ mod tests {
         );
         // Min luminance in 1/10000 cd/m² units: 0.05 → 500.
         assert!(
-            (info.min_luminance_micro_cd_m2 as i32 - 500).abs() < 200,
+            (i32::try_from(info.min_luminance_micro_cd_m2).unwrap_or(i32::MAX) - 500).abs() < 200,
             "expected ~500 (0.05 cd/m²), got {}",
             info.min_luminance_micro_cd_m2
         );
@@ -526,7 +553,7 @@ mod tests {
                     seed ^= seed << 13;
                     seed ^= seed >> 7;
                     seed ^= seed << 17;
-                    (seed >> 24) as u8
+                    ((seed >> 24) & 0xFF) as u8
                 })
                 .collect();
             let _ = parse_hdr_display_info(&blob);

@@ -78,6 +78,7 @@ pub mod cert;
 pub mod directory;
 pub mod enrollment;
 pub mod persist;
+pub mod projection;
 pub mod revocation;
 
 pub use canonical::CanonicalError;
@@ -94,6 +95,13 @@ pub use enrollment::{
 };
 pub use persist::{
     DeviceKeyOutcome, IdentityPaths, PersistError, adopt_device_key, load_or_create_device_key,
+};
+pub use projection::{
+    GovernedDeviceIdentityV2, GovernedHumanIdentityV1, GovernedHumanIdentityV2,
+    MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES, MAX_TRUSTED_IDENTITY_PROJECTION_BYTES,
+    MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES, MAX_TRUSTED_IDENTITY_PROJECTION_HUMANS,
+    TRUSTED_IDENTITY_PROJECTION_V1_VERSION, TRUSTED_IDENTITY_PROJECTION_VERSION,
+    TrustedIdentityProjectionError, TrustedIdentityProjectionV1, TrustedIdentityProjectionV2,
 };
 pub use revocation::{
     REVOCATION_PREIMAGE_TAG, RevocationEntry, RevocationError, RevocationList, RevocationReason,

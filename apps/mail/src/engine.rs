@@ -510,7 +510,7 @@ pub mod live {
             |url| {
                 let _ = std::process::Command::new("xdg-open").arg(url).spawn();
             },
-            std::time::Duration::from_mins(5),
+            std::time::Duration::from_secs(300),
         )?;
         let mut vault = SecretVault::open();
         vault.put(

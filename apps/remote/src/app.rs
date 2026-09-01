@@ -405,14 +405,16 @@ impl RemoteApp {
                 }
             }
             "session-rdp" => {
-                if let Some(id) = self.first_of_kind(ConnectionKind::Rdp) {
-                    self.apply(Action::Connect(id), &mut doc);
-                }
+                self.dev_preview_session(
+                    ConnectionKind::Rdp,
+                    SessionStatus::Failed("RDP is not available in qOS yet".into()),
+                );
             }
             "session-qos" => {
-                if let Some(id) = self.first_of_kind(ConnectionKind::Qos) {
-                    self.apply(Action::Connect(id), &mut doc);
-                }
+                self.dev_preview_session(
+                    ConnectionKind::Qos,
+                    SessionStatus::Failed("qOS Relay is not available in qOS yet".into()),
+                );
             }
             // Preview-only session states (no transport) for `--shots` grading
             // of the composed status surfaces.
@@ -479,29 +481,10 @@ impl RemoteApp {
                 self.selected = Some(id);
             }
             Action::ToggleFavorite(id) => {
-                // Compute the absolute target *before* the in-memory flip so the
-                // action carries a value, not a read-then-flip — deterministic
-                // replay. The on-screen star and the Ctrl+K row build the same
-                // SetFavorite action.
-                if let Some(target) = self.workspace.get(id).map(|c| !c.favorite) {
-                    self.workspace.toggle_favorite(id);
-                    self.actions.dispatch(
-                        state,
-                        crate::actions::REMOTE_ACTION_TYPE,
-                        &crate::actions::set_favorite_action(id, target),
-                    );
-                }
+                self.toggle_favorite(id, state);
             }
             Action::Delete(id) => {
-                self.workspace.remove(id);
-                self.actions.dispatch(
-                    state,
-                    crate::actions::REMOTE_ACTION_TYPE,
-                    &crate::actions::delete_action(id),
-                );
-                if self.selected == Some(id) {
-                    self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
-                }
+                self.delete_connection(id, state);
             }
             Action::FocusField(f) => {
                 self.focus_field(f);
@@ -561,6 +544,40 @@ impl RemoteApp {
         }
     }
 
+    fn toggle_favorite(&mut self, id: ConnectionId, state: &mut AutoCommit) {
+        // Compute the absolute target before the in-memory flip so replay does
+        // not depend on the connection's current state.
+        let Some(target) = self
+            .workspace
+            .get(id)
+            .map(|connection| !connection.favorite)
+        else {
+            return;
+        };
+        self.workspace.toggle_favorite(id);
+        let action = crate::actions::set_favorite_action(id, target);
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::REMOTE_ACTION_TYPE,
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+        );
+    }
+
+    fn delete_connection(&mut self, id: ConnectionId, state: &mut AutoCommit) {
+        self.workspace.remove(id);
+        let action = crate::actions::delete_action(id);
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::REMOTE_ACTION_TYPE,
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+        );
+        if self.selected == Some(id) {
+            self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
+        }
+    }
+
     /// `true` while the rail is (resolved) open at the current layout.
     fn rail_open(&self) -> bool {
         self.rail.is_open(self.rail_layout)
@@ -584,6 +601,12 @@ impl RemoteApp {
         let Some(c) = self.workspace.get(id).cloned() else {
             return;
         };
+        // Older documents may contain RDP or qOS Relay profiles. Keep them
+        // editable, but never make an unavailable transport look connectable.
+        if !c.kind.is_supported() {
+            self.selected = Some(id);
+            return;
+        }
         self.session_for = Some(id);
         self.fullscreen = false;
         self.fb_image = None;
@@ -751,8 +774,12 @@ impl RemoteApp {
         // deterministic read of the current document (see [`crate::actions`]).
         let action = crate::actions::upsert_action(&conn);
         self.workspace.upsert(conn);
-        self.actions
-            .dispatch(state, crate::actions::REMOTE_ACTION_TYPE, &action);
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::REMOTE_ACTION_TYPE,
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+        );
         self.selected = Some(id);
         self.screen = Screen::List;
         self.blur_field();
@@ -1154,6 +1181,8 @@ impl Widget for RemoteApp {
     ) -> NodeId {
         // The app draws itself; we just need a single full-bleed node so
         // the host can size us. No child widgets participate in taffy.
+        // `new_leaf` on a freshly created tree never fails.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: taffy::Size {
@@ -1168,7 +1197,9 @@ impl Widget for RemoteApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -1762,7 +1793,10 @@ impl RemoteApp {
         } else {
             cur.saturating_sub(1)
         };
-        self.selected = Some(filtered[next]);
+        // `next` is derived from `cur` (in bounds, or 0) via `min`/`saturating_sub`.
+        if let Some(&id) = filtered.get(next) {
+            self.selected = Some(id);
+        }
         self.dirty = true;
     }
 
@@ -2352,16 +2386,20 @@ impl RemoteApp {
             row.x1 - 16.0,
             row.center().y + 16.0,
         );
-        self.draw_button(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            connect,
-            "Connect",
-            true,
-        );
-        self.push_hit(connect, Action::Connect(c.id));
+        if c.kind.is_supported() {
+            self.draw_button(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                connect,
+                "Connect",
+                true,
+            );
+            self.push_hit(connect, Action::Connect(c.id));
+        } else {
+            Self::draw_unavailable_button(scene, transform, text_renderer, theme, connect);
+        }
 
         let edit = Rect::new(connect.x0 - 86.0, connect.y0, connect.x0 - 10.0, connect.y1);
         self.draw_button(scene, transform, text_renderer, theme, edit, "Edit", false);
@@ -2435,6 +2473,41 @@ impl RemoteApp {
             .weight(TextWeight::Semibold);
         let face = if primary { face.primary() } else { face };
         Button::paint(scene, transform, text_renderer, theme, &face);
+    }
+
+    /// A non-interactive status, deliberately not styled like a secondary
+    /// action. It makes old profiles truthful without turning them into a
+    /// dead "Connect" button.
+    fn draw_unavailable_button(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) {
+        let rr = RoundedRect::from_rect(rect, 8.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.neutral[2],
+            None,
+            &rr,
+        );
+        let label = "Unavailable";
+        let (width, _) = text_renderer.measure_weighted(label, 12.0, None, TextWeight::Semibold);
+        text_renderer.draw_text_weighted(
+            scene,
+            label,
+            12.0,
+            theme.tokens.colors.text_dim,
+            transform
+                * Affine::translate((
+                    rect.center().x - f64::from(width) / 2.0,
+                    rect.center().y - 7.0,
+                )),
+            None,
+            TextWeight::Semibold,
+        );
     }
 
     /// The text band inside a field box — where the shared input lives, and
@@ -2619,8 +2692,9 @@ impl RemoteApp {
             y,
             "Protocol",
         );
-        let seg_w = card_w / 4.0;
-        for (i, k) in ConnectionKind::all().into_iter().enumerate() {
+        let kinds = ConnectionKind::available_to_create();
+        let seg_w = card_w / kinds.len() as f64;
+        for (i, k) in kinds.into_iter().enumerate() {
             let seg = Rect::new(
                 card_x + i as f64 * seg_w,
                 y,
@@ -2637,7 +2711,7 @@ impl RemoteApp {
                 k.tag(),
                 active,
                 i == 0,
-                i == 3,
+                i.saturating_add(1) == kinds.len(),
             );
             self.push_hit(seg, Action::SetKind(k));
         }
@@ -3806,15 +3880,30 @@ impl RemoteApp {
             // Draw cells run-by-run (group consecutive same-style cells).
             let mut x = surface.x0 + pad;
             let mut i = 0;
-            while i < line.cells.len() {
-                let style = (line.cells[i].color, line.cells[i].bold);
+            while let Some(cell) = line.cells.get(i) {
+                let style = (cell.color, cell.bold);
                 let start = i;
-                while i < line.cells.len() && (line.cells[i].color, line.cells[i].bold) == style {
+                while line
+                    .cells
+                    .get(i)
+                    .is_some_and(|c| (c.color, c.bold) == style)
+                {
                     i += 1;
                 }
-                let run: String = line.cells[start..i].iter().map(|c| c.ch).collect();
+                let run: String = line
+                    .cells
+                    .get(start..i)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|c| c.ch)
+                    .collect();
                 let color = match style.0 {
-                    Some(idx) => palette.ansi[idx.min(15)],
+                    // `ansi` is a fixed `[Color; 16]`; `idx.min(15)` is always in range.
+                    Some(idx) => palette
+                        .ansi
+                        .get(idx.min(15))
+                        .copied()
+                        .unwrap_or(palette.fg_default),
                     None => palette.fg_default,
                 };
                 let weight = if style.1 {
@@ -3971,9 +4060,13 @@ fn next_field(cur: Option<Field>, kind: ConnectionKind) -> Field {
     match cur {
         Some(f) => {
             let idx = order.iter().position(|x| *x == f).unwrap_or(0);
-            order[(idx + 1) % order.len()]
+            // `order` is never empty, and the modulo keeps the index in range.
+            order
+                .get((idx + 1) % order.len())
+                .copied()
+                .unwrap_or(Field::Name)
         }
-        None => order[0],
+        None => order.first().copied().unwrap_or(Field::Name),
     }
 }
 
@@ -4476,6 +4569,21 @@ mod tests {
         app.dev_set_screen("form-qos");
         assert!(matches!(app.screen, Screen::Form { .. }));
         assert_eq!(app.draft.kind, ConnectionKind::Qos);
+    }
+
+    #[test]
+    fn unavailable_transport_cannot_open_a_session() {
+        let mut app = RemoteApp::new_demo();
+        let mut state = AutoCommit::new();
+        let id = app
+            .first_of_kind(ConnectionKind::Rdp)
+            .expect("demo contains a legacy RDP profile");
+
+        app.apply(Action::Connect(id), &mut state);
+
+        assert_eq!(app.screen, Screen::List);
+        assert_eq!(app.selected, Some(id));
+        assert!(app.live.is_none());
     }
 
     #[test]

@@ -47,7 +47,7 @@ pub fn image_fetcher() -> Fetcher {
 }
 
 pub fn image_store() -> ImageStore {
-    ImageStore::new(image_fetcher())
+    ImageStore::new(&image_fetcher())
 }
 
 /// A cheap, `Copy` handle the screen builders thread down to the image-bearing

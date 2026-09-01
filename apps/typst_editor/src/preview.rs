@@ -578,9 +578,7 @@ impl PreviewPane {
         }
         let mut out = String::new();
         let mut prev_key: Option<(usize, i64)> = None;
-        let Some(selected) = self.cells.get(lo..hi) else {
-            return None;
-        };
+        let selected = self.cells.get(lo..hi)?;
         for cell in selected {
             if let Some(k) = prev_key
                 && k != cell.line_key
@@ -610,6 +608,10 @@ impl PreviewPane {
     /// Zoom past fit-width and pan to `(pan_x_frac, pan_y_frac)` of the reachable
     /// scroll range, so an offscreen capture can prove the page pans on both
     /// axes once it overflows the pane. Used only by the `--shots` renderer.
+    #[allow(
+        clippy::similar_names,
+        reason = "pan_x_frac/pan_y_frac are a standard x/y coordinate-pair naming convention"
+    )]
     pub fn demo_pan_view(&mut self, display_zoom: f64, pan_x_frac: f64, pan_y_frac: f64) {
         self.fit_width = false;
         let fw = self.viewport.fit_width_zoom();
@@ -914,6 +916,7 @@ fn selection_color(theme: &Theme) -> Color {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use crate::compile::{PageImage, TextCell, TextRun};

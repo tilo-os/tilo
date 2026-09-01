@@ -82,6 +82,14 @@ pub mod keys {
 
 /// Resolve (creating if absent) the `root.settings` map. Crate-visible so the
 /// preference [`crate::actions`] mutate the same object the app seeds here.
+///
+/// `put_object` on the document's own root can only fail if the root itself
+/// no longer exists, which never happens for a live `AutoCommit` — see
+/// `ui::widget::mod::TaffyTreeExt` for the equivalent taffy-side argument.
+#[allow(
+    clippy::expect_used,
+    reason = "put_object on the document root cannot fail; see doc comment"
+)]
 pub(crate) fn settings_obj(doc: &mut AutoCommit) -> ObjId {
     match doc.get(&automerge::ROOT, keys::SETTINGS) {
         Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -177,10 +185,12 @@ mod tests {
     #[test]
     fn round_trips_through_doc() {
         let mut doc = AutoCommit::new();
-        let mut s = Settings::default();
-        s.diff_layout = DiffLayout::SideBySide;
-        s.show_whitespace = true;
-        s.syntax_highlight = false;
+        let s = Settings {
+            diff_layout: DiffLayout::SideBySide,
+            show_whitespace: true,
+            syntax_highlight: false,
+            ..Settings::default()
+        };
         s.write(&mut doc);
 
         let back = Settings::read(&mut doc);

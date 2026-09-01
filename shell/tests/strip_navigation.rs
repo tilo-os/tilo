@@ -53,9 +53,14 @@ const GROUPS: usize = 5;
 fn strip_tree() -> (WorkspaceTree, StripId, Vec<GroupId>, Vec<[u64; 2]>) {
     let ws_id = WorkspaceId::new();
     let strip_id = StripId::new();
-    let groups: Vec<GroupId> = (0..GROUPS).map(|i| 1001 + i as u64).collect();
+    let groups: Vec<GroupId> = (0..GROUPS)
+        .map(|i| 1001u64.saturating_add(i as u64))
+        .collect();
     let tabs: Vec<[u64; 2]> = (0..GROUPS)
-        .map(|i| [(i as u64 + 1) * 10 + 1, (i as u64 + 1) * 10 + 2])
+        .map(|i| {
+            let base = (i as u64).saturating_add(1).saturating_mul(10);
+            [base.saturating_add(1), base.saturating_add(2)]
+        })
         .collect();
 
     let mk_tab = |id: u64, label: &str| Tab {
@@ -211,7 +216,11 @@ impl Harness {
         // Run the focus-follow pan (an eased curve on wall time) to its end via
         // `tick_snap_at`, rather than asserting mid-animation.
         if let Some(row) = self.host.group_row_mut_for_tests(self.strip) {
-            row.tick_snap_at(Instant::now() + Duration::from_secs(2));
+            row.tick_snap_at(
+                Instant::now()
+                    .checked_add(Duration::from_secs(2))
+                    .unwrap_or_else(Instant::now),
+            );
         }
         self.lay_out();
     }
@@ -303,6 +312,11 @@ impl Harness {
         r
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "st's only use is producing tree via tree(), read from through the function's \
+                  last statement; nothing to drop earlier"
+    )]
     fn active_window(&self) -> (GroupId, u64) {
         let st = self.chrome.borrow();
         let tree = st.tree();
@@ -368,9 +382,8 @@ fn the_plus_chip_does_not_move_the_viewport() {
     h.click(plus.center());
     h.tick();
 
-    assert_eq!(
-        h.scroll_x(),
-        parked,
+    assert!(
+        (h.scroll_x() - parked).abs() <= f64::EPSILON,
         "clicking + moved the strip from {parked} to {}",
         h.scroll_x()
     );

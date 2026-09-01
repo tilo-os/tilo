@@ -18,18 +18,20 @@
     clippy::string_slice,
     clippy::panic,
     clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard; the arithmetic \
+              here is a wall-clock timeout deadline and a typed-character \
+              counter bounded by a short-lived test run, not real user data"
 )]
 
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 use qos_agent::{Config, Session};
-use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
-use uuid::Uuid;
+use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload};
 
 mod typed_peer;
-use typed_peer::TypedPeer;
+use typed_peer::{TypedPeer, document_mutation};
 
 const APP: &str = "dev.qos.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
@@ -143,12 +145,15 @@ fn drive_peer_and_type(
                 payload: PresencePayload::Arrived,
                 ..
             } => {
-                let snap = CollabRequest::SyncCRDT {
+                let snap = CollabRequest::DocumentSnapshot {
                     data: replica.save(),
                 };
                 peer.send(&snap).unwrap();
             }
-            CollabEvent::CRDTIncremental { data } => {
+            event @ CollabEvent::Document { .. } => {
+                let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
+                    continue;
+                };
                 replica
                     .load_incremental(&data)
                     .expect("apply the agent's change");
@@ -158,7 +163,7 @@ fn drive_peer_and_type(
                 // rather than merely overlapping.
                 if let Some(ch) = TYPED.chars().nth(typed) {
                     let delta = type_one(replica, head, &ch.to_string());
-                    let msg = CollabRequest::SyncIncremental { data: delta };
+                    let msg = CollabRequest::DocumentIncremental { data: delta };
                     peer.send(&msg).unwrap();
                     typed += 1;
                 }
@@ -258,7 +263,7 @@ fn assert_attribution(replica: &mut AutoCommit, typed: usize) {
     //
     // Worth asserting rather than assuming, because the obvious place to
     // look for an author is the wire envelope, and there it genuinely is
-    // absent: `CollabEvent::CRDTIncremental` has no user field at all.
+    // Document attribution is carried separately from the Automerge bytes.
     // The author is in the delta instead. Every change carries the actor
     // that made it, the peer recovered all of them by applying the raw
     // incremental bytes, and no frame here was signed — so a receiver can
@@ -297,7 +302,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    let room = Uuid::new_v4();
+    let room = typed_peer::room();
 
     let mut peer = TypedPeer::connect(&sock);
     let hello = CollabRequest::Hello {
@@ -313,6 +318,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
 
     let cfg = Config {
         endpoint: Some(sock),
+        endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
         app_id: APP.into(),
         cluster: room,
         record: Some(RECORD.into()),
@@ -341,7 +347,10 @@ fn a_person_typing_and_the_agent_working_both_land() {
     // Give the person's last keystrokes a moment to reach the agent, so a
     // pass here is not just a race the agent happened to win.
     std::thread::sleep(Duration::from_millis(300));
-    assert!(agent.join().unwrap(), "the agent reports having acted");
+    assert!(
+        agent.join().unwrap(),
+        "the agent reports having acted (typed={typed}, table_done={table_done})"
+    );
 
     let shown = assert_agent_table(&replica, table_done);
     assert_person_typed(&replica, typed, &shown);

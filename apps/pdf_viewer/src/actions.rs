@@ -693,23 +693,43 @@ mod tests {
         };
         app.perform_action(&mut state.doc, &add_annotation_action(&a));
 
-        // The host drains the stashed heads and records one undo boundary.
-        let boundary =
-            Widget::take_committed_action(&mut app).expect("one undo boundary was stashed");
-        assert_eq!(boundary, before_heads, "the boundary brackets the action");
-        state.record_committed_action(boundary, None, None);
+        // The host's own recorder drains the stashed heads and records the
+        // boundary. Going through it rather than pushing an entry by hand is
+        // the point: attribution happens in there, and undo is author-scoped.
+        // The node map is empty because the app widget *is* the root here.
+        let local_author = ui::collaboration::local_user_id();
+        let root: *mut dyn Widget = &mut app;
+        assert!(
+            ui::undo::record_dispatched_action(
+                &mut state,
+                root,
+                &std::collections::HashMap::new(),
+                &local_author,
+            ),
+            "the host recorded an undo boundary for the dispatched action"
+        );
 
         assert_eq!(
             PdfDoc::list_annotations(&state.doc).len(),
             before_len + 1,
             "the action added the highlight"
         );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
+        let entry = state
+            .peek_last_undo()
+            .expect("exactly one undo boundary recorded");
+        assert_eq!(
+            entry.before, before_heads,
+            "the boundary brackets the action"
+        );
+        assert_eq!(
+            entry.author.as_ref(),
+            Some(&local_author),
+            "the host attributed it to the local user, so their Ctrl+Z can reach it"
         );
 
-        state.undo(None, None).expect("an undo entry to pop");
+        state
+            .undo_as(Some(&local_author), None, None)
+            .expect("an undo entry to pop");
         assert_eq!(
             PdfDoc::list_annotations(&state.doc).len(),
             before_len,

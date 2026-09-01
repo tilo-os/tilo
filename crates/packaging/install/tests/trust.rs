@@ -134,7 +134,7 @@ fn build_qpkg(
     manifest: &Manifest,
     publisher_sk: &SigningKey,
     payload_dir: &Path,
-) {
+) -> pkg::PackageId {
     #[derive(Serialize)]
     struct QpkgHeader {
         package_id: String,
@@ -167,7 +167,7 @@ fn build_qpkg(
         append(&mut tar, &name, b);
     }
     tar.finish().unwrap();
-    let _ = id;
+    id
 }
 
 fn append(tar: &mut tar::Builder<std::fs::File>, name: &str, bytes: &[u8]) {
@@ -471,6 +471,62 @@ fn install_default_warns_but_installs_self_signed() {
         stderr.contains("self-signed") || stderr.contains("WARN"),
         "stderr: {stderr}"
     );
+}
+
+#[test]
+fn install_require_publisher_binds_the_package_to_the_registry_key() {
+    let env = TestEnv::new();
+    let (publisher_sk, publisher_pub_hex) = fresh_key();
+    let manifest = manifest(&publisher_pub_hex);
+    let payload_dir = tempfile::tempdir().unwrap();
+    write_payload(payload_dir.path());
+    let qpkg_path = env.home.path().join("app.qpkg");
+    let package_root = build_qpkg(&qpkg_path, &manifest, &publisher_sk, payload_dir.path());
+    env.write_trusted_attestors(&TrustedAttestors::default());
+    env.write_revocation(&RevocationList::default());
+
+    let mut mismatched = env.cmd();
+    mismatched
+        .arg("install")
+        .arg(&qpkg_path)
+        .arg("--ignore-missing-runtime")
+        .arg("--require-publisher")
+        .arg("11".repeat(32));
+    let (ok, _stdout, stderr) = run(mismatched);
+    assert!(!ok, "a different publisher key must be refused");
+    assert!(
+        stderr.contains("does not match --require-publisher"),
+        "{stderr}"
+    );
+
+    let mut wrong_root = env.cmd();
+    wrong_root
+        .arg("install")
+        .arg(&qpkg_path)
+        .arg("--ignore-missing-runtime")
+        .arg("--require-publisher")
+        .arg(&publisher_pub_hex)
+        .arg("--require-package-root")
+        .arg("22".repeat(32));
+    let (ok, _stdout, stderr) = run(wrong_root);
+    assert!(!ok, "a different signed root must be refused");
+    assert!(
+        stderr.contains("does not match --require-package-root"),
+        "{stderr}"
+    );
+
+    let mut matching = env.cmd();
+    matching
+        .arg("install")
+        .arg(&qpkg_path)
+        .arg("--ignore-missing-runtime")
+        .arg("--require-publisher")
+        .arg(&publisher_pub_hex)
+        .arg("--require-package-root")
+        .arg(package_root.to_hex());
+    let (ok, stdout, stderr) = run(matching);
+    assert!(ok, "matching publisher should install: {stderr}");
+    assert!(stdout.contains("installed:"));
 }
 
 #[test]

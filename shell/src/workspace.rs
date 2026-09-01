@@ -22,6 +22,7 @@ pub struct Rectangle {
 }
 
 impl Rectangle {
+    #[must_use]
     pub fn expand(&self, padding: f32) -> Self {
         Self {
             x: self.x - padding,

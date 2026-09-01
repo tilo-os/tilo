@@ -35,9 +35,12 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     Ok(themes::app_root_for_shot(width))
 }
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.themes", themes::app_root)
+        &LaunchSpec::new("dev.qos.themes", themes::app_root)
             .shot_root(shot_root)
             .configure_app(|app| themes::actions::register(app.action_registry_mut())),
     );

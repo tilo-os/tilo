@@ -51,7 +51,6 @@ pub mod icons;
 pub mod modal;
 pub mod model;
 pub mod opml;
-pub mod portal;
 pub mod reader_theme;
 pub mod sample;
 pub mod search_provider;

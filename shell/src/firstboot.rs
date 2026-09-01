@@ -1,25 +1,18 @@
-//! First-boot setup, invoked by the `quick-desktop-firstboot.service`
-//! system unit at first user login (`/usr/bin/quick-desktop --firstboot`).
+//! First-boot setup, invoked by `shell-firstboot.service` as
+//! `/usr/bin/shell --firstboot-only`.
 //!
 //! The systemd unit guards re-runs with a `ConditionPathExists` on
-//! `/etc/quick-desktop/.firstboot-done`, so this module is a one-shot
-//! "make sure the user-facing config + cache dirs exist" hook. Cheap,
-//! idempotent, and must NOT bail the compositor boot — `main` runs `run` then continues regardless.
-//!
-//! On top of the XDG-config bootstrap, this also provisions a
-//! single-device signing identity at `<config>/qos/identity/primary.json`
-//! when none is present — protected before provisioning returns and later used
-//! by the launcher through an app-scoped signing broker, encoded by the same
-//! `ui::widget::identity_flow::IdentityRecord` type the interactive ceremony writes.
-//!
-//! See `os/usr/lib/systemd/system/quick-desktop-firstboot.service` and
-//! `CLAUDE.md`'s "Boot chain" section for the lifecycle context.
+//! `/etc/qos/.firstboot-done`, so this module is a one-shot "make sure the
+//! user-facing config dir exists" hook. It is cheap and idempotent. It never
+//! creates a personal signing identity: that is an acknowledged interactive
+//! ceremony owned by the compositor OOBE.
 
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -29,10 +22,72 @@ use rand_core::OsRng;
 use threshold_identity::ThresholdIdentity;
 use ui::widget::identity_flow::IdentityRecord;
 
+/// Human-facing name of the Unix account running this session.
+///
+/// This is only used by the compatibility path where qDesktop is installed
+/// on top of an existing Linux distribution. Native qOS setup has its own
+/// identity ceremony and must not derive identity metadata from a Unix
+/// account that happens to run the session.
+#[cfg(unix)]
+pub fn login_account_display_name() -> String {
+    use std::ffi::CStr;
+
+    let uid = unsafe { libc::geteuid() };
+    let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut result = std::ptr::null_mut();
+    let mut buffer = vec![0_u8; 16 * 1024];
+    let status = unsafe {
+        libc::getpwuid_r(
+            uid,
+            pwd.as_mut_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            std::ptr::addr_of_mut!(result),
+        )
+    };
+    if status == 0 && !result.is_null() {
+        let pwd = unsafe { pwd.assume_init() };
+        let username = unsafe { CStr::from_ptr(pwd.pw_name) }
+            .to_string_lossy()
+            .trim()
+            .to_string();
+        let gecos = unsafe { CStr::from_ptr(pwd.pw_gecos) }
+            .to_string_lossy()
+            .split(',')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if !gecos.is_empty() {
+            return gecos;
+        }
+        if !username.is_empty() {
+            return username;
+        }
+    }
+    std::env::var("USER")
+        .ok()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| format!("User {uid}"))
+}
+
+#[cfg(not(unix))]
+pub fn login_account_display_name() -> String {
+    std::env::var("USER")
+        .ok()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "Local user".to_string())
+}
+
 /// File name for the primary single-device identity record. Matches
 /// what the runtime identity broker migrates and what `DiskIdentityStore`
 /// writes via the UI's identity-flow ceremony.
 const PRIMARY_IDENTITY_FILE: &str = "primary.json";
+
+/// Sequence for same-directory temporary owner-claim files.  The final claim
+/// is a hard link, not this name; `create_new` simply prevents a stale temp
+/// file from ever being overwritten.
+static OWNER_CLAIM_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Process-global entry point. Resolves the user's XDG config dir from
 /// `$XDG_CONFIG_HOME` (falling back to `$HOME/.config`) and creates
@@ -48,42 +103,32 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     )
 }
 
-/// Effective uid of this process; `0` means the identity step must not run — see [`run_as`].
-#[cfg(unix)]
-fn effective_uid() -> u32 {
-    // Safety: `geteuid` is always successful and takes no arguments.
-    unsafe { libc::geteuid() }
-}
-
-#[cfg(not(unix))]
-fn effective_uid() -> u32 {
-    1000
+/// Current wall-clock time as nanoseconds since the epoch, clamped to
+/// `u64::MAX` rather than truncated — a value that large is centuries past
+/// any real device-cert issuance this crate computes against.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "clamped to 0..=u64::MAX immediately above, so it always fits u64"
+)]
+fn now_ns_u64() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .min(u128::from(u64::MAX)) as u64
 }
 
 /// Pure form of [`run`] that takes env-var values as arguments instead
 /// of reading the real environment — tests drive this with a `tempdir`-rooted fixture so the suite never pokes the developer's real `$HOME`.
+///
+/// # Errors
+///
+/// Returns an error when directory creation fails (permission denied, ENOSPC).
 pub fn run_with_env(
     xdg_config_home: Option<OsString>,
     home: Option<OsString>,
 ) -> Result<(), Box<dyn Error>> {
-    run_as(xdg_config_home, home, effective_uid())
-}
-
-/// [`run_with_env`] with the effective uid supplied, so the "root must not
-/// mint an identity" rule is testable without running the suite as root.
-///
-/// This hook is reachable from a *system* unit running before anyone has
-/// logged in, where `$HOME` is root's — minting here would put the
-/// user's signing key in `/root/.config`, owned by root and unreadable
-/// by the person it belongs to. The session would then find no identity
-/// and boot without one, exactly the failure this guard prevents. A
-/// signing identity is *personal*: minted in the user's own session, by [`crate::onboarding`], after the user has been told what it is.
-pub fn run_as(
-    xdg_config_home: Option<OsString>,
-    home: Option<OsString>,
-    uid: u32,
-) -> Result<(), Box<dyn Error>> {
-    let Some(config_dir) = resolve_config_dir(xdg_config_home.clone(), home.clone()) else {
+    let Some(config_dir) = resolve_config_dir(xdg_config_home, home) else {
         tracing::warn!(
             "firstboot: neither XDG_CONFIG_HOME nor HOME set; skipping config-dir creation"
         );
@@ -94,43 +139,6 @@ pub fn run_as(
         "firstboot: ensured quick-desktop config dir at {}",
         config_dir.display()
     );
-
-    // Identity provisioning happens in the user's session, never here as root — see `run_as`'s doc comment for why.
-    if uid == 0 {
-        tracing::info!(
-            "firstboot: running as root, so no signing identity is minted here — \
-             the identity belongs to the user and is created in their session"
-        );
-        return Ok(());
-    }
-
-    // Create a fresh single-device Ed25519 record if none exists.
-    // Best-effort — a failure to write does NOT prevent boot from
-    // continuing; without a real record apps fall back to unsigned collab
-    // ops. Any later enrolment/rotation goes through the identity-flow ceremony in `ui::widget::identity_flow`.
-    if let Some(identity_dir) = resolve_identity_dir(xdg_config_home, home) {
-        match ensure_primary_identity(&identity_dir) {
-            Ok(ProvisionOutcome::Existing) => {
-                tracing::info!(
-                    "firstboot: identity already present at {}",
-                    identity_dir.join(PRIMARY_IDENTITY_FILE).display()
-                );
-            }
-            Ok(ProvisionOutcome::Created { pubkey_hex }) => {
-                tracing::info!(
-                    "firstboot: minted single-device identity at {} (pubkey={pubkey_hex})",
-                    identity_dir.join(PRIMARY_IDENTITY_FILE).display()
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "firstboot: could not provision identity at {}: {e} (apps will run \
-                     without a signing identity)",
-                    identity_dir.display()
-                );
-            }
-        }
-    }
     Ok(())
 }
 
@@ -143,6 +151,14 @@ pub enum ProvisionOutcome {
     /// A fresh single-device identity was minted and written — the derived
     /// Ed25519 pubkey is included so a wrapper (log line, tests) can render the public half without re-reading the file.
     Created { pubkey_hex: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IdentityProvisioningContext {
+    /// Native qOS: the dedicated OOBE owns the identity and storage policy.
+    NativeQos,
+    /// qDesktop added to a pre-existing Linux distribution and user account.
+    LegacyLinuxHost,
 }
 
 /// Compute the quick-desktop config dir (`<config-base>/quick-desktop`) following the same XDG fallback rules the peer-sync marker uses.
@@ -162,31 +178,6 @@ fn resolve_config_dir(
     Some(p)
 }
 
-/// Compute the qOS identity dir (`<config-base>/qos/identity`) — the
-/// same path `runtime-identity::load()` reads and `DiskIdentityStore::from_env` writes to.
-fn resolve_identity_dir(
-    xdg_config_home: Option<OsString>,
-    home: Option<OsString>,
-) -> Option<PathBuf> {
-    if let Some(xdg) = xdg_config_home.filter(|v| !v.is_empty()) {
-        let mut p = PathBuf::from(xdg);
-        if p.is_absolute() {
-            p.push("qos");
-            p.push("identity");
-            return Some(p);
-        }
-    }
-    let home = home.filter(|v| !v.is_empty())?;
-    let mut p = PathBuf::from(home);
-    if !p.is_absolute() {
-        return None;
-    }
-    p.push(".config");
-    p.push("qos");
-    p.push("identity");
-    Some(p)
-}
-
 fn ensure_dirs(config_dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(config_dir)?;
     Ok(())
@@ -202,9 +193,18 @@ fn ensure_dirs(config_dir: &Path) -> std::io::Result<()> {
 ///
 /// Returns an error if file system operations fail (permission denied, I/O error, etc.).
 pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, io::Error> {
+    ensure_primary_identity_in_context(identity_dir, IdentityProvisioningContext::NativeQos)
+}
+
+fn ensure_primary_identity_in_context(
+    identity_dir: &Path,
+    context: IdentityProvisioningContext,
+) -> Result<ProvisionOutcome, io::Error> {
     let path = identity_dir.join(PRIMARY_IDENTITY_FILE);
     if path.exists() {
-        protect_identity_record(identity_dir)?;
+        if context == IdentityProvisioningContext::NativeQos {
+            protect_identity_record(identity_dir)?;
+        }
         return Ok(ProvisionOutcome::Existing);
     }
 
@@ -214,9 +214,13 @@ pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, 
     let identity = ThresholdIdentity::bootstrap_single_device(&mut rng)
         .map_err(|e| io::Error::other(e.to_string()))?;
     let pubkey_hex = hex_encode(identity.group_public_key().as_bytes());
+    let display_name = match context {
+        IdentityProvisioningContext::NativeQos => String::new(),
+        IdentityProvisioningContext::LegacyLinuxHost => login_account_display_name(),
+    };
     let record = IdentityRecord::from_threshold_identity(
         &identity,
-        "",
+        &display_name,
         [128, 128, 128],
         std::time::SystemTime::now(),
     )
@@ -237,9 +241,53 @@ pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, 
 /// single transport identity used by the shell, filesystem synchroniser, and
 /// hosted relay. Existing records are migrated idempotently; an existing
 /// device key is never replaced.
+///
+/// # Errors
+///
+/// Returns an error if the identity directory can't be created or its
+/// permissions set, if the primary identity can't be provisioned or loaded,
+/// if it isn't a single-device identity, if the device key or certificate
+/// can't be created, loaded, verified, or signed, or if the identity
+/// registry can't be migrated or saved.
 pub fn ensure_collaboration_identity(
     identity_dir: &Path,
     paths: &IdentityPaths,
+) -> Result<ProvisionOutcome, io::Error> {
+    ensure_collaboration_identity_in_context(
+        identity_dir,
+        paths,
+        IdentityProvisioningContext::NativeQos,
+    )
+}
+
+/// Provision collaboration identity for qDesktop installed on an existing
+/// Linux distribution.
+///
+/// A newly minted identity is labelled from the current passwd entry so it is
+/// visibly associated with the already-authenticated Unix user. An existing
+/// identity record is used as-is: this compatibility path does not introduce
+/// another login, password, or storage migration.
+///
+/// # Errors
+///
+/// Returns an error if the identity directory cannot be created or its
+/// permissions set, or if the identity and its certified device key cannot be
+/// provisioned, loaded, verified, migrated, or saved.
+pub fn ensure_collaboration_identity_for_legacy_linux_host(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+) -> Result<ProvisionOutcome, io::Error> {
+    ensure_collaboration_identity_in_context(
+        identity_dir,
+        paths,
+        IdentityProvisioningContext::LegacyLinuxHost,
+    )
+}
+
+fn ensure_collaboration_identity_in_context(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    context: IdentityProvisioningContext,
 ) -> Result<ProvisionOutcome, io::Error> {
     fs::create_dir_all(identity_dir)?;
     #[cfg(unix)]
@@ -250,14 +298,18 @@ pub fn ensure_collaboration_identity(
     }
 
     let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
-    let outcome = if primary_path.exists() {
-        protect_identity_record(identity_dir)?;
-        ProvisionOutcome::Existing
-    } else {
-        ensure_primary_identity(identity_dir)?
-    };
+    let (selected_path, outcome) =
+        if let Some(path) = runtime_identity::resolve_active_identity(identity_dir) {
+            if context == IdentityProvisioningContext::NativeQos {
+                protect_identity_record_at(identity_dir, &path)?;
+            }
+            (path, ProvisionOutcome::Existing)
+        } else {
+            let outcome = ensure_primary_identity_in_context(identity_dir, context)?;
+            (primary_path, outcome)
+        };
 
-    let signer = runtime_identity::load_from_path(primary_path)
+    let signer = runtime_identity::load_from_path(selected_path)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     if !signer.is_single_device() {
         return Err(io::Error::new(
@@ -271,14 +323,7 @@ pub fn ensure_collaboration_identity(
     // The first identity to claim the machine owns its legacy system-facing
     // certificate. Later OS users keep their own root and receive a separate
     // identity-keyed certificate for the same device key.
-    let device_owner = if paths.user_pubkey.exists() {
-        let stored = persist::read_public_key(&paths.user_pubkey)
-            .map_err(|e| io::Error::other(e.to_string()))?;
-        stored == root_public
-    } else {
-        persist::write_public_key(&paths.user_pubkey, &root_public)?;
-        true
-    };
+    let device_owner = claim_device_owner(&paths.user_pubkey, &root_public)?;
 
     let (device, _) =
         persist::load_or_create_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
@@ -296,11 +341,7 @@ pub fn ensure_collaboration_identity(
             ));
         }
     } else if device_owner {
-        let issued_at_ns = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-            .min(u128::from(u64::MAX)) as u64;
+        let issued_at_ns = now_ns_u64();
         let mut cert = DeviceCert {
             user_public_key: root_public,
             device_public_key: device.verifying_key().to_bytes(),
@@ -348,10 +389,109 @@ pub fn ensure_collaboration_identity(
     Ok(outcome)
 }
 
+/// Atomically elect the legacy system-facing identity owner.
+///
+/// The owner key is shared by every OS user on a machine.  An `exists` check
+/// followed by a normal write lets two first logins both observe an empty path
+/// and lets the later write replace the first owner's key.  Write the complete
+/// candidate to a same-directory temporary file, then hard-link it into its
+/// final name: link creation is an atomic no-clobber claim on the target
+/// directory entry.  A competing caller reads (and therefore validates) the
+/// winner rather than ever replacing it.
+///
+/// A hard link is deliberately used instead of `rename`: `rename` atomically
+/// replaces an existing target, which is exactly the election race we must
+/// avoid.  qOS stores this identity tree on a local Linux filesystem, where
+/// hard links are available and both paths share a directory/filesystem.
+fn claim_device_owner(path: &Path, root_public: &[u8; 32]) -> io::Result<bool> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "system identity public-key path has no parent",
+        )
+    })?;
+
+    let temp = create_owner_claim_temp(parent, root_public)?;
+    let claim = fs::hard_link(&temp, path);
+    // The final path is the claim.  The temp link contains no secret and is
+    // removed in all outcomes; a removal error must not obscure a successful
+    // (or failed) election result.
+    let _ = fs::remove_file(&temp);
+
+    match claim {
+        Ok(()) => {
+            // `hard_link` made the complete, synced file visible.  Sync its
+            // parent before treating the election as successful, so the
+            // winner's directory entry survives a sudden power loss.
+            fs::File::open(parent)?.sync_all()?;
+            // Validate our own published winner too: a filesystem anomaly or
+            // future refactor must fail closed instead of issuing a legacy
+            // certificate against an unverified owner record.
+            let stored = read_claimed_owner(path)?;
+            if stored != *root_public {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "atomic owner claim did not contain the claimed public key",
+                ));
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            // Someone else won.  Preserve the existing owner exactly as the
+            // old sequential path did, but validate it before deciding this
+            // identity is a non-owner.
+            Ok(read_claimed_owner(path)? == *root_public)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Create and synchronously fill a uniquely named same-directory temporary
+/// claim file.  The bounded retry is only for stale files left by a killed
+/// process; the process-local sequence makes normal collisions impossible.
+fn create_owner_claim_temp(parent: &Path, root_public: &[u8; 32]) -> io::Result<PathBuf> {
+    for _ in 0..16 {
+        let sequence = OWNER_CLAIM_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temp = parent.join(format!(
+            ".qos-owner-claim-{}-{sequence}",
+            std::process::id()
+        ));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+        {
+            Ok(mut file) => {
+                if let Err(error) = file.write_all(root_public).and_then(|()| file.sync_all()) {
+                    let _ = fs::remove_file(&temp);
+                    return Err(error);
+                }
+                return Ok(temp);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate an owner-claim temporary file",
+    ))
+}
+
+fn read_claimed_owner(path: &Path) -> io::Result<[u8; 32]> {
+    persist::read_public_key(path).map_err(|error| io::Error::other(error.to_string()))
+}
+
 /// Enrol the machine's existing device key under an imported local identity.
 ///
 /// This keeps app signing and collaboration transport authentication on the
 /// same `identity -> device` chain immediately after setup/import.
+///
+/// # Errors
+///
+/// Returns an error if the record at `record_path` can't be loaded, or if
+/// the device key or its certificate can't be created, loaded, verified, or
+/// signed.
 pub fn ensure_device_certificate_for_record(
     record_path: &Path,
     paths: &IdentityPaths,
@@ -386,11 +526,7 @@ fn ensure_device_certificate_for_identity(
         return Ok(cert_path);
     }
 
-    let issued_at_ns = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .min(u128::from(u64::MAX)) as u64;
+    let issued_at_ns = now_ns_u64();
     let mut cert = DeviceCert {
         user_public_key,
         device_public_key: device.verifying_key().to_bytes(),
@@ -408,6 +544,75 @@ fn ensure_device_certificate_for_identity(
     qos_user_identity::verify_device_cert(&cert).map_err(|e| io::Error::other(e.to_string()))?;
     persist::write_device_cert(&cert_path, &cert).map_err(|e| io::Error::other(e.to_string()))?;
     Ok(cert_path)
+}
+
+/// Verify the complete personal-root/device chain without changing it.
+///
+/// Login uses this after the human-facing ceremony. Every persisted secret,
+/// public key and certificate must describe the same root and device, and the
+/// certificate must be valid at `now_ns`. Missing, malformed, weakly-permissioned
+/// or mismatched state is an error; this function never creates or repairs it.
+///
+/// # Errors
+///
+/// Returns an I/O error when any identity artifact is missing, insecure,
+/// malformed, expired, or inconsistent with the root/device chain.
+pub fn verify_collaboration_identity(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    now_ns: u64,
+) -> Result<(), io::Error> {
+    let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
+    #[cfg(unix)]
+    {
+        let dir_metadata = fs::metadata(identity_dir)?;
+        if !dir_metadata.is_dir() || dir_metadata.permissions().mode() & 0o077 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "personal identity directory must not be accessible by group or other users",
+            ));
+        }
+        let primary_metadata = fs::symlink_metadata(&primary_path)?;
+        if !primary_metadata.file_type().is_file()
+            || primary_metadata.permissions().mode() & 0o777 != 0o600
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "primary identity must be a regular file with mode 0600",
+            ));
+        }
+    }
+    let identity = runtime_identity::load_from_path(primary_path)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    if !identity.is_single_device() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "threshold identity requires the multi-device certificate ceremony",
+        ));
+    }
+    let root_public = persist::read_public_key(&paths.user_pubkey)
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let device = persist::read_device_key(&paths.device_privkey)
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let cert = persist::read_device_cert(&paths.device_cert)
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    qos_user_identity::verify_device_cert_at(&cert, now_ns)
+        .map_err(|e| io::Error::other(e.to_string()))?;
+
+    let expected_root = identity.group_public_key();
+    if root_public != expected_root || cert.user_public_key != expected_root {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "personal identity and persisted certification root do not match",
+        ));
+    }
+    if cert.device_public_key != device.verifying_key().to_bytes() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "certified device key does not match the persisted device secret",
+        ));
+    }
+    Ok(())
 }
 
 /// Resolve the system identity root, with the same test/development override
@@ -431,24 +636,31 @@ fn import_primary_identity(identity_dir: &Path, bytes: &[u8]) -> io::Result<Path
 }
 
 fn protect_identity_record(identity_dir: &Path) -> io::Result<()> {
+    protect_identity_record_at(identity_dir, &identity_dir.join(PRIMARY_IDENTITY_FILE))
+}
+
+fn protect_identity_record_at(identity_dir: &Path, record_path: &Path) -> io::Result<()> {
+    let id = record_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "identity has no valid id"))?;
     #[cfg(test)]
     {
         let provider = runtime_identity::BrokerFileProvider::new(identity_dir);
-        runtime_identity::secure_identity_with_provider(identity_dir, "primary", &provider)?;
+        runtime_identity::secure_identity_with_provider(identity_dir, id, &provider)?;
     }
     #[cfg(not(test))]
     {
-        runtime_identity::secure_identity(identity_dir, "primary")?;
+        runtime_identity::secure_identity(identity_dir, id)?;
     }
     Ok(())
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for b in bytes {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0xF) as usize] as char);
+        out.push(char::from_digit(u32::from(b >> 4), 16).unwrap_or('0'));
+        out.push(char::from_digit(u32::from(b & 0xF), 16).unwrap_or('0'));
     }
     out
 }
@@ -457,6 +669,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+    use std::sync::{Arc, Barrier};
 
     /// Minimal tempdir helper (avoids pulling `tempfile` as a dev-dep — the only test in `quick-shell` that needs one).
     struct TmpDir(PathBuf);
@@ -520,46 +733,9 @@ mod tests {
     }
 
     #[test]
-    fn run_provisions_identity_when_missing() {
-        let tmp = TmpDir::new("mint-identity");
-        // An explicit non-root uid: `run_with_env` reads the real one, and as
-        // root the guard returns before minting, so this asserted nothing on a
-        // runner that builds in a root container.
-        run_as(Some(OsString::from(tmp.path())), None, 1000).expect("firstboot ok");
-        let identity_file = tmp
-            .path()
-            .join("qos")
-            .join("identity")
-            .join(PRIMARY_IDENTITY_FILE);
-        assert!(
-            identity_file.exists(),
-            "expected identity file at {identity_file:?}"
-        );
-
-        // File loads through runtime-identity's parser — real seed, real derived pubkey, no soft-mismatch.
-        let ident = runtime_identity::load_from_path(identity_file)
-            .expect("runtime-identity must parse the minted record");
-        assert!(ident.is_single_device());
-        assert_eq!(ident.threshold(), 1);
-        assert_eq!(ident.total_shares(), 1);
-        assert_eq!(ident.share_index(), 1);
-        // Round-trip via a real sign+verify to confirm the seed and pubkey
-        // stored in the file match — a placeholder record would fail this.
-        let sig = ident.sign(b"firstboot-check").expect("sign ok");
-        let vk =
-            ed25519_dalek::VerifyingKey::from_bytes(&ident.group_public_key()).expect("vk decode");
-        use ed25519_dalek::Verifier;
-        let sig = ed25519_dalek::Signature::from_bytes(&sig);
-        vk.verify(b"firstboot-check", &sig)
-            .expect("dalek verify must succeed against derived pubkey");
-    }
-
-    /// Running as root must not mint an identity — see `run_as`'s doc comment for why.
-    #[test]
-    fn root_does_not_mint_an_identity() {
-        let tmp = TmpDir::new("root-refuses");
-        run_as(Some(OsString::from(tmp.path())), None, 0)
-            .expect("root path is a no-op, not an error");
+    fn run_does_not_provision_identity_when_missing() {
+        let tmp = TmpDir::new("no-mint-identity");
+        run_with_env(Some(OsString::from(tmp.path())), None).expect("firstboot ok");
         let identity_file = tmp
             .path()
             .join("qos")
@@ -567,40 +743,19 @@ mod tests {
             .join(PRIMARY_IDENTITY_FILE);
         assert!(
             !identity_file.exists(),
-            "root must not mint {identity_file:?} — the identity belongs to the user's session"
-        );
-    }
-
-    /// The same call as a normal user does mint, so the guard is about the uid and not about the function having quietly stopped working.
-    #[test]
-    fn a_normal_user_still_mints() {
-        let tmp = TmpDir::new("user-mints");
-        run_as(Some(OsString::from(tmp.path())), None, 1000).expect("user path mints");
-        let identity_file = tmp
-            .path()
-            .join("qos")
-            .join("identity")
-            .join(PRIMARY_IDENTITY_FILE);
-        assert!(
-            identity_file.exists(),
-            "a non-root uid mints {identity_file:?}"
+            "firstboot must leave personal identity creation to the OOBE"
         );
     }
 
     #[test]
-    fn run_leaves_existing_identity_alone() {
+    fn run_does_not_touch_an_existing_identity() {
         let tmp = TmpDir::new("existing-identity");
         let dir = tmp.path().join("qos").join("identity");
         std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join(PRIMARY_IDENTITY_FILE);
-        // Marker bytes: not a valid identity — proves firstboot doesn't
-        // overwrite it. If firstboot starts repairing malformed records, swap in a real record and assert byte-content is preserved.
-        std::fs::write(&file, b"MARKER: hands off").unwrap();
-        // Non-root, so the run actually reaches the "identity already exists"
-        // branch this test is about rather than returning at the uid guard.
-        run_as(Some(OsString::from(tmp.path())), None, 1000).expect("firstboot ok");
-        let got = std::fs::read(&file).unwrap();
-        assert_eq!(got, b"MARKER: hands off");
+        let identity_file = dir.join(PRIMARY_IDENTITY_FILE);
+        std::fs::write(&identity_file, b"MARKER: hands off").unwrap();
+        run_with_env(Some(OsString::from(tmp.path())), None).expect("firstboot ok");
+        assert_eq!(std::fs::read(identity_file).unwrap(), b"MARKER: hands off");
     }
 
     #[test]
@@ -612,12 +767,58 @@ mod tests {
             ProvisionOutcome::Created { pubkey_hex } => {
                 assert_eq!(pubkey_hex.len(), 64, "hex of 32 bytes is 64 chars");
             }
-            other => panic!("expected Created on empty dir, got {other:?}"),
+            other @ ProvisionOutcome::Existing => {
+                panic!("expected Created on empty dir, got {other:?}")
+            }
         }
+        let identity = runtime_identity::load_from_path(dir.join(PRIMARY_IDENTITY_FILE))
+            .expect("load created identity");
+        assert_eq!(
+            identity.display_name(),
+            "",
+            "native qOS must not infer personal identity from its Unix implementation account"
+        );
         // Second run leaves it alone.
         assert_eq!(
             ensure_primary_identity(&dir).expect("provision ok (2nd)"),
             ProvisionOutcome::Existing
+        );
+    }
+
+    #[test]
+    fn legacy_linux_host_associates_a_fresh_identity_with_the_unix_account() {
+        let tmp = TmpDir::new("legacy-host-account");
+        let personal = tmp.path().join("config/qos/identity");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+
+        assert!(matches!(
+            ensure_collaboration_identity_for_legacy_linux_host(&personal, &paths)
+                .expect("provision host identity"),
+            ProvisionOutcome::Created { .. }
+        ));
+        let identity = runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
+            .expect("load host identity");
+        assert_eq!(identity.display_name(), login_account_display_name());
+    }
+
+    #[test]
+    fn legacy_linux_host_does_not_relabel_or_migrate_an_existing_identity() {
+        let tmp = TmpDir::new("legacy-host-existing");
+        let personal = tmp.path().join("config/qos/identity");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+        ensure_primary_identity(&personal).expect("seed existing identity");
+        let record_path = personal.join(PRIMARY_IDENTITY_FILE);
+        let before = std::fs::read(&record_path).expect("read identity before host setup");
+
+        assert_eq!(
+            ensure_collaboration_identity_for_legacy_linux_host(&personal, &paths)
+                .expect("associate existing host identity"),
+            ProvisionOutcome::Existing
+        );
+        assert_eq!(
+            std::fs::read(record_path).expect("read identity after host setup"),
+            before,
+            "the legacy-host compatibility path must use an existing identity as-is"
         );
     }
 
@@ -647,6 +848,83 @@ mod tests {
             ensure_collaboration_identity(&personal, &paths).unwrap(),
             ProvisionOutcome::Existing
         );
+        let before = [
+            std::fs::read(personal.join(PRIMARY_IDENTITY_FILE)).unwrap(),
+            std::fs::read(&paths.user_pubkey).unwrap(),
+            std::fs::read(&paths.device_privkey).unwrap(),
+            std::fs::read(&paths.device_cert).unwrap(),
+        ];
+        verify_collaboration_identity(&personal, &paths, cert.issued_at_ns)
+            .expect("complete chain verifies without mutation");
+        let after = [
+            std::fs::read(personal.join(PRIMARY_IDENTITY_FILE)).unwrap(),
+            std::fs::read(&paths.user_pubkey).unwrap(),
+            std::fs::read(&paths.device_privkey).unwrap(),
+            std::fs::read(&paths.device_cert).unwrap(),
+        ];
+        assert_eq!(before, after, "login verification must be read-only");
+    }
+
+    #[test]
+    fn collaboration_verifier_rejects_a_mismatched_personal_root() {
+        let tmp = TmpDir::new("collaboration-identity-mismatch");
+        let personal = tmp.path().join("config/qos/identity");
+        let other_personal = tmp.path().join("other/qos/identity");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+        ensure_collaboration_identity(&personal, &paths).unwrap();
+        ensure_primary_identity(&other_personal).unwrap();
+        std::fs::copy(
+            other_personal.join(PRIMARY_IDENTITY_FILE),
+            personal.join(PRIMARY_IDENTITY_FILE),
+        )
+        .unwrap();
+
+        let error = verify_collaboration_identity(&personal, &paths, u64::MAX)
+            .expect_err("a different personal root must not pass login");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collaboration_verifier_rejects_a_permissive_primary_secret() {
+        let tmp = TmpDir::new("collaboration-identity-permissions");
+        let personal = tmp.path().join("config/qos/identity");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+        ensure_collaboration_identity(&personal, &paths).unwrap();
+
+        let primary = personal.join(PRIMARY_IDENTITY_FILE);
+        std::fs::set_permissions(&primary, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let error = verify_collaboration_identity(&personal, &paths, u64::MAX)
+            .expect_err("a group-readable personal seed must fail closed");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn collaboration_setup_repairs_the_active_import_without_minting_primary() {
+        let tmp = TmpDir::new("active-import");
+        let personal = tmp.path().join("config/qos/identity");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+        ensure_primary_identity(&personal).expect("seed exported identity");
+        let imported = personal.join("identity-imported.json");
+        std::fs::rename(personal.join(PRIMARY_IDENTITY_FILE), &imported)
+            .expect("give imported identity its managed name");
+        runtime_identity::set_active_identity(&personal, "identity-imported")
+            .expect("select imported identity");
+
+        assert_eq!(
+            ensure_collaboration_identity(&personal, &paths).expect("repair imported chain"),
+            ProvisionOutcome::Existing
+        );
+        assert!(imported.exists());
+        assert!(
+            !personal.join(PRIMARY_IDENTITY_FILE).exists(),
+            "repair must not mint a second personal identity"
+        );
+        let signer = runtime_identity::load_from_path(imported).expect("load imported identity");
+        let cert =
+            persist::read_device_cert(&paths.device_cert_for_user(&signer.group_public_key()))
+                .expect("identity-specific certificate");
+        qos_user_identity::verify_device_cert(&cert).expect("valid imported chain");
     }
 
     #[test]
@@ -682,17 +960,117 @@ mod tests {
         );
     }
 
+    #[test]
+    fn simultaneous_user_provisioning_builds_one_consistent_device_chain() {
+        let tmp = TmpDir::new("simultaneous-user-provisioning");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+        let alice = tmp.path().join("alice/qos/identity");
+        let bob = tmp.path().join("bob/qos/identity");
+        ensure_primary_identity(&alice).expect("seed alice identity");
+        ensure_primary_identity(&bob).expect("seed bob identity");
+
+        let start = Arc::new(Barrier::new(3));
+        let alice_start = Arc::clone(&start);
+        let alice_paths = paths.clone();
+        let alice_dir = alice.clone();
+        let alice_thread = std::thread::spawn(move || {
+            alice_start.wait();
+            ensure_collaboration_identity(&alice_dir, &alice_paths)
+        });
+        let bob_start = Arc::clone(&start);
+        let bob_paths = paths.clone();
+        let bob_dir = bob.clone();
+        let bob_thread = std::thread::spawn(move || {
+            bob_start.wait();
+            ensure_collaboration_identity(&bob_dir, &bob_paths)
+        });
+        start.wait();
+        alice_thread
+            .join()
+            .expect("alice provisioning thread")
+            .expect("alice provisioning");
+        bob_thread
+            .join()
+            .expect("bob provisioning thread")
+            .expect("bob provisioning");
+
+        let device = persist::read_device_key(&paths.device_privkey)
+            .expect("one complete shared device key")
+            .verifying_key()
+            .to_bytes();
+        let owner = persist::read_public_key(&paths.user_pubkey).expect("elected owner");
+        let legacy = persist::read_device_cert(&paths.device_cert).expect("legacy owner cert");
+        assert_eq!(legacy.user_public_key, owner);
+        assert_eq!(legacy.device_public_key, device);
+        qos_user_identity::verify_device_cert(&legacy).expect("valid legacy certificate");
+
+        for identity_dir in [&alice, &bob] {
+            let signer = runtime_identity::load_from_path(identity_dir.join(PRIMARY_IDENTITY_FILE))
+                .expect("load user identity");
+            let cert =
+                persist::read_device_cert(&paths.device_cert_for_user(&signer.group_public_key()))
+                    .expect("identity-specific certificate");
+            assert_eq!(cert.device_public_key, device);
+            qos_user_identity::verify_device_cert(&cert)
+                .expect("identity-specific chain remains valid");
+        }
+    }
+
+    #[test]
+    fn simultaneous_owner_claims_elect_one_valid_winner_without_clobbering() {
+        let tmp = TmpDir::new("simultaneous-owner-election");
+        let path = tmp.path().join("system/user-identity/pubkey.bin");
+        std::fs::create_dir_all(path.parent().expect("claim parent")).expect("claim parent");
+
+        // Distinct roots model two OS users completing their first identity
+        // ceremony at once.  Start both claim attempts together, rather than
+        // relying on an incidental scheduler race.
+        let alice = [0xA1; 32];
+        let bob = [0xB2; 32];
+        let start = Arc::new(Barrier::new(3));
+        let alice_start = Arc::clone(&start);
+        let alice_path = path.clone();
+        let alice_thread = std::thread::spawn(move || {
+            alice_start.wait();
+            (alice, claim_device_owner(&alice_path, &alice))
+        });
+        let bob_start = Arc::clone(&start);
+        let bob_path = path.clone();
+        let bob_thread = std::thread::spawn(move || {
+            bob_start.wait();
+            (bob, claim_device_owner(&bob_path, &bob))
+        });
+        start.wait();
+
+        let (alice_key, alice_claim) = alice_thread.join().expect("alice claim thread");
+        let (bob_key, bob_claim) = bob_thread.join().expect("bob claim thread");
+        let alice_claim = alice_claim.expect("alice claim result");
+        let bob_claim = bob_claim.expect("bob claim result");
+        assert_ne!(
+            alice_claim, bob_claim,
+            "exactly one distinct root owns the device"
+        );
+
+        let winner = persist::read_public_key(&path).expect("valid owner key");
+        let claimed_winner = if alice_claim { alice_key } else { bob_key };
+        assert_eq!(
+            winner, claimed_winner,
+            "the elected owner was never overwritten"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("owner key bytes").len(),
+            32,
+            "concurrent readers can only observe a complete winner file"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
-    fn provisioned_identity_file_is_0600() {
+    fn ensure_primary_identity_writes_a_private_file() {
         let tmp = TmpDir::new("mode");
-        // Non-root: as root nothing is minted and there is no file to stat.
-        run_as(Some(OsString::from(tmp.path())), None, 1000).expect("firstboot ok");
-        let identity_file = tmp
-            .path()
-            .join("qos")
-            .join("identity")
-            .join(PRIMARY_IDENTITY_FILE);
+        let identity_dir = tmp.path().join("qos").join("identity");
+        ensure_primary_identity(&identity_dir).expect("provision identity");
+        let identity_file = identity_dir.join(PRIMARY_IDENTITY_FILE);
         let meta = std::fs::metadata(&identity_file).unwrap();
         let mode = meta.permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "primary.json must be 0600, got {mode:o}");

@@ -1,0 +1,13 @@
+[Unit]
+Description=qOS graphical user session lifecycle
+Documentation=man:systemd.special(7)
+# The standard targets refuse direct manual starts by design. A desktop-owned
+# target is the supported activation root: pulling both into one transaction
+# runs graphical-session-pre services (identity) before graphical-session.
+Requires=graphical-session-pre.target graphical-session.target
+After=graphical-session-pre.target
+PartOf=graphical-session.target
+# Releasing the greetd-owned qOS target must tear down both standard session
+# targets immediately; relying on later StopWhenUnneeded garbage collection
+# leaves PartOf services alive for an indeterminate window.
+PropagatesStopTo=graphical-session.target graphical-session-pre.target

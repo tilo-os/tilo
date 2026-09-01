@@ -350,18 +350,22 @@ impl Action for EbookAction {
                 excerpt,
                 color,
                 text,
-            } => Ok(Self::apply_add_note(
-                doc, book_id, id, *chapter, *block, *start, *end, excerpt, color, text,
-            )),
+            } => {
+                Self::apply_add_note(
+                    doc, book_id, id, *chapter, *block, *start, *end, excerpt, color, text,
+                );
+                Ok(())
+            }
             EbookAction::ToggleBookmark {
                 book_id,
                 id,
                 chapter,
                 block,
                 excerpt,
-            } => Ok(Self::apply_toggle_bookmark(
-                doc, book_id, id, *chapter, *block, excerpt,
-            )),
+            } => {
+                Self::apply_toggle_bookmark(doc, book_id, id, *chapter, *block, excerpt);
+                Ok(())
+            }
             EbookAction::HighlightSelection {
                 book_id,
                 group,
@@ -369,19 +373,26 @@ impl Action for EbookAction {
                 color,
                 remove_groups,
                 pieces,
-            } => Ok(Self::apply_highlight_selection(
-                doc,
-                book_id,
-                group,
-                *chapter,
-                color,
-                remove_groups,
-                pieces,
-            )),
-            EbookAction::ChangeHighlightColor { group, color } => {
-                Ok(Self::apply_change_highlight_color(doc, group, color))
+            } => {
+                Self::apply_highlight_selection(
+                    doc,
+                    book_id,
+                    group,
+                    *chapter,
+                    color,
+                    remove_groups,
+                    pieces,
+                );
+                Ok(())
             }
-            EbookAction::DeleteHighlight { group } => Ok(Self::apply_delete_highlight(doc, group)),
+            EbookAction::ChangeHighlightColor { group, color } => {
+                Self::apply_change_highlight_color(doc, group, color);
+                Ok(())
+            }
+            EbookAction::DeleteHighlight { group } => {
+                Self::apply_delete_highlight(doc, group);
+                Ok(())
+            }
             EbookAction::AddComment {
                 book_id,
                 group,
@@ -393,9 +404,12 @@ impl Action for EbookAction {
                 excerpt,
                 color,
                 text,
-            } => Ok(Self::apply_add_comment(
-                doc, book_id, group, id, *chapter, *block, *start, *end, excerpt, color, text,
-            )),
+            } => {
+                Self::apply_add_comment(
+                    doc, book_id, group, id, *chapter, *block, *start, *end, excerpt, color, text,
+                );
+                Ok(())
+            }
             EbookAction::MoveAnnotation {
                 id,
                 chapter,
@@ -403,9 +417,10 @@ impl Action for EbookAction {
                 start,
                 end,
                 excerpt,
-            } => Ok(Self::apply_move_annotation(
-                doc, id, *chapter, *block, *start, *end, excerpt,
-            )),
+            } => {
+                Self::apply_move_annotation(doc, id, *chapter, *block, *start, *end, excerpt);
+                Ok(())
+            }
         }
     }
 

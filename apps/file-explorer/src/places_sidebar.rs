@@ -25,6 +25,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::command::{CommandSink, FileCommand, push};
 use crate::favorites::Favorite;
+use crate::i18n::t;
 use ui::ColorCompat;
 use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use ui::presence::PresenceCtx;
@@ -78,6 +79,10 @@ pub struct FavState {
     pub pressed: Option<usize>,
     /// Latest laid-out favourites geometry.
     pub band: Option<FavBand>,
+    /// Keyboard cursor and focus live with the persistent store because the
+    /// sidebar widget itself is rebuilt when Files' structure changes.
+    pub keyboard_index: Option<usize>,
+    pub focused: bool,
 }
 
 impl FavState {
@@ -87,12 +92,15 @@ impl FavState {
             drag: DragController::vertical(),
             pressed: None,
             band: None,
+            keyboard_index: None,
+            focused: false,
         }
     }
 }
 
 /// The variable part of a row's paint — bundled so [`PlacesSidebar::draw_row`]
 /// stays under clippy's argument-count limit.
+#[derive(Clone, Copy)]
 struct RowVisual<'a> {
     icon: Icon,
     label: &'a str,
@@ -123,9 +131,9 @@ impl PlacesSidebar {
     pub fn new(favs: FavStore, active: PathBuf, sink: CommandSink) -> Self {
         // System places: the filesystem root, then the Trash (when the platform
         // exposes one). Deleting moves files here; clicking it opens the trash.
-        let mut system = vec![(Icon::HardDrive, "Root".to_string(), PathBuf::from("/"))];
+        let mut system = vec![(Icon::HardDrive, t("files-place-root"), PathBuf::from("/"))];
         if let Some(trash) = crate::fileops::trash_dir() {
-            system.push((Icon::Trash2, "Trash".to_string(), trash));
+            system.push((Icon::Trash2, t("files-place-trash"), trash));
         }
         Self {
             favs,
@@ -172,6 +180,64 @@ impl PlacesSidebar {
 
     fn fav_count(&self) -> usize {
         self.favs.borrow().favorites.len()
+    }
+
+    fn place_count(&self) -> usize {
+        self.fav_count() + self.system.len()
+    }
+
+    fn active_index(&self) -> Option<usize> {
+        self.favs
+            .borrow()
+            .favorites
+            .iter()
+            .position(|favorite| favorite.path == self.active)
+            .or_else(|| {
+                self.system
+                    .iter()
+                    .position(|(_, _, path)| *path == self.active)
+                    .map(|index| self.fav_count() + index)
+            })
+    }
+
+    fn keyboard_index(&self) -> Option<usize> {
+        let count = self.place_count();
+        if count == 0 {
+            return None;
+        }
+        self.favs
+            .borrow()
+            .keyboard_index
+            .filter(|index| *index < count)
+            .or_else(|| self.active_index())
+            .or(Some(0))
+    }
+
+    fn set_keyboard_index(&self, index: usize) {
+        let count = self.place_count();
+        self.favs.borrow_mut().keyboard_index = (count > 0).then_some(index.min(count - 1));
+    }
+
+    fn place_at_index(&self, index: usize) -> Option<(String, PathBuf)> {
+        let favs = self.favs.borrow();
+        if let Some(favorite) = favs.favorites.get(index) {
+            return Some((favorite.label.clone(), favorite.path.clone()));
+        }
+        drop(favs);
+        self.system
+            .get(index.checked_sub(self.fav_count())?)
+            .map(|(_, label, path)| (label.clone(), path.clone()))
+    }
+
+    fn activate_keyboard_place(&self) -> bool {
+        let Some((_, path)) = self
+            .keyboard_index()
+            .and_then(|index| self.place_at_index(index))
+        else {
+            return false;
+        };
+        push(&self.sink, FileCommand::Navigate(path));
+        true
     }
 
     fn fav_first_y(&self) -> f64 {
@@ -411,127 +477,13 @@ impl Widget for PlacesSidebar {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let tokens = &theme.tokens;
-        // Panel background (a hair lighter than the content) + a quiet divider.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            tokens.colors.surface_white_5,
-            None,
-            &self.rect,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            tokens.colors.border_white_10,
-            None,
-            &Line::new((self.rect.x1, self.rect.y0), (self.rect.x1, self.rect.y1)),
-        );
-
-        // Favourites header — only when there are favourites to head (an empty
-        // section header reads as a bug).
-        if self.fav_count() > 0 {
-            self.draw_header(
-                scene,
-                transform,
-                tr,
-                theme,
-                self.rect.y0 + TOP,
-                "Favourites",
-            );
-        }
-
-        // Favourite rows (with live reflow + ghost while dragging). Compute the
-        // list geometry BEFORE borrowing the store (metrics reads the store).
-        let metrics = self.metrics();
-        let (drag_active, from_idx) = {
-            let mut favs = self.favs.borrow_mut();
-            let active = favs.drag.is_active();
-            if active {
-                favs.drag.sync_insertion(&metrics);
-            }
-            (active, favs.drag.from_index())
-        };
-        {
-            let favs = self.favs.borrow();
-            for (i, fav) in favs.favorites.iter().enumerate() {
-                if drag_active && Some(i) == from_idx {
-                    continue; // painted as the floating ghost below
-                }
-                let shift = if drag_active {
-                    favs.drag.item_shift(i, &metrics)
-                } else {
-                    0.0
-                };
-                let mut rect = self.fav_row_rect(i);
-                rect = Rect::new(rect.x0, rect.y0 + shift, rect.x1, rect.y1 + shift);
-                let active = !drag_active && fav.path == self.active;
-                let hovered = self.hover_fav == Some(i) && !active;
-                Self::draw_row(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    rect,
-                    RowVisual {
-                        icon: fav.icon(),
-                        label: &fav.label,
-                        active,
-                        hovered,
-                        ghost: false,
-                    },
-                );
-            }
-        }
-
-        // System header + rows.
-        self.draw_header(scene, transform, tr, theme, self.sys_header_y(), "System");
-        for (i, (icon, label, path)) in self.system.iter().enumerate() {
-            let rect = self.sys_row_rect(i);
-            let active = *path == self.active;
-            let hovered = self.hover_sys == Some(i) && !active;
-            Self::draw_row(
-                scene,
-                transform,
-                tr,
-                theme,
-                rect,
-                RowVisual {
-                    icon: *icon,
-                    label,
-                    active,
-                    hovered,
-                    ghost: false,
-                },
-            );
-        }
-
-        // Floating ghost of the dragged favourite.
-        if drag_active {
-            let favs = self.favs.borrow();
-            if let (Some(fi), Some(ghost)) = (
-                from_idx,
-                favs.drag.ghost_rect(self.row_x0(), self.row_x1(), &metrics),
-            ) && let Some(fav) = favs.favorites.get(fi)
-            {
-                Self::draw_row(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    ghost,
-                    RowVisual {
-                        icon: fav.icon(),
-                        label: &fav.label,
-                        active: false,
-                        hovered: false,
-                        ghost: true,
-                    },
-                );
-            }
-        }
+        self.draw_panel_bg(scene, transform, theme);
+        self.draw_favourites_section(scene, transform, tr, theme);
+        self.draw_system_section(scene, transform, tr, theme);
+        self.draw_drag_ghost(scene, transform, tr, theme);
     }
 
+    #[allow(clippy::too_many_lines)] // Central event dispatcher keeps gesture state transitions ordered.
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -541,11 +493,49 @@ impl Widget for PlacesSidebar {
         _path: &ObjId,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
+        node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        let _ = focus_target;
         match event {
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed && self.favs.borrow().focused =>
+            {
+                use winit::keyboard::{Key, NamedKey};
+                let count = self.place_count();
+                let current = self.keyboard_index().unwrap_or(0);
+                match &event.logical_key {
+                    Key::Named(NamedKey::ArrowUp) => {
+                        self.set_keyboard_index(current.saturating_sub(1));
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::ArrowDown) => {
+                        self.set_keyboard_index((current + 1).min(count.saturating_sub(1)));
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::Home) => {
+                        self.set_keyboard_index(0);
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::End) => {
+                        if count > 0 {
+                            self.set_keyboard_index(count - 1);
+                        }
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::Enter) => {
+                        *handled = self.activate_keyboard_place();
+                    }
+                    Key::Named(NamedKey::ContextMenu) => {
+                        if current < self.fav_count()
+                            && let Some((_, path)) = self.place_at_index(current)
+                        {
+                            push(&self.sink, FileCommand::OpenFavoriteMenu(path));
+                            *handled = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = pt;
@@ -565,6 +555,9 @@ impl Widget for PlacesSidebar {
             } => {
                 let pt = self.last_cursor;
                 if let Some(i) = self.favorite_at(pt) {
+                    self.set_keyboard_index(i);
+                    self.favs.borrow_mut().focused = true;
+                    *focus_target = Some(node_id);
                     let metrics = self.metrics();
                     let grab = pt.y - metrics.slot_lead(i);
                     let mut favs = self.favs.borrow_mut();
@@ -574,6 +567,9 @@ impl Widget for PlacesSidebar {
                 } else if let Some(i) = self.system_at(pt)
                     && let Some((_, _, path)) = self.system.get(i)
                 {
+                    self.set_keyboard_index(self.fav_count() + i);
+                    self.favs.borrow_mut().focused = true;
+                    *focus_target = Some(node_id);
                     push(&self.sink, FileCommand::Navigate(path.clone()));
                     *handled = true;
                 }
@@ -638,6 +634,260 @@ impl Widget for PlacesSidebar {
     }
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        let mut favs = self.favs.borrow_mut();
+        favs.focused = focused;
+        if focused && favs.keyboard_index.is_none() {
+            drop(favs);
+            if let Some(index) = self
+                .active_index()
+                .or_else(|| (self.place_count() > 0).then_some(0))
+            {
+                self.set_keyboard_index(index);
+            }
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.favs.borrow().focused
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let count = self.place_count();
+        let keyboard = self.keyboard_index();
+        let focused = self.is_focused();
+        let mut children = Vec::with_capacity(count);
+        for index in 0..count {
+            let Some((label, path)) = self.place_at_index(index) else {
+                continue;
+            };
+            let section = if index < self.fav_count() {
+                t("files-a11y-favourite")
+            } else {
+                t("files-a11y-system-location")
+            };
+            children.push(
+                AccessNode::new(Role::ListItem)
+                    .with_name(label)
+                    .with_description(crate::i18n::t_args(
+                        "files-a11y-place-description",
+                        &[
+                            crate::i18n::arg("section", section),
+                            crate::i18n::arg("path", path.display().to_string()),
+                        ],
+                    ))
+                    .with_position(index + 1, count)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: focused && keyboard == Some(index),
+                        selected: path == self.active,
+                        ..Default::default()
+                    }),
+            );
+        }
+        Some(
+            AccessNode::new(Role::List)
+                .with_name(t("files-a11y-places"))
+                .with_optional_value(
+                    keyboard.and_then(|index| self.place_at_index(index).map(|(label, _)| label)),
+                )
+                .with_state(AccessState {
+                    focusable: true,
+                    focused,
+                    ..Default::default()
+                })
+                .with_children(children),
+        )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        match action {
+            ui::a11y::Action::Activate => self.activate_keyboard_place(),
+            ui::a11y::Action::ShowContextMenu => {
+                let Some(index) = self
+                    .keyboard_index()
+                    .filter(|index| *index < self.fav_count())
+                else {
+                    return false;
+                };
+                let Some((_, path)) = self.place_at_index(index) else {
+                    return false;
+                };
+                push(&self.sink, FileCommand::OpenFavoriteMenu(path));
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+impl PlacesSidebar {
+    /// Panel background (a hair lighter than the content) + a quiet divider.
+    fn draw_panel_bg(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let tokens = &theme.tokens;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.surface_white_5,
+            None,
+            &self.rect,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            tokens.colors.border_white_10,
+            None,
+            &Line::new((self.rect.x1, self.rect.y0), (self.rect.x1, self.rect.y1)),
+        );
+    }
+
+    /// Favourites header (only when there are favourites to head — an empty
+    /// section header reads as a bug) plus the favourite rows, with live
+    /// reflow while dragging.
+    fn draw_favourites_section(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.fav_count() > 0 {
+            self.draw_header(
+                scene,
+                transform,
+                tr,
+                theme,
+                self.rect.y0 + TOP,
+                &t("files-place-favourites"),
+            );
+        }
+
+        // Compute the list geometry BEFORE borrowing the store (metrics reads
+        // the store).
+        let metrics = self.metrics();
+        let (drag_active, from_idx) = {
+            let mut favs = self.favs.borrow_mut();
+            let active = favs.drag.is_active();
+            if active {
+                favs.drag.sync_insertion(&metrics);
+            }
+            (active, favs.drag.from_index())
+        };
+        let favs = self.favs.borrow();
+        for (i, fav) in favs.favorites.iter().enumerate() {
+            if drag_active && Some(i) == from_idx {
+                continue; // painted as the floating ghost below
+            }
+            let shift = if drag_active {
+                favs.drag.item_shift(i, &metrics)
+            } else {
+                0.0
+            };
+            let mut rect = self.fav_row_rect(i);
+            rect = Rect::new(rect.x0, rect.y0 + shift, rect.x1, rect.y1 + shift);
+            let active = !drag_active && fav.path == self.active;
+            let hovered = self.hover_fav == Some(i) && !active;
+            Self::draw_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                rect,
+                RowVisual {
+                    icon: fav.icon(),
+                    label: &fav.label,
+                    active,
+                    hovered,
+                    ghost: false,
+                },
+            );
+        }
+    }
+
+    fn draw_system_section(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.draw_header(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.sys_header_y(),
+            &t("files-place-system"),
+        );
+        for (i, (icon, label, path)) in self.system.iter().enumerate() {
+            let rect = self.sys_row_rect(i);
+            let active = *path == self.active;
+            let hovered = self.hover_sys == Some(i) && !active;
+            Self::draw_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                rect,
+                RowVisual {
+                    icon: *icon,
+                    label,
+                    active,
+                    hovered,
+                    ghost: false,
+                },
+            );
+        }
+    }
+
+    /// Floating ghost of the dragged favourite, if a drag is active. Reads
+    /// the drag state [`Self::draw_favourites_section`] already synced this
+    /// frame, so call order matters: favourites first, then the ghost.
+    fn draw_drag_ghost(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let favs = self.favs.borrow();
+        if !favs.drag.is_active() {
+            return;
+        }
+        let metrics = self.metrics();
+        let from_idx = favs.drag.from_index();
+        if let (Some(fi), Some(ghost)) = (
+            from_idx,
+            favs.drag.ghost_rect(self.row_x0(), self.row_x1(), &metrics),
+        ) && let Some(fav) = favs.favorites.get(fi)
+        {
+            Self::draw_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                ghost,
+                RowVisual {
+                    icon: fav.icon(),
+                    label: &fav.label,
+                    active: false,
+                    hovered: false,
+                    ghost: true,
+                },
+            );
+        }
     }
 }
 
@@ -979,5 +1229,39 @@ mod tests {
             Some(1),
             "gap sits at the drop row"
         );
+    }
+
+    #[test]
+    fn accessibility_exposes_places_selection_keyboard_cursor_and_activation() {
+        use ui::a11y::{Action, Role};
+
+        let sink = new_sink();
+        let store = new_store(favorites::defaults(
+            Path::new("/home/u"),
+            &favorites::UserDirs::default(),
+        ));
+        let mut sidebar = PlacesSidebar::new(store, PathBuf::from("/home/u"), sink.clone());
+        sidebar.set_focus(true);
+        sidebar.set_keyboard_index(1);
+
+        let node = sidebar.accessibility().expect("places has semantics");
+        assert_eq!(node.role, Role::List);
+        assert_eq!(node.name.as_deref(), Some("Places"));
+        assert!(node.state.focusable && node.state.focused);
+        assert_eq!(node.children.len(), sidebar.place_count());
+        assert!(node.children[0].state.selected, "Home is the active place");
+        assert!(
+            node.children[1].state.focused,
+            "keyboard cursor is independent"
+        );
+        assert_eq!(node.children[1].pos_in_set, Some(2));
+        assert_eq!(node.children[1].set_size, Some(sidebar.place_count()));
+
+        let mut doc = AutoCommit::new();
+        assert!(sidebar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+        assert!(matches!(
+            sink.borrow().last(),
+            Some(FileCommand::Navigate(path)) if path.ends_with("Documents")
+        ));
     }
 }

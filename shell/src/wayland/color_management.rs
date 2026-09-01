@@ -16,8 +16,8 @@
 //! descriptions do get info).
 //!
 //! Per-surface attach is double-buffered per spec (pending on
-//! `set_image_description`, applied on `wl_surface.commit`); the pending
-//! + current values live in `SurfaceData::data_map` under
+//! `set_image_description`, applied on `wl_surface.commit`); the
+//! pending and current values live in `SurfaceData::data_map` under
 //! [`ColorManagementSurfaceData`], flipped by the commit hook in
 //! [`crate::compositor::state::State`].
 
@@ -204,15 +204,38 @@ impl ParametricBuilder {
     /// Assemble the pieces into a settled image description. Returns
     /// `None` when the required-field set is incomplete.
     fn build(&self) -> Option<ImageDescriptionData> {
-        let inner = self.inner.lock().ok()?;
+        // Copy the (Copy-typed) fields out under the lock, then release it —
+        // everything below reads only these local copies, not `inner`.
+        let (
+            primaries_named,
+            primaries_custom,
+            tf_named,
+            tf_power_eexp,
+            mastering_primaries,
+            mastering_luminance,
+            max_cll,
+            max_fall,
+        ) = {
+            let inner = self.inner.lock().ok()?;
+            (
+                inner.primaries_named,
+                inner.primaries_custom,
+                inner.tf_named,
+                inner.tf_power_eexp,
+                inner.mastering_primaries,
+                inner.mastering_luminance,
+                inner.max_cll,
+                inner.max_fall,
+            )
+        };
         // Required: primaries + transfer.
-        let primaries = match (inner.primaries_named, inner.primaries_custom) {
-            (Some(p), _) => primaries_named_to_color(p)?,
+        let primaries = match (primaries_named, primaries_custom) {
+            (Some(p), _) => primaries_named_to_color(p),
             (None, Some(c)) => guess_primaries_from_custom(c),
             (None, None) => return None,
         };
-        let transfer = match (inner.tf_named, inner.tf_power_eexp) {
-            (Some(t), _) => transfer_named_to_color(t)?,
+        let transfer = match (tf_named, tf_power_eexp) {
+            (Some(t), _) => transfer_named_to_color(t),
             (None, Some(exp)) => match exp {
                 // Common named power curves.
                 22_000 => TransferCharacteristics::Bt709,
@@ -239,7 +262,7 @@ impl ParametricBuilder {
 
         // Optional HDR10 metadata from mastering primaries + luminances.
         let hdr = if transfer.is_hdr() {
-            let mastering = inner.mastering_primaries.map_or_else(
+            let mastering = mastering_primaries.map_or_else(
                 MasteringDisplayColorVolume::hdr10_reference,
                 |m| MasteringDisplayColorVolume {
                     display_primaries: [
@@ -248,21 +271,15 @@ impl ParametricBuilder {
                         (chrom_micro_to_st2086(m.b.0), chrom_micro_to_st2086(m.b.1)),
                     ],
                     white_point: (chrom_micro_to_st2086(m.w.0), chrom_micro_to_st2086(m.w.1)),
-                    max_display_mastering_luminance: inner
-                        .mastering_luminance
+                    max_display_mastering_luminance: mastering_luminance
                         .map_or(10_000_000, |(_, max)| max.saturating_mul(10_000)),
-                    min_display_mastering_luminance: inner
-                        .mastering_luminance
+                    min_display_mastering_luminance: mastering_luminance
                         .map_or(500, |(min, _)| min),
                 },
             );
             let light = ContentLightLevel {
-                max_content_light_level: inner
-                    .max_cll
-                    .map_or(0, |v| v.min(u32::from(u16::MAX)) as u16),
-                max_frame_average_light_level: inner
-                    .max_fall
-                    .map_or(0, |v| v.min(u32::from(u16::MAX)) as u16),
+                max_content_light_level: max_cll.map_or(0, clamp_to_u16),
+                max_frame_average_light_level: max_fall.map_or(0, clamp_to_u16),
             };
             Some(Hdr10Metadata { mastering, light })
         } else {
@@ -285,27 +302,34 @@ impl ParametricBuilder {
     }
 }
 
-fn primaries_named_to_color(p: Primaries) -> Option<ColorPrimaries> {
+/// Clamp a `u32` into `u16`'s range rather than truncate it.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "clamped to 0..=u32::from(u16::MAX) immediately above, so it always fits u16"
+)]
+fn clamp_to_u16(v: u32) -> u16 {
+    v.min(u32::from(u16::MAX)) as u16
+}
+
+fn primaries_named_to_color(p: Primaries) -> ColorPrimaries {
     match p {
-        Primaries::Srgb => Some(ColorPrimaries::Bt709),
-        Primaries::Bt2020 => Some(ColorPrimaries::Bt2020),
-        Primaries::DisplayP3 => Some(ColorPrimaries::DisplayP3),
+        Primaries::Srgb => ColorPrimaries::Bt709,
+        Primaries::Bt2020 => ColorPrimaries::Bt2020,
+        Primaries::DisplayP3 => ColorPrimaries::DisplayP3,
         // Unsupported / uncommon primaries — treat as unspecified so
         // the encoder falls back to BT.709 defaults rather than
         // crashing.
-        _ => Some(ColorPrimaries::Unspecified),
+        _ => ColorPrimaries::Unspecified,
     }
 }
 
-fn transfer_named_to_color(t: TransferFunction) -> Option<TransferCharacteristics> {
+fn transfer_named_to_color(t: TransferFunction) -> TransferCharacteristics {
     match t {
-        TransferFunction::Bt1886 => Some(TransferCharacteristics::Bt709),
-        TransferFunction::Gamma22 => Some(TransferCharacteristics::Bt709),
-        TransferFunction::St2084Pq => Some(TransferCharacteristics::SmpteSt2084),
-        TransferFunction::Hlg => Some(TransferCharacteristics::AribStdB67),
-        TransferFunction::Srgb => Some(TransferCharacteristics::Srgb),
-        TransferFunction::ExtSrgb => Some(TransferCharacteristics::Srgb),
-        _ => Some(TransferCharacteristics::Unspecified),
+        TransferFunction::Bt1886 | TransferFunction::Gamma22 => TransferCharacteristics::Bt709,
+        TransferFunction::St2084Pq => TransferCharacteristics::SmpteSt2084,
+        TransferFunction::Hlg => TransferCharacteristics::AribStdB67,
+        TransferFunction::Srgb | TransferFunction::ExtSrgb => TransferCharacteristics::Srgb,
+        _ => TransferCharacteristics::Unspecified,
     }
 }
 
@@ -324,8 +348,18 @@ fn guess_primaries_from_custom(c: CustomPrimaries) -> ColorPrimaries {
 /// x × `50_000`. Divide by 20, saturating so a rogue negative from the
 /// wire doesn't sign-flip.
 fn chrom_micro_to_st2086(micro: i32) -> u16 {
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "clamped to >= 0 immediately above, so it always fits a non-negative u32"
+    )]
     let clamped = micro.max(0) as u32;
-    ((clamped + 10) / 20).min(u32::from(u16::MAX)) as u16
+    let scaled = clamped.saturating_add(10).saturating_div(20);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "clamped to 0..=u32::from(u16::MAX) immediately above, so it always fits u16"
+    )]
+    let st2086 = scaled.min(u32::from(u16::MAX)) as u16;
+    st2086
 }
 
 /// Monotonic image-description identity counter. Never recycled per
@@ -355,7 +389,7 @@ impl ImageDescriptionData {
     /// Low 32 bits of the identity for the pre-v2 `ready` event.
     #[must_use]
     pub fn identity_lo(&self) -> u32 {
-        self.identity as u32
+        (self.identity & 0xFFFF_FFFF) as u32
     }
 
     /// High 32 bits of the identity for the `ready2` event.
@@ -631,10 +665,14 @@ where
                     states
                         .data_map
                         .insert_if_missing_threadsafe(ColorManagementSurfaceData::default);
-                    let d = states
-                        .data_map
-                        .get::<ColorManagementSurfaceData>()
-                        .expect("just inserted");
+                    // `insert_if_missing_threadsafe` just above should guarantee this
+                    // is present; if it's somehow missing, treat it as "already
+                    // taken" so the client sees a protocol error rather than the
+                    // compositor panicking (this process runs with `panic = "abort"`,
+                    // so a panic here would kill every other client's session too).
+                    let Some(d) = states.data_map.get::<ColorManagementSurfaceData>() else {
+                        return true;
+                    };
                     let mut inner = match d.inner.lock() {
                         Ok(g) => g,
                         // Poisoned mutex — treat as "already taken" so
@@ -680,7 +718,6 @@ where
                     "image_description references are unsupported".into(),
                 );
             }
-            wp_color_manager_v1::Request::Destroy => {}
             _ => {}
         }
     }
@@ -692,6 +729,15 @@ where
         + Dispatch<WpImageDescriptionV1, ImageDescriptionData>
         + 'static,
 {
+    // The local `set_once!` macro and the `Create` arm's body were already split
+    // out below (`set_builder_field_once`/`create_image_description`); what's left
+    // is one match arm per wire request variant, which stays a 1:1 dispatch table
+    // rather than fragmenting further.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per WpImageDescriptionCreatorParamsV1 request variant; \
+                  the two heaviest chunks are already split into named helpers"
+    )]
     fn request(
         _state: &mut D,
         _client: &Client,
@@ -701,54 +747,9 @@ where
         _dh: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
-        // Helper: guarded field-set. Raises `already_set` when the
-        // caller writes a second time, mirroring the spec.
-        macro_rules! set_once {
-            ($field:ident = $val:expr, $msg:literal) => {{
-                let Ok(mut inner) = builder.inner.lock() else {
-                    creator.post_error(
-                        wp_image_description_creator_params_v1::Error::IncompleteSet,
-                        "builder poisoned",
-                    );
-                    return;
-                };
-                if inner.consumed {
-                    creator.post_error(
-                        wp_image_description_creator_params_v1::Error::AlreadySet,
-                        "builder already consumed",
-                    );
-                    return;
-                }
-                if inner.$field.is_some() {
-                    creator.post_error(
-                        wp_image_description_creator_params_v1::Error::AlreadySet,
-                        $msg,
-                    );
-                    return;
-                }
-                inner.$field = Some($val);
-            }};
-        }
-
         match request {
             wp_image_description_creator_params_v1::Request::Create { image_description } => {
-                match builder.build() {
-                    Some(data) => {
-                        let identity = data.identity;
-                        let obj = data_init.init(image_description, data);
-                        // Advertise the modern `ready2` identity + the
-                        // legacy `ready` identity so v1 clients also
-                        // observe the object as usable.
-                        let () = obj.ready2((identity >> 32) as u32, identity as u32);
-                        builder.mark_consumed();
-                    }
-                    None => {
-                        creator.post_error(
-                            wp_image_description_creator_params_v1::Error::IncompleteSet,
-                            "primaries + transfer are required before create",
-                        );
-                    }
-                }
+                create_image_description(creator, builder, image_description, data_init);
             }
             wp_image_description_creator_params_v1::Request::SetTfNamed { tf } => {
                 let Ok(tf) = tf.into_result() else {
@@ -758,10 +759,14 @@ where
                     );
                     return;
                 };
-                set_once!(tf_named = tf, "transfer function already set");
+                set_builder_field_once(builder, creator, "transfer function already set", |i| {
+                    set_if_none(&mut i.tf_named, tf)
+                });
             }
             wp_image_description_creator_params_v1::Request::SetTfPower { eexp } => {
-                set_once!(tf_power_eexp = eexp, "transfer function already set");
+                set_builder_field_once(builder, creator, "transfer function already set", |i| {
+                    set_if_none(&mut i.tf_power_eexp, eexp)
+                });
             }
             wp_image_description_creator_params_v1::Request::SetPrimariesNamed { primaries } => {
                 let Ok(primaries) = primaries.into_result() else {
@@ -771,7 +776,9 @@ where
                     );
                     return;
                 };
-                set_once!(primaries_named = primaries, "primaries already set");
+                set_builder_field_once(builder, creator, "primaries already set", |i| {
+                    set_if_none(&mut i.primaries_named, primaries)
+                });
             }
             wp_image_description_creator_params_v1::Request::SetPrimaries {
                 r_x,
@@ -783,15 +790,15 @@ where
                 w_x,
                 w_y,
             } => {
-                set_once!(
-                    primaries_custom = CustomPrimaries {
-                        r: (r_x, r_y),
-                        g: (g_x, g_y),
-                        b: (b_x, b_y),
-                        w: (w_x, w_y),
-                    },
-                    "primaries already set"
-                );
+                let custom = CustomPrimaries {
+                    r: (r_x, r_y),
+                    g: (g_x, g_y),
+                    b: (b_x, b_y),
+                    w: (w_x, w_y),
+                };
+                set_builder_field_once(builder, creator, "primaries already set", |i| {
+                    set_if_none(&mut i.primaries_custom, custom)
+                });
             }
             wp_image_description_creator_params_v1::Request::SetLuminances {
                 min_lum,
@@ -802,10 +809,9 @@ where
                     // Loose validation — spec's tighter check is left
                     // to the wire; we accept anything sensible.
                 }
-                set_once!(
-                    luminances = (min_lum, max_lum, reference_lum),
-                    "luminances already set"
-                );
+                set_builder_field_once(builder, creator, "luminances already set", |i| {
+                    set_if_none(&mut i.luminances, (min_lum, max_lum, reference_lum))
+                });
             }
             wp_image_description_creator_params_v1::Request::SetMasteringDisplayPrimaries {
                 r_x,
@@ -817,32 +823,115 @@ where
                 w_x,
                 w_y,
             } => {
-                set_once!(
-                    mastering_primaries = CustomPrimaries {
-                        r: (r_x, r_y),
-                        g: (g_x, g_y),
-                        b: (b_x, b_y),
-                        w: (w_x, w_y),
-                    },
-                    "mastering display primaries already set"
+                let custom = CustomPrimaries {
+                    r: (r_x, r_y),
+                    g: (g_x, g_y),
+                    b: (b_x, b_y),
+                    w: (w_x, w_y),
+                };
+                set_builder_field_once(
+                    builder,
+                    creator,
+                    "mastering display primaries already set",
+                    |i| set_if_none(&mut i.mastering_primaries, custom),
                 );
             }
             wp_image_description_creator_params_v1::Request::SetMasteringLuminance {
                 min_lum,
                 max_lum,
             } => {
-                set_once!(
-                    mastering_luminance = (min_lum, max_lum),
-                    "mastering luminance already set"
-                );
+                set_builder_field_once(builder, creator, "mastering luminance already set", |i| {
+                    set_if_none(&mut i.mastering_luminance, (min_lum, max_lum))
+                });
             }
             wp_image_description_creator_params_v1::Request::SetMaxCll { max_cll } => {
-                set_once!(max_cll = max_cll, "max_cll already set");
+                set_builder_field_once(builder, creator, "max_cll already set", |i| {
+                    set_if_none(&mut i.max_cll, max_cll)
+                });
             }
             wp_image_description_creator_params_v1::Request::SetMaxFall { max_fall } => {
-                set_once!(max_fall = max_fall, "max_fall already set");
+                set_builder_field_once(builder, creator, "max_fall already set", |i| {
+                    set_if_none(&mut i.max_fall, max_fall)
+                });
             }
             _ => {}
+        }
+    }
+}
+
+/// `true` and sets `*slot` if it was `None`; `false` (no write) if the
+/// caller had already set it. The `bool` is what
+/// [`set_builder_field_once`] uses to decide whether to post `AlreadySet`.
+fn set_if_none<T>(slot: &mut Option<T>, val: T) -> bool {
+    if slot.is_some() {
+        return false;
+    }
+    *slot = Some(val);
+    true
+}
+
+/// Guarded field-set for `ParametricBuilder`: `set` reports via its `bool`
+/// return whether the field was free to take. Posts the matching protocol
+/// error — `IncompleteSet` if the mutex is poisoned, `AlreadySet` for a
+/// consumed builder or a field already written — instead of overwriting
+/// what the client set first, mirroring the spec. Split out of the
+/// `WpImageDescriptionCreatorParamsV1` dispatch (formerly a
+/// `macro_rules!` defined inline) to keep that match short.
+fn set_builder_field_once(
+    builder: &ParametricBuilder,
+    creator: &WpImageDescriptionCreatorParamsV1,
+    msg: &str,
+    set: impl FnOnce(&mut ParametricBuilderInner) -> bool,
+) {
+    let Ok(mut inner) = builder.inner.lock() else {
+        creator.post_error(
+            wp_image_description_creator_params_v1::Error::IncompleteSet,
+            "builder poisoned",
+        );
+        return;
+    };
+    if inner.consumed {
+        creator.post_error(
+            wp_image_description_creator_params_v1::Error::AlreadySet,
+            "builder already consumed",
+        );
+        return;
+    }
+    if !set(&mut inner) {
+        creator.post_error(
+            wp_image_description_creator_params_v1::Error::AlreadySet,
+            msg,
+        );
+    }
+}
+
+/// `Create` request: builds the final [`ImageDescriptionData`] and
+/// advertises it via `ready2`/`ready`, or posts `IncompleteSet` when a
+/// required field is still missing. Split out of the
+/// `WpImageDescriptionCreatorParamsV1` dispatch to keep that match short.
+fn create_image_description<D>(
+    creator: &WpImageDescriptionCreatorParamsV1,
+    builder: &Arc<ParametricBuilder>,
+    image_description: New<WpImageDescriptionV1>,
+    data_init: &mut DataInit<'_, D>,
+) where
+    D: Dispatch<WpImageDescriptionV1, ImageDescriptionData> + 'static,
+{
+    match builder.build() {
+        Some(data) => {
+            let identity = data.identity;
+            let obj = data_init.init(image_description, data);
+            // Advertise the modern `ready2` identity + the
+            // legacy `ready` identity so v1 clients also
+            // observe the object as usable.
+            let () = obj.ready2((identity >> 32) as u32, (identity & 0xFFFF_FFFF) as u32);
+            builder.mark_consumed();
+        }
+        None => {
+            creator.post_error(
+                wp_image_description_creator_params_v1::Error::IncompleteSet,
+                "primaries + transfer are required before create",
+            );
         }
     }
 }
@@ -862,20 +951,16 @@ where
         _dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
-        match request {
-            wp_image_description_v1::Request::Destroy => {}
-            wp_image_description_v1::Request::GetInformation { information } => {
-                // Parametric descriptions from our creator DO NOT
-                // permit get_information per spec (see the request's
-                // documentation in the XML). Follow the spec: post
-                // the `no_information` error.
-                let _ = information;
-                obj.post_error(
-                    wp_image_description_v1::Error::NoInformation,
-                    "get_information is not allowed on this image description",
-                );
-            }
-            _ => {}
+        if let wp_image_description_v1::Request::GetInformation { information } = request {
+            // Parametric descriptions from our creator DO NOT
+            // permit get_information per spec (see the request's
+            // documentation in the XML). Follow the spec: post
+            // the `no_information` error.
+            let _ = information;
+            obj.post_error(
+                wp_image_description_v1::Error::NoInformation,
+                "get_information is not allowed on this image description",
+            );
         }
     }
 }
@@ -985,7 +1070,6 @@ where
         data_init: &mut DataInit<'_, D>,
     ) {
         match request {
-            wp_color_management_surface_feedback_v1::Request::Destroy => {}
             wp_color_management_surface_feedback_v1::Request::GetPreferred {
                 image_description,
             }
@@ -1022,16 +1106,14 @@ where
         _dh: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
-        match request {
-            wp_color_management_output_v1::Request::Destroy => {}
-            wp_color_management_output_v1::Request::GetImageDescription { image_description } => {
-                let desc = data.snapshot();
-                let identity_hi = desc.identity_hi();
-                let identity_lo = desc.identity_lo();
-                let obj = data_init.init(image_description, desc);
-                let () = obj.ready2(identity_hi, identity_lo);
-            }
-            _ => {}
+        if let wp_color_management_output_v1::Request::GetImageDescription { image_description } =
+            request
+        {
+            let desc = data.snapshot();
+            let identity_hi = desc.identity_hi();
+            let identity_lo = desc.identity_lo();
+            let obj = data_init.init(image_description, desc);
+            let () = obj.ready2(identity_hi, identity_lo);
         }
     }
 }

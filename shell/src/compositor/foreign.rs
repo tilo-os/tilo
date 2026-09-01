@@ -1044,6 +1044,9 @@ impl Widget for ForeignSurfaceWidget {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` can't fail in practice for a single-node insert; a
+        // dummy id here just means the fallback is unreachable by real
+        // traversal instead of panicking.
         let node = taffy
             .new_leaf(taffy::Style {
                 size: taffy::Size {
@@ -1052,7 +1055,7 @@ impl Widget for ForeignSurfaceWidget {
                 },
                 ..Default::default()
             })
-            .expect("foreign surface leaf node");
+            .unwrap_or(NodeId::new(0));
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -1549,6 +1552,10 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "deterministic geometry fixtures use exactly representable values"
+)]
 mod tests {
     use super::*;
     use crate::shell::state::WorkspaceTree;

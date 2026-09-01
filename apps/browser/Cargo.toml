@@ -19,6 +19,7 @@ path = "src/main.rs"
 # build stays hermetic: chrome runs against the deterministic test
 # engine.
 wpe = ["ui/webview-wpe"]
+thin = ["dep:runtime-dylib"]
 
 [dependencies]
 # ui — UI toolkit. The browser is chrome around the toolkit's WebView
@@ -26,6 +27,7 @@ wpe = ["ui/webview-wpe"]
 # `webview-adblock` feature pulls in the filter-list → WebKit
 # content-blocker compiler for the built-in ad blocking.
 ui = { path = "../../ui", features = ["webview-adblock"] }
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 
 # Filter lists (EasyList/EasyPrivacy) are fetched on a background thread
 # with a blocking client and cached under the user cache dir.
@@ -39,7 +41,6 @@ zip.workspace = true
 serde_json.workspace = true
 
 tracing.workspace = true
-tracing-subscriber.workspace = true
 
 # Direct quick-ui adjacent deps (matches the set quick-terminal +
 # file-explorer pull in for their `Widget` impls).

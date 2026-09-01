@@ -153,6 +153,12 @@ type LinkStackEntry = (Option<String>, Vec<(String, MarkValue)>, usize);
 /// Advance the in-progress verbatim-capture state machine for one XML event: an unmodeled
 /// element's raw source, re-emitted as a `fidelity` block once its closing tag is reached.
 /// No-op unless `capture` is already `Some` (the caller only calls this while it is).
+// Each parameter is a distinct, independently necessary piece of parse
+// state or event data — the same `doc`/`prev`/`cur`/`cur_len` bundle
+// `start_block`/`append`/`open_para` above already thread individually.
+// Bundling would trade named parameters for an equally large struct with
+// no behavioural change.
+#[allow(clippy::too_many_arguments, reason = "see comment above the function")]
 fn advance_capture(
     ev: &Event,
     s: &str,
@@ -185,6 +191,11 @@ fn advance_capture(
 /// Advance the in-progress `draw:frame` state machine for one XML event: collects the image
 /// href + alt text, then on close emits either an `image` block (if the Pictures part has the
 /// bytes) or a verbatim fidelity atom. No-op unless `frame` is already `Some`.
+// See the comment on `advance_capture` above — same shared parse-state bundle.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "see comment above advance_capture"
+)]
 fn advance_frame(
     ev: &Event,
     s: &str,
@@ -390,12 +401,6 @@ fn advance_tracked(
     }
 }
 
-/// # Errors
-/// Returns [`CodecError`] if `content_xml` isn't valid UTF-8 or well-formed XML.
-#[allow(
-    clippy::too_many_lines,
-    reason = "a single-pass SAX dispatch over ~15 office:text element types (paragraph/heading/list/table/span/link nesting, note/comment/bookmark/change range tracking); the five self-contained in-progress captures (fidelity/frame/note/annotation/tracked-changes) are already split into advance_* above — the rest shares ~20 pieces of parser state across every arm, so further extraction would need either a 20+ argument helper per event kind or a lifetime-entangled parser-state struct, neither safe to introduce without compiling"
-)]
 /// All per-parse mutable state for [`parse_body`]'s event loop, bundled so the loop can be split
 /// into named handlers below instead of one 500-line function.
 #[derive(Default)]
@@ -462,6 +467,16 @@ impl BodyState {
 
     /// Block-opening and stack-pushing events: notes/annotations/tracked-changes captures,
     /// headings, paragraphs, lists, tables, spans, links, and image frames.
+    // A single-pass SAX dispatch over ~15 office:text element types
+    // (paragraph/heading/list/table/span/link nesting, note/comment/
+    // bookmark/change range tracking); the five self-contained
+    // in-progress captures (fidelity/frame/note/annotation/tracked-changes)
+    // are already split into the advance_* functions above — the rest
+    // shares this whole struct's state across every arm, so further
+    // extraction would need either a large per-event-kind helper
+    // signature or a lifetime-entangled parser-state struct, neither
+    // safe to introduce without compiling.
+    #[allow(clippy::too_many_lines, reason = "see comment above the function")]
     fn handle_start(
         &mut self,
         e: &BytesStart,
@@ -684,6 +699,8 @@ impl BodyState {
     /// Self-closing property/marker events: paragraph and heading shorthand, comment/bookmark/
     /// tracked-change range markers, tabs/breaks/spaces, table cells, and the fidelity-atom
     /// capture for a single unmodeled empty element.
+    // See the comment on `handle_start` above — same shared-state dispatch shape.
+    #[allow(clippy::too_many_lines, reason = "see comment above handle_start")]
     fn handle_empty(
         &mut self,
         e: &BytesStart,
@@ -778,10 +795,10 @@ impl BodyState {
                 }
             }
             b"text:tab" if self.in_text => {
-                append(doc, self.cur.as_deref(), &mut self.cur_len, "\t")
+                append(doc, self.cur.as_deref(), &mut self.cur_len, "\t");
             }
             b"text:line-break" if self.in_text => {
-                append(doc, self.cur.as_deref(), &mut self.cur_len, "\n")
+                append(doc, self.cur.as_deref(), &mut self.cur_len, "\n");
             }
             b"text:s" if self.in_text => {
                 let n = attr_val(e, b"text:c")

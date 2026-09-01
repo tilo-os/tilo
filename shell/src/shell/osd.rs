@@ -11,6 +11,12 @@
 
 use std::time::{Duration, Instant};
 
+use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
+use vello::Scene;
+use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
+use vello::peniko::{BlendMode, Fill};
+
 /// How long the slab stays up after the last press. Long enough to read
 /// after a single tap, short enough that a burst of presses does not
 /// leave it hanging around afterwards.
@@ -154,6 +160,187 @@ impl Osd {
     pub fn is_live(&self, now: Instant) -> bool {
         now.saturating_duration_since(self.raised_at) < OSD_HOLD
     }
+
+    /// Place the slab low and centred within `viewport`, away from the
+    /// content most likely to be under the pointer.
+    pub fn rect_in(viewport: Rect) -> Rect {
+        let w = 260.0_f64.min(viewport.width() * 0.6);
+        let h = 96.0_f64;
+        let cx = viewport.center().x;
+        let y1 = viewport.y1 - (viewport.height() * 0.12).max(56.0);
+        Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1)
+    }
+
+    /// Paint this readout inside `viewport` at the supplied lifecycle alpha.
+    /// The OSD is intentionally non-interactive, so it owns no hit targets.
+    pub fn draw(
+        self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        viewport: Rect,
+        alpha: f32,
+    ) {
+        if alpha <= 0.0 {
+            return;
+        }
+        let rect = Self::rect_in(viewport);
+        let faded = alpha < 0.999;
+        if faded {
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                alpha,
+                transform,
+                &viewport,
+            );
+        }
+
+        draw_card(scene, transform, rect, theme);
+        draw_glyph(scene, transform, rect, theme, self.kind);
+        draw_level_bar(scene, transform, rect, theme, self);
+        draw_caption(scene, transform, rect, theme, text_renderer, self);
+
+        if faded {
+            scene.pop_layer();
+        }
+    }
+}
+
+fn draw_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
+    let colors = &theme.tokens.colors;
+    let radius = 18.0_f64;
+    // The slab floats over arbitrary app content, so it needs elevation to
+    // remain distinct on both quiet and visually busy tiles.
+    ui::surface::soft_shadow(scene, transform, rect, colors.neutral[0], 36.0, 14.0, 0.5);
+    let body = RoundedRect::from_rect(rect, radius);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.surfaces.overlay,
+        None,
+        &body,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        colors.border_white_10,
+        None,
+        &body,
+    );
+}
+
+fn draw_glyph(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme, kind: OsdKind) {
+    let colors = &theme.tokens.colors;
+    let glyph_px = 28.0_f64;
+    let gx = rect.center().x;
+    let gy = rect.y0 + 26.0;
+    let glyph_rect = Rect::new(
+        gx - glyph_px / 2.0,
+        gy - glyph_px / 2.0,
+        gx + glyph_px / 2.0,
+        gy + glyph_px / 2.0,
+    );
+    let (icon, tint) = match kind {
+        OsdKind::Volume { muted: true } => (ui::icons::Icon::VolumeX, colors.text_primary),
+        OsdKind::Volume { muted: false } => (ui::icons::Icon::Volume2, colors.text_primary),
+        OsdKind::Brightness => (ui::icons::Icon::Sun, colors.text_primary),
+        OsdKind::MicMute { muted } => (
+            ui::icons::Icon::MicOff,
+            if muted {
+                colors.semantic.warning
+            } else {
+                colors.text_primary
+            },
+        ),
+        OsdKind::Transport(transport) => (
+            match transport {
+                Transport::Play => ui::icons::Icon::Play,
+                Transport::Pause => ui::icons::Icon::Pause,
+                Transport::Next => ui::icons::Icon::SkipForward,
+                Transport::Previous => ui::icons::Icon::SkipBack,
+            },
+            colors.text_primary,
+        ),
+    };
+    ui::icons::draw_icon(
+        scene,
+        transform,
+        glyph_rect,
+        icon,
+        tint,
+        ui::icons::LUCIDE_DEFAULT_STROKE_PX * 1.4,
+    );
+}
+
+fn draw_level_bar(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme, osd: Osd) {
+    if !osd.has_level() {
+        return;
+    }
+    let colors = &theme.tokens.colors;
+    let bar_h = 6.0_f64;
+    let inset = 24.0_f64;
+    let bar = Rect::new(
+        rect.x0 + inset,
+        rect.y0 + 50.0,
+        rect.x1 - inset,
+        rect.y0 + 50.0 + bar_h,
+    );
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.surface_white_10,
+        None,
+        &RoundedRect::from_rect(bar, bar_h / 2.0),
+    );
+    // Muting keeps the track but empties its fill, so the slab does not
+    // change shape while still agreeing with the crossed-out volume glyph.
+    let filled = if matches!(osd.kind, OsdKind::Volume { muted: true }) {
+        0.0
+    } else {
+        f64::from(osd.level.clamp(0.0, 1.0))
+    };
+    if filled > 0.0 {
+        let w = (bar.width() * filled).max(bar_h);
+        let fill_rect = Rect::new(bar.x0, bar.y0, bar.x0 + w, bar.y1);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.accent[5],
+            None,
+            &RoundedRect::from_rect(fill_rect, bar_h / 2.0),
+        );
+    }
+}
+
+fn draw_caption(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    theme: &Theme,
+    text_renderer: &mut TextRenderer,
+    osd: Osd,
+) {
+    let colors = &theme.tokens.colors;
+    let size = theme.tokens.typography.scale.sm;
+    let caption = osd.caption();
+    let (cw, ch) = text_renderer.measure_weighted(&caption, size, None, TextWeight::Medium);
+    text_renderer.draw_text_weighted(
+        scene,
+        &caption,
+        size,
+        colors.text_dim,
+        transform.pre_translate(
+            (
+                rect.center().x - f64::from(cw) / 2.0,
+                rect.y1 - 12.0 - f64::from(ch),
+            )
+                .into(),
+        ),
+        None,
+        TextWeight::Medium,
+    );
 }
 
 /// Same key restarts the timer, different key replaces outright — either
@@ -173,6 +360,10 @@ pub fn expire(current: &mut Option<Osd>, now: Instant) -> bool {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact OSD animation endpoints and clamps are the behavior under test"
+)]
 mod tests {
     use super::*;
 
@@ -269,5 +460,18 @@ mod tests {
             !expire(&mut cur, t0 + OSD_HOLD),
             "expiring nothing must not claim a repaint"
         );
+    }
+
+    #[test]
+    fn slab_geometry_is_low_centered_and_width_bounded() {
+        let viewport = Rect::new(20.0, 40.0, 1220.0, 840.0);
+        let rect = Osd::rect_in(viewport);
+        assert_eq!(rect.width(), 260.0);
+        assert_eq!(rect.height(), 96.0);
+        assert_eq!(rect.center().x, viewport.center().x);
+        assert_eq!(viewport.y1 - rect.y1, 96.0);
+
+        let narrow = Osd::rect_in(Rect::new(0.0, 0.0, 300.0, 500.0));
+        assert_eq!(narrow.width(), 180.0);
     }
 }

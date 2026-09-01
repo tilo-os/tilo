@@ -401,6 +401,7 @@ impl VelloDrmBridge {
 /// The source half of a sub-rectangle copy/swizzle: the combined-scene RGBA buffer, its full
 /// width/height, and the sub-rect's top-left origin within it. The three free functions below
 /// share this shape; grouping it keeps each function under clippy's argument-count limit.
+#[derive(Clone, Copy)]
 pub struct SubrectSource<'a> {
     pub src_rgba: &'a [u8],
     pub src_w: usize,

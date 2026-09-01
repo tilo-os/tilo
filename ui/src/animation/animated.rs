@@ -5,6 +5,7 @@ use crate::color_compat::ColorCompat;
 use std::time::{Duration, Instant};
 
 pub trait Lerp {
+    #[must_use]
     fn lerp(self, other: Self, t: f32) -> Self;
 }
 
@@ -87,6 +88,12 @@ impl Curve {
 /// Solves `m * x'' + c * x' + k * x = k` with `x(0) = 0`, `x'(0) = 0`, so
 /// the position approaches `1.0` as `t -> infinity`. `t` is the `0..1`
 /// duration ratio.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "m/c/k/t/s mirror the differential equation spelled out in the doc \
+              comment above; naming them mass/damping/stiffness/time/aux would \
+              just make the formula below harder to check against a textbook"
+)]
 fn spring_unit_step(stiffness: f32, damping: f32, mass: f32, t: f32) -> f32 {
     let m = mass.max(1e-4);
     let k = stiffness.max(0.0);
@@ -279,7 +286,20 @@ impl Transition {
     /// No-op when the intent is unchanged AND the animation has settled, so
     /// repeated calls each frame don't restart the curve.
     pub fn set_open(&mut self, open: bool, duration: Duration, curve: Curve) {
-        let now = Instant::now();
+        self.set_open_at(open, duration, curve, Instant::now());
+    }
+
+    /// [`Self::set_open`] against a caller-supplied clock.
+    ///
+    /// Every other reader here — [`Self::value`], [`Self::is_visible`],
+    /// [`Self::is_animating`] — already takes `now`; `set_open` was the one
+    /// that reached for the clock itself. That asymmetry is untestable: a
+    /// test could start a transition and ask whether it was still running,
+    /// but the two calls read the clock independently, so a scheduler stall
+    /// longer than the animation between them let it finish and the
+    /// assertion flip. Pinning both ends to one instant makes such a test a
+    /// statement about the animation rather than about the machine's load.
+    pub fn set_open_at(&mut self, open: bool, duration: Duration, curve: Curve, now: Instant) {
         if open == self.open && self.anim.done(now) {
             return;
         }

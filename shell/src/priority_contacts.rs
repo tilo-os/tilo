@@ -108,6 +108,12 @@ impl PriorityContactRegistry {
     /// Replace the whole projection. This is called only after the D-Bus
     /// service verifies `dev.qos.contacts`; keeping the check at that boundary
     /// means this storage type never tries to infer authority from a string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `contacts` exceeds the maximum count, if the
+    /// registry's lock is poisoned, or if persisting the updated record
+    /// fails.
     pub fn replace_verified(&self, contacts: Vec<ContactProjection>) -> Result<usize, String> {
         if contacts.len() > MAX_CONTACTS {
             return Err("too many priority contacts".into());
@@ -204,7 +210,7 @@ fn read_record(path: &Path) -> std::io::Result<DiskRecord> {
             "priority-contact registry has unsafe ownership or mode",
         ));
     }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
     file.take(MAX_RECORD_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_RECORD_BYTES {
         return Err(std::io::Error::new(

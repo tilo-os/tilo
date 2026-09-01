@@ -336,7 +336,31 @@ impl ActivityTimeline {
     }
 
     pub fn set_entries(&mut self, entries: Vec<HistoryEntry>) {
+        let selected_ids: Vec<HistoryEntryId> = self
+            .selection
+            .and_then(|(start, end)| self.entries.get(start..=end))
+            .map(|selected| selected.iter().map(|entry| entry.id).collect())
+            .unwrap_or_default();
         self.entries = entries;
+        self.selection = if selected_ids.is_empty() {
+            None
+        } else {
+            let positions: Vec<usize> = selected_ids
+                .iter()
+                .filter_map(|id| self.entries.iter().position(|entry| entry.id == *id))
+                .collect();
+            let contiguous = positions.len() == selected_ids.len()
+                && positions
+                    .windows(2)
+                    .all(|pair| matches!(pair, [left, right] if *right == left.saturating_add(1)));
+            contiguous.then(|| {
+                (
+                    *positions.first().unwrap_or(&0),
+                    *positions.last().unwrap_or(&0),
+                )
+            })
+        };
+        self.selection_anchor = self.selection.map(|(start, _)| start);
         self.regroup();
     }
 
@@ -1056,6 +1080,14 @@ impl ActivityTimeline {
                     .is_some_and(|e| self.passes(e, &chip_ops, &needle))
             })
             .collect();
+        // A destructive selection must never survive a filter that hides any
+        // member: the visible UI would no longer describe what Undo targets.
+        if let Some((start, end)) = self.selection
+            && (start..=end).any(|index| !self.visible.contains(&index))
+        {
+            self.selection = None;
+            self.selection_anchor = None;
+        }
         self.rebuild_rows();
     }
 
@@ -2907,6 +2939,7 @@ mod tests {
             text_delta: Some((1, 0)),
             diff_payload: None,
             redaction: None,
+            context: None,
         }
     }
 
@@ -3308,7 +3341,7 @@ mod tests {
                     .checked_add(Duration::from_secs(500))
                     .unwrap_or(SystemTime::UNIX_EPOCH),
                 SystemTime::UNIX_EPOCH
-                    .checked_add(Duration::from_mins(10))
+                    .checked_add(Duration::from_secs(600))
                     .unwrap_or(SystemTime::UNIX_EPOCH),
             )),
             ..Default::default()
@@ -3455,6 +3488,7 @@ mod group_tests {
             text_delta: Some((usize::from(id).saturating_add(1), 0)),
             diff_payload: None,
             redaction: None,
+            context: None,
         }
     }
 
@@ -4309,5 +4343,39 @@ mod group_tests {
             vec!["Ada", "Ada", "Ada", "Alice", "Alice", "Alice", "Alice"],
             "oldest-first flips the bands, and still does not break them"
         );
+    }
+
+    #[test]
+    fn selection_tracks_stable_ids_across_feed_insertion() {
+        let mut timeline = timeline_at(
+            Rect::new(0.0, 0.0, 620.0, 600.0),
+            vec![
+                entry(OpClass::Splice, "Ada", 1, 1),
+                entry(OpClass::Splice, "Ada", 3, 3),
+            ],
+        );
+        let selected_id = timeline.entries()[1].id;
+        timeline.set_selection(Some((1, 1)));
+        timeline.set_entries(vec![
+            entry(OpClass::Splice, "Ada", 1, 1),
+            entry(OpClass::Splice, "Ada", 2, 2),
+            entry(OpClass::Splice, "Ada", 3, 3),
+        ]);
+        assert_eq!(timeline.selection(), Some((2, 2)));
+        assert_eq!(timeline.entries()[2].id, selected_id);
+    }
+
+    #[test]
+    fn filtering_out_a_selection_clears_destructive_targeting() {
+        let mut timeline = timeline_at(
+            Rect::new(0.0, 0.0, 620.0, 600.0),
+            vec![
+                entry(OpClass::Splice, "Ada", 1, 1),
+                entry(OpClass::Splice, "Maren", 2, 2),
+            ],
+        );
+        timeline.set_selection(Some((0, 0)));
+        timeline.set_filter(HistoryFilter::default().with_author("Maren"));
+        assert_eq!(timeline.selection(), None);
     }
 }

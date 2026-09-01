@@ -382,14 +382,18 @@ fn serve(body: &'static str) -> u16 {
     port
 }
 
-/// `$XDG_RUNTIME_DIR/qos-netgate-test`. Deliberately not a `TempDir`:
-/// the harness' scratch root is long enough to overflow `sun_path`.
+/// A short, process-private test directory. This deliberately ignores
+/// `XDG_RUNTIME_DIR`: other launcher tests temporarily override that global
+/// environment variable, and libtest runs modules in this binary in parallel.
+/// Reading it here made those tests delete the netgate's live socket directory.
+/// The PID keeps concurrent Cargo invocations apart while remaining well below
+/// `sun_path`'s 108-byte limit.
 fn runtime_scratch_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
-        || PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })),
-        PathBuf::from,
-    );
-    let dir = base.join("qos-netgate-test");
+    let dir = PathBuf::from(format!(
+        "/tmp/qos-netgate-{}-{}",
+        unsafe { libc::getuid() },
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).expect("create runtime scratch dir");
     dir
 }

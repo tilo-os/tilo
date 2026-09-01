@@ -107,10 +107,6 @@ impl PeerIdentityStore {
     ///
     /// Returns `DeviceCertError` if the certificate signature does not verify,
     /// the embedded public key is invalid, or the certificate has expired.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal `RwLock` has been poisoned.
     pub fn insert(
         &self,
         peer: PeerOrigin,
@@ -118,53 +114,54 @@ impl PeerIdentityStore {
         now_ns: u64,
     ) -> Result<PeerIdentity, DeviceCertError> {
         let identity = PeerIdentity::from_cert(cert, now_ns)?;
-        let mut inner = self.inner.write().expect("PeerIdentityStore lock poisoned");
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.by_peer.insert(peer, identity.clone());
+        drop(inner);
         Ok(identity)
     }
 
     /// Drop a peer's cached identity — used on disconnect. Idempotent.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal `RwLock` has been poisoned.
     pub fn remove(&self, peer: &PeerOrigin) {
-        let mut inner = self.inner.write().expect("PeerIdentityStore lock poisoned");
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.by_peer.remove(peer);
     }
 
     /// Look up a peer by its [`PeerOrigin`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal `RwLock` has been poisoned.
     pub fn get(&self, peer: &PeerOrigin) -> Option<PeerIdentity> {
-        let inner = self.inner.read().expect("PeerIdentityStore lock poisoned");
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.by_peer.get(peer).cloned()
     }
 
     /// Merge a user's revocation list — additive, see [`RevocationList::insert`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal `RwLock` has been poisoned.
-    pub fn set_revocations(&self, user_pubkey: [u8; 32], list: RevocationList) {
-        let mut inner = self.inner.write().expect("PeerIdentityStore lock poisoned");
+    pub fn set_revocations(&self, user_pubkey: [u8; 32], list: &RevocationList) {
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let current = inner.revocations.entry(user_pubkey).or_default();
         for entry in list.iter().cloned() {
             // Never let a later handshake erase or postpone a revocation that
             // this device has already verified.
             let _ = current.insert(entry);
         }
+        drop(inner);
     }
 
     /// True if `device_pubkey` has been revoked under `user_pubkey` at or before `at_ns`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal `RwLock` has been poisoned.
     pub fn is_revoked(&self, user_pubkey: &[u8; 32], device_pubkey: &[u8; 32], at_ns: u64) -> bool {
-        let inner = self.inner.read().expect("PeerIdentityStore lock poisoned");
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner
             .revocations
             .get(user_pubkey)
@@ -429,10 +426,10 @@ mod tests {
         sign_revocation_entry(&mut rev, &root_sk).unwrap();
         let mut list = RevocationList::new();
         list.insert(rev).unwrap();
-        store.set_revocations(user_pk, list);
+        store.set_revocations(user_pk, &list);
         // A later peer advertising an empty/stale set cannot erase what we
         // already learned.
-        store.set_revocations(user_pk, RevocationList::new());
+        store.set_revocations(user_pk, &RevocationList::new());
 
         // Signed AT the cut-off — rejected.
         let msg = b"at";
@@ -454,6 +451,8 @@ mod tests {
 
     #[test]
     fn different_users_get_separate_revocation_lists() {
+        use qos_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+
         let (_, _, alice_cert) = fresh_identity(DeviceCapabilities::primary());
         let (bob_root, _, bob_cert) = fresh_identity(DeviceCapabilities::primary());
         let alice_user_pk = alice_cert.user_public_key;
@@ -465,7 +464,6 @@ mod tests {
         store.insert(peer(2), bob_cert, 500).unwrap();
 
         // Revoke Bob's device.
-        use qos_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
         let mut rev = RevocationEntry {
             user_public_key: bob_user_pk,
             revoked_device_public_key: bob_device_pk,
@@ -476,7 +474,7 @@ mod tests {
         sign_revocation_entry(&mut rev, &bob_root).unwrap();
         let mut list = RevocationList::new();
         list.insert(rev).unwrap();
-        store.set_revocations(bob_user_pk, list);
+        store.set_revocations(bob_user_pk, &list);
 
         // Bob's device is revoked …
         assert!(store.is_revoked(&bob_user_pk, &bob_device_pk, 700));

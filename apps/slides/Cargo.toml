@@ -13,7 +13,11 @@ path = "src/lib.rs"
 name = "slides"
 path = "src/main.rs"
 
+[features]
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui", features = ["portal"] }
 # The qOS action model: doc-mutating operations are replayable, undoable actions.
 qos-actions = { path = "../../crates/collab/actions" }
@@ -32,7 +36,7 @@ quick-xml.workspace = true
 # (org.freedesktop.portal.FileChooser). On GNOME the user sees GNOME's file
 # chooser; on qOS the compositor's portal backend renders qOS's picker. The
 # portal call runs off the UI thread on its own small Tokio runtime and the
-# chosen path is delivered back over a channel (see `portal`).
+# chosen path is delivered back over a shared `ui::portal` channel.
 
 [lints]
 workspace = true

@@ -5,8 +5,8 @@
 //!
 //! # The problem this solves
 //!
-//! `BufferSizes` reserves six buffers — lines, tiles, segment counts,
-//! segments, blend spill and the per-tile command list — whose sizes
+//! `BufferSizes` reserves seven buffers — lines, binning data, tiles,
+//! segment counts, segments, blend spill and the per-tile command list — whose sizes
 //! upstream picks as constants, with the comment that they are "hand
 //! picked to accommodate the vello test scenes as well as paris-30k" and
 //! "should instead get derived from the scene layout using reasonable
@@ -28,16 +28,21 @@
 //! bump the counter first and check afterwards, setting a bit in
 //! `failed` when the write had to be dropped.
 //!
-//! So each frame downloads those 32 bytes, and the frame *after* it
-//! reads them and grows [`BumpBudget`] to cover what was asked for, with
-//! headroom. The reservation converges on the scene from below instead
-//! of starting at a stress scene's worth and staying there.
+//! The synchronous path schedules a 32-byte counter download and collects
+//! it once wgpu reports the mapping ready. The asynchronous path already
+//! waits between the coarse and fine stages, so it reads the counters there.
+//! In either case, later renders grow [`BumpBudget`] with headroom instead
+//! of every renderer permanently starting at a stress scene's budget.
 //!
 //! # What this costs, and when the guess is wrong
 //!
-//! A 32-byte non-blocking readback, a frame behind — never a pipeline
-//! stall. A wrong guess costs one frame: it renders short, `failed` is
-//! logged, and the next frame is already grown to fit.
+//! The synchronous readback does not deliberately block, but callback
+//! readiness is not bounded to one frame. The asynchronous path does wait
+//! for its mapping. If a budget is too small, that render can omit work;
+//! later renders grow from the counters that were reached before failure.
+//! This is therefore appropriate for qOS only because its first-render
+//! floors cover measured application and compositor scenes. A one-shot
+//! renderer should not rely on adaptation to repair its only output.
 
 use std::sync::{Arc, Mutex};
 
@@ -47,8 +52,8 @@ use wgpu::{Buffer, Device};
 use crate::recording::BufferProxy;
 use crate::wgpu_engine::WgpuEngine;
 
-/// Set to any non-empty value to have every frame's measured usage
-/// printed against what was reserved for it.
+/// Set to any non-empty value to print each collected frame's usage
+/// against its adaptive policy budget.
 ///
 /// This is the switch the reservation was calibrated with, and the one
 /// to reach for when a scene renders with pieces missing.
@@ -62,11 +67,8 @@ const LOG_ENV: &str = "VELLO_BUMP_LOG";
 /// allocator whose counter/failure signal does not yet cover a real workload;
 /// they are intentionally not production fallbacks.
 ///
-/// This is not a fallback for production — it is how the two are
-/// compared. Rendering the same scene both ways from one binary is what
-/// turns "the smaller reservation looks fine" into a pixel-for-pixel
-/// claim, and an overflow of these buffers drops geometry silently, so
-/// nothing weaker than that claim is worth much.
+/// Scene and viewport safety floors still apply, so this is a conservative
+/// fallback rather than an exact reproduction of upstream allocation sizes.
 const BUDGET_ENV: &str = "VELLO_BUMP_BUDGET";
 
 /// A readback that has been started and not yet collected.
@@ -81,7 +83,7 @@ pub(crate) struct BudgetTracker {
     budget: BumpBudget,
     pending: Option<Pending>,
     log: bool,
-    /// Reserve upstream's constants and hold them there, for A/B.
+    /// Hold the policy budget at upstream's constants.
     pinned: bool,
     /// Tiles in the viewport last rendered, for the log only.
     n_tiles: u32,
@@ -143,16 +145,16 @@ impl BudgetTracker {
     }
 
     /// Note the viewport this renderer is drawing into, so the log can
-    /// say what was actually reserved: [`BufferSizes`] floors several of
-    /// these buffers by screen area, and a budget of zero at 1920x1080
-    /// still reserves 13 MB.
+    /// include the viewport policy floors. [`BufferSizes`] also applies
+    /// scene-derived and structural prefixes that this tracker cannot see.
     ///
     /// [`BufferSizes`]: vello_encoding::BufferSizes
     pub(crate) fn set_viewport(&mut self, width: u32, height: u32) {
         self.n_tiles = width.max(1).div_ceil(TILE_SIZE) * height.max(1).div_ceil(TILE_SIZE);
     }
 
-    /// What the sizes actually come out at, floors included.
+    /// The policy budget after viewport floors, excluding scene-derived
+    /// floors and structural prefixes added by [`BufferSizes`].
     fn effective(&self) -> BumpBudget {
         let floor = BumpBudget::floor_for_viewport(self.n_tiles);
         BumpBudget {
@@ -172,7 +174,12 @@ impl BudgetTracker {
     /// that outruns the map callback does not queue up a second buffer
     /// to leak.
     pub(crate) fn wants_readback(&self) -> bool {
-        self.pending.is_none()
+        !self.pinned && self.pending.is_none()
+    }
+
+    /// Whether adaptive sizing needs counters from a render.
+    pub(crate) fn wants_measurement(&self) -> bool {
+        !self.pinned
     }
 
     pub(crate) fn has_pending_readback(&self) -> bool {
@@ -185,6 +192,10 @@ impl BudgetTracker {
     /// Returns `(changed, overflowed)`: `changed` tells the caller to drop
     /// pooled buffers at obsolete sizes, while `overflowed` lets a one-shot
     /// renderer reject the incomplete pixels and immediately submit again.
+    #[allow(
+        clippy::print_stderr,
+        reason = "qOS applications do not install a log-to-tracing bridge"
+    )]
     pub(crate) fn collect(&mut self, device: &Device, engine: &mut WgpuEngine) -> (bool, bool) {
         let Some(pending) = self.pending.take() else {
             return (false, false);
@@ -203,6 +214,7 @@ impl BudgetTracker {
             self.pending = Some(pending);
             return (false, false);
         };
+        let before = self.effective();
         let mut changed = false;
         let mut overflowed = false;
         if ok && let Some(buf) = engine.get_download(pending.proxy) {
@@ -213,9 +225,10 @@ impl BudgetTracker {
             overflowed = used.failed != 0;
             buf.unmap();
             let in_effect = self.effective();
-            changed = !self.pinned && self.budget.observe(&used);
+            let budget_changed = !self.pinned && self.budget.observe(&used);
+            changed = before != self.effective();
             if self.log {
-                self.report(&used, &in_effect, changed);
+                self.report(&used, &in_effect, budget_changed);
             } else if used.failed != 0 {
                 // `eprintln!`, matching `report` below, and deliberately
                 // not `log::warn!`: nothing in this workspace installs a
@@ -267,13 +280,17 @@ impl BudgetTracker {
         self.pending = Some(Pending { proxy, done });
     }
 
-    /// One line per measured frame: what it used against what was
-    /// reserved for it, floors included.
+    /// One line per measured frame: measured use against the policy budget.
+    /// Scene-derived floors and structural prefixes are not included.
+    #[allow(
+        clippy::print_stderr,
+        reason = "explicit diagnostics must work without logging initialization"
+    )]
     fn report(&self, used: &BumpAllocators, in_effect: &BumpBudget, changed: bool) {
         let b = in_effect;
         eprintln!(
             "vello frame {}: lines {}/{} binning {}/{} tiles {}/{} seg_counts {}/{} \
-             segments {}/{} blend {}/{} ptcl {}/{} failed={:#x} reserved={} KB{}",
+             segments {}/{} blend {}/{} ptcl {}/{} failed={:#x} policy={} KB{}",
             self.frame,
             used.lines,
             b.lines,

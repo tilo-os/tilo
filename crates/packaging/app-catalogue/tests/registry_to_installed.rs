@@ -104,9 +104,16 @@ type = "gui"
     app_registry::qpkg::write_bytes(id, &store).unwrap()
 }
 
+fn test_publisher() -> SigningIdentity {
+    SigningIdentity::from_signing_key(SigningKey::from_bytes(&[11_u8; 32]))
+}
+
 /// A signed registry entry pointing at `qpkg_url`.
 fn signed_entry(package_id: &str, qpkg_url: &str, qpkg: &[u8]) -> RegistryEntry {
     let key = SigningKey::from_bytes(&[11u8; 32]);
+    let root = app_registry::qpkg::load(qpkg)
+        .expect("fixture qpkg must parse")
+        .package_id;
     let mut entry = RegistryEntry {
         package_id: package_id.to_string(),
         name: "Sheets".into(),
@@ -119,7 +126,7 @@ fn signed_entry(package_id: &str, qpkg_url: &str, qpkg: &[u8]) -> RegistryEntry 
         versions: vec![RegistryVersion {
             version: "1.4.0".into(),
             qpkg_url: qpkg_url.to_string(),
-            qpkg_root_hash_hex: hex::encode([0u8; 32]),
+            qpkg_root_hash_hex: root.to_hex(),
             qpkg_size_bytes: qpkg.len() as u64,
             released_at_unix: 1,
         }],
@@ -231,7 +238,7 @@ const PACKAGE_ID: &str = "dev.qos.catalogue-e2e";
 
 #[test]
 fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
-    let publisher = SigningIdentity::generate();
+    let publisher = test_publisher();
     let qpkg = author_qpkg(PACKAGE_ID, &publisher);
 
     // Serve it.
@@ -339,7 +346,7 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
 /// handing over something other than what its signed entry described.
 #[test]
 fn a_corrupted_download_never_becomes_an_installed_app() {
-    let publisher = SigningIdentity::generate();
+    let publisher = test_publisher();
     let good = author_qpkg("dev.qos.catalogue-corrupt", &publisher);
     // Serve a truncated archive under the same entry.
     let corrupted = good[..good.len() / 2].to_vec();
@@ -506,7 +513,7 @@ fn an_app_installed_from_a_registry_keeps_the_services_it_declared() {
         "the fixture has to declare collab or this test proves nothing"
     );
 
-    let publisher = SigningIdentity::generate();
+    let publisher = test_publisher();
     let authored = authoring::author(
         PKG,
         "Word Processor",
@@ -567,7 +574,7 @@ fn a_payload_with_no_manifest_is_published_as_declaring_no_services() {
     let bin = bare.path().join("true");
     std::fs::write(&bin, b"#!/bin/true\n").unwrap();
 
-    let publisher = SigningIdentity::generate();
+    let publisher = test_publisher();
     let authored = authoring::author("dev.qos.bare", "Bare", &bin, None, &publisher).unwrap();
     assert_eq!(authored.source, authoring::ManifestSource::Synthesised);
 }

@@ -90,6 +90,14 @@ pub(crate) struct OffsetMap {
 
 impl OffsetMap {
     pub(crate) fn for_text_with_hyphenation(text: &str, lang: Option<hypher::Lang>) -> Self {
+        Self::for_text_with_breaks(text, lang, &[])
+    }
+
+    pub(crate) fn for_text_with_breaks(
+        text: &str,
+        lang: Option<hypher::Lang>,
+        discretionary_breaks: &[usize],
+    ) -> Self {
         use std::collections::HashSet;
 
         // cosmic-text already consumes unicode-linebreak's UAX #14 table. Only
@@ -122,6 +130,16 @@ impl OffsetMap {
                 }
             }
         }
+        insertions.extend(
+            discretionary_breaks
+                .iter()
+                .copied()
+                .filter(|byte| *byte > 0 && *byte < text.len() && text.is_char_boundary(*byte))
+                .map(|source| VirtualInsertion {
+                    source,
+                    ch: '\u{ad}',
+                }),
+        );
         insertions.sort_unstable_by_key(|insertion| insertion.source);
         insertions.dedup_by(|a, b| {
             if a.source != b.source {
@@ -250,7 +268,7 @@ pub(crate) fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Ra
                 let [first, second] = window else {
                     return None;
                 };
-                second.1.is_word_like().then(|| first.0..second.0)
+                second.1.is_word_like().then_some(first.0..second.0)
             })
             .collect::<Vec<_>>()
             .into_iter()
@@ -322,6 +340,15 @@ mod tests {
             map.shaped_to_source(map.source_to_shaped(text.len())),
             text.len()
         );
+    }
+
+    #[test]
+    fn custom_breaks_ignore_endpoints_and_non_utf8_boundaries() {
+        let text = "éclair";
+        let map = OffsetMap::for_text_with_breaks(text, None, &[0, 1, 2, text.len(), usize::MAX]);
+        assert_eq!(map.shape_text(text), "é\u{ad}clair");
+        assert_eq!(map.insertions.len(), 1);
+        assert_eq!(map.insertions[0].source, 2);
     }
 
     #[test]

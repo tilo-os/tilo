@@ -48,6 +48,13 @@ pub struct DeviceFleetStore {
 }
 
 impl DeviceFleetStore {
+    /// Open the device fleet store rooted at the environment's identity
+    /// registry and collaboration identity paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identity registry's environment (neither
+    /// `XDG_CONFIG_HOME` nor `HOME` set) can't be resolved.
     pub fn from_env() -> io::Result<Self> {
         let registry = crate::identity_registry::IdentityRegistryStore::from_env()?;
         Ok(Self::at(
@@ -63,6 +70,14 @@ impl DeviceFleetStore {
         }
     }
 
+    /// Load the persisted device fleet for `identity_id`, or a fresh empty
+    /// one if none has been saved yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file exists but can't be read or parsed, if
+    /// its schema version or identity id doesn't match, or if any stored
+    /// certificate or revocation entry fails verification.
     pub fn load(&self, identity_id: &str) -> io::Result<DeviceFleet> {
         let path = self.path(identity_id);
         if !path.exists() {
@@ -88,6 +103,11 @@ impl DeviceFleetStore {
     }
 
     /// Ensure the current machine appears in the fleet for `identity_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identity can't be loaded, if this device's
+    /// certificate can't be read, or if persisting the updated fleet fails.
     pub fn register_current_device(&self, identity_id: &str) -> io::Result<DeviceFleet> {
         let (_, profile) = self.identity(identity_id)?;
         let cert_path = self
@@ -99,6 +119,12 @@ impl DeviceFleetStore {
     }
 
     /// Mint a short-lived enrollment token from this already trusted device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identity or this device's key/certificate
+    /// can't be loaded, if the certificate doesn't verify or doesn't grant
+    /// `can_admit_devices`, or if minting or encoding the token fails.
     pub fn mint_enrollment(
         &self,
         identity_id: &str,
@@ -137,6 +163,13 @@ impl DeviceFleetStore {
     }
 
     /// Complete enrollment after the new device returns its public key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the token can't be decoded, has expired, or names
+    /// an issuer other than `identity_id`'s user key; if the identity can't
+    /// be loaded; if signing or verifying the new certificate fails; or if
+    /// persisting it fails.
     pub fn complete_enrollment(
         &self,
         identity_id: &str,
@@ -171,6 +204,12 @@ impl DeviceFleetStore {
     }
 
     /// Root-sign a permanent revocation and persist it with the fleet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identity or fleet can't be loaded, if
+    /// `device_public_key` isn't enrolled under `identity_id`, if signing
+    /// the revocation fails, or if persisting the updated fleet fails.
     pub fn revoke(
         &self,
         identity_id: &str,
@@ -291,7 +330,15 @@ impl DeviceFleetStore {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    // `char::from_digit` with radix 16 only returns `None` for digits >= 16;
+    // both nibbles are masked to 0..=15, so the fallback never triggers —
+    // it exists only to avoid indexing a lookup table.
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        out.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
+        out.push(char::from_digit(u32::from(byte & 0x0f), 16).unwrap_or('0'));
+    }
+    out
 }
 
 fn decode_hex_32(value: &str) -> io::Result<[u8; 32]> {
@@ -303,7 +350,12 @@ fn decode_hex_32(value: &str) -> io::Result<[u8; 32]> {
     }
     let mut out = [0_u8; 32];
     for (index, slot) in out.iter_mut().enumerate() {
-        *slot = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+        let start = index.saturating_mul(2);
+        let end = start.saturating_add(2);
+        let chunk = value
+            .get(start..end)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid identity hex"))?;
+        *slot = u8::from_str_radix(chunk, 16)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid identity hex"))?;
     }
     Ok(out)

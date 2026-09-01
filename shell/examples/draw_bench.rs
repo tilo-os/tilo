@@ -49,10 +49,16 @@ fn main() {
         let us = t0.elapsed().as_micros();
         min_us = min_us.min(us);
         max_us = max_us.max(us);
-        total_us += us;
+        total_us = total_us.saturating_add(us);
     }
 
-    let mean = total_us as f64 / iters as f64;
+    // Benchmark timing display only; precision loss in a microsecond mean at
+    // these magnitudes is irrelevant to the printed 0.1us-resolution figure.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "benchmark timing display, not a correctness value"
+    )]
+    let mean = total_us as f64 / f64::from(u32::try_from(iters).unwrap_or(u32::MAX));
     println!("shell draw at rest: iters={iters} mean={mean:.1}us min={min_us}us max={max_us}us");
     println!(
         "  → {:.1} Hz steady-state draw throughput (excludes layout + GPU + present)",

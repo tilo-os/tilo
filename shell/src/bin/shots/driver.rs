@@ -146,15 +146,15 @@ impl ShellDriver {
     /// The shared wire to the host lives on [`FrameBuilder::dispatch_event`];
     /// this method only adds driver-local bookkeeping (cursor cache,
     /// modifier snapshot) before delegating.
-    pub fn dispatch(&mut self, event: WindowEvent) -> bool {
-        if let WindowEvent::CursorMoved { position, .. } = &event {
+    pub fn dispatch(&mut self, event: &WindowEvent) -> bool {
+        if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x, position.y);
         }
-        if let WindowEvent::ModifiersChanged(m) = &event {
+        if let WindowEvent::ModifiersChanged(m) = event {
             self.modifiers = *m;
         }
         self.fb.dispatch_event(
-            &event,
+            event,
             &self.modifiers,
             &mut self.state,
             &self.root_obj,
@@ -167,16 +167,16 @@ impl ShellDriver {
     /// `dispatch` so per-event hit-tests run in the same order they
     /// would on real hardware.
     pub fn click_at(&mut self, p: Point) {
-        self.dispatch(WindowEvent::CursorMoved {
+        self.dispatch(&WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(p.x, p.y),
         });
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -190,7 +190,7 @@ impl ShellDriver {
     /// pixel deltas should multiply by ~`1.0/16.0` first to stay
     /// concept-faithful with the strip's per-line factor.
     pub fn mouse_wheel(&mut self, dx: f32, dy: f32) {
-        self.dispatch(WindowEvent::MouseWheel {
+        self.dispatch(&WindowEvent::MouseWheel {
             device_id: unsafe { std::mem::zeroed() },
             delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
             phase: winit::event::TouchPhase::Moved,
@@ -203,7 +203,7 @@ impl ShellDriver {
     /// scrub-then-pause behaviour. Updates `self.last_cursor` so any
     /// follow-up `mouse_wheel()` lands at the new position.
     pub fn move_cursor(&mut self, p: Point) {
-        self.dispatch(WindowEvent::CursorMoved {
+        self.dispatch(&WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(p.x, p.y),
         });
@@ -213,7 +213,7 @@ impl ShellDriver {
     /// releasing. Caller is responsible for the matching `release()`
     /// once the drag is complete.
     pub fn press(&mut self) {
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -222,7 +222,7 @@ impl ShellDriver {
 
     /// Synthesise a left-button `Released` at the current cursor.
     pub fn release(&mut self) {
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -243,11 +243,11 @@ impl ShellDriver {
     }
 
     fn drag_with_button(&mut self, from: Point, to: Point, steps: u32, button: MouseButton) {
-        self.dispatch(WindowEvent::CursorMoved {
+        self.dispatch(&WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(from.x, from.y),
         });
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
             button,
@@ -256,12 +256,12 @@ impl ShellDriver {
         for s in 1..=steps.max(1) {
             let t = f64::from(s) / n;
             let p = Point::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
-            self.dispatch(WindowEvent::CursorMoved {
+            self.dispatch(&WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
                 position: PhysicalPosition::new(p.x, p.y),
             });
         }
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Released,
             button,
@@ -269,9 +269,9 @@ impl ShellDriver {
     }
 
     /// Synthesise a `KeyboardInput { state: Pressed }` for `key`.
-    pub fn press_key(&mut self, key: Key) {
+    pub fn press_key(&mut self, key: &Key) {
         let event = key_press_event(key);
-        self.dispatch(event);
+        self.dispatch(&event);
     }
 
     /// Type a literal string — one `Key::Character` event per non-control
@@ -283,9 +283,10 @@ impl ShellDriver {
             if c.is_control() {
                 continue;
             }
-            let event =
-                key_press_event(Key::Character(winit::keyboard::SmolStr::new(c.to_string())));
-            self.dispatch(event);
+            let event = key_press_event(&Key::Character(winit::keyboard::SmolStr::new(
+                c.to_string(),
+            )));
+            self.dispatch(&event);
         }
     }
 
@@ -447,7 +448,11 @@ fn peer_append_tab(doc: &mut automerge::AutoCommit, title: &str) -> bool {
     let Ok(entry) = doc.insert_object(&tabs, at, ObjType::Map) else {
         return false;
     };
-    let _ = doc.put(&entry, "id", ScalarValue::Uint(70_000 + at as u64));
+    let _ = doc.put(
+        &entry,
+        "id",
+        ScalarValue::Uint(70_000u64.saturating_add(at as u64)),
+    );
     let _ = doc.put(&entry, "title", title.to_string());
     true
 }
@@ -457,7 +462,7 @@ impl ShellDriver {
     /// something to bring here. Reachable only from `--shots`, but goes
     /// through the real `RoomRecords::reference` path, so what the scene
     /// paints is what a real room index produces.
-    fn seed_records_in_other_rooms(&mut self) {
+    fn seed_records_in_other_rooms(&self) {
         use ui::record::{RecordId, RecordKind};
         let rooms: Vec<_> = {
             let handle = self.chrome_handle();
@@ -481,11 +486,9 @@ impl ShellDriver {
         let index = self.fb.host().room_records();
         let mut index = index.borrow_mut();
         for (i, (path, kind)) in records.iter().enumerate() {
-            index.reference(
-                rooms[i % rooms.len()],
-                &RecordId::for_file(path),
-                &RecordKind::new(*kind),
-            );
+            let idx = i.checked_rem(rooms.len()).unwrap_or(0);
+            let Some(room) = rooms.get(idx) else { continue };
+            index.reference(*room, &RecordId::for_file(path), &RecordKind::new(*kind));
         }
     }
 
@@ -548,6 +551,168 @@ impl ShellDriver {
             }
         }
         self.with_chrome(|_| {});
+    }
+
+    /// Scenario-facing wrapper for the canonical shared-workspace fixture.
+    /// Keeping the mutation here ensures screenshots use the same
+    /// authority-checked capabilities and presence data as legacy scenes.
+    pub fn seed_shared_workspace_for_shots(&mut self) {
+        self.seed_shared_room();
+    }
+
+    /// Materialise the durable half of an invite without pretending the
+    /// recipient is already online. The membership record takes the same
+    /// authority-checked path as workspace settings; the `invited` presence
+    /// row is intentionally non-followable until a session arrives.
+    pub fn seed_invite_pending_for_shots(&mut self) {
+        use shell::shell::state::{CapOverride, Collaborator, Subject, Verb};
+
+        let handle = self.chrome_handle();
+        let owner = handle.borrow().local_user_id.clone();
+        {
+            let st = handle.borrow();
+            let mut tree = st.tree_mut();
+            tree.adopt_ownerless_workspaces(&owner);
+            let workspace = tree.active;
+            tree.grant_in_workspace(
+                workspace,
+                &owner,
+                CapOverride::membership(
+                    Subject::person("ada"),
+                    workspace.raw().to_string(),
+                    Verb::Write,
+                ),
+            );
+            if let Some(ws) = tree.active_workspace_mut()
+                && !ws.collaborators.iter().any(|person| person.id == "ada")
+            {
+                ws.collaborators
+                    .push(Collaborator::new("ada", "Ada").as_invited());
+            }
+        }
+        self.with_chrome(|state| {
+            state.overlays.collaborators = true;
+            state.bump();
+        });
+    }
+
+    /// Turn the same invited identity into live presence on Notes. This is a
+    /// separate transition because a sent invite is access, whereas an active
+    /// tab is session-only information that must not appear prematurely.
+    pub fn admit_invited_collaborator_for_shots(&mut self) -> bool {
+        let handle = self.chrome_handle();
+        let mut admitted = false;
+        {
+            let st = handle.borrow();
+            let mut tree = st.tree_mut();
+            let notes_tab = tree.active_workspace().and_then(|ws| {
+                ws.strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .find(|tab| tab.title == "Notes")
+                    .map(|tab| tab.id)
+            });
+            if let (Some(notes_tab), Some(ws)) = (notes_tab, tree.active_workspace_mut())
+                && let Some(ada) = ws
+                    .collaborators
+                    .iter_mut()
+                    .find(|person| person.id == "ada")
+            {
+                ada.invited = false;
+                ada.active_tab = Some(notes_tab);
+                admitted = true;
+            }
+        }
+        self.with_chrome(|state| {
+            state.overlays.collaborators = true;
+            state.bump();
+        });
+        admitted
+    }
+
+    /// Revert the earliest non-current entry that can produce a forward
+    /// change. The room activity pane owns the operation, so the scenario
+    /// exercises the same immutable-history recovery path as its button.
+    pub fn revert_room_activity_for_shots(&mut self) -> bool {
+        let candidates: Vec<_> = self
+            .host()
+            .room_activity()
+            .entries()
+            .iter()
+            .map(|entry| entry.id)
+            .collect();
+        let handle = self.chrome_handle();
+        for id in candidates {
+            let changed = {
+                let st = handle.borrow();
+                let mut tree = st.tree_mut();
+                self.host_mut()
+                    .room_activity_mut()
+                    .revert_to(&mut tree, &id)
+            };
+            if changed {
+                self.with_chrome(|state| {
+                    state.overlays.room_activity = false;
+                    state.overlays.collaborators = false;
+                    state.bump();
+                    state.push_notification(
+                        "Reverted a workspace change",
+                        "Written forward: the version you reverted from is still in the history.",
+                    );
+                });
+                self.host_mut().force_room_activity_closed_for_shots();
+                // Prime the notification host. It drains newly queued chrome
+                // notifications during paint, so the named recovery frame
+                // must be the frame that displays the result, not the next
+                // unrelated step in the journey.
+                let _ = self.fb.paint();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Show that presence attaches to app content. We focus the real Files
+    /// hosted window and move Ada's location to its tab; it is not a second
+    /// shell-only mock of the same avatar.
+    pub fn show_collaborator_in_files_for_shots(&mut self) -> bool {
+        let target = {
+            let state = self.chrome();
+            let tree = state.tree();
+            tree.active_workspace().and_then(|ws| {
+                ws.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .find(|tab| tab.title == "Files")
+                            .map(|tab| (strip.id, group.id, tab.id))
+                    })
+                })
+            })
+        };
+        let Some((strip, group, files_tab)) = target else {
+            return false;
+        };
+        self.host_mut()
+            .focus_window_on_strip(strip, group, files_tab);
+        self.with_chrome(|state| {
+            let mut tree = state.tree_mut();
+            if let Some(ada) = tree.active_workspace_mut().and_then(|ws| {
+                ws.collaborators
+                    .iter_mut()
+                    .find(|person| person.id == "ada")
+            }) {
+                ada.invited = false;
+                ada.active_tab = Some(files_tab);
+            }
+            drop(tree);
+            state.overlays.room_activity = false;
+            state.overlays.collaborators = true;
+            state.bump();
+        });
+        true
     }
 
     /// Seeds the active workspace with membership and granted capabilities
@@ -614,532 +779,675 @@ impl ShellDriver {
     /// catalogue) — a one-shot mutation; call on a fresh driver per scene.
     pub fn scene_setup(&mut self, name: &str) -> Result<(), String> {
         match name {
-            "desktop" => {}
-            "overview" => {
-                self.with_chrome(|st| st.overlays.overview = true);
-                self.fb.host_mut().force_overview_settled(true);
-            }
-            // The same panel with the room actually shared: members on
-            // this room and on Research, and two resources handed out.
-            "overview-shared" => {
-                self.seed_shared_room();
-                self.with_chrome(|st| st.overlays.overview = true);
-                self.fb.host_mut().force_overview_settled(true);
-            }
-            "palette" => {
-                self.fb.host_mut().set_palette_visible(true);
-                // Production opens the palette focused (`open_palette_with_scope`);
-                // otherwise the focus ring is absent from the shot.
-                self.fb.host_mut().set_palette_focus(true);
-                // Settle the rising-edge open animation: frame 0 (`alpha == 0`)
-                // is indistinguishable from bare desktop.
-                self.fb.host_mut().force_palette_settled();
-                // Live compositor populates results on every keystroke via
-                // `handle_event`; scenes seed it explicitly instead.
-                let root = self.root_obj.clone();
-                self.fb
-                    .host_mut()
-                    .refresh_search_results_for_shots(&mut self.state, &root);
-            }
-            // "calculator" is both an installed app's name and a hit in
-            // dozens of source paths — the app has to rank first.
-            "palette_app_query" => {
-                self.fb.host_mut().set_palette_visible(true);
-                self.fb.host_mut().force_palette_settled();
-                self.fb.host_mut().set_palette_focus(true);
-                self.fb.host_mut().set_palette_query("calculator");
-                let root = self.root_obj.clone();
-                self.fb
-                    .host_mut()
-                    .refresh_search_results_for_shots(&mut self.state, &root);
-            }
-            // Ctrl+K's half of search, scoped to the focused app; pumps
-            // apps first (as the live frame loop does) so the note's text
-            // is actually in the document to match against.
-            "palette_in_app_query" => {
-                let root = self.root_obj.clone();
-                self.fb.pump_apps(&mut self.state, &root);
-                self.with_chrome(|st| {
-                    st.search_scope = shell::shell::chrome_state::SearchScope::ActiveApp;
-                });
-                self.fb.host_mut().set_palette_visible(true);
-                self.fb.host_mut().set_palette_focus(true);
-                self.fb.host_mut().force_palette_settled();
-                self.fb.host_mut().set_palette_query("nirios");
-                self.fb
-                    .host_mut()
-                    .refresh_search_results_for_shots(&mut self.state, &root);
-            }
-            // Seeded in other rooms deliberately — a record already in
-            // the active room needs no bringing.
-            "palette_records" => {
-                self.seed_records_in_other_rooms();
-                self.fb.host_mut().set_palette_visible(true);
-                self.fb.host_mut().set_palette_focus(true);
-                self.fb.host_mut().force_palette_settled();
-                self.fb.host_mut().set_palette_query("dune");
-                let root = self.root_obj.clone();
-                self.fb
-                    .host_mut()
-                    .refresh_search_results_for_shots(&mut self.state, &root);
-            }
-            // Empty results are a state the palette spends real time in
-            // and the one most likely to be left looking broken.
-            "palette_no_results" => {
-                self.fb.host_mut().set_palette_visible(true);
-                self.fb.host_mut().set_palette_focus(true);
-                self.fb.host_mut().force_palette_settled();
-                self.fb
-                    .host_mut()
-                    .set_palette_query("zzzz-nothing-matches-this");
-                let root = self.root_obj.clone();
-                self.fb
-                    .host_mut()
-                    .refresh_search_results_for_shots(&mut self.state, &root);
-            }
-            "palette_typed" => {
-                self.fb.host_mut().set_palette_visible(true);
-                self.fb.host_mut().set_palette_focus(true);
-                self.fb.host_mut().force_palette_settled();
-                self.fb.host_mut().set_palette_query("open");
-                let root = self.root_obj.clone();
-                self.fb
-                    .host_mut()
-                    .refresh_search_results_for_shots(&mut self.state, &root);
-            }
-            "quick-settings" => {
-                self.with_chrome(|st| st.overlays.quick_settings = true);
-                self.fb.host_mut().force_quick_settings_settled();
-            }
-            "qs-wifi-drillin" => {
-                self.with_chrome(|st| {
-                    st.overlays.quick_settings = true;
-                    st.quick_settings.push_level(QsLevel::Wifi);
-                });
-                self.fb.host_mut().force_quick_settings_settled();
-            }
-            "qs-bt-drillin" => {
-                self.with_chrome(|st| {
-                    st.overlays.quick_settings = true;
-                    st.quick_settings.push_level(QsLevel::Bluetooth);
-                });
-                self.fb.host_mut().force_quick_settings_settled();
-            }
-            "ws-settings-general" => {
-                self.with_chrome(|st| {
-                    st.overlays.ws_settings = true;
-                    st.ws_settings_tab = WsTab::General;
-                });
-                self.fb.host_mut().force_ws_settings_settled();
-            }
-            "ws-settings-members" => {
-                self.seed_workspace_permissions();
-                self.with_chrome(|st| {
-                    st.overlays.ws_settings = true;
-                    st.ws_settings_tab = WsTab::Members;
-                });
-                self.fb.host_mut().force_ws_settings_settled();
-            }
-            "ws-settings-apps" => {
-                self.with_chrome(|st| {
-                    st.overlays.ws_settings = true;
-                    st.ws_settings_tab = WsTab::Apps;
-                });
-                self.fb.host_mut().force_ws_settings_settled();
-            }
-            "room-activity" => {
-                // Drives the room through the production mirrors, not a
-                // seeded `HistoryEntry` — these are the same calls the
-                // portal, permission prompt, drop handler and settings
-                // modal make.
-                use shell::shell::state::{CapOverride, Scope, Subject, Verb};
-                let handle = self.chrome_handle();
-                let owner = {
-                    let st = handle.borrow();
-                    st.local_user_id.clone()
-                };
-                {
-                    let st = handle.borrow();
-                    let mut tree = st.tree_mut();
-                    tree.adopt_ownerless_workspaces(&owner);
-                    let ws_id = tree.active;
-                    tree.grant_in_workspace(
-                        ws_id,
-                        &owner,
-                        CapOverride::grant(
-                            Subject::app("Files"),
-                            Scope::FsPath("/var/workspace/design".to_string()),
-                            Verb::Write,
-                        ),
-                    );
-                    let temp = tree.grant_in_workspace(
-                        ws_id,
-                        &owner,
-                        CapOverride::grant(
-                            Subject::app("Terminal"),
-                            Scope::Device("camera".to_string()),
-                            Verb::Read,
-                        ),
-                    );
-                    tree.doc_append_tab_to_first_group_of_active_workspace(
-                        90_001,
-                        "Release notes".to_string(),
-                        b"{}".to_vec(),
-                    );
-                    tree.commit_room_change();
-                    if let Some(cap_id) = temp {
-                        tree.revoke_in_workspace(ws_id, &owner, &cap_id);
-                    }
-                    if let Some(ws) = tree.active_workspace_mut() {
-                        ws.name = "Design review".to_string();
-                    }
-                    tree.seed_doc_from_cache();
-
-                    // A second person and a history spread over time: the
-                    // peer forks the document under its own actor, makes a
-                    // real change, and merges back — the shape a remote
-                    // replica's sync round has — with commits stamped
-                    // across the past fortnight so the author directory and
-                    // date filter both have something to exercise.
-                    let base: Vec<automerge::Change> = tree
-                        .export_changes_since(&[])
-                        .iter()
-                        .filter_map(|b| automerge::Change::try_from(b.as_slice()).ok())
-                        .collect();
-                    let mut peer = automerge::AutoCommit::new();
-                    peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
-                    if peer.apply_changes(base).is_ok() {
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map_or(0, |d| d.as_secs() as i64);
-                        const DAY: i64 = 86_400;
-                        for (days_ago, title) in
-                            [(11_i64, "Q3 budget"), (5, "Onboarding notes"), (1, "Retro")]
-                        {
-                            if peer_append_tab(&mut peer, title) {
-                                qdoc::history::commit_stamped_at(&mut peer, now - days_ago * DAY);
-                            }
-                        }
-                        let blobs: Vec<Vec<u8>> = peer
-                            .get_changes(&tree.doc.get_heads())
-                            .into_iter()
-                            .map(|c| c.raw_bytes().to_vec())
-                            .collect();
-                        let _ = tree.apply_changes(&blobs);
-                    }
-                }
-                self.with_chrome(|st| st.overlays.room_activity = true);
-                self.fb.host_mut().force_room_activity_settled();
-            }
-            "room-activity-named" => {
-                // Two runs named, one by the peer under its own actor, so
-                // the band reads "named by" someone other than the viewer.
-                // Both go in through the pane's own write path (the [Name]
-                // chip's call).
-                self.scene_setup("room-activity")?;
-                let handle = self.chrome_handle();
-                let st = handle.borrow();
-                let mut tree = st.tree_mut();
-                let entries = self.fb.host().room_activity().entries().to_vec();
-                if entries.len() >= 6 {
-                    // The peer's own run: it named it before syncing.
-                    let mut peer = tree.doc.fork();
-                    peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
-                    ui::history_groups::name_range(
-                        &mut peer,
-                        &entries[entries.len() - 3].id,
-                        Some(&entries[entries.len() - 1].id),
-                        "Reading week",
-                    );
-                    qdoc::history::commit_stamped(&mut peer);
-                    let _ = tree.doc.merge(&mut peer);
-
-                    let pane = self.fb.host_mut().room_activity_mut();
-                    pane.apply_name(
-                        &mut tree,
-                        &ui::GroupNameRequest {
-                            record_id: None,
-                            start: entries[0].id,
-                            end: entries[3].id,
-                            label: "Set up the room".to_string(),
-                        },
-                    );
-                }
-                drop(tree);
-                drop(st);
-                self.fb.host_mut().force_room_activity_settled();
-            }
-            "room-activity-all" => {
-                // Widened to the whole tree; every row now says which
-                // workspace it happened in.
-                self.scene_setup("room-activity")?;
-                let handle = self.chrome_handle();
-                let st = handle.borrow();
-                let tree = st.tree();
-                self.fb
-                    .host_mut()
-                    .room_activity_mut()
-                    .set_scope(shell::shell::room_activity::RoomScope::AllWorkspaces, &tree);
-            }
-            "ws-settings-permissions" => {
-                self.seed_workspace_permissions();
-                self.with_chrome(|st| {
-                    st.overlays.ws_settings = true;
-                    st.ws_settings_tab = WsTab::Permissions;
-                });
-                self.fb.host_mut().force_ws_settings_settled();
-            }
-            "notifications" => {
-                use shell::shell::notification::{Notification, NotificationSeverity};
-                // Backdate `created_at` past the slide-in window: at t=0 a
-                // toast's `enter` progress is ~0 and `slide_dx == TOAST_WIDTH`
-                // pushes it entirely off-screen-right.
-                let settled_at = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
-                self.with_chrome(|st| {
-                    // Severity ramp in one frame; long dismiss windows so
-                    // the still-image scene captures the stack visible.
-                    st.push_notification_full(
-                        Notification::new("Switched to workspace Research", "Active tab: Notes")
-                            .with_severity(NotificationSeverity::Info)
-                            .with_dismiss_after(Duration::from_mins(1))
-                            .with_created_at(settled_at),
-                    );
-                    st.push_notification_full(
-                        Notification::new("Slow network", "Peer sync delayed; retrying")
-                            .with_severity(NotificationSeverity::Warning)
-                            .with_dismiss_after(Duration::from_mins(1))
-                            .with_created_at(settled_at),
-                    );
-                    st.push_notification_full(
-                        Notification::new("Permission denied", "Files cannot access /etc/shadow")
-                            .with_severity(NotificationSeverity::Error)
-                            .with_dismiss_after(Duration::from_mins(1))
-                            .with_created_at(settled_at),
-                    );
-                });
-            }
-            "notifications-one" => {
-                use shell::shell::notification::{Notification, NotificationSeverity};
-                let settled_at = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
-                self.with_chrome(|st| {
-                    st.push_notification_full(
-                        Notification::new("Build finished", "All 524 tests passed")
-                            .with_severity(NotificationSeverity::Info)
-                            .with_dismiss_after(Duration::from_mins(1))
-                            .with_created_at(settled_at),
-                    );
-                });
-            }
-            "notifications-dnd" => {
-                use shell::shell::notification::{Notification, NotificationSeverity};
-                let settled_at = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
-                self.with_chrome(|st| {
-                    // One banner posted *before* DND is engaged stays on
-                    // screen (DND only gates new posts).
-                    st.push_notification_full(
-                        Notification::new("Meeting in 10 minutes", "Standup — Research workspace")
-                            .with_severity(NotificationSeverity::Info)
-                            .with_dismiss_after(Duration::from_mins(1))
-                            .with_created_at(settled_at),
-                    );
-                    // Engage Do-Not-Disturb, then post two more — these are
-                    // suppressed from the banner surface and held in
-                    // history, so the DND pill reads "… · 2 held".
-                    st.set_dnd(true);
-                    st.push_notification_full(
-                        Notification::new("Slow network", "Peer sync delayed")
-                            .with_severity(NotificationSeverity::Warning),
-                    );
-                    st.push_notification_full(
-                        Notification::new("New mail", "3 unread in Inbox")
-                            .with_severity(NotificationSeverity::Info),
-                    );
-                });
-            }
-            "multi-group" => {
-                // The only scene that exercises inter-group chrome (resize
-                // handles, active-group outlines, gap drop-zones) — every
-                // other scene operates on the single-group bootstrap.
-                use shell::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
-                self.with_chrome(|st| {
-                    let mut tree = st.tree_mut();
-                    if let Some(ws) = tree.active_workspace_mut()
-                        && let Some(strip) = ws.strips.first_mut()
-                    {
-                        // IDs picked far above the bootstrap range so
-                        // they don't collide with persisted state.
-                        for (gid, tid, label) in
-                            [(9001u64, 9101u64, "Stub-A"), (9002u64, 9102u64, "Stub-B")]
-                        {
-                            let stub_tab = Tab {
-                                id: tid,
-                                title: label.to_string(),
-                                tile: TileContent::Stub {
-                                    kind: shell::shell::state::AppKind::Settings,
-                                    label: label.to_string(),
-                                },
-                            };
-                            let group = WindowGroup {
-                                id: gid,
-                                tabs: vec![stub_tab],
-                                active_tab: tid,
-                                width: WindowWidth::Normal,
-                                maximized: false,
-                            };
-                            strip.window_groups.push(group);
-                        }
-                    }
-                    drop(tree);
-                    st.bump();
-                });
-            }
-            // One window filling the strip. Maximizing used to stroke a
-            // 2 px accent rectangle around the group's bounding box —
-            // sharp corners a pixel outside a rounded card — and there
-            // was no scene that showed it, which is how it survived to
-            // be reported from a live session instead of from a review.
-            "maximized" => {
-                let mut target = None;
-                self.with_chrome(|st| {
-                    {
-                        let mut tree = st.tree_mut();
-                        if let Some(strip) = tree
-                            .active_workspace_mut()
-                            .and_then(|ws| ws.strips.first_mut())
-                        {
-                            let sid = strip.id;
-                            if let Some(g) = strip.window_groups.first_mut() {
-                                g.maximized = true;
-                                target = Some((sid, g.id));
-                            }
-                        }
-                    }
-                    if let Some((_, gid)) = target {
-                        st.set_maximized_group(Some(gid));
-                    }
-                    st.bump();
-                });
-                let Some((strip_id, group_id)) = target else {
-                    return Err("maximized: active workspace has no window group".into());
-                };
-                // The widget tree is built before `scene_setup` runs, so
-                // the flag has to land on the live group as well — the
-                // same pair of writes the maximize click performs.
-                if let Some(row) = self.host_mut().group_row_mut_for_tests(strip_id) {
-                    for g in &mut row.groups {
-                        if g.id == group_id {
-                            g.maximized = true;
-                        }
-                    }
-                }
-            }
-            // Two half-width windows, focus on the right-hand one — nothing
-            // about the layout alone says which takes the next keystroke.
-            "two-groups-focus" => {
-                use shell::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
-                let half = WindowWidth::Fraction(500);
-                let mut placed = None;
-                self.with_chrome(|st| {
-                    {
-                        let mut tree = st.tree_mut();
-                        let mut sibling = None;
-                        let mut strip_id = None;
-                        if let Some(strip) = tree
-                            .active_workspace_mut()
-                            .and_then(|ws| ws.strips.first_mut())
-                        {
-                            for g in &mut strip.window_groups {
-                                g.width = half;
-                            }
-                            let gid = 9101u64;
-                            let tid = 9111u64;
-                            strip.window_groups.push(WindowGroup {
-                                id: gid,
-                                tabs: vec![Tab {
-                                    id: tid,
-                                    title: "Settings".to_string(),
-                                    tile: TileContent::Stub {
-                                        kind: shell::shell::state::AppKind::Settings,
-                                        label: "Settings".to_string(),
-                                    },
-                                }],
-                                active_tab: tid,
-                                width: half,
-                                maximized: false,
-                            });
-                            strip_id = Some(strip.id);
-                            sibling = Some(gid);
-                        }
-                        // Focus the newly-added right-hand window, so the
-                        // scene shows the signal moving off the default.
-                        if let (Some(sid), Some(gid)) = (strip_id, sibling) {
-                            tree.set_active_group(sid, gid);
-                            placed = Some(sid);
-                        }
-                    }
-                    st.bump();
-                });
-                // Widths only reach the widget tree at construction, which
-                // ran before this; halve the live groups too or the scene
-                // renders one full-width window with its sibling off-edge.
-                if let Some(sid) = placed
-                    && let Some(row) = self.host_mut().group_row_mut_for_tests(sid)
-                {
-                    for g in &mut row.groups {
-                        g.set_width(half.to_ui());
-                    }
-                }
-                // The pushed group latches its 420 ms arrival fade off the
-                // wall clock the moment it's spliced in; paint once so it
-                // becomes a widget, then wait the curve out before the
-                // caller's `paint_settled` captures the resting state.
-                let _ = self.paint_settled();
-                std::thread::sleep(std::time::Duration::from_millis(600));
-            }
-            "multi-strip" => {
-                // Three strips in the active workspace, focus on the
-                // middle one — the only scene exercising the strip ribbon.
-                use shell::shell::state::{
-                    AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-                };
-                self.with_chrome(|st| {
-                    let mut focus = None;
-                    {
-                        let mut tree = st.tree_mut();
-                        if let Some(ws) = tree.active_workspace_mut() {
-                            for (n, name) in ["Build", "Review"].iter().enumerate() {
-                                let sid = StripId(9200 + n as u64);
-                                let mut strip = Strip::new(sid, (*name).to_string());
-                                let gid = 9300 + n as u64;
-                                let tid = 9400 + n as u64;
-                                strip.window_groups.push(WindowGroup {
-                                    id: gid,
-                                    tabs: vec![Tab {
-                                        id: tid,
-                                        title: (*name).to_string(),
-                                        tile: TileContent::Stub {
-                                            kind: AppKind::Settings,
-                                            label: (*name).to_string(),
-                                        },
-                                    }],
-                                    active_tab: tid,
-                                    width: WindowWidth::Normal,
-                                    maximized: false,
-                                });
-                                ws.strips.push(strip);
-                            }
-                            focus = ws.strips.get(1).map(|s| s.id).map(|sid| (ws.id, sid));
-                        }
-                        if let Some((ws_id, sid)) = focus {
-                            tree.active_strip.insert(ws_id, sid);
-                        }
-                    }
-                    st.bump();
-                });
-            }
+            "desktop" => Self::scene_desktop(),
+            "overview" => self.scene_overview(),
+            "overview-shared" => self.scene_overview_shared(),
+            "palette" => self.scene_palette(),
+            "palette_app_query" => self.scene_palette_app_query(),
+            "palette_in_app_query" => self.scene_palette_in_app_query(),
+            "palette_records" => self.scene_palette_records(),
+            "palette_no_results" => self.scene_palette_no_results(),
+            "palette_typed" => self.scene_palette_typed(),
+            "quick-settings" => self.scene_quick_settings(),
+            "qs-wifi-drillin" => self.scene_qs_wifi_drillin(),
+            "qs-bt-drillin" => self.scene_qs_bt_drillin(),
+            "ws-settings-general" => self.scene_ws_settings_general(),
+            "ws-settings-members" => self.scene_ws_settings_members(),
+            "ws-settings-apps" => self.scene_ws_settings_apps(),
+            "room-activity" => self.scene_room_activity(),
+            "room-activity-named" => self.scene_room_activity_named(),
+            "room-activity-all" => self.scene_room_activity_all(),
+            "ws-settings-permissions" => self.scene_ws_settings_permissions(),
+            "notifications" => self.scene_notifications(),
+            "notifications-one" => self.scene_notifications_one(),
+            "notifications-dnd" => self.scene_notifications_dnd(),
+            "multi-group" => self.scene_multi_group(),
+            "maximized" => return self.scene_maximized(),
+            "two-groups-focus" => self.scene_two_groups_focus(),
+            "multi-strip" => self.scene_multi_strip(),
             other => return Err(format!("unknown scene '{other}'")),
         }
         Ok(())
+    }
+
+    /// Bare desktop — the driver's default state already renders it, so
+    /// this scene is a deliberate no-op kept for catalogue symmetry.
+    fn scene_desktop() {}
+
+    fn scene_overview(&mut self) {
+        self.with_chrome(|st| st.overlays.overview = true);
+        self.fb.host_mut().force_overview_settled(true);
+    }
+
+    /// The same panel with the room actually shared: members on this room
+    /// and on Research, and two resources handed out.
+    fn scene_overview_shared(&mut self) {
+        self.seed_shared_room();
+        self.with_chrome(|st| st.overlays.overview = true);
+        self.fb.host_mut().force_overview_settled(true);
+    }
+
+    fn scene_palette(&mut self) {
+        self.fb.host_mut().set_palette_visible(true);
+        // Production opens the palette focused (`open_palette_with_scope`);
+        // otherwise the focus ring is absent from the shot.
+        self.fb.host_mut().set_palette_focus(true);
+        // Settle the rising-edge open animation: frame 0 (`alpha == 0`)
+        // is indistinguishable from bare desktop.
+        self.fb.host_mut().force_palette_settled();
+        // Live compositor populates results on every keystroke via
+        // `handle_event`; scenes seed it explicitly instead.
+        let root = self.root_obj.clone();
+        self.fb
+            .host_mut()
+            .refresh_search_results_for_shots(&mut self.state, &root);
+    }
+
+    /// "calculator" is both an installed app's name and a hit in dozens of
+    /// source paths — the app has to rank first.
+    fn scene_palette_app_query(&mut self) {
+        self.fb.host_mut().set_palette_visible(true);
+        self.fb.host_mut().force_palette_settled();
+        self.fb.host_mut().set_palette_focus(true);
+        self.fb.host_mut().set_palette_query("calculator");
+        let root = self.root_obj.clone();
+        self.fb
+            .host_mut()
+            .refresh_search_results_for_shots(&mut self.state, &root);
+    }
+
+    /// Ctrl+K's half of search, scoped to the focused app; pumps apps first
+    /// (as the live frame loop does) so the note's text is actually in the
+    /// document to match against.
+    fn scene_palette_in_app_query(&mut self) {
+        let root = self.root_obj.clone();
+        self.fb.pump_apps(&mut self.state, &root);
+        self.with_chrome(|st| {
+            st.search_scope = shell::shell::chrome_state::SearchScope::ActiveApp;
+        });
+        self.fb.host_mut().set_palette_visible(true);
+        self.fb.host_mut().set_palette_focus(true);
+        self.fb.host_mut().force_palette_settled();
+        self.fb.host_mut().set_palette_query("nirios");
+        self.fb
+            .host_mut()
+            .refresh_search_results_for_shots(&mut self.state, &root);
+    }
+
+    /// Seeded in other rooms deliberately — a record already in the active
+    /// room needs no bringing.
+    fn scene_palette_records(&mut self) {
+        self.seed_records_in_other_rooms();
+        self.fb.host_mut().set_palette_visible(true);
+        self.fb.host_mut().set_palette_focus(true);
+        self.fb.host_mut().force_palette_settled();
+        self.fb.host_mut().set_palette_query("dune");
+        let root = self.root_obj.clone();
+        self.fb
+            .host_mut()
+            .refresh_search_results_for_shots(&mut self.state, &root);
+    }
+
+    /// Empty results are a state the palette spends real time in and the
+    /// one most likely to be left looking broken.
+    fn scene_palette_no_results(&mut self) {
+        self.fb.host_mut().set_palette_visible(true);
+        self.fb.host_mut().set_palette_focus(true);
+        self.fb.host_mut().force_palette_settled();
+        self.fb
+            .host_mut()
+            .set_palette_query("zzzz-nothing-matches-this");
+        let root = self.root_obj.clone();
+        self.fb
+            .host_mut()
+            .refresh_search_results_for_shots(&mut self.state, &root);
+    }
+
+    fn scene_palette_typed(&mut self) {
+        self.fb.host_mut().set_palette_visible(true);
+        self.fb.host_mut().set_palette_focus(true);
+        self.fb.host_mut().force_palette_settled();
+        self.fb.host_mut().set_palette_query("open");
+        let root = self.root_obj.clone();
+        self.fb
+            .host_mut()
+            .refresh_search_results_for_shots(&mut self.state, &root);
+    }
+
+    fn scene_quick_settings(&mut self) {
+        self.with_chrome(|st| st.overlays.quick_settings = true);
+        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    fn scene_qs_wifi_drillin(&mut self) {
+        self.with_chrome(|st| {
+            st.overlays.quick_settings = true;
+            st.quick_settings.push_level(QsLevel::Wifi);
+        });
+        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    fn scene_qs_bt_drillin(&mut self) {
+        self.with_chrome(|st| {
+            st.overlays.quick_settings = true;
+            st.quick_settings.push_level(QsLevel::Bluetooth);
+        });
+        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    fn scene_ws_settings_general(&mut self) {
+        self.with_chrome(|st| {
+            st.overlays.ws_settings = true;
+            st.ws_settings_tab = WsTab::General;
+        });
+        self.fb.host_mut().force_ws_settings_settled();
+    }
+
+    fn scene_ws_settings_members(&mut self) {
+        self.seed_workspace_permissions();
+        self.with_chrome(|st| {
+            st.overlays.ws_settings = true;
+            st.ws_settings_tab = WsTab::Members;
+        });
+        self.fb.host_mut().force_ws_settings_settled();
+    }
+
+    fn scene_ws_settings_apps(&mut self) {
+        self.with_chrome(|st| {
+            st.overlays.ws_settings = true;
+            st.ws_settings_tab = WsTab::Apps;
+        });
+        self.fb.host_mut().force_ws_settings_settled();
+    }
+
+    /// Drives the room through the production mirrors, not a seeded
+    /// `HistoryEntry` — these are the same calls the portal, permission
+    /// prompt, drop handler and settings modal make.
+    fn scene_room_activity(&mut self) {
+        use shell::shell::state::{CapOverride, Scope, Subject, Verb};
+        let handle = self.chrome_handle();
+        let owner = {
+            let st = handle.borrow();
+            st.local_user_id.clone()
+        };
+        {
+            let st = handle.borrow();
+            let mut tree = st.tree_mut();
+            tree.adopt_ownerless_workspaces(&owner);
+            let ws_id = tree.active;
+            tree.grant_in_workspace(
+                ws_id,
+                &owner,
+                CapOverride::grant(
+                    Subject::app("Files"),
+                    Scope::FsPath("/var/workspace/design".to_string()),
+                    Verb::Write,
+                ),
+            );
+            let temp = tree.grant_in_workspace(
+                ws_id,
+                &owner,
+                CapOverride::grant(
+                    Subject::app("Terminal"),
+                    Scope::Device("camera".to_string()),
+                    Verb::Read,
+                ),
+            );
+            tree.doc_append_tab_to_first_group_of_active_workspace(
+                90_001,
+                "Release notes".to_string(),
+                b"{}".to_vec(),
+            );
+            tree.commit_room_change();
+            if let Some(cap_id) = temp {
+                tree.revoke_in_workspace(ws_id, &owner, &cap_id);
+            }
+            if let Some(ws) = tree.active_workspace_mut() {
+                ws.name = "Design review".to_string();
+            }
+            tree.seed_doc_from_cache();
+
+            // A second person and a history spread over time: the
+            // peer forks the document under its own actor, makes a
+            // real change, and merges back — the shape a remote
+            // replica's sync round has — with commits stamped
+            // across the past fortnight so the author directory and
+            // date filter both have something to exercise.
+            let base: Vec<automerge::Change> = tree
+                .export_changes_since(&[])
+                .iter()
+                .filter_map(|b| automerge::Change::try_from(b.as_slice()).ok())
+                .collect();
+            let mut peer = automerge::AutoCommit::new();
+            peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
+            if peer.apply_changes(base).is_ok() {
+                const DAY: i64 = 86_400;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+                for (days_ago, title) in
+                    [(11_i64, "Q3 budget"), (5, "Onboarding notes"), (1, "Retro")]
+                {
+                    if peer_append_tab(&mut peer, title) {
+                        qdoc::history::commit_stamped_at(
+                            &mut peer,
+                            now.saturating_sub(days_ago.saturating_mul(DAY)),
+                        );
+                    }
+                }
+                let blobs: Vec<Vec<u8>> = peer
+                    .get_changes(&tree.doc.get_heads())
+                    .into_iter()
+                    .map(|c| c.raw_bytes().to_vec())
+                    .collect();
+                let _ = tree.apply_changes(&blobs);
+            }
+        }
+        self.with_chrome(|st| st.overlays.room_activity = true);
+        self.fb.host_mut().force_room_activity_settled();
+    }
+
+    /// Deterministic scenario entry point for the two history zoom levels.
+    /// It seeds the same collaborative changes as the legacy visual scene,
+    /// then switches through the pane's public API rather than reaching into
+    /// drawing state.
+    pub fn seed_room_activity_for_shots(&mut self, explore: bool) {
+        self.scene_room_activity();
+        self.fb.host_mut().room_activity_mut().set_view(if explore {
+            shell::shell::room_activity::ActivityView::Explore
+        } else {
+            shell::shell::room_activity::ActivityView::CatchUp
+        });
+        self.fb.host_mut().force_room_activity_settled();
+        // Headless snapshots do not render, while this immediate-mode sheet
+        // derives its keyboard order from the controls it actually paints.
+        // Build one CPU-side scene (no adapter/GPU involved) so keyboard
+        // actions exercise the same rendered control set in every mode.
+        let _ = self.fb.paint();
+    }
+
+    /// Select Ada in the contributor controls using the history surface's
+    /// public filter API. Returns false if the seeded remote replica failed
+    /// to produce an authored change, rather than emitting a misleading PNG.
+    pub fn filter_room_activity_to_ada_for_shots(&mut self) -> bool {
+        let ada = self
+            .fb
+            .host()
+            .room_activity()
+            .contributors()
+            .iter()
+            .find(|name| name.eq_ignore_ascii_case("ada"))
+            .cloned();
+        let Some(ada) = ada else {
+            return false;
+        };
+        self.fb
+            .host_mut()
+            .room_activity_mut()
+            .set_author_filter(Some(ada));
+        self.fb.host_mut().force_room_activity_settled();
+        let _ = self.fb.paint();
+        true
+    }
+
+    pub fn select_room_activity_entry(&mut self, index: usize) {
+        let (start, len) = {
+            let activity = self.fb.host().room_activity();
+            let entries = activity.timeline().entries();
+            let start = activity
+                .visible_entry(index)
+                .and_then(|visible| entries.iter().position(|entry| entry.id == visible.id))
+                .unwrap_or(index);
+            (start, entries.len())
+        };
+        for candidate in start..len {
+            self.fb
+                .host_mut()
+                .room_activity_mut()
+                .timeline_mut()
+                .set_selection(Some((candidate, candidate)));
+            let handle = self.chrome_handle();
+            let state = handle.borrow();
+            let mut tree = state.tree_mut();
+            if self
+                .fb
+                .host()
+                .room_activity()
+                .compare_selection(&mut tree, None)
+                .is_some()
+            {
+                break;
+            }
+        }
+        let _ = self.fb.paint();
+    }
+
+    /// Two runs named, one by the peer under its own actor, so the band
+    /// reads "named by" someone other than the viewer. Both go in through
+    /// the pane's own write path (the [Name] chip's call).
+    fn scene_room_activity_named(&mut self) {
+        self.scene_room_activity();
+        let handle = self.chrome_handle();
+        let st = handle.borrow();
+        let mut tree = st.tree_mut();
+        let entries = self.fb.host().room_activity().entries().to_vec();
+        if entries.len() >= 6 {
+            // The peer's own run: it named it before syncing.
+            let mut peer = tree.doc.fork();
+            peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
+            let end = entries.len().saturating_sub(1);
+            let start = entries.len().saturating_sub(3);
+            if let (Some(start_entry), Some(end_entry)) = (entries.get(start), entries.get(end)) {
+                ui::history_groups::name_range(
+                    &mut peer,
+                    &start_entry.id,
+                    Some(&end_entry.id),
+                    "Reading week",
+                );
+                qdoc::history::commit_stamped(&mut peer);
+                let _ = tree.doc.merge(&mut peer);
+            }
+
+            if let (Some(first), Some(fourth)) = (entries.first(), entries.get(3)) {
+                let pane = self.fb.host_mut().room_activity_mut();
+                pane.apply_name(
+                    &mut tree,
+                    &ui::GroupNameRequest {
+                        record_id: None,
+                        start: first.id,
+                        end: fourth.id,
+                        label: "Set up the room".to_string(),
+                    },
+                );
+            }
+        }
+        drop(tree);
+        drop(st);
+        self.fb.host_mut().force_room_activity_settled();
+    }
+
+    /// Widened to the whole tree; every row now says which workspace it
+    /// happened in.
+    fn scene_room_activity_all(&mut self) {
+        self.scene_room_activity();
+        let handle = self.chrome_handle();
+        let st = handle.borrow();
+        let tree = st.tree();
+        self.fb
+            .host_mut()
+            .room_activity_mut()
+            .set_scope(shell::shell::room_activity::RoomScope::AllWorkspaces, &tree);
+    }
+
+    fn scene_ws_settings_permissions(&mut self) {
+        self.seed_workspace_permissions();
+        self.with_chrome(|st| {
+            st.overlays.ws_settings = true;
+            st.ws_settings_tab = WsTab::Permissions;
+        });
+        self.fb.host_mut().force_ws_settings_settled();
+    }
+
+    fn scene_notifications(&mut self) {
+        use shell::shell::notification::{Notification, NotificationSeverity};
+        // Backdate `created_at` past the slide-in window: at t=0 a
+        // toast's `enter` progress is ~0 and `slide_dx == TOAST_WIDTH`
+        // pushes it entirely off-screen-right.
+        let settled_at = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        self.with_chrome(|st| {
+            // Severity ramp in one frame; long dismiss windows so
+            // the still-image scene captures the stack visible.
+            st.push_notification_full(
+                Notification::new("Switched to workspace Research", "Active tab: Notes")
+                    .with_severity(NotificationSeverity::Info)
+                    .with_dismiss_after(Duration::from_secs(60))
+                    .with_created_at(settled_at),
+            );
+            st.push_notification_full(
+                Notification::new("Slow network", "Peer sync delayed; retrying")
+                    .with_severity(NotificationSeverity::Warning)
+                    .with_dismiss_after(Duration::from_secs(60))
+                    .with_created_at(settled_at),
+            );
+            st.push_notification_full(
+                Notification::new("Permission denied", "Files cannot access /etc/shadow")
+                    .with_severity(NotificationSeverity::Error)
+                    .with_dismiss_after(Duration::from_secs(60))
+                    .with_created_at(settled_at),
+            );
+        });
+    }
+
+    fn scene_notifications_one(&mut self) {
+        use shell::shell::notification::{Notification, NotificationSeverity};
+        let settled_at = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        self.with_chrome(|st| {
+            st.push_notification_full(
+                Notification::new("Build finished", "All 524 tests passed")
+                    .with_severity(NotificationSeverity::Info)
+                    .with_dismiss_after(Duration::from_secs(60))
+                    .with_created_at(settled_at),
+            );
+        });
+    }
+
+    fn scene_notifications_dnd(&mut self) {
+        use shell::shell::notification::{Notification, NotificationSeverity};
+        let settled_at = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        self.with_chrome(|st| {
+            // One banner posted *before* DND is engaged stays on
+            // screen (DND only gates new posts).
+            st.push_notification_full(
+                Notification::new("Meeting in 10 minutes", "Standup — Research workspace")
+                    .with_severity(NotificationSeverity::Info)
+                    .with_dismiss_after(Duration::from_secs(60))
+                    .with_created_at(settled_at),
+            );
+            // Engage Do-Not-Disturb, then post two more — these are
+            // suppressed from the banner surface and held in
+            // history, so the DND pill reads "… · 2 held".
+            st.set_dnd(true);
+            st.push_notification_full(
+                Notification::new("Slow network", "Peer sync delayed")
+                    .with_severity(NotificationSeverity::Warning),
+            );
+            st.push_notification_full(
+                Notification::new("New mail", "3 unread in Inbox")
+                    .with_severity(NotificationSeverity::Info),
+            );
+        });
+    }
+
+    /// The only scene that exercises inter-group chrome (resize handles,
+    /// active-group outlines, gap drop-zones) — every other scene operates
+    /// on the single-group bootstrap.
+    fn scene_multi_group(&mut self) {
+        use shell::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+        self.with_chrome(|st| {
+            let mut tree = st.tree_mut();
+            if let Some(ws) = tree.active_workspace_mut()
+                && let Some(strip) = ws.strips.first_mut()
+            {
+                // IDs picked far above the bootstrap range so
+                // they don't collide with persisted state.
+                for (gid, tid, label) in
+                    [(9001u64, 9101u64, "Stub-A"), (9002u64, 9102u64, "Stub-B")]
+                {
+                    let stub_tab = Tab {
+                        id: tid,
+                        title: label.to_string(),
+                        tile: TileContent::Stub {
+                            kind: shell::shell::state::AppKind::Settings,
+                            label: label.to_string(),
+                        },
+                    };
+                    let group = WindowGroup {
+                        id: gid,
+                        tabs: vec![stub_tab],
+                        active_tab: tid,
+                        width: WindowWidth::Normal,
+                        maximized: false,
+                    };
+                    strip.window_groups.push(group);
+                }
+            }
+            drop(tree);
+            st.bump();
+        });
+    }
+
+    /// One window filling the strip. Maximizing used to stroke a 2 px
+    /// accent rectangle around the group's bounding box — sharp corners a
+    /// pixel outside a rounded card — and there was no scene that showed
+    /// it, which is how it survived to be reported from a live session
+    /// instead of from a review.
+    fn scene_maximized(&mut self) -> Result<(), String> {
+        let mut target = None;
+        self.with_chrome(|st| {
+            {
+                let mut tree = st.tree_mut();
+                if let Some(strip) = tree
+                    .active_workspace_mut()
+                    .and_then(|ws| ws.strips.first_mut())
+                {
+                    let sid = strip.id;
+                    if let Some(g) = strip.window_groups.first_mut() {
+                        g.maximized = true;
+                        target = Some((sid, g.id));
+                    }
+                }
+            }
+            if let Some((_, gid)) = target {
+                st.set_maximized_group(Some(gid));
+            }
+            st.bump();
+        });
+        let Some((strip_id, group_id)) = target else {
+            return Err("maximized: active workspace has no window group".into());
+        };
+        // The widget tree is built before `scene_setup` runs, so
+        // the flag has to land on the live group as well — the
+        // same pair of writes the maximize click performs.
+        if let Some(row) = self.host_mut().group_row_mut_for_tests(strip_id) {
+            for g in &mut row.groups {
+                if g.id == group_id {
+                    g.maximized = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Two half-width windows, focus on the right-hand one — nothing about
+    /// the layout alone says which takes the next keystroke.
+    fn scene_two_groups_focus(&mut self) {
+        use shell::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+        let half = WindowWidth::Fraction(500);
+        let mut placed = None;
+        self.with_chrome(|st| {
+            let mut tree = st.tree_mut();
+            let mut sibling = None;
+            let mut strip_id = None;
+            if let Some(strip) = tree
+                .active_workspace_mut()
+                .and_then(|ws| ws.strips.first_mut())
+            {
+                for g in &mut strip.window_groups {
+                    g.width = half;
+                }
+                let gid = 9101u64;
+                let tid = 9111u64;
+                strip.window_groups.push(WindowGroup {
+                    id: gid,
+                    tabs: vec![Tab {
+                        id: tid,
+                        title: "Settings".to_string(),
+                        tile: TileContent::Stub {
+                            kind: shell::shell::state::AppKind::Settings,
+                            label: "Settings".to_string(),
+                        },
+                    }],
+                    active_tab: tid,
+                    width: half,
+                    maximized: false,
+                });
+                strip_id = Some(strip.id);
+                sibling = Some(gid);
+            }
+            // Focus the newly-added right-hand window, so the
+            // scene shows the signal moving off the default.
+            if let (Some(sid), Some(gid)) = (strip_id, sibling) {
+                tree.set_active_group(sid, gid);
+                placed = Some(sid);
+            }
+            drop(tree);
+            st.bump();
+        });
+        // Widths only reach the widget tree at construction, which
+        // ran before this; halve the live groups too or the scene
+        // renders one full-width window with its sibling off-edge.
+        if let Some(sid) = placed
+            && let Some(row) = self.host_mut().group_row_mut_for_tests(sid)
+        {
+            for g in &mut row.groups {
+                g.set_width(half.to_ui());
+            }
+        }
+        // The pushed group latches its 420 ms arrival fade off the
+        // wall clock the moment it's spliced in; paint once so it
+        // becomes a widget, then wait the curve out before the
+        // caller's `paint_settled` captures the resting state.
+        let _ = self.paint_settled();
+        std::thread::sleep(std::time::Duration::from_millis(600));
+    }
+
+    /// Three strips in the active workspace, focus on the middle one — the
+    /// only scene exercising the strip ribbon.
+    fn scene_multi_strip(&mut self) {
+        use shell::shell::state::{
+            AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
+        };
+        self.with_chrome(|st| {
+            let mut focus = None;
+            {
+                let mut tree = st.tree_mut();
+                if let Some(ws) = tree.active_workspace_mut() {
+                    for (n, name) in ["Build", "Review"].iter().enumerate() {
+                        let n = n as u64;
+                        let sid = StripId(9200u64.saturating_add(n));
+                        let mut strip = Strip::new(sid, (*name).to_string());
+                        let gid = 9300u64.saturating_add(n);
+                        let tid = 9400u64.saturating_add(n);
+                        strip.window_groups.push(WindowGroup {
+                            id: gid,
+                            tabs: vec![Tab {
+                                id: tid,
+                                title: (*name).to_string(),
+                                tile: TileContent::Stub {
+                                    kind: AppKind::Settings,
+                                    label: (*name).to_string(),
+                                },
+                            }],
+                            active_tab: tid,
+                            width: WindowWidth::Normal,
+                            maximized: false,
+                        });
+                        ws.strips.push(strip);
+                    }
+                    focus = ws.strips.get(1).map(|s| s.id).map(|sid| (ws.id, sid));
+                }
+                if let Some((ws_id, sid)) = focus {
+                    tree.active_strip.insert(ws_id, sid);
+                }
+            }
+            st.bump();
+        });
     }
 
     /// Catalogue of scene names supported by `scene_setup`. Used by the
@@ -1253,7 +1561,7 @@ impl ShellDriver {
 /// (`platform_specific`) so we zero-init the struct + overwrite the
 /// fields the shell actually reads. Same workaround the e2e harness
 /// uses (see `tests/e2e_shell_flows.rs::escape_event`).
-pub fn key_press_event(key: Key) -> WindowEvent {
+pub fn key_press_event(key: &Key) -> WindowEvent {
     let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
     ev.logical_key = key.clone();
     ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
@@ -1263,7 +1571,7 @@ pub fn key_press_event(key: Key) -> WindowEvent {
     // `text` is `Option<SmolStr>` — for ASCII characters we mirror what
     // winit normally fills so the palette's character-input branch
     // sees the same glyph it would on real hardware.
-    ev.text = if let Key::Character(s) = &key {
+    ev.text = if let Key::Character(s) = key {
         Some(s.clone())
     } else {
         None
@@ -1283,6 +1591,40 @@ pub fn key_press_event(key: Key) -> WindowEvent {
 mod tests {
     use super::*;
 
+    #[test]
+    fn collaboration_fixture_keeps_pending_invite_out_of_live_presence() {
+        let mut d = ShellDriver::new((1600, 900));
+        d.seed_invite_pending_for_shots();
+        let invited = d
+            .chrome()
+            .tree()
+            .active_workspace()
+            .and_then(|ws| ws.collaborators.iter().find(|person| person.id == "ada"))
+            .cloned()
+            .expect("pending invitation creates Ada's durable row");
+        assert!(invited.invited);
+        assert_eq!(invited.active_tab, None);
+
+        assert!(d.admit_invited_collaborator_for_shots());
+        let live = d
+            .chrome()
+            .tree()
+            .active_workspace()
+            .and_then(|ws| ws.collaborators.iter().find(|person| person.id == "ada"))
+            .cloned()
+            .expect("acceptance retains the same identity");
+        assert!(!live.invited);
+        let notes = d.chrome().tree().active_workspace().and_then(|ws| {
+            ws.strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .find(|tab| tab.title == "Notes")
+                .map(|tab| tab.id)
+        });
+        assert_eq!(live.active_tab, notes);
+    }
+
     /// Drive Cmd+Tab through `dispatch` and verify the chrome's
     /// `overlays.overview` flag flips. Mirrors the live binary's
     /// hotkey path through real `handle_event` dispatch on the host
@@ -1294,7 +1636,7 @@ mod tests {
         let _ = d.paint();
         assert!(!d.chrome().overlays.overview);
         d.set_modifiers(ModifiersState::SUPER);
-        d.press_key(Key::Named(NamedKey::Tab));
+        d.press_key(&Key::Named(NamedKey::Tab));
         assert!(
             d.chrome().overlays.overview,
             "Cmd+Tab should toggle the overview overlay on through driver dispatch"
@@ -1500,17 +1842,10 @@ mod tests {
         );
     }
 
-    /// Drag a tab into its own group, click that group's window body, then
-    /// press Ctrl+K. The palette must not make the sibling group disappear,
-    /// and must scope to the CLICKED group's tab, not whichever group was
-    /// active before the detach. Extends
-    /// [`driver_drag_tab_out_creates_sibling_group`]'s setup.
-    #[test]
-    fn detach_click_body_ctrl_k_scopes_to_clicked_tab() {
-        let mut d = ShellDriver::new((1600, 900));
-        let _ = d.paint();
-        d.relayout();
-
+    /// Drag the Files tab into its own sibling group. Split out of
+    /// [`detach_click_body_ctrl_k_scopes_to_clicked_tab`] to keep that test
+    /// short.
+    fn detach_files_tab_into_sibling_group(d: &mut ShellDriver) -> shell::shell::state::StripId {
         let strip_id = {
             let st = d.chrome();
             let tree = st.tree();
@@ -1534,7 +1869,17 @@ mod tests {
         d.relayout();
         let _ = d.paint();
         d.relayout();
+        strip_id
+    }
 
+    /// Assert the detach left exactly two groups in `strip_id`, and return
+    /// the detached (singleton) group's tab id and rect. Split out of
+    /// [`detach_click_body_ctrl_k_scopes_to_clicked_tab`] to keep that test
+    /// short.
+    fn assert_detached_into_two_groups(
+        d: &mut ShellDriver,
+        strip_id: shell::shell::state::StripId,
+    ) -> (u64, Rect) {
         let post = d.host().groups_per_strip();
         let strip = post
             .iter()
@@ -1548,7 +1893,9 @@ mod tests {
             .iter()
             .position(|(_, tabs)| tabs.len() == 1)
             .expect("singleton (detached) group");
-        let notes_group_idx = 1 - files_group_idx;
+        // Exactly two groups are asserted above, so the other index is
+        // whichever of {0, 1} `files_group_idx` isn't — no arithmetic needed.
+        let notes_group_idx = usize::from(files_group_idx == 0);
         let files_tab_id = strip.1[files_group_idx].1[0];
         let files_rect = d
             .host_mut()
@@ -1564,6 +1911,22 @@ mod tests {
             files_rect.area() > 0.0 && notes_rect.area() > 0.0,
             "both groups laid out before body click"
         );
+        (files_tab_id, files_rect)
+    }
+
+    /// Drag a tab into its own group, click that group's window body, then
+    /// press Ctrl+K. The palette must not make the sibling group disappear,
+    /// and must scope to the CLICKED group's tab, not whichever group was
+    /// active before the detach. Extends
+    /// [`driver_drag_tab_out_creates_sibling_group`]'s setup.
+    #[test]
+    fn detach_click_body_ctrl_k_scopes_to_clicked_tab() {
+        let mut d = ShellDriver::new((1600, 900));
+        let _ = d.paint();
+        d.relayout();
+
+        let strip_id = detach_files_tab_into_sibling_group(&mut d);
+        let (files_tab_id, files_rect) = assert_detached_into_two_groups(&mut d, strip_id);
 
         // Well below the tab bar so we don't hit a pill.
         let body_click = Point::new(
@@ -1575,20 +1938,20 @@ mod tests {
         let _ = d.paint();
         d.relayout();
 
-        let mid = d.host().groups_per_strip();
-        let strip_mid = mid
+        let after_click = d.host().groups_per_strip();
+        let found = after_click
             .iter()
             .find(|(s, _)| *s == strip_id)
             .expect("strip present after body click");
         assert_eq!(
-            strip_mid.1.len(),
+            found.1.len(),
             2,
             "body click alone should not drop a group; got {:?}",
-            strip_mid.1
+            found.1
         );
 
         d.set_modifiers(ModifiersState::CONTROL);
-        d.press_key(Key::Character(winit::keyboard::SmolStr::new("k")));
+        d.press_key(&Key::Character(winit::keyboard::SmolStr::new("k")));
         d.set_modifiers(ModifiersState::empty());
         let _ = d.paint();
         d.relayout();

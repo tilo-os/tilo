@@ -137,8 +137,7 @@ impl Autosave {
         // Only used to decide compact-vs-append (see `request`); a length too big for
         // `usize` saturates rather than wrapping, which just biases toward compacting sooner.
         self.base = std::fs::metadata(&self.document)
-            .map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX))
-            .unwrap_or(0);
+            .map_or(0, |m| usize::try_from(m.len()).unwrap_or(usize::MAX));
         self.appended = 0;
     }
 
@@ -246,7 +245,7 @@ fn writer_loop(
     loop {
         let timeout = match deadline {
             Some(d) => d.saturating_duration_since(Instant::now()),
-            None => Duration::from_hours(1),
+            None => Duration::from_secs(3600),
         };
         match rx.recv_timeout(timeout) {
             Ok(Msg::Full(bytes)) => {
@@ -334,7 +333,7 @@ mod tests {
         let mut store = DocStore::open_for("dev.qos.autosave-drop").unwrap();
         let mut doc = store.new_document();
         {
-            let mut saver = Autosave::spawn(store, Duration::from_mins(10));
+            let mut saver = Autosave::spawn(store, Duration::from_secs(600));
             saver.seed(&mut doc);
             doc.put(&ROOT, "k", "v").unwrap();
             saver.request(&mut doc);

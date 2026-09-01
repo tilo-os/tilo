@@ -13,7 +13,11 @@ path = "src/lib.rs"
 name = "totp"
 path = "src/main.rs"
 
+[features]
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
 ui = { path = "../../ui", features = ["portal"] }
@@ -63,7 +67,7 @@ image = { workspace = true, features = ["png", "jpeg"] }
 # qOS the compositor's portal backend renders qOS's picker (and hosts the
 # per-cluster file-access prompt). The portal call runs off the UI thread on
 # its own small Tokio runtime and the chosen path comes back over a channel
-# (see `app::portal`). All three are already resolved in the shared workspace
+# through `ui::portal`. All three are already resolved in the shared workspace
 # lockfile, so this adds no registry fetch and keeps the fleet build green.
 
 # --- Encryption-at-rest for the vault ---------------------------------

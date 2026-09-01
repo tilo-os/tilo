@@ -153,6 +153,10 @@ pub fn text_right(
 
 /// Horizontally centred text in `[x0, x1]`, vertically centred in `[y0,y1]`.
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "t/s/w/x/y are the standard graphics convention: transform, string, measured width, position"
+)]
 pub fn text_center(
     tr: &mut TextRenderer,
     scene: &mut Scene,

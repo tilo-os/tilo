@@ -14,7 +14,7 @@
 //! projection + an input router, in keeping with the toolkit's
 //! "state lives in the CRDT" contract.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
@@ -81,6 +81,10 @@ pub(crate) enum MenuTarget {
     /// One of your own messages — the action menu offers Edit.
     Message(Id),
     /// The workspace background / the sidebar's "+" — create affordances.
+    #[allow(
+        dead_code,
+        reason = "legacy CRDT scope selection remains testable for wire compatibility; production navigation uses Inbox and CurrentContext"
+    )]
     Workspace(Id),
 }
 
@@ -185,7 +189,11 @@ pub(crate) const SWIPE_COMMIT_DX: f64 = 88.0;
 /// next mouse-press.
 #[derive(Clone, Debug)]
 pub(crate) enum Hit {
-    Workspace(Id),
+    /// Open the cross-workspace conversation inbox. This is navigation, not a
+    /// second kind of qOS workspace.
+    Inbox,
+    /// Return from Inbox to channels belonging to the active qOS workspace.
+    CurrentContext,
     Channel(Id),
     /// A voice-channel member chip in the sidebar — clicking joins the call.
     VoiceChannel(Id),
@@ -203,10 +211,8 @@ pub(crate) enum Hit {
     },
     /// The "+" create-category button in the sidebar header.
     AddCategory(Id),
-    /// The "+" create-workspace button at the foot of the rail.
-    AddWorkspace,
-    /// Confirm the inline rename editor.
-    RenameConfirm,
+    /// Focus/place the caret in the inline structural rename field.
+    FocusRename,
     Reaction {
         msg: Id,
         emoji: String,
@@ -229,6 +235,8 @@ pub(crate) enum Hit {
     EditSave,
     /// Discard the inline message editor without writing.
     EditCancel,
+    /// Focus/place the caret in the inline message editor.
+    FocusEdit,
     EmojiChoice(String),
     FocusMain,
     FocusThread,
@@ -370,6 +378,11 @@ pub struct ChatApp {
     pub(crate) workspaces: Vec<Workspace>,
     pub(crate) channels: Vec<Channel>,
     pub(crate) categories: Vec<crate::model::Category>,
+    /// People evidenced in the active chat workspace: the local person plus
+    /// authors, reactors, mentioned people, and voice participants in that
+    /// workspace's channels. The backing document's `users` map is a global
+    /// directory, so exposing it directly here would make people from another
+    /// workspace appear in this workspace's People/call chrome.
     pub(crate) users: Vec<User>,
     pub(crate) messages: Vec<Message>,
     /// Voice membership per channel in the active workspace (cached from the
@@ -394,12 +407,15 @@ pub struct ChatApp {
 
     // Per-peer view state.
     pub(crate) active_ws: Id,
+    /// The qOS workspace Chat was opened in. Inbox may temporarily display a
+    /// conversation sourced from another workspace; this anchor lets the
+    /// person return to their contextual channels without changing OS state.
+    pub(crate) context_ws: Id,
+    /// Inbox is a cross-workspace navigation surface, deliberately distinct
+    /// from the contextual channel list and from the CRDT's legacy grouping.
+    pub(crate) inbox_open: bool,
     pub(crate) active_channel: Id,
     pub(crate) focus: Focus,
-    /// Caret index for the in-memory inline editors only — the message-edit
-    /// working text (`editing`) and the inline rename (`rename`). The
-    /// composers own their own caret inside their `TextInput`.
-    pub(crate) caret: usize,
     pub(crate) scroll: f64,
     pub(crate) thread_open: Option<Id>,
     pub(crate) emoji_open: bool,
@@ -407,10 +423,11 @@ pub struct ChatApp {
     pub(crate) emoji_anchor: Point,
     pub(crate) history_open: Option<Id>,
     pub(crate) history_anchor: Point,
-    /// Inline message editor: the id of your own message being edited plus its
-    /// working text. `self.caret` indexes into this text. Enter/Save writes it
-    /// through [`ChatDoc::edit_message`]; Esc/Cancel discards it.
-    pub(crate) editing: Option<(Id, String)>,
+    /// Your own message currently being edited. The shared multiline input
+    /// owns its working text, caret, selection and IME composition until Save
+    /// writes through [`ChatDoc::edit_message`].
+    pub(crate) editing: Option<Id>,
+    pub(crate) edit_input: TextInput,
 
     // Attachment picker (browses the shared workspace for a file to share).
     pub(crate) attach_open: bool,
@@ -418,8 +435,10 @@ pub struct ChatApp {
 
     // Structure editing.
     pub(crate) menu: Option<ContextMenu>,
-    /// Inline rename editor: the target being renamed + its working text.
-    pub(crate) rename: Option<(MenuTarget, String)>,
+    /// Channel/category currently being renamed. The shared single-line input
+    /// owns the transient working name; structural CRDT policy stays here.
+    pub(crate) rename: Option<MenuTarget>,
+    pub(crate) rename_input: TextInput,
     pub(crate) swipe: Option<RowSwipe>,
 
     // Call state.
@@ -482,6 +501,9 @@ pub struct ChatApp {
     video_node: Option<NodeId>,
     pub(crate) video: VideoPlayer,
     pub(crate) hits: Vec<(Rect, Hit)>,
+    /// Ordinal in `keyboard_targets()`. Derived from the current hit inventory
+    /// so Tab and assistive focus traverse the same controls a pointer can use.
+    pub(crate) keyboard_target: Option<usize>,
     pub(crate) last_mouse: Point,
     /// The live call control beneath the pointer. Kept as render-only state so
     /// attached and shell-owned copies share the same hover treatment without
@@ -580,6 +602,7 @@ impl ChatApp {
         // Author the local view state under the real identity from the start so
         // nothing is attributed to the demo `u_me`.
         app.active_ws.clear();
+        app.context_ws.clear();
         app.active_channel.clear();
         app.thread_open = None;
         app
@@ -608,9 +631,10 @@ impl ChatApp {
             composer_main: Self::new_composer(),
             composer_thread: Self::new_composer(),
             active_ws: "ws_acme".into(),
+            context_ws: "ws_acme".into(),
+            inbox_open: false,
             active_channel: "c_crit".into(),
             focus: Focus::Main,
-            caret: 0,
             scroll: 0.0,
             thread_open: Some("m_concept".into()),
             emoji_open: false,
@@ -619,10 +643,12 @@ impl ChatApp {
             history_open: None,
             history_anchor: Point::ZERO,
             editing: None,
+            edit_input: Self::new_message_editor(),
             attach_open: false,
             attach_entries: Vec::new(),
             menu: None,
             rename: None,
+            rename_input: Self::new_rename_input(),
             swipe: None,
             call: CallState::default(),
             call_chrome_motion: CallChromeMotion::default(),
@@ -643,12 +669,13 @@ impl ChatApp {
             media: MediaEngine::simulated(),
             perms: ChatPermissions::permissive(),
             actions: ui::ActionHost::new(),
-            images: ui::ImageStore::new(crate::images::fetcher()),
+            images: ui::ImageStore::new(&crate::images::fetcher()),
             rect: Rect::ZERO,
             root_node: None,
             video_node: None,
             video,
             hits: Vec::new(),
+            keyboard_target: None,
             last_mouse: Point::ZERO,
             call_hovered: None,
             relayout: false,
@@ -712,8 +739,12 @@ impl ChatApp {
     /// in-memory projection is reconciled from the document by the caller's
     /// `reload`. This app supplies only its domain: the action and its type.
     pub(crate) fn perform_action(&mut self, doc: &mut AutoCommit, action: &ChatAction) {
-        self.actions
-            .dispatch(doc, actions::CHAT_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            actions::CHAT_ACTION_TYPE,
+            action,
+            actions::history_context(action),
+        );
     }
 
     /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
@@ -803,8 +834,13 @@ impl ChatApp {
     }
 
     /// Stage a named scenario for a headless screenshot against the ephemeral
-    /// demo workspace. The default (empty) scenario is the rich desktop frame:
-    /// an open thread beside the conversation and a live call huddle.
+    /// demo workspace. The default is an ordinary reading/conversation frame;
+    /// collaboration states are explicit so a capture does not teach a floating
+    /// call as Chat's resting state.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the screenshot scenario dispatcher keeps each named visual contract explicit and adjacent"
+    )]
     pub fn seed_shot_scenario(&mut self, scenario: &str) {
         match scenario {
             "narrow" => {
@@ -821,6 +857,21 @@ impl ChatApp {
                 self.thread_open = None;
                 self.right_flap.snap(false);
                 self.call = CallState::default();
+            }
+            "people" => {
+                self.thread_open = None;
+                self.right_flap.snap(true);
+                self.call = CallState::default();
+            }
+            "thread-narrow" => {
+                self.thread_open = Some("m_concept".into());
+                self.right_flap.snap(true);
+                self.call = CallState::default();
+            }
+            "collaboration" => {
+                self.thread_open = Some("m_concept".into());
+                self.right_flap.open();
+                self.call.join("c_huddle");
             }
             "starter" => {
                 // The real first-run empty workspace (no demo content).
@@ -898,18 +949,17 @@ impl ChatApp {
                 // with an earlier message still carrying the static "(edited)"
                 // marker — the whole edit story in one frame. Ephemeral shot
                 // only: at seed time the messages aren't loaded yet, so the
-                // working text is set directly and the caret is clamped to its
-                // end by `reload`.
+                // working text is staged directly in the same shared input the
+                // live Edit action uses.
                 self.right_flap.snap(false);
                 self.thread_open = None;
                 self.call = CallState::default();
-                self.editing = Some((
-                    "m_me2".into(),
-                    "That's the one. Starting a huddle to walk through the grid — jump in. Moving it to 3pm so the west-coast folks can make it."
-                        .into(),
-                ));
+                let text = "That's the one. Starting a huddle to walk through the grid — jump in. Moving it to 3pm so the west-coast folks can make it.";
+                self.edit_input.set_text(text);
+                self.edit_input.set_cursor_pos(text.len());
+                self.editing = Some("m_me2".into());
                 self.focus = Focus::Main;
-                self.caret = usize::MAX; // clamped to the working text length on reload
+                self.set_composer_focus();
             }
             "composer" => {
                 // The composer mid-compose: a multi-line draft with the caret,
@@ -922,7 +972,8 @@ impl ChatApp {
                 self.shot_composer_draft = Some(
                     "Shipping the composer on the shared TextInput — real caret, \
                      selection, and Ctrl+C/V now.\nEnter sends, Shift+Enter for a new line."
-                        .into(),
+                        .to_string()
+                        + "\nPlease check teh adress",
                 );
             }
             "msgmenu" => {
@@ -938,10 +989,9 @@ impl ChatApp {
                 });
             }
             _ => {
-                // Desktop demo: reveal the thread beside the conversation and
-                // put this peer in the Design Huddle so the call surface shows.
-                self.right_flap.open();
-                self.call.join("c_huddle");
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
             }
         }
     }
@@ -1240,6 +1290,13 @@ impl ChatApp {
     /// the encode + framing route through [`qos_callstream::VideoStreamSender`]
     /// — the same throttle+encoder+`SurfaceFrame` composition the compositor's
     /// `SharedFlatpakSession` performs — instead of a second in-app codec.
+    #[cfg_attr(
+        not(feature = "live-media"),
+        allow(
+            clippy::needless_pass_by_ref_mut,
+            reason = "live-media mutates capture state; the default build keeps the same call API"
+        )
+    )]
     pub(crate) fn acquire_screen(&mut self) -> bool {
         if !self.call_allows(crate::call::CallAction::ShareScreen) {
             return false;
@@ -1275,6 +1332,14 @@ impl ChatApp {
 
     /// Tear down the local screen capture and stop publishing the screen track.
     /// The caller clears `call.sharing` + the shared voice membership.
+    #[cfg_attr(
+        not(feature = "live-media"),
+        allow(
+            clippy::needless_pass_by_ref_mut,
+            clippy::unused_self,
+            reason = "live-media tears down capture state; the default build keeps the same call API"
+        )
+    )]
     pub(crate) fn release_screen(&mut self) {
         #[cfg(feature = "live-media")]
         {
@@ -1563,6 +1628,25 @@ impl ChatApp {
         t
     }
 
+    /// A local working copy for editing a sent message. It deliberately stays
+    /// unbound until Save so peers never observe half-finished revisions.
+    fn new_message_editor() -> TextInput {
+        TextInput::local()
+            .multiline(true)
+            .with_enter_submits(true)
+            .with_plain_chrome()
+            .with_font_size(15.0)
+    }
+
+    /// A single-line local field for channel/category names. The host commits
+    /// the trimmed value through the target-specific CRDT action on submit.
+    fn new_rename_input() -> TextInput {
+        TextInput::local()
+            .with_enter_submits(true)
+            .with_plain_chrome()
+            .with_font_size(13.0)
+    }
+
     /// The composer for the surface the user is typing in.
     pub(crate) fn focused_composer(&self) -> &TextInput {
         match self.focus {
@@ -1587,6 +1671,8 @@ impl ChatApp {
         let thread = matches!(self.focus, Focus::Thread) && self.thread_open.is_some() && !editing;
         ui::Widget::set_focus(&mut self.composer_main, main);
         ui::Widget::set_focus(&mut self.composer_thread, thread);
+        ui::Widget::set_focus(&mut self.edit_input, self.editing.is_some());
+        ui::Widget::set_focus(&mut self.rename_input, self.rename.is_some());
     }
 
     pub(crate) fn thread_draft_key(&self) -> Option<String> {
@@ -1601,7 +1687,15 @@ impl ChatApp {
         self.workspaces = ChatDoc::list_workspaces(doc);
         self.channels = ChatDoc::list_channels(doc);
         self.categories = ChatDoc::list_categories(doc);
-        self.users = ChatDoc::list_users(doc);
+        if !self.workspaces.iter().any(|w| w.id == self.context_ws)
+            && let Some(context) = self
+                .workspaces
+                .iter()
+                .find(|w| w.id == self.active_ws)
+                .or_else(|| self.workspaces.first())
+        {
+            self.context_ws = context.id.clone();
+        }
         // Keep the active channel valid (e.g. after a workspace switch).
         if self
             .channel(&self.active_channel)
@@ -1627,18 +1721,22 @@ impl ChatApp {
             };
         }
         self.messages = ChatDoc::list_messages(doc, &self.active_channel);
-        // Cache voice membership for every voice channel in this workspace.
+        // Cache voice membership for this workspace only. The document's
+        // channel list is global, so filtering here is as important as it is
+        // for the People projection below: a huddle elsewhere is not a huddle
+        // in the workspace currently on screen.
         self.voice_members.clear();
         for ch in self
             .channels
             .iter()
-            .filter(|c| c.kind == model::ChannelKind::Voice)
+            .filter(|c| c.workspace == self.active_ws && c.kind == model::ChannelKind::Voice)
         {
             let members = ChatDoc::list_voice_members(doc, &ch.id);
             if !members.is_empty() {
                 self.voice_members.insert(ch.id.clone(), members);
             }
         }
+        self.users = self.workspace_people(doc);
         // Load the per-surface drafts from the CRDT into the composer widgets.
         // `set_text` is a no-op when the value is unchanged, so this preserves
         // the caret/selection while typing (the draft we just wrote back equals
@@ -1671,16 +1769,55 @@ impl ChatApp {
             self.draft_main = draft;
         }
         self.set_composer_focus();
-        // Clamp the caret to whatever text the inline editor currently indexes
-        // (message-edit working text, or the rename buffer). The composers own
-        // their own caret, so it is not clamped here.
-        let max = match &self.editing {
-            Some((_, text)) => text.chars().count(),
-            None => 0,
-        };
-        if self.editing.is_some() && self.caret > max {
-            self.caret = max;
+    }
+
+    /// Project the document-global identity directory onto evidence local to
+    /// the active chat workspace. Membership is not stored separately in this
+    /// document, so claiming every known identity is "in" the selected
+    /// workspace would be dishonest. Channel activity and voice membership
+    /// are durable, workspace-owned evidence; the local identity is included
+    /// so a brand-new workspace remains a valid one-person surface.
+    fn workspace_people(&self, doc: &AutoCommit) -> Vec<User> {
+        let mut ids: HashSet<Id> = HashSet::from([self.me.id.clone()]);
+        ids.extend(self.former_ids.iter().cloned());
+
+        for channel in self
+            .channels
+            .iter()
+            .filter(|channel| channel.workspace == self.active_ws)
+        {
+            for message in ChatDoc::list_messages(doc, &channel.id) {
+                ids.insert(message.author);
+                for reaction in message.reactions {
+                    ids.extend(reaction.users);
+                }
+                ids.extend(message.mentions.into_iter().map(|mention| mention.user));
+            }
         }
+        for members in self.voice_members.values() {
+            ids.extend(members.iter().map(|member| member.user.clone()));
+        }
+
+        let mut people: Vec<_> = ChatDoc::list_users(doc)
+            .into_iter()
+            .filter(|user| ids.contains(&user.id))
+            .collect();
+        if !people.iter().any(|user| self.is_me(&user.id)) {
+            people.push(User {
+                id: self.me.id.clone(),
+                name: self.me.name.clone(),
+                initials: self.me.initials.clone(),
+                color_idx: self.me.color_idx,
+                status: model::Presence::Online,
+                is_agent: false,
+            });
+        }
+        people.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        people
     }
 
     /// Advance the local read watermark for the channel currently in view so
@@ -1735,6 +1872,24 @@ impl ChatApp {
                 .then_with(|| a.0.name.cmp(&b.0.name))
         });
         rows
+    }
+
+    /// Whether this workspace has somebody besides the local participant. An
+    /// agent is still a collaborator (and should surface collaboration
+    /// controls), but it is never counted or labelled as a person.
+    pub(crate) fn has_other_collaborator(&self) -> bool {
+        self.users.iter().any(|u| !self.is_me(&u.id))
+    }
+
+    /// The roster's public destination name. `People` is precise when every
+    /// entry is human; once an agent is present, `Collaborators` accurately
+    /// covers both and the row itself keeps the agent visibly typed.
+    pub(crate) fn roster_label(&self) -> &'static str {
+        if self.users.iter().any(|u| u.is_agent) {
+            "Collaborators"
+        } else {
+            "People"
+        }
     }
 
     // --- responsive flap geometry ----------------------------------------
@@ -1838,6 +1993,11 @@ impl ChatApp {
         )
     }
     pub(crate) fn thread_rect(&self) -> Rect {
+        // A thread is content, not a secondary sidebar. On a narrow window it
+        // becomes the pushed detail view rather than a cramped popover.
+        if self.right_mode == FlapMode::Overlay && self.thread_open.is_some() {
+            return self.rect;
+        }
         let x0 = self.right_pane_x0();
         Rect::new(x0, self.rect.y0, x0 + THREAD_W, self.rect.y1)
     }
@@ -1875,6 +2035,7 @@ impl ChatApp {
             && let Some(first) = self.workspaces.first()
         {
             self.active_ws = first.id.clone();
+            self.context_ws = first.id.clone();
             self.active_channel.clear();
             ws_changed = true;
         }
@@ -1942,6 +2103,130 @@ impl ChatApp {
 
     pub(crate) fn push_hit(hits: &mut Vec<(Rect, Hit)>, rect: Rect, hit: Hit) {
         hits.push((rect, hit));
+    }
+
+    /// Pointer, keyboard and assistive technology all derive from this one
+    /// immediate-mode control inventory. Purely decorative/scrim targets stay
+    /// out; every included row has a useful spoken name and an activation path.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive semantic mapping keeps pointer, keyboard and assistive labels from drifting into separate inventories"
+    )]
+    pub(crate) fn semantic_hits_from(
+        &self,
+        hits: &[(Rect, Hit)],
+    ) -> Vec<(Rect, Hit, String, ui::a11y::Role, bool)> {
+        use ui::a11y::Role;
+
+        hits.iter()
+            .filter_map(|(rect, hit)| {
+                let (name, role, selected) = match hit {
+                    Hit::Inbox => {
+                        let unread: u32 = self.channels.iter().map(|channel| channel.unread).sum();
+                        let suffix = if unread == 0 {
+                            String::new()
+                        } else {
+                            format!(", {unread} unread")
+                        };
+                        (format!("Inbox{suffix}"), Role::Tab, self.inbox_open)
+                    }
+                    Hit::CurrentContext => {
+                        let name = self
+                            .workspaces
+                            .iter()
+                            .find(|workspace| workspace.id == self.context_ws)
+                            .map_or("Current workspace", |workspace| workspace.name.as_str());
+                        (
+                            format!("{name} channels, current workspace"),
+                            Role::Tab,
+                            !self.inbox_open,
+                        )
+                    }
+                    Hit::Channel(id) | Hit::VoiceChannel(id) => {
+                        let channel = self.channel(id)?;
+                        let source = self
+                            .workspaces
+                            .iter()
+                            .find(|workspace| workspace.id == channel.workspace)
+                            .map_or("qOS workspace", |workspace| workspace.name.as_str());
+                        let unread = if channel.unread == 0 {
+                            String::new()
+                        } else {
+                            format!(", {} unread", channel.unread)
+                        };
+                        let context = if self.inbox_open {
+                            format!(", from {source}")
+                        } else {
+                            String::new()
+                        };
+                        (
+                            format!("{} {}{context}{unread}", channel.kind.glyph(), channel.name),
+                            Role::ListItem,
+                            channel.id == self.active_channel,
+                        )
+                    }
+                    Hit::CategoryToggle(id) => {
+                        let name = self
+                            .categories
+                            .iter()
+                            .find(|category| category.id == *id)
+                            .map_or("category", |category| category.name.as_str());
+                        (format!("Expand or collapse {name}"), Role::Button, false)
+                    }
+                    Hit::AddChannel { .. } => ("Add channel".into(), Role::Button, false),
+                    Hit::AddCategory(_) => ("Add category".into(), Role::Button, false),
+                    Hit::FocusMain => ("Message composer".into(), Role::MultilineTextInput, false),
+                    Hit::FocusThread => (
+                        "Thread reply composer".into(),
+                        Role::MultilineTextInput,
+                        false,
+                    ),
+                    Hit::Send => ("Send message".into(), Role::Button, false),
+                    Hit::Attach => ("Attach a workspace file".into(), Role::Button, false),
+                    Hit::StartCall => ("Start or open call".into(), Role::Button, false),
+                    Hit::ToggleLeftFlap => {
+                        ("Show conversation navigation".into(), Role::Button, false)
+                    }
+                    Hit::ToggleRightFlap => ("Show people or thread".into(), Role::Button, false),
+                    Hit::OpenThread(_) => ("Open message thread".into(), Role::Button, false),
+                    Hit::CloseThread => ("Close thread".into(), Role::Button, false),
+                    Hit::AddReaction { .. } => ("Add reaction".into(), Role::Button, false),
+                    Hit::EditHistory { .. } => ("Show edit history".into(), Role::Button, false),
+                    Hit::EditSave => ("Save message edit".into(), Role::Button, false),
+                    Hit::EditCancel => ("Cancel message edit".into(), Role::Button, false),
+                    Hit::CallMute => (
+                        "Mute microphone".into(),
+                        Role::ToggleButton,
+                        self.call.muted,
+                    ),
+                    Hit::CallDeafen => (
+                        "Deafen call audio".into(),
+                        Role::ToggleButton,
+                        self.call.deafened,
+                    ),
+                    Hit::CallAudioOnly => (
+                        "Turn camera off".into(),
+                        Role::ToggleButton,
+                        self.call.audio_only,
+                    ),
+                    Hit::CallShareScreen => {
+                        ("Share screen".into(), Role::ToggleButton, self.call.sharing)
+                    }
+                    Hit::CallExpand => (
+                        "Expand or restore call".into(),
+                        Role::Button,
+                        self.call.expanded,
+                    ),
+                    Hit::CallLeave => ("Leave call".into(), Role::Button, false),
+                    _ => return None,
+                };
+                Some((*rect, hit.clone(), name, role, selected))
+            })
+            .collect()
+    }
+
+    pub(crate) fn semantic_hits(&self) -> Vec<(Rect, Hit, String, ui::a11y::Role, bool)> {
+        self.semantic_hits_from(&self.hits)
     }
 }
 
@@ -2063,10 +2348,18 @@ impl Widget for ChatApp {
                 ..Default::default()
             }
         };
+        // `new_leaf` on a freshly created tree never fails.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let video_node = taffy.new_leaf(video_style).unwrap();
         node_map.insert(video_node, &raw mut self.video as *mut dyn Widget);
         self.video_node = Some(video_node);
 
+        // `new_with_children` only fails when a child belongs to a different
+        // tree; `video_node` was just built in this one above.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "video_node was just created in this same tree"
+        )]
         let root = taffy
             .new_with_children(
                 Style {
@@ -2085,7 +2378,9 @@ impl Widget for ChatApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -2142,7 +2437,7 @@ impl Widget for ChatApp {
         self.draw_header(scene, tf, tr, theme, &mut hits);
         let msg_area = self.messages_rect(tr);
         crate::paint::push_clip(scene, tf, msg_area);
-        self.draw_messages(scene, tf, tr, theme, msg_area, &mut hits);
+        self.draw_messages(scene, tf, tr, theme, presence, msg_area, &mut hits);
         scene.pop_layer();
         self.draw_composer(scene, tf, tr, theme, presence, &mut hits);
 
@@ -2182,7 +2477,7 @@ impl Widget for ChatApp {
         }
         if self.left_flap_open() || self.left_flap.reveal() > 0.001 {
             self.draw_rail(scene, tf, tr, theme, &mut hits);
-            self.draw_sidebar(scene, tf, tr, theme, &mut hits);
+            self.draw_sidebar(scene, tf, tr, theme, presence, &mut hits);
         }
 
         // Flap toggle buttons (hamburger / members) float over the header in
@@ -2229,6 +2524,17 @@ impl Widget for ChatApp {
         }
         if self.attach_open {
             self.draw_attach_picker(scene, tf, tr, theme, &mut hits);
+        }
+
+        // Immediate-mode keyboard focus needs a visible counterpart. The ring
+        // is painted last so it remains legible on rail, sidebar and popovers.
+        let semantic = self.semantic_hits_from(&hits);
+        if let Some(index) = self.keyboard_target {
+            if let Some((rect, ..)) = semantic.get(index) {
+                crate::paint::stroke_round(scene, tf, *rect, 9.0, c.accent[7], 2.0);
+            } else {
+                self.keyboard_target = None;
+            }
         }
 
         self.hits = hits;
@@ -2281,6 +2587,81 @@ impl Widget for ChatApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let controls = self
+            .semantic_hits()
+            .into_iter()
+            .enumerate()
+            .map(|(index, (rect, _hit, name, role, selected))| {
+                let mut state = AccessState::new()
+                    .focusable(true)
+                    .focused(self.keyboard_target == Some(index));
+                if matches!(role, Role::Tab | Role::ListItem) {
+                    state = state.selected(selected);
+                }
+                if matches!(role, Role::ToggleButton) {
+                    state = state.checked(selected);
+                }
+                AccessNode::new(role)
+                    .with_name(name)
+                    .with_state(state)
+                    .with_bounds(rect)
+                    .with_key(index as u64)
+            })
+            .collect();
+
+        let conversation = self
+            .messages
+            .iter()
+            .filter(|message| message.parent.is_none())
+            .map(|message| {
+                let author = self
+                    .user(&message.author)
+                    .map_or("Unknown person", |user| user.name.as_str());
+                AccessNode::new(Role::ListItem)
+                    .with_name(format!("{author}: {}", message.text))
+                    .with_hashed_key((&message.id, "message"))
+            })
+            .collect();
+        let conversation = AccessNode::new(Role::List)
+            .with_name("Messages")
+            .with_children(conversation)
+            .with_hashed_key("message-list");
+
+        let mut children: Vec<AccessNode> = controls;
+        children.push(conversation);
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name("Chat")
+                .with_description(if self.inbox_open {
+                    "Inbox: conversations across qOS workspaces"
+                } else {
+                    "Channels in the current qOS workspace"
+                })
+                .with_children(children),
+        )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [index] = path else {
+            return None;
+        };
+        self.semantic_hits().get(*index).map(|(rect, ..)| *rect)
+    }
+
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        let [index] = path else {
+            return false;
+        };
+        if *index >= self.semantic_hits().len() {
+            return false;
+        }
+        self.keyboard_target = Some(*index);
+        true
+    }
+
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its action, so it records exactly one undo boundary bracketing the event —
     /// the same path a Ctrl+K palette dispatch takes.
@@ -2311,7 +2692,6 @@ impl Widget for ChatApp {
             self.thread_open = None;
             self.scroll = 0.0;
             self.focus = Focus::Main;
-            self.caret = 0;
         }
     }
 
@@ -2600,6 +2980,31 @@ mod screenshare_reuse_tests {
 #[cfg(test)]
 mod identity_on_screen {
     use super::*;
+
+    fn user(id: &str, is_agent: bool) -> User {
+        User {
+            id: id.into(),
+            name: id.into(),
+            initials: "U".into(),
+            color_idx: 0,
+            status: crate::model::Presence::Online,
+            is_agent,
+        }
+    }
+
+    #[test]
+    fn roster_vocabulary_never_calls_an_agent_a_person() {
+        let mut app = ChatApp::new_ephemeral();
+        app.users = vec![user("u_me", false), user("u_scribe", true)];
+        assert!(
+            app.has_other_collaborator(),
+            "the agent is another collaborator"
+        );
+        assert_eq!(app.roster_label(), "Collaborators");
+
+        app.users = vec![user("u_me", false), user("u_aria", false)];
+        assert_eq!(app.roster_label(), "People");
+    }
 
     /// Nobody is ever shown the token the system uses to route to them.
     ///

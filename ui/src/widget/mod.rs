@@ -10,12 +10,56 @@ use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 /// Shared disabled-state opacity: wrap draw output in
 /// `scene.push_layer(.., DISABLED_ALPHA, ..)` / `pop_layer()`.
 pub const DISABLED_ALPHA: f32 = 0.45;
 
 pub trait Widget {
+    /// Attach native child views after the host window exists. The default
+    /// recursively reaches retained descendants; leaf adapters make mounting
+    /// idempotent so this can be repeated after a structural rebuild.
+    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+        for child in self.children_mut() {
+            child.mount_native_views(host);
+        }
+    }
+
+    /// Tear native children down while their parent window is still alive.
+    fn unmount_native_views(&mut self) {
+        for child in self.children_mut() {
+            child.unmount_native_views();
+        }
+    }
+
+    /// Called before each live frame. Native adapters hide first, then their
+    /// normal draw call reveals only views actually present in this frame.
+    fn native_view_frame_start(&mut self) {
+        for child in self.children_mut() {
+            child.native_view_frame_start();
+        }
+    }
+
+    /// Receive host-selected platform conventions. The default propagates to
+    /// retained children, keeping target-OS branches out of app code.
+    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        for child in self.children_mut() {
+            child.set_platform_conventions(conventions);
+        }
+    }
+
+    /// Receive the host's current input capabilities. The default propagates
+    /// through retained containers, so app code does not need device branches.
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        for child in self.children_mut() {
+            child.set_interaction_environment(environment);
+        }
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId);
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
         false
@@ -238,6 +282,42 @@ pub trait Widget {
         None
     }
 
+    /// Geometry for an immediate-mode semantic child from
+    /// [`AccessNode::children`](crate::a11y::AccessNode::children). The path is
+    /// its child-index path beneath this widget's accessibility node. Returning
+    /// a rect lets AccessKit activation inject the same click as pointer input.
+    fn synthetic_accessibility_rect(&self, _path: &[usize]) -> Option<vello::kurbo::Rect> {
+        None
+    }
+
+    /// Move this widget's own immediate-mode focus to a synthetic semantic
+    /// child. Retained widgets continue to use the ordinary taffy focus path.
+    fn focus_synthetic_accessibility(&mut self, _path: &[usize]) -> bool {
+        false
+    }
+
+    /// Reparent one retained [`children`](Widget::children) entry beneath a
+    /// synthetic child returned by [`accessibility`](Widget::accessibility).
+    /// The returned index addresses `AccessNode::children` for this frame.
+    /// Collections use this to place a real interactive row delegate inside
+    /// its virtual `ListItem`/`TreeItem` instead of exporting a duplicate.
+    fn accessibility_child_parent(&self, _child_index: usize) -> Option<usize> {
+        None
+    }
+
+    /// Reparent one retained [`children`](Widget::children) entry beneath a
+    /// nested path of synthetic children returned by
+    /// [`accessibility`](Widget::accessibility).
+    ///
+    /// The default preserves the one-level
+    /// [`accessibility_child_parent`](Widget::accessibility_child_parent)
+    /// contract. Tables override this to place a real cell control beneath
+    /// its synthetic row and cell, for example `[visible_row, column]`.
+    fn accessibility_child_path(&self, child_index: usize) -> Option<Vec<usize>> {
+        self.accessibility_child_parent(child_index)
+            .map(|parent| vec![parent])
+    }
+
     /// May mutate the CRDT like [`handle_event`](Widget::handle_event).
     /// Default `false` ("not handled") falls back to generic dispatch
     /// (`Focus` moves keyboard focus, `Activate` synthesises a click);
@@ -245,6 +325,70 @@ pub trait Widget {
     /// expand/collapse) override to handle those verbs precisely.
     fn perform_action(
         &mut self,
+        _action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        false
+    }
+
+    /// Perform an accessibility [`Action`](crate::a11y::Action) aimed at one of
+    /// this widget's **synthetic** accessibility nodes — the routed counterpart
+    /// to [`perform_action`](Widget::perform_action).
+    ///
+    /// A widget that paints its own contents (a timeline of clips, a
+    /// spreadsheet grid, a table of rows) has no child widgets to receive an
+    /// action, so it describes its structure through
+    /// [`AccessNode::children`](crate::a11y::AccessNode::children) instead. When
+    /// an assistive technology activates one of those nodes, the host resolves
+    /// the node's id back to `(this widget, key path)` and calls this method, so
+    /// the widget knows **which** element the user meant.
+    ///
+    /// `key_path` names the target relative to this widget: one element per
+    /// level of [`AccessNode::children`](crate::a11y::AccessNode::children)
+    /// nesting — `[row]` for a table row, `[row, cell]` for a cell inside it.
+    /// Each element is the node's [`key`](crate::a11y::AccessNode::key), or its
+    /// ordinal among its siblings when it declared none. An **empty** path means
+    /// the action targets the widget itself.
+    ///
+    /// For an element keyed by identity rather than position, compare the
+    /// incoming key against [`hash_key`](crate::a11y::hash_key) of your own id:
+    ///
+    /// ```ignore
+    /// fn perform_action_at(&mut self, action: &Action, key_path: &[u64], ..) -> bool {
+    ///     let Some(&clip_key) = key_path.first() else { return false };
+    ///     let Some(clip) = self.clips.iter().find(|c| hash_key(&c.id) == clip_key) else {
+    ///         return false;   // stale reference — do nothing, never guess
+    ///     };
+    ///     ...
+    /// }
+    /// ```
+    ///
+    /// Returns `true` if the widget consumed the action. The **default forwards
+    /// to [`perform_action`](Widget::perform_action)**, ignoring the path — so
+    /// every existing widget keeps behaving exactly as it did, and a widget with
+    /// no synthetic children (where the path is always empty) need not override
+    /// this at all. If a widget declines, the host falls back to its generic
+    /// dispatch just as it does for `perform_action`; note that the fallback is
+    /// widget-granular (it moves focus to, or clicks the centre of, the whole
+    /// widget), so a canvas that wants per-element operation must implement this.
+    fn perform_action_at(
+        &mut self,
+        action: &crate::a11y::Action,
+        key_path: &[u64],
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        let _ = key_path;
+        self.perform_action(action, state, path)
+    }
+
+    /// Handle an action addressed to a synthetic accessibility child created
+    /// by this widget. `target` is the opaque stable value supplied through
+    /// [`AccessNode::with_action_target`](crate::a11y::AccessNode::with_action_target).
+    fn perform_semantic_action(
+        &mut self,
+        _target: &str,
         _action: &crate::a11y::Action,
         _state: &mut AutoCommit,
         _path: &ObjId,
@@ -289,9 +433,21 @@ pub trait Widget {
         false
     }
     fn needs_commit(&self) -> bool {
-        false
+        self.children().iter().any(|child| child.needs_commit())
     }
-    fn on_commit(&mut self) {}
+    /// Drain semantic provenance for the native transaction currently asking
+    /// the host to commit. Use this for CRDT-native edits such as flowing text;
+    /// replayable discrete operations should continue through `ActionHost`.
+    fn take_commit_context(&mut self) -> Option<qos_actions::ActionContext> {
+        self.children_mut()
+            .into_iter()
+            .find_map(Widget::take_commit_context)
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            child.on_commit();
+        }
+    }
     fn get_state(&self) -> Option<String> {
         None
     }
@@ -445,6 +601,49 @@ pub trait Widget {
         None
     }
 
+    /// Host → widget: the live state of the undo history, published once per
+    /// frame to every laid-out widget.
+    ///
+    /// A widget only ever receives `&mut AutoCommit`, which carries the
+    /// document but not its history — so without this a control could not tell
+    /// whether there was anything to undo, and every app was reduced to
+    /// printing the shortcut and hoping. Store the status (embed an
+    /// [`UndoAccess`](crate::undo::UndoAccess)) and read it back in `draw`, in
+    /// [`is_enabled`](Widget::is_enabled), and in
+    /// [`accessibility`](Widget::accessibility) — which only gets `&self`, and
+    /// is exactly where the disabled state has to be honest.
+    ///
+    /// The host sweeps its `node_map`, so this reaches a widget at any depth
+    /// with no container forwarding. Default: ignore it.
+    fn set_undo_status(&mut self, _status: &crate::undo::UndoStatus) {}
+
+    /// Widget → host: an undo or redo the user asked for.
+    ///
+    /// The host drains this after each event and performs it through
+    /// [`App::perform_undo`](crate::app::App::perform_undo) /
+    /// [`App::perform_redo`](crate::app::App::perform_redo) — the same methods
+    /// the Ctrl+Z key handler calls, so a button and the shortcut are one
+    /// implementation and cannot drift.
+    ///
+    /// Rising-edge: reading MUST clear it, so one activation is one undo.
+    /// Default: nothing requested.
+    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
+        None
+    }
+
+    /// Offer a host keyboard undo/redo shortcut to focused widget-local
+    /// history before the application document consumes it.
+    ///
+    /// The default recursively asks retained children. A component with its
+    /// own editing history should return `true` only while focus is inside
+    /// that component and it has consumed the request. Returning `false`
+    /// preserves the standard collaboration-safe document undo behavior.
+    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
+        self.children_mut()
+            .into_iter()
+            .any(|child| child.handle_local_undo_request(request))
+    }
+
     /// Apply an action another app in this room published, if this app owns
     /// the document — lets an app address a document it doesn't hold by
     /// saying what should happen instead of writing bytes directly, keeping
@@ -477,6 +676,17 @@ pub trait Widget {
     /// freeze partway until an unrelated event woke it again.
     fn needs_animation_frame(&self) -> bool {
         self.children().iter().any(|c| c.needs_animation_frame())
+    }
+
+    /// Earliest wall-clock deadline at which this subtree needs a sync/redraw
+    /// even if there is no input. Unlike `needs_animation_frame`, this keeps
+    /// the event loop asleep until the requested instant and is appropriate
+    /// for filesystem/status polling rather than animation.
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.children()
+            .iter()
+            .filter_map(|child| child.next_wake_deadline())
+            .min()
     }
 
     /// `Some(rect)` when this subtree holds an *open* modal, its panel box.
@@ -616,6 +826,9 @@ mod checkbox;
 pub use checkbox::{Checkbox, CheckboxFace, CheckboxInteract};
 mod column;
 pub use column::Column;
+mod composition;
+mod form;
+pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
 mod row;
 pub use row::Row;
 mod toggle;
@@ -624,6 +837,10 @@ mod stack;
 pub use stack::Stack;
 mod container;
 pub use container::Container;
+mod router;
+pub use router::{RouteError, RouteHandle, Router};
+mod document_view;
+pub use document_view::ModelView;
 mod divider;
 pub use divider::{Divider, DividerAxis};
 mod link;
@@ -662,9 +879,9 @@ pub use spacer::Spacer;
 mod image;
 pub use image::{Image, ImageDecodeError, ImageFit};
 mod slider;
-pub use slider::Slider;
+pub use slider::{Slider, SliderFace};
 mod text_input;
-pub use text_input::TextInput;
+pub use text_input::{TextActionRequest, TextInput, TextInputKind};
 pub mod code_editor;
 pub use code_editor::{
     CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind, token_color,
@@ -748,7 +965,7 @@ pub use spinner::Spinner;
 pub mod date_picker;
 pub use date_picker::DatePicker;
 pub mod time_picker;
-pub use time_picker::TimePicker;
+pub use time_picker::{TimePicker, TimeValue};
 pub mod color_picker;
 pub use color_picker::ColorPicker;
 pub mod popover_widget;
@@ -759,10 +976,17 @@ pub mod modal_dialog;
 pub use modal_dialog::ModalDialog;
 pub mod modal_frame;
 pub use modal_frame::{ModalAction, ModalEmphasis, ModalFrame, ModalHit, ModalLayout, ModalSpec};
+pub mod native_view;
+pub use native_view::{
+    NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
+    NativeViewInput,
+};
 pub mod modal_prompt;
 pub use modal_prompt::PromptBody;
 pub mod toolbar;
 pub use toolbar::Toolbar;
+pub mod undo_button;
+pub use undo_button::UndoButton;
 pub mod breadcrumb;
 pub use breadcrumb::Breadcrumb;
 pub mod avatar;
@@ -784,7 +1008,12 @@ pub use webview::WebView;
 pub mod image_viewer;
 pub use image_viewer::ImageViewer;
 pub mod tree_view;
-pub use tree_view::TreeView;
+pub use tree_view::{
+    TreeChildState, TreeLoadReason, TreeLoadRequest, TreeModel, TreeModelChange, TreeNode,
+    TreeRowKey, TreeSlot, TreeView,
+};
+pub mod virtual_list;
+pub use virtual_list::{DuplicateListKey, ListModel, ListRowState, VecListModel, VirtualList};
 pub mod toggle_group;
 pub use toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup, segment_colors};
 
@@ -823,8 +1052,8 @@ pub mod history_scrubber;
 pub mod name_field;
 pub use activity_timeline::ActivityTimeline;
 pub use history::{
-    HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay,
-    format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
+    HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
+    RedactionDisplay, format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
 };
 pub use history_scrubber::HistoryScrubber;
 // The op/artifact vocabulary a `HistoryEntry` is written in. Re-exported so a

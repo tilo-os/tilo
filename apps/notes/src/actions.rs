@@ -107,6 +107,22 @@ pub enum NotesAction {
     DeletePage { id: String },
 }
 
+/// Durable, browseable history metadata for a Notes mutation.
+pub fn history_context(action: &NotesAction) -> qos_actions::ActionContext {
+    let mut context = qos_actions::ActionContext::for_action("org.qos.Notes", "Notes", action);
+    let (label, id, title) = match action {
+        NotesAction::UpsertPage(page) => ("Update page", page.id.as_str(), page.title.as_str()),
+        NotesAction::DeletePage { id } => ("Delete page", id.as_str(), "Page"),
+    };
+    context.action_label = label.to_string();
+    context.resource = Some(qos_actions::ActionResource {
+        id: format!("notes.page:{id}"),
+        kind: "notes.page".to_string(),
+        label: title.to_string(),
+    });
+    context
+}
+
 impl Action for NotesAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
@@ -809,5 +825,19 @@ mod tests {
             1,
             "only Inbox survives"
         );
+    }
+
+    #[test]
+    fn page_action_history_is_addressable() {
+        let context = history_context(&NotesAction::UpsertPage(PageData {
+            id: "page-7".into(),
+            title: "Launch brief".into(),
+            parent: String::new(),
+            order: 0,
+        }));
+        assert_eq!(context.action_label, "Update page");
+        let resource = context.resource.expect("page resource");
+        assert_eq!(resource.id, "notes.page:page-7");
+        assert_eq!(resource.label, "Launch brief");
     }
 }

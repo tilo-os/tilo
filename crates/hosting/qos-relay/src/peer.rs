@@ -368,8 +368,9 @@ async fn handle_subscribe(
             }));
         }
     }
-    let retained_count = load_retained_replay(&wr, workspace_id, replay)?;
-    let pending_count = load_pending_replay(&wr, peer, workspace_id, replay, replay_cleanup)?;
+    let (retained_count, retained) = load_retained_replay(&wr, workspace_id, replay)?;
+    let pending_count =
+        load_pending_replay(&wr, peer, workspace_id, &retained, replay, replay_cleanup)?;
     wr.add_subscriber(Subscriber {
         device_public_key: peer.device_public_key,
         role: peer.role,
@@ -393,8 +394,9 @@ fn load_retained_replay(
     wr: &crate::workspace::WorkspaceRuntime,
     workspace_id: u64,
     replay: &mut Vec<Envelope>,
-) -> Result<u32, PeerError> {
+) -> Result<(u32, std::collections::HashSet<Vec<u8>>), PeerError> {
     let retained = wr.store.load_retained()?;
+    let retained_bytes = retained.iter().cloned().collect();
     let mut retained_count = 0u32;
     for raw in retained {
         let Some(payload) = raw.get(4..) else {
@@ -414,7 +416,7 @@ fn load_retained_replay(
             }
         }
     }
-    Ok(retained_count)
+    Ok((retained_count, retained_bytes))
 }
 
 /// Load pending deltas before advertising Ready, but retain their
@@ -424,12 +426,21 @@ fn load_pending_replay(
     wr: &crate::workspace::WorkspaceRuntime,
     peer: &AuthenticatedPeer,
     workspace_id: u64,
+    retained: &std::collections::HashSet<Vec<u8>>,
     replay: &mut Vec<Envelope>,
     replay_cleanup: &mut Vec<std::path::PathBuf>,
 ) -> Result<u32, PeerError> {
     let pending = wr.store.load_pending(&peer.device_public_key)?;
     let mut pending_count = 0u32;
     for entry in pending {
+        // A retained document message may also have been queued while this
+        // already-enrolled device was offline. Replay it once through the
+        // retained baseline and remove the duplicate pending entry only after
+        // that replay has been written successfully.
+        if retained.contains(&entry.bytes) {
+            replay_cleanup.push(entry.path);
+            continue;
+        }
         // Each pending entry is a full pre-encoded envelope — send it
         // verbatim.
         let Some(payload) = entry.bytes.get(4..) else {

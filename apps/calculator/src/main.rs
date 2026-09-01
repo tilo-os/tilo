@@ -33,10 +33,14 @@
     )
 )]
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 use std::collections::HashMap;
 use std::time::Instant;
 
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -57,8 +61,6 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// Returns `Err` when `--bench-clicks` fails to build/compute a taffy layout
 /// frame, or when `--shots` fails to lay out or write the rendered PNG.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-
     let args: Vec<String> = std::env::args().collect();
     // `--bench-clicks [N]` drives real Calc-keypad button clicks through the
     // production `handle_event` path and times each event + repaint frame,
@@ -68,67 +70,43 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let n = parse_bench_n(&args).unwrap_or(400);
         return run_clicks_bench(shots_viewport(), n);
     }
-    if let Some(out) = parse_shots_arg(&args) {
-        // The headless screenshot shows the lived-in demo state; the live loop
-        // (below) boots empty via `app_root`. `QOS_CALC_EMPTY` lets a shot
-        // capture that real empty-launch state for verification.
-        let root: Box<dyn Widget> = if std::env::var_os("QOS_CALC_EMPTY").is_some() {
-            calculator::app_root()
-        } else {
-            // Shots-only overrides so one binary can capture every state:
-            //   QOS_CALC_MODE=calc|2d|3d      — which screen to render
-            //   QOS_CALC_HISTORY=open|closed  — force the history sidebar state
-            let mut app = calculator::CalculatorApp::seeded();
-            match std::env::var("QOS_CALC_MODE").ok().as_deref() {
-                Some("2d" | "graph2d") => {
-                    app.shots_set_mode(calculator::model::Mode::Graph2d);
-                }
-                Some("3d" | "graph3d") => {
-                    app.shots_set_mode(calculator::model::Mode::Graph3d);
-                }
-                _ => {}
-            }
-            match std::env::var("QOS_CALC_HISTORY").ok().as_deref() {
-                Some("open") => app.shots_set_history_open(true),
-                Some("closed" | "collapsed") => app.shots_set_history_open(false),
-                _ => {}
-            }
-            Box::new(app)
-        };
-        render_shot_to_png(root, shots_viewport(), &out)?;
-        return Ok(());
-    }
+    ui::launch::run(
+        &LaunchSpec::new("dev.qos.calculator", calculator::app_root)
+            .shot_handler(render_shot)
+            .configure_app(configure_app),
+    )?;
+    Ok(())
+}
 
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            &spec,
-            calculator::app_root(),
-            "dev.qos.calculator",
-        ));
-    }
-
-    let (state, autosave) = ui::persist::open("dev.qos.calculator");
-    #[allow(unused_mut)]
-    let mut app = ui::App::new(state, calculator::app_root()).with_autosave(autosave);
-    // Register the calculator's action decoder so the shell's Ctrl+K palette and
-    // remote replay can decode + replay the same history / graph actions the
-    // on-screen affordances dispatch.
+fn configure_app(app: &mut ui::App) {
     calculator::actions::register(app.action_registry_mut());
-    // Widget-debug overlays (bounds outline + widget-name labels) are a
-    // development aid only. The toolkit's `App` turns them on from the
-    // `QUICK_UI_DEBUG` env var alone, so a var inherited from the launching
-    // environment would leak the overlay into a shipped calculator. Force it
-    // off in release builds so a plain run is always clean; debug builds keep
-    // the env-driven toggle for development.
     #[cfg(not(debug_assertions))]
     {
         app.debug_mode = false;
     }
-    app.run();
-    Ok(())
+}
+
+fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
+    // The live app starts empty; screenshots default to a populated state.
+    let root: Box<dyn Widget> = if std::env::var_os("QOS_CALC_EMPTY").is_some() {
+        calculator::app_root()
+    } else {
+        let mut app = calculator::CalculatorApp::seeded();
+        match std::env::var("QOS_CALC_MODE").ok().as_deref() {
+            Some("2d" | "graph2d") => app.shots_set_mode(calculator::model::Mode::Graph2d),
+            Some("3d" | "graph3d") => app.shots_set_mode(calculator::model::Mode::Graph3d),
+            _ => {}
+        }
+        match std::env::var("QOS_CALC_HISTORY").ok().as_deref() {
+            Some("open") => app.shots_set_history_open(true),
+            Some("closed" | "collapsed") => app.shots_set_history_open(false),
+            _ => {}
+        }
+        Box::new(app)
+    };
+    render_shot_to_png(root, args.viewport.unwrap_or_else(shots_viewport), out)
+        .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// Parse the optional click count after `--bench-clicks`.
@@ -421,19 +399,6 @@ fn shots_viewport() -> (u32, u32) {
         }
     }
     DEFAULT_SHOTS_VIEWPORT
-}
-
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
-    }
-    None
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
