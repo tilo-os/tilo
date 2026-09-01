@@ -280,24 +280,18 @@ impl PlayerApp {
             return;
         };
         for ev in mgr.poll() {
-            match ev {
-                CollabEvent::CRDTIncremental { data } => collab.ingest(&data),
-                CollabEvent::CRDTUpdate { data } => collab.ingest_snapshot(&data),
-                CollabEvent::SignedCRDTIncremental { envelope, .. } => {
-                    if let Ok(collab_types::DocumentMutation::Incremental(data)) =
-                        collab_types::DocumentMutation::decode(&envelope.payload)
-                    {
+            if let CollabEvent::Document { envelope, .. } = ev {
+                match collab_types::DocumentMutation::decode(&envelope.payload) {
+                    Ok(collab_types::DocumentMutation::Incremental(data)) => {
                         collab.ingest(&data);
                     }
-                }
-                CollabEvent::SignedCRDTUpdate { envelope, .. } => {
-                    if let Ok(collab_types::DocumentMutation::Snapshot(data)) =
-                        collab_types::DocumentMutation::decode(&envelope.payload)
-                    {
+                    Ok(collab_types::DocumentMutation::Snapshot(data)) => {
                         collab.ingest_snapshot(&data);
                     }
+                    Err(error) => {
+                        tracing::warn!(%error, "video collab: invalid document mutation");
+                    }
                 }
-                _ => {}
             }
         }
         let now = media::now_ms();
@@ -306,7 +300,7 @@ impl PlayerApp {
                 if let Some(engine) = self.player.engine()
                     && let Some(delta) = collab.host_step(engine, now)
                 {
-                    mgr.send(CollabRequest::SyncIncremental { data: delta });
+                    mgr.send(CollabRequest::DocumentIncremental { data: delta });
                 }
             }
             Role::Follower => {
