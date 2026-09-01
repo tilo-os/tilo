@@ -217,6 +217,8 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>\
 <video><model type='virtio' heads='1' primary='yes'/></video>\
 <graphics type='spice' autoport='yes'><listen type='none'/></graphics>\
+<sound model='ich9'><codec type='micro'/><audio id='1'/></sound>\
+<audio id='1' type='spice'/>\
 <memballoon model='virtio'/></devices></domain>",
         config.domain_name,
         config.domain_uuid,
@@ -306,6 +308,8 @@ mod tests {
         assert!(xml.contains("<hyperv mode='custom'>"));
         assert!(xml.contains("<tpm model='tpm-crb'>"));
         assert!(xml.contains("<listen type='none'/>"));
+        assert!(xml.contains("<sound model='ich9'>"));
+        assert!(xml.contains("<audio id='1' type='spice'/>"));
         assert!(xml.contains("a&amp;b.qcow2"));
         assert!(xml.contains(INSTALL_MEDIA));
         assert!(xml.contains(GUEST_TOOLS_MEDIA));

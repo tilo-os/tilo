@@ -8,9 +8,11 @@
 
 use compat_catalogue::Layer;
 use launcher::capabilities::CapabilityPlan;
+use std::path::PathBuf;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{VmAvailability, VmDelegate, VmRouteRequest};
+use crate::{AudioProxyLease, VmAvailability, VmDelegate, VmRouteRequest};
 
 /// Privileged qOS authority for the capability projection used by the Windows
 /// appliance.  It is intentionally an injected adapter rather than a second
@@ -69,6 +71,77 @@ impl windows_vm::CapabilityBroker for DenyAllVmCapabilityBroker {
     fn revoke(&self, _lease_id: &str) {}
 }
 
+/// App-focused SPICE presentation constrained to a per-launch private audio
+/// graph. This SPICE fallback exposes playback only; microphone capture remains
+/// unavailable until its brokered grant can be carried without weakening the
+/// generic viewer's conservative redirect policy.
+pub struct AudioIsolatedSpiceLauncher<R> {
+    runner: R,
+    root: PathBuf,
+    next: AtomicU64,
+    uid: u32,
+}
+
+impl<R> AudioIsolatedSpiceLauncher<R> {
+    #[must_use]
+    pub fn new(runner: R) -> Self {
+        // SAFETY: libc get-effective-uid has no preconditions and does not
+        // dereference memory; it reads process credentials.
+        let uid = unsafe { libc::geteuid() };
+        Self {
+            runner,
+            root: PathBuf::from(format!("/run/user/{uid}/qos-windows-vm")),
+            next: AtomicU64::new(0),
+            uid,
+        }
+    }
+}
+
+impl<R: windows_vm::CommandRunner> windows_vm::RemoteAppLauncher for AudioIsolatedSpiceLauncher<R> {
+    fn launch(
+        &self,
+        guest: &windows_vm::GuestLaunch,
+        brokered: &windows_vm::BrokeredLaunch,
+    ) -> Result<windows_vm::RemoteAppProcess, windows_vm::RemoteAppError> {
+        let sequence = self.next.fetch_add(1, Ordering::Relaxed);
+        let lease = AudioProxyLease::start(
+            self.root.join(format!("{}-{sequence}", std::process::id())),
+            self.uid,
+            false,
+        )
+        .map_err(|error| windows_vm::RemoteAppError::Spice {
+            code: None,
+            stderr: format!("private audio setup failed: {error}"),
+        })?;
+        let audio_runtime = lease
+            .pipewire_socket()
+            .parent()
+            .ok_or_else(|| windows_vm::RemoteAppError::Spice {
+                code: None,
+                stderr: "private audio endpoint has no runtime directory".to_string(),
+            })?
+            .to_path_buf();
+        let request = windows_vm::AppFocusedSpiceLauncher::new(())
+            .command(guest, brokered)?
+            .env("PIPEWIRE_RUNTIME_DIR", audio_runtime)
+            .env("PIPEWIRE_REMOTE", "pipewire-0")
+            .env(
+                "PULSE_SERVER",
+                format!("unix:{}", lease.pulse_socket().display()),
+            );
+        let output = self.runner.run(&request)?;
+        if !output.success {
+            return Err(windows_vm::RemoteAppError::Spice {
+                code: output.code,
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
+        }
+        Ok(windows_vm::RemoteAppProcess {
+            exit_code: output.code,
+        })
+    }
+}
+
 /// Concrete delegate installed in qOS's privileged compatibility host.
 ///
 /// `WindowsAppliance` provides the singleton libvirt backend, authenticated
@@ -83,6 +156,7 @@ pub struct LiveVmDelegate<B, A, C, L, P> {
     /// It is descriptive for availability; `WindowsAppliance::launch` still
     /// verifies the guest's actual response before a viewer is started.
     presentation: windows_vm::ApplicationPresentation,
+    launch_gate: Mutex<()>,
 }
 
 impl<B, A, C, L, P> LiveVmDelegate<B, A, C, L, P> {
@@ -96,6 +170,7 @@ impl<B, A, C, L, P> LiveVmDelegate<B, A, C, L, P> {
             appliance,
             portal,
             presentation,
+            launch_gate: Mutex::new(()),
         }
     }
 
@@ -138,6 +213,11 @@ where
         &self,
         request: VmRouteRequest<'_>,
     ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
+        let _launch_guard = self.launch_gate.lock().map_err(|_| {
+            windows_vm::LaunchError::CapabilityBroker(
+                "singleton Windows launch gate is unavailable".to_string(),
+            )
+        })?;
         // The catalogue itself is the only source allowed to select the VM.
         // This prevents a manager-side route override from using the VM as an
         // arbitrary executable runner.
