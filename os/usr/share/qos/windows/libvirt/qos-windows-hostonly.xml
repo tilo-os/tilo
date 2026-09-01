@@ -16,6 +16,8 @@
   <bridge name="virbr-qoswin" stp="on" delay="0"/>
   <ip address="192.168.251.1" netmask="255.255.255.0">
     <dhcp>
+      <!-- The bridge client accepts only this fixed singleton address. -->
+      <host mac="52:54:00:71:4f:53" name="qos-windows-appliance" ip="192.168.251.2"/>
       <range start="192.168.251.2" end="192.168.251.254"/>
     </dhcp>
   </ip>

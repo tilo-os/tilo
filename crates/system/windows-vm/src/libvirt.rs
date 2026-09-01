@@ -182,7 +182,7 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 <controller type='scsi' index='0' model='virtio-scsi'><driver iothread='1'/></controller>\
 <disk type='file' device='disk'><driver name='qemu' type='qcow2' cache='none' io='native' discard='unmap' detect_zeroes='unmap'/>\
 <source file='{disk}'/><target dev='sda' bus='scsi'/></disk>\
-<interface type='network'><source network='{network}'/><model type='virtio'/></interface>\
+<interface type='network'><mac address='52:54:00:71:4f:53'/><source network='{network}'/><model type='virtio'/></interface>\
 <channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>\
 <vsock model='virtio'><cid auto='no' address='{}'/></vsock>\
 <tpm model='tpm-crb'><backend type='emulator' version='2.0'/></tpm>\
