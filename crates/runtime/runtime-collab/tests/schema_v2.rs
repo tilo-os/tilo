@@ -6,8 +6,6 @@
 //! - Roster/context: `subscribe_context` yielding `ChannelContext` snapshots.
 //! - Signed op stream attribution: `Stream.read()` returns `(op,
 //!   fromUserId)`, decoded by the wrapper.
-//! - Legacy unsigned paths (`send_unsigned_snapshot` /
-//!   `send_unsigned_incremental`) dispatched to the broker verbatim.
 //! - Scrollback: `fetch_scrollback_for` decodes `ScrollbackBatch`.
 //!
 //! No real broker — everything runs against a hand-rolled fake server over
@@ -51,8 +49,6 @@ use runtime_portal::UnixCapnpClient;
 
 #[derive(Default)]
 struct Captures {
-    unsigned_snapshots: Vec<Vec<u8>>,
-    unsigned_incrementals: Vec<Vec<u8>>,
     presence_caret: Vec<(Vec<u8>, u64)>,
     presence_selection: Vec<(Vec<u8>, u64, u64)>,
     presence_arrived: Vec<Vec<u8>>,
@@ -362,29 +358,19 @@ impl channel_handle::Server for FakeChannel {
         Promise::ok(())
     }
 
-    fn send_unsigned_snapshot(
+    fn retired_unsigned_snapshot(
         self: Rc<Self>,
-        params: channel_handle::SendUnsignedSnapshotParams,
-        _results: channel_handle::SendUnsignedSnapshotResults,
+        _params: channel_handle::RetiredUnsignedSnapshotParams,
+        _results: channel_handle::RetiredUnsignedSnapshotResults,
     ) -> Promise<(), capnp::Error> {
-        let d = match params.get().and_then(runtime_collab::collab_capnp::channel_handle::send_unsigned_snapshot_params::Reader::get_data) {
-            Ok(b) => b.to_vec(),
-            Err(e) => return Promise::err(e),
-        };
-        self.captures.borrow_mut().unsigned_snapshots.push(d);
         Promise::ok(())
     }
 
-    fn send_unsigned_incremental(
+    fn retired_unsigned_incremental(
         self: Rc<Self>,
-        params: channel_handle::SendUnsignedIncrementalParams,
-        _results: channel_handle::SendUnsignedIncrementalResults,
+        _params: channel_handle::RetiredUnsignedIncrementalParams,
+        _results: channel_handle::RetiredUnsignedIncrementalResults,
     ) -> Promise<(), capnp::Error> {
-        let d = match params.get().and_then(runtime_collab::collab_capnp::channel_handle::send_unsigned_incremental_params::Reader::get_data) {
-            Ok(b) => b.to_vec(),
-            Err(e) => return Promise::err(e),
-        };
-        self.captures.borrow_mut().unsigned_incrementals.push(d);
         Promise::ok(())
     }
 
@@ -686,42 +672,6 @@ async fn op_stream_carries_from_user_id() {
             let ev2 = stream.read().await.unwrap();
             assert_eq!(ev2.op, b"second-op");
             assert_eq!(ev2.from_user_id, "peer-42");
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn legacy_unsigned_paths_reach_broker() {
-    let local = LocalSet::new();
-    local
-        .run_until(async {
-            let captures = Rc::new(RefCell::new(Captures::default()));
-            let broker = FakeBroker {
-                captures: captures.clone(),
-                op_backlog: Vec::new(),
-                presence_backlog: Vec::new(),
-                context_backlog: Vec::new(),
-                scrollback_response: None,
-            };
-            let collab = stand_up_client(broker);
-            let channel = collab.join_channel("c", b"id").await.unwrap();
-
-            channel.send_unsigned_snapshot(b"full-doc").await.unwrap();
-            channel
-                .send_unsigned_incremental(b"change-1")
-                .await
-                .unwrap();
-            channel
-                .send_unsigned_incremental(b"change-2")
-                .await
-                .unwrap();
-
-            let c = captures.borrow();
-            assert_eq!(c.unsigned_snapshots, vec![b"full-doc".to_vec()]);
-            assert_eq!(
-                c.unsigned_incrementals,
-                vec![b"change-1".to_vec(), b"change-2".to_vec()]
-            );
         })
         .await;
 }

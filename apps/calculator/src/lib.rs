@@ -32,6 +32,7 @@
         clippy::string_slice,
         clippy::panic,
         clippy::unreachable,
+        clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]

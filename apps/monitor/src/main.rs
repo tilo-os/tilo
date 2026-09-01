@@ -37,6 +37,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -58,8 +59,6 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// lay out the offscreen widget tree (a Taffy tree-construction or
 /// layout-compute failure).
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-
     let args: Vec<String> = std::env::args().collect();
     // `--bench-interact` drives real input events (clicks, tab switches,
     // scrolls) through the production `handle_event` path and times the full
@@ -70,47 +69,46 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         return run_interaction_bench(viewport);
     }
-    if let Some(out) = parse_shots_arg(&args) {
-        // `--shots` renders one offscreen frame. A `--viewport WxH` arg
-        // overrides the default desktop viewport so the same binary can
-        // capture the narrow responsive layout (single-pane Processes push +
-        // stacked dashboard). `--scenario NAME` snaps a deterministic
-        // interaction state (`resources` = Resources dashboard, `detail` =
-        // pushed detail pane) since a single frame has no event loop.
-        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        let mut app = monitor::MonitorApp::new();
-        if let Some(scenario) = parse_scenario_arg(&args) {
-            app.seed_shot_scenario(&scenario);
-        }
-        render_shot_to_png(Box::new(app), viewport, &out)?;
-        return Ok(());
-    }
+    ui::launch::run(
+        &LaunchSpec::new("dev.qos.monitor", monitor::app_root)
+            .shot_handler(render_shot)
+            .scenarios(&[
+                "detail",
+                "interval-popover",
+                "resources",
+                "resources-many",
+                "tree-collapsed",
+                "tree-expanded",
+                "per-process",
+                "per-process-collapsed",
+                "context-menu",
+                "kill-confirm",
+            ])
+            .configure_app(configure_app),
+    )?;
+    Ok(())
+}
 
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            &spec,
-            monitor::app_root(),
-            "dev.qos.monitor",
-        ));
-    }
-
-    let (state, autosave) = ui::persist::open("dev.qos.monitor");
-    #[allow(unused_mut)]
-    let mut app = ui::App::new(state, monitor::app_root()).with_autosave(autosave);
-    // Widget-debug overlays (bounds outline + widget-name labels) are a
-    // development aid the toolkit enables from the `QUICK_UI_DEBUG` env var
-    // alone. Force them off in release so a var inherited from the launching
-    // environment can never leak the overlay into a shipped Monitor; debug
-    // builds keep the env-driven toggle.
+fn configure_app(app: &mut ui::App) {
+    let _ = app;
     #[cfg(not(debug_assertions))]
     {
         app.debug_mode = false;
     }
-    app.run();
-    Ok(())
+}
+
+fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
+    let mut app = monitor::MonitorApp::new();
+    if let Some(scenario) = args.scenario.as_deref() {
+        app.seed_shot_scenario(scenario);
+    }
+    render_shot_to_png(
+        Box::new(app),
+        args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
+        out,
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// Parse `--viewport WxH` (e.g. `--viewport 480x900`) for `--shots`.
@@ -125,33 +123,6 @@ fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
         if let Some(spec) = spec {
             let (w, h) = spec.split_once(['x', 'X'])?;
             return Some((w.trim().parse().ok()?, h.trim().parse().ok()?));
-        }
-    }
-    None
-}
-
-/// Parse `--scenario NAME` for a deterministic `--shots` interaction state.
-fn parse_scenario_arg(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--scenario" {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix("--scenario=") {
-            return Some(rest.to_string());
-        }
-    }
-    None
-}
-
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
         }
     }
     None

@@ -245,6 +245,36 @@ impl ReviewOverlay {
             COMMENT_BODY_INK,
         );
 
+        self.draw_comment_resolve_button(
+            scene,
+            text_renderer,
+            transform,
+            card_x,
+            card_top,
+            card_h,
+            id,
+        );
+        card_top + card_h + 6.0
+    }
+
+    /// The Resolve button on a comment card: its rect, chrome, label and
+    /// hit entry. Split out of [`Self::draw_comment`] to keep that under the
+    /// line limit; the card's own geometry is already decided by then.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the paint context (scene/text_renderer/transform) plus the card geometry \
+                  its caller already computed; the same bundle every draw_* here carries"
+    )]
+    fn draw_comment_resolve_button(
+        &mut self,
+        scene: &mut Scene,
+        text_renderer: &mut TextRenderer,
+        transform: Affine,
+        card_x: f64,
+        card_top: f64,
+        card_h: f64,
+        id: &str,
+    ) {
         let button_y = card_top + card_h - REVIEW_BTN - 4.0;
         let button = Rect::new(
             card_x + COMMENT_CARD_W - 64.0,
@@ -277,7 +307,6 @@ impl ReviewOverlay {
         );
         self.hits
             .push((button, ReviewAction::ResolveComment(id.to_string())));
-        card_top + card_h + 6.0
     }
 
     #[allow(clippy::too_many_arguments)]

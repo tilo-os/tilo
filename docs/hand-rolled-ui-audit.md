@@ -192,12 +192,31 @@ and per-button a11y nodes
 remain bounded by these apps' monolithic immediate-mode architecture (a separate
 retained-tree refactor), not by the button primitive.
 
-Left for later, with the reason each isn't a clean face-swap:
-- **git_client** hunk stage/unstage/discard — a *ghost* style (translucent at
-  rest, accent/danger fill only on hover); needs a `Ghost`/tinted face variant.
-- **notes** new-page chip — a borderless accent-tint icon chip; same ghost gap.
-- **logs** narrow-mode Back — a bespoke translucent pill with a left-aligned
-  chevron (not centred); ghost variant + leading-icon alignment.
+Audited and deliberately retained, with the reason each isn't a clean
+face-swap:
+- **git_client** hunk stage/unstage/discard — a compact hunk-header action with
+  a translucent rest fill and dim label, then a *solid* action-specific hover
+  fill (accent for stage/unstage, danger for discard) with a light label. Its
+  returned, content-sized rectangle is also the diff view's hit-test record.
+- **notes** new-page chip — a borderless square whose translucent accent hover
+  is intentionally much quieter than a solid primary action. It keeps primary
+  ink in both states and centres a typographic `+` in the exact layout-owned
+  hit rectangle.
+- **logs** narrow-mode Back — a neutral translucent pill with a standard border
+  in both states and a precisely left-positioned chevron/label pair. It never
+  takes on an accent or danger fill and shares its rectangle with push-navigation
+  hit testing.
+
+These controls look related at a glance, but a shared "tinted" face that
+preserved them would need separate policy for semantic tone, subtle versus
+solid hover, rest/hover ink, border presence, translucent compositing ground,
+and leading versus centred content. Those axes do not form one reusable button
+style: they merely encode these three call sites as options. Adding them would
+move roughly as much code into `ui` as it removes from the apps while making
+`ButtonFace` harder to understand. Keep these small painters local until at
+least two consumers converge on an actual semantic treatment; do not emulate
+their stronger hover by abusing `pressed`, and do not convert the custom merge
+regions below.
 - **backups** "Back up now" — carries a progress sliver + custom `+` glyph; a
   custom surface, not a plain button.
 - **imager** footer primary — bespoke per-state styling (lightens on hover,

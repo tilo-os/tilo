@@ -32,7 +32,9 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::popover::Popover;
-use ui::widget::{Button, ButtonFace, ButtonStyle, ModalDialog, Text, TextInput, Widget};
+use ui::widget::{
+    Button, ButtonFace, ButtonStyle, ModalDialog, Text, TextInput, Toggle, ToggleFace, Widget,
+};
 
 use crate::charts::{self, Series, with_alpha};
 use crate::layout;
@@ -2441,35 +2443,19 @@ impl MonitorApp {
             if on { c.accent[5] } else { c.border_standard },
             1.0,
         );
-        // little switch knob
+        // Keep the app-specific labeled pill, but use the shared switch face
+        // for its compact state indicator.
         let knob_track = Rect::new(
             kt_r.x0 + 10.0,
             kt_r.center().y - 6.0,
             kt_r.x0 + 30.0,
             kt_r.center().y + 6.0,
         );
-        charts::fill_rrect(
+        Toggle::paint(
             scene,
             t,
-            knob_track,
-            6.0,
-            if on {
-                c.accent[5]
-            } else {
-                with_alpha(c.text_dim, 120)
-            },
-        );
-        let knob_cx = if on {
-            knob_track.x1 - 6.0
-        } else {
-            knob_track.x0 + 6.0
-        };
-        scene.fill(
-            Fill::NonZero,
-            t,
-            Color::WHITE,
-            None,
-            &vello::kurbo::Circle::new(Point::new(knob_cx, knob_track.center().y), 5.0),
+            theme,
+            &ToggleFace::new(knob_track, on).on_color(c.accent[5]),
         );
         tr.draw_text(
             scene,
