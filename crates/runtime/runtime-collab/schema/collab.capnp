@@ -51,18 +51,10 @@ interface ChannelHandle {
   # union (cursor was the only variant in schema v1).
   presence @2 () -> (handle :PresenceHandle);
 
-  # LEGACY — unsigned full-document snapshot. Present so apps that
-  # have not yet been provisioned with a signing identity keep
-  # working across the ui-collab → runtime-collab migration.
-  # Callers on the migration target path use `send` with a
-  # collab-types SignedOp instead. Will be removed once identity
-  # provisioning covers every fleet app.
-  sendUnsignedSnapshot @3 (data :Data) -> ();
-
-  # LEGACY — unsigned incremental Automerge change blob. Same
-  # transitional contract as `sendUnsignedSnapshot`; removal
-  # deferred until the whole fleet has an identity.
-  sendUnsignedIncremental @4 (data :Data) -> ();
+  # Retired unsigned verbs keep their ordinals because Cap'n Proto requires
+  # declarations to remain sequential. They carry no data and have no effect.
+  retiredUnsignedSnapshot @3 () -> ();
+  retiredUnsignedIncremental @4 () -> ();
 
   # Subscribe to broker roster + permission-list updates. Returned
   # stream yields a fresh `ChannelContext` snapshot every time the
@@ -289,29 +281,8 @@ interface Stream {
 }
 
 enum OpKind {
-  # What `Stream.read`'s `op` bytes actually are. The stream carries
-  # three kinds of frame and they are not interchangeable: a delta
-  # must be applied incrementally, a whole document must be merged,
-  # and a signed envelope must be decoded before either. Without a
-  # discriminator a reader can only guess, and the only available
-  # guess — "try to decode a signed envelope, drop it if that fails"
-  # — silently discards every unsigned frame.
-  #
-  # `signed` is ordinal 0 so it is also the default: a producer that
-  # predates this field means the postcard-encoded `SignedOp` it has
-  # always sent.
-
+  # Every live stream frame is a postcard-encoded SignedOp.
   signed @0;
-  # `op` is a postcard-encoded `SignedOp`.
-
-  unsignedIncremental @1;
-  # `op` is a raw Automerge change delta, applied incrementally on
-  # top of the document the reader already holds.
-
-  unsignedSnapshot @2;
-  # `op` is a whole Automerge document, merged into the reader's.
-  # Sent to a peer that has just arrived and has no history for the
-  # deltas to apply against.
 }
 
 interface PresenceHandle {

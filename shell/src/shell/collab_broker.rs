@@ -495,54 +495,13 @@ pub fn spawn_native(
     peer_sync: &Option<Arc<ShellNetwork>>,
     membership: crate::shell::state::WorkspaceTreeHandle,
 ) -> std::io::Result<BrokerHandle> {
-    let identity = LocalIdentity::from_network(peer_sync.clone());
     let publisher = PeerPublisher::from_network(peer_sync.clone());
     spawn_inner(
         capnp_socket_path,
         peer_sync.as_ref(),
-        &identity,
         &publisher,
         Some(membership),
     )
-}
-
-/// Test-only variant of [`spawn_native`] that takes an explicit
-/// [`LocalIdentity`] instead of deriving one from `peer_sync`.
-///
-/// # Errors
-///
-/// Same failure mode as [`spawn_native`]: the Cap'n Proto socket at
-/// `capnp_socket_path` could not be bound.
-#[cfg(test)]
-pub fn spawn_native_with_identity(
-    capnp_socket_path: PathBuf,
-    peer_sync: &Option<Arc<ShellNetwork>>,
-    identity: &Arc<LocalIdentity>,
-) -> std::io::Result<BrokerHandle> {
-    let publisher = PeerPublisher::from_network(peer_sync.clone());
-    spawn_inner(
-        capnp_socket_path,
-        peer_sync.as_ref(),
-        identity,
-        &publisher,
-        None,
-    )
-}
-
-/// Test-only variant of [`spawn_native`] that takes an explicit
-/// [`PeerPublisher`] and runs with no peer-sync network at all.
-///
-/// # Errors
-///
-/// Same failure mode as [`spawn_native`]: the Cap'n Proto socket at
-/// `capnp_socket_path` could not be bound.
-#[cfg(test)]
-pub fn spawn_native_with_publisher(
-    capnp_socket_path: PathBuf,
-    publisher: &Arc<PeerPublisher>,
-) -> std::io::Result<BrokerHandle> {
-    let identity = LocalIdentity::from_network(None);
-    spawn_inner(capnp_socket_path, None, &identity, publisher, None)
 }
 
 /// Inbound queues + shared fanout state the drain thread polls each
@@ -918,7 +877,6 @@ fn validate_document_route(
 fn spawn_inner(
     capnp_socket_path: PathBuf,
     peer_sync: Option<&Arc<ShellNetwork>>,
-    identity: &Arc<LocalIdentity>,
     publisher: &Arc<PeerPublisher>,
     membership: Option<crate::shell::state::WorkspaceTreeHandle>,
 ) -> std::io::Result<BrokerHandle> {
@@ -979,7 +937,6 @@ fn spawn_inner(
         &table,
         Arc::clone(&channels),
         Arc::clone(publisher),
-        Arc::clone(identity),
         membership,
         Arc::clone(&capnp_quit),
     )?;
@@ -1086,6 +1043,17 @@ mod tests {
 
     /// A digest-shaped peer id, as presence frames carry it.
     const PEER: &str = "peer@5537458103208628978";
+
+    #[test]
+    fn document_routes_stay_with_their_app_and_record() {
+        let document = CrdtRoute::record("dev.qos.notes", "room-1", "note-1");
+
+        assert!(document.delivers_to(&document));
+        assert!(document.delivers_to(&CrdtRoute::cluster("room-1")));
+        assert!(!document.delivers_to(&CrdtRoute::record("dev.qos.files", "room-1", "note-1",)));
+        assert!(!document.delivers_to(&CrdtRoute::record("dev.qos.notes", "room-1", "note-2",)));
+        assert!(!document.delivers_to(&CrdtRoute::record("dev.qos.notes", "room-2", "note-1",)));
+    }
 
     #[test]
     fn remote_document_route_preserves_signed_kind_and_rejects_relabeling() {
