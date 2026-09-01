@@ -23,7 +23,7 @@
 //!
 //! Writing is doubly gated: the typed confirmation, plus the
 //! `QOS_IMAGER_ALLOW_WRITE=1` allow-gate in [`write`]. With the gate off the
-//! same progress UI runs against a simulated worker that touches no device.
+//! write is explicitly unavailable; no simulated worker reports fake success.
 //!
 //! `app_root()` is the live integration point; `app_root_for_shot()` stages
 //! only peer-local capture state before returning the same widget. The live binary sets
