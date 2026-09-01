@@ -133,6 +133,13 @@ impl AudioEngine {
     /// deployment is missing that runtime dependency rather than a condition
     /// callers can route around — this panics with a diagnostic rather than
     /// silently degrading to a stub that would claim to play and never sound.
+    ///
+    /// # Panics
+    ///
+    /// With the `audio` feature enabled, panics when `GStreamer` cannot create
+    /// its core `playbin` element. This indicates that the required
+    /// `gstreamer1-plugins-base` runtime package is missing or unusable.
+    #[allow(clippy::panic)] // A missing required runtime is not recoverable here.
     pub fn new() -> Self {
         #[cfg(feature = "audio")]
         let inner = {
@@ -140,9 +147,13 @@ impl AudioEngine {
             if let Err(e) = gstreamer::init() {
                 tracing::error!(target: "music::audio", error = %e, "gstreamer::init failed — the `audio` feature needs a working GStreamer runtime");
             }
-            let playbin = gstreamer::ElementFactory::make("playbin").build().expect(
-                "playbin: requires gstreamer1-plugins-base, the audio feature's runtime dependency",
-            );
+            let playbin = match gstreamer::ElementFactory::make("playbin").build() {
+                Ok(playbin) => playbin,
+                Err(error) => panic!(
+                    "could not create GStreamer playbin; install the \
+                     gstreamer1-plugins-base runtime package: {error}"
+                ),
+            };
             let frames = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             // Route audio through an explicit **real** sink chain, so the
             // output is audible and verifiable. `autoaudiosink` selects
@@ -801,9 +812,8 @@ fn spawn_stream_download(
                 ready.store(true, Relaxed);
                 done.store(true, Relaxed);
             };
-            let mut file = match std::fs::File::create(&path) {
-                Ok(f) => f,
-                Err(_) => return finish(),
+            let Ok(mut file) = std::fs::File::create(&path) else {
+                return finish();
             };
             // Primary source (the rangeable proxy). If it yields no bytes at all
             // — a broken/rate-limited public proxy — fall back to the direct
@@ -851,18 +861,18 @@ fn download_into(
     fetched: &std::sync::Arc<std::sync::atomic::AtomicU64>,
     expected: &std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) -> u64 {
+    const CHUNK: u64 = 1_048_576;
+
     use std::sync::atomic::Ordering::Relaxed;
-    let client = match reqwest::blocking::Client::builder()
+    let Ok(client) = reqwest::blocking::Client::builder()
         .user_agent(ua_for_uri(uri))
         .timeout(std::time::Duration::from_secs(30))
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return 0,
+    else {
+        return 0;
     };
     let clen = parse_clen(uri);
     expected.store(clen.unwrap_or(0), Relaxed);
-    const CHUNK: u64 = 1_048_576;
     let mut off = 0u64;
     loop {
         if let Some(c) = clen
