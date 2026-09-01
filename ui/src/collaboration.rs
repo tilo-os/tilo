@@ -14,6 +14,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub use collab_types::DocumentMutation;
 use collab_types::SignedOp;
 
 use crate::presence::PresenceKey;
@@ -50,13 +51,12 @@ pub enum CollabRequest {
         #[serde(default)]
         handle: Option<String>,
     },
-    /// Legacy: unsigned full-document state. Apps using this path do not
-    /// get role enforcement and surface a "legacy / unsigned" badge in
-    /// chrome.
-    SyncCRDT { data: Vec<u8> },
-    /// Legacy: unsigned incremental Automerge change blob. New code
-    /// should prefer [`CollabRequest::SignedSyncIncremental`].
-    SyncIncremental { data: Vec<u8> },
+    /// Complete document state. The SDK wraps this mutation in a signed
+    /// envelope from the certified launcher identity before transmission.
+    DocumentSnapshot { data: Vec<u8> },
+    /// Incremental document changes. The SDK wraps this mutation in a signed
+    /// envelope from the certified launcher identity before transmission.
+    DocumentIncremental { data: Vec<u8> },
     /// Outbound presence update — pointer moved, caret changed, selection
     /// shifted, or arrived/left a keyed object. Fanned out to every
     /// connected peer as `CollabEvent::RemotePresenceUpdate`.
@@ -70,7 +70,7 @@ pub enum CollabRequest {
     ///
     /// `Box`ed to keep the discriminant thin on the stack — `SignedOp` is
     /// large (32-byte pubkey + 64-byte sig + payload + UUIDs).
-    SignedSyncIncremental { envelope: Box<SignedOp> },
+    SignedOperation { envelope: Box<SignedOp> },
     /// Late-join scrollback fetch: up to `max` ops with `seq < before_seq`,
     /// answered with one [`CollabEvent::ScrollbackBatch`].
     ///
@@ -144,16 +144,6 @@ pub enum CollabEvent {
         x: f32,
         y: f32,
     },
-    /// Legacy: full unsigned document state, merged into the local
-    /// Automerge doc.
-    CRDTUpdate {
-        data: Vec<u8>,
-    },
-    /// Legacy: unsigned incremental change blob. See
-    /// [`CollabRequest::SyncIncremental`].
-    CRDTIncremental {
-        data: Vec<u8>,
-    },
     RemotePresenceUpdate {
         user_id: String,
         key: PresenceKey,
@@ -171,20 +161,10 @@ pub enum CollabEvent {
         payload: Vec<u8>,
         from_user_id: String,
     },
-    /// A validated signed envelope from another peer (validation ran on the
-    /// broker). Receivers extract `envelope.payload` into the same
-    /// `automerge::apply_changes` path [`CollabEvent::CRDTIncremental`] uses.
-    ///
-    /// `from_user_id` mirrors the broker's synthetic id
-    /// (`"peer-<src_id>"`) so attribution code uses one id shape.
-    SignedCRDTIncremental {
-        envelope: Box<SignedOp>,
-        from_user_id: String,
-    },
-    /// Validated signed full-document state for a late joiner. The mutation
-    /// kind was inside the signed payload, so a peer cannot relabel an
+    /// A validated signed document envelope from another peer. The mutation
+    /// kind is inside the signed payload, so a peer cannot relabel an
     /// incremental as a snapshot or vice versa.
-    SignedCRDTUpdate {
+    Document {
         envelope: Box<SignedOp>,
         from_user_id: String,
     },
@@ -202,6 +182,19 @@ pub enum CollabEvent {
         ops: Vec<Box<SignedOp>>,
         exhausted: bool,
     },
+}
+
+impl CollabEvent {
+    /// Decode the typed payload of a validated document event. Returns `None`
+    /// for presence, context, action, and scrollback events.
+    pub fn document_mutation(
+        &self,
+    ) -> Option<Result<DocumentMutation, collab_types::DocumentMutationError>> {
+        let Self::Document { envelope, .. } = self else {
+            return None;
+        };
+        Some(DocumentMutation::decode(&envelope.payload))
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -251,7 +244,7 @@ pub struct Collaborator {
 
 /// Failure modes for [`CollaborationManager::send_signed_op`].
 /// `NoIdentity` is the common case — call before the shell provisions an
-/// identity — and callers can fall back to plain `SyncIncremental`.
+/// identity — and callers can fall back to plain `DocumentIncremental`.
 #[derive(Debug)]
 pub enum SignedSendError {
     /// No [`SigningIdentity`] bound (see [`CollaborationManager::with_identity`]).
@@ -410,6 +403,35 @@ struct SdkJoinIdentity {
     signer: SdkDocumentSigner,
 }
 
+/// Certified identity for a client connecting to an explicit collaboration
+/// endpoint rather than through a launcher-inherited identity service.
+#[derive(Clone)]
+pub struct CertifiedEndpointIdentity {
+    presentation: Vec<u8>,
+    device_key: ed25519_dalek::SigningKey,
+}
+
+impl CertifiedEndpointIdentity {
+    pub fn new(presentation: Vec<u8>, device_key: ed25519_dalek::SigningKey) -> Self {
+        Self {
+            presentation,
+            device_key,
+        }
+    }
+}
+
+impl std::fmt::Debug for CertifiedEndpointIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CertifiedEndpointIdentity")
+            .field(
+                "presentation",
+                &format_args!("{} bytes", self.presentation.len()),
+            )
+            .field("device_key", &"<redacted>")
+            .finish()
+    }
+}
+
 enum SdkDocumentSigner {
     Certified(runtime_identity::SigningIdentity),
     /// Explicit-FD harnesses have no launcher identity service. Their
@@ -454,7 +476,7 @@ fn sdk_join_identity(cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal
 pub struct CollaborationManager {
     backend: Backend,
     /// When `Some`, [`Self::send_signed_op`] mints a signed envelope and
-    /// dispatches [`CollabRequest::SignedSyncIncremental`]. This explicit
+    /// dispatches [`CollabRequest::SignedOperation`]. This explicit
     /// policy-envelope API is separate from document mutations, which the SDK
     /// signs with the certified launcher identity.
     identity: Option<SigningIdentity>,
@@ -481,6 +503,7 @@ impl CollaborationManager {
             cluster_id,
             record,
             handle,
+            None,
         )
     }
 
@@ -506,6 +529,35 @@ impl CollaborationManager {
             cluster_id,
             record,
             handle,
+            None,
+        )
+    }
+
+    /// Connect to an explicit endpoint with a certified device presentation.
+    /// This is the headless equivalent of the launcher-provided identity path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`runtime_portal::NotAvailable`] when `fd` cannot bootstrap a
+    /// collaboration service connection.
+    pub fn for_route_fd_with_identity(
+        fd: RawFd,
+        app_id: impl Into<String>,
+        cluster_id: Uuid,
+        record: Option<String>,
+        handle: Option<String>,
+        identity: CertifiedEndpointIdentity,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        Self::for_route_from(
+            SdkConnectSource::Fd(fd),
+            app_id.into(),
+            cluster_id,
+            record,
+            handle,
+            Some(SdkJoinIdentity {
+                presentation: identity.presentation,
+                signer: SdkDocumentSigner::Harness(identity.device_key),
+            }),
         )
     }
 
@@ -515,14 +567,15 @@ impl CollaborationManager {
         cluster_id: Uuid,
         record: Option<String>,
         handle: Option<String>,
+        endpoint_identity: Option<SdkJoinIdentity>,
     ) -> Result<Self, runtime_portal::NotAvailable> {
-        let identity = if matches!(&source, SdkConnectSource::Env) {
-            sdk_join_identity(cluster_id)?
-        } else {
-            SdkJoinIdentity {
+        let identity = match endpoint_identity {
+            Some(identity) => identity,
+            None if matches!(&source, SdkConnectSource::Env) => sdk_join_identity(cluster_id)?,
+            None => SdkJoinIdentity {
                 presentation: Vec::new(),
                 signer: harness_document_signer(),
-            }
+            },
         };
         let sdk = Self::spawn_sdk(source, identity)?;
         let mut manager = Self {
@@ -752,7 +805,7 @@ impl CollaborationManager {
         let envelope = identity
             .sign_op(payload, artifact, op_class)
             .map_err(SignedSendError::Canonical)?;
-        self.send(CollabRequest::SignedSyncIncremental {
+        self.send(CollabRequest::SignedOperation {
             envelope: Box::new(envelope),
         });
         Ok(())
@@ -1525,12 +1578,12 @@ async fn dispatch_sdk_request(
 ) {
     match request {
         CollabRequest::Hello { .. } => {}
-        CollabRequest::SignedSyncIncremental { envelope } => {
+        CollabRequest::SignedOperation { envelope } => {
             if let Ok(bytes) = postcard::to_stdvec(&*envelope) {
                 let _ = route.channel.send(&bytes).await;
             }
         }
-        CollabRequest::SyncCRDT { data } => {
+        CollabRequest::DocumentSnapshot { data } => {
             send_document_mutation(
                 route,
                 signer,
@@ -1538,7 +1591,7 @@ async fn dispatch_sdk_request(
             )
             .await;
         }
-        CollabRequest::SyncIncremental { data } => {
+        CollabRequest::DocumentIncremental { data } => {
             send_document_mutation(
                 route,
                 signer,
@@ -1605,16 +1658,11 @@ fn signed_document_event(
     envelope: SignedOp,
     from_user_id: String,
 ) -> Result<CollabEvent, collab_types::DocumentMutationError> {
-    match collab_types::DocumentMutation::decode(&envelope.payload)? {
-        collab_types::DocumentMutation::Snapshot(_) => Ok(CollabEvent::SignedCRDTUpdate {
-            envelope: Box::new(envelope),
-            from_user_id,
-        }),
-        collab_types::DocumentMutation::Incremental(_) => Ok(CollabEvent::SignedCRDTIncremental {
-            envelope: Box::new(envelope),
-            from_user_id,
-        }),
-    }
+    let _mutation = collab_types::DocumentMutation::decode(&envelope.payload)?;
+    Ok(CollabEvent::Document {
+        envelope: Box::new(envelope),
+        from_user_id,
+    })
 }
 
 /// Unpack the SDK's 0x00RRGGBB u32 into [R, G, B] floats in 0..1 — the
@@ -2247,7 +2295,7 @@ mod tests {
         );
         // Whichever backend it settled on, the app goes on calling these
         // every frame. Neither may panic.
-        mgr.send(CollabRequest::SyncCRDT {
+        mgr.send(CollabRequest::DocumentSnapshot {
             data: b"after the broker died".to_vec(),
         });
         let _ = mgr.poll();
@@ -2263,7 +2311,7 @@ mod tests {
         }
         let mut mgr = CollaborationManager::new();
         assert!(!mgr.is_connected(), "no service = not connected");
-        mgr.send(CollabRequest::SyncCRDT {
+        mgr.send(CollabRequest::DocumentSnapshot {
             data: b"nope".to_vec(),
         });
         assert!(mgr.poll().is_empty(), "no events on Disabled backend");
@@ -2339,7 +2387,7 @@ mod tests {
         );
         op.signature = collab_types::Signature::from_bytes([0u8; 64]);
         let expected_bytes = postcard::to_stdvec(&op).unwrap();
-        mgr.send(CollabRequest::SignedSyncIncremental {
+        mgr.send(CollabRequest::SignedOperation {
             envelope: Box::new(op),
         });
 
@@ -2484,14 +2532,14 @@ mod tests {
         let signed: Vec<_> = events
             .into_iter()
             .filter_map(|e| match e {
-                CollabEvent::SignedCRDTIncremental {
+                CollabEvent::Document {
                     envelope,
                     from_user_id,
                 } => Some((envelope, from_user_id)),
                 _ => None,
             })
             .collect();
-        assert_eq!(signed.len(), 1, "one SignedCRDTIncremental expected");
+        assert_eq!(signed.len(), 1, "one document event expected");
         assert_eq!(signed[0].1, "peer-bob");
         assert_eq!(
             collab_types::DocumentMutation::decode(&signed[0].0.payload).unwrap(),
@@ -2513,10 +2561,14 @@ mod tests {
             std::time::SystemTime::UNIX_EPOCH,
             43,
         );
+        let event = signed_document_event(op, "peer-alice".into()).unwrap();
         assert!(matches!(
-            signed_document_event(op, "peer-alice".into()).unwrap(),
-            CollabEvent::SignedCRDTUpdate { from_user_id, .. }
-                if from_user_id == "peer-alice"
+            &event,
+            CollabEvent::Document { from_user_id, .. } if from_user_id == "peer-alice"
+        ));
+        assert!(matches!(
+            event.document_mutation(),
+            Some(Ok(DocumentMutation::Snapshot(data))) if data == b"whole document"
         ));
     }
 

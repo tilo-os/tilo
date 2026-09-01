@@ -56,6 +56,9 @@ struct VerifiedJoinIdentity {
 struct AdmittedJoinIdentity {
     verified: VerifiedJoinIdentity,
     principal_id: String,
+    /// Informational display label announced by this authenticated session.
+    /// Authorization always uses `principal_id`, never this handle.
+    display_handle: Option<String>,
     /// Workspace admission role from the live owner/capability roster.
     /// Certified document operations use this directly instead of requiring
     /// a second, channel-local role attestation for the same person.
@@ -90,6 +93,7 @@ fn admit_verified_join(
         verified,
         principal_id,
         role,
+        display_handle: None,
     })
 }
 
@@ -147,29 +151,36 @@ fn verify_join_identity(
     route: &CrdtRoute,
     identity_bytes: &[u8],
     membership: Option<&WorkspaceTreeHandle>,
+    trusted_devices: Option<&[[u8; 32]]>,
 ) -> Result<AdmittedJoinIdentity, String> {
     let Some(presentation) = runtime_collab::CertifiedJoinIdentity::decode(identity_bytes)
         .map_err(|error| format!("certified join presentation is malformed: {error}"))?
     else {
         return Err("collaboration join requires a certified device presentation".into());
     };
-    let profile = crate::identity_registry::selected_identity_profile(&route.cluster_id)
-        .map_err(|error| format!("workspace identity lookup failed: {error}"))?
-        .ok_or_else(|| "no identity is selected for this workspace".to_string())?;
     let cert: qos_user_identity::DeviceCert =
         serde_json::from_slice(&presentation.device_certificate)
             .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
-    let fleet = crate::device_fleet::DeviceFleetStore::from_env()
-        .and_then(|store| store.load(&profile.id))
-        .map_err(|error| format!("device fleet lookup failed: {error}"))?;
-    let revoked = fleet.is_revoked(&cert.device_public_key);
-    // Enrollment follows the fleet authority's existing device-key model.
-    // Requiring byte-for-byte certificate equality would incorrectly reject a
-    // renewed root-signed certificate for an already enrolled device.
-    let enrolled = fleet
-        .certificates
-        .iter()
-        .any(|known| known.device_public_key == cert.device_public_key);
+    let (expected_root, revoked, enrolled) = if let Some(devices) = trusted_devices {
+        (
+            cert.user_public_key,
+            false,
+            devices.contains(&cert.device_public_key),
+        )
+    } else {
+        let profile = crate::identity_registry::selected_identity_profile(&route.cluster_id)
+            .map_err(|error| format!("workspace identity lookup failed: {error}"))?
+            .ok_or_else(|| "no identity is selected for this workspace".to_string())?;
+        let fleet = crate::device_fleet::DeviceFleetStore::from_env()
+            .and_then(|store| store.load(&profile.id))
+            .map_err(|error| format!("device fleet lookup failed: {error}"))?;
+        let revoked = fleet.is_revoked(&cert.device_public_key);
+        let enrolled = fleet
+            .certificates
+            .iter()
+            .any(|known| known.device_public_key == cert.device_public_key);
+        (profile.user_public_key, revoked, enrolled)
+    };
     let now_ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| {
@@ -181,7 +192,7 @@ fn verify_join_identity(
     let verified = verify_join_presentation(
         route,
         &presentation,
-        &profile.user_public_key,
+        &expected_root,
         now_ns,
         revoked,
         enrolled,
@@ -259,6 +270,7 @@ pub struct CapnpBrokerState {
     /// `None` exists only for transitional test/diagnostic brokers; a
     /// certified join fails closed when they have no authority to consult.
     membership: Option<WorkspaceTreeHandle>,
+    trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
 }
 
 impl CapnpBrokerState {
@@ -273,6 +285,7 @@ impl CapnpBrokerState {
         broker_channels: Arc<Mutex<BrokerChannels>>,
         publisher: Arc<PeerPublisher>,
         membership: Option<WorkspaceTreeHandle>,
+        trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             channels: Mutex::new(HashMap::new()),
@@ -280,13 +293,17 @@ impl CapnpBrokerState {
             broker_channels,
             publisher,
             membership,
+            trusted_devices,
         })
     }
 
     /// `joinChannel(channelId, identity)` carries no announced handle,
     /// so the room lookup is the only answer for who to stamp traffic as.
     fn participant_id(admitted: &AdmittedJoinIdentity) -> String {
-        admitted.principal_id.clone()
+        admitted
+            .display_handle
+            .clone()
+            .unwrap_or_else(|| admitted.principal_id.clone())
     }
 
     fn revalidate_admission(
@@ -297,11 +314,14 @@ impl CapnpBrokerState {
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("certified session lost its membership authority".into())
         })?;
-        admit_verified_join(&membership.read(), route, admitted.verified.clone()).map_err(|error| {
-            capnp::Error::failed(format!(
-                "certified collaboration session is no longer admitted: {error}"
-            ))
-        })
+        let mut current = admit_verified_join(&membership.read(), route, admitted.verified.clone())
+            .map_err(|error| {
+                capnp::Error::failed(format!(
+                    "certified collaboration session is no longer admitted: {error}"
+                ))
+            })?;
+        current.display_handle.clone_from(&admitted.display_handle);
+        Ok(current)
     }
 
     /// Bind a certified operation to the route, typed document protocol and
@@ -404,17 +424,10 @@ impl CapnpBrokerState {
             .filter(|(k, _)| route.delivers_to(&CrdtRoute::from_channel_key(k)))
             .map(|(_, subs)| subs);
         match event {
-            CollabEvent::SignedCRDTIncremental {
-                envelope,
-                from_user_id,
-            }
-            | CollabEvent::SignedCRDTUpdate {
+            CollabEvent::Document {
                 envelope,
                 from_user_id,
             } => Self::fanout_signed_incremental(channels, except, envelope, from_user_id),
-            CollabEvent::CRDTIncremental { .. } | CollabEvent::CRDTUpdate { .. } => {
-                tracing::warn!("collab: dropping retired unsigned document event");
-            }
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                 Self::fanout_cursor_moved(channels, except, user_id, *x, *y);
             }
@@ -630,14 +643,31 @@ impl collab_service::Server for CapnpCollabService {
                 .to_owned();
             let identity = reader.get_identity()?;
             let route = CrdtRoute::from_channel_key(&channel_id);
-            let verified_identity = verify_join_identity(
+            let mut verified_identity = verify_join_identity(
                 &route,
                 identity,
                 state.membership.as_ref(),
+                state
+                    .trusted_devices
+                    .as_ref()
+                    .map(|devices| devices.as_slice()),
             )
             .map_err(|error| {
                 capnp::Error::failed(format!("collaboration join identity rejected: {error}"))
             })?;
+            let participant_handle = reader
+                .get_participant_handle()?
+                .to_str()
+                .map_err(|error| {
+                    capnp::Error::failed(format!("participant handle not utf8: {error}"))
+                })?
+                .trim()
+                .chars()
+                .take(64)
+                .collect::<String>();
+            if !participant_handle.is_empty() {
+                verified_identity.display_handle = Some(participant_handle);
+            }
             tracing::info!(
                 target: "qos_collab_probe",
                 channel = %channel_id,
@@ -703,16 +733,8 @@ impl channel_handle::Server for CapnpChannelHandle {
             let current_identity = state.revalidate_admission(&route, &verified_identity)?;
             verify_session_author(&current_identity, envelope.author)
                 .map_err(|error| capnp::Error::failed(format!("capnp send: {error}")))?;
-            let document_mutation =
-                state.authorize_certified_document(&route, &current_identity, &envelope)?;
-            handle_signed_op_send(
-                &state,
-                peer_id,
-                &route,
-                &current_identity,
-                &document_mutation,
-                envelope,
-            );
+            state.authorize_certified_document(&route, &current_identity, &envelope)?;
+            handle_signed_op_send(&state, peer_id, &route, &current_identity, envelope);
             Ok(())
         })
     }
@@ -834,7 +856,6 @@ fn handle_signed_op_send(
     peer_id: u64,
     route: &CrdtRoute,
     verified_identity: &AdmittedJoinIdentity,
-    document_mutation: &DocumentMutation,
     envelope: SignedOp,
 ) {
     let artifact = envelope.artifact;
@@ -872,15 +893,9 @@ fn handle_signed_op_send(
             // Republishing is not vouching.
             state.publisher().signed_document(route, envelope.clone());
             let from_user_id = CapnpBrokerState::participant_id(verified_identity);
-            let event = match document_mutation {
-                DocumentMutation::Snapshot(_) => CollabEvent::SignedCRDTUpdate {
-                    envelope: Box::new(envelope),
-                    from_user_id,
-                },
-                DocumentMutation::Incremental(_) => CollabEvent::SignedCRDTIncremental {
-                    envelope: Box::new(envelope),
-                    from_user_id,
-                },
+            let event = CollabEvent::Document {
+                envelope: Box::new(envelope),
+                from_user_id,
             };
             if let Some(t) = state.fanout.upgrade() {
                 t.fanout_to_route(&event, peer_id, route);
@@ -1349,11 +1364,18 @@ pub fn spawn(
     broker_channels: Arc<Mutex<BrokerChannels>>,
     publisher: Arc<PeerPublisher>,
     membership: Option<WorkspaceTreeHandle>,
+    trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
     quit: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<()>> {
     let _ = std::fs::remove_file(&socket_path);
     let wired = publisher.is_wired();
-    let state = CapnpBrokerState::new(fanout, broker_channels, publisher, membership);
+    let state = CapnpBrokerState::new(
+        fanout,
+        broker_channels,
+        publisher,
+        membership,
+        trusted_devices,
+    );
     fanout.attach_capnp(Arc::clone(&state));
 
     // Bind on the caller's thread: from the worker thread, a bind
@@ -1764,6 +1786,7 @@ mod tests {
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::disabled(),
             Some(Arc::clone(&membership_tree)),
+            None,
         );
         assert!(membership_tree.write().workspaces[0].revoke_capability(&membership));
         assert!(
@@ -1798,16 +1821,15 @@ mod tests {
         broker_channels: &Arc<Mutex<BrokerChannels>>,
         route: &CrdtRoute,
         admitted: &AdmittedJoinIdentity,
-        mutation: &DocumentMutation,
         op: &SignedOp,
     ) {
-        handle_signed_op_send(state, 1, route, admitted, mutation, op.clone());
+        handle_signed_op_send(state, 1, route, admitted, op.clone());
         let mut forged = op.clone();
         forged.seq = 2;
         forged.payload = DocumentMutation::Incremental(b"tampered".to_vec())
             .encode()
             .expect("typed incremental");
-        handle_signed_op_send(state, 1, route, admitted, mutation, forged);
+        handle_signed_op_send(state, 1, route, admitted, forged);
 
         let artifact = op.artifact;
         let audit = state
@@ -1896,6 +1918,7 @@ mod tests {
             Arc::clone(&broker_channels),
             publisher,
             Some(Arc::clone(&membership)),
+            None,
         );
         fanout.attach_capnp(Arc::clone(&state));
         state.ensure_channel(&route.channel_key());
@@ -1914,10 +1937,10 @@ mod tests {
             1,
         );
         sign_op(&mut op, &device).expect("device signs document op");
-        let mutation = state
+        state
             .authorize_certified_document(&route, &admitted, &op)
             .expect("live owner may edit the joined document");
-        handle_signed_op_send(&state, 1, &route, &admitted, &mutation, op.clone());
+        handle_signed_op_send(&state, 1, &route, &admitted, op.clone());
 
         let delivered = received.try_recv().expect("snapshot fanout");
         assert_eq!(delivered.kind, OpKind::Signed);
@@ -1937,14 +1960,7 @@ mod tests {
         );
         assert_published_snapshot(&sink, &route);
 
-        assert_replay_and_forgery_are_audited(
-            &state,
-            &broker_channels,
-            &route,
-            &admitted,
-            &mutation,
-            &op,
-        );
+        assert_replay_and_forgery_are_audited(&state, &broker_channels, &route, &admitted, &op);
 
         downgrade_member_to_viewer(&membership, &principal, &route.cluster_id);
         let viewer = state
