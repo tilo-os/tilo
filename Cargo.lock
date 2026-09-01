@@ -17072,6 +17072,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows-app"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "qos-actions",
+ "runtime-dylib",
+ "serde",
+ "taffy",
+ "ui",
+ "vello",
+ "winit",
+]
+
+[[package]]
 name = "windows-collections"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
