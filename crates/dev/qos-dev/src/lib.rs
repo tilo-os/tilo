@@ -2769,7 +2769,7 @@ fn screen_registry_source(names: &[String]) -> String {
         let function = name.replace('-', "_");
         let _ = writeln!(
             source,
-            "\n\n/// Build the `{name}` screen.\npub fn {function}(theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {{\n    build(include_str!(\"../ui/{name}.json\"), theme)\n}}"
+            "\n\n/// Build the `{name}` screen.\n///\n/// # Errors\n///\n/// Returns a graph parse, validation, component, or construction error.\npub fn {function}(theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {{\n    {function}_with(theme, UiBuildContext::default())\n}}\n\n/// Build `{name}` with app-owned component factories and other services.\n///\n/// # Errors\n///\n/// Returns a graph parse, validation, component, or construction error.\npub fn {function}_with(\n    theme: &Theme,\n    context: UiBuildContext,\n) -> Result<Box<dyn Widget>, UiGraphError> {{\n    build_with(include_str!(\"../ui/{name}.json\"), theme, context)\n}}"
         );
     }
     source.push_str(
@@ -2785,7 +2785,7 @@ pub fn get(name: &str, theme: &Theme) -> Option<Result<Box<dyn Widget>, UiGraphE
         let _ = writeln!(source, "        {name:?} => Some({function}(theme)),");
     }
     source.push_str(
-        "        _ => None,\n    }\n}\n\nfn get_routed(\n    name: &str,\n    theme: &Theme,\n    navigation: &RouteHandle,\n) -> Option<Result<Box<dyn Widget>, UiGraphError>> {\n    let source = match name {\n",
+        "        _ => None,\n    }\n}\n\nfn get_routed(\n    name: &str,\n    theme: &Theme,\n    navigation: &RouteHandle,\n    context: &UiBuildContext,\n) -> Option<Result<Box<dyn Widget>, UiGraphError>> {\n    let source = match name {\n",
     );
     for name in names {
         let _ = writeln!(
@@ -2794,7 +2794,7 @@ pub fn get(name: &str, theme: &Theme) -> Option<Result<Box<dyn Widget>, UiGraphE
         );
     }
     source.push_str(
-        "        _ => return None,\n    };\n    Some(build_routed(source, theme, navigation))\n}\n\n/// Build a history-aware host for all registered screens.\npub fn router(initial: &str, theme: &Theme) -> Result<Router, RouteError> {\n    Router::new(initial, NAMES.iter().copied(), theme, |route, theme, navigation| {\n        get_routed(route, theme, navigation)\n            .ok_or_else(|| format!(\"screen {route:?} is not registered\"))?\n            .map_err(|error| error.to_string())\n    })\n}\n\nfn build(source: &str, theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {\n    let graph = UiGraphHandle::from_json(source)?;\n    Ok(Box::new(graph.widget(theme)?))\n}\n\nfn build_routed(\n    source: &str,\n    theme: &Theme,\n    navigation: &RouteHandle,\n) -> Result<Box<dyn Widget>, UiGraphError> {\n    let graph = UiGraphHandle::from_json(source)?;\n    let context = UiBuildContext::default().with_router(navigation.clone());\n    Ok(Box::new(graph.widget_with(theme, context)?))\n}\n",
+        "        _ => return None,\n    };\n    let context = context.clone().with_router(navigation.clone());\n    Some(build_with(source, theme, context))\n}\n\n/// Build a history-aware host for all registered screens.\n///\n/// # Errors\n///\n/// Returns an error when the initial route or a screen is invalid.\npub fn router(initial: &str, theme: &Theme) -> Result<Router, RouteError> {\n    router_with(initial, theme, UiBuildContext::default())\n}\n\n/// Build the screen router with app-owned component factories and services.\n///\n/// # Errors\n///\n/// Returns an error when the initial route or a screen is invalid.\npub fn router_with(\n    initial: &str,\n    theme: &Theme,\n    context: UiBuildContext,\n) -> Result<Router, RouteError> {\n    Router::new(initial, NAMES.iter().copied(), theme, move |route, theme, navigation| {\n        get_routed(route, theme, navigation, &context)\n            .ok_or_else(|| format!(\"screen {route:?} is not registered\"))?\n            .map_err(|error| error.to_string())\n    })\n}\n\nfn build_with(\n    source: &str,\n    theme: &Theme,\n    context: UiBuildContext,\n) -> Result<Box<dyn Widget>, UiGraphError> {\n    let graph = UiGraphHandle::from_json(source)?;\n    Ok(Box::new(graph.widget_with(theme, context)?))\n}\n",
     );
     source
 }
@@ -3102,6 +3102,7 @@ fn write_ui_node_tree(node: &qos_ui_graph::UiNode, depth: usize, output: &mut St
         qos_ui_graph::UiNode::TextInput { .. } => "text-input",
         qos_ui_graph::UiNode::Checkbox { .. } => "checkbox",
         qos_ui_graph::UiNode::Toggle { .. } => "toggle",
+        qos_ui_graph::UiNode::Component { .. } => "component",
         qos_ui_graph::UiNode::Spacer { .. } => "spacer",
     };
     let _ = writeln!(output, "{}{} ({kind})", "  ".repeat(depth), node.id());
@@ -6411,7 +6412,7 @@ fn app_readme(spec: &AppSpec) -> String {
     if spec.template == Template::Graph {
         let _ = writeln!(
             out,
-            "\nOpen the serialized screen with `qos-dev ui edit ui/main.json`. Script or review it with `qos-dev ui tree`, `qos-dev ui set`, `qos-dev ui apply`, `qos-dev ui insert`, `qos-dev ui move`, and `qos-dev ui validate`."
+            "\nOpen the serialized screen with `qos-dev ui edit ui/main.json`. Script or review it with `qos-dev ui tree`, `qos-dev ui set`, `qos-dev ui apply`, `qos-dev ui insert`, `qos-dev ui move`, and `qos-dev ui validate`. A `{{\"type\":\"component\"}}` node can mount an app-owned retained component; register its factory in `UiBuildContext` and pass it to `screens::router_with`."
         );
     }
     if spec.template == Template::Async {
@@ -8220,6 +8221,46 @@ mod tests {
     }
 
     #[test]
+    fn ui_graph_tools_insert_inspect_and_edit_app_components() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let graph = temp.path().join("ui/main.json");
+        init_ui_graph(&graph, "Projects", false).expect("initialize graph");
+        let component = parse_ui_node(
+            r#"{"type":"component","id":"profile","name":"profile-card","props":{"title":"Ada"}}"#,
+        )
+        .expect("component node");
+        edit_ui_graph(
+            &graph,
+            UiGraphEdit::Insert {
+                parent: "root".into(),
+                index: 2,
+                node: component,
+            },
+        )
+        .expect("insert component");
+        edit_ui_graph(
+            &graph,
+            UiGraphEdit::SetProperty {
+                id: "profile".into(),
+                property: "props.title".into(),
+                value: serde_json::json!("Grace"),
+            },
+        )
+        .expect("edit component prop");
+
+        assert!(
+            ui_graph_tree(&graph)
+                .unwrap()
+                .contains("profile (component)")
+        );
+        assert!(matches!(
+            load_ui_graph(&graph).unwrap().node("profile"),
+            Some(qos_ui_graph::UiNode::Component { props, .. })
+                if props.get("title") == Some(&serde_json::json!("Grace"))
+        ));
+    }
+
+    #[test]
     fn explicit_ui_builder_plan_is_deterministic() {
         let plan = ui_builder_plan(
             Path::new("ui/main.json"),
@@ -8809,6 +8850,7 @@ mod tests {
         assert!(app_readme(&spec).contains("qos-dev ui tree"));
         assert!(app_readme(&spec).contains("qos-dev ui set"));
         assert!(app_readme(&spec).contains("qos-dev ui apply"));
+        assert!(app_readme(&spec).contains("screens::router_with"));
     }
 
     #[test]
@@ -9000,8 +9042,11 @@ mod tests {
             syn::parse_file(&locale_registry.1)
                 .expect("generated locale registry is valid Rust syntax");
             if template == Template::Graph {
-                syn::parse_file(&screen_registry_source(&["main".into()]))
-                    .expect("generated screen registry is valid Rust syntax");
+                let registry = screen_registry_source(&["main".into()]);
+                syn::parse_file(&registry).expect("generated screen registry is valid Rust syntax");
+                assert!(registry.contains("pub fn main_with("));
+                assert!(registry.contains("pub fn router_with("));
+                assert!(registry.contains("context.clone().with_router"));
             }
         }
     }
