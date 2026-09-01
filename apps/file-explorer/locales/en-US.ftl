@@ -47,6 +47,22 @@ files-destructive-eviction-started = Destructive local removal started for { $co
     [one] item
    *[other] items
 }.
+files-permanent-delete-title = Permanently delete { $count } { $count ->
+    [one] item
+   *[other] items
+}?
+files-permanent-delete-summary = The selected { $count } { $count ->
+    [one] item will
+   *[other] items will
+} be removed from Trash.
+files-permanent-delete-loss = This cannot be undone.
+files-permanent-delete-confirm = Delete Permanently
+files-empty-trash-title = Permanently empty Trash?
+files-empty-trash-summary = { $count ->
+    [one] 1 item will be removed from Trash.
+   *[other] All { $count } items will be removed from Trash.
+}
+files-empty-trash-confirm = Empty Trash
 
 ## Properties and availability sheet
 files-property-collaborative-record = Collaborative record: { $record }
