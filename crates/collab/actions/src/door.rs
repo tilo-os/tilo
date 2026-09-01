@@ -282,6 +282,24 @@ pub fn invoke(
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
 ) -> Result<Dispatched, DoorError> {
+    invoke_with_context(
+        doc, resources, address, argument, actor, registry, transport, None,
+    )
+}
+
+/// [`invoke`] with ambient task/session provenance. The resource's concrete
+/// action label and address remain authoritative; app, purpose, group, and
+/// facets fill only fields the resource did not supply.
+pub fn invoke_with_context(
+    doc: &mut crate::action::Doc,
+    resources: &[Resource],
+    address: &ActionAddress,
+    argument: Option<&str>,
+    actor: &[u8],
+    registry: &ActionRegistry,
+    transport: &mut dyn ActionTransport,
+    ambient: Option<&ActionContext>,
+) -> Result<Dispatched, DoorError> {
     let resource = find_resource(resources, &address.resource)
         .ok_or_else(|| DoorError::Unknown(address.clone()))?;
     let spec = resource
@@ -289,12 +307,15 @@ pub fn invoke(
         .iter()
         .find(|candidate| candidate.id == address.action)
         .ok_or_else(|| DoorError::Unknown(address.clone()))?;
-    let context = ActionContext::for_resource(
+    let mut context = ActionContext::for_resource(
         &spec.label,
         resource.id.as_str(),
         &resource.kind,
         &resource.label,
     );
+    if let Some(ambient) = ambient {
+        context = context.enriched_by(ambient);
+    }
     let encoded = encode(resources, address, argument)?;
     let action = registry
         .decode(&encoded)
@@ -638,6 +659,42 @@ mod tests {
             "attribution must not cost the identical replay"
         );
         assert_eq!(transport.replicated.len(), 1);
+    }
+
+    #[test]
+    fn ambient_task_context_reaches_door_actions_without_overwriting_resource() {
+        let mut doc = AutoCommit::new();
+        let mut transport = LocalTransport::new();
+        let ambient = ActionContext::default()
+            .with_app("org.qos.Notes", "Notes")
+            .with_purpose("Prepare launch")
+            .with_group("issue:42", "Launch", "issue");
+        let dispatched = invoke_with_context(
+            &mut doc,
+            &open(),
+            &star(),
+            None,
+            b"agent:ada",
+            &registry(),
+            &mut transport,
+            Some(&ambient),
+        )
+        .expect("door action");
+
+        let context = dispatched.envelope().context.as_ref().expect("context");
+        assert_eq!(context.action_label, "Star");
+        assert_eq!(context.purpose.as_deref(), Some("Prepare launch"));
+        assert_eq!(
+            context.group.as_ref().map(|group| group.id.as_str()),
+            Some("issue:42")
+        );
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str()),
+            Some("notes.note:1")
+        );
     }
 
     /// Resource ids carry colons, so the address separator has to be something

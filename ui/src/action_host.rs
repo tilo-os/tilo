@@ -39,11 +39,19 @@ pub struct ActionHost {
     /// [`ActionSpec`](qos_actions::ActionSpec) build the byte-identical
     /// action.
     last_dispatched: Option<EncodedAction>,
+    ambient_context: Option<ActionContext>,
 }
 
 impl ActionHost {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Set task/session provenance inherited by later dispatches. Concrete
+    /// action/resource fields always win; this is primarily for purpose and
+    /// work-group metadata supplied by an agent run or issue context.
+    pub fn set_ambient_context(&mut self, context: Option<ActionContext>) {
+        self.ambient_context = context;
     }
 
     /// Brackets the undo boundary on the *first* action of the event only
@@ -102,6 +110,11 @@ impl ActionHost {
         self.last_dispatched = Some(encoded.clone());
         let mut transport = qos_actions::LocalTransport::new();
         let actor = doc.get_actor().to_bytes().to_vec();
+        let context = match (context, self.ambient_context.as_ref()) {
+            (Some(context), Some(ambient)) => Some(context.enriched_by(ambient)),
+            (None, Some(ambient)) => Some(ambient.clone()),
+            (context, None) => context,
+        };
         let result = match context {
             Some(context) => qos_actions::dispatch_by_with_context(
                 doc,
@@ -277,5 +290,43 @@ mod tests {
             .and_then(|message| ActionContext::from_change_message(message))
             .expect("context embedded in change");
         assert_eq!(context.summary().as_deref(), Some("Set score · Score"));
+    }
+
+    #[test]
+    fn ambient_task_context_enriches_explicit_action_context() {
+        let mut doc = AutoCommit::new();
+        let mut host = ActionHost::new();
+        host.set_ambient_context(Some(
+            ActionContext::default()
+                .with_purpose("Prepare launch")
+                .with_group("issue:42", "Launch", "issue"),
+        ));
+        host.dispatch_with_context(
+            &mut doc,
+            PUT_TYPE,
+            &Put {
+                key: "k".into(),
+                value: 1,
+            },
+            ActionContext::for_resource("Set", "counter", "counter", "Counter"),
+        );
+        let heads = doc.get_heads();
+        let change = doc.get_change_by_hash(&heads[0]).unwrap();
+        let context = change
+            .message()
+            .and_then(|message| ActionContext::from_change_message(message))
+            .unwrap();
+        assert_eq!(context.purpose.as_deref(), Some("Prepare launch"));
+        assert_eq!(
+            context.group.as_ref().map(|group| group.id.as_str()),
+            Some("issue:42")
+        );
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str()),
+            Some("counter")
+        );
     }
 }
