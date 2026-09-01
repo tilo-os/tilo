@@ -1364,7 +1364,7 @@ impl GitClientApp {
         let bg = if armed {
             c.semantic.danger
         } else {
-            c.surface_white_10
+            c.lift(0.72)
         };
         let fg = if armed {
             Color::WHITE
@@ -1594,7 +1594,7 @@ impl GitClientApp {
             if enabled {
                 theme.accent_primary
             } else {
-                c.surface_white_10
+                c.lift(0.72)
             },
         );
         let fg = if enabled { Color::WHITE } else { c.neutral[5] };
@@ -1752,7 +1752,7 @@ impl GitClientApp {
             if enabled {
                 theme.accent_primary
             } else {
-                c.surface_white_10
+                c.lift(0.72)
             },
         );
         let fg = if enabled { Color::WHITE } else { c.neutral[5] };

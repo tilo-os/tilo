@@ -635,7 +635,7 @@ impl PeerSyncOverlay {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.surface_white_5,
+                colors.lift(0.35),
                 None,
                 &RoundedRect::from_rect(row, f64::from(theme.tokens.radii.sm)),
             );
@@ -671,7 +671,7 @@ impl PeerSyncOverlay {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    colors.surface_white_5,
+                    colors.lift(0.35),
                     None,
                     &RoundedRect::from_rect(button_rect, button_rect.height() / 2.0),
                 );
@@ -811,7 +811,7 @@ impl PeerSyncOverlay {
                 if primary {
                     colors.accent[5]
                 } else {
-                    colors.surface_white_5
+                    colors.lift(0.35)
                 },
                 None,
                 &RoundedRect::from_rect(brect, bh / 2.0),
@@ -976,7 +976,7 @@ fn draw_naming(
     y += f64::from(body) + 8.0;
     let field = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + 38.0);
     let rr = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.sm));
-    scene.fill(Fill::NonZero, transform, colors.surface_white_5, None, &rr);
+    scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &rr);
     scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         transform,
@@ -1198,7 +1198,7 @@ fn draw_person(
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
             transform,
-            colors.border_white_10,
+            ui::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
             None,
             &vello::kurbo::Circle::new(center, 16.0),
         );
@@ -1243,7 +1243,7 @@ fn draw_code(
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.surface_white_5,
+        colors.lift(0.35),
         None,
         &RoundedRect::from_rect(field, f64::from(theme.tokens.radii.md)),
     );

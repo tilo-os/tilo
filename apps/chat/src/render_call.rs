@@ -209,7 +209,13 @@ impl ChatApp {
         );
         let body = ui::surface::soft_outline(panel);
         scene.fill(Fill::NonZero, tf, c.neutral[1], None, &body);
-        scene.stroke(&Stroke::new(1.0), tf, c.border_white_10, None, &body);
+        scene.stroke(
+            &Stroke::new(1.0),
+            tf,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            None,
+            &body,
+        );
 
         // Title bar doubles as the DRAG HANDLE — grab it to move the overlay.
         let title_bar = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 30.0);
@@ -264,7 +270,14 @@ impl ChatApp {
         if host_talking {
             stroke_round(scene, tf, v, 10.0, c.semantic.success, 2.5);
         } else {
-            stroke_round(scene, tf, v, 10.0, c.border_white_20, 1.0);
+            stroke_round(
+                scene,
+                tf,
+                v,
+                10.0,
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
+                1.0,
+            );
         }
         Self::name_plate(scene, tf, tr, theme, v, "You", self.call.muted);
 
@@ -537,7 +550,10 @@ impl ChatApp {
         // The host active-speaker treatment is shared by both layouts: a bright
         // ring while transmitting, a hairline otherwise.
         let (ring_col, ring_w) = if self.call.muted {
-            (c.border_white_20, 1.5)
+            (
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
+                1.5,
+            )
         } else {
             (c.semantic.success, 2.5)
         };
@@ -609,8 +625,15 @@ impl ChatApp {
         fill_round(scene, tf, rect, radius, c.neutral[1]);
         let margin = (rect.width().min(rect.height()) * 0.14).min(90.0);
         let inner = rect.inflate(-margin, -margin);
-        fill_round(scene, tf, inner, radius, c.surface_white_5);
-        stroke_round(scene, tf, inner, radius, c.border_white_10, 1.0);
+        fill_round(scene, tf, inner, radius, c.lift(0.35));
+        stroke_round(
+            scene,
+            tf,
+            inner,
+            radius,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
 
         // Drawn monitor icon, centred a touch above the middle.
         let gw = (rect.height() * 0.20).clamp(44.0, 120.0);
@@ -746,7 +769,14 @@ impl ChatApp {
         // never runs off either edge.
         let (bar, buttons) = self.overlay_controls_layout();
         fill_round(scene, tf, bar, 16.0, c.neutral[1]);
-        stroke_round(scene, tf, bar, 16.0, c.border_white_10, 1.0);
+        stroke_round(
+            scene,
+            tf,
+            bar,
+            16.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
         for (label_txt, on, danger, enabled, hit, r) in buttons {
             let hovered = self.call_control_is_hovered(&hit);
             Self::ctl(
@@ -981,7 +1011,14 @@ impl ChatApp {
             if p.sharing {
                 Self::presenter_badge(scene, tf, theme, rect);
             }
-            stroke_round(scene, tf, rect, 14.0, c.border_white_10, 1.0);
+            stroke_round(
+                scene,
+                tf,
+                rect,
+                14.0,
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+                1.0,
+            );
             return;
         }
         if let Some(u) = u {
@@ -1026,7 +1063,14 @@ impl ChatApp {
         if p.sharing {
             Self::presenter_badge(scene, tf, theme, rect);
         }
-        stroke_round(scene, tf, rect, 14.0, c.border_white_10, 1.0);
+        stroke_round(
+            scene,
+            tf,
+            rect,
+            14.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
     }
 
     /// A small monitor badge in a participant tile's top-right marking them as
@@ -1105,7 +1149,7 @@ impl ChatApp {
         let c = &theme.tokens.colors;
         let (bg, fg) = if !enabled {
             (
-                c.surface_white_10.with_alpha_factor(0.45),
+                c.lift(0.72).with_alpha_factor(0.45),
                 c.text_dim.with_alpha_factor(0.45),
             )
         } else if danger && hovered {
@@ -1115,9 +1159,9 @@ impl ChatApp {
         } else if on {
             (c.accent[5], Color::WHITE)
         } else if hovered {
-            (c.surface_white_20, c.text_primary)
+            (c.lift(1.0), c.text_primary)
         } else {
-            (c.surface_white_10, c.text_primary)
+            (c.lift(0.72), c.text_primary)
         };
         fill_round(scene, tf, rect, 9.0, bg);
         if hovered {
@@ -1129,7 +1173,7 @@ impl ChatApp {
                 if danger {
                     c.semantic.danger
                 } else {
-                    c.border_white_20
+                    ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51)
                 },
                 1.0,
             );
@@ -1191,7 +1235,14 @@ impl ChatApp {
             Color::from_rgba8(0, 0, 0, 70),
         );
         fill_round(scene, tf, panel, 14.0, c.neutral[1]);
-        stroke_round(scene, tf, panel, 14.0, c.border_white_10, 1.0);
+        stroke_round(
+            scene,
+            tf,
+            panel,
+            14.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
 
         let title = if self.emoji_target.is_some() {
             "Add reaction"
@@ -1356,7 +1407,14 @@ impl ChatApp {
             Color::from_rgba8(0, 0, 0, 70),
         );
         fill_round(scene, tf, panel, 14.0, c.neutral[1]);
-        stroke_round(scene, tf, panel, 14.0, c.border_white_10, 1.0);
+        stroke_round(
+            scene,
+            tf,
+            panel,
+            14.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
         label(
             scene,
             tr,

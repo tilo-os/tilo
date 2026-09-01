@@ -2228,7 +2228,7 @@ impl CalendarApp {
             if active {
                 fill_round(scene, t, c.accent[5].with_alpha(0.18), row, 8.0);
             } else if row.contains(self.last_mouse) {
-                fill_round(scene, t, c.surface_white_5, row, 8.0);
+                fill_round(scene, t, c.lift(0.35), row, 8.0);
             }
             // bullet
             scene.fill(
@@ -2274,7 +2274,7 @@ impl CalendarApp {
             if active {
                 fill_round(scene, t, c.accent[5].with_alpha(0.18), row, 8.0);
             } else if row.contains(self.last_mouse) {
-                fill_round(scene, t, c.surface_white_5, row, 8.0);
+                fill_round(scene, t, c.lift(0.35), row, 8.0);
             }
             // colour tag
             fill_round(
@@ -2344,7 +2344,7 @@ impl CalendarApp {
             );
             let sync = Rect::new(r.x1 - pad - 44.0, y - 4.0, r.x1 - pad, y + 16.0);
             if sync.contains(self.last_mouse) {
-                fill_round(scene, t, c.surface_white_5, sync, 6.0);
+                fill_round(scene, t, c.lift(0.35), sync, 6.0);
             }
             tr.draw_text(
                 scene,
@@ -2362,7 +2362,7 @@ impl CalendarApp {
                 // account's calendar list (management itself lives in Settings).
                 let header = Rect::new(r.x0 + 10.0, y - 4.0, r.x1 - 10.0, y + 18.0);
                 if header.contains(self.last_mouse) {
-                    fill_round(scene, t, c.surface_white_5, header, 6.0);
+                    fill_round(scene, t, c.lift(0.35), header, 6.0);
                 }
                 draw_caret(
                     scene,
@@ -2387,7 +2387,7 @@ impl CalendarApp {
                 for cal in &acc.calendars {
                     let row = Rect::new(r.x0 + 10.0, y, r.x1 - 10.0, y + 30.0);
                     if row.contains(self.last_mouse) {
-                        fill_round(scene, t, c.surface_white_5, row, 6.0);
+                        fill_round(scene, t, c.lift(0.35), row, 6.0);
                     }
                     // Colour swatch checkbox: filled when visible, hollow when
                     // hidden. The whole row toggles visibility.
@@ -2521,7 +2521,7 @@ impl CalendarApp {
                 }
                 let row = Rect::new(r.x0 + 12.0, y, r.x1 - 12.0, y + 30.0);
                 if row.contains(self.last_mouse) {
-                    fill_round(scene, t, c.surface_white_5, row, 6.0);
+                    fill_round(scene, t, c.lift(0.35), row, 6.0);
                 }
                 // Affordance split: the checkbox AND the label text toggle
                 // completion; the open area to their right selects the task to view
@@ -2687,7 +2687,7 @@ impl CalendarApp {
         let weekend = day.weekday().num_days_from_monday() >= 5;
 
         if is_anchor && !is_today {
-            fill_rect(scene, t, c.surface_white_5, cell);
+            fill_rect(scene, t, c.lift(0.35), cell);
         }
         if weekend && in_month {
             fill_rect(scene, t, c.neutral[1].with_alpha(0.35), cell);
@@ -2978,7 +2978,7 @@ impl CalendarApp {
         let c = &theme.tokens.colors;
         let back = Rect::new(r.x0 + 12.0, r.y0 + 12.0, r.x0 + 96.0, r.y0 + 44.0);
         if back.contains(self.last_mouse) {
-            fill_round(scene, t, c.surface_white_5, back, 8.0);
+            fill_round(scene, t, c.lift(0.35), back, 8.0);
         }
         draw_back_arrow(
             scene,
@@ -3417,7 +3417,7 @@ impl CalendarApp {
         {
             let r = f.calendar;
             let bg = if cal_active {
-                c.surface_white_10
+                c.lift(0.72)
             } else {
                 c.surfaces.raised
             };
@@ -4609,7 +4609,7 @@ pub(crate) fn center_text(
 pub(crate) fn draw_icon_button(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, hover: bool) {
     let c = &theme.tokens.colors;
     let bg = if hover {
-        c.surface_white_10
+        c.lift(0.72)
     } else {
         c.surfaces.raised
     };
@@ -4947,7 +4947,7 @@ fn draw_field_button(
 ) {
     let c = &theme.tokens.colors;
     let bg = if active {
-        c.surface_white_10
+        c.lift(0.72)
     } else {
         c.surfaces.raised
     };

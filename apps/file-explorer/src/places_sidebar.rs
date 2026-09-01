@@ -353,7 +353,7 @@ impl PlacesSidebar {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                tokens.colors.surface_white_10,
+                tokens.colors.lift(0.72),
                 None,
                 &RoundedRect::from_rect(pill, f64::from(tokens.radii.md)),
             );
@@ -740,14 +740,14 @@ impl PlacesSidebar {
         scene.fill(
             Fill::NonZero,
             transform,
-            tokens.colors.surface_white_5,
+            tokens.colors.lift(0.35),
             None,
             &self.rect,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_white_10,
+            ui::tokens::colors::Colors::hairline_on(tokens.colors.surfaces.raised, 26),
             None,
             &Line::new((self.rect.x1, self.rect.y0), (self.rect.x1, self.rect.y1)),
         );
