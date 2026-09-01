@@ -101,11 +101,17 @@ impl ActionHost {
         };
         self.last_dispatched = Some(encoded.clone());
         let mut transport = qos_actions::LocalTransport::new();
+        let actor = doc.get_actor().to_bytes().to_vec();
         let result = match context {
-            Some(context) => {
-                qos_actions::dispatch_with_context(doc, action, encoded, &mut transport, context)
-            }
-            None => qos_actions::dispatch(doc, action, encoded, &mut transport),
+            Some(context) => qos_actions::dispatch_by_with_context(
+                doc,
+                action,
+                encoded,
+                &mut transport,
+                Some(&actor),
+                context,
+            ),
+            None => qos_actions::dispatch_by(doc, action, encoded, &mut transport, Some(&actor)),
         };
         if let Err(e) = result {
             tracing::warn!(error = %e, type_id = %type_id, "action dispatch failed");
@@ -167,6 +173,31 @@ mod tests {
             doc.get(&ROOT, "score").unwrap().unwrap().0.to_i64(),
             Some(42)
         );
+    }
+
+    #[test]
+    fn direct_actions_keep_the_clicking_documents_actor() {
+        let actor = automerge::ActorId::from(vec![7, 8, 9, 10]);
+        let mut doc = AutoCommit::new().with_actor(actor.clone());
+        let mut host = ActionHost::new();
+        host.dispatch_with_context(
+            &mut doc,
+            PUT_TYPE,
+            &Put {
+                key: "score".into(),
+                value: 42,
+            },
+            ActionContext::for_action(
+                "org.qos.Test",
+                "Test",
+                &Put {
+                    key: "score".into(),
+                    value: 42,
+                },
+            ),
+        );
+        let changes = doc.get_changes(&[]);
+        assert_eq!(changes.last().map(|change| change.actor_id()), Some(&actor));
     }
 
     #[test]
