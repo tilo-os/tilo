@@ -55,6 +55,8 @@ jobs:
       full: ${{ steps.plan.outputs.full }}
       selected_count: ${{ steps.plan.outputs.selected_count }}
       workspace_count: ${{ steps.plan.outputs.workspace_count }}
+      estimated_cost: ${{ steps.plan.outputs.estimated_cost }}
+      shard_count: ${{ steps.plan.outputs.shard_count }}
     steps:
       - name: Checkout complete history for change selection
         uses: actions/checkout@v4
