@@ -90,6 +90,14 @@ pub mod qr {
     include!("../../qos-dev/templates/qr.rs");
 }
 
+pub mod generated_form_component {
+    include!(concat!(env!("OUT_DIR"), "/profile_card.rs"));
+}
+
+pub mod generated_display_component {
+    include!(concat!(env!("OUT_DIR"), "/activity_card.rs"));
+}
+
 pub mod screens {
     use ui::widget::Widget;
     use ui::{RouteError, RouteHandle, Router, Theme, UiBuildContext, UiGraphError, UiGraphHandle};
