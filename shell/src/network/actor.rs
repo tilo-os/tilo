@@ -800,10 +800,6 @@ fn spawn_host_pump(
             let event = match inbound {
                 HostInbound::Ready { .. } => HostEvent::Ready,
                 HostInbound::Delta { author, data }
-                | HostInbound::SignedDelta {
-                    author,
-                    op_bytes: data,
-                }
                 | HostInbound::Presence {
                     author,
                     payload: data,
