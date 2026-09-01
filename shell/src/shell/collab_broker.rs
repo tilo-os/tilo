@@ -459,6 +459,7 @@ impl BrokerHandle {
         );
     }
 
+    #[must_use]
     pub fn follow_dispatcher(&self) -> SessionFollowDispatcher {
         SessionFollowDispatcher {
             fanout: Arc::clone(&self.fanout),
@@ -1159,6 +1160,33 @@ mod tests {
             vec![(format!("peer@{HANDLE}"), "bob".to_string())],
             "the room's name is announced exactly once, against the id \
              both frames arrived under",
+        );
+    }
+
+    #[test]
+    fn follow_dispatcher_is_local_and_room_scoped() {
+        let table = Arc::new(super::FanoutState::new());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = Arc::clone(&seen);
+        let _sub = table.subscribe_rooms(
+            vec!["room-1".to_string()],
+            Box::new(move |event, _route| {
+                if let CollabEvent::FollowChanged { peer_id } = event
+                    && let Ok(mut rows) = sink_seen.lock()
+                {
+                    rows.push(peer_id.clone());
+                }
+            }),
+        );
+        let dispatcher = super::SessionFollowDispatcher {
+            fanout: Arc::clone(&table),
+        };
+        dispatcher.set("room-2", Some("peer@wrong".into()));
+        dispatcher.set("room-1", Some("peer@7".into()));
+        dispatcher.set("room-1", None);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[Some("peer@7".to_string()), None]
         );
     }
 
