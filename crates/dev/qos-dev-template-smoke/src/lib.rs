@@ -110,6 +110,10 @@ pub mod generated_table_component {
     include!(concat!(env!("OUT_DIR"), "/results_table.rs"));
 }
 
+pub mod generated_text_component {
+    include!(concat!(env!("OUT_DIR"), "/article_body.rs"));
+}
+
 pub mod screens {
     use ui::widget::Widget;
     use ui::{RouteError, RouteHandle, Router, Theme, UiBuildContext, UiGraphError, UiGraphHandle};
