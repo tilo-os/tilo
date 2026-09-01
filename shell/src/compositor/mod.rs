@@ -167,6 +167,22 @@ pub fn parse_firstboot(args: &[&str]) -> bool {
     args.contains(&"--firstboot")
 }
 
+/// Process-global wrapper around [`parse_firstboot_only`]. This is the
+/// system-unit entry point: perform idempotent first-boot setup and exit
+/// without attempting to run a compositor.
+pub fn parse_firstboot_only_from_args() -> bool {
+    let owned: Vec<String> = std::env::args().skip(1).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
+    parse_firstboot_only(&borrowed)
+}
+
+/// Pure, testable parser for the system-unit-only first-boot entry point.
+/// Unlike [`parse_firstboot`], this flag never falls through to compositor
+/// startup.
+pub fn parse_firstboot_only(args: &[&str]) -> bool {
+    args.contains(&"--firstboot-only")
+}
+
 /// Process-global wrapper around [`parse_provision_identity`].
 pub fn parse_provision_identity_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
@@ -400,6 +416,25 @@ mod tests {
         assert!(parse_firstboot(&["--firstboot"]));
         assert!(parse_firstboot(&["--firstboot", "--mode", "native"]));
         assert!(parse_firstboot(&["--mode=native", "--firstboot"]));
+    }
+
+    // --firstboot-only
+
+    #[test]
+    fn firstboot_only_default_false() {
+        assert!(!parse_firstboot_only(&[]));
+        assert!(!parse_firstboot_only(&["--firstboot"]));
+        assert!(!parse_firstboot_only(&["--mode", "native"]));
+    }
+
+    #[test]
+    fn firstboot_only_flag_present_anywhere() {
+        assert!(parse_firstboot_only(&["--firstboot-only"]));
+        assert!(parse_firstboot_only(&[
+            "--mode",
+            "native",
+            "--firstboot-only"
+        ]));
     }
 
     // peer-sync marker file

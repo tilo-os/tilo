@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use automerge::{ScalarValue, transaction::Transactable};
 use shell::onboarding::MintedIdentity;
-use shell::onboarding_view::{KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD, OnboardingView};
+use shell::onboarding_view::{KEY_BEGIN, KEY_CONNECT, KEY_CREATE, KEY_UNDERSTOOD, OnboardingView};
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use ui::State;
 use ui::offscreen::OffscreenRenderer;
@@ -30,20 +30,18 @@ use vello::kurbo::{Affine, Point};
 
 const WIDTH: u32 = 1000;
 const HEIGHT: u32 = 720;
-// `as f32` on compile-time canvas-size literals: 1000/720 are exactly
-// representable, well under f32's 24-bit mantissa headroom.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "WIDTH/HEIGHT are small compile-time constants, exactly representable in f32"
-)]
-const WIDTH_F32: f32 = WIDTH as f32;
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "WIDTH/HEIGHT are small compile-time constants, exactly representable in f32"
-)]
-const HEIGHT_F32: f32 = HEIGHT as f32;
 
-fn shoot(theme: &Theme, out: &Path, steps: &[&str]) -> Result<(), String> {
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "snapshot dimensions are small renderer sizes and exactly representable"
+)]
+fn shoot(
+    theme: &Theme,
+    out: &Path,
+    steps: &[&str],
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
     let mut state = State::new();
     let mut view = OnboardingView::with_minter(Box::new(|| {
         Ok(MintedIdentity {
@@ -69,8 +67,8 @@ fn shoot(theme: &Theme, out: &Path, steps: &[&str]) -> Result<(), String> {
         .compute_layout_with_measure(
             node,
             Size {
-                width: AvailableSpace::Definite(WIDTH_F32),
-                height: AvailableSpace::Definite(HEIGHT_F32),
+                width: AvailableSpace::Definite(width as f32),
+                height: AvailableSpace::Definite(height as f32),
             },
             |known, available, node_id, _, _| {
                 node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
@@ -87,12 +85,13 @@ fn shoot(theme: &Theme, out: &Path, steps: &[&str]) -> Result<(), String> {
     // so this is the steady state the user actually looks at rather than the
     // single frame in which the tree was rebuilt.
     view.sync(&mut state.doc, &state.root);
+    view.settle_motion_for_snapshot();
 
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
     view.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
-    let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
+    let mut r = OffscreenRenderer::new(width, height);
     r.render_png(&scene, theme.bg_app, out);
     println!("wrote {}", out.display());
     Ok(())
@@ -105,24 +104,62 @@ fn main() -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("create_dir_all({dir}): {e}"))?;
     let dir = PathBuf::from(dir);
 
-    for (theme, suffix) in [(Theme::dark(), "dark"), (Theme::light(), "light")] {
-        shoot(&theme, &dir.join(format!("1-intro-{suffix}.png")), &[])?;
+    for (theme, suffix) in [
+        (Theme::dark(), "dark"),
+        (Theme::light(), "light"),
+        (Theme::high_contrast(), "high-contrast"),
+    ] {
         shoot(
             &theme,
-            &dir.join(format!("2-no-recovery-{suffix}.png")),
+            &dir.join(format!("1-intro-{suffix}.png")),
+            &[],
+            WIDTH,
+            HEIGHT,
+        )?;
+        shoot(
+            &theme,
+            &dir.join(format!("2-connect-{suffix}.png")),
+            &[KEY_CONNECT],
+            WIDTH,
+            HEIGHT,
+        )?;
+        shoot(
+            &theme,
+            &dir.join(format!("3-no-recovery-{suffix}.png")),
             &[KEY_BEGIN],
+            WIDTH,
+            HEIGHT,
         )?;
         // The gate, ticked — the primary action becomes available only here.
         shoot(
             &theme,
-            &dir.join(format!("3-acknowledged-{suffix}.png")),
+            &dir.join(format!("4-acknowledged-{suffix}.png")),
             &[KEY_BEGIN, KEY_UNDERSTOOD],
+            WIDTH,
+            HEIGHT,
         )?;
         shoot(
             &theme,
-            &dir.join(format!("4-done-{suffix}.png")),
+            &dir.join(format!("5-done-{suffix}.png")),
             &[KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE],
+            WIDTH,
+            HEIGHT,
         )?;
     }
+
+    shoot(
+        &Theme::dark(),
+        &dir.join("6-intro-narrow-dark.png"),
+        &[],
+        420,
+        640,
+    )?;
+    shoot(
+        &Theme::dark().with_reduce_motion(true),
+        &dir.join("7-no-recovery-reduced-motion.png"),
+        &[KEY_BEGIN],
+        800,
+        600,
+    )?;
     Ok(())
 }
