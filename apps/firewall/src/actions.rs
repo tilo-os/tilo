@@ -392,6 +392,7 @@ fn config_contract() -> ActionContract {
     ActionContract {
         permission: PermissionRequirement::Admin,
         risk: RiskLevel::Privileged,
+        confirmation: ConfirmationPolicy::Confirm,
         retry: RetryPolicy::Idempotent,
         reversible: true,
         tags: vec!["security".into(), "firewall".into()],
@@ -427,6 +428,8 @@ pub fn provide_resources(config: &FirewallConfig) -> Vec<Resource> {
             confirmation: ConfirmationPolicy::Confirm,
             retry: RetryPolicy::Idempotent,
             discovery: DiscoveryScope::Launchable,
+            execution: qos_actions::ExecutionMode::Background { cancellable: true },
+            result: qos_actions::ResultSpec::Job,
             tags: vec!["security".into(), "firewall".into()],
             ..ActionContract::default()
         }),
@@ -450,6 +453,8 @@ pub fn provide_resources(config: &FirewallConfig) -> Vec<Resource> {
             permission: PermissionRequirement::Admin,
             risk: RiskLevel::Privileged,
             retry: RetryPolicy::Idempotent,
+            execution: qos_actions::ExecutionMode::Background { cancellable: true },
+            result: qos_actions::ResultSpec::Job,
             tags: vec!["security".into(), "firewall".into()],
             ..ActionContract::default()
         }),
