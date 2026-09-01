@@ -19,8 +19,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     AudioProxyLease, VmAvailability, VmDelegate, VmInstallCandidate, VmInstallation,
-    VmInstallationPhase, VmInstallerInput, VmInstallerKind, VmInventory, VmPublishedApplication,
-    VmRouteRequest, VmSharedSessionContributor, VmSharedSessionGrantKind,
+    VmInstallationPhase, VmInstallerInput, VmInstallerKind, VmInventory, VmPresentation,
+    VmPublishedApplication, VmRouteRequest, VmSharedSessionContributor, VmSharedSessionGrantKind,
     VmSharedSessionLeaseSummary,
 };
 
@@ -314,31 +314,19 @@ impl VmPortalAuthority for CanonicalRailPortalAuthority {
 /// only the materialised result.
 pub struct CanonicalRailCapabilityBroker {
     next: AtomicU64,
-    network_leases: Mutex<Option<SharedNetworkProxy>>,
-}
-
-struct SharedNetworkProxy {
-    proxy: windows_vm::GuestNetworkProxy,
-    leases: BTreeMap<String, Vec<String>>,
-}
-
-impl SharedNetworkProxy {
-    fn union(&self) -> Vec<String> {
-        self.leases
-            .values()
-            .flatten()
-            .cloned()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect()
-    }
+    /// Every launch receives a distinct host listener/token/policy. This
+    /// prevents the host relay from silently broadening its requested policy,
+    /// but does not make programs in the persistent shared Windows user
+    /// session mutually distrustful: active redirects are an effective union
+    /// within that guest session.
+    network_leases: Mutex<BTreeMap<String, windows_vm::GuestNetworkProxy>>,
 }
 
 impl Default for CanonicalRailCapabilityBroker {
     fn default() -> Self {
         Self {
             next: AtomicU64::new(0),
-            network_leases: Mutex::new(None),
+            network_leases: Mutex::new(BTreeMap::new()),
         }
     }
 }
@@ -358,37 +346,20 @@ impl windows_vm::CapabilityBroker for CanonicalRailCapabilityBroker {
         let sequence = self.next.fetch_add(1, Ordering::Relaxed);
         let lease_id = format!("rail-{}-{sequence}", std::process::id());
         let (network_proxy, network_binding) = if request.grants.network {
-            let mut slot = self.network_leases.lock().map_err(|_| {
+            let mut leases = self.network_leases.lock().map_err(|_| {
                 windows_vm::LaunchError::CapabilityBroker(
                     "Windows network lease state is unavailable".to_string(),
                 )
             })?;
-            let session = if let Some(session) = slot.as_mut() {
-                session
-            } else {
-                *slot = Some(SharedNetworkProxy {
-                    proxy: windows_vm::GuestNetworkProxy::start(
-                        request.grants.network_hosts.clone(),
-                    )
-                    .map_err(|error| {
-                        windows_vm::LaunchError::CapabilityBroker(error.to_string())
-                    })?,
-                    leases: BTreeMap::new(),
-                });
-                slot.as_mut().ok_or_else(|| {
-                    windows_vm::LaunchError::CapabilityBroker(
-                        "Windows network proxy could not be installed".to_string(),
-                    )
-                })?
-            };
-            session
-                .leases
-                .insert(lease_id.clone(), request.grants.network_hosts.clone());
-            session
-                .proxy
-                .replace_hosts(session.union())
+            let proxy = windows_vm::GuestNetworkProxy::start(request.grants.network_hosts.clone())
                 .map_err(|error| windows_vm::LaunchError::CapabilityBroker(error.to_string()))?;
-            let binding = session.proxy.binding().clone();
+            let binding = proxy.binding().clone();
+            if leases.insert(lease_id.clone(), proxy).is_some() {
+                return Err(windows_vm::LaunchError::CapabilityBroker(
+                    "Windows network lease identifier was reused".to_string(),
+                ));
+            }
+            drop(leases);
             (true, Some(binding))
         } else {
             (false, None)
@@ -404,17 +375,10 @@ impl windows_vm::CapabilityBroker for CanonicalRailCapabilityBroker {
     }
 
     fn revoke(&self, lease_id: &str) {
-        if let Ok(mut slot) = self.network_leases.lock()
-            && let Some(session) = slot.as_mut()
-        {
-            session.leases.remove(lease_id);
-            if session.leases.is_empty() {
-                // Drop before returning: listener and token cease to exist
-                // before shared-session UI removes the last lease.
-                *slot = None;
-            } else {
-                let _ = session.proxy.replace_hosts(session.union());
-            }
+        if let Ok(mut leases) = self.network_leases.lock() {
+            // Dropping a lease proxy wakes the listener and terminates all
+            // established TCP tunnels belonging to this lease only.
+            leases.remove(lease_id);
         }
     }
 }
@@ -676,6 +640,24 @@ impl ActiveVmUninstallation {
 }
 
 impl<B, A, C, L, P> LiveVmDelegate<B, A, C, L, P> {
+    fn require_no_active_uninstallation(&self) -> Result<(), windows_vm::LaunchError> {
+        let uninstaller = self.uninstaller.lock().map_err(|_| {
+            windows_vm::LaunchError::CapabilityBroker(
+                "Windows uninstaller state is unavailable".to_string(),
+            )
+        })?;
+        if uninstaller
+            .as_ref()
+            .is_some_and(|active| !active.is_terminal())
+        {
+            return Err(windows_vm::LaunchError::InvalidRequest(
+                "Windows uninstallation is in progress",
+            ));
+        }
+        drop(uninstaller);
+        Ok(())
+    }
+
     #[must_use]
     pub fn new(
         appliance: windows_vm::WindowsAppliance<B, A, C, L>,
@@ -758,7 +740,14 @@ where
                         app_id: vm_app_id(&application.id),
                         published_application_id: application.id.clone(),
                         display_name: application.display_name.clone(),
-                        presentation: self.presentation.to_string(),
+                        presentation: match self.presentation {
+                            windows_vm::ApplicationPresentation::NativeRail => {
+                                VmPresentation::NativeRail
+                            }
+                            windows_vm::ApplicationPresentation::AppFocusedSpice => {
+                                VmPresentation::AppFocusedSpice
+                            }
+                        },
                         uninstall_available: application.uninstall_available,
                     })
                     .collect()
@@ -785,6 +774,7 @@ where
                 "singleton Windows launch gate is unavailable".to_string(),
             )
         })?;
+        self.require_no_active_uninstallation()?;
         let package = windows_vm::InstallerPackage::new(
             match input.kind {
                 VmInstallerKind::Exe => windows_vm::InstallerKind::Exe,
@@ -982,6 +972,14 @@ where
         workspace_id: &str,
         entry_id: &str,
     ) -> Result<crate::VmUninstallation, windows_vm::LaunchError> {
+        // Serialise the start of uninstall with every launch/install check.
+        // Once this transaction is recorded, those paths continue to reject
+        // until guest status reaches a terminal state.
+        let _launch_guard = self.launch_gate.lock().map_err(|_| {
+            windows_vm::LaunchError::CapabilityBroker(
+                "singleton Windows launch gate is unavailable".to_string(),
+            )
+        })?;
         let uninstaller = self.uninstaller.lock().map_err(|_| {
             windows_vm::LaunchError::CapabilityBroker(
                 "Windows uninstaller state is unavailable".to_string(),
@@ -1041,6 +1039,7 @@ where
                 "singleton Windows launch gate is unavailable".to_string(),
             )
         })?;
+        self.require_no_active_uninstallation()?;
         // The catalogue itself is the only source allowed to select the VM.
         // This prevents a manager-side route override from using the VM as an
         // arbitrary executable runner.
@@ -1074,6 +1073,7 @@ where
                 "singleton Windows launch gate is unavailable".to_string(),
             )
         })?;
+        self.require_no_active_uninstallation()?;
         if request.route != crate::RouteKind::Vm {
             return Err(windows_vm::LaunchError::InvalidRequest("VM route"));
         }
@@ -1337,7 +1337,8 @@ mod tests {
                     shares: vec![windows_vm::ShareBinding {
                         drive_name: "QOS1".to_string(),
                         portal_document_id: "portal-document".to_string(),
-                        host_path: "/run/qos/windows-vm/leases/server-lease/portal-document".into(),
+                        host_path: windows_vm::portal_lease_root()
+                            .join("server-lease/portal-document"),
                         read_only: true,
                     }],
                 })

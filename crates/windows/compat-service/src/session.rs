@@ -792,9 +792,7 @@ where
                 Err(SessionError::UnknownEntry)
             }
         }
-        ProtocolRequest::LaunchVmWithPortalFile {
-            entry_id, writable, ..
-        } => {
+        ProtocolRequest::LaunchVmWithPortalFile { entry_id, .. } => {
             if !valid_id(&entry_id) || !allowed_entry_ids.contains(&entry_id) {
                 return Err(SessionError::UnknownEntry);
             }
@@ -815,11 +813,10 @@ where
                     &capabilities,
                     now_unix(),
                     source,
-                    if writable {
-                        windows_vm::PortalDocumentAccess::ReadWrite
-                    } else {
-                        windows_vm::PortalDocumentAccess::ReadOnly
-                    },
+                    // This protocol action is intentionally read-only. A
+                    // future write-back action must have a distinct portal
+                    // decision rather than trusting a client-supplied bit.
+                    windows_vm::PortalDocumentAccess::ReadOnly,
                 )
                 .map(|receipt| ProtocolResponse::Launched { receipt })
         }
@@ -1054,6 +1051,11 @@ where
                 "Open in Windows VM is available only for published Windows guest applications."
                     .to_string(),
             ),
+            presentation: None,
+            portal_file_open_available: false,
+            portal_file_open_unavailable_reason: Some(
+                "Open file is available only for published Windows guest applications.".to_string(),
+            ),
             // The resource broker gives every Wine/UMU launch a fresh
             // playback-only PipeWire/Pulse graph. A startup failure is a
             // launch error, not an imaginary unavailable feature in the UI.
@@ -1076,10 +1078,19 @@ where
             publisher: "Managed Windows appliance".to_string(),
             capsule_id: None,
             program_id: application.published_application_id,
-            explanation: published_vm_explanation(&application.presentation),
+            explanation: published_vm_explanation(application.presentation.label()),
             vm_launch_available: vm_availability.available,
             vm_unavailable_reason: (!vm_availability.available)
                 .then(|| vm_availability.detail.clone()),
+            presentation: Some(application.presentation),
+            portal_file_open_available: application.presentation.supports_portal_files()
+                && vm_availability.available,
+            portal_file_open_unavailable_reason: (!application.presentation.supports_portal_files())
+                .then(|| {
+                    "Open file is unavailable in app-focused SPICE because this presentation has no portal file bridge."
+                        .to_string()
+                })
+                .or_else(|| (!vm_availability.available).then(|| vm_availability.detail.clone())),
             audio_output_available: true,
             audio_unavailable_reason: None,
             installation_status: None,
@@ -1299,8 +1310,9 @@ impl SessionClient {
     }
 
     /// Send one request together with the already-open file selected by the
-    /// standard qOS/XDG portal. Ancillary data is accepted only by the
-    /// protocol's `install` method.
+    /// standard qOS/XDG portal.  The only consumers are the installation
+    /// flow and the descriptor-only `RemoteApp` file-launch flow; neither ever
+    /// accepts a pathname from the client.
     pub fn request_with_file(
         &mut self,
         request: &ProtocolRequest,
@@ -1311,6 +1323,7 @@ impl SessionClient {
             ProtocolRequest::Install { .. }
                 | ProtocolRequest::InstallInVm { .. }
                 | ProtocolRequest::InstallInCapsule { .. }
+                | ProtocolRequest::LaunchVmWithPortalFile { .. }
         ) {
             return Err(SessionError::DescriptorInvalid);
         }
@@ -1510,7 +1523,7 @@ pub enum SessionError {
     UnknownEntry,
     #[error("the Windows installer confirmation expired; inspect the portal file again")]
     VmInstallConfirmationExpired,
-    #[error("the install request did not carry one portal file descriptor")]
+    #[error("the request did not carry one portal file descriptor")]
     DescriptorMissing,
     #[error("the compatibility request carried invalid ancillary data")]
     DescriptorInvalid,
@@ -1654,6 +1667,49 @@ mod tests {
         let mut bytes = Vec::new();
         received.read_to_end(&mut bytes).unwrap();
         assert_eq!(bytes, b"portal-selected bytes");
+    }
+
+    #[test]
+    fn client_transfers_a_portal_descriptor_for_a_remoteapp_launch() {
+        let (writer, mut reader) = UnixStream::pair().unwrap();
+        let mut client = SessionClient { stream: writer };
+        let mut selected = NamedTempFile::new().unwrap();
+        selected.write_all(b"portal-selected document").unwrap();
+        selected.flush().unwrap();
+
+        let worker = std::thread::spawn(move || {
+            let (request, descriptor) = read_request_frame(&mut reader, MAX_FRAME_BYTES).unwrap();
+            assert!(matches!(
+                request,
+                ProtocolRequest::LaunchVmWithPortalFile { entry_id, .. }
+                    if entry_id == "windows-entry"
+            ));
+            let mut received = File::from(descriptor.expect("SCM_RIGHTS descriptor"));
+            received.rewind().unwrap();
+            let mut bytes = Vec::new();
+            received.read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"portal-selected document");
+            write_frame(
+                &mut reader,
+                &ProtocolResponse::Error {
+                    error: ProtocolError::new("test_complete", "test response"),
+                },
+                MAX_FRAME_BYTES,
+            )
+            .unwrap();
+        });
+
+        let response = client
+            .request_with_file(
+                &ProtocolRequest::LaunchVmWithPortalFile {
+                    version: PROTOCOL_VERSION,
+                    entry_id: "windows-entry".to_string(),
+                },
+                selected.as_file(),
+            )
+            .unwrap();
+        assert!(matches!(response, ProtocolResponse::Error { .. }));
+        worker.join().unwrap();
     }
 
     #[test]
