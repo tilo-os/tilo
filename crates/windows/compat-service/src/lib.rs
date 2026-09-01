@@ -73,5 +73,6 @@ pub use store::{
     InstallationRecord, InstallationStatus, InstallerKind, ProgramKind, RegisteredProgram,
 };
 pub use vm_adapter::{
-    DenyAllVmCapabilityBroker, DenyAllVmPortalAuthority, LiveVmDelegate, VmPortalAuthority,
+    AudioIsolatedSpiceLauncher, DenyAllVmCapabilityBroker, DenyAllVmPortalAuthority,
+    LiveVmDelegate, VmPortalAuthority,
 };
