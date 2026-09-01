@@ -686,6 +686,7 @@ where
         | ProtocolRequest::RefreshVmInstallation { version }
         | ProtocolRequest::RefreshVmUninstallation { version }
         | ProtocolRequest::RetryInstall { version, .. }
+        | ProtocolRequest::EscalateInstallToVm { version, .. }
         | ProtocolRequest::RemoveLauncher { version, .. }
         | ProtocolRequest::VendorUninstall { version, .. }
         | ProtocolRequest::VendorUninstallVm { version, .. }
