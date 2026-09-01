@@ -39,8 +39,7 @@ use uuid::Uuid;
 
 use qos_actions::{
     Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider, ResultSpec,
-    RetryPolicy,
+    ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::FeedsDoc;
@@ -376,8 +375,6 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
     ) {
         let refresh = refresh.with_contract(ActionContract {
             retry: RetryPolicy::Idempotent,
-            execution: ExecutionMode::Background { cancellable: false },
-            result: ResultSpec::Job,
             tags: vec!["network".into(), "refresh".into()],
             ..ActionContract::default()
         });
@@ -547,10 +544,11 @@ mod tests {
             .iter()
             .find(|a| a.id == "refresh-all")
             .unwrap();
-        assert!(matches!(
+        assert_eq!(
             refresh.contract.execution,
-            ExecutionMode::Background { .. }
-        ));
+            qos_actions::ExecutionMode::Immediate
+        );
+        assert_eq!(refresh.contract.result, qos_actions::ResultSpec::None);
 
         let folder = reader
             .children
