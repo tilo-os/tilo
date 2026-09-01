@@ -129,6 +129,9 @@ not register a host binfmt handler, require a privileged runner mutation, or
 leave an emulator installed after the job. It also keeps every emulated build
 in CI rather than on developer machines. Declared Docker volumes are copied
 into the private root before execution, including the Nix image's `/nix` store.
+The package matrix runs at most two targets concurrently; native Cargo builds
+use at most four compiler jobs, while emulated Cargo and Nix builds use two.
+This leaves capacity for main-branch checks on the shared runner pool.
 
 The build is not a generic cross-compile: Cargo and the target package manager
 both execute inside the selected Ubuntu, Debian, Fedora, Arch, or Nix userspace,
