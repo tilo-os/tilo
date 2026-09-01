@@ -6,18 +6,20 @@
 
 use std::collections::BTreeSet;
 use std::fs::File;
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use compat_service::{
-    AudioIsolatedSpiceLauncher, BwrapExecutor, CapabilityAuthority, CapsuleStore,
-    CompatSessionHandle, DenyAllVmCapabilityBroker, DenyAllVmPortalAuthority, HostSession,
-    LauncherAuthenticator, LiveVmDelegate, ManagedCompatibility, ShippedCataloguePaths,
-    SystemResourceBroker, SystemRuntimeRegistry, TrustedLauncherRegistry, VmAvailability,
-    VmCandidatePublication, VmDelegate, VmInstallation, VmInstallerInput, VmInventory,
-    VmRouteRequest, VmUninstallation, load_shipped_catalogue, spawn_session_service,
+    AudioIsolatedRailLauncher, AudioIsolatedSpiceLauncher, BwrapExecutor,
+    CanonicalRailCapabilityBroker, CanonicalRailPortalAuthority, CapabilityAuthority, CapsuleStore,
+    CompatSessionHandle, HostSession, LauncherAuthenticator, LiveVmDelegate, ManagedCompatibility,
+    SharedSessionCapabilityBroker, ShippedCataloguePaths, SystemResourceBroker,
+    SystemRuntimeRegistry, TrustedLauncherRegistry, VmAvailability, VmCandidatePublication,
+    VmDelegate, VmInstallation, VmInstallerInput, VmInventory, VmRouteRequest,
+    VmSharedSessionTracker, VmUninstallation, load_shipped_catalogue, spawn_session_service,
 };
 use windows_vm::{
     ApplianceConfig, ApplicationPresentation, GuestBridgeConfig, HttpsGuestBridge, LibvirtBackend,
@@ -93,12 +95,44 @@ pub struct WindowsCompatHandle {
     registry_refresh: EntryRegistryRefresh,
 }
 
+struct SessionPresentationLauncher {
+    rail: AudioIsolatedRailLauncher<StdCommandRunner>,
+    spice: AudioIsolatedSpiceLauncher<StdCommandRunner>,
+}
+
+impl windows_vm::RemoteAppLauncher for SessionPresentationLauncher {
+    fn launch(
+        &self,
+        guest: &windows_vm::GuestLaunch,
+        brokered: &windows_vm::BrokeredLaunch,
+    ) -> Result<windows_vm::RemoteAppProcess, windows_vm::RemoteAppError> {
+        match guest.presentation {
+            ApplicationPresentation::NativeRail => {
+                windows_vm::RemoteAppLauncher::launch(&self.rail, guest, brokered)
+            }
+            ApplicationPresentation::AppFocusedSpice => {
+                windows_vm::RemoteAppLauncher::launch(&self.spice, guest, brokered)
+            }
+        }
+    }
+}
+
+fn native_rail_surface_available() -> bool {
+    std::process::Command::new("/usr/libexec/qos-windows-rail")
+        .arg("--probe")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 fn live_vm_delegate() -> Result<Arc<dyn VmDelegate>, String> {
     const ROOT: &str = "/var/lib/qos/windows";
     let domain_uuid = std::fs::read_to_string(format!("{ROOT}/domain.uuid"))
         .map_err(|error| format!("could not read singleton VM identity: {error}"))?;
     let domain_uuid = domain_uuid.trim();
-    let presentation = ApplicationPresentation::AppFocusedSpice;
+    let presentation = ApplicationPresentation::select(native_rail_surface_available());
     let configuration = ApplianceConfig::recommended(
         domain_uuid,
         format!("{ROOT}/system.qcow2"),
@@ -117,18 +151,26 @@ fn live_vm_delegate() -> Result<Arc<dyn VmDelegate>, String> {
     })
     .map_err(|error| format!("could not open authenticated guest bridge: {error}"))?;
     let runner = StdCommandRunner;
+    let shared_session = VmSharedSessionTracker::default();
     let appliance = WindowsAppliance::new(
         configuration,
         ProvisioningStore::new(format!("{ROOT}/session/state.json")),
         LibvirtBackend::new(runner),
         bridge,
-        DenyAllVmCapabilityBroker::default(),
-        AudioIsolatedSpiceLauncher::new(runner),
+        SharedSessionCapabilityBroker::new(
+            CanonicalRailCapabilityBroker::default(),
+            shared_session.clone(),
+        ),
+        SessionPresentationLauncher {
+            rail: AudioIsolatedRailLauncher::new(runner),
+            spice: AudioIsolatedSpiceLauncher::new(runner),
+        },
     );
-    Ok(Arc::new(LiveVmDelegate::new(
+    Ok(Arc::new(LiveVmDelegate::with_shared_session_tracker(
         appliance,
-        DenyAllVmPortalAuthority,
+        CanonicalRailPortalAuthority::new(presentation),
         presentation,
+        shared_session,
     )))
 }
 

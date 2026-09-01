@@ -1,6 +1,6 @@
 <#
 The guest endpoint is intentionally small: catalog, health and preparation of
-one single-use RemoteApp credential (or a focused SPICE presentation). It is an HTTPS service bound only to the
+the one persistent managed RemoteApp session (or a focused SPICE presentation). It is an HTTPS service bound only to the
 non-forwarding qOS host-only network. Every request also needs a fresh HMAC
 over timestamp, nonce and body using the bootstrap key installed SYSTEM-only.
 
@@ -15,6 +15,7 @@ $focusRoot = 'C:\ProgramData\qOS\FocusedApp'
 $config = Get-Content -Raw -LiteralPath (Join-Path $root 'bridge.json') | ConvertFrom-Json
 $secret = [IO.File]::ReadAllBytes((Join-Path $root 'bridge.secret'))
 $appsPath = Join-Path $root 'published-applications.json'
+$managedSessionPath = Join-Path $root 'managed-session.json'
 $installerRoot = 'C:\ProgramData\qOS\InstallerSession'
 $processJobHelper = Join-Path $installerRoot 'qOS-ProcessJob.ps1'
 if (-not (Test-Path -LiteralPath $processJobHelper -PathType Leaf)) { throw 'qOS process-job helper is missing' }
@@ -70,6 +71,21 @@ function Require-RequestAuth($context, [string]$body) {
     }
 }
 
+function Get-ManagedSession() {
+    if (-not (Test-Path -LiteralPath $managedSessionPath -PathType Leaf)) { throw 'managed qOS session configuration is missing' }
+    $session = Get-Content -Raw -LiteralPath $managedSessionPath | ConvertFrom-Json
+    $username = [string]$session.username
+    $password = [string]$session.password
+    if ([int]$session.schemaVersion -ne 1 -or $username -notmatch '^[A-Za-z0-9._-]{1,64}$' -or [string]::IsNullOrWhiteSpace($password) -or $password.Length -gt 256) {
+        throw 'managed qOS session configuration is invalid'
+    }
+    $account = Get-LocalUser -Name $username -ErrorAction SilentlyContinue
+    if ($null -eq $account -or -not $account.Enabled -or $account.SID.Value -match '-(500|501|503|504)$') {
+        throw 'managed qOS session account is unavailable'
+    }
+    return @{ username = $username; password = $password }
+}
+
 function Get-ManagedInteractiveUser() {
     # Win32_ComputerSystem.UserName is populated only for the active console
     # session. RDP-only/service sessions do not satisfy the SPICE contract;
@@ -77,6 +93,9 @@ function Get-ManagedInteractiveUser() {
     $user = [string](Get-CimInstance -ClassName Win32_ComputerSystem).UserName
     if ([string]::IsNullOrWhiteSpace($user) -or $user -match '[\x00-\x1f\x7f]') { return $null }
     if ($user -in @('SYSTEM', 'NT AUTHORITY\SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE')) { return $null }
+    $managed = Get-ManagedSession
+    $leaf = if ($user -match '\\') { $user.Substring($user.LastIndexOf('\') + 1) } else { $user }
+    if (-not [string]::Equals($leaf, [string]$managed.username, [StringComparison]::OrdinalIgnoreCase)) { return $null }
     return $user
 }
 
@@ -842,37 +861,15 @@ while ($listener.IsListening) {
                 $requestedPresentation = [string]$request.presentationBackend
                 if ([string]::IsNullOrWhiteSpace($requestedPresentation)) { $requestedPresentation = 'native_rail' }
                 if ($requestedPresentation -notin @('native_rail', 'native_rail_rds', 'native_rail_client_best_effort', 'app_focused_spice')) { throw 'unsupported presentation backend' }
-                # Native RAIL needs a one-use account because it connects to
-                # the guest RDP listener. Focused SPICE attaches to the
-                # singleton VM display instead; creating an account there
-                # would be unnecessary guest state and an accidental second
-                # access path.
+                # Both presentations belong to the same one persistent qOS
+                # identity/session. RAIL reuses its owner-provisioned
+                # credential; focused SPICE never returns that credential.
                 $name = $null
                 $password = $null
                 if ($requestedPresentation -ne 'app_focused_spice') {
-                    $name = "qra$([Guid]::NewGuid().ToString('N').Substring(0, 16))"
-                    $passwordBytes = [byte[]]::new(32)
-                    # .NET Framework (and therefore Windows PowerShell 5.1 on
-                    # supported Windows Server releases) has Create/GetBytes but
-                    # not the newer static RandomNumberGenerator.Fill API.
-                    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
-                    try { $rng.GetBytes($passwordBytes) }
-                    finally { $rng.Dispose() }
-                    $password = [Convert]::ToBase64String($passwordBytes) + '!qA1'
-                    $secure = ConvertTo-SecureString $password -AsPlainText -Force
-                    New-LocalUser -Name $name -Password $secure -AccountNeverExpires -PasswordNeverExpires | Out-Null
-                    Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $name
-                    $when = (Get-Date).AddMinutes(10)
-                    $taskName = "qOS-Remove-$name"
-                    # ScheduledTasks takes a DateTime directly, avoiding
-                    # schtasks.exe's locale-dependent /SD date syntax. Deleting
-                    # the task as part of its own action prevents steady-state
-                    # task-list growth after many RemoteApp sessions.
-                    $cleanupCommand = "Remove-LocalUser -Name '$name' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName '$taskName' -Confirm:`$false"
-                    $cleanupAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command `"$cleanupCommand`""
-                    $cleanupTrigger = New-ScheduledTaskTrigger -Once -At $when
-                    $cleanupPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-                    Register-ScheduledTask -TaskName $taskName -Action $cleanupAction -Trigger $cleanupTrigger -Principal $cleanupPrincipal -Force | Out-Null
+                    $managed = Get-ManagedSession
+                    $name = [string]$managed.username
+                    $password = [string]$managed.password
                 }
                 $os = Get-CimInstance -ClassName Win32_OperatingSystem
                 $presentation = if ($os.ProductType -eq 3) { 'native_rail_rds' } else { 'native_rail_client_best_effort' }
