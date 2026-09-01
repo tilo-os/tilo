@@ -1,6 +1,6 @@
 use ui::LocalState;
 use ui::tokens::TextRole;
-use ui::widget::{Text, TextInput, Widget};
+use ui::widget::{Text, TextInput, Widget, labeled_field};
 
 /// A complete local input → typed state → retained output loop.
 pub fn app_root() -> Box<dyn Widget> {
@@ -13,14 +13,12 @@ pub fn app_root() -> Box<dyn Widget> {
     let input = TextInput::local()
         .with_initial_value(&name.get())
         .with_id("name-input")
-        .with_accessible_name("starter-name-label")
         .with_placeholder("starter-name-placeholder")
         .on_change(name.text_sink());
 
     Box::new(ui::column![
         Text::new("starter-title").with_role(TextRole::Title),
-        Text::new("starter-name-label").with_role(TextRole::Label),
-        input,
+        labeled_field("starter-name-label", input),
         greeting,
     ])
 }
