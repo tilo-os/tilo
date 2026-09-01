@@ -34,13 +34,39 @@ pub fn commit_stamped(doc: &mut AutoCommit) -> Option<ChangeHash> {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
-    commit_stamped_at(doc, secs)
+    commit_stamped_at_with_message(doc, secs, None)
 }
 
 /// As [`commit_stamped`], but with a caller-supplied Unix time in **seconds** (automerge's own
 /// unit). For hosts that own a clock (the FS layer replaying a durable change chain, a test spreading versions across a day) so the recorded time is when the edit happened.
 pub fn commit_stamped_at(doc: &mut AutoCommit, unix_secs: i64) -> Option<ChangeHash> {
-    doc.commit_with(CommitOptions::default().with_time(unix_secs))
+    commit_stamped_at_with_message(doc, unix_secs, None)
+}
+
+/// Commit a native document edit with both a timestamp and an optional
+/// semantic message. This is the commit-boundary counterpart to action
+/// dispatch: flowing CRDT text remains a native splice while history still
+/// learns which app/resource the edit belongs to.
+pub fn commit_stamped_with_message(
+    doc: &mut AutoCommit,
+    message: Option<String>,
+) -> Option<ChangeHash> {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+    commit_stamped_at_with_message(doc, secs, message)
+}
+
+fn commit_stamped_at_with_message(
+    doc: &mut AutoCommit,
+    unix_secs: i64,
+    message: Option<String>,
+) -> Option<ChangeHash> {
+    let mut options = CommitOptions::default().with_time(unix_secs);
+    if let Some(message) = message {
+        options = options.with_message(message);
+    }
+    doc.commit_with(options)
 }
 
 /// Enumerate the document's history in causal order (oldest first), including the schema genesis:

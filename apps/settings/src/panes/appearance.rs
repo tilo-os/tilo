@@ -419,6 +419,21 @@ impl Widget for AppearancePane {
             .collect()
     }
 
+    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+        self.composed
+            .as_ref()
+            .is_some_and(|content| content.needs_commit())
+            .then(|| {
+                ui::qos_actions::ActionContext::for_resource(
+                    "Change appearance preferences",
+                    "settings.appearance",
+                    "settings.preference-pane",
+                    "Appearance",
+                )
+                .with_app("org.qos.Settings", "Settings")
+            })
+    }
+
     fn name(&self) -> &'static str {
         "AppearancePane"
     }
