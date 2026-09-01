@@ -4705,6 +4705,7 @@ fn source_catalog() -> String {
         "starter-title = Your first qOS app\n\
 starter-name-label = Your name\n\
 starter-name-placeholder = Type your name\n\
+starter-updates-label = Receive updates\n\
 starter-greeting = Hello, { $name }!\n\
 data-name-column = Name\n\
 data-actions-column = Actions\n\
@@ -4780,6 +4781,14 @@ fn app_responds_to_semantic_input() {{
             .name_contains("Ada"),
     )
     .expect("derived greeting semantics match");
+    app.perform_named("updates-checkbox", &Action::ToggleCheck)
+        .expect("the generated local checkbox remains addressable");
+    app.expect(
+        &SemanticExpectation::named("updates-checkbox")
+            .role(Role::Checkbox)
+            .checked(false),
+    )
+    .expect("typed boolean binding updates checkbox semantics");
 }}
 "#
         ),
@@ -6575,6 +6584,8 @@ mod tests {
         assert!(!library.contains("Column::new()"));
         assert!(library.contains("with_id(\"name-input\")"));
         assert!(library.contains("TextInput::from_state(&name)"));
+        assert!(library.contains("Checkbox::from_state(&updates)"));
+        assert!(library.contains("labeled_check(\"starter-updates-label\", updates)"));
         assert!(!library.contains("on_change(name.text_sink())"));
         assert!(!library.contains("with_initial_value(&name.get())"));
         assert!(library.contains("pub mod locales;"));
@@ -6590,6 +6601,8 @@ mod tests {
         assert!(app_test.contains("perform_named(\"name-input\""));
         assert!(app_test.contains("SemanticExpectation::named(\"greeting\")"));
         assert!(app_test.contains("name_contains(\"Ada\")"));
+        assert!(app_test.contains("perform_named(\"updates-checkbox\""));
+        assert!(app_test.contains("checked(false)"));
 
         let report = doctor_app(&destination).expect("doctor generated app");
         assert!(report.is_ready(), "{}", report.summary());
