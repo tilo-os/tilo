@@ -18,6 +18,7 @@ use ui::theme::Theme;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerSyncRequest {
     IssueInvite,
+    ExportIdentity,
     IssueInviteFor {
         name: String,
         role: crate::network::invite::InviteRole,
@@ -47,6 +48,7 @@ enum Button {
     CopyToken,
     PasteToken,
     PasteIdentity,
+    CopyIdentity,
 }
 
 /// Result of routing one input event through the overlay.
@@ -138,6 +140,10 @@ impl PeerSyncOverlay {
             (PeerSyncRequest::IssueInvite, Ok(token)) => {
                 self.finish_invite(token, None, copy_result);
             }
+            (PeerSyncRequest::ExportIdentity, Ok(card)) => {
+                ui::text_selection::clipboard_copy(&card);
+                self.state.status = Some("Identity copied — send it to the inviter".to_string());
+            }
             (PeerSyncRequest::IssueInviteFor { name, .. }, Ok(token)) => {
                 self.finish_invite(token, Some(name.clone()), copy_result);
             }
@@ -145,6 +151,9 @@ impl PeerSyncOverlay {
                 self.state.invite_token = None;
                 self.state.invite_for = None;
                 self.state.status = Some(format!("Invite failed: {error}"));
+            }
+            (PeerSyncRequest::ExportIdentity, Err(error)) => {
+                self.state.status = Some(format!("Identity unavailable: {error}"));
             }
             (PeerSyncRequest::AcceptInvite(_), Ok(room)) => {
                 self.state.connect_input = None;
@@ -306,6 +315,7 @@ impl PeerSyncOverlay {
                 self.paste_recipient_identity();
                 EventOutcome::consumed()
             }
+            Button::CopyIdentity => EventOutcome::request(PeerSyncRequest::ExportIdentity, false),
         }
     }
 
@@ -563,6 +573,7 @@ impl PeerSyncOverlay {
                 ("Join".into(), Button::Join),
                 ("Cancel".into(), Button::Cancel),
                 ("Paste".into(), Button::PasteToken),
+                ("Copy my identity".into(), Button::CopyIdentity),
             ]
         } else {
             vec![("Copy".into(), Button::CopyToken)]
@@ -622,6 +633,7 @@ impl PeerSyncOverlay {
                         Button::CopyToken => "copy",
                         Button::PasteToken => "paste",
                         Button::PasteIdentity => "paste-identity",
+                        Button::CopyIdentity => "copy-identity",
                     },
                     *rect,
                 )
@@ -1177,6 +1189,17 @@ mod tests {
         );
         assert_eq!(parse_recipient_identity("5a"), None);
         assert_eq!(parse_recipient_identity(&"g".repeat(64)), None);
+    }
+
+    #[test]
+    #[serial_test::serial(clipboard)]
+    fn exporting_identity_copies_a_non_secret_card_without_closing_join() {
+        let mut overlay = PeerSyncOverlay::default();
+        overlay.prompt_connect();
+        let card = format!("qos-identity:{}", hex::encode([0x2a; 32]));
+        overlay.finish_request(&PeerSyncRequest::ExportIdentity, Ok(card.clone()), false);
+        assert_eq!(ui::text_selection::clipboard_paste(), Some(card));
+        assert!(overlay.state.connect_input.is_some());
     }
 
     #[test]
