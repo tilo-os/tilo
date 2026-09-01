@@ -58,6 +58,11 @@ pub(crate) enum LandlockBuildError {
 /// Landlock crate's best-effort mode otherwise drops these bits and reports a
 /// partial policy; hard-requirement mode correctly refuses the mismatch. Use
 /// `fstat` on the opened object so a path replacement cannot change the answer.
+///
+/// # Errors
+///
+/// Returns the operating-system error when the already-open policy object
+/// cannot be inspected with `fstat`.
 pub fn access_for_fd(
     fd: &PathFd,
     requested: BitFlags<AccessFs>,

@@ -275,7 +275,13 @@ fn ambient_fd_close_ranges(keep: &[i32]) -> std::io::Result<Vec<(u32, u32)>> {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "negative kept fd")
         })?;
         if fd > first {
-            ranges.push((first, fd - 1));
+            let last = fd.checked_sub(1).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "kept fd underflowed its close range",
+                )
+            })?;
+            ranges.push((first, last));
         }
         first = fd.saturating_add(1);
     }
