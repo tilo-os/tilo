@@ -20,7 +20,7 @@ use automerge::{AutoCommit, ROOT};
 
 use qos_actions::{
     Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, Resource, ResourceProvider, RetryPolicy,
+    ExecutionLocus, OperationKind, PermissionRequirement, Resource, ResourceProvider, RetryPolicy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +29,75 @@ use crate::model::RetentionPolicy;
 
 /// Registry `type_id` for every backups action.
 pub const BACKUPS_ACTION_TYPE: &str = "backups.action";
+pub const BACKUPS_OPERATION_TYPE: &str = "backups.operation";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BackupsOperation {
+    Restore { snapshot_id: String },
+    Delete { snapshot_id: String },
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<BackupsOperation>, String> {
+    if type_id != BACKUPS_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+/// Snapshot effects remain discoverable, but are explicitly unavailable until
+/// a storage provider supplies real restore/delete primitives.
+pub fn snapshot_resource(snapshot_id: &str) -> Resource {
+    let restore = ActionSpec::operation(
+        "restore",
+        "Restore snapshot",
+        OperationKind::Effect,
+        BACKUPS_OPERATION_TYPE,
+        &BackupsOperation::Restore {
+            snapshot_id: snapshot_id.to_string(),
+        },
+    )
+    .expect("BackupsOperation is always serializable")
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Write,
+        retry: RetryPolicy::AtMostOnce,
+        tags: vec!["storage".into(), "restore".into()],
+        ..ActionContract::default()
+    })
+    .unavailable(
+        "restore_backend_unavailable",
+        "No backup storage backend is configured to restore this snapshot",
+    );
+    let delete = ActionSpec::operation(
+        "delete",
+        "Delete snapshot",
+        OperationKind::Effect,
+        BACKUPS_OPERATION_TYPE,
+        &BackupsOperation::Delete {
+            snapshot_id: snapshot_id.to_string(),
+        },
+    )
+    .expect("BackupsOperation is always serializable")
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Write,
+        retry: RetryPolicy::AtMostOnce,
+        tags: vec!["storage".into(), "delete".into()],
+        ..ActionContract::default()
+    })
+    .destructive()
+    .unavailable(
+        "delete_backend_unavailable",
+        "No backup storage backend is configured to delete this snapshot",
+    );
+    Resource::new(
+        format!("backups.snapshot:{snapshot_id}"),
+        "backups.snapshot",
+        format!("Snapshot {snapshot_id}"),
+    )
+    .with_action(restore)
+    .with_action(delete)
+}
 
 /// Every collaborative operation the Backups app exports on its stored
 /// configuration.
@@ -287,6 +356,35 @@ mod tests {
                 .iter()
                 .any(|l| l.contains("retention") || l.contains("keep") || l.contains("Set")),
             "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn unavailable_snapshot_effects_are_truthful_and_delete_is_destructive() {
+        let resource = snapshot_resource("snap-42");
+        let restore = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "restore")
+            .unwrap();
+        let delete = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "delete")
+            .unwrap();
+        assert!(!restore.contract.availability.is_available());
+        assert!(!delete.contract.availability.is_available());
+        assert_eq!(delete.contract.risk, qos_actions::RiskLevel::Destructive);
+        assert_eq!(
+            delete.contract.confirmation,
+            qos_actions::ConfirmationPolicy::Confirm
+        );
+        let encoded = immediate_encode(delete);
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(BackupsOperation::Delete {
+                snapshot_id: "snap-42".into()
+            })
         );
     }
 

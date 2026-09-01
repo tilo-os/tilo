@@ -2773,8 +2773,8 @@ impl Widget for VpnApp {
                         risk: qos_actions::RiskLevel::Privileged,
                         confirmation: qos_actions::ConfirmationPolicy::Confirm,
                         retry: qos_actions::RetryPolicy::AtMostOnce,
-                        execution: qos_actions::ExecutionMode::Background { cancellable: false },
-                        result: qos_actions::ResultSpec::Job,
+                        execution: qos_actions::ExecutionMode::Immediate,
+                        result: qos_actions::ResultSpec::None,
                         ..qos_actions::ActionContract::default()
                     }),
                 );

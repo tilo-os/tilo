@@ -54,8 +54,10 @@
 use automerge::AutoCommit;
 
 use qos_actions::{
-    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, Resource, ResourceProvider, RetryPolicy,
+    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
+    ConfirmationPolicy, DiscoveryScope, Doc, EncodedAction, ExecutionLocus, ExecutionMode,
+    OperationKind, ParamType, PermissionRequirement, Resource, ResourceProvider, ResultSpec,
+    RetryPolicy, RiskLevel,
 };
 
 use crate::doc::ImagerDoc;
@@ -63,6 +65,154 @@ use crate::model::{InstallMode, InstallProfile};
 
 /// Registry `type_id` for every imager action.
 pub const IMAGER_ACTION_TYPE: &str = "imager.action";
+pub const IMAGER_OPERATION_TYPE: &str = "imager.operation";
+
+/// App-owned operations. These are deliberately separate from replayable
+/// profile edits: media I/O and job inspection are local side effects.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ImagerOperation {
+    Write {
+        device: String,
+        confirmation: String,
+    },
+    Verify,
+    Cancel,
+    Status,
+    ExportConfig,
+}
+
+pub fn encode_operation(operation: &ImagerOperation) -> EncodedAction {
+    EncodedAction::encode_operation(IMAGER_OPERATION_TYPE, operation).unwrap_or_else(|_| {
+        EncodedAction {
+            type_id: IMAGER_OPERATION_TYPE.to_string(),
+            payload: Vec::new(),
+        }
+    })
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<ImagerOperation>, String> {
+    if type_id != IMAGER_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+/// Build the live operational surface for the selected write plan.
+pub fn operation_resource(device: Option<&str>, plan_complete: bool, job_active: bool) -> Resource {
+    let device = device.unwrap_or("").to_string();
+    let expected = device.clone();
+    let write = ActionSpec::typed_operation(
+        "write",
+        "Erase drive and write image",
+        "Type the exact device name",
+        OperationKind::Effect,
+        IMAGER_OPERATION_TYPE,
+        vec![ActionParam::required_owned(
+            "confirmation",
+            ParamType::Text,
+            "Exact target device name shown by Imager",
+        )],
+        move |args: &ActionArgs| {
+            encode_operation(&ImagerOperation::Write {
+                device: expected.clone(),
+                confirmation: args.text("confirmation").unwrap_or("").to_string(),
+            })
+        },
+    )
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Admin,
+        risk: RiskLevel::Destructive,
+        confirmation: ConfirmationPolicy::Phrase {
+            phrase: device.clone(),
+        },
+        retry: RetryPolicy::AtMostOnce,
+        // The handler starts the app-owned worker and returns. Progress is
+        // queried through the separate status operation, not a protocol job.
+        execution: ExecutionMode::Immediate,
+        result: ResultSpec::None,
+        tags: vec!["storage".into(), "raw-device".into()],
+        ..ActionContract::default()
+    });
+
+    let write = if job_active {
+        write.unavailable("write_in_progress", "An image write is already in progress")
+    } else if !plan_complete {
+        write.unavailable(
+            "incomplete_plan",
+            "Select an image source and target drive before writing",
+        )
+    } else {
+        write
+    };
+
+    let verify = ActionSpec::operation(
+        "verify",
+        "Verify written image",
+        OperationKind::Effect,
+        IMAGER_OPERATION_TYPE,
+        &ImagerOperation::Verify,
+    )
+    .expect("ImagerOperation is always serializable")
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Admin,
+        retry: RetryPolicy::Idempotent,
+        tags: vec!["storage".into(), "verification".into()],
+        ..ActionContract::default()
+    })
+    .unavailable(
+        "verify_is_write_phase",
+        "Read-back verification runs automatically after every successful write",
+    );
+
+    let cancel = ActionSpec::operation(
+        "cancel",
+        "Cancel image write",
+        OperationKind::Effect,
+        IMAGER_OPERATION_TYPE,
+        &ImagerOperation::Cancel,
+    )
+    .expect("ImagerOperation is always serializable")
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Admin,
+        retry: RetryPolicy::Idempotent,
+        tags: vec!["storage".into(), "job".into()],
+        ..ActionContract::default()
+    });
+    let cancel = if job_active {
+        cancel.unavailable(
+            "cancel_not_cooperative",
+            "The raw-device writer cannot yet stop safely between write chunks",
+        )
+    } else {
+        cancel.unavailable("no_active_write", "No image write is currently running")
+    };
+
+    let status = ActionSpec::operation(
+        "status",
+        "Show image-write status",
+        OperationKind::View,
+        IMAGER_OPERATION_TYPE,
+        &ImagerOperation::Status,
+    )
+    .expect("ImagerOperation is always serializable")
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Read,
+        retry: RetryPolicy::Idempotent,
+        discovery: DiscoveryScope::Launchable,
+        result: ResultSpec::Json {
+            schema: serde_json::json!({ "type": "object" }),
+        },
+        ..ActionContract::view()
+    });
+
+    Resource::new("imager.write-plan", "imager.write-plan", "Image write plan")
+        .with_action(write)
+        .with_action(verify)
+        .with_action(cancel)
+        .with_action(status)
+}
 
 /// Every collaborative operation the imager exports on the shared document.
 ///
@@ -532,6 +682,59 @@ mod tests {
             "{labels:?}"
         );
         assert!(labels.iter().any(|l| l.contains("hostname")), "{labels:?}");
+    }
+
+    #[test]
+    fn write_operation_requires_typed_device_admin_and_destructive_confirmation() {
+        let resource = operation_resource(Some("/dev/sdz"), true, false);
+        let write = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "write")
+            .unwrap();
+        assert!(write.contract.availability.is_available());
+        assert_eq!(write.contract.permission, PermissionRequirement::Admin);
+        assert_eq!(write.contract.risk, RiskLevel::Destructive);
+        assert_eq!(
+            write.contract.confirmation,
+            ConfirmationPolicy::Phrase {
+                phrase: "/dev/sdz".into()
+            }
+        );
+        assert_eq!(write.params().len(), 1);
+        assert_eq!(write.params()[0].name.as_ref(), "confirmation");
+        let encoded = write
+            .build_args([(
+                "confirmation".to_string(),
+                qos_actions::ArgValue::Text("/dev/sdz".into()),
+            )])
+            .unwrap();
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(ImagerOperation::Write {
+                device: "/dev/sdz".into(),
+                confirmation: "/dev/sdz".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn unsupported_verify_and_cancel_are_explicitly_unavailable() {
+        let resource = operation_resource(Some("/dev/sdz"), true, true);
+        for id in ["verify", "cancel"] {
+            let action = resource
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap();
+            assert!(!action.contract.availability.is_available(), "{id}");
+        }
+        let status = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "status")
+            .unwrap();
+        assert_eq!(status.contract.discovery, DiscoveryScope::Launchable);
     }
 
     /// A plain ISO (or no source) has no profile to customize, so the app

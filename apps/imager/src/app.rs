@@ -2783,15 +2783,52 @@ impl ImagerApp {
     }
 
     fn start_write(&mut self, state: &mut AutoCommit) {
-        let (Some(src), Some(tgt)) = (self.source.clone(), self.target().cloned()) else {
-            self.set_status(state, "Select a source and drive first.");
-            self.dirty = true;
-            return;
+        let operation = crate::actions::ImagerOperation::Write {
+            device: self.target().map(TargetDrive::dev_path).unwrap_or_default(),
+            confirmation: self.confirm_input.value().to_string(),
         };
-        if !self.confirm_matches() {
-            self.set_status(state, "Type the exact device name to confirm.");
+        if let Err(reason) = self.perform_operation(&operation, state) {
+            self.set_status(state, &reason);
             self.dirty = true;
-            return;
+        }
+    }
+
+    /// One semantic implementation shared by the direct Confirm control and
+    /// the resource-operation route.
+    fn perform_operation(
+        &mut self,
+        operation: &crate::actions::ImagerOperation,
+        state: &mut AutoCommit,
+    ) -> Result<(), String> {
+        let crate::actions::ImagerOperation::Write {
+            device,
+            confirmation,
+        } = operation
+        else {
+            return match operation {
+                crate::actions::ImagerOperation::Verify => Err(
+                    "Read-back verification runs automatically after every successful write".into(),
+                ),
+                crate::actions::ImagerOperation::Cancel => {
+                    Err("The raw-device writer cannot yet stop safely between write chunks".into())
+                }
+                crate::actions::ImagerOperation::Status => Ok(()),
+                crate::actions::ImagerOperation::ExportConfig => {
+                    if self.source.is_none() || self.target().is_none() {
+                        Err("Select an image source and target drive first".into())
+                    } else {
+                        self.export_config(state);
+                        Ok(())
+                    }
+                }
+                crate::actions::ImagerOperation::Write { .. } => unreachable!(),
+            };
+        };
+        let (Some(src), Some(tgt)) = (self.source.clone(), self.target().cloned()) else {
+            return Err("Select a source and drive first.".into());
+        };
+        if *device != tgt.dev_path() {
+            return Err("The selected target changed; review the write plan again.".into());
         }
         let req = WriteRequest {
             source: src,
@@ -2799,7 +2836,7 @@ impl ImagerApp {
             action: self.action,
             profile: self.profile.clone(),
         };
-        let (start, rx) = spawn_job(req, self.confirm_input.value());
+        let (start, rx) = spawn_job(req, confirmation);
         match start {
             crate::write::JobStart::Started => {
                 self.job_rx = rx;
@@ -2830,16 +2867,17 @@ impl ImagerApp {
                 self.goto(state, Step::Write);
             }
             crate::write::JobStart::ConfirmationMismatch => {
-                self.set_status(state, "Confirmation does not match — write refused.");
+                return Err("Confirmation does not match — write refused.".into());
             }
             crate::write::JobStart::TooSmall => {
-                self.set_status(state, "Image is larger than the drive — write refused.");
+                return Err("Image is larger than the drive — write refused.".into());
             }
             crate::write::JobStart::Incomplete => {
-                self.set_status(state, "Select a source and drive before writing.");
+                return Err("Select a source and drive before writing.".into());
             }
         }
         self.dirty = true;
+        Ok(())
     }
 
     /// Drain live job progress, folding it into the doc. Called each `sync`.
@@ -3248,16 +3286,19 @@ impl Widget for ImagerApp {
     /// [`crate::actions`]. Empty unless an installable qOS image is selected.
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
-        let mut job =
-            qos_actions::Resource::new("imager.job", "imager.write-plan", "Image write plan");
         let available = self.source.is_some() && self.target().is_some();
+        let mut job = crate::actions::operation_resource(
+            self.target().map(TargetDrive::dev_path).as_deref(),
+            available,
+            self.job_rx.is_some(),
+        );
         job.actions.push(
             qos_actions::ActionSpec::operation(
                 "export-config",
                 "Export headless configuration",
                 qos_actions::OperationKind::View,
-                "imager.export-config",
-                &"",
+                crate::actions::IMAGER_OPERATION_TYPE,
+                &crate::actions::ImagerOperation::ExportConfig,
             )
             .expect("imager operation payload is serializable")
             .with_contract(qos_actions::ActionContract {
@@ -3272,6 +3313,7 @@ impl Widget for ImagerApp {
                 result: qos_actions::ResultSpec::Json {
                     schema: serde_json::json!({ "type": "string" }),
                 },
+                discovery: qos_actions::DiscoveryScope::Launchable,
                 ..qos_actions::ActionContract::view()
             }),
         );
@@ -3287,18 +3329,65 @@ impl Widget for ImagerApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != qos_actions::OperationKind::View || type_id != "imager.export-config" {
+        let Some(operation) = crate::actions::decode_operation(type_id, _payload)? else {
             return Ok(false);
+        };
+        let expected_kind = match operation {
+            crate::actions::ImagerOperation::Status
+            | crate::actions::ImagerOperation::ExportConfig => qos_actions::OperationKind::View,
+            _ => qos_actions::OperationKind::Effect,
+        };
+        if kind != expected_kind {
+            return Err("Imager operation kind does not match its contract".into());
         }
-        if self.source.is_none() || self.target().is_none() {
-            return Err("Select an image source and target drive first".into());
-        }
-        let text = self
-            .profile
-            .to_headless_config(self.source.as_ref(), self.target());
-        self.export_dialog.show(text);
-        self.dirty = true;
+        let mut local_doc = _doc.clone();
+        self.perform_operation(&operation, &mut local_doc)?;
         Ok(true)
+    }
+
+    fn invoke_resource_operation_v2(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<qos_actions::ActionOutput>, String> {
+        match crate::actions::decode_operation(type_id, payload)? {
+            Some(crate::actions::ImagerOperation::Status) => {
+                if kind != qos_actions::OperationKind::View {
+                    return Err("Imager status is a view operation".into());
+                }
+                return Ok(Some(qos_actions::ActionOutput {
+                    value: Some(serde_json::json!({
+                        "phase": self.progress.phase.key(),
+                        "progress": self.progress.overall(),
+                        "message": self.status,
+                    })),
+                    resources: Vec::new(),
+                }));
+            }
+            Some(crate::actions::ImagerOperation::ExportConfig) => {
+                if kind != qos_actions::OperationKind::View {
+                    return Err("Imager config export is a view operation".into());
+                }
+                if self.source.is_none() || self.target().is_none() {
+                    return Err("Select an image source and target drive first".into());
+                }
+                let text = self
+                    .profile
+                    .to_headless_config(self.source.as_ref(), self.target());
+                self.export_dialog.show(text.clone());
+                self.dirty = true;
+                return Ok(Some(qos_actions::ActionOutput {
+                    value: Some(serde_json::Value::String(text)),
+                    resources: Vec::new(),
+                }));
+            }
+            _ => {}
+        }
+        self.invoke_resource_operation(kind, type_id, payload, doc, path)
+            .map(|handled| handled.then(qos_actions::ActionOutput::default))
     }
 
     /// The framework host drains the undo boundary an on-screen profile control
