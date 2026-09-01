@@ -60,13 +60,26 @@ inferred from Windows or FreeRDP defaults. The live RAIL broker projects:
   source only for a canonical qOS microphone grant.
 
 Both redirectors are live in the session composition and are revoked when the
-RAIL process exits. Clipboard file transfer remains disabled even with a text
-clipboard grant: the compatibility protocol does not yet carry opaque portal
-document handles, and raw workspace paths are not a safe substitute for a
-file-portal selection. Audio playback is live through the same private graph.
-The current VM egress mechanism is an all-or-nothing NAT NIC for activation
-and Windows Update; it cannot enforce a canonical filtered `NetHost` list, so
-ordinary application egress is not projected.
+RAIL process exits. A file projection is represented end-to-end as an opaque
+portal handle plus its exact `read-only` or `read-write` decision. The launch
+boundary rejects duplicate handles and rejects a broker attempt to turn a
+read-only handle into a writable RDP drive. A materialising broker must expose
+only a per-lease directory below `/run/qos/windows-vm/leases/<lease>/`; its
+rootless bubblewrap mount namespace overlays read-only drives with `--ro-bind`,
+rather than trusting an advisory FreeRDP flag. The projection is removed on
+revocation.
+
+When such a projection is present, FreeRDP redirects that narrow drive only.
+Windows can copy or drag the projected file from the drive into a published
+application. Cross-desktop RDP clipboard file transfer remains disabled even
+with a text clipboard grant: FreeRDP would otherwise resolve an ambient X11/
+compositor file offer, which has no portal handle. Raw workspace paths are not
+a safe substitute. Audio playback is live through the same private graph.
+Ordinary application egress uses the host-only, token-authenticated `NetHost`
+relay; the guest has no NAT route. Active applications in the one shared
+Windows session receive the effective union, which the management UI reports.
+The separate all-or-nothing NAT lease remains limited to owner-authorised
+activation and Windows Update maintenance.
 
 The manager receives a server-derived `VmSharedSessionLeaseSummary` inside
 `VmAvailability.shared_session`. It contains `active`, a sorted
@@ -123,13 +136,17 @@ Live in the shipped image:
   mediation, output-only audio, and focused SPICE fallback;
 - signed Fedora virtio-win guest tools, Windows vdagent-backed SPICE resize and
   cursor integration, with clipboard/file transfer still blocked in libvirt;
+- qOS portal picker to opaque, one-shot RAIL document drive, read-only by
+  default and enforced in a rootless mount namespace;
+- filtered shared-session `NetHost` egress without a guest NAT route;
 - server-derived shared-session permission reporting; and
 - KVM/host-passthrough storage and CPU tuning.
 
 Still gated by a missing authority, guest component, upstream limitation, or
 hardware:
 
-- portal file drives, file drag/drop, and ordinary app network egress;
+- ambient cross-desktop file clipboard drag/drop (the explicit **Open file…**
+  portal flow is the secure supported replacement);
 - simultaneous apps on one FreeRDP RAIL connection;
 - production 3D acceleration on a single non-partitionable GPU; and
 - native RAIL itself on client Windows releases where the unsupported host

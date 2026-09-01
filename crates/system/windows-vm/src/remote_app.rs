@@ -109,8 +109,11 @@ impl<R> FreeRdpLauncher<R> {
 
         if brokered.clipboard {
             // Text/image clipboard follows the canonical clipboard grant.
-            // File clipboard stays off until selections are represented by
-            // opaque portal document handles rather than ambient host paths.
+            // File clipboard stays off.  A portal-selected document is made
+            // available only through its brokered RDP drive below; Windows
+            // can copy or drag it from that drive into the published app.
+            // Letting FreeRDP inspect a compositor/X11 file offer here would
+            // reintroduce an ambient client path outside that projection.
             request = request.arg("/clipboard:direction-to:all,files-to:off");
         } else {
             request = request.arg("-clipboard");
@@ -123,6 +126,15 @@ impl<R> FreeRdpLauncher<R> {
             // workspace path.  Read-only enforcement belongs to that mount,
             // not to an advisory FreeRDP switch (RDPDR has no trustworthy
             // read-only command-line mode).
+            if share.read_only {
+                // Consumed by `/usr/libexec/qos-windows-rail`, never passed
+                // to FreeRDP. The helper overlays this broker-owned directory
+                // read-only in its rootless mount namespace.
+                request = request.arg(format!(
+                    "--qos-read-only-drive={}",
+                    share.host_path.display()
+                ));
+            }
             request = request.arg(format!(
                 "/drive:{},{}",
                 share.drive_name,

@@ -2,7 +2,7 @@
 //!
 //! The public capability is an opaque [`PortalDocumentGrant`], never a host
 //! path.  This broker owns the descriptor selected by the qOS portal and makes
-//! a short-lived copy below the RAIL lease root.  FreeRDP receives only that
+//! a short-lived copy below the RAIL lease root.  `FreeRDP` receives only that
 //! directory.  Revocation removes it, and a read/write projection is copied
 //! back through the already-open descriptor before it is removed.
 
@@ -45,13 +45,12 @@ struct StoredDocument {
 struct LeaseDocument {
     document: Arc<StoredDocument>,
     projection: PathBuf,
-    read_only_mount: Option<PathBuf>,
 }
 
 /// qOS's host-side mapping from opaque portal IDs to opened document handles.
 ///
 /// A store may be shared by the portal bridge and the RAIL capability broker;
-/// neither Windows, FreeRDP, nor an untrusted manager client can resolve a
+/// neither Windows, `FreeRDP`, nor an untrusted manager client can resolve a
 /// handle to its source path.
 #[derive(Debug)]
 pub struct PortalDocumentStore {
@@ -158,7 +157,7 @@ impl PortalDocumentStore {
         set_mode(&lease_dir, 0o700)?;
 
         let result = (|| {
-            let documents = self
+            let mut documents = self
                 .documents
                 .lock()
                 .map_err(|_| portal_error("portal document store is unavailable"))?;
@@ -177,38 +176,23 @@ impl PortalDocumentStore {
                         "portal document does not belong to this launch",
                     ));
                 }
-                let drive_name = format!("QOS{:02}", index + 1);
+                let drive_number = index.saturating_add(1);
+                let drive_name = format!("QOS{drive_number:02}");
                 let directory = lease_dir.join(&drive_name);
                 fs::create_dir(&directory).map_err(|error| {
                     portal_error(format!("could not create portal drive projection: {error}"))
                 })?;
                 set_mode(&directory, 0o700)?;
-                // Modes are not a boundary against FreeRDP running under the
-                // same uid.  Read-only projections therefore use a kernel
-                // read-only bind mount at the path passed to RDPDR.
-                let (backing, read_only_mount) = if grant.access.is_read_only() {
-                    let backing = lease_dir.join(format!(".portal-{index}"));
-                    fs::create_dir(&backing).map_err(|error| {
-                        portal_error(format!("could not create portal backing store: {error}"))
-                    })?;
-                    set_mode(&backing, 0o700)?;
-                    let projection = backing.join("document");
-                    copy_from_portal_descriptor(&document, &projection, grant.access)?;
-                    // Nothing has received `directory` yet, so populate the
-                    // private backing before making the RDP-visible mount.
-                    mount_read_only(&backing, &directory)?;
-                    (backing, Some(directory.clone()))
-                } else {
-                    (directory.clone(), None)
-                };
-                let projection = backing.join("document");
-                if !grant.access.is_read_only() {
-                    copy_from_portal_descriptor(&document, &projection, grant.access)?;
-                }
+                // The RAIL helper places read-only directories behind a
+                // rootless bubblewrap `--ro-bind` before FreeRDP starts.
+                // Keeping projection creation unprivileged makes the normal
+                // session path usable; mode 0400 is defense in depth, while
+                // the mount namespace is the actual same-uid boundary.
+                let projection = directory.join("document");
+                copy_from_portal_descriptor(&document, &projection, grant.access)?;
                 lease_documents.push(LeaseDocument {
                     document,
                     projection: projection.clone(),
-                    read_only_mount,
                 });
                 shares.push(ShareBinding {
                     drive_name,
@@ -221,6 +205,13 @@ impl PortalDocumentStore {
                 .lock()
                 .map_err(|_| portal_error("portal lease store is unavailable"))?
                 .insert(lease_id.to_string(), lease_documents);
+            // Portal handles are one-shot launch capabilities. The lease
+            // retains the opened descriptor for write-back, while replaying
+            // the same opaque handle in a later launch fails closed.
+            for grant in &request.grants.portal_documents {
+                documents.remove(&grant.handle);
+            }
+            drop(documents);
             Ok(shares)
         })();
         if result.is_err() {
@@ -248,19 +239,14 @@ impl PortalDocumentStore {
                         first_error.get_or_insert(error);
                     }
                 }
-                if let Some(mount) = &lease_document.read_only_mount {
-                    if let Err(error) = unmount(mount) {
-                        first_error.get_or_insert(error);
-                    }
-                }
             }
         }
-        if let Err(error) = fs::remove_dir_all(self.root.join(lease_id)) {
-            if error.kind() != io::ErrorKind::NotFound {
-                first_error.get_or_insert_with(|| {
-                    portal_error(format!("could not remove portal lease: {error}"))
-                });
-            }
+        if let Err(error) = fs::remove_dir_all(self.root.join(lease_id))
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            first_error.get_or_insert_with(|| {
+                portal_error(format!("could not remove portal lease: {error}"))
+            });
         }
         if let Some(error) = first_error {
             return Err(error);
@@ -270,7 +256,7 @@ impl PortalDocumentStore {
 }
 
 /// RAIL capability broker that turns only registered portal descriptors into
-/// explicit FreeRDP drives. It is suitable for the native RAIL presentation;
+/// explicit `FreeRDP` drives. It is suitable for the native RAIL presentation;
 /// SPICE remains deny-all for files.
 #[derive(Debug)]
 pub struct PortalRailCapabilityBroker {
@@ -368,72 +354,6 @@ fn create_private_dir(path: &Path) -> Result<(), LaunchError> {
     set_mode(path, 0o700)
 }
 
-fn mount_read_only(source: &Path, target: &Path) -> Result<(), LaunchError> {
-    let source = path_to_cstring(source)?;
-    let target = path_to_cstring(target)?;
-    // SAFETY: both strings are NUL terminated and live for these syscalls;
-    // source/target are private directories created immediately above.
-    let bind = unsafe {
-        libc::mount(
-            source.as_ptr(),
-            target.as_ptr(),
-            std::ptr::null(),
-            libc::MS_BIND,
-            std::ptr::null(),
-        )
-    };
-    if bind != 0 {
-        return Err(portal_error(format!(
-            "kernel read-only portal projection is unavailable: {}",
-            io::Error::last_os_error()
-        )));
-    }
-    // SAFETY: this remount changes only the validated bind mount, not the
-    // hidden backing directory retained by the broker.
-    let remount = unsafe {
-        libc::mount(
-            std::ptr::null(),
-            target.as_ptr(),
-            std::ptr::null(),
-            libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY,
-            std::ptr::null(),
-        )
-    };
-    if remount == 0 {
-        return Ok(());
-    }
-    let error = io::Error::last_os_error();
-    let _ = unmount_path(target.as_ptr());
-    Err(portal_error(format!(
-        "could not make portal projection read-only: {error}"
-    )))
-}
-
-fn unmount(path: &Path) -> Result<(), LaunchError> {
-    let path = path_to_cstring(path)?;
-    unmount_path(path.as_ptr())
-}
-
-fn unmount_path(path: *const libc::c_char) -> Result<(), LaunchError> {
-    // SAFETY: every caller supplies a live NUL-terminated mountpoint path
-    // created by this broker.
-    let result = unsafe { libc::umount2(path, libc::MNT_DETACH) };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(portal_error(format!(
-            "could not unmount portal projection: {}",
-            io::Error::last_os_error()
-        )))
-    }
-}
-
-fn path_to_cstring(path: &Path) -> Result<std::ffi::CString, LaunchError> {
-    use std::os::unix::ffi::OsStrExt as _;
-    std::ffi::CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| portal_error("portal projection path contained a NUL"))
-}
-
 fn set_mode(path: &Path, mode: u32) -> Result<(), LaunchError> {
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
         .map_err(|error| portal_error(format!("could not protect portal projection: {error}")))
@@ -492,18 +412,7 @@ mod tests {
             )
             .unwrap();
         let broker = PortalRailCapabilityBroker::new(store);
-        let lease = match broker.materialize(&request(grant)) {
-            Ok(lease) => lease,
-            Err(LaunchError::CapabilityBroker(message))
-                if message.contains("kernel read-only portal projection") =>
-            {
-                // An unprivileged development process cannot make a bind
-                // mount. That is a fail-closed result, not a weak chmod
-                // fallback. CI with mount capability runs the assertions.
-                return;
-            }
-            Err(error) => panic!("unexpected portal projection failure: {error}"),
-        };
+        let lease = broker.materialize(&request(grant)).unwrap();
         assert_eq!(lease.shares.len(), 1);
         assert!(lease.shares[0].read_only);
         assert!(
@@ -520,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn read_only_mount_refuses_same_uid_chmod_and_write() {
+    fn read_only_projection_is_marked_for_the_rail_mount_namespace() {
         let temp = TempDir::new().unwrap();
         let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
         let grant = store
@@ -532,21 +441,10 @@ mod tests {
             )
             .unwrap();
         let broker = PortalRailCapabilityBroker::new(store);
-        let lease = match broker.materialize(&request(grant)) {
-            Ok(lease) => lease,
-            Err(LaunchError::CapabilityBroker(message))
-                if message.contains("kernel read-only portal projection") =>
-            {
-                return;
-            }
-            Err(error) => panic!("unexpected portal projection failure: {error}"),
-        };
+        let lease = broker.materialize(&request(grant)).unwrap();
+        assert!(lease.shares[0].read_only);
         let document = lease.shares[0].host_path.join("document");
         assert!(OpenOptions::new().write(true).open(&document).is_err());
-        use std::os::unix::ffi::OsStrExt as _;
-        let name = std::ffi::CString::new(document.as_os_str().as_bytes()).unwrap();
-        // SAFETY: `name` is a valid live C string for this filesystem call.
-        assert_ne!(unsafe { libc::chmod(name.as_ptr(), 0o600) }, 0);
         broker.revoke(&lease.lease_id);
     }
 
@@ -592,6 +490,27 @@ mod tests {
             broker.materialize(&request(grant)),
             Err(LaunchError::CapabilityBroker(_))
         ));
+    }
+
+    #[test]
+    fn a_portal_handle_can_materialize_only_one_launch() {
+        let temp = TempDir::new().unwrap();
+        let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
+        let grant = store
+            .register(
+                "workspace",
+                "published.app",
+                source(&temp, "input", b"private"),
+                PortalDocumentAccess::ReadOnly,
+            )
+            .unwrap();
+        let broker = PortalRailCapabilityBroker::new(store);
+        let first = broker.materialize(&request(grant.clone())).unwrap();
+        assert!(matches!(
+            broker.materialize(&request(grant)),
+            Err(LaunchError::CapabilityBroker(_))
+        ));
+        broker.revoke(&first.lease_id);
     }
 
     #[test]

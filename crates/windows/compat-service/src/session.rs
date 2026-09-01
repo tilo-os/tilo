@@ -202,6 +202,27 @@ where
             .map_err(Into::into)
     }
 
+    fn launch_published_vm_with_portal_file(
+        &self,
+        application: &crate::VmPublishedApplication,
+        workspace_id: &str,
+        capabilities: &[CapOverride],
+        now_unix: Option<u64>,
+        source: File,
+        access: windows_vm::PortalDocumentAccess,
+    ) -> Result<crate::LaunchReceipt, SessionError> {
+        self.service
+            .launch_published_vm_with_portal_file(
+                application,
+                workspace_id,
+                capabilities,
+                now_unix,
+                source,
+                access,
+            )
+            .map_err(Into::into)
+    }
+
     fn install(
         &self,
         mut source: File,
@@ -774,6 +795,9 @@ where
         ProtocolRequest::LaunchVmWithPortalFile {
             entry_id, writable, ..
         } => {
+            if !valid_id(&entry_id) || !allowed_entry_ids.contains(&entry_id) {
+                return Err(SessionError::UnknownEntry);
+            }
             let application = managed
                 .vm_inventory()
                 .applications
