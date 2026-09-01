@@ -7,6 +7,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 workflow="$repo/.forgejo/workflows/build-image.yml"
 provenance="$repo/os/dev/release-provenance.sh"
+freshness="$repo/os/dev/release-freshness.sh"
 fail=0
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
@@ -30,6 +31,12 @@ grep -Fq 'Independently rebuild the release candidate' "$workflow" \
   && grep -Fq -- '--timestamp "$SOURCE_DATE_EPOCH"' "$repo/os/dev/reseal-image.sh" \
   && ok 'release compares uncached base and final sealed OS rebuilds' \
   || bad 'reproducibility is claimed without a release-blocking comparison'
+
+grep -Fq -- '--type https://qos.dev/security/release-freshness/v1' "$workflow" \
+  && grep -Fq 'release freshness attestation is absent, expired, or does not bind this release' "$workflow" \
+  && grep -Fq '604800' "$freshness" \
+  && ok 'channel promotion requires a bounded signed freshness statement' \
+  || bad 'release freshness is unsigned, unbounded, or not promotion-blocking'
 
 sign_line="$(grep -n 'cosign sign ' "$workflow" | head -1 | cut -d: -f1)"
 promote_line="$(grep -n 'promote release channels' "$workflow" | head -1 | cut -d: -f1)"
