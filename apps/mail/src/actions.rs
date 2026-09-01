@@ -43,8 +43,7 @@ use serde::{Deserialize, Serialize};
 
 use qos_actions::{
     Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider, ResultSpec,
-    RetryPolicy,
+    ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::MailDoc;
@@ -359,8 +358,6 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
     ) {
         let refresh = refresh.with_contract(ActionContract {
             retry: RetryPolicy::Idempotent,
-            execution: ExecutionMode::Background { cancellable: false },
-            result: ResultSpec::Job,
             tags: vec!["network".into(), "mail".into(), "refresh".into()],
             ..ActionContract::default()
         });
@@ -559,6 +556,12 @@ mod tests {
         let mb_actions: Vec<&str> = mailbox.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(mb_actions.contains(&"new-folder"), "{mb_actions:?}");
         assert!(mb_actions.contains(&"refresh"), "{mb_actions:?}");
+        let refresh = mailbox.actions.iter().find(|a| a.id == "refresh").unwrap();
+        assert_eq!(
+            refresh.contract.execution,
+            qos_actions::ExecutionMode::Immediate
+        );
+        assert_eq!(refresh.contract.result, qos_actions::ResultSpec::None);
 
         let folder = mailbox
             .children

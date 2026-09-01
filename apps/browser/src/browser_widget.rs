@@ -29,8 +29,8 @@ use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::qos_actions::{
-    ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
-    OperationKind, ParamType, Resource, ResultSpec, RetryPolicy,
+    ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
+    Resource, RetryPolicy,
 };
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -111,10 +111,6 @@ fn decode_browser_operation(payload: &[u8]) -> Result<BrowserOperation, String> 
 fn navigation_contract() -> ActionContract {
     ActionContract {
         retry: RetryPolicy::Idempotent,
-        execution: ExecutionMode::Background { cancellable: true },
-        result: ResultSpec::Resource {
-            resource_kind: "browser.page".into(),
-        },
         tags: vec!["network".into(), "navigation".into()],
         ..ActionContract::view()
     }
@@ -1081,6 +1077,11 @@ mod tests {
         assert!(!back.contract.availability.is_available());
         let navigate = page.actions.iter().find(|a| a.id == "navigate").unwrap();
         assert_eq!(navigate.params()[0].name.as_ref(), "url");
+        assert_eq!(
+            navigate.contract.execution,
+            ui::qos_actions::ExecutionMode::Immediate
+        );
+        assert_eq!(navigate.contract.result, ui::qos_actions::ResultSpec::None);
         let mut args = serde_json::Map::new();
         args.insert("url".into(), serde_json::json!("qos.example"));
         let encoded = navigate.build_json(&args).unwrap();

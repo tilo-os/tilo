@@ -44,7 +44,7 @@ use std::path::PathBuf;
 
 use automerge::AutoCommit;
 use qos_actions::door::{ActionAddress, ActionDescriptor};
-use qos_actions::{ActionRegistry, Resource};
+use qos_actions::{ActionContract, ActionRegistry, PermissionRequirement, Resource};
 use ui::permissions::{PermissionContext, PermissionScope, ResourceRef, Verb};
 
 /// Separator between a resource id and an action id in an address.
@@ -546,6 +546,21 @@ pub fn permitted(perms: &PermissionContext, address: &ActionAddress) -> bool {
     perms.check(&scope_for(address))
 }
 
+/// Check the authority the operation itself declares. The address gate stays
+/// the fallback for legacy descriptors; a read-only view must not silently be
+/// upgraded to Write, and an administrative action must not be downgraded.
+fn permitted_descriptor(perms: &PermissionContext, descriptor: &ActionDescriptor) -> bool {
+    let mut scope = scope_for(&descriptor.address);
+    scope.op = match descriptor.contract.permission {
+        PermissionRequirement::None | PermissionRequirement::Read => Verb::Read,
+        PermissionRequirement::Comment => Verb::Comment,
+        PermissionRequirement::Write => Verb::Write,
+        PermissionRequirement::Invite => Verb::Invite,
+        PermissionRequirement::Admin => Verb::Admin,
+    };
+    perms.check(&scope)
+}
+
 /// The tree `contract` publishes for `doc` as it stands, seen from `view`.
 ///
 /// Rebuilt on every call, never cached — an app's tree changes with every
@@ -570,7 +585,7 @@ pub fn offers(
         for descriptor in qos_actions::door::survey(&resources) {
             // Denied means absent, so nothing downstream can decide to
             // perform an operation it may not.
-            if !permitted(perms, &descriptor.address) {
+            if !permitted_descriptor(perms, &descriptor) {
                 continue;
             }
             out.push(Offer {
@@ -656,6 +671,7 @@ fn openable(
                 // work only the session hosting the room can do.
                 locus: qos_actions::ExecutionLocus::ServerPreferred,
                 kind: qos_actions::OperationKind::Effect,
+                contract: ActionContract::default(),
                 params: Vec::new(),
                 input: onto.clone(),
             },
@@ -1131,6 +1147,7 @@ mod tests {
                 description: None,
                 locus: qos_actions::ExecutionLocus::ClientLocal,
                 kind: qos_actions::OperationKind::Document,
+                contract: ActionContract::default(),
                 params: Vec::new(),
                 input,
             },
