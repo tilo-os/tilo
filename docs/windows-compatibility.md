@@ -139,11 +139,15 @@ cache and clears it after an invalid or disconnected response.
 
 The managed-entry registry has a monotonic compositor generation and is
 re-read from capsule state. A running manager starts with the exact entry
-snapshot authenticated at its launch. The service may add only entries created
-from a descriptor imported by that same authenticated connection, and removes
-authority immediately when a launcher or capsule is deleted. Entries created
-by another manager still require a new authenticated launch snapshot, so an
-existing client cannot widen itself by guessing identifiers.
+snapshot authenticated at its launch. A VM installer transaction belongs to
+the authenticated workspace that imported its descriptor: reconnecting that
+workspace can resume and publish its candidates, while another workspace sees
+neither status nor candidates. Publishing returns the resulting opaque host
+entry only to that workspace's requesting session, so it can launch the app
+immediately without widening other live sessions. Launcher or capsule deletion
+removes authority immediately. Entries created by another manager still require
+a new authenticated launch snapshot, so an existing client cannot widen itself
+by guessing identifiers.
 
 ## Explainable catalogue resolution (implemented core; fallback ordering is roadmap)
 
