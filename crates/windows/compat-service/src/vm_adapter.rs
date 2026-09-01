@@ -168,10 +168,35 @@ pub struct LiveVmDelegate<B, A, C, L, P> {
 }
 
 struct ActiveVmInstallation {
+    /// The authenticated qOS workspace that started this transaction. This
+    /// deliberately outlives a manager connection so reconnects in the same
+    /// workspace can resume it, while other workspaces cannot observe or
+    /// publish its candidates.
+    workspace_id: String,
     operation: windows_vm::InstallationOperationId,
     generation: u64,
     candidates: BTreeMap<String, windows_vm::DiscoveredApplication>,
     status: VmInstallation,
+}
+
+impl ActiveVmInstallation {
+    fn belongs_to(&self, workspace_id: &str) -> bool {
+        self.workspace_id == workspace_id
+    }
+
+    fn status_for(&self, workspace_id: &str) -> Option<VmInstallation> {
+        self.belongs_to(workspace_id).then(|| self.status.clone())
+    }
+
+    fn candidate_for(
+        &self,
+        workspace_id: &str,
+        entry_id: &str,
+    ) -> Option<windows_vm::DiscoveredApplication> {
+        self.belongs_to(workspace_id)
+            .then(|| self.candidates.get(entry_id).cloned())
+            .flatten()
+    }
 }
 
 impl<B, A, C, L, P> LiveVmDelegate<B, A, C, L, P> {
@@ -253,6 +278,7 @@ where
 
     fn install_from_portal(
         &self,
+        workspace_id: &str,
         input: VmInstallerInput,
         source: File,
     ) -> Result<VmInstallation, windows_vm::LaunchError> {
@@ -280,6 +306,7 @@ where
         let catalog = self.appliance.catalog()?;
         let status = vm_installation_from_guest(&operation, &guest_status);
         let active = ActiveVmInstallation {
+            workspace_id: workspace_id.to_string(),
             operation,
             generation: catalog.generation,
             candidates: candidate_map(&guest_status),
@@ -293,15 +320,17 @@ where
         Ok(status)
     }
 
-    fn installation_status(&self) -> Option<VmInstallation> {
-        self.installer
-            .lock()
-            .ok()
-            .and_then(|active| active.as_ref().map(|active| active.status.clone()))
+    fn installation_status(&self, workspace_id: &str) -> Option<VmInstallation> {
+        self.installer.lock().ok().and_then(|active| {
+            active
+                .as_ref()
+                .and_then(|active| active.status_for(workspace_id))
+        })
     }
 
     fn refresh_installation_status(
         &self,
+        workspace_id: &str,
     ) -> Result<Option<VmInstallation>, windows_vm::LaunchError> {
         let operation = self
             .installer
@@ -312,6 +341,7 @@ where
                 )
             })?
             .as_ref()
+            .filter(|active| active.belongs_to(workspace_id))
             .map(|active| active.operation.clone());
         let Some(operation) = operation else {
             return Ok(None);
@@ -324,7 +354,7 @@ where
         })?;
         let active = installer
             .as_mut()
-            .filter(|active| active.operation == operation)
+            .filter(|active| active.operation == operation && active.belongs_to(workspace_id))
             .ok_or(windows_vm::AgentError::InvalidInstaller)?;
         active.candidates = candidate_map(&guest_status);
         active.status = vm_installation_from_guest(&operation, &guest_status);
@@ -335,8 +365,9 @@ where
 
     fn publish_install_candidate(
         &self,
+        workspace_id: &str,
         entry_id: &str,
-    ) -> Result<VmInstallation, windows_vm::LaunchError> {
+    ) -> Result<crate::VmCandidatePublication, windows_vm::LaunchError> {
         let (operation, generation, candidate) = self
             .installer
             .lock()
@@ -348,9 +379,7 @@ where
             .as_ref()
             .and_then(|active| {
                 active
-                    .candidates
-                    .get(entry_id)
-                    .cloned()
+                    .candidate_for(workspace_id, entry_id)
                     .map(|candidate| (active.operation.clone(), active.generation, candidate))
             })
             .ok_or(windows_vm::AgentError::InvalidInstaller)?;
@@ -368,7 +397,11 @@ where
         })?;
         let active = installer
             .as_mut()
-            .filter(|active| active.operation == operation && active.generation == generation)
+            .filter(|active| {
+                active.operation == operation
+                    && active.generation == generation
+                    && active.belongs_to(workspace_id)
+            })
             .ok_or(windows_vm::AgentError::InvalidInstaller)?;
         active.generation = result.catalog_generation;
         active.candidates.remove(entry_id);
@@ -378,7 +411,10 @@ where
             .retain(|candidate| candidate.entry_id != entry_id);
         let status = active.status.clone();
         drop(installer);
-        Ok(status)
+        Ok(crate::VmCandidatePublication {
+            installation: status,
+            published_entry_id: vm_entry_id(&vm_published_application_id(&candidate.id)),
+        })
     }
 
     fn remove_published_application(&self, entry_id: &str) -> Result<(), windows_vm::LaunchError> {
@@ -633,5 +669,45 @@ mod tests {
         assert_ne!(app, "guest-word");
         assert_eq!(entry, vm_entry_id("guest-word"));
         assert_ne!(entry, vm_entry_id("guest-excel"));
+    }
+
+    #[test]
+    fn workspace_b_cannot_observe_or_publish_workspace_a_candidates() {
+        let operation =
+            windows_vm::InstallationOperationId::parse("installer-operation-a").unwrap();
+        let candidate = windows_vm::DiscoveredApplication {
+            id: "guest-app".to_string(),
+            display_name: "Guest app".to_string(),
+            product_name: None,
+            publisher: None,
+            version: None,
+            uninstall: None,
+        };
+        let candidate_entry = vm_candidate_entry_id(&operation, &candidate.id);
+        let active = ActiveVmInstallation {
+            workspace_id: "workspace-a".to_string(),
+            operation,
+            generation: 1,
+            candidates: BTreeMap::from([(candidate_entry.clone(), candidate)]),
+            status: VmInstallation {
+                detail: "Running".to_string(),
+                phase: VmInstallationPhase::Running,
+                exit_code: None,
+                candidates: Vec::new(),
+            },
+        };
+
+        assert!(active.status_for("workspace-a").is_some());
+        assert!(
+            active
+                .candidate_for("workspace-a", &candidate_entry)
+                .is_some()
+        );
+        assert!(active.status_for("workspace-b").is_none());
+        assert!(
+            active
+                .candidate_for("workspace-b", &candidate_entry)
+                .is_none()
+        );
     }
 }
