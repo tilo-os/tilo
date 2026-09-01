@@ -31,7 +31,21 @@ so changing the active theme or text/UI scale updates it without rebuilding
 the application widget tree. Hyphenation, OpenType, alignment, wrapping, and
 fragmentation modifiers compose with a role. An explicit core typography
 modifier such as `with_size`, `with_weight`, `with_font_family`, or
-`with_style` opts out and keeps that text custom.
+`with_style` opts out of live role styling and keeps that text custom without
+discarding its semantic intent.
+
+`Title` and `Display` expose level-1 headings to accessibility tools;
+`Heading` exposes level 2. Nested sections can retain the visual role while
+setting their document outline explicitly:
+
+```rust
+let subsection = Text::new("Keyboard shortcuts")
+    .with_role(TextRole::Heading)
+    .with_heading_level(3);
+```
+
+Body, label, caption, reading, and code roles remain static text. This makes
+screen-reader heading navigation match the visible hierarchy by default.
 
 Use an explicit style only when text has a real typographic requirement that
 does not match a role:
