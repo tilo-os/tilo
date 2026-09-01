@@ -544,7 +544,7 @@ impl NotesApp {
             .workspace
             .selected()
             .and_then(|id| self.workspace.get(id))
-            .map_or_else(|| "notes".to_string(), |m| m.title.clone());
+            .map_or_else(|| "Notes".to_string(), |m| m.title.clone());
         let size = tokens.typography.scale.base;
         let text_x = self.menu_btn_rect.x1 + 4.0;
         let text_y = self.topbar_rect.y0 + (self.topbar_rect.height() - f64::from(size)) / 2.0;
@@ -1024,6 +1024,19 @@ impl NotesApp {
         }
     }
 
+    /// Complete a first-note request from the empty-state button. This runs
+    /// from both the normal event path and `sync`, because an accessibility
+    /// activation reaches the child widget directly and then asks the host for
+    /// a sync. Either route creates the same root page and shared action.
+    fn drain_empty_note_request(&mut self, state: &mut AutoCommit) -> bool {
+        if !self.main.take_empty_action() {
+            return false;
+        }
+        self.apply_and_dispatch(state, OutEvent::CreateChild { parent: None });
+        self.sidebar.sync_from_workspace(&self.workspace);
+        true
+    }
+
     /// Schedule a debounced save of the current workspace.
     fn persist(&self) {
         if let Some(s) = &self.saver {
@@ -1357,6 +1370,7 @@ fn seed_welcome(root: &std::path::Path, workspace: &mut Workspace) {
 
 impl Widget for NotesApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.drain_empty_note_request(state);
         // Bridge the in-memory workspace to the shared CRDT document:
         // seed/adopt the page tree, then bind the editor to the selected
         // page so its text syncs between instances.
@@ -2227,6 +2241,11 @@ impl NotesApp {
                 self.sidebar.sync_from_workspace(&self.workspace);
             }
         }
+        // A fresh workspace has no selected page, so its central first-use
+        // action creates a root note. Route it through the same replayable
+        // action path as the sidebar + and Cmd/Ctrl-N; a first note must be
+        // just as collaborative and undoable as every later one.
+        self.drain_empty_note_request(state);
         // After every event, observe the editor's dirty flag and
         // request a debounced save if the user just edited.
         self.drain_editor_edits();
@@ -2265,6 +2284,21 @@ mod tests {
             "nothing selected on an empty workspace"
         );
         assert!(app.main.title().is_none(), "no page bound in the editor");
+    }
+
+    #[test]
+    fn accessibility_activation_creates_the_first_shared_note_on_sync() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+        let mut doc = AutoCommit::new();
+        assert!(
+            app.main
+                .perform_action(&ui::a11y::Action::Activate, &mut doc, &ObjId::Root,)
+        );
+
+        app.sync(&mut doc, &ObjId::Root);
+        assert_eq!(app.workspace.pages().len(), 1);
+        assert!(app.workspace.selected().is_some());
     }
 
     #[test]

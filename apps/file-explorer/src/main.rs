@@ -713,6 +713,10 @@ fn apply_post_layout_scenario(
 /// applies any post-layout `scenario` (which needs the laid-out geometry —
 /// e.g. a mid-drag reorder or an open context menu) and finally composites the
 /// overlay layer so context menus appear in the shot.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the headless shot boundary owns one linear GPU setup-render-readback-write transaction"
+)]
 fn render_shot_to_png(
     mut widget: FileExplorerWidget,
     viewport: (u32, u32),
@@ -736,7 +740,7 @@ fn render_shot_to_png(
     let mut state = ui::State::new();
     widget.sync(&mut state.doc, &state.root);
 
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+    let mut child = widget.build_layout(&mut taffy, &theme, &mut node_map);
     let root = taffy.new_with_children(
         Style {
             size: Size {
@@ -767,6 +771,43 @@ fn render_shot_to_png(
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
+
+    // Responsive children learn their actual width only during layout. Settle
+    // one structural reflow before capturing so narrow screenshots test the
+    // finished interface, not its first-frame breakpoint transition.
+    if widget.take_structure_dirty() {
+        taffy = TaffyTree::new();
+        node_map = HashMap::new();
+        widget.sync(&mut state.doc, &state.root);
+        child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy.new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(w as f32),
+                    height: Dimension::length(h as f32),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )?;
+        let measure_map = node_map.clone();
+        let tr = &mut text_renderer;
+        taffy.compute_layout_with_measure(
+            root,
+            taffy::Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )?;
+        widget.apply_layout(&taffy, child, Point::ORIGIN);
+    }
 
     // Post-layout scenarios need the laid-out geometry.
     apply_post_layout_scenario(&mut widget, scenario, (w, h), &mut state, child, &taffy);
