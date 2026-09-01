@@ -35,7 +35,9 @@ use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, SegmentedFace, TextInput, ToggleGroup, Widget};
+use ui::widget::{
+    Button, ButtonFace, SegmentedFace, TextInput, TextInputKind, ToggleGroup, Widget,
+};
 
 use crate::model::{self, Account, Algorithm};
 
@@ -143,15 +145,17 @@ impl AddAccountPanel {
             max_scroll: 0.0,
             reveal_advanced: false,
             body_clip: Rect::ZERO,
-            uri: TextInput::local(),
+            uri: TextInput::local().with_kind(TextInputKind::Url),
             uri_expanded: false,
-            issuer: TextInput::local(),
-            label: TextInput::local(),
-            secret: TextInput::local(),
+            issuer: TextInput::local().with_kind(TextInputKind::Name),
+            label: TextInput::local().with_kind(TextInputKind::Name),
+            secret: TextInput::local().with_kind(TextInputKind::Password),
             advanced_open: false,
             algorithm: Algorithm::Sha1,
             digits: 6,
-            period: TextInput::local().with_initial_value("30"),
+            period: TextInput::local()
+                .with_kind(TextInputKind::Number)
+                .with_initial_value("30"),
             focused: None,
             last_mouse: Point::ZERO,
             error: String::new(),
@@ -1523,6 +1527,7 @@ fn draw_glyph(scene: &mut Scene, transform: Affine, tile: Rect, glyph: Glyph, co
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
 

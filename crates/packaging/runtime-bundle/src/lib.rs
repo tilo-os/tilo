@@ -23,7 +23,7 @@
     )
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -91,6 +91,16 @@ pub enum BundleError {
     FileMissing { path: String },
     #[error("file present in payload but not listed in bundle.toml: {path}")]
     FileUnlisted { path: String },
+    #[error("invalid payload path in bundle.toml: {path}")]
+    InvalidPayloadPath { path: String },
+    #[error("payload entry is not a regular file: {path}")]
+    NonRegularFile { path: String },
+    #[error("file size mismatch for {path}: expected {expected}, got {actual}")]
+    SizeMismatch {
+        path: String,
+        expected: u64,
+        actual: u64,
+    },
     #[error("home / data-dir not resolvable — set XDG_DATA_HOME or HOME")]
     NoDataDir,
     #[error("bundle is not signed — signature required (pass --allow-unsigned-runtime to opt out)")]
@@ -582,6 +592,32 @@ pub fn verify_bundle_with(
     root: &Path,
     opts: &VerifyOptions,
 ) -> Result<BundleManifest, BundleError> {
+    verify_bundle_impl(root, opts, true)
+}
+
+/// Verify a bundle's signed manifest, file set and sizes without reading every
+/// payload byte. This is appropriate only when the caller independently proves
+/// the payload is immutable (the launcher uses it for root-owned system
+/// bundles). User-controlled bundles must use [`verify_bundle_with`].
+///
+/// # Errors
+///
+/// Returns the same manifest, file-shape, architecture, and signature errors
+/// as [`verify_bundle_with`], plus [`BundleError::SizeMismatch`] when a listed
+/// file's length differs. It deliberately does not detect equal-sized content
+/// changes; the caller's immutability proof is the protection against those.
+pub fn verify_bundle_metadata_with(
+    root: &Path,
+    opts: &VerifyOptions,
+) -> Result<BundleManifest, BundleError> {
+    verify_bundle_impl(root, opts, false)
+}
+
+fn verify_bundle_impl(
+    root: &Path,
+    opts: &VerifyOptions,
+    hash_payload: bool,
+) -> Result<BundleManifest, BundleError> {
     let manifest_path = root.join(BUNDLE_MANIFEST_FILENAME);
     if !manifest_path.exists() {
         return Err(BundleError::ManifestMissing {
@@ -610,19 +646,41 @@ pub fn verify_bundle_with(
     // The manifest itself lives at the root; don't treat it as payload.
     on_disk.remove(BUNDLE_MANIFEST_FILENAME);
 
+    let mut listed = BTreeSet::new();
     for expected in &manifest.files {
+        if !valid_payload_path(&expected.path) || !listed.insert(expected.path.as_str()) {
+            return Err(BundleError::InvalidPayloadPath {
+                path: expected.path.clone(),
+            });
+        }
         let abs = root.join(&expected.path);
         if !abs.exists() {
             return Err(BundleError::FileMissing {
                 path: expected.path.clone(),
             });
         }
-        let (hash, _size) = hash_file(&abs)?;
-        if hash != expected.hash {
-            return Err(BundleError::HashMismatch {
-                expected: expected.hash.clone(),
-                computed: hash,
+        if !fs::symlink_metadata(&abs)?.file_type().is_file() {
+            return Err(BundleError::NonRegularFile {
+                path: expected.path.clone(),
             });
+        }
+        if hash_payload {
+            let (hash, _size) = hash_file(&abs)?;
+            if hash != expected.hash {
+                return Err(BundleError::HashMismatch {
+                    expected: expected.hash.clone(),
+                    computed: hash,
+                });
+            }
+        } else {
+            let actual = abs.metadata()?.len();
+            if actual != expected.size {
+                return Err(BundleError::SizeMismatch {
+                    path: expected.path.clone(),
+                    expected: expected.size,
+                    actual,
+                });
+            }
         }
         on_disk.remove(&expected.path);
     }
@@ -643,7 +701,14 @@ pub fn verify_bundle_with(
         });
     }
 
-    // Signature policy.
+    verify_manifest_signature(&manifest, opts)?;
+    Ok(manifest)
+}
+
+fn verify_manifest_signature(
+    manifest: &BundleManifest,
+    opts: &VerifyOptions,
+) -> Result<(), BundleError> {
     let need_sig = opts.require_signature || opts.require_publisher.is_some();
     match (
         manifest.publisher_hex.as_deref(),
@@ -679,8 +744,16 @@ pub fn verify_bundle_with(
         _ if need_sig => return Err(BundleError::NotSigned),
         _ => {}
     }
+    Ok(())
+}
 
-    Ok(manifest)
+fn valid_payload_path(path: &str) -> bool {
+    !path.is_empty()
+        && path != BUNDLE_MANIFEST_FILENAME
+        && !path.contains('\\')
+        && path
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
 fn decode_fixed_hex<const N: usize>(s: &str, field: &'static str) -> Result<[u8; N], BundleError> {
@@ -716,7 +789,7 @@ fn walk_payload(root: &Path, out: &mut BTreeMap<String, PathBuf>) -> std::io::Re
             let ty = entry.file_type()?;
             if ty.is_dir() {
                 recurse(base, &path, out)?;
-            } else if ty.is_file() {
+            } else {
                 let rel = path
                     .strip_prefix(base)
                     .unwrap_or(&path)
@@ -724,7 +797,6 @@ fn walk_payload(root: &Path, out: &mut BTreeMap<String, PathBuf>) -> std::io::Re
                     .replace('\\', "/");
                 out.insert(rel, path);
             }
-            // symlinks / other: ignore. bundles should be plain files.
         }
         Ok(())
     }
@@ -1119,6 +1191,142 @@ mod tests {
 
         let err = verify_bundle(out.path()).unwrap_err();
         matches!(err, BundleError::BadSignature);
+    }
+
+    #[test]
+    fn metadata_verify_checks_shape_but_deliberately_not_content() {
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let identity_path = host.path().join("identity.json");
+        fs::write(&identity_path, Identity::generate().to_json_bytes()).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let manifest = build_bundle_with(
+            out.path(),
+            "system-fast-path",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: Some(&identity_path),
+                extra_libs: &[],
+            },
+        )
+        .unwrap();
+        let opts = VerifyOptions {
+            require_signature: true,
+            ..VerifyOptions::default()
+        };
+        verify_bundle_metadata_with(out.path(), &opts).expect("untouched metadata verifies");
+
+        let payload = out.path().join(&manifest.files[0].path);
+        let mut same_size = fs::read(&payload).unwrap();
+        same_size[0] ^= 1;
+        fs::write(&payload, &same_size).unwrap();
+        verify_bundle_metadata_with(out.path(), &opts)
+            .expect("caller-owned immutability is what protects equal-sized content");
+        assert!(matches!(
+            verify_bundle_with(out.path(), &opts),
+            Err(BundleError::HashMismatch { .. })
+        ));
+
+        fs::write(&payload, [same_size, vec![0]].concat()).unwrap();
+        assert!(matches!(
+            verify_bundle_metadata_with(out.path(), &opts),
+            Err(BundleError::SizeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn verify_rejects_traversal_and_duplicate_manifest_paths() {
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let out = tempfile::tempdir().unwrap();
+        let mut manifest = build_bundle_with(
+            out.path(),
+            "malformed-paths",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+                extra_libs: &[],
+            },
+        )
+        .unwrap();
+        manifest.files[0].path = "../outside".to_string();
+        fs::write(
+            out.path().join(BUNDLE_MANIFEST_FILENAME),
+            toml::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            verify_bundle(out.path()),
+            Err(BundleError::InvalidPayloadPath { .. })
+        ));
+
+        let mut manifest = build_bundle_with(
+            out.path(),
+            "duplicate-paths",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+                extra_libs: &[],
+            },
+        )
+        .unwrap();
+        manifest.files.push(manifest.files[0].clone());
+        fs::write(
+            out.path().join(BUNDLE_MANIFEST_FILENAME),
+            toml::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            verify_bundle(out.path()),
+            Err(BundleError::InvalidPayloadPath { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_rejects_non_regular_payload_entries() {
+        use std::os::unix::fs::symlink;
+
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let out = tempfile::tempdir().unwrap();
+        let mut manifest = build_bundle_with(
+            out.path(),
+            "plain-files-only",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+                extra_libs: &[],
+            },
+        )
+        .unwrap();
+        symlink("lib/lib64/libc.so.6", out.path().join("unexpected-link")).unwrap();
+        assert!(matches!(
+            verify_bundle(out.path()),
+            Err(BundleError::FileUnlisted { path }) if path == "unexpected-link"
+        ));
+
+        let (hash, size) = hash_file(&out.path().join("unexpected-link")).unwrap();
+        manifest.files.push(BundleFile {
+            path: "unexpected-link".to_string(),
+            hash,
+            size,
+        });
+        manifest.files.sort_by(|a, b| a.path.cmp(&b.path));
+        manifest.root_hash = compute_root_hash(&manifest.files);
+        fs::write(
+            out.path().join(BUNDLE_MANIFEST_FILENAME),
+            toml::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            verify_bundle(out.path()),
+            Err(BundleError::NonRegularFile { path }) if path == "unexpected-link"
+        ));
     }
 
     #[test]

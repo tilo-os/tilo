@@ -184,6 +184,7 @@ impl LogsApp {
             popup: None,
             focused: true,
             search_input: TextInput::new(Vec::new())
+                .with_kind(ui::widget::TextInputKind::Search)
                 .with_id("logs.search")
                 .with_on_change_path(crate::doc::K_SEARCH)
                 .with_placeholder("Search messages, units…")

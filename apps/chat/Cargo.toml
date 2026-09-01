@@ -14,6 +14,7 @@ name = "chat"
 path = "src/main.rs"
 
 [features]
+thin = ["dep:runtime-dylib"]
 # The real-time media engine ships on by default so a normally-built `chat` can
 # actually place voice/camera/screen-share calls. The live-vs-simulated engine
 # is a genuine RUNTIME choice: `ChatApp::new()` (the live binary) uses
@@ -44,6 +45,7 @@ live-media = [
 ]
 
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui" }
 # The qOS action model: the serializable, replayable unit of CRDT mutation
 # behind Ctrl+K and cross-peer collaboration. Chat's messages/channels/reactions

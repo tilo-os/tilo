@@ -19,7 +19,7 @@
 //! ```
 
 use automerge::{AutoCommit, ChangeHash};
-use qos_actions::{Action, EncodedAction};
+use qos_actions::{Action, ActionContext, EncodedAction};
 
 /// Framework-owned action dispatch an app embeds as a single field, in
 /// place of hand-rolled `perform_action`/`DiscardTransport`/
@@ -39,11 +39,19 @@ pub struct ActionHost {
     /// [`ActionSpec`](qos_actions::ActionSpec) build the byte-identical
     /// action.
     last_dispatched: Option<EncodedAction>,
+    ambient_context: Option<ActionContext>,
 }
 
 impl ActionHost {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Set task/session provenance inherited by later dispatches. Concrete
+    /// action/resource fields always win; this is primarily for purpose and
+    /// work-group metadata supplied by an agent run or issue context.
+    pub fn set_ambient_context(&mut self, context: Option<ActionContext>) {
+        self.ambient_context = context;
     }
 
     /// Brackets the undo boundary on the *first* action of the event only
@@ -56,6 +64,34 @@ impl ActionHost {
     /// affordance never panics the app.
     pub fn dispatch<A>(&mut self, doc: &mut AutoCommit, type_id: &str, action: &A)
     where
+        A: Action + serde::Serialize,
+    {
+        self.dispatch_maybe_context(doc, type_id, action, None);
+    }
+
+    /// Dispatch with the activity context the app already has at the direct
+    /// affordance: resource, human label, optional purpose/group, and browse
+    /// facets. This is the preferred path for mutations that should appear in
+    /// workspace history; [`Self::dispatch`] remains the legacy fallback.
+    pub fn dispatch_with_context<A>(
+        &mut self,
+        doc: &mut AutoCommit,
+        type_id: &str,
+        action: &A,
+        context: ActionContext,
+    ) where
+        A: Action + serde::Serialize,
+    {
+        self.dispatch_maybe_context(doc, type_id, action, Some(context));
+    }
+
+    fn dispatch_maybe_context<A>(
+        &mut self,
+        doc: &mut AutoCommit,
+        type_id: &str,
+        action: &A,
+        context: Option<ActionContext>,
+    ) where
         A: Action + serde::Serialize,
     {
         if self.commit_before.is_none() {
@@ -73,7 +109,24 @@ impl ActionHost {
         };
         self.last_dispatched = Some(encoded.clone());
         let mut transport = qos_actions::LocalTransport::new();
-        if let Err(e) = qos_actions::dispatch(doc, action, encoded, &mut transport) {
+        let actor = doc.get_actor().to_bytes().to_vec();
+        let context = match (context, self.ambient_context.as_ref()) {
+            (Some(context), Some(ambient)) => Some(context.enriched_by(ambient)),
+            (None, Some(ambient)) => Some(ambient.clone()),
+            (context, None) => context,
+        };
+        let result = match context {
+            Some(context) => qos_actions::dispatch_by_with_context(
+                doc,
+                action,
+                encoded,
+                &mut transport,
+                Some(&actor),
+                context,
+            ),
+            None => qos_actions::dispatch_by(doc, action, encoded, &mut transport, Some(&actor)),
+        };
+        if let Err(e) = result {
             tracing::warn!(error = %e, type_id = %type_id, "action dispatch failed");
         }
     }
@@ -136,6 +189,34 @@ mod tests {
     }
 
     #[test]
+    fn direct_actions_keep_the_clicking_documents_actor() {
+        let actor = automerge::ActorId::from(vec![7, 8, 9, 10]);
+        let mut doc = AutoCommit::new().with_actor(actor.clone());
+        let mut host = ActionHost::new();
+        host.dispatch_with_context(
+            &mut doc,
+            PUT_TYPE,
+            &Put {
+                key: "score".into(),
+                value: 42,
+            },
+            ActionContext::for_action(
+                "org.qos.Test",
+                "Test",
+                &Put {
+                    key: "score".into(),
+                    value: 42,
+                },
+            ),
+        );
+        let changes = doc.get_changes(&[]);
+        assert_eq!(
+            changes.last().map(automerge::Change::actor_id),
+            Some(&actor)
+        );
+    }
+
+    #[test]
     fn brackets_one_undo_boundary_across_several_actions() {
         let mut doc = AutoCommit::new();
         // A pre-existing app write; the bracket must start *after* it.
@@ -188,5 +269,67 @@ mod tests {
             .last_dispatched()
             .expect("dispatch recorded the action");
         assert_eq!(enc, &EncodedAction::encode(PUT_TYPE, &action).unwrap());
+    }
+
+    #[test]
+    fn contextual_dispatch_embeds_activity_in_the_change() {
+        let mut doc = AutoCommit::new();
+        let mut host = ActionHost::new();
+        host.dispatch_with_context(
+            &mut doc,
+            PUT_TYPE,
+            &Put {
+                key: "score".into(),
+                value: 9,
+            },
+            ActionContext::for_resource("Set score", "counter:1", "counter", "Score"),
+        );
+        let heads = doc.get_heads();
+        let change = doc
+            .get_change_by_hash(&heads[0])
+            .expect("contextual action committed");
+        let context = change
+            .message()
+            .and_then(|message| ActionContext::from_change_message(message))
+            .expect("context embedded in change");
+        assert_eq!(context.summary().as_deref(), Some("Set score · Score"));
+    }
+
+    #[test]
+    fn ambient_task_context_enriches_explicit_action_context() {
+        let mut doc = AutoCommit::new();
+        let mut host = ActionHost::new();
+        host.set_ambient_context(Some(
+            ActionContext::default()
+                .with_purpose("Prepare launch")
+                .with_group("issue:42", "Launch", "issue"),
+        ));
+        host.dispatch_with_context(
+            &mut doc,
+            PUT_TYPE,
+            &Put {
+                key: "k".into(),
+                value: 1,
+            },
+            ActionContext::for_resource("Set", "counter", "counter", "Counter"),
+        );
+        let heads = doc.get_heads();
+        let change = doc.get_change_by_hash(&heads[0]).unwrap();
+        let context = change
+            .message()
+            .and_then(|message| ActionContext::from_change_message(message))
+            .unwrap();
+        assert_eq!(context.purpose.as_deref(), Some("Prepare launch"));
+        assert_eq!(
+            context.group.as_ref().map(|group| group.id.as_str()),
+            Some("issue:42")
+        );
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str()),
+            Some("counter")
+        );
     }
 }

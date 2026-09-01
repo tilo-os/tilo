@@ -14,6 +14,7 @@ name = "calendar"
 path = "src/main.rs"
 
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
 ui = { path = "../../ui" }
@@ -47,6 +48,7 @@ taffy.workspace = true
 reqwest = { workspace = true, optional = true, features = ["blocking", "rustls-tls"] }
 
 [features]
+thin = ["dep:runtime-dylib"]
 # The real CalDAV transport ships on by default so a configured account syncs
 # for real over HTTPS. It runs on a background thread (see `app::CalendarApp`),
 # so the UI never blocks on the network, and it degrades gracefully: with no

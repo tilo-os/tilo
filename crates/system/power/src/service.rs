@@ -165,12 +165,13 @@ impl PowerService {
 
     /// Run the service loop until the process ends. Never returns under normal operation.
     pub async fn run(mut self) {
-        let policy = self.policy;
-        info!(target: "qos::power", ?policy, "power service started");
-
         // Prompt cadence for commands + registry mirroring + lid polling; battery is polled less
         // often (every `BATTERY_POLL_EVERY` ticks).
         const BATTERY_POLL_EVERY: u32 = 80; // 250ms * 80 = 20s
+
+        let policy = self.policy;
+        info!(target: "qos::power", ?policy, "power service started");
+
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
         let mut ticks: u32 = 0;
 

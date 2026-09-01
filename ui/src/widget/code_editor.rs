@@ -34,7 +34,7 @@ use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
-use crate::widget::{TextInput, Widget};
+use crate::widget::{TextInput, TextInputKind, Widget};
 
 /// The syntactic category a run of source falls into. The editor never
 /// hard-codes a colour for these — [`token_color`] resolves each to a
@@ -199,6 +199,7 @@ impl CodeEditor {
     fn configure(input: TextInput) -> TextInput {
         input
             .multiline(true)
+            .with_kind(TextInputKind::Code)
             .with_mono()
             .with_plain_chrome()
             .with_gutter(true)

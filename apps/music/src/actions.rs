@@ -86,6 +86,51 @@ pub enum MusicAction {
     ToggleFollowedArtist { artist: String },
 }
 
+/// Durable, browseable history metadata for a library mutation.
+pub fn history_context(action: &MusicAction) -> qos_actions::ActionContext {
+    let mut context = qos_actions::ActionContext::for_action("org.qos.Music", "Music", action);
+    let (label, id, kind, resource_label) = match action {
+        MusicAction::CreatePlaylist { id, name } => ("Create playlist", id, "music.playlist", name),
+        MusicAction::RenamePlaylist { id, name } => ("Rename playlist", id, "music.playlist", name),
+        MusicAction::DeletePlaylist { id } => ("Delete playlist", id, "music.playlist", id),
+        MusicAction::AddTrackToPlaylist { playlist, track: _ } => (
+            "Add track to playlist",
+            playlist,
+            "music.playlist",
+            playlist,
+        ),
+        MusicAction::RemoveTrackFromPlaylist { playlist, track: _ } => (
+            "Remove track from playlist",
+            playlist,
+            "music.playlist",
+            playlist,
+        ),
+        MusicAction::MoveTrackInPlaylist { playlist, .. } => {
+            ("Reorder playlist", playlist, "music.playlist", playlist)
+        }
+        MusicAction::SetPlaylistCover { playlist, .. } => (
+            "Change playlist cover",
+            playlist,
+            "music.playlist",
+            playlist,
+        ),
+        MusicAction::ToggleLiked { track } => ("Toggle liked song", track, "music.track", track),
+        MusicAction::ToggleSavedAlbum { album } => {
+            ("Toggle saved album", album, "music.album", album)
+        }
+        MusicAction::ToggleFollowedArtist { artist } => {
+            ("Toggle followed artist", artist, "music.artist", artist)
+        }
+    };
+    context.action_label = label.to_string();
+    context.resource = Some(qos_actions::ActionResource {
+        id: format!("{kind}:{id}"),
+        kind: kind.to_string(),
+        label: resource_label.clone(),
+    });
+    context
+}
+
 impl Action for MusicAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {

@@ -139,6 +139,41 @@ pub enum ContactsAction {
     SetFavorite { id: String, favorite: bool },
 }
 
+/// Durable, browseable history metadata for an address-book mutation.
+pub fn history_context(action: &ContactsAction) -> qos_actions::ActionContext {
+    let mut context =
+        qos_actions::ActionContext::for_action("org.qos.Contacts", "Contacts", action);
+    let (label, id, name) = match action {
+        ContactsAction::UpsertContact(contact) => {
+            let name = format!("{} {}", contact.first, contact.last)
+                .trim()
+                .to_string();
+            ("Update contact", contact.id.as_str(), name)
+        }
+        ContactsAction::DeleteContact { id } => ("Delete contact", id.as_str(), "Contact".into()),
+        ContactsAction::SetFavorite { id, favorite } => (
+            if *favorite {
+                "Favorite contact"
+            } else {
+                "Unfavorite contact"
+            },
+            id.as_str(),
+            "Contact".into(),
+        ),
+    };
+    context.action_label = label.to_string();
+    context.resource = Some(qos_actions::ActionResource {
+        id: format!("contacts.contact:{id}"),
+        kind: "contacts.contact".to_string(),
+        label: if name.is_empty() {
+            "Contact".to_string()
+        } else {
+            name
+        },
+    });
+    context
+}
+
 impl Action for ContactsAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {

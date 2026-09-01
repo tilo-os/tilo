@@ -188,6 +188,9 @@ pub struct TypstApp {
     /// doc access) for the caret readout and change detection. The editor body
     /// and its syntax highlighting live in the shared `SourceEditor` widget.
     source_cache: String,
+    /// A native source splice is committed by the widget host rather than an
+    /// action envelope; this rising edge supplies its durable provenance.
+    native_edit_pending: bool,
 
     // --- view state ---
     /// Editor↔preview horizontal split, 0..1 of the content width.
@@ -324,6 +327,7 @@ impl TypstApp {
             initialized: false,
             last_source: String::new(),
             source_cache: String::new(),
+            native_edit_pending: false,
             split_ratio: 0.46,
             show_diagnostics: false,
             err_count: 0,
@@ -654,7 +658,9 @@ impl TypstApp {
             .iter()
             .position(|d| d.name == name && d.from_disk)
         {
-            self.documents[i].source = src;
+            if let Some(existing) = self.documents.get_mut(i) {
+                existing.source = src;
+            }
             i
         } else {
             self.documents.push(Document {
@@ -794,7 +800,12 @@ impl TypstApp {
         let caret = self.editor.caret().min(self.source_cache.len());
         let mut line = 1usize;
         let mut col = 1usize;
-        for ch in self.source_cache[..caret].chars() {
+        // Walk char boundaries directly rather than byte-slicing the source —
+        // `caret` is a byte offset and isn't guaranteed to land on one.
+        for (i, ch) in self.source_cache.char_indices() {
+            if i >= caret {
+                break;
+            }
             if ch == '\n' {
                 line += 1;
                 col = 1;
@@ -1631,7 +1642,7 @@ fn elide_to_width(tr: &mut TextRenderer, s: &str, max_w: f64) -> String {
     let mut keep = chars.len();
     while keep > 1 {
         keep -= 1;
-        let candidate: String = chars[..keep].iter().collect::<String>() + "…";
+        let candidate: String = chars.iter().take(keep).collect::<String>() + "…";
         let (w, _) = tr.measure_weighted(&candidate, PILL_FONT, None, TextWeight::Semibold);
         if f64::from(w) <= max_w {
             return candidate;
@@ -1679,6 +1690,8 @@ impl Widget for TypstApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` on a freshly created tree never fails.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -1693,7 +1706,9 @@ impl Widget for TypstApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         let rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -1802,6 +1817,31 @@ impl Widget for TypstApp {
 
     fn name(&self) -> &'static str {
         "TypstEditor"
+    }
+
+    fn needs_commit(&self) -> bool {
+        self.native_edit_pending
+    }
+
+    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+        self.native_edit_pending.then(|| {
+            let document = self
+                .documents
+                .get(self.current)
+                .map_or("Untitled.typ", |document| document.name.as_str());
+            ui::qos_actions::ActionContext::for_resource(
+                "Edit source",
+                format!("typst.document:{document}"),
+                "typst.document",
+                document,
+            )
+            .with_app("org.qos.Typst", "Typst")
+            .with_facet(ui::qos_actions::ActionFacet::new("file-type", "Typst"))
+        })
+    }
+
+    fn on_commit(&mut self) {
+        self.native_edit_pending = false;
     }
 
     fn get_rect(&self) -> Rect {
@@ -1927,8 +1967,12 @@ impl TypstApp {
             }
         }
         // Route remaining keys to the focused editor.
-        if self.editor.focused && self.editor.handle_key(event, &modifiers, doc, src_id) {
-            *handled = true;
+        if self.editor.focused {
+            let before = doc.pending_ops();
+            if self.editor.handle_key(event, &modifiers, doc, src_id) {
+                *handled = true;
+                self.native_edit_pending |= doc.pending_ops() > before;
+            }
         }
     }
 
@@ -2138,6 +2182,7 @@ impl TypstApp {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use winit::dpi::PhysicalPosition;
@@ -2222,6 +2267,36 @@ mod tests {
         // Welcome demo compiles cleanly into at least one page.
         assert!(app.preview.page_count() >= 1, "rendered a page");
         assert_eq!(app.err_count, 0, "welcome demo has no errors");
+    }
+
+    #[test]
+    fn source_edit_requests_a_semantically_stamped_commit() {
+        let (mut app, mut doc) = fresh();
+        let before = app.read_source(&doc);
+
+        assert!(send(&mut app, &mut doc, &char_press("x")));
+        assert_ne!(app.read_source(&doc), before, "the source really changed");
+        assert!(app.needs_commit());
+
+        let context = app.take_commit_context().expect("native edit provenance");
+        assert_eq!(context.action_label, "Edit source");
+        assert_eq!(
+            context.app.as_ref().map(|app| app.id.as_str()),
+            Some("org.qos.Typst")
+        );
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.kind.as_str()),
+            Some("typst.document")
+        );
+
+        app.on_commit();
+        assert!(
+            !app.needs_commit(),
+            "commit acknowledgement clears the latch"
+        );
     }
 
     /// A focused editor that isn't compiling or flashing must report no need

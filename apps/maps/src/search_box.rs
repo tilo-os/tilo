@@ -292,7 +292,7 @@ impl SearchBox {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        overlay: SearchOverlay<'_>,
+        overlay: &SearchOverlay<'_>,
     ) {
         if !self.overlay_active(overlay.query) {
             return;

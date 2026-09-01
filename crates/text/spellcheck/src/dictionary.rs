@@ -30,6 +30,107 @@ const BUILTIN_WORDS: &str = include_str!("../data/words.txt");
 /// spelling covers `qOS`, `QOS` and `qos`.
 const PRODUCT_WORDS: &[&str] = &["qos", "claude", "nirios"];
 
+/// High-frequency conversational forms that broad word-list generation tends
+/// to lose (especially contractions and proper names). Full system Hunspell is
+/// preferred at runtime; these keep the embedded/offline fallback humane.
+const CONVERSATIONAL_WORDS: &[&str] = &[
+    "aren't",
+    "can't",
+    "couldn't",
+    "didn't",
+    "doesn't",
+    "don't",
+    "hadn't",
+    "hasn't",
+    "haven't",
+    "he'd",
+    "he'll",
+    "he's",
+    "how's",
+    "i'd",
+    "i'll",
+    "i'm",
+    "i've",
+    "isn't",
+    "it'd",
+    "it'll",
+    "it's",
+    "let's",
+    "mustn't",
+    "shan't",
+    "she'd",
+    "she'll",
+    "she's",
+    "shouldn't",
+    "that's",
+    "there's",
+    "they'd",
+    "they'll",
+    "they're",
+    "they've",
+    "wasn't",
+    "we'd",
+    "we'll",
+    "we're",
+    "we've",
+    "weren't",
+    "what's",
+    "where's",
+    "who's",
+    "won't",
+    "wouldn't",
+    "you'd",
+    "you'll",
+    "you're",
+    "you've",
+    "alex",
+    "alexander",
+    "alice",
+    "amelia",
+    "andrew",
+    "anna",
+    "anthony",
+    "ava",
+    "benjamin",
+    "charles",
+    "charlotte",
+    "chloe",
+    "daniel",
+    "david",
+    "elijah",
+    "elizabeth",
+    "ella",
+    "emily",
+    "emma",
+    "ethan",
+    "evelyn",
+    "grace",
+    "harper",
+    "henry",
+    "isabella",
+    "jack",
+    "james",
+    "jane",
+    "joseph",
+    "liam",
+    "lily",
+    "lucas",
+    "lucy",
+    "maria",
+    "mason",
+    "mia",
+    "michael",
+    "noah",
+    "oliver",
+    "olivia",
+    "quinten",
+    "samuel",
+    "sophia",
+    "victoria",
+    "william",
+    "ctrl",
+];
+
 /// A set of known words for spell checking.
 ///
 /// Membership is **case-insensitive**: words are stored lowercased and
@@ -57,7 +158,12 @@ pub struct Dictionary {
 impl Dictionary {
     /// Build the dictionary embedded in the binary at compile time.
     pub fn builtin() -> Self {
-        Self::from_words(BUILTIN_WORDS.lines().chain(PRODUCT_WORDS.iter().copied()))
+        Self::from_words(
+            BUILTIN_WORDS
+                .lines()
+                .chain(PRODUCT_WORDS.iter().copied())
+                .chain(CONVERSATIONAL_WORDS.iter().copied()),
+        )
     }
 
     /// Like [`builtin`](Self::builtin), but also load any persisted user words
@@ -66,6 +172,16 @@ impl Dictionary {
     /// silent no-op, so this is safe to call in headless tests and sandboxes.
     pub fn with_user_dict() -> Self {
         let mut d = Self::builtin();
+        d.load_user_dict();
+        d
+    }
+
+    /// Load only the person's added words, without rebuilding the embedded
+    /// 75k-word English dictionary. This is useful when the built-in checker is
+    /// already process-shared and a caller only needs the personal-vocabulary
+    /// overlay.
+    pub fn user_dict_overlay() -> Self {
+        let mut d = Self::default();
         d.load_user_dict();
         d
     }
@@ -126,6 +242,13 @@ impl Dictionary {
     /// Returns `true` if `word` is in the dictionary (built-in list **or** the
     /// runtime user dictionary), compared case-insensitively.
     pub fn contains(&self, word: &str) -> bool {
+        let apostrophe_normalized;
+        let word = if word.contains('\u{2019}') {
+            apostrophe_normalized = word.replace('\u{2019}', "'");
+            apostrophe_normalized.as_str()
+        } else {
+            word
+        };
         // Fast path: a word that is already lowercase needs no allocation.
         if word.chars().all(|c| !c.is_uppercase()) {
             self.words.contains(word) || self.user_words.contains(word)

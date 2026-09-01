@@ -92,6 +92,12 @@ pub enum RunError {
     InvalidOpenUri(String),
     #[error("refusing authored launch: identity signing broker could not start ({0})")]
     IdentityBroker(String),
+    #[error(
+        "internal error: the sandbox argv lost its trailing entrypoint token before a splice \
+         step could run. This should never happen — refusing to launch rather than risk a \
+         command line silently missing one of its sandboxing directives."
+    )]
+    ArgvInvariant,
 }
 
 impl RunError {
@@ -407,7 +413,7 @@ pub fn resolve_runtime(
         let version = manifest
             .runtime_ref()
             .map_or_else(|| "1".to_string(), |(_, v)| v.to_string());
-        enforce_bundle_policy(explicit, opts)?;
+        enforce_bundle_policy(explicit, opts, false)?;
         return Ok(Some((explicit.clone(), version)));
     }
     // 2. Manifest declaration.
@@ -420,10 +426,10 @@ pub fn resolve_runtime(
     // Look up: per-user first, then system.
     let per_user = runtime_bundle::default_bundle_path(version).ok();
     let system = runtime_bundle::system_bundle_path(version);
-    let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system]).collect();
+    let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system.clone()]).collect();
     for cand in &candidates {
         if cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() {
-            enforce_bundle_policy(cand, opts)?;
+            enforce_bundle_policy(cand, opts, cand == &system)?;
             return Ok(Some((cand.clone(), version.to_string())));
         }
     }
@@ -450,7 +456,11 @@ pub fn resolve_runtime(
 ///   3. Else any signed publisher is accepted.
 ///
 /// Layering lets the OS image bake and pin a fresh key at build time.
-fn enforce_bundle_policy(path: &Path, opts: &RunOptions) -> Result<(), RunError> {
+fn enforce_bundle_policy(
+    path: &Path,
+    opts: &RunOptions,
+    system_bundle: bool,
+) -> Result<(), RunError> {
     let require_publisher = match opts.require_runtime_publisher.clone() {
         Some(explicit) => Some(explicit),
         None => trusted_publisher_pin_from_file(),
@@ -460,7 +470,21 @@ fn enforce_bundle_policy(path: &Path, opts: &RunOptions) -> Result<(), RunError>
         require_signature: !opts.allow_unsigned_runtime,
         require_arch: None,
     };
-    match runtime_bundle::verify_bundle_with(path, &verify_opts) {
+    let verified = if system_bundle {
+        runtime_bundle::verify_bundle_metadata_with(path, &verify_opts).and_then(|manifest| {
+            if system_bundle_tree_is_root_owned(path, &manifest) {
+                Ok(manifest)
+            } else {
+                Err(runtime_bundle::BundleError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "system runtime is not an immutable root-owned tree",
+                )))
+            }
+        })
+    } else {
+        runtime_bundle::verify_bundle_with(path, &verify_opts)
+    };
+    match verified {
         Ok(manifest) => {
             // Multi-publisher trust list: `require_publisher` above was `None`
             // (only one key can be pinned there), so check by hand here.
@@ -493,12 +517,61 @@ fn enforce_bundle_policy(path: &Path, opts: &RunOptions) -> Result<(), RunError>
     }
 }
 
+#[cfg(unix)]
+fn system_bundle_tree_is_root_owned(
+    root: &Path,
+    manifest: &runtime_bundle::BundleManifest,
+) -> bool {
+    fn secure(path: &Path) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(metadata) = std::fs::symlink_metadata(path) else {
+            return false;
+        };
+        !metadata.file_type().is_symlink() && metadata.uid() == 0 && metadata.mode() & 0o022 == 0
+    }
+
+    // Protect against replacing the otherwise-secure version directory through
+    // a writable ancestor, then check every signed file and its subdirectories.
+    let mut ancestor = Some(root);
+    while let Some(path) = ancestor {
+        if !secure(path) {
+            return false;
+        }
+        ancestor = path.parent();
+    }
+    if !secure(&root.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME)) {
+        return false;
+    }
+    for file in &manifest.files {
+        let path = root.join(&file.path);
+        if !secure(&path) {
+            return false;
+        }
+        let mut parent = path.parent();
+        while let Some(dir) = parent.filter(|dir| dir.starts_with(root) && *dir != root) {
+            if !secure(dir) {
+                return false;
+            }
+            parent = dir.parent();
+        }
+    }
+    true
+}
+
+#[cfg(not(unix))]
+fn system_bundle_tree_is_root_owned(
+    _root: &Path,
+    _manifest: &runtime_bundle::BundleManifest,
+) -> bool {
+    false
+}
+
 /// A single-entry trust list is the pin handed to
 /// `verify_bundle_with`; multi-entry lists are checked after it returns.
 fn trusted_publisher_pin_from_file() -> Option<String> {
     let list = load_trusted_publisher_list()?;
     if list.len() == 1 {
-        Some(list.into_iter().next().unwrap())
+        list.into_iter().next()
     } else {
         None
     }
@@ -695,16 +768,34 @@ unsafe fn place_service_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()>
     Ok(())
 }
 
+/// Pop the trailing entrypoint token that `build_bwrap_argv` /
+/// `build_bwrap_argv_for_entry` always leave at the end of `argv`, so a
+/// splice function can insert its own flags before it and push it back.
+///
+/// # Errors
+///
+/// Returns [`RunError::ArgvInvariant`] if `argv` is empty. This should never
+/// happen on any real launch path; failing here beats silently continuing
+/// with an argv that is missing whichever sandboxing directive the caller
+/// was about to splice in.
+fn pop_entry(argv: &mut Vec<String>) -> Result<String, RunError> {
+    argv.pop().ok_or(RunError::ArgvInvariant)
+}
+
 /// Splice in the `QOS_CLI_COMMAND` setenv before the trailing entrypoint
 /// token so bwrap still parses it as a flag.
-fn splice_cli_setenv(argv: &mut Vec<String>, extra_setenv: Option<(String, String)>) {
+fn splice_cli_setenv(
+    argv: &mut Vec<String>,
+    extra_setenv: Option<(String, String)>,
+) -> Result<(), RunError> {
     if let Some((k, v)) = extra_setenv {
-        let entry = argv.pop().expect("argv non-empty");
+        let entry = pop_entry(argv)?;
         argv.push("--setenv".to_string());
         argv.push(k);
         argv.push(v);
         argv.push(entry);
     }
+    Ok(())
 }
 
 /// Narrow dynamic-loader binds only (not all of `/usr`), for a plain
@@ -715,7 +806,7 @@ fn splice_minimal_libs(
     argv: &mut Vec<String>,
     opts: &RunOptions,
     resolved_runtime_present: bool,
-) -> Vec<String> {
+) -> Result<Vec<String>, RunError> {
     let mut extra_ro_paths: Vec<String> = Vec::new();
     let use_minimal_libs = opts.minimal_libs && !resolved_runtime_present;
     if opts.minimal_libs && resolved_runtime_present {
@@ -724,7 +815,7 @@ fn splice_minimal_libs(
         );
     }
     if use_minimal_libs {
-        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        let entry = pop_entry(argv)?;
         for path in minimal_loader_binds() {
             if std::path::Path::new(path).exists() {
                 argv.push("--ro-bind".to_string());
@@ -735,39 +826,45 @@ fn splice_minimal_libs(
         }
         argv.push(entry);
     }
-    extra_ro_paths
+    Ok(extra_ro_paths)
 }
 
 /// Workspace id, spliced before the entrypoint token so the child learns
 /// which room it was opened into. Absent when the launch has no session.
 /// Shared by `run_with` and `run_with_captured`.
-fn splice_workspace_id_bind(argv: &mut Vec<String>, opts: &RunOptions) {
+fn splice_workspace_id_bind(argv: &mut Vec<String>, opts: &RunOptions) -> Result<(), RunError> {
     if let Some(workspace_id) = opts.workspace_id.as_deref() {
-        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        let entry = pop_entry(argv)?;
         crate::sandbox::push_workspace_id(argv, workspace_id);
         argv.push(entry);
     }
+    Ok(())
 }
 
 /// A trusted shell launch may attach a small typed context for the target
 /// app (for example, a VPN profile selected in Settings). It carries no
 /// authority and is deliberately bounded + JSON-object checked before it
 /// crosses the clean-environment sandbox boundary.
-fn splice_tool_context(argv: &mut Vec<String>) {
+fn splice_tool_context(argv: &mut Vec<String>) -> Result<(), RunError> {
     if let Some(context) = validated_tool_context_from_env() {
-        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        let entry = pop_entry(argv)?;
         argv.push("--setenv".to_string());
         argv.push("QOS_TOOL_CONTEXT".to_string());
         argv.push(context);
         argv.push(entry);
     }
+    Ok(())
 }
 
 /// App directory: bound read-write at a fixed sandbox path, HOME/XDG vars
 /// pointed inside it. Spliced here (not in `build_bwrap_argv`) since the
 /// room is a launch property, not the package's.
-fn splice_app_dir(argv: &mut Vec<String>, app_dir: &Path, capabilities: &CapabilityPlan) {
-    let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+fn splice_app_dir(
+    argv: &mut Vec<String>,
+    app_dir: &Path,
+    capabilities: &CapabilityPlan,
+) -> Result<(), RunError> {
+    let entry = pop_entry(argv)?;
     crate::appdir::push_app_dir(argv, app_dir);
     // After `push_app_dir` (which repoints `HOME`): this says where the
     // *user's* home is, only when a grant actually bound it.
@@ -786,6 +883,7 @@ fn splice_app_dir(argv: &mut Vec<String>, app_dir: &Path, capabilities: &Capabil
         );
     }
     argv.push(entry);
+    Ok(())
 }
 
 /// Wayland display, spliced before the entrypoint token like the
@@ -794,28 +892,32 @@ fn splice_app_dir(argv: &mut Vec<String>, app_dir: &Path, capabilities: &Capabil
 fn splice_wayland(
     argv: &mut Vec<String>,
     opts: &RunOptions,
-) -> Option<crate::sandbox::WaylandBind> {
+) -> Result<Option<crate::sandbox::WaylandBind>, RunError> {
     let wayland_bind = opts
         .wayland_socket
         .as_ref()
         .map(|host| crate::sandbox::wayland_bind_for(host, current_uid()));
     if let Some(bind) = &wayland_bind {
-        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        let entry = pop_entry(argv)?;
         crate::sandbox::push_wayland_bind(argv, bind);
         argv.push(entry);
     }
-    wayland_bind
+    Ok(wayland_bind)
 }
 
 /// Egress gate socket, spliced like Wayland — the app's only route out of an
 /// otherwise empty network namespace. Shared by `run_with` and
 /// `run_with_captured`.
-fn splice_net_gate_bind(argv: &mut Vec<String>, net_gate: Option<&crate::sandbox::NetGateBind>) {
+fn splice_net_gate_bind(
+    argv: &mut Vec<String>,
+    net_gate: Option<&crate::sandbox::NetGateBind>,
+) -> Result<(), RunError> {
     if let Some(bind) = net_gate {
-        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        let entry = pop_entry(argv)?;
         crate::sandbox::push_net_gate(argv, bind);
         argv.push(entry);
     }
+    Ok(())
 }
 
 /// GPU: the compositor's render node decides EGL/Vulkan visibility, spliced
@@ -826,10 +928,10 @@ fn splice_gpu(
     manifest: &MinimalManifest,
     opts: &RunOptions,
     capabilities: &CapabilityPlan,
-) -> Option<crate::gpu::GpuSelection> {
+) -> Result<Option<crate::gpu::GpuSelection>, RunError> {
     let gpu = resolve_gpu_selection(manifest, opts);
     if let Some(sel) = &gpu {
-        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        let entry = pop_entry(argv)?;
         crate::sandbox::push_gpu_selection(
             argv,
             sel,
@@ -837,7 +939,7 @@ fn splice_gpu(
         );
         argv.push(entry);
     }
-    gpu
+    Ok(gpu)
 }
 
 /// Everything [`splice_sandbox_shim`] needs beyond `argv` and `opts`.
@@ -867,7 +969,7 @@ fn splice_sandbox_shim(
     if !need_shim {
         return Ok(());
     }
-    let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+    let entry = pop_entry(argv)?;
     let launcher = std::env::current_exe()
         .map_err(|e| RunError::Io(std::io::Error::other(format!("current_exe: {e}"))))?;
     argv.push("--ro-bind".to_string());
@@ -1168,10 +1270,21 @@ fn resolve_identity_broker(
     Ok((app, control, thread, identity_host))
 }
 
+/// What an argv builder produces: the bwrap command line, an optional
+/// `(name, value)` environment pair the caller must splice in, and the
+/// trailing arguments passed through to the app.
+type BuiltArgv = (Vec<String>, Option<(String, String)>, Vec<String>);
+
 /// Pick the entrypoint bin per launch mode: GUI uses `bin`; CLI uses
 /// `cli_bin()` (falling back to `bin`) and splices `QOS_CLI_COMMAND` /
 /// forwards passthrough argv. Returns `(argv, extra_setenv, passthrough)`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every argument is an independently-resolved piece of the sandbox \
+              (runtime, service binds, dbus plan, identity, capabilities); bundling \
+              them would only move the same list behind a struct built at the one \
+              call site"
+)]
 fn build_initial_argv(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -1181,9 +1294,9 @@ fn build_initial_argv(
     dbus_plan: Option<&DBusBindPlan>,
     identity_arg: Option<&Path>,
     capabilities: &CapabilityPlan,
-) -> (Vec<String>, Option<(String, String)>, Vec<String>) {
+) -> Result<BuiltArgv, RunError> {
     match &opts.mode {
-        LaunchMode::Gui => (
+        LaunchMode::Gui => Ok((
             build_bwrap_argv(
                 manifest,
                 payload_root,
@@ -1197,7 +1310,7 @@ fn build_initial_argv(
             // A GUI launch carries at most one argument — the document to open —
             // riding the same tail as CLI passthrough (opaque bytes after entrypoint).
             gui_open_args(opts),
-        ),
+        )),
         LaunchMode::Cli {
             command,
             passthrough_argv,
@@ -1217,18 +1330,18 @@ fn build_initial_argv(
                 &entry_bin_owned,
                 capabilities,
             );
-            (
+            Ok((
                 v,
                 Some(("QOS_CLI_COMMAND".to_string(), command.clone())),
                 passthrough_argv.clone(),
-            )
+            ))
         }
         // Refused at the top of `run_with`, before any of the setup above
-        // ran. Reaching here would mean that guard was removed.
-        LaunchMode::Host { desktop_id } => unreachable!(
-            "host application {desktop_id} reached the sandbox builder; \
-             the LaunchMode::Host guard at the top of run_with is gone"
-        ),
+        // ran. Reaching here would mean that guard was removed; fail the
+        // launch instead of trusting it never will.
+        LaunchMode::Host { desktop_id } => Err(RunError::HostAppNotAPackage {
+            desktop_id: desktop_id.clone(),
+        }),
     }
 }
 
@@ -1321,15 +1434,15 @@ pub fn run_with(
         dbus_plan.as_ref(),
         identity_arg,
         &capabilities,
-    );
-    splice_cli_setenv(&mut argv, extra_setenv);
-    let extra_ro_paths = splice_minimal_libs(&mut argv, opts, resolved_runtime.is_some());
-    splice_workspace_id_bind(&mut argv, opts);
-    splice_tool_context(&mut argv);
-    splice_app_dir(&mut argv, &app_dir, &capabilities);
-    let wayland_bind = splice_wayland(&mut argv, opts);
-    splice_net_gate_bind(&mut argv, net_gate.as_ref());
-    let gpu = splice_gpu(&mut argv, manifest, opts, &capabilities);
+    )?;
+    splice_cli_setenv(&mut argv, extra_setenv)?;
+    let extra_ro_paths = splice_minimal_libs(&mut argv, opts, resolved_runtime.is_some())?;
+    splice_workspace_id_bind(&mut argv, opts)?;
+    splice_tool_context(&mut argv)?;
+    splice_app_dir(&mut argv, &app_dir, &capabilities)?;
+    let wayland_bind = splice_wayland(&mut argv, opts)?;
+    splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
+    let gpu = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
     splice_sandbox_shim(
         &mut argv,
         opts,
@@ -1384,31 +1497,31 @@ fn validated_tool_context_from_env() -> Option<String> {
 fn resolve_entry_and_passthrough(
     manifest: &MinimalManifest,
     opts: &RunOptions,
-) -> (String, Vec<String>) {
+) -> Result<(String, Vec<String>), RunError> {
     match &opts.mode {
-        LaunchMode::Gui => (
+        LaunchMode::Gui => Ok((
             manifest
                 .entrypoint
                 .gui_bin()
                 .unwrap_or(&manifest.entrypoint.bin)
                 .to_string(),
             gui_open_args(opts),
-        ),
+        )),
         LaunchMode::Cli {
             passthrough_argv, ..
-        } => (
+        } => Ok((
             manifest
                 .entrypoint
                 .cli_bin()
                 .unwrap_or(&manifest.entrypoint.bin)
                 .to_string(),
             passthrough_argv.clone(),
-        ),
-        // Refused at the top of `run_with_captured`. See `run_with`.
-        LaunchMode::Host { desktop_id } => unreachable!(
-            "host application {desktop_id} reached the sandbox builder; \
-             the LaunchMode::Host guard at the top of run_with_captured is gone"
-        ),
+        )),
+        // Refused at the top of `run_with_captured`; fail the launch instead
+        // of trusting that guard never moves or disappears.
+        LaunchMode::Host { desktop_id } => Err(RunError::HostAppNotAPackage {
+            desktop_id: desktop_id.clone(),
+        }),
     }
 }
 
@@ -1555,7 +1668,7 @@ pub fn run_with_captured(
     let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
     // Entrypoint + trailing arguments, resolved the same way `run_with`
     // does — both entries must agree on binary and arguments.
-    let (entry_bin, passthrough) = resolve_entry_and_passthrough(manifest, opts);
+    let (entry_bin, passthrough) = resolve_entry_and_passthrough(manifest, opts)?;
     let mut argv = crate::sandbox::build_bwrap_argv_for_entry(
         manifest,
         payload_root,
@@ -1566,11 +1679,11 @@ pub fn run_with_captured(
         &entry_bin,
         &capabilities,
     );
-    splice_net_gate_bind(&mut argv, net_gate.as_ref());
-    splice_workspace_id_bind(&mut argv, opts);
+    splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
+    splice_workspace_id_bind(&mut argv, opts)?;
     {
         let app_dir = resolve_app_dir(manifest, opts)?;
-        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        let entry = pop_entry(&mut argv)?;
         crate::appdir::push_app_dir(&mut argv, &app_dir);
         argv.push(entry);
     }
@@ -1627,7 +1740,10 @@ fn stage_seccomp_blob(bytes: &[u8]) -> std::io::Result<OwnedFd> {
 
     // Fallback: O_TMPFILE under /tmp. If even that fails we surface the IO
     // error — the launcher cannot safely continue without a seccomp blob fd.
-    let path = std::ffi::CString::new("/tmp").unwrap();
+    // "/tmp" is a fixed literal with no interior NUL, so this cannot fail in
+    // practice; still routed through `?` rather than asserted.
+    let path = std::ffi::CString::new("/tmp")
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
     let fd = unsafe {
         libc::open(
             path.as_ptr(),
@@ -1645,15 +1761,18 @@ fn stage_seccomp_blob(bytes: &[u8]) -> std::io::Result<OwnedFd> {
 fn write_all_pwrite(fd: RawFd, bytes: &[u8]) -> std::io::Result<()> {
     let mut written = 0usize;
     while written < bytes.len() {
-        // `written < bytes.len()` holds here, so this cannot underflow in
-        // practice, but a real file offset is not the place to trust that
-        // silently: an error beats a payload written to the wrong offset.
-        let remaining = bytes.len().checked_sub(written).ok_or_else(|| {
-            std::io::Error::new(
+        // `written < bytes.len()` holds here, so this cannot run past the
+        // buffer in practice, but a real file offset is not the place to
+        // trust that silently: an error beats a payload written to the
+        // wrong offset. `remaining` is derived from the same slice `pwrite`
+        // is handed, rather than re-deriving its length separately.
+        let Some(remaining_bytes) = bytes.get(written..) else {
+            return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "pwrite: write cursor ran past the buffer length",
-            )
-        })?;
+            ));
+        };
+        let remaining = remaining_bytes.len();
         let offset = libc::off_t::try_from(written).map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -1663,7 +1782,7 @@ fn write_all_pwrite(fd: RawFd, bytes: &[u8]) -> std::io::Result<()> {
         let n = unsafe {
             libc::pwrite(
                 fd,
-                bytes[written..].as_ptr().cast::<libc::c_void>(),
+                remaining_bytes.as_ptr().cast::<libc::c_void>(),
                 remaining,
                 offset,
             )

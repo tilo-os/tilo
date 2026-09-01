@@ -23,6 +23,7 @@ type ConfigureApp = fn(&mut App);
 type OpenState = fn(&'static str) -> (State, crate::persist::Autosave);
 type OpenStateWithArgs = fn(&'static str, &LaunchArgs) -> (State, crate::persist::Autosave);
 type LiveHandler = fn(&LaunchArgs) -> Result<(), LaunchError>;
+type CommandHandler = fn(&LaunchArgs) -> Result<bool, LaunchError>;
 
 /// Parsed common launch arguments. Extra flags are retained for an app's
 /// screenshot factory after being explicitly allow-listed by [`LaunchSpec`].
@@ -67,6 +68,8 @@ pub struct LaunchSpec {
     shot_viewport: ViewportFactory,
     configure_app: Option<ConfigureApp>,
     live_handler: Option<LiveHandler>,
+    command_handler: Option<CommandHandler>,
+    headless_enabled: bool,
     open_state: OpenState,
     open_state_with_args: Option<OpenStateWithArgs>,
     allowed_flags: &'static [&'static str],
@@ -88,6 +91,8 @@ impl LaunchSpec {
             shot_viewport: |_| DEFAULT_VIEWPORT,
             configure_app: None,
             live_handler: None,
+            command_handler: None,
+            headless_enabled: true,
             open_state: crate::persist::open,
             open_state_with_args: None,
             allowed_flags: &[],
@@ -111,6 +116,8 @@ impl LaunchSpec {
             shot_viewport: |_| DEFAULT_VIEWPORT,
             configure_app: None,
             live_handler: None,
+            command_handler: None,
+            headless_enabled: true,
             open_state: crate::persist::open,
             open_state_with_args: None,
             allowed_flags: &[],
@@ -168,6 +175,27 @@ impl LaunchSpec {
     #[must_use]
     pub fn live_handler(mut self, handler: LiveHandler) -> Self {
         self.live_handler = Some(handler);
+        self
+    }
+
+    /// Handle an app-specific, non-windowed command after argument validation.
+    /// Return `true` when the command was handled and launch should stop.
+    ///
+    /// This keeps developer utilities such as fixture generation and benchmark
+    /// drivers in the standard parser without making them part of the normal
+    /// screenshot or live-window lifecycle.
+    #[must_use]
+    pub fn command_handler(mut self, handler: CommandHandler) -> Self {
+        self.command_handler = Some(handler);
+        self
+    }
+
+    /// Reject headless input driving for apps whose widgets have privileged
+    /// side effects, such as an on-screen keyboard that injects keystrokes into
+    /// another application.
+    #[must_use]
+    pub fn disable_headless(mut self) -> Self {
+        self.headless_enabled = false;
         self
     }
 
@@ -260,6 +288,7 @@ pub enum LaunchError {
     ConflictingModes,
     ShotsOnly(String),
     ShotsUnsupported,
+    HeadlessUnsupported,
     Scenario(String),
     Operation(String),
 }
@@ -279,6 +308,9 @@ impl fmt::Display for LaunchError {
             }
             Self::ShotsOnly(arg) => write!(f, "{arg} is only meaningful with --shots"),
             Self::ShotsUnsupported => write!(f, "this application does not support --shots"),
+            Self::HeadlessUnsupported => {
+                write!(f, "this application does not support --headless-drive")
+            }
             Self::Scenario(message) | Self::Operation(message) => f.write_str(message),
         }
     }
@@ -346,6 +378,12 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     )?;
     validate_spec_args(&args, spec)?;
 
+    if let Some(handler) = spec.command_handler
+        && handler(&args)?
+    {
+        return Ok(());
+    }
+
     if let Some(out) = &args.shots {
         if let Some(handler) = spec.shot_handler {
             handler(&args)?;
@@ -380,6 +418,9 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
 }
 
 fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), LaunchError> {
+    if args.headless.is_some() && !spec.headless_enabled {
+        return Err(LaunchError::HeadlessUnsupported);
+    }
     if let Some(scenario) = args.scenario.as_deref()
         && !spec.scenarios.contains(&scenario)
     {
@@ -552,6 +593,7 @@ mod tests {
 
     static CUSTOM_SHOT_RAN: AtomicBool = AtomicBool::new(false);
     static CUSTOM_LIVE_RAN: AtomicBool = AtomicBool::new(false);
+    static CUSTOM_COMMAND_RAN: AtomicBool = AtomicBool::new(false);
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
@@ -636,6 +678,32 @@ mod tests {
 
     fn dummy_root() -> Box<dyn Widget> {
         Box::new(crate::widget::Button::new("test", "Test", None))
+    }
+
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "signature is fixed by LaunchSpec::command_handler"
+    )]
+    fn custom_command(_: &LaunchArgs) -> Result<bool, LaunchError> {
+        CUSTOM_COMMAND_RAN.store(true, Ordering::SeqCst);
+        Ok(true)
+    }
+
+    #[test]
+    fn app_command_can_finish_before_window_startup() {
+        CUSTOM_COMMAND_RAN.store(false, Ordering::SeqCst);
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root)
+            .allowed_live_flags(&["--utility"])
+            .command_handler(custom_command);
+        run_with_args(&spec, &strings(&["app", "--utility"])).unwrap();
+        assert!(CUSTOM_COMMAND_RAN.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn privileged_app_can_reject_headless_driving() {
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root).disable_headless();
+        let result = run_with_args(&spec, &strings(&["app", "--headless-drive", "{}"]));
+        assert_eq!(result, Err(LaunchError::HeadlessUnsupported));
     }
 
     #[test]

@@ -70,6 +70,9 @@ jobs:
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 
+      - name: Check complete workspace formatting
+        run: cargo fmt --all --check
+
       # Build/run tests first so the following checks can reuse emitted
       # rlibs/rmeta instead of compiling metadata before codegen.
       - name: Run every workspace test

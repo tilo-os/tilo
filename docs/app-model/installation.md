@@ -15,6 +15,7 @@ Usage: qos-install <COMMAND>
 
 Commands:
   install  Install a .qpkg into the local store. Verifies signature first
+  update   Fetch a newer version and keep the app's per-room state
   list     List installed packages
   remove   Remove an installed package by id
   run      Launch an installed package via qos-launcher
@@ -25,6 +26,25 @@ Commands:
   path     Print the directory the shim installer writes PATH shims into
   runtime  Manage installed qOS runtime bundles
 ```
+
+`add` is an alias for `install`, so `qos-install add ./app.qpkg` works for
+people who think of this as adding an app rather than installing a file.
+
+For catalogue apps, use `qos-catalogue install <package-id>` (or its `add`
+alias). It resolves the configured repositories and pins both the expected
+publisher and package-root hash when handing the download to `qos-install`.
+Repository management is available without hand-editing TOML:
+
+```sh
+qos-catalogue repo list
+qos-catalogue repo add team https://apps.example.test --owner-key <64-hex-key>
+qos-catalogue repo disable team
+qos-catalogue repo enable team
+qos-catalogue repo remove team
+```
+
+Changes are atomically written to the same `registries.toml` used by the
+Store. Repositories retain list order as their resolution priority.
 
 ## The on-disk layout
 
@@ -132,6 +152,8 @@ overwrite the same directory. If you need side-by-side versions (multiple
 qos-install install <qpkg>
     [--pinned]                      # never GC'd (GC not implemented yet)
     [--force]                       # overwrite same-id install
+    [--require-package-root <hex>]  # bind to a signed registry version
+    [--require-publisher <hex>]     # bind to that registry's publisher
     [--require-attestor <id>]       # refuse unless signed by this attestor
     [--allow-self-signed]           # permit self-signed as fallback
 ```
@@ -139,7 +161,10 @@ qos-install install <qpkg>
 Sequence:
 
 1. Read the `.qpkg` tar into an in-memory blob store.
-2. Verify the signed root and every hash. Apply trust policy (see
+2. Verify the signed root and every hash. If registry constraints were
+   supplied, require both the advertised package root and publisher key;
+   this prevents a valid package from another release or publisher being
+   substituted after catalogue resolution. Apply trust policy (see
    [`trust.md`](./trust.md)).
 3. If a package with the same `[package].id` is already installed,
    refuse unless `--force`.

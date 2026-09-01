@@ -479,29 +479,10 @@ impl RemoteApp {
                 self.selected = Some(id);
             }
             Action::ToggleFavorite(id) => {
-                // Compute the absolute target *before* the in-memory flip so the
-                // action carries a value, not a read-then-flip — deterministic
-                // replay. The on-screen star and the Ctrl+K row build the same
-                // SetFavorite action.
-                if let Some(target) = self.workspace.get(id).map(|c| !c.favorite) {
-                    self.workspace.toggle_favorite(id);
-                    self.actions.dispatch(
-                        state,
-                        crate::actions::REMOTE_ACTION_TYPE,
-                        &crate::actions::set_favorite_action(id, target),
-                    );
-                }
+                self.toggle_favorite(id, state);
             }
             Action::Delete(id) => {
-                self.workspace.remove(id);
-                self.actions.dispatch(
-                    state,
-                    crate::actions::REMOTE_ACTION_TYPE,
-                    &crate::actions::delete_action(id),
-                );
-                if self.selected == Some(id) {
-                    self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
-                }
+                self.delete_connection(id, state);
             }
             Action::FocusField(f) => {
                 self.focus_field(f);
@@ -558,6 +539,40 @@ impl RemoteApp {
             Action::ToggleRail => {
                 self.rail.toggle(self.rail_layout);
             }
+        }
+    }
+
+    fn toggle_favorite(&mut self, id: ConnectionId, state: &mut AutoCommit) {
+        // Compute the absolute target before the in-memory flip so replay does
+        // not depend on the connection's current state.
+        let Some(target) = self
+            .workspace
+            .get(id)
+            .map(|connection| !connection.favorite)
+        else {
+            return;
+        };
+        self.workspace.toggle_favorite(id);
+        let action = crate::actions::set_favorite_action(id, target);
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::REMOTE_ACTION_TYPE,
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+        );
+    }
+
+    fn delete_connection(&mut self, id: ConnectionId, state: &mut AutoCommit) {
+        self.workspace.remove(id);
+        let action = crate::actions::delete_action(id);
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::REMOTE_ACTION_TYPE,
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+        );
+        if self.selected == Some(id) {
+            self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
         }
     }
 
@@ -751,8 +766,12 @@ impl RemoteApp {
         // deterministic read of the current document (see [`crate::actions`]).
         let action = crate::actions::upsert_action(&conn);
         self.workspace.upsert(conn);
-        self.actions
-            .dispatch(state, crate::actions::REMOTE_ACTION_TYPE, &action);
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::REMOTE_ACTION_TYPE,
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+        );
         self.selected = Some(id);
         self.screen = Screen::List;
         self.blur_field();
@@ -1154,6 +1173,8 @@ impl Widget for RemoteApp {
     ) -> NodeId {
         // The app draws itself; we just need a single full-bleed node so
         // the host can size us. No child widgets participate in taffy.
+        // `new_leaf` on a freshly created tree never fails.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: taffy::Size {
@@ -1168,7 +1189,9 @@ impl Widget for RemoteApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -1762,7 +1785,10 @@ impl RemoteApp {
         } else {
             cur.saturating_sub(1)
         };
-        self.selected = Some(filtered[next]);
+        // `next` is derived from `cur` (in bounds, or 0) via `min`/`saturating_sub`.
+        if let Some(&id) = filtered.get(next) {
+            self.selected = Some(id);
+        }
         self.dirty = true;
     }
 
@@ -3806,15 +3832,30 @@ impl RemoteApp {
             // Draw cells run-by-run (group consecutive same-style cells).
             let mut x = surface.x0 + pad;
             let mut i = 0;
-            while i < line.cells.len() {
-                let style = (line.cells[i].color, line.cells[i].bold);
+            while let Some(cell) = line.cells.get(i) {
+                let style = (cell.color, cell.bold);
                 let start = i;
-                while i < line.cells.len() && (line.cells[i].color, line.cells[i].bold) == style {
+                while line
+                    .cells
+                    .get(i)
+                    .is_some_and(|c| (c.color, c.bold) == style)
+                {
                     i += 1;
                 }
-                let run: String = line.cells[start..i].iter().map(|c| c.ch).collect();
+                let run: String = line
+                    .cells
+                    .get(start..i)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|c| c.ch)
+                    .collect();
                 let color = match style.0 {
-                    Some(idx) => palette.ansi[idx.min(15)],
+                    // `ansi` is a fixed `[Color; 16]`; `idx.min(15)` is always in range.
+                    Some(idx) => palette
+                        .ansi
+                        .get(idx.min(15))
+                        .copied()
+                        .unwrap_or(palette.fg_default),
                     None => palette.fg_default,
                 };
                 let weight = if style.1 {
@@ -3971,9 +4012,13 @@ fn next_field(cur: Option<Field>, kind: ConnectionKind) -> Field {
     match cur {
         Some(f) => {
             let idx = order.iter().position(|x| *x == f).unwrap_or(0);
-            order[(idx + 1) % order.len()]
+            // `order` is never empty, and the modulo keeps the index in range.
+            order
+                .get((idx + 1) % order.len())
+                .copied()
+                .unwrap_or(Field::Name)
         }
-        None => order[0],
+        None => order.first().copied().unwrap_or(Field::Name),
     }
 }
 

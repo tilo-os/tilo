@@ -10,6 +10,7 @@ use automerge::{ActorId, ChangeHash};
 use serde::{Deserialize, Serialize};
 
 use crate::action::{ActionId, EncodedAction, ExecutionLocus};
+use crate::context::ActionContext;
 
 /// One replayable action, ready to cross a boundary.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +40,11 @@ pub struct ActionEnvelope {
     /// envelope written before attribution existed still deserializes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor: Option<Vec<u8>>,
+    /// Human provenance used by history, search, and passive activity UI.
+    /// It does not affect what the action is allowed to mutate; it is carried
+    /// into the Automerge change message so it survives the transport log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ActionContext>,
 }
 
 impl ActionEnvelope {

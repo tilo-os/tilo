@@ -8,8 +8,8 @@ mod render;
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 pub use key::{PathSegment, PointerSpace, PresenceKey, SelectionRange};
 pub use render::{
-    PeerCursor, PillPlacement, PillRequest, contrast_ink, draw_peer_cursors, draw_remote_cursors,
-    draw_remote_presence, layout_peer_pills,
+    PeerCursor, PillPlacement, PillRequest, contrast_ink, draw_peer_cursors, draw_peer_presence,
+    draw_remote_cursors, draw_remote_presence, layout_peer_pills,
 };
 
 /// How long a "just typed" highlight lingers before fading out.
@@ -438,9 +438,7 @@ pub struct PresenceCtx {
     /// When a remote *document* change (not just a caret move) was last
     /// applied, fed by [`Self::note_remote_text_edit`]; the `Caret` arm of
     /// [`Self::apply_remote_presence`] only paints a typing mark when this
-    /// is also recent. Joined by time, not by author — `CollabEvent::
-    /// CRDTIncremental` carries no user id, so another peer's caret can be
-    /// mis-attributed while one person is genuinely editing.
+    /// is also recent.
     last_remote_text_edit: Option<Instant>,
     /// Draw-time visibility window in scene-space pixels, for spatial culling.
     /// `Cell` so containers (Scrollable) can scope-push a tighter inner
@@ -1258,18 +1256,18 @@ pub fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
     let bytes = s.as_bytes();
     match bytes.len() {
         3 => {
-            let r =
-                u8::from_str_radix(std::str::from_utf8(&[bytes[0], bytes[0]]).ok()?, 16).ok()?;
-            let g =
-                u8::from_str_radix(std::str::from_utf8(&[bytes[1], bytes[1]]).ok()?, 16).ok()?;
-            let b =
-                u8::from_str_radix(std::str::from_utf8(&[bytes[2], bytes[2]]).ok()?, 16).ok()?;
+            let b0 = *bytes.first()?;
+            let b1 = *bytes.get(1)?;
+            let b2 = *bytes.get(2)?;
+            let r = u8::from_str_radix(std::str::from_utf8(&[b0, b0]).ok()?, 16).ok()?;
+            let g = u8::from_str_radix(std::str::from_utf8(&[b1, b1]).ok()?, 16).ok()?;
+            let b = u8::from_str_radix(std::str::from_utf8(&[b2, b2]).ok()?, 16).ok()?;
             Some((r, g, b))
         }
         6 | 8 => {
-            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+            let r = u8::from_str_radix(s.get(0..2)?, 16).ok()?;
+            let g = u8::from_str_radix(s.get(2..4)?, 16).ok()?;
+            let b = u8::from_str_radix(s.get(4..6)?, 16).ok()?;
             Some((r, g, b))
         }
         _ => None,

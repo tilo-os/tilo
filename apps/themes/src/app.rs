@@ -387,8 +387,12 @@ impl ThemesApp {
     /// stashed so the host records **one** undo boundary bracketing it
     /// ([`Widget::take_committed_action`]); Ctrl+Z then reverts it.
     fn perform_action(&mut self, state: &mut AutoCommit, action: &crate::actions::ThemesAction) {
-        self.actions
-            .dispatch(state, crate::actions::THEMES_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::THEMES_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Themes", "Themes", action),
+        );
     }
 
     /// Route one command-bus signal. Presentation-only commands (selection, the

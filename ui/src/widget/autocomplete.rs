@@ -36,7 +36,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::widget::TaffyTreeExt;
-use crate::widget::{TextInput, Widget};
+use crate::widget::{TextInput, TextInputKind, Widget};
 
 /// One completion offered in the dropdown.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -157,7 +157,7 @@ impl Autocomplete {
     pub fn new() -> Self {
         Self {
             id: String::new(),
-            input: TextInput::local(),
+            input: TextInput::local().with_kind(TextInputKind::Search),
             suggester: None,
             suggestions: Vec::new(),
             highlight: None,

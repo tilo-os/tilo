@@ -5,7 +5,7 @@
 //! change; followers merge it and bring their engine in line with drift
 //! correction ([`media::MediaEngine::apply_transport`]). The wire is the same
 //! `ui::collaboration` collab socket every qOS app uses — the CRDT bytes ride
-//! `CollabRequest::SyncIncremental`, so a peer that joins the workspace simply
+//! `CollabRequest::DocumentIncremental`, so a peer that joins the workspace simply
 //! starts following.
 //!
 //! This module holds only the CRDT-drive logic (`host_step` / ingest /

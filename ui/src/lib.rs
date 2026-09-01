@@ -34,6 +34,7 @@
         clippy::string_slice,
         clippy::panic,
         clippy::unreachable,
+        clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
@@ -86,6 +87,7 @@ pub mod presence;
 pub mod profiling;
 pub mod query_text;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange};
+pub mod text_assistance;
 pub mod text_break;
 pub use text_break::{LineBreakKind, line_break_opportunities};
 pub mod reader_hud;
@@ -180,8 +182,8 @@ pub use widget::{RichBlockStyle, RichTextEditor};
 // a `HistoryEntry` without a direct dependency on the collab-types crate.
 pub use widget::activity_timeline::{ActivityTimeline, BandUndoRequest};
 pub use widget::history::{
-    HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay,
-    format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
+    HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
+    RedactionDisplay, format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
 };
 pub use widget::history_group::{
     GroupNameRequest, GroupingConfig, HistoryGroup, MAX_GROUP_DEPTH, NamedRange, OpFamily,
@@ -193,7 +195,10 @@ pub use widget::name_field::{NameField, NameFieldOutcome};
 // without knowing the module layout.
 pub use history_source::groups as history_groups;
 pub use history_source::{
-    AuthorDirectory, HistorySource, heads_for_entry, version_index_for_entry,
+    ActivityBrief, ActivityDigest, ActivityNarrator, AuthorDirectory, CompareError,
+    GroundedNarrative, HistoryComparison, HistoryFacetIndex, HistoryResourceTarget,
+    HistorySeenFrontier, HistorySelectionDetail, HistorySource, NarrativeRequest, compare_entries,
+    deterministic_narrative, heads_for_entry, validate_narrative, version_index_for_entry,
 };
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.

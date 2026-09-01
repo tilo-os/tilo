@@ -1451,6 +1451,12 @@ impl TubeApp {
     }
 
     fn persist(&self, state: &mut AutoCommit, root: &ObjId) {
+        // `STATE_KEY` is a presentation cache: it snapshots fetched catalogue
+        // data, playback position, and transient UI state so Tube can reopen
+        // quickly. It is deliberately not assigned an `ActionContext`; doing
+        // so would misrepresent worker refreshes and playback ticks as user
+        // actions. User-authored Tube operations are recorded separately by
+        // `TubeAction` at their dispatch boundary.
         if let Ok(json) = serde_json::to_string(&self.model) {
             let _ = state.put(root, STATE_KEY, json);
         }
@@ -1960,6 +1966,7 @@ impl Widget for TubeApp {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use crate::model::Category;

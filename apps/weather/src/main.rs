@@ -42,6 +42,9 @@ use ui::widget::Widget;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 /// # Errors
 ///
 /// Returns an error if `--probe` can't complete its live fetch within its
