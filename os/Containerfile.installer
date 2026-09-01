@@ -41,7 +41,10 @@ COPY usr/share/qos/installer-sudoers /usr/share/qos/installer-sudoers
 # instead of enforcing=0. See os/usr/share/qos/selinux/qos-installer.cil.
 COPY usr/share/qos/selinux/qos-installer.cil /usr/share/qos/selinux/qos-installer.cil
 
-# Point greetd at the session selector (installer-vs-greeter by cmdline).
+# Keep the normal installed-system greeter config available outside /etc, then
+# point the live medium at the installer selector. qos-install restores the
+# normal config into the target deployment's writable /etc before first boot.
+COPY etc/greetd/config.toml /usr/share/qos/greetd-config.toml
 COPY etc/greetd/config.installer.toml /etc/greetd/config.toml
 
 # `qos.installer=1` — the one thing that distinguishes the live medium from a
@@ -50,7 +53,8 @@ COPY etc/greetd/config.installer.toml /etc/greetd/config.toml
 #   * qos-install refuses to run without it (a safety guard).
 #   * qos-installer-setup.service (ConditionKernelCommandLine=qos.installer)
 #     drops in the passwordless sudoers rule only here.
-# The INSTALLED system has no such argument, so it boots straight to the desktop.
+# qos-install explicitly deletes this argument from the target deployment, so
+# the installed system boots the normal greeter rather than re-entering setup.
 #
 # It belongs to the image rather than to the disk-image step. It used to be
 # bootc-image-builder's `[customizations.kernel] append` in os/installer-disk.toml,
