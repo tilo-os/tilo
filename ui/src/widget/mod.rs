@@ -10,11 +10,24 @@ use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::time::Instant;
 
 /// Shared disabled-state opacity: wrap draw output in
 /// `scene.push_layer(.., DISABLED_ALPHA, ..)` / `pop_layer()`.
 pub const DISABLED_ALPHA: f32 = 0.45;
+
+/// Result of admitting an effect/view operation into a widget.
+///
+/// `Accepted` is deliberately distinct from success: the widget must later
+/// report progress and exactly one terminal [`qos_actions::InvocationUpdate`]
+/// from [`Widget::poll_resource_operation`]. This keeps queued and streaming
+/// work from being reported as completed merely because it entered a queue.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ResourceOperationStart {
+    Completed(qos_actions::ActionOutput),
+    Accepted,
+}
 
 pub trait Widget {
     /// Attach native child views after the host window exists. The default
@@ -111,6 +124,28 @@ pub trait Widget {
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![]
+    }
+
+    /// Effect/view operation type ids this widget can actually dispatch.
+    ///
+    /// Implementors that override `invoke_resource_operation(_v2)` must list
+    /// their locally handled types here. The host combines these declarations
+    /// across the retained tree and refuses to publish an action whose type has
+    /// no handler, preventing a catalogue entry that can only fail at runtime.
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    fn resource_operation_handlers(&self) -> HashSet<String> {
+        let mut handlers = self
+            .local_resource_operation_handlers()
+            .iter()
+            .map(|handler| (*handler).to_string())
+            .collect::<HashSet<_>>();
+        for child in self.children() {
+            handlers.extend(child.resource_operation_handlers());
+        }
+        handlers
     }
     fn name(&self) -> &str;
     /// Stable id for the e2e test harness; `None` falls back to a path-based
@@ -582,6 +617,63 @@ pub trait Widget {
             }
         }
         Ok(false)
+    }
+
+    /// V2 operation route with a typed result. Existing widgets inherit the
+    /// legacy adapter; migrated operations override this method and return the
+    /// output promised by their `ActionContract`.
+    fn invoke_resource_operation_v2(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<qos_actions::ActionOutput>, String> {
+        self.invoke_resource_operation(kind, type_id, payload, doc, path)
+            .map(|handled| handled.then(qos_actions::ActionOutput::default))
+    }
+
+    /// Admit an exported non-document operation with a stable invocation id.
+    ///
+    /// Existing synchronous handlers inherit this adapter. A background or
+    /// streaming handler overrides it, records `invocation`, and returns
+    /// [`ResourceOperationStart::Accepted`].
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        let _ = invocation;
+        self.invoke_resource_operation_v2(kind, type_id, payload, doc, path)
+            .map(|result| result.map(ResourceOperationStart::Completed))
+    }
+
+    /// Poll one admitted operation without blocking the UI thread.
+    ///
+    /// `cancellation_requested` is a cooperative signal from the action
+    /// broker. Cancellable handlers should stop at a safe boundary and return
+    /// `Cancelled`; non-cancellable handlers may ignore it. The default
+    /// recursively polls retained children.
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        for child in self.children_mut() {
+            if let Some(update) =
+                child.poll_resource_operation(invocation, cancellation_requested, doc, path)
+            {
+                return Some(update);
+            }
+        }
+        None
     }
 
     fn accepts_drop(&self, _payload: &DragPayload) -> bool {
