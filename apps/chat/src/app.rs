@@ -1036,6 +1036,13 @@ impl ChatApp {
     /// the encode + framing route through [`qos_callstream::VideoStreamSender`]
     /// — the same throttle+encoder+`SurfaceFrame` composition the compositor's
     /// `SharedFlatpakSession` performs — instead of a second in-app codec.
+    #[cfg_attr(
+        not(feature = "live-media"),
+        allow(
+            clippy::needless_pass_by_ref_mut,
+            reason = "live-media mutates capture state; the default build keeps the same call API"
+        )
+    )]
     pub(crate) fn acquire_screen(&mut self) -> bool {
         if !self.call_allows(crate::call::CallAction::ShareScreen) {
             return false;
@@ -1071,6 +1078,14 @@ impl ChatApp {
 
     /// Tear down the local screen capture and stop publishing the screen track.
     /// The caller clears `call.sharing` + the shared voice membership.
+    #[cfg_attr(
+        not(feature = "live-media"),
+        allow(
+            clippy::needless_pass_by_ref_mut,
+            clippy::unused_self,
+            reason = "live-media tears down capture state; the default build keeps the same call API"
+        )
+    )]
     pub(crate) fn release_screen(&mut self) {
         #[cfg(feature = "live-media")]
         {
