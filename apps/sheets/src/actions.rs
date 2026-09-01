@@ -159,35 +159,50 @@ pub enum SheetsAction {
 /// Durable, browseable history metadata for a workbook mutation.
 pub fn history_context(action: &SheetsAction) -> qos_actions::ActionContext {
     let mut context = qos_actions::ActionContext::for_action("org.qos.Sheets", "Sheets", action);
-    let (label, id, kind, resource_label) = match action {
+    let (label, id, kind, resource_label) = history_resource(action);
+    context.action_label = label.to_string();
+    context.resource = Some(qos_actions::ActionResource {
+        id,
+        kind: kind.to_string(),
+        label: resource_label,
+    });
+    context
+}
+
+type HistoryResource = (&'static str, String, &'static str, String);
+
+fn cell_resource(label: &'static str, sheet: usize, col: u32, row: u32) -> HistoryResource {
+    (
+        label,
+        format!("sheets.cell:{sheet}:{col}:{row}"),
+        "sheets.cell",
+        format!("{}{}", column_label(col), row + 1),
+    )
+}
+
+fn range_resource(label: &'static str, sheet: usize, cells: usize) -> HistoryResource {
+    (
+        label,
+        format!("sheets.range:{sheet}"),
+        "sheets.range",
+        format!("{cells} cells"),
+    )
+}
+
+fn history_resource(action: &SheetsAction) -> HistoryResource {
+    match action {
         SheetsAction::SetCell {
             sheet, col, row, ..
-        } => (
-            "Edit cell",
-            format!("sheets.cell:{sheet}:{col}:{row}"),
-            "sheets.cell",
-            format!("{}{}", column_label(*col), row + 1),
-        ),
+        } => cell_resource("Edit cell", *sheet, *col, *row),
         SheetsAction::SetFormat {
             sheet, col, row, ..
-        } => (
-            "Format cell",
-            format!("sheets.cell:{sheet}:{col}:{row}"),
-            "sheets.cell",
-            format!("{}{}", column_label(*col), row + 1),
-        ),
-        SheetsAction::SetCells { sheet, cells } => (
-            "Edit range",
-            format!("sheets.range:{sheet}"),
-            "sheets.range",
-            format!("{} cells", cells.len()),
-        ),
-        SheetsAction::SetFormats { sheet, cells } => (
-            "Format range",
-            format!("sheets.range:{sheet}"),
-            "sheets.range",
-            format!("{} cells", cells.len()),
-        ),
+        } => cell_resource("Format cell", *sheet, *col, *row),
+        SheetsAction::SetCells { sheet, cells } => {
+            range_resource("Edit range", *sheet, cells.len())
+        }
+        SheetsAction::SetFormats { sheet, cells } => {
+            range_resource("Format range", *sheet, cells.len())
+        }
         SheetsAction::AddSheet { name } => (
             "Add sheet",
             format!("sheets.sheet:{name}"),
@@ -260,14 +275,7 @@ pub fn history_context(action: &SheetsAction) -> qos_actions::ActionContext {
             "sheets.workbook",
             "Workbook".to_string(),
         ),
-    };
-    context.action_label = label.to_string();
-    context.resource = Some(qos_actions::ActionResource {
-        id,
-        kind: kind.to_string(),
-        label: resource_label,
-    });
-    context
+    }
 }
 
 /// Enrich direct UI actions with the sheet's durable document identity. The

@@ -9681,7 +9681,7 @@ mod tests {
         wp.needs_commit = true;
 
         let context = wp.take_commit_context().expect("native edit provenance");
-        assert_eq!(context.label, "Edit document");
+        assert_eq!(context.action_label, "Edit document");
         assert_eq!(
             context.app.as_ref().map(|app| app.id.as_str()),
             Some("org.qos.Writer")
