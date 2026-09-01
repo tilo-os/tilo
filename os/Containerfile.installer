@@ -10,6 +10,8 @@
 #     podman build -t localhost/qos-installer:latest -f os/Containerfile.installer os/
 FROM localhost/qos:latest
 
+ARG QOS_INSTALLER_DEV_SSH=0
+
 # The graphical installer UI (a ui::App; staged into os/ by
 # build-custom-installer.sh — either the real release binary or a --stub-ui
 # placeholder for testing OS plumbing without the toolkit).
@@ -69,6 +71,16 @@ RUN printf 'kargs = ["qos.installer=1"]\n' \
 # Enable the two new units. greetd / graphical.target are already enabled by
 # the base qOS image.
 RUN systemctl enable qos-firstboot-user.service qos-installer-setup.service
+
+# Release media have no remote-login surface. A developer can opt in while
+# building a local diagnostic image, paired with an explicitly supplied
+# non-default password in build-custom-installer.sh.
+RUN if [ "$QOS_INSTALLER_DEV_SSH" = 1 ]; then \
+      systemctl unmask sshd.service && systemctl enable sshd.service; \
+    else \
+      systemctl disable sshd.service 2>/dev/null || true; \
+      systemctl mask sshd.service; \
+    fi
 
 # Validate the layered image.
 RUN bootc container lint

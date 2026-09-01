@@ -7,6 +7,8 @@ set -uo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 backend="$repo_root/os/usr/libexec/qos-install"
 containerfile="$repo_root/os/Containerfile.installer"
+builder="$repo_root/os/dev/build-custom-installer.sh"
+firstboot_user="$repo_root/os/usr/libexec/qos-firstboot-user"
 fail=0
 
 ok() { printf 'ok    %s\n' "$*"; }
@@ -32,11 +34,57 @@ else
   bad "target does not remove the live-installer sudo privilege"
 fi
 
-if grep -Fq 'find "$LIVE_CONNECTIONS" -mindepth 1 -maxdepth 1 -type f -print0' "$backend" \
-   && grep -Fq 'install -m 0600 "$PROFILE"' "$backend"; then
-  ok "live Wi-Fi profiles are copied without following links and remain private"
+if grep -Fq -- '-uid 0 -links 1 ! -perm /077 -print0' "$backend" \
+   && grep -Fq 'install -m 0600 "$PROFILE"' "$backend" \
+   && grep -Fq "sed -i '/^[[:space:]]*permissions=/d'" "$backend"; then
+  ok "safe live Wi-Fi profiles become private machine connections on first boot"
 else
   bad "installer Wi-Fi profiles are not safely preserved for first boot"
+fi
+
+if grep -Fq 'code.podesta.ai/qos/qos:*|code.podesta.ai/qos/qos@sha256:*' "$backend"; then
+  ok "installed update origin is restricted to the signature-required repository"
+else
+  bad "installer can record an update origin outside the signature-required policy"
+fi
+
+if grep -Fq 'TARGET_MAJ_MIN=' "$backend" \
+   && grep -Fq 'LIVE_MAJ_MIN=' "$backend" \
+   && grep -Fq 'lsblk -spno NAME,TYPE' "$backend" \
+   && grep -Fq "could not resolve the live medium's physical disk" "$backend"; then
+  ok "live-medium refusal compares stable block identities and fails closed"
+else
+  bad "live-medium disk guard still relies on path-string equality"
+fi
+
+if grep -Fq 'CONF_TMP="$(mktemp ' "$backend" \
+   && grep -Fq 'chmod 0600 "$CONF_TMP"' "$backend" \
+   && grep -Fq 'mv -f "$CONF_TMP" "$CONF"' "$backend"; then
+  ok "account password hash is created privately and published atomically"
+else
+  bad "account password hash is briefly exposed or written non-atomically"
+fi
+
+if grep -Fq 'systemctl mask sshd.service' "$containerfile" \
+   && ! grep -Fq 'quickuser:quickdesktop:wheel' "$builder" \
+   && grep -Fq -- '--dev-login requires a non-empty QOS_INSTALLER_DEV_PASSWORD' "$builder"; then
+  ok "release installer has no public debug credential and masks SSH"
+else
+  bad "release installer still exposes a known debug login or SSH"
+fi
+
+if grep -Fq "refusing to modify pre-existing account" "$firstboot_user" \
+   && grep -Fq 'root|bin|daemon|' "$backend"; then
+  ok "installer refuses reserved and pre-existing system accounts"
+else
+  bad "installer can reset a privileged or pre-existing account"
+fi
+
+if grep -Fq '"$DEPLOY_ETC/systemd/system/sshd.service"' "$backend" \
+   && grep -Fq 'multi-user.target.wants/sshd.service' "$backend"; then
+  ok "live-only SSH state is removed from the installed target"
+else
+  bad "live-medium SSH mask/enablement can leak into the target"
 fi
 
 exit "$fail"
