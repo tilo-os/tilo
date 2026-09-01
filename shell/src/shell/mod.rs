@@ -88,6 +88,7 @@ pub mod topbar;
 pub mod topbar_chrome;
 pub mod uri_open;
 pub mod window_actions;
+pub mod windows_compat;
 pub mod workspace_drop;
 pub mod workspace_history;
 pub mod workspace_settings;
