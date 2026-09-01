@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use compat_service::{
     InstallationStatus, ManagedApplication, ManagedInstallation, MatchReason, PROTOCOL_VERSION,
-    ProtocolRequest, ProtocolResponse, RouteKind, SessionClient,
+    ProtocolRequest, ProtocolResponse, RouteKind, SessionClient, VmAvailability,
 };
 
 use crate::model::{AppStatus, ApplianceState, Catalogue, Confidence, Grant, Route, WindowsApp};
@@ -293,6 +293,7 @@ enum WorkerEvent {
     Listed {
         applications: Vec<ManagedApplication>,
         installations: Vec<ManagedInstallation>,
+        vm_availability: VmAvailability,
     },
     Unavailable(String),
     Notice(String),
@@ -348,8 +349,10 @@ impl LiveProvider {
                 WorkerEvent::Listed {
                     applications,
                     installations,
+                    vm_availability,
                 } => {
-                    self.cached = catalogue_from_managed(applications, &installations);
+                    self.cached =
+                        catalogue_from_managed(applications, &installations, vm_availability);
                     self.refresh_pending = false;
                     self.next_refresh = Instant::now() + REFRESH_INTERVAL;
                 }
@@ -515,9 +518,11 @@ fn worker(
                     Ok(ProtocolResponse::Listed {
                         applications,
                         installations,
+                        vm_availability,
                     }) => WorkerEvent::Listed {
                         applications,
                         installations,
+                        vm_availability,
                     },
                     Ok(ProtocolResponse::Error { error }) => {
                         WorkerEvent::Unavailable(error.message)
@@ -610,9 +615,11 @@ fn worker(
                     Ok(ProtocolResponse::Listed {
                         applications,
                         installations,
+                        vm_availability,
                     }) => WorkerEvent::Listed {
                         applications,
                         installations,
+                        vm_availability,
                     },
                     Ok(ProtocolResponse::Error { error }) => {
                         WorkerEvent::Unavailable(error.message)
@@ -702,9 +709,11 @@ fn lifecycle_request(
         Ok(ProtocolResponse::Listed {
             applications,
             installations,
+            vm_availability,
         }) => WorkerEvent::Listed {
             applications,
             installations,
+            vm_availability,
         },
         Ok(ProtocolResponse::Error { error }) => WorkerEvent::Unavailable(error.message),
         Ok(_) => WorkerEvent::Unavailable(
@@ -729,14 +738,8 @@ fn unavailable_catalogue(detail: &str) -> Catalogue {
 fn catalogue_from_managed(
     applications: Vec<ManagedApplication>,
     installations: &[ManagedInstallation],
+    vm_availability: VmAvailability,
 ) -> Catalogue {
-    let vm_reason = applications
-        .iter()
-        .find_map(|application| application.vm_unavailable_reason.clone())
-        .unwrap_or_else(|| "The privileged Windows guest adapter is unavailable.".to_string());
-    let vm_ready = applications
-        .iter()
-        .any(|application| application.vm_launch_available);
     let mut apps = applications
         .into_iter()
         .map(|application| {
@@ -757,12 +760,8 @@ fn catalogue_from_managed(
     Catalogue {
         apps,
         vm: ApplianceState {
-            ready: vm_ready,
-            detail: if vm_ready {
-                "The managed Windows appliance is ready.".to_string()
-            } else {
-                vm_reason
-            },
+            ready: vm_availability.available,
+            detail: vm_availability.detail,
             running_apps: 0,
         },
     }
@@ -993,6 +992,21 @@ mod tests {
             app.grants
                 .iter()
                 .any(|grant| grant.label == "Audio output" && !grant.enabled)
+        );
+    }
+
+    #[test]
+    fn ready_vm_is_reported_even_without_published_application_rows() {
+        let catalogue = catalogue_from_managed(
+            Vec::new(),
+            &[],
+            VmAvailability::ready("The managed Windows appliance is ready."),
+        );
+        assert!(catalogue.apps.is_empty());
+        assert!(catalogue.vm.ready);
+        assert_eq!(
+            catalogue.vm.detail,
+            "The managed Windows appliance is ready."
         );
     }
 
