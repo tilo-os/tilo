@@ -7,7 +7,8 @@ use thiserror::Error;
 
 use crate::https_guest::{
     InstallationOperationId, InstallationStatus, InstallerPackage, PreparedInstallation,
-    PublicationResult, StagedInstaller,
+    PreparedUninstallation, PublicationResult, StagedInstaller, UninstallationOperationId,
+    UninstallationStatus,
 };
 use crate::{ApplicationPresentation, Catalog, CatalogError, LicenseState};
 
@@ -135,6 +136,22 @@ pub trait GuestAgent: Send + Sync {
         _application_id: &str,
         _expected_generation: u64,
     ) -> Result<PublicationResult, AgentError> {
+        Err(AgentError::InstallerUnsupported)
+    }
+
+    fn begin_uninstallation(
+        &self,
+        _session: &GuestSession,
+        _application_id: &str,
+    ) -> Result<PreparedUninstallation, AgentError> {
+        Err(AgentError::InstallerUnsupported)
+    }
+
+    fn uninstallation_status(
+        &self,
+        _session: &GuestSession,
+        _operation: &UninstallationOperationId,
+    ) -> Result<UninstallationStatus, AgentError> {
         Err(AgentError::InstallerUnsupported)
     }
 }
