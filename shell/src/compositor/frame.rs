@@ -954,12 +954,11 @@ impl FrameBuilder {
         // OOBE transitions replace the whole focusable subtree. Clear the
         // native focus cursor before it can retain a node removed by the
         // structural rebuild.
-        if self.host.take_focus_reset() {
-            if let Some(old_id) = focus.take()
-                && let Some(&widget) = self.node_map.get(&old_id)
-            {
-                unsafe { (*widget).set_focus(false) };
-            }
+        if self.host.take_focus_reset()
+            && let Some(old_id) = focus.take()
+            && let Some(&widget) = self.node_map.get(&old_id)
+        {
+            unsafe { (*widget).set_focus(false) };
         }
         let Some(child) = self.host_node() else {
             // No layout tree yet (see `host_node`'s doc) — nothing to
