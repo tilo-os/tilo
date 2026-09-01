@@ -21,14 +21,15 @@ use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 use qos_agent::{Config, Session};
-use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
+use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload};
 use uuid::Uuid;
 
 mod typed_peer;
-use typed_peer::{TypedPeer as UnixStream, recv, send};
+use typed_peer::{TypedPeer as UnixStream, document_mutation, recv, send};
 
 const APP: &str = "dev.qos.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
+static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The capability an inviter issues an agent for the app it was invited to.
 fn granted(name: &str, app: &str) -> ui::permissions::PermissionContext {
@@ -104,7 +105,7 @@ fn run(
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    let room = Uuid::new_v4();
+    let room = typed_peer::room();
     let mut peer = UnixStream::connect(&sock);
     send(
         &mut peer,
@@ -141,12 +142,15 @@ fn run(
                 payload: PresencePayload::Arrived,
                 ..
             } => {
-                let snap = CollabRequest::SyncCRDT {
+                let snap = CollabRequest::DocumentSnapshot {
                     data: replica.save(),
                 };
                 send(&mut peer, &snap).unwrap();
             }
-            CollabEvent::CRDTIncremental { data } => {
+            event @ CollabEvent::Document { .. } => {
+                let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
+                    continue;
+                };
                 replica
                     .load_incremental(&data)
                     .expect("apply the agent's change");
@@ -172,12 +176,16 @@ fn run(
 /// mention from being dispatched at all.
 #[test]
 fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
+    let _serial = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let replica = seed_document_with_image(
         "Scribe: delete the image, then give this a title, then delete the image again",
     );
     let (mut replica, acted) = run(
         |sock, room| Config {
             endpoint: Some(sock),
+            endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
             app_id: APP.into(),
             cluster: room,
             record: Some(RECORD.into()),
@@ -334,7 +342,7 @@ fn drive_photo_peer(
                 payload: PresencePayload::Arrived,
                 ..
             } => {
-                let snap = CollabRequest::SyncCRDT {
+                let snap = CollabRequest::DocumentSnapshot {
                     data: photo_replica.save(),
                 };
                 send(&mut photo_peer, &snap).unwrap();
@@ -343,7 +351,10 @@ fn drive_photo_peer(
                     signalled = true;
                 }
             }
-            CollabEvent::CRDTIncremental { data } => {
+            event @ CollabEvent::Document { .. } => {
+                let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
+                    continue;
+                };
                 let _ = photo_replica.load_incremental(&data);
                 if photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters != 0 {
                     break;
@@ -379,12 +390,21 @@ fn drive_word_processor_peer(
                 photo_ready_rx
                     .recv_timeout(Duration::from_secs(10))
                     .expect("the photo peer never answered its own Arrived");
-                let snap = CollabRequest::SyncCRDT {
+                // `send` queues the photo snapshot asynchronously. Let the
+                // broker deliver it before revealing the instruction.
+                std::thread::sleep(Duration::from_millis(250));
+                let snap = CollabRequest::DocumentSnapshot {
                     data: wp_replica.save(),
                 };
                 send(&mut wp_peer, &snap).unwrap();
             }
-            CollabEvent::CRDTIncremental { data } if wp_replica.load_incremental(&data).is_ok() => {
+            event @ CollabEvent::Document { .. } => {
+                let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
+                    continue;
+                };
+                if wp_replica.load_incremental(&data).is_err() {
+                    continue;
+                }
                 done = !blocks(&wp_replica)
                     .iter()
                     .any(|x| x.text.starts_with("Scribe:"));
@@ -397,6 +417,9 @@ fn drive_word_processor_peer(
 
 #[test]
 fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
+    let _serial = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
     let _broker = typed_peer::spawn(&sock);
@@ -408,7 +431,7 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    let room = Uuid::new_v4();
+    let room = typed_peer::room();
 
     // The word processor: the page the agent was invited to, carrying the
     // instruction.
@@ -422,6 +445,7 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
     let permissions = word_processor_and_photos_permissions();
     let cfg = Config {
         endpoint: Some(sock),
+        endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
         app_id: APP.into(),
         cluster: room,
         record: Some(RECORD.into()),
@@ -481,10 +505,14 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
 /// nothing at all would be, and never leaks an address into the document.
 #[test]
 fn without_the_capability_a_discovered_operation_is_never_performed() {
+    let _serial = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let replica = seed_document_with_image("Scribe: delete the image");
     let (replica, acted) = run(
         |sock, room| Config {
             endpoint: Some(sock),
+            endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
             app_id: APP.into(),
             cluster: room,
             record: Some(RECORD.into()),
