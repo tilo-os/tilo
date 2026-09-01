@@ -37,6 +37,7 @@ pub mod groups;
 pub mod revert;
 pub mod run_undo;
 pub mod runs;
+pub mod seen;
 pub use authors::{
     AuthorDirectory, UNKNOWN_AUTHOR_NAME, actor_handle, local_identity_author, short_id, stable_hue,
 };
@@ -54,6 +55,7 @@ pub use run_undo::{
 pub use runs::{
     AgentRun, RUNS_KEY, RunStep, forget_run, is_run_marker, read_runs, record_run, run_starting_at,
 };
+pub use seen::HistorySeenFrontier;
 
 /// The structural path materialises one snapshot per version, so cost is
 /// linear in versions and document size; 200 is well past what a scrubber

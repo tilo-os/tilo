@@ -9,6 +9,7 @@
 use std::collections::HashSet;
 use std::time::SystemTime;
 
+use crate::history_source::seen::HistorySeenFrontier;
 use crate::widget::history::{HistoryAuthor, HistoryEntry};
 use crate::widget::history_group::{GroupingConfig, group_entries};
 
@@ -66,6 +67,22 @@ impl ActivityDigest {
             .filter(|entry| entry.timestamp > since)
             .cloned()
             .collect();
+        Self::from_recent(recent, limit)
+    }
+
+    /// Causal-id based catch-up. Prefer this for persisted "since you
+    /// looked" state; the timestamp constructor remains useful for explicit
+    /// date-range summaries.
+    pub fn from_unseen(
+        entries: &[HistoryEntry],
+        frontier: &HistorySeenFrontier,
+        limit: usize,
+    ) -> Self {
+        let recent = frontier.unseen(entries).into_iter().cloned().collect();
+        Self::from_recent(recent, limit)
+    }
+
+    fn from_recent(recent: Vec<HistoryEntry>, limit: usize) -> Self {
         let people = recent
             .iter()
             .map(|entry| {
@@ -187,5 +204,17 @@ mod tests {
         );
         assert_eq!(digest.briefs[0].apps, vec!["Notes"]);
         assert_eq!(digest.briefs[0].resources, vec!["Launch brief"]);
+    }
+
+    #[test]
+    fn unseen_digest_does_not_lose_a_delayed_concurrent_change() {
+        let first = entry(1, "Ada", 100);
+        let mut frontier = HistorySeenFrontier::default();
+        frontier.mark_seen(std::slice::from_ref(&first));
+        let delayed = entry(2, "Maren", 50);
+        let digest = ActivityDigest::from_unseen(&[delayed, first], &frontier, 3);
+        assert_eq!(digest.total_changes, 1);
+        assert_eq!(digest.people, 1);
+        assert_eq!(digest.briefs[0].authors[0].name, "Maren");
     }
 }
