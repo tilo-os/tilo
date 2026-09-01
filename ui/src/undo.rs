@@ -217,10 +217,10 @@ pub fn shortcut(character: &str, ctrl: bool, shift: bool) -> Option<UndoRequest>
 /// relies on. Exactly one `&mut` is live at a time, so a widget that is both
 /// the root and registered in the map is safe (and yields its bracket once,
 /// because reading clears it).
-pub fn record_dispatched_action(
+pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     state: &mut crate::state::State,
     root: *mut dyn crate::widget::Widget,
-    node_map: &std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+    node_map: &std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget, S>,
     author: &crate::permissions::UserId,
 ) -> bool {
     let mut brackets: Vec<Vec<automerge::ChangeHash>> = Vec::new();

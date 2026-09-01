@@ -138,15 +138,15 @@ pub fn project_flat(resources: &[Resource]) -> Vec<FlatSpec> {
 /// rebuilt per frame, so a stale key must be refused rather than matched to
 /// whatever now sits at that position.
 pub fn resolve<'a>(resources: &'a [Resource], key: &str) -> Option<&'a ActionSpec> {
-    let (resource_id, action_id) = key.split_once(KEY_SEP)?;
     fn walk<'a>(r: &'a Resource, rid: &str, aid: &str) -> Option<&'a ActionSpec> {
-        if r.id.0 == rid {
-            if let Some(spec) = r.actions.iter().find(|a| a.id == aid) {
-                return Some(spec);
-            }
+        if r.id.0 == rid
+            && let Some(spec) = r.actions.iter().find(|a| a.id == aid)
+        {
+            return Some(spec);
         }
         r.children.iter().find_map(|c| walk(c, rid, aid))
     }
+    let (resource_id, action_id) = key.split_once(KEY_SEP)?;
     resources
         .iter()
         .find_map(|r| walk(r, resource_id, action_id))
@@ -199,6 +199,11 @@ impl std::error::Error for InvokeError {}
 /// `args` strictly against the parameters the projection advertised, and run
 /// the app's own builder. The result is byte-identical to what the on-screen
 /// affordance produces, because it *is* the affordance's closure.
+///
+/// # Errors
+///
+/// Returns [`InvokeError`] when `key` is unknown or `args` do not satisfy the
+/// addressed action's parameters.
 pub fn build_from_flat(
     resources: &[Resource],
     key: &str,
@@ -211,6 +216,11 @@ pub fn build_from_flat(
 }
 
 /// [`build_from_flat`] for arguments that arrived as a JSON object.
+///
+/// # Errors
+///
+/// Returns [`InvokeError`] when `key` is unknown or `args` do not satisfy the
+/// addressed action's parameters.
 pub fn build_from_json(
     resources: &[Resource],
     key: &str,
@@ -239,13 +249,26 @@ pub enum WireMessage {
 
 impl WireMessage {
     /// Encode as one newline-terminated JSON line.
+    ///
+    /// # Panics
+    ///
+    /// Panics if serde unexpectedly cannot serialize this enum's built-in
+    /// string, boolean, and integer fields.
+    #[allow(
+        clippy::expect_used,
+        reason = "WireMessage contains only serde's infallible built-in serializers"
+    )]
     pub fn to_line(&self) -> String {
-        let mut s = serde_json::to_string(self).expect("a wire message is always serializable");
+        let mut s = serde_json::to_string(self).expect("WireMessage serialization is infallible");
         s.push('\n');
         s
     }
 
     /// Decode one JSON line.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`serde_json::Error`] when `line` is not a valid wire message.
     pub fn from_line(line: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(line)
     }
@@ -255,6 +278,11 @@ impl WireMessage {
 ///
 /// `Ok(None)` is a clean end of stream. Blank lines are skipped so a writer may
 /// flush padding without desynchronising the reader.
+///
+/// # Errors
+///
+/// Returns an I/O error from `reader`, or [`std::io::ErrorKind::InvalidData`]
+/// when a non-blank line is not a valid [`WireMessage`].
 pub fn read_message(reader: &mut impl BufRead) -> std::io::Result<Option<WireMessage>> {
     let mut line = String::new();
     loop {
@@ -313,7 +341,7 @@ impl<W: Write, R: BufRead> IoTransport<W, R> {
         match self
             .out
             .write_all(msg.to_line().as_bytes())
-            .and_then(|_| self.out.flush())
+            .and_then(|()| self.out.flush())
         {
             Ok(()) => true,
             Err(e) => {

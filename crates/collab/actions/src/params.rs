@@ -142,6 +142,7 @@ impl ActionParam {
     }
 
     /// Restrict this parameter to `choices`. Binding refuses anything else.
+    #[must_use]
     pub fn with_choices<S: Into<Str>>(mut self, choices: impl IntoIterator<Item = S>) -> Self {
         self.choices = choices.into_iter().map(Into::into).collect();
         self
@@ -200,8 +201,7 @@ impl ArgValue {
             ArgValue::Text(s) => serde_json::Value::String(s.clone()),
             ArgValue::Integer(i) => serde_json::Value::from(*i),
             ArgValue::Number(f) => serde_json::Number::from_f64(*f)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null),
+                .map_or(serde_json::Value::Null, serde_json::Value::Number),
             ArgValue::Boolean(b) => serde_json::Value::Bool(*b),
         }
     }
@@ -299,6 +299,10 @@ impl ActionArgs {
     /// Fails on the first problem rather than accumulating: the caller has to
     /// fix them one at a time anyway, and a partial bind must never reach an
     /// action.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first missing, unknown, wrong-typed, or disallowed argument.
     pub fn bind(
         params: &[ActionParam],
         supplied: impl IntoIterator<Item = (String, ArgValue)>,
@@ -328,7 +332,11 @@ impl ActionArgs {
                     return Err(ArgError::NotAllowed {
                         name,
                         value: got,
-                        allowed: param.choices.iter().map(|c| c.to_string()).collect(),
+                        allowed: param
+                            .choices
+                            .iter()
+                            .map(std::string::ToString::to_string)
+                            .collect(),
                     });
                 }
             }
@@ -346,6 +354,11 @@ impl ActionArgs {
 
     /// Bind arguments that arrived as a JSON object — the shape a control
     /// socket delivers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArgError`] when a JSON value is unrepresentable or the
+    /// supplied arguments do not satisfy `params`.
     pub fn bind_json(
         params: &[ActionParam],
         supplied: &serde_json::Map<String, serde_json::Value>,
@@ -378,6 +391,10 @@ impl ActionArgs {
 
     /// The number bound to `name`, if any. An integer argument widens, matching
     /// [`ArgValue::satisfies`].
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "Number parameters deliberately widen integer JSON values to f64"
+    )]
     pub fn number(&self, name: &str) -> Option<f64> {
         match self.values.get(name) {
             Some(ArgValue::Number(f)) => Some(*f),

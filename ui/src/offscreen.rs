@@ -61,20 +61,29 @@ pub struct SharedGpu {
 /// on first call. Fails with the same [`OffscreenError`]s as
 /// [`OffscreenRenderer::try_new`] — a machine with no usable adapter
 /// gets a `NoAdapter`, never a panic.
+///
+/// # Errors
+///
+/// Returns [`OffscreenError::NoAdapter`] when no usable GPU adapter exists, or
+/// [`OffscreenError::ContextPoisoned`] when another thread panicked while
+/// holding the shared render-context lock.
 pub fn shared_gpu() -> Result<SharedGpu, OffscreenError> {
     let context = shared_render_context();
-    let mut ctx = context
-        .lock()
-        .map_err(|_| OffscreenError::ContextPoisoned)?;
-    let dev_id = ctx
-        .device(None)
-        .block_on()
-        .ok_or(OffscreenError::NoAdapter)?;
-    let handle = &ctx.devices[dev_id];
-    Ok(SharedGpu {
-        device: handle.device.clone(),
-        queue: handle.queue.clone(),
-    })
+    let (device, queue) = {
+        let mut ctx = context
+            .lock()
+            .map_err(|_| OffscreenError::ContextPoisoned)?;
+        let dev_id = ctx
+            .device(None)
+            .block_on()
+            .ok_or(OffscreenError::NoAdapter)?;
+        let handle = ctx.devices.get(dev_id).ok_or(OffscreenError::NoAdapter)?;
+        let device = handle.device.clone();
+        let queue = handle.queue.clone();
+        drop(ctx);
+        (device, queue)
+    };
+    Ok(SharedGpu { device, queue })
 }
 
 /// Why an [`OffscreenRenderer`] could not be built.
