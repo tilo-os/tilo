@@ -4222,12 +4222,12 @@ mod tests {
     fn wheel_scrolls_gallery_and_clamps_at_top() {
         let (mut app, mut doc, root) = sample_app();
         app.apply(Action::Nav(Screen::Gallery), &mut doc, &root);
-        assert_eq!(app.gallery_scroll, 0.0);
+        assert!(app.gallery_scroll.abs() < f64::EPSILON);
         // Wheel down moves the roll; wheel far up clamps back to the top.
         assert!(drive(&mut app, &wheel(-3.0), &mut doc, &root));
         assert!(app.gallery_scroll > 0.0);
         assert!(drive(&mut app, &wheel(100.0), &mut doc, &root));
-        assert_eq!(app.gallery_scroll, 0.0);
+        assert!(app.gallery_scroll.abs() < f64::EPSILON);
     }
 
     #[test]
