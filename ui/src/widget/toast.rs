@@ -917,6 +917,63 @@ mod tests {
     }
 
     #[test]
+    fn transient_card_honours_a_caller_inset_and_narrow_available_width() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        // The caller has removed 92 px of bottom player chrome from its area.
+        // A narrow content column also cannot accommodate the normal minimum.
+        let area = Rect::new(40.0, 10.0, 190.0, 308.0);
+        let hit = paint_transient(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            area,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new("This title must clip safely", ToastKind::Info),
+        );
+
+        assert_eq!(hit.card_rect.x0, area.x0 + 24.0);
+        assert_eq!(hit.card_rect.x1, area.x1 - 24.0);
+        assert_eq!(hit.card_rect.y1, area.y1 - 24.0);
+        assert!(hit.card_rect.y0 >= area.y0);
+    }
+
+    #[test]
+    fn partial_alpha_keeps_transient_geometry_and_still_paints() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let area = Rect::new(0.0, 0.0, 480.0, 320.0);
+        let mut full_scene = Scene::new();
+        let full = paint_transient(
+            &mut full_scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            area,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new("Backup complete", ToastKind::Success),
+        );
+        let mut faded_scene = Scene::new();
+        let faded = paint_transient(
+            &mut faded_scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            area,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new("Backup complete", ToastKind::Success).alpha(0.35),
+        );
+
+        assert_eq!(faded.card_rect, full.card_rect);
+        assert!(
+            !faded_scene.encoding().draw_tags.is_empty(),
+            "a partially faded card remains visible"
+        );
+    }
+
+    #[test]
     fn paint_card_is_a_noop_when_fully_faded() {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();

@@ -9,6 +9,7 @@ registry::scenario_modules! {
     Shots;
     ctrl_k_palette, "ctrl_k_palette.rs", "unified Ctrl+K palette states";
     data_table, "data_table.rs", "virtualized data-table states";
+    denied_state_shots, "denied_state_shots.rs", "permission-denied control states";
     fractional_scale_shots, "fractional_scale_shots.rs", "fractional-scale gallery renders";
     gallery_shots, "gallery_shots.rs", "dark and light component gallery";
     history_cases, "history_cases.rs", "history and collaboration cases";
@@ -21,6 +22,7 @@ registry::scenario_modules! {
     table_shots, "table_shots.rs", "table layouts and states";
     text_shots, "text_shots.rs", "typography rendering";
     textinput_ext_shots, "textinput_ext_shots.rs", "extended text input states";
+    undo_controls_shots, "undo_controls_shots.rs", "undo and redo availability states";
     widget_showcase_snapshot, "widget_showcase_snapshot.rs", "showcase visual snapshot";
     widget_snapshot, "widget_snapshot.rs", "individual widget snapshots";
 }
