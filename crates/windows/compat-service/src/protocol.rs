@@ -5,38 +5,55 @@ use crate::{ExplainStatus, LaunchReceipt};
 
 pub const PROTOCOL_VERSION: u16 = 1;
 
-/// Versioned JSON contract for a future user-session Unix socket. No socket is
-/// bound by this crate today. A daemon implementing it must authenticate the
-/// peer and obtain capabilities from the compositor; this DTO deliberately has
-/// no field through which a client can self-grant.
+/// The inherited session service accepts only opaque server-owned entry IDs
+/// for launch. A query is preview-only and cannot select a launch plan.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "method", rename_all = "snake_case")]
+#[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProtocolRequest {
-    Resolve(ResolveRequest),
-    Launch {
-        version: u16,
-        app_id: String,
-        workspace_id: String,
-        program_id: String,
-        query: ApplicationQuery,
-        explicit_vm_fallback: bool,
-    },
+    List { version: u16 },
+    Resolve(Box<ResolveRequest>),
+    Launch { version: u16, entry_id: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResolveRequest {
     pub version: u16,
-    pub app_id: String,
     pub query: ApplicationQuery,
-    pub explicit_vm_fallback: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ManagedApplication {
+    pub id: String,
+    pub app_id: String,
+    pub display_name: String,
+    pub publisher: String,
+    pub capsule_id: String,
+    pub program_id: String,
+    pub explanation: ExplainStatus,
+    pub vm_launch_available: bool,
+    pub vm_unavailable_reason: Option<String>,
+    pub audio_output_available: bool,
+    pub audio_unavailable_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum ProtocolResponse {
-    Resolved { explanation: ExplainStatus },
-    Launched { receipt: LaunchReceipt },
-    Error { error: ProtocolError },
+    Listed {
+        applications: Vec<ManagedApplication>,
+    },
+    Resolved {
+        explanation: ExplainStatus,
+        /// Always true: preview queries are never retained for launch.
+        preview_only: bool,
+    },
+    Launched {
+        receipt: LaunchReceipt,
+    },
+    Error {
+        error: ProtocolError,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -53,6 +70,14 @@ impl ProtocolError {
             message: format!(
                 "compatibility protocol {received} is unsupported; expected {PROTOCOL_VERSION}"
             ),
+        }
+    }
+
+    #[must_use]
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
         }
     }
 }
