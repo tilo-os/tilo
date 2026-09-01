@@ -19,6 +19,8 @@ iroh-gossip.workspace = true
 automerge.workspace = true
 qdoc = { path = "../crates/doc/qdoc" }
 collab-types = { path = "../crates/collab/collab-types" }
+ed25519-dalek.workspace = true
+getrandom.workspace = true
 # The shared thumbnail generator + content-addressed cache. Default features
 # only (raster images + EPUB covers — pure Rust, no native deps): the OS
 # filesystem daemon host-generates the light preview types and never pulls
@@ -28,11 +30,14 @@ thumbnail = { path = "../crates/thumbnail" }
 # The machine's one device key. The mount derives its iroh node key from
 # it rather than minting its own, so the node id names the device.
 qos-user-identity = { path = "../crates/identity/qos-user-identity" }
+# Bus-free, production battery/AC sampling for speculative-hydration policy.
+qos-power-mgmt = { path = "../crates/system/power", default-features = false }
 runtime-fs = { path = "../crates/runtime/runtime-fs" }
 libc.workspace = true
 moka = { version = "0.12.15", features = ["sync"] }
 serde.workspace = true
 serde_json.workspace = true
+uuid.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }
@@ -40,6 +45,7 @@ hex.workspace = true
 blake3.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 futures-lite.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 # Encode PNG fixtures for the thumbnail tests (the crate itself never decodes
