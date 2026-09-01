@@ -21,12 +21,46 @@ pub const HOST_PROTOCOL_MAJOR: u16 = 1;
 /// permission service. This is transport input, not a second policy database.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct VmLaunchGrants {
+    /// Exact canonical `Scope::NetHost` values resolved for this application.
+    /// An empty list means no egress. This is deliberately not a bool: a
+    /// filtered grant must retain the names it authorizes until the relay
+    /// checks each outbound CONNECT request.
+    pub network_hosts: Vec<String>,
     pub network: bool,
     pub clipboard: bool,
     pub microphone: bool,
-    /// Opaque portal document identifiers. The broker resolves these to
-    /// narrowly scoped staging paths and controls read/write mode.
-    pub portal_documents: Vec<String>,
+    /// Opaque portal document grants.  The broker resolves these to narrowly
+    /// scoped staging paths.  Keeping the access mode beside the opaque handle
+    /// is important: a read-only portal decision must not become a writable
+    /// RDP drive merely because the materialising broker was confused.
+    pub portal_documents: Vec<PortalDocumentGrant>,
+}
+
+/// Access granted by qOS's file portal for one opaque document handle.
+///
+/// This is deliberately not a filesystem permission or a host path.  The
+/// capability broker is the only component allowed to turn it into a private
+/// per-launch projection for FreeRDP.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PortalDocumentAccess {
+    ReadOnly,
+    ReadWrite,
+}
+
+impl PortalDocumentAccess {
+    #[must_use]
+    pub const fn is_read_only(self) -> bool {
+        matches!(self, Self::ReadOnly)
+    }
+}
+
+/// A document the user selected through qOS's file portal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PortalDocumentGrant {
+    /// An unguessable, broker-owned portal document handle.  It is never a
+    /// host path and is not presented to the guest or FreeRDP.
+    pub handle: String,
+    pub access: PortalDocumentAccess,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,6 +87,10 @@ pub struct ShareBinding {
 pub struct BrokeredLaunch {
     pub lease_id: String,
     pub network: bool,
+    /// Guest-local proxy configuration for the materialized network lease.
+    /// It is present exactly when `network` is true and is sent only to the
+    /// authenticated guest bridge, never to a manager or RDP argv.
+    pub network_binding: Option<crate::GuestNetworkBinding>,
     pub clipboard: bool,
     pub microphone: bool,
     pub shares: Vec<ShareBinding>,
@@ -64,6 +102,7 @@ impl BrokeredLaunch {
         Self {
             lease_id: lease_id.into(),
             network: false,
+            network_binding: None,
             clipboard: false,
             microphone: false,
             shares: Vec::new(),
@@ -80,6 +119,9 @@ impl BrokeredLaunch {
             return Err(RemoteAppError::InvalidLease);
         }
         let lease_root = PathBuf::from("/run/qos/windows-vm/leases").join(&self.lease_id);
+        if self.network != self.network_binding.is_some() {
+            return Err(RemoteAppError::InvalidNetworkLease);
+        }
         let mut names = HashSet::new();
         let mut documents = HashSet::new();
         for share in &self.shares {
@@ -370,19 +412,21 @@ where
                 .grants
                 .portal_documents
                 .iter()
-                .map(String::as_str)
-                .collect::<HashSet<_>>();
-            if brokered
-                .shares
-                .iter()
-                .any(|share| !granted_documents.contains(share.portal_document_id.as_str()))
-            {
+                .map(|document| (document.handle.as_str(), document.access))
+                .collect::<std::collections::HashMap<_, _>>();
+            if brokered.shares.iter().any(|share| {
+                granted_documents
+                    .get(share.portal_document_id.as_str())
+                    .is_none_or(|access| share.read_only != access.is_read_only())
+            }) {
                 return Err(LaunchError::BrokerEscalated("files"));
             }
 
-            let guest = self
-                .agent
-                .prepare_launch(&session, &request.application_id)?;
+            let guest = self.agent.prepare_launch(
+                &session,
+                &request.application_id,
+                brokered.network_binding.as_ref(),
+            )?;
             if guest.remote_app_alias != application.remote_app_alias {
                 return Err(LaunchError::PublicationChanged);
             }
@@ -527,12 +571,12 @@ fn validate_request(request: &LaunchRequest) -> Result<(), LaunchError> {
     {
         return Err(LaunchError::InvalidRequest("application id"));
     }
-    if request
-        .grants
-        .portal_documents
-        .iter()
-        .any(|document| document.trim().is_empty() || document.chars().any(char::is_control))
-    {
+    let mut handles = HashSet::new();
+    if request.grants.portal_documents.iter().any(|document| {
+        document.handle.trim().is_empty()
+            || document.handle.chars().any(char::is_control)
+            || !handles.insert(document.handle.as_str())
+    }) {
         return Err(LaunchError::InvalidRequest("portal document id"));
     }
     Ok(())
@@ -641,7 +685,12 @@ mod tests {
             })
         }
 
-        fn prepare_launch(&self, _: &GuestSession, _: &str) -> Result<GuestLaunch, AgentError> {
+        fn prepare_launch(
+            &self,
+            _: &GuestSession,
+            _: &str,
+            _: Option<&crate::GuestNetworkBinding>,
+        ) -> Result<GuestLaunch, AgentError> {
             Ok(GuestLaunch {
                 endpoint: RdpEndpoint {
                     address: (IpAddr::V4(Ipv4Addr::LOCALHOST), 3389).into(),
@@ -760,6 +809,68 @@ mod tests {
     }
 
     #[test]
+    fn broker_cannot_upgrade_a_read_only_portal_document_to_a_writable_drive() {
+        let directory = TempDir::new().unwrap();
+        let appliance = fixture(
+            &directory,
+            Agent {
+                available: true,
+                alias_on_launch: "qos-word".to_string(),
+            },
+            BrokeredLaunch {
+                lease_id: "lease".to_string(),
+                network: false,
+                network_binding: None,
+                clipboard: false,
+                microphone: false,
+                shares: vec![ShareBinding {
+                    drive_name: "QOS1".to_string(),
+                    portal_document_id: "portal-document".to_string(),
+                    host_path: "/run/qos/windows-vm/leases/lease/document".into(),
+                    read_only: false,
+                }],
+            },
+        );
+        let mut request = request();
+        request.grants.portal_documents = vec![PortalDocumentGrant {
+            handle: "portal-document".to_string(),
+            access: PortalDocumentAccess::ReadOnly,
+        }];
+        assert!(matches!(
+            appliance.launch(&request),
+            Err(LaunchError::BrokerEscalated("files"))
+        ));
+    }
+
+    #[test]
+    fn duplicate_portal_handles_are_rejected_before_any_guest_connection() {
+        let directory = TempDir::new().unwrap();
+        let appliance = fixture(
+            &directory,
+            Agent {
+                available: true,
+                alias_on_launch: "qos-word".to_string(),
+            },
+            BrokeredLaunch::deny_all("lease"),
+        );
+        let mut request = request();
+        request.grants.portal_documents = vec![
+            PortalDocumentGrant {
+                handle: "portal-document".to_string(),
+                access: PortalDocumentAccess::ReadOnly,
+            },
+            PortalDocumentGrant {
+                handle: "portal-document".to_string(),
+                access: PortalDocumentAccess::ReadWrite,
+            },
+        ];
+        assert!(matches!(
+            appliance.launch(&request),
+            Err(LaunchError::InvalidRequest("portal document id"))
+        ));
+    }
+
+    #[test]
     fn a_broker_cannot_enable_ungranted_clipboard() {
         let directory = TempDir::new().unwrap();
         let appliance = fixture(
@@ -771,6 +882,7 @@ mod tests {
             BrokeredLaunch {
                 lease_id: "lease".to_string(),
                 network: false,
+                network_binding: None,
                 clipboard: true,
                 microphone: false,
                 shares: Vec::new(),
