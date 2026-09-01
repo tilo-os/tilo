@@ -23,6 +23,10 @@ use winit::keyboard::{Key, NamedKey};
 use ui::format::bytes as format_bytes;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
+use ui::qos_actions::{
+    ActionContract, ActionSpec, Availability, ExecutionMode, OperationKind, PermissionRequirement,
+    Resource, ResultSpec, RetryPolicy,
+};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -4421,7 +4425,109 @@ impl Widget for MapsApp {
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+        let root = if let Some(root) = resources.first_mut() {
+            root
+        } else {
+            resources.push(Resource::new("maps.workspace", "maps.workspace", "Maps"));
+            resources.first_mut().expect("Maps root was just inserted")
+        };
+        root.actions.push(
+            ActionSpec::operation(
+                "locate",
+                "Use my location",
+                OperationKind::Effect,
+                "maps.locate",
+                &"",
+            )
+            .expect("Maps operation payload is serializable")
+            .with_contract(ActionContract {
+                availability: if self.location_rx.is_none() {
+                    Availability::Available
+                } else {
+                    Availability::Unavailable {
+                        code: "request_in_progress".into(),
+                        reason: "A location request is already in progress".into(),
+                    }
+                },
+                permission: PermissionRequirement::Read,
+                retry: RetryPolicy::AtMostOnce,
+                execution: ExecutionMode::Background { cancellable: false },
+                result: ResultSpec::Resource {
+                    resource_kind: "maps.location".into(),
+                },
+                ..ActionContract::default()
+            }),
+        );
+        root.actions.push(
+            ActionSpec::operation(
+                "toggle-traffic",
+                if self.map_controls.traffic_enabled() {
+                    "Hide traffic"
+                } else {
+                    "Show traffic"
+                },
+                OperationKind::View,
+                "maps.toggle-traffic",
+                &"",
+            )
+            .expect("Maps operation payload is serializable")
+            .with_contract(ActionContract::view()),
+        );
+        for place in self.model.places.iter().filter(|place| place.saved) {
+            if let Some(resource) = root
+                .children
+                .iter_mut()
+                .find(|resource| resource.id.0 == format!("maps.place:{}", place.id))
+            {
+                for (id, label, type_id) in [
+                    ("open", "Open place", "maps.open-place"),
+                    ("directions", "Get directions", "maps.directions"),
+                ] {
+                    resource.actions.insert(
+                        0,
+                        ActionSpec::operation(id, label, OperationKind::View, type_id, &place.id)
+                            .expect("Maps place id is serializable")
+                            .with_contract(ActionContract::view()),
+                    );
+                }
+            }
+        }
+        resources
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        match (kind, type_id) {
+            (OperationKind::Effect, "maps.locate") => {
+                if self.location_rx.is_some() {
+                    return Err("A location request is already in progress".into());
+                }
+                self.use_my_location();
+            }
+            (OperationKind::View, "maps.toggle-traffic") => {
+                self.set_traffic(!self.map_controls.traffic_enabled())
+            }
+            (OperationKind::View, "maps.open-place") | (OperationKind::View, "maps.directions") => {
+                let id: String =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                if self.model.place(&id).is_none() {
+                    return Err("Map place is no longer available".into());
+                }
+                self.select_place(&id);
+                if type_id == "maps.directions" {
+                    self.enter_directions();
+                }
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
     }
 
     /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
@@ -4734,6 +4840,33 @@ impl MapsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_place_open_uses_the_same_selection_route_as_the_map() {
+        let mut app = MapsApp::offline();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let id = app
+            .model
+            .places
+            .iter()
+            .find(|place| place.saved)
+            .expect("sample has a saved place")
+            .id
+            .clone();
+        let payload = serde_json::to_vec(&id).unwrap();
+        assert!(
+            app.invoke_resource_operation(
+                OperationKind::View,
+                "maps.open-place",
+                &payload,
+                &state.doc,
+                &state.root,
+            )
+            .unwrap()
+        );
+        assert_eq!(app.model.selected.as_deref(), Some(id.as_str()));
+    }
 
     fn app_at(w: f64, h: f64) -> MapsApp {
         // Offline variant: no tile worker thread, no network — tests stay
