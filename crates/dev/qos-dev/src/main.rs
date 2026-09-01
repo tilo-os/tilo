@@ -468,6 +468,8 @@ enum ComponentTemplateArg {
     Form,
     /// Source-agnostic virtualized tree with typed configuration.
     Tree,
+    /// Source-agnostic sparse variable-height list with retained delegates.
+    List,
 }
 
 fn main() -> ExitCode {
@@ -634,6 +636,7 @@ fn run_add(args: AddArgs) -> Result<()> {
                     ComponentTemplateArg::Display => qos_dev::ComponentTemplate::Display,
                     ComponentTemplateArg::Form => qos_dev::ComponentTemplate::Form,
                     ComponentTemplateArg::Tree => qos_dev::ComponentTemplate::Tree,
+                    ComponentTemplateArg::List => qos_dev::ComponentTemplate::List,
                 },
             },
             options,
@@ -1029,6 +1032,29 @@ mod tests {
         let Command::Add(AddArgs { command: None }) = wizard.command else {
             panic!("expected interactive add command");
         };
+    }
+
+    #[test]
+    fn add_command_exposes_the_reusable_list_template() {
+        let cli = Cli::try_parse_from([
+            "qos-dev",
+            "add",
+            "component",
+            "activity-list",
+            "--template",
+            "list",
+        ])
+        .expect("list component command");
+
+        assert!(matches!(
+            cli.command,
+            Command::Add(AddArgs {
+                command: Some(AddCommand::Component {
+                    template: ComponentTemplateArg::List,
+                    ..
+                })
+            })
+        ));
     }
 
     #[test]
