@@ -236,6 +236,17 @@ enum UiCommand {
         #[arg(long)]
         index: usize,
     },
+    /// Change one node property without replacing the complete node.
+    Set {
+        file: PathBuf,
+        #[arg(long)]
+        id: String,
+        /// Dot-separated serialized property, for example `text.value`.
+        #[arg(long)]
+        property: String,
+        #[command(flatten)]
+        edit: PropertyEditArgs,
+    },
 }
 
 #[derive(clap::Args)]
@@ -247,6 +258,17 @@ struct NodeSourceArgs {
     /// File containing one node JSON object.
     #[arg(long, group = "node-source")]
     node_file: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+#[group(id = "property-edit", required = true, multiple = false)]
+struct PropertyEditArgs {
+    /// JSON value, or an unquoted string when JSON parsing does not apply.
+    #[arg(long, group = "property-edit")]
+    value: Option<String>,
+    /// Remove the property so its schema default applies.
+    #[arg(long, group = "property-edit")]
+    unset: bool,
 }
 
 #[derive(clap::Args)]
@@ -734,8 +756,33 @@ fn run_ui(args: UiArgs) -> Result<()> {
             qos_dev::edit_ui_graph(&file, qos_dev::UiGraphEdit::Move { id, parent, index })?;
             println!("Updated {}", file.display());
         }
+        UiCommand::Set {
+            file,
+            id,
+            property,
+            edit,
+        } => {
+            let value = match (edit.value, edit.unset) {
+                (Some(source), false) => Some(parse_ui_property_value(source)),
+                (None, true) => None,
+                _ => anyhow::bail!("choose exactly one of --value or --unset"),
+            };
+            qos_dev::edit_ui_graph(
+                &file,
+                qos_dev::UiGraphEdit::SetProperty {
+                    id,
+                    property,
+                    value,
+                },
+            )?;
+            println!("Updated {}", file.display());
+        }
     }
     Ok(())
+}
+
+fn parse_ui_property_value(source: String) -> serde_json::Value {
+    serde_json::from_str(&source).unwrap_or(serde_json::Value::String(source))
 }
 
 fn read_ui_node(source: NodeSourceArgs) -> Result<qos_ui_graph::UiNode> {
@@ -1428,6 +1475,74 @@ mod tests {
                 "node.json",
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn ui_set_accepts_one_typed_property_edit() {
+        let set = Cli::try_parse_from([
+            "qos-dev",
+            "ui",
+            "set",
+            "ui/main.json",
+            "--id",
+            "title",
+            "--property",
+            "text.value",
+            "--value",
+            "Recent projects",
+        ])
+        .expect("UI property command");
+        assert!(matches!(
+            set.command,
+            Command::Ui(UiArgs {
+                command: UiCommand::Set {
+                    edit: PropertyEditArgs {
+                        value: Some(_),
+                        unset: false,
+                    },
+                    ..
+                }
+            })
+        ));
+
+        assert!(
+            Cli::try_parse_from([
+                "qos-dev",
+                "ui",
+                "set",
+                "ui/main.json",
+                "--id",
+                "title",
+                "--property",
+                "size",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "qos-dev",
+                "ui",
+                "set",
+                "ui/main.json",
+                "--id",
+                "title",
+                "--property",
+                "size",
+                "--value",
+                "24",
+                "--unset",
+            ])
+            .is_err()
+        );
+        assert_eq!(
+            parse_ui_property_value("true".into()),
+            serde_json::json!(true)
+        );
+        assert_eq!(parse_ui_property_value("24".into()), serde_json::json!(24));
+        assert_eq!(
+            parse_ui_property_value("Recent projects".into()),
+            serde_json::json!("Recent projects")
         );
     }
 }

@@ -321,7 +321,7 @@ pub struct PackageOutcome {
     pub entrypoints: Vec<PathBuf>,
 }
 
-/// One validated structural edit to a serialized UI object graph.
+/// One validated edit to a serialized UI object graph.
 #[derive(Clone, Debug, PartialEq)]
 pub enum UiGraphEdit {
     Insert {
@@ -340,6 +340,13 @@ pub enum UiGraphEdit {
         id: String,
         parent: String,
         index: usize,
+    },
+    /// Set or remove one serialized node property. A dotted path addresses
+    /// nested objects such as `text.value` or `navigate.route`.
+    SetProperty {
+        id: String,
+        property: String,
+        value: Option<serde_json::Value>,
     },
 }
 
@@ -2855,7 +2862,7 @@ pub fn parse_ui_node(source: &str) -> Result<qos_ui_graph::UiNode> {
     serde_json::from_str(source).context("parsing UI node JSON")
 }
 
-/// Apply one structural edit and atomically replace the graph file only after
+/// Apply one edit and atomically replace the graph file only after
 /// the complete candidate validates.
 ///
 /// # Errors
@@ -2877,8 +2884,55 @@ pub fn edit_ui_graph(path: &Path, edit: UiGraphEdit) -> Result<()> {
         UiGraphEdit::Move { id, parent, index } => {
             document.move_node(&id, &parent, index)?;
         }
+        UiGraphEdit::SetProperty {
+            id,
+            property,
+            value,
+        } => {
+            set_ui_node_property(&mut document, &id, &property, value)?;
+        }
     }
     write_ui_graph(path, &document)
+}
+
+fn set_ui_node_property(
+    document: &mut qos_ui_graph::UiDocument,
+    id: &str,
+    property: &str,
+    value: Option<serde_json::Value>,
+) -> Result<()> {
+    let node = document
+        .node(id)
+        .cloned()
+        .with_context(|| format!("UI graph has no node {id:?}"))?;
+    let segments: Vec<_> = property.split('.').collect();
+    if segments.iter().any(|segment| segment.is_empty()) {
+        bail!("property path must contain non-empty dot-separated names");
+    }
+    let mut serialized = serde_json::to_value(node).context("serializing UI node")?;
+    let Some((leaf, parents)) = segments.split_last() else {
+        bail!("property path must contain a name");
+    };
+    let mut current = &mut serialized;
+    for segment in parents {
+        current = current
+            .as_object_mut()
+            .and_then(|object| object.get_mut(*segment))
+            .with_context(|| format!("node {id:?} has no object property path {property:?}"))?;
+    }
+    let object = current
+        .as_object_mut()
+        .with_context(|| format!("node {id:?} property parent is not an object"))?;
+    if let Some(value) = value {
+        object.insert((*leaf).to_owned(), value);
+    } else if object.remove(*leaf).is_none() {
+        bail!("node {id:?} has no property {property:?}");
+    }
+    let replacement: qos_ui_graph::UiNode = serde_json::from_value(serialized)
+        .with_context(|| format!("property {property:?} is not valid for node {id:?}"))?;
+    document
+        .replace_node(id, replacement)
+        .with_context(|| format!("validating property {property:?} on node {id:?}"))
 }
 
 /// Rewrite a valid graph in the canonical pretty-printed form.
@@ -6309,7 +6363,7 @@ fn app_readme(spec: &AppSpec) -> String {
     if spec.template == Template::Graph {
         let _ = writeln!(
             out,
-            "\nOpen the serialized screen with `qos-dev ui edit ui/main.json`. Script or review it with `qos-dev ui tree`, `qos-dev ui insert`, `qos-dev ui move`, and `qos-dev ui validate`."
+            "\nOpen the serialized screen with `qos-dev ui edit ui/main.json`. Script or review it with `qos-dev ui tree`, `qos-dev ui set`, `qos-dev ui insert`, `qos-dev ui move`, and `qos-dev ui validate`."
         );
     }
     if spec.template == Template::Async {
@@ -7974,6 +8028,74 @@ mod tests {
     }
 
     #[test]
+    fn ui_graph_property_edits_are_nested_typed_and_atomic() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let graph = temp.path().join("ui/main.json");
+        init_ui_graph(&graph, "Projects", false).expect("initialize graph");
+
+        edit_ui_graph(
+            &graph,
+            UiGraphEdit::SetProperty {
+                id: "title".into(),
+                property: "text.value".into(),
+                value: Some(serde_json::json!("Recent projects")),
+            },
+        )
+        .expect("set nested title value");
+        edit_ui_graph(
+            &graph,
+            UiGraphEdit::SetProperty {
+                id: "title".into(),
+                property: "size".into(),
+                value: Some(serde_json::json!(24.0)),
+            },
+        )
+        .expect("set typed size");
+        let source = std::fs::read_to_string(&graph).unwrap();
+        assert!(source.contains("Recent projects"));
+        assert!(source.contains("\"size\": 24.0"));
+
+        edit_ui_graph(
+            &graph,
+            UiGraphEdit::SetProperty {
+                id: "title".into(),
+                property: "size".into(),
+                value: None,
+            },
+        )
+        .expect("restore schema default");
+        assert!(matches!(
+            load_ui_graph(&graph).unwrap().node("title"),
+            Some(qos_ui_graph::UiNode::Text { size: None, .. })
+        ));
+
+        let before_invalid = std::fs::read(&graph).unwrap();
+        let error = edit_ui_graph(
+            &graph,
+            UiGraphEdit::SetProperty {
+                id: "title".into(),
+                property: "size".into(),
+                value: Some(serde_json::json!("large")),
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("not valid"), "{error:#}");
+        assert_eq!(std::fs::read(&graph).unwrap(), before_invalid);
+
+        let typo = edit_ui_graph(
+            &graph,
+            UiGraphEdit::SetProperty {
+                id: "title".into(),
+                property: "typo".into(),
+                value: Some(serde_json::json!(true)),
+            },
+        )
+        .unwrap_err();
+        assert!(typo.to_string().contains("not valid"), "{typo:#}");
+        assert_eq!(std::fs::read(&graph).unwrap(), before_invalid);
+    }
+
+    #[test]
     fn explicit_ui_builder_plan_is_deterministic() {
         let plan = ui_builder_plan(
             Path::new("ui/main.json"),
@@ -8561,6 +8683,7 @@ mod tests {
         assert!(app_lib(&spec).contains("screens::router(\"main\", &Theme::default())"));
         assert!(app_test(&spec).contains("serialized_screen_is_interactive"));
         assert!(app_readme(&spec).contains("qos-dev ui tree"));
+        assert!(app_readme(&spec).contains("qos-dev ui set"));
     }
 
     #[test]
