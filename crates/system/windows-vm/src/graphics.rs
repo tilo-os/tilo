@@ -313,7 +313,7 @@ fn has_exclusive_iommu_group(device: &Path) -> bool {
         return false;
     };
     let members = directory_names(group.join("devices"));
-    members.len() == 1 && members[0] == address
+    members.len() == 1 && members.first().is_some_and(|member| member == address)
 }
 
 fn probe_mediated_types(path: &Path) -> Vec<MediatedTypeCapability> {
