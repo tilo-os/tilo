@@ -15,6 +15,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
 
@@ -27,7 +28,7 @@ use ui::widget::{
     ArtifactKind, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
 };
 use ui::{
-    ActivityDigest, ActivityTimeline, AuthorDirectory, BandUndoRequest, ChangeRun,
+    ActivityBrief, ActivityDigest, ActivityTimeline, AuthorDirectory, BandUndoRequest, ChangeRun,
     GroupNameRequest, HistoryComparison, HistoryFacetIndex, HistorySelectionDetail, HistorySource,
     NamedRange, NarrativeRequest, RecordStore, Theme, Widget,
 };
@@ -39,8 +40,8 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::shell::state::WorkspaceTree;
 use crate::shell::workspace_history::{
-    FeedCoverage, WorkspaceHistoryId, WorkspaceHistoryIndex, WorkspaceHistoryQuery,
-    WorkspaceSeenFrontier,
+    FeedCoverage, WorkspaceHistoryEntry, WorkspaceHistoryId, WorkspaceHistoryIndex,
+    WorkspaceHistoryQuery, WorkspaceSeenFrontier,
 };
 
 /// Widest the sheet ever gets. Past this the rows stop gaining information
@@ -108,6 +109,13 @@ enum ActivityFocus {
     ExplorerPane(ExplorerPane),
 }
 
+struct AccessControl {
+    role: ui::a11y::Role,
+    selected: bool,
+    expanded: Option<bool>,
+    description: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DetailAction {
     Open,
@@ -160,6 +168,25 @@ impl ExplorerPane {
 )]
 fn at(transform: Affine, dx: f64, dy: f64) -> Affine {
     transform * Affine::translate((dx, dy))
+}
+
+/// Convert a non-negative on-screen measurement for the text renderer.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "finite viewport dimensions are well within f32's range"
+)]
+fn text_width(width: f64) -> f32 {
+    width.max(0.0) as f32
+}
+
+/// Number of complete rows that fit in a non-negative pixel extent.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is clamped non-negative and bounded by the viewport"
+)]
+fn complete_rows(height: f64, row_height: f64) -> usize {
+    (height.max(0.0) / row_height).floor() as usize
 }
 
 /// How far back the pane is showing. Maps onto
@@ -229,6 +256,10 @@ impl RoomScope {
 
 /// What a dispatched event did.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "these independent flags report distinct effects to the overlay host"
+)]
 pub struct RoomActivityOutcome {
     pub handled: bool,
     pub reverted: bool,
@@ -606,11 +637,10 @@ impl RoomActivityPane {
         let mut detail = HistorySelectionDetail::from_range(self.timeline.entries(), range)?;
         let mut origin = None;
         for id in &detail.entry_ids {
-            let next = self
-                .projected_origins
-                .get(id)
-                .map(|address| address.origin.clone())
-                .unwrap_or(crate::shell::workspace_history::HistoryOrigin::WorkspaceTree);
+            let next = self.projected_origins.get(id).map_or(
+                crate::shell::workspace_history::HistoryOrigin::WorkspaceTree,
+                |address| address.origin.clone(),
+            );
             if origin.as_ref().is_some_and(|current| current != &next) {
                 detail.can_compare = false;
                 detail.can_undo = false;
@@ -1052,14 +1082,14 @@ impl RoomActivityPane {
         };
         let passive_rows: Vec<HistoryEntry> = unseen(&passive_frontier, tree)
             .into_iter()
-            .map(|row| row.timeline_entry())
+            .map(WorkspaceHistoryEntry::timeline_entry)
             .collect();
         self.passive_unread = passive_rows.len();
         self.passive_digest =
             ActivityDigest::from_entries(&passive_rows, SystemTime::UNIX_EPOCH, 5);
         let catchup_rows: Vec<HistoryEntry> = unseen(&self.catchup_frontier, tree)
             .into_iter()
-            .map(|row| row.timeline_entry())
+            .map(WorkspaceHistoryEntry::timeline_entry)
             .collect();
         self.digest = ActivityDigest::from_entries(&catchup_rows, SystemTime::UNIX_EPOCH, 5);
         self.reset_narrative();
@@ -1325,170 +1355,187 @@ impl RoomActivityPane {
                 &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
             );
         }
-        let size = theme.tokens.typography.scale.sm;
         if show_left {
-            tr.draw_text_weighted(
-                scene,
-                "Browse by",
-                size,
-                theme.tokens.colors.text_primary,
-                at(transform, left.x0 + 12.0, left.y0 + 12.0),
-                None,
-                ui::text_render::TextWeight::Medium,
-            );
-            let mut y = left.y0 + 38.0;
-            let candidates = self.lens_candidates();
-            if self.lens_offset >= candidates.len() {
-                self.lens_offset = 0;
-            }
-            let capacity = (((left.y1 - 6.0 - y) / 32.0).floor() as usize).max(1);
-            let remaining = candidates.len().saturating_sub(self.lens_offset);
-            let shown = remaining.min(if remaining > capacity {
-                capacity.saturating_sub(1)
-            } else {
-                capacity
-            });
-            for (lens, label) in candidates.iter().skip(self.lens_offset).take(shown) {
-                self.draw_lens_row(scene, transform, tr, theme, lens, label, &mut y, left);
-            }
-            if shown < remaining || self.lens_offset > 0 {
-                let label = if shown < remaining {
-                    "More lenses…"
-                } else {
-                    "First lenses…"
-                };
-                self.lens_more_rect = draw_more_row(scene, transform, tr, theme, left, y, label);
-                self.lens_more_advance = shown.max(1);
-            }
+            self.draw_explorer_lenses(scene, transform, tr, theme, left);
         }
-
         if show_right {
-            tr.draw_text_weighted(
-                scene,
-                "Provenance",
-                size,
-                theme.tokens.colors.text_primary,
-                at(transform, right.x0 + 12.0, right.y0 + 12.0),
-                None,
-                ui::text_render::TextWeight::Medium,
-            );
-            if let Some(detail) = self.selection_detail() {
-                let width = (right.width() - 24.0).max(0.0) as f32;
-                tr.draw_text(
-                    scene,
-                    &detail.title,
-                    theme.tokens.typography.scale.base,
-                    theme.tokens.colors.text_primary,
-                    at(transform, right.x0 + 12.0, right.y0 + 40.0),
-                    Some(width),
-                );
-                let people = detail.authors.join(", ");
-                let resources = detail
-                    .resources
-                    .iter()
-                    .map(|resource| resource.label.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let facets = detail
-                    .facets
-                    .iter()
-                    .map(|facet| format!("{}: {}", facet.key, facet.value))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let provenance = format!(
-                    "{} action{}\n{}\n{}{}",
-                    detail.entry_ids.len(),
-                    if detail.entry_ids.len() == 1 { "" } else { "s" },
-                    people,
-                    if resources.is_empty() {
-                        "No resource declared"
-                    } else {
-                        &resources
-                    },
-                    if facets.is_empty() {
-                        String::new()
-                    } else {
-                        format!("\n{facets}")
-                    },
-                );
-                tr.draw_text(
-                    scene,
-                    &provenance,
-                    size,
-                    theme.tokens.colors.text_dim,
-                    at(transform, right.x0 + 12.0, right.y0 + 88.0),
-                    Some(width),
-                );
-                let mut x = right.x0 + 12.0;
-                let mut action_y = right.y0 + 170.0;
-                for action in [
-                    DetailAction::Open,
-                    DetailAction::Compare,
-                    DetailAction::Undo,
-                    DetailAction::Split,
-                    DetailAction::Merge,
-                ] {
-                    let enabled = match action {
-                        DetailAction::Open => !detail.resources.is_empty(),
-                        DetailAction::Compare => detail.can_compare,
-                        DetailAction::Undo => detail.can_undo,
-                        DetailAction::Split => self.split_candidate().is_some(),
-                        DetailAction::Merge => self.merge_candidate().is_some(),
-                    };
-                    if !enabled {
-                        continue;
-                    }
-                    if x + 60.0 > right.x1 - 12.0 {
-                        x = right.x0 + 12.0;
-                        action_y += 34.0;
-                    }
-                    let rect = Rect::new(x, action_y, x + 60.0, action_y + 28.0);
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        theme.tokens.colors.surface_white_5,
-                        None,
-                        &RoundedRect::from_rect(rect, 6.0),
-                    );
-                    tr.draw_text(
-                        scene,
-                        self.detail_action_label(action),
-                        size,
-                        theme.tokens.colors.text_primary,
-                        at(transform, rect.x0 + 8.0, rect.y0 + 7.0),
-                        None,
-                    );
-                    self.detail_action_rects.push((action, rect));
-                    x += 66.0;
-                }
-                let selected_ids = self.selected_ids();
-                if self.comparison_selection == selected_ids
-                    && let Some(comparison) = &self.comparison
-                {
-                    let mut lines = vec![format!(
-                        "Before {} B · After {} B · {} patches",
-                        comparison.before_document.len(),
-                        comparison.after_document.len(),
-                        comparison.patches.len()
-                    )];
-                    lines.extend(
-                        comparison
-                            .patches
-                            .iter()
-                            .take(4)
-                            .map(|patch| format!("{:?}", patch.action)),
-                    );
-                    tr.draw_text(
-                        scene,
-                        &lines.join("\n"),
-                        size,
-                        theme.tokens.colors.text_dim,
-                        at(transform, right.x0 + 12.0, right.y0 + 246.0),
-                        Some(width),
-                    );
-                }
-            }
+            self.draw_explorer_details(scene, transform, tr, theme, right);
         }
+    }
+
+    fn draw_explorer_lenses(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        bounds: Rect,
+    ) {
+        tr.draw_text_weighted(
+            scene,
+            "Browse by",
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_primary,
+            at(transform, bounds.x0 + 12.0, bounds.y0 + 12.0),
+            None,
+            ui::text_render::TextWeight::Medium,
+        );
+        let mut y = bounds.y0 + 38.0;
+        let candidates = self.lens_candidates();
+        if self.lens_offset >= candidates.len() {
+            self.lens_offset = 0;
+        }
+        let capacity = complete_rows(bounds.y1 - 6.0 - y, 32.0).max(1);
+        let remaining = candidates.len().saturating_sub(self.lens_offset);
+        let shown = remaining.min(if remaining > capacity {
+            capacity.saturating_sub(1)
+        } else {
+            capacity
+        });
+        for (lens, label) in candidates.iter().skip(self.lens_offset).take(shown) {
+            self.draw_lens_row(scene, transform, tr, theme, lens, label, &mut y, bounds);
+        }
+        if shown < remaining || self.lens_offset > 0 {
+            let label = if shown < remaining {
+                "More lenses…"
+            } else {
+                "First lenses…"
+            };
+            self.lens_more_rect = draw_more_row(scene, transform, tr, theme, bounds, y, label);
+            self.lens_more_advance = shown.max(1);
+        }
+    }
+
+    fn draw_explorer_details(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        bounds: Rect,
+    ) {
+        let size = theme.tokens.typography.scale.sm;
+        tr.draw_text_weighted(
+            scene,
+            "Provenance",
+            size,
+            theme.tokens.colors.text_primary,
+            at(transform, bounds.x0 + 12.0, bounds.y0 + 12.0),
+            None,
+            ui::text_render::TextWeight::Medium,
+        );
+        if let Some(detail) = self.selection_detail() {
+            let width = text_width(bounds.width() - 24.0);
+            tr.draw_text(
+                scene,
+                &detail.title,
+                theme.tokens.typography.scale.base,
+                theme.tokens.colors.text_primary,
+                at(transform, bounds.x0 + 12.0, bounds.y0 + 40.0),
+                Some(width),
+            );
+            tr.draw_text(
+                scene,
+                &detail_provenance(&detail),
+                size,
+                theme.tokens.colors.text_dim,
+                at(transform, bounds.x0 + 12.0, bounds.y0 + 88.0),
+                Some(width),
+            );
+            self.draw_detail_actions(scene, transform, tr, theme, bounds, &detail);
+            self.draw_detail_comparison(scene, transform, tr, theme, bounds, width);
+        }
+    }
+
+    fn draw_detail_actions(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        bounds: Rect,
+        detail: &HistorySelectionDetail,
+    ) {
+        let mut x = bounds.x0 + 12.0;
+        let mut y = bounds.y0 + 170.0;
+        for action in [
+            DetailAction::Open,
+            DetailAction::Compare,
+            DetailAction::Undo,
+            DetailAction::Split,
+            DetailAction::Merge,
+        ] {
+            let enabled = match action {
+                DetailAction::Open => !detail.resources.is_empty(),
+                DetailAction::Compare => detail.can_compare,
+                DetailAction::Undo => detail.can_undo,
+                DetailAction::Split => self.split_candidate().is_some(),
+                DetailAction::Merge => self.merge_candidate().is_some(),
+            };
+            if !enabled {
+                continue;
+            }
+            if x + 60.0 > bounds.x1 - 12.0 {
+                x = bounds.x0 + 12.0;
+                y += 34.0;
+            }
+            let rect = Rect::new(x, y, x + 60.0, y + 28.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surface_white_5,
+                None,
+                &RoundedRect::from_rect(rect, 6.0),
+            );
+            tr.draw_text(
+                scene,
+                self.detail_action_label(action),
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_primary,
+                at(transform, rect.x0 + 8.0, rect.y0 + 7.0),
+                None,
+            );
+            self.detail_action_rects.push((action, rect));
+            x += 66.0;
+        }
+    }
+
+    fn draw_detail_comparison(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        bounds: Rect,
+        width: f32,
+    ) {
+        if self.comparison_selection != self.selected_ids() {
+            return;
+        }
+        let Some(comparison) = &self.comparison else {
+            return;
+        };
+        let mut lines = vec![format!(
+            "Before {} B · After {} B · {} patches",
+            comparison.before_document.len(),
+            comparison.after_document.len(),
+            comparison.patches.len()
+        )];
+        lines.extend(
+            comparison
+                .patches
+                .iter()
+                .take(4)
+                .map(|patch| format!("{:?}", patch.action)),
+        );
+        tr.draw_text(
+            scene,
+            &lines.join("\n"),
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_dim,
+            at(transform, bounds.x0 + 12.0, bounds.y0 + 246.0),
+            Some(width),
+        );
     }
 
     #[allow(
@@ -1529,7 +1576,7 @@ impl RoomActivityPane {
                 theme.tokens.colors.text_dim
             },
             at(transform, rect.x0 + 8.0, rect.y0 + 6.0),
-            Some((rect.width() - 16.0).max(0.0) as f32),
+            Some(text_width(rect.width() - 16.0)),
         );
         self.lens_rects.push((lens.clone(), rect));
         *y += 32.0;
@@ -1627,7 +1674,7 @@ impl RoomActivityPane {
                 theme.tokens.typography.scale.base,
                 theme.tokens.colors.text_dim,
                 at(transform, x0 + 4.0, y + 12.0),
-                Some((x1 - x0 - 8.0).max(0.0) as f32),
+                Some(text_width(x1 - x0 - 8.0)),
             );
             return;
         }
@@ -1645,66 +1692,24 @@ impl RoomActivityPane {
             let expanded = self.expanded_brief == Some(index);
             let height = if expanded { 112.0 } else { 70.0 };
             let more_room = 34.0;
-            let has_later = index + 1 < self.digest.briefs.len() || self.brief_offset > 0;
+            let has_later = index
+                .checked_add(1)
+                .is_some_and(|next| next < self.digest.briefs.len())
+                || self.brief_offset > 0;
             if y + height + if has_later { more_room } else { 0.0 } > self.sheet.y1 - 10.0 {
                 break;
             }
             let rect = Rect::new(x0, y, x1, y + height);
             self.brief_rects.push((index, rect));
-            let card = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surface_white_5,
-                None,
-                &card,
-            );
-            let width = (rect.width() - 24.0).max(0.0) as f32;
-            tr.draw_text_weighted(
-                scene,
-                &brief.title,
-                theme.tokens.typography.scale.base,
-                theme.tokens.colors.text_primary,
-                at(transform, rect.x0 + 12.0, rect.y0 + 10.0),
-                Some(width),
-                ui::text_render::TextWeight::Medium,
-            );
-            tr.draw_text(
-                scene,
-                &brief.detail,
-                theme.tokens.typography.scale.sm,
-                theme.tokens.colors.text_dim,
-                at(transform, rect.x0 + 12.0, rect.y0 + 34.0),
-                Some(width),
-            );
-            if expanded {
-                let mut provenance = brief.apps.join(", ");
-                if !brief.resources.is_empty() {
-                    if !provenance.is_empty() {
-                        provenance.push_str(" · ");
-                    }
-                    provenance.push_str(&brief.resources.join(", "));
-                }
-                if provenance.is_empty() {
-                    provenance = format!("{} underlying changes", brief.changes);
-                }
-                tr.draw_text(
-                    scene,
-                    &format!("{provenance}\nOpen in Explorer →"),
-                    theme.tokens.typography.scale.sm,
-                    theme.tokens.colors.text_dim,
-                    at(transform, rect.x0 + 12.0, rect.y0 + 76.0),
-                    Some(width),
-                );
-            }
+            draw_brief_card(scene, transform, tr, theme, brief, rect, expanded);
             y += height + 8.0;
-            shown += 1;
+            shown = shown.saturating_add(1);
         }
         let remaining = self
             .digest
             .briefs
             .len()
-            .saturating_sub(self.brief_offset + shown);
+            .saturating_sub(self.brief_offset.saturating_add(shown));
         if remaining > 0 || self.brief_offset > 0 {
             let label = if remaining > 0 {
                 "More outcomes…"
@@ -1772,20 +1777,17 @@ impl RoomActivityPane {
             let missing = self.feed_coverage.unavailable_records.len();
             let capped = self.feed_coverage.capped_records;
             if missing > 0 {
-                subtitle.push_str(&format!(
+                let _ = write!(
+                    subtitle,
                     " · {missing} record{} unavailable",
                     if missing == 1 { "" } else { "s" }
-                ));
+                );
             }
             if capped > 0 {
-                subtitle.push_str(&format!(" · {capped} additional records truncated"));
+                let _ = write!(subtitle, " · {capped} additional records truncated");
             }
         }
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "sheet width is a UI pixel measurement, always far under f32's range"
-        )]
-        let wrap_width = (self.sheet.width() - 32.0) as f32;
+        let wrap_width = text_width(self.sheet.width() - 32.0);
         tr.draw_text(
             scene,
             &subtitle,
@@ -1967,6 +1969,172 @@ impl RoomActivityPane {
         self.handle_event_with_records(event, scale_factor, modifiers, cursor, tree, None)
     }
 
+    fn handle_pointer_click(
+        &mut self,
+        point: Point,
+        tree: &mut WorkspaceTree,
+        records: Option<&RecordStore>,
+    ) -> Option<RoomActivityOutcome> {
+        if let Some(scope) = hit_value(&self.scope_rects, point) {
+            self.keyboard_focus = Some(ActivityFocus::Scope(scope));
+            self.set_scope(scope, tree);
+            return Some(handled_outcome());
+        }
+        if let Some(view) = hit_value(&self.view_rects, point) {
+            self.keyboard_focus = Some(ActivityFocus::View(view));
+            self.set_view(view);
+            return Some(handled_outcome());
+        }
+        let view_outcome = match self.view {
+            ActivityView::CatchUp => self.handle_catchup_click(point),
+            ActivityView::Explore => self.handle_explore_click(point, tree, records),
+        };
+        if view_outcome.is_some() {
+            return view_outcome;
+        }
+        if let Some(period) = hit_value(&self.period_rects, point) {
+            self.keyboard_focus = Some(ActivityFocus::Period(period));
+            self.set_period(period);
+            return Some(handled_outcome());
+        }
+        if let Some(author) = hit_value(&self.author_rects, point) {
+            self.keyboard_focus = Some(ActivityFocus::Author(author.clone()));
+            self.set_author_filter(author);
+            return Some(handled_outcome());
+        }
+        if self
+            .author_more_rect
+            .is_some_and(|rect| rect.contains(point))
+        {
+            self.keyboard_focus = Some(ActivityFocus::MorePeople);
+            self.advance_people();
+            return Some(handled_outcome());
+        }
+        None
+    }
+
+    fn handle_catchup_click(&mut self, point: Point) -> Option<RoomActivityOutcome> {
+        if let Some(index) = hit_value(&self.brief_rects, point) {
+            self.keyboard_focus = Some(ActivityFocus::Brief(index));
+            if self.expanded_brief == Some(index) {
+                self.open_brief_in_explorer(index);
+            } else {
+                self.expanded_brief = Some(index);
+            }
+            return Some(handled_outcome());
+        }
+        if self
+            .brief_more_rect
+            .is_some_and(|rect| rect.contains(point))
+        {
+            self.keyboard_focus = Some(ActivityFocus::MoreBriefs);
+            self.advance_briefs();
+            return Some(handled_outcome());
+        }
+        None
+    }
+
+    fn handle_explore_click(
+        &mut self,
+        point: Point,
+        tree: &mut WorkspaceTree,
+        records: Option<&RecordStore>,
+    ) -> Option<RoomActivityOutcome> {
+        if let Some(pane) = hit_value(&self.explorer_pane_rects, point) {
+            self.keyboard_focus = Some(ActivityFocus::ExplorerPane(pane));
+            self.explorer_pane = pane;
+            return Some(handled_outcome());
+        }
+        if let Some(action) = hit_value(&self.detail_action_rects, point) {
+            self.keyboard_focus = Some(ActivityFocus::Detail(action));
+            return Some(self.apply_detail_action(action, tree, records));
+        }
+        if let Some(lens) = hit_value(&self.lens_rects, point) {
+            self.keyboard_focus = Some(ActivityFocus::Lens(lens.clone()));
+            self.lens = lens;
+            self.reinstall_filter();
+            return Some(handled_outcome());
+        }
+        if self.lens_more_rect.is_some_and(|rect| rect.contains(point)) {
+            self.keyboard_focus = Some(ActivityFocus::MoreLenses);
+            self.advance_lenses();
+            return Some(handled_outcome());
+        }
+        None
+    }
+
+    fn apply_detail_action(
+        &mut self,
+        action: DetailAction,
+        tree: &mut WorkspaceTree,
+        records: Option<&RecordStore>,
+    ) -> RoomActivityOutcome {
+        let mut outcome = handled_outcome();
+        match action {
+            DetailAction::Open => {
+                outcome.open_target = self
+                    .selection_detail()
+                    .and_then(|detail| detail.resources.into_iter().next());
+            }
+            DetailAction::Compare => {
+                self.comparison = self.compare_selection(tree, records);
+                self.comparison_selection = self.selected_ids();
+                outcome.compared = self.comparison.is_some();
+            }
+            DetailAction::Undo => {
+                if let Some(request) = self.selection_undo_request() {
+                    let applied = self.undo_band(tree, records, &request);
+                    outcome.reverted = applied.wrote;
+                    outcome.undo_partial = applied.partial;
+                }
+            }
+            DetailAction::Split => outcome.named = self.split_selection_group(tree),
+            DetailAction::Merge => outcome.named = self.merge_selection_groups(tree),
+        }
+        outcome
+    }
+
+    fn selection_undo_request(&self) -> Option<BandUndoRequest> {
+        let (start, end) = self.timeline.selection()?;
+        let first = self.timeline.entries().get(start)?;
+        let last = self.timeline.entries().get(end)?;
+        Some(BandUndoRequest {
+            start: first.id,
+            end: last.id,
+            label: self.selection_detail().map(|detail| detail.title),
+            authors: Vec::new(),
+        })
+    }
+
+    fn handle_pane_key(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: Modifiers,
+        tree: &mut WorkspaceTree,
+        records: Option<&RecordStore>,
+    ) -> Option<RoomActivityOutcome> {
+        if self.timeline.wants_keyboard() {
+            return None;
+        }
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return None;
+        };
+        let state = modifiers.state();
+        if state.control_key() || state.super_key() || state.alt_key() {
+            return None;
+        }
+        self.handle_navigation_key(logical_key, state.shift_key(), tree, records)
+    }
+
     pub fn handle_event_with_records(
         &mut self,
         event: &WindowEvent,
@@ -1978,183 +2146,21 @@ impl RoomActivityPane {
     ) -> RoomActivityOutcome {
         let mut out = RoomActivityOutcome::default();
 
-        if self.timeline.wants_keyboard() {
-            // The inline group-name editor owns every unchorded key until it
-            // commits or cancels; Tab included, so a half-typed name cannot be
-            // abandoned by the pane-level focus controller.
-        } else if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-            && !modifiers.state().control_key()
-            && !modifiers.state().super_key()
-            && !modifiers.state().alt_key()
-        {
-            if let Some(outcome) = self.handle_navigation_key(
-                logical_key,
-                modifiers.state().shift_key(),
-                tree,
-                records,
-            ) {
-                return outcome;
-            }
+        // The inline group-name editor owns every unchorded key until it
+        // commits or cancels; Tab included, so a half-typed name cannot be
+        // abandoned by the pane-level focus controller.
+        if let Some(outcome) = self.handle_pane_key(event, *modifiers, tree, records) {
+            return outcome;
         }
 
-        // The shell's own chip rows first — they sit above the timeline and
-        // the timeline would otherwise treat a chip click as a click on its
-        // own filter strip.
-        if let (Some(p), WindowEvent::MouseInput { state, button, .. }) = (cursor, event)
-            && *state == winit::event::ElementState::Pressed
+        // Pane chrome gets first refusal so the timeline cannot claim a click
+        // on controls painted above it.
+        if let (Some(point), WindowEvent::MouseInput { state, button, .. }) = (cursor, event)
+            && *state == ElementState::Pressed
             && *button == winit::event::MouseButton::Left
+            && let Some(outcome) = self.handle_pointer_click(point, tree, records)
         {
-            for (scope, rect) in self.scope_rects.clone() {
-                if rect.contains(p) {
-                    self.keyboard_focus = Some(ActivityFocus::Scope(scope));
-                    self.set_scope(scope, tree);
-                    return RoomActivityOutcome {
-                        handled: true,
-                        ..RoomActivityOutcome::default()
-                    };
-                }
-            }
-            for (view, rect) in self.view_rects.clone() {
-                if rect.contains(p) {
-                    self.keyboard_focus = Some(ActivityFocus::View(view));
-                    self.set_view(view);
-                    return RoomActivityOutcome {
-                        handled: true,
-                        ..RoomActivityOutcome::default()
-                    };
-                }
-            }
-            if self.view == ActivityView::CatchUp {
-                for (index, rect) in self.brief_rects.clone() {
-                    if rect.contains(p) {
-                        self.keyboard_focus = Some(ActivityFocus::Brief(index));
-                        if self.expanded_brief == Some(index) {
-                            self.open_brief_in_explorer(index);
-                        } else {
-                            self.expanded_brief = Some(index);
-                        }
-                        return RoomActivityOutcome {
-                            handled: true,
-                            ..RoomActivityOutcome::default()
-                        };
-                    }
-                }
-                if self.brief_more_rect.is_some_and(|rect| rect.contains(p)) {
-                    self.keyboard_focus = Some(ActivityFocus::MoreBriefs);
-                    self.advance_briefs();
-                    return RoomActivityOutcome {
-                        handled: true,
-                        ..RoomActivityOutcome::default()
-                    };
-                }
-            }
-            if self.view == ActivityView::Explore {
-                for (pane, rect) in self.explorer_pane_rects.clone() {
-                    if rect.contains(p) {
-                        self.keyboard_focus = Some(ActivityFocus::ExplorerPane(pane));
-                        self.explorer_pane = pane;
-                        return RoomActivityOutcome {
-                            handled: true,
-                            ..RoomActivityOutcome::default()
-                        };
-                    }
-                }
-                for (action, rect) in self.detail_action_rects.clone() {
-                    if !rect.contains(p) {
-                        continue;
-                    }
-                    self.keyboard_focus = Some(ActivityFocus::Detail(action));
-                    out.handled = true;
-                    match action {
-                        DetailAction::Open => {
-                            out.open_target = self
-                                .selection_detail()
-                                .and_then(|detail| detail.resources.into_iter().next());
-                        }
-                        DetailAction::Compare => {
-                            self.comparison = self.compare_selection(tree, records);
-                            self.comparison_selection = self.selected_ids();
-                            out.compared = self.comparison.is_some();
-                        }
-                        DetailAction::Undo => {
-                            if let Some((start, end)) = self.timeline.selection()
-                                && let (Some(first), Some(last)) = (
-                                    self.timeline.entries().get(start),
-                                    self.timeline.entries().get(end),
-                                )
-                            {
-                                let request = BandUndoRequest {
-                                    start: first.id,
-                                    end: last.id,
-                                    label: self.selection_detail().map(|detail| detail.title),
-                                    authors: Vec::new(),
-                                };
-                                let applied = self.undo_band(tree, records, &request);
-                                out.reverted = applied.wrote;
-                                out.undo_partial = applied.partial;
-                            }
-                        }
-                        DetailAction::Split => out.named = self.split_selection_group(tree),
-                        DetailAction::Merge => out.named = self.merge_selection_groups(tree),
-                    }
-                    return out;
-                }
-                for (lens, rect) in self.lens_rects.clone() {
-                    if rect.contains(p) {
-                        self.keyboard_focus = Some(ActivityFocus::Lens(lens.clone()));
-                        self.lens = lens;
-                        self.reinstall_filter();
-                        return RoomActivityOutcome {
-                            handled: true,
-                            ..RoomActivityOutcome::default()
-                        };
-                    }
-                }
-                if self.lens_more_rect.is_some_and(|rect| rect.contains(p)) {
-                    self.keyboard_focus = Some(ActivityFocus::MoreLenses);
-                    self.advance_lenses();
-                    return RoomActivityOutcome {
-                        handled: true,
-                        ..RoomActivityOutcome::default()
-                    };
-                }
-            }
-            for (period, rect) in self.period_rects.clone() {
-                if rect.contains(p) {
-                    self.keyboard_focus = Some(ActivityFocus::Period(period));
-                    self.set_period(period);
-                    return RoomActivityOutcome {
-                        handled: true,
-                        ..RoomActivityOutcome::default()
-                    };
-                }
-            }
-            for (author, rect) in self.author_rects.clone() {
-                if rect.contains(p) {
-                    self.keyboard_focus = Some(ActivityFocus::Author(author.clone()));
-                    self.set_author_filter(author);
-                    return RoomActivityOutcome {
-                        handled: true,
-                        ..RoomActivityOutcome::default()
-                    };
-                }
-            }
-            if self.author_more_rect.is_some_and(|rect| rect.contains(p)) {
-                self.keyboard_focus = Some(ActivityFocus::MorePeople);
-                self.advance_people();
-                return RoomActivityOutcome {
-                    handled: true,
-                    ..RoomActivityOutcome::default()
-                };
-            }
+            return outcome;
         }
 
         let mut handled = false;
@@ -2315,24 +2321,24 @@ impl RoomActivityPane {
             self.keyboard_focus = None;
             return;
         }
+        let last = order.len().saturating_sub(1);
         let next = if let Some(end) = to_edge {
-            if end {
-                order.len().saturating_sub(1)
-            } else {
-                0
-            }
+            if end { last } else { 0 }
         } else if let Some(current) = self
             .keyboard_focus
             .as_ref()
             .and_then(|focus| order.iter().position(|candidate| candidate == focus))
         {
             if backwards {
-                current.checked_sub(1).unwrap_or_else(|| order.len() - 1)
+                current.checked_sub(1).unwrap_or(last)
             } else {
-                current.saturating_add(1) % order.len()
+                current
+                    .checked_add(1)
+                    .filter(|next| *next < order.len())
+                    .unwrap_or(0)
             }
         } else if backwards {
-            order.len() - 1
+            last
         } else {
             0
         };
@@ -2449,7 +2455,13 @@ impl RoomActivityPane {
             ActivityFocus::Scope(value) => Some(value.label().to_string()),
             ActivityFocus::View(value) => Some(value.label().to_string()),
             ActivityFocus::Period(value) => Some(value.label().to_string()),
-            ActivityFocus::Author(Some(value)) => Some(value.clone()),
+            ActivityFocus::Author(Some(value))
+            | ActivityFocus::Lens(
+                LensSelection::App(value)
+                | LensSelection::ResourceKind(value)
+                | LensSelection::Resource(value)
+                | LensSelection::WorkGroup(value),
+            ) => Some(value.clone()),
             ActivityFocus::Author(None) => Some("Everyone".to_string()),
             ActivityFocus::MorePeople => Some("More people".to_string()),
             ActivityFocus::Brief(index) => self
@@ -2459,10 +2471,6 @@ impl RoomActivityPane {
                 .map(|brief| brief.title.clone()),
             ActivityFocus::MoreBriefs => Some("More outcomes".to_string()),
             ActivityFocus::Lens(LensSelection::All) => Some("Everything".to_string()),
-            ActivityFocus::Lens(LensSelection::App(value))
-            | ActivityFocus::Lens(LensSelection::ResourceKind(value))
-            | ActivityFocus::Lens(LensSelection::Resource(value))
-            | ActivityFocus::Lens(LensSelection::WorkGroup(value)) => Some(value.clone()),
             ActivityFocus::Lens(LensSelection::Facet(key, value)) => {
                 Some(format!("{key}: {value}"))
             }
@@ -2471,6 +2479,107 @@ impl RoomActivityPane {
             ActivityFocus::Detail(action) => Some(self.detail_action_label(*action).to_string()),
             ActivityFocus::ExplorerPane(pane) => Some(pane.label().to_string()),
         }
+    }
+
+    fn access_control(&self, focus: &ActivityFocus) -> Option<AccessControl> {
+        use ui::a11y::Role;
+
+        let control = |role, selected, expanded, description: &str| AccessControl {
+            role,
+            selected,
+            expanded,
+            description: description.to_string(),
+        };
+        Some(match focus {
+            ActivityFocus::Scope(value) => control(
+                Role::RadioButton,
+                self.scope == *value,
+                None,
+                "History scope",
+            ),
+            ActivityFocus::View(value) => {
+                control(Role::Tab, self.view == *value, None, "History view")
+            }
+            ActivityFocus::Period(value) => {
+                control(Role::RadioButton, self.period == *value, None, "Time range")
+            }
+            ActivityFocus::Author(value) => control(
+                Role::RadioButton,
+                self.author == *value,
+                None,
+                "Person filter",
+            ),
+            ActivityFocus::MorePeople => {
+                control(Role::Button, false, None, "Show more contributor filters")
+            }
+            ActivityFocus::Brief(index) => {
+                let brief = self.digest.briefs.get(*index)?;
+                AccessControl {
+                    role: Role::Button,
+                    selected: false,
+                    expanded: Some(self.expanded_brief == Some(*index)),
+                    description: format!(
+                        "{}; {} changes by {}",
+                        brief.detail,
+                        brief.changes,
+                        brief
+                            .authors
+                            .iter()
+                            .map(|author| author.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                }
+            }
+            ActivityFocus::MoreBriefs => {
+                control(Role::Button, false, None, "Show more outcome summaries")
+            }
+            ActivityFocus::Lens(value) => {
+                control(Role::RadioButton, self.lens == *value, None, "History lens")
+            }
+            ActivityFocus::MoreLenses => {
+                control(Role::Button, false, None, "Show more history lenses")
+            }
+            ActivityFocus::Detail(_) => {
+                control(Role::Button, false, None, "Selected history action")
+            }
+            ActivityFocus::ExplorerPane(value) => control(
+                Role::Tab,
+                self.explorer_pane == *value,
+                None,
+                "Explorer panel",
+            ),
+        })
+    }
+
+    fn accessibility_control_node(
+        &self,
+        focus: &ActivityFocus,
+        index: usize,
+        set_size: usize,
+    ) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let label = self.focus_label(focus)?;
+        let control = self.access_control(focus)?;
+        let mut state = AccessState::new()
+            .focusable(true)
+            .focused(self.keyboard_focus.as_ref() == Some(focus));
+        state = if control.role == Role::RadioButton {
+            state.checked(control.selected)
+        } else {
+            state.selected(control.selected)
+        };
+        if let Some(expanded) = control.expanded {
+            state = state.expanded(expanded);
+        }
+        Some(
+            AccessNode::new(control.role)
+                .with_name(label)
+                .with_description(control.description)
+                .with_state(state)
+                .with_position(index.saturating_add(1), set_size),
+        )
     }
 
     /// Semantic mirror of this immediate-mode overlay. Shell overlays are not
@@ -2497,109 +2606,7 @@ impl RoomActivityPane {
         root.children = order
             .iter()
             .enumerate()
-            .filter_map(|(index, focus)| {
-                let label = self.focus_label(focus)?;
-                let (role, selected, expanded, description) = match focus {
-                    ActivityFocus::Scope(value) => (
-                        Role::RadioButton,
-                        self.scope == *value,
-                        None,
-                        Some("History scope".to_string()),
-                    ),
-                    ActivityFocus::View(value) => (
-                        Role::Tab,
-                        self.view == *value,
-                        None,
-                        Some("History view".to_string()),
-                    ),
-                    ActivityFocus::Period(value) => (
-                        Role::RadioButton,
-                        self.period == *value,
-                        None,
-                        Some("Time range".to_string()),
-                    ),
-                    ActivityFocus::Author(value) => (
-                        Role::RadioButton,
-                        self.author == *value,
-                        None,
-                        Some("Person filter".to_string()),
-                    ),
-                    ActivityFocus::MorePeople => (
-                        Role::Button,
-                        false,
-                        None,
-                        Some("Show more contributor filters".to_string()),
-                    ),
-                    ActivityFocus::Brief(brief_index) => {
-                        let brief = self.digest.briefs.get(*brief_index)?;
-                        (
-                            Role::Button,
-                            false,
-                            Some(self.expanded_brief == Some(*brief_index)),
-                            Some(format!(
-                                "{}; {} changes by {}",
-                                brief.detail,
-                                brief.changes,
-                                brief
-                                    .authors
-                                    .iter()
-                                    .map(|author| author.name.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            )),
-                        )
-                    }
-                    ActivityFocus::MoreBriefs => (
-                        Role::Button,
-                        false,
-                        None,
-                        Some("Show more outcome summaries".to_string()),
-                    ),
-                    ActivityFocus::Lens(value) => (
-                        Role::RadioButton,
-                        self.lens == *value,
-                        None,
-                        Some("History lens".to_string()),
-                    ),
-                    ActivityFocus::MoreLenses => (
-                        Role::Button,
-                        false,
-                        None,
-                        Some("Show more history lenses".to_string()),
-                    ),
-                    ActivityFocus::Detail(_) => (
-                        Role::Button,
-                        false,
-                        None,
-                        Some("Selected history action".to_string()),
-                    ),
-                    ActivityFocus::ExplorerPane(value) => (
-                        Role::Tab,
-                        self.explorer_pane == *value,
-                        None,
-                        Some("Explorer panel".to_string()),
-                    ),
-                };
-                let mut state = AccessState::new()
-                    .focusable(true)
-                    .focused(self.keyboard_focus.as_ref() == Some(focus));
-                state = if role == Role::RadioButton {
-                    state.checked(selected)
-                } else {
-                    state.selected(selected)
-                };
-                if let Some(value) = expanded {
-                    state = state.expanded(value);
-                }
-                let mut node = AccessNode::new(role)
-                    .with_name(label)
-                    .with_state(state)
-                    .with_position(index.saturating_add(1), set_size);
-                if let Some(value) = description {
-                    node = node.with_description(value);
-                }
-                Some(node)
-            })
+            .filter_map(|(index, focus)| self.accessibility_control_node(focus, index, set_size))
             .collect();
         let mut history = AccessNode::new(Role::List).with_name("History entries");
         history.children = (0..self.timeline.visible_len().min(100))
@@ -2793,12 +2800,14 @@ impl RoomActivityPane {
         if let (Some(a), Some(b)) = positions {
             let (start_index, end_index) = (a.min(b), a.max(b));
             let mut expected = None;
-            for entry in &self.timeline.entries()[start_index..=end_index] {
-                let origin = self
-                    .projected_origins
-                    .get(&entry.id)
-                    .map(|address| address.origin.clone())
-                    .unwrap_or(crate::shell::workspace_history::HistoryOrigin::WorkspaceTree);
+            let Some(entries) = self.timeline.entries().get(start_index..=end_index) else {
+                return UndoApply::default();
+            };
+            for entry in entries {
+                let origin = self.projected_origins.get(&entry.id).map_or(
+                    crate::shell::workspace_history::HistoryOrigin::WorkspaceTree,
+                    |address| address.origin.clone(),
+                );
                 if expected.as_ref().is_some_and(|value| value != &origin) {
                     return UndoApply::default();
                 }
@@ -2875,6 +2884,109 @@ impl RoomActivityPane {
     pub fn invalidate(&mut self) {
         self.last_heads.clear();
     }
+}
+
+fn handled_outcome() -> RoomActivityOutcome {
+    RoomActivityOutcome {
+        handled: true,
+        ..RoomActivityOutcome::default()
+    }
+}
+
+fn hit_value<T: Clone>(rects: &[(T, Rect)], point: Point) -> Option<T> {
+    rects
+        .iter()
+        .find(|(_, rect)| rect.contains(point))
+        .map(|(value, _)| value.clone())
+}
+
+fn detail_provenance(detail: &HistorySelectionDetail) -> String {
+    let people = detail.authors.join(", ");
+    let resources = detail
+        .resources
+        .iter()
+        .map(|resource| resource.label.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let facets = detail
+        .facets
+        .iter()
+        .map(|facet| format!("{}: {}", facet.key, facet.value))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{} action{}\n{}\n{}{}",
+        detail.entry_ids.len(),
+        if detail.entry_ids.len() == 1 { "" } else { "s" },
+        people,
+        if resources.is_empty() {
+            "No resource declared"
+        } else {
+            &resources
+        },
+        if facets.is_empty() {
+            String::new()
+        } else {
+            format!("\n{facets}")
+        },
+    )
+}
+
+fn draw_brief_card(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    brief: &ActivityBrief,
+    rect: Rect,
+    expanded: bool,
+) {
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surface_white_5,
+        None,
+        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+    );
+    let width = text_width(rect.width() - 24.0);
+    tr.draw_text_weighted(
+        scene,
+        &brief.title,
+        theme.tokens.typography.scale.base,
+        theme.tokens.colors.text_primary,
+        at(transform, rect.x0 + 12.0, rect.y0 + 10.0),
+        Some(width),
+        ui::text_render::TextWeight::Medium,
+    );
+    tr.draw_text(
+        scene,
+        &brief.detail,
+        theme.tokens.typography.scale.sm,
+        theme.tokens.colors.text_dim,
+        at(transform, rect.x0 + 12.0, rect.y0 + 34.0),
+        Some(width),
+    );
+    if !expanded {
+        return;
+    }
+    let mut provenance = brief.apps.join(", ");
+    if !brief.resources.is_empty() {
+        if !provenance.is_empty() {
+            provenance.push_str(" · ");
+        }
+        provenance.push_str(&brief.resources.join(", "));
+    }
+    if provenance.is_empty() {
+        provenance = format!("{} underlying changes", brief.changes);
+    }
+    tr.draw_text(
+        scene,
+        &format!("{provenance}\nOpen in Explorer →"),
+        theme.tokens.typography.scale.sm,
+        theme.tokens.colors.text_dim,
+        at(transform, rect.x0 + 12.0, rect.y0 + 76.0),
+        Some(width),
+    );
 }
 
 /// Chips that would overflow the row are neither painted nor returned,
@@ -3066,7 +3178,7 @@ fn draw_more_row(
         theme.tokens.typography.scale.sm,
         theme.tokens.colors.text_primary,
         at(transform, rect.x0 + 8.0, rect.y0 + 6.0),
-        Some((rect.width() - 16.0).max(0.0) as f32),
+        Some(text_width(rect.width() - 16.0)),
     );
     Some(rect)
 }
