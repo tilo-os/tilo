@@ -1809,6 +1809,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn no_capabilities_adds_no_binds_beyond_the_system_profile() {
         let baseline = argv_with_caps("com.example.notes", &[], 1_000);
         let m = mk_manifest("off");

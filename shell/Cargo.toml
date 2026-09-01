@@ -253,6 +253,10 @@ runtime-collab = { path = "../crates/runtime/runtime-collab" }
 # sandbox. Library-only use here — see `shell::shell::launcher` for why
 # the sandbox itself is built by the binary rather than in-process.
 launcher = { path = "../crates/packaging/launcher" }
+# Session-owned Windows compatibility broker. The shell supplies the trusted
+# launcher registry and fresh workspace capability authority.
+compat-service = { path = "../crates/windows/compat-service" }
+windows-vm = { path = "../crates/system/windows-vm" }
 # The host's own applications: `.desktop` entries the compositor reads
 # so a Flatpak or a distribution binary is launchable and searchable.
 desktop-entry = { package = "qos-desktop-entry", path = "../crates/system/desktop-entry" }
