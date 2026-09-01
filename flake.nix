@@ -31,6 +31,14 @@
           modules = [
             self.nixosModules.qos-session
             {
+              # Supply the minimal machine shape required by a complete NixOS
+              # evaluation; this check validates the session module rather
+              # than producing a bootable image.
+              fileSystems."/" = {
+                device = "none";
+                fsType = "tmpfs";
+              };
+              boot.loader.grub.devices = [ "nodev" ];
               services.qos-session.enable = true;
               system.stateVersion = "24.11";
             }
