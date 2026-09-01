@@ -539,7 +539,7 @@ impl DiffView {
             HunkAction::Toggle => theme.accent_primary,
             HunkAction::Discard => c.semantic.danger,
         };
-        let bg = if hovered { accent } else { c.surface_white_10 };
+        let bg = if hovered { accent } else { c.lift(0.72) };
         let fg = if hovered { Color::WHITE } else { c.text_dim };
         draw::fill_round(scene, t, brect, 5.0, bg);
         draw::text_weighted(

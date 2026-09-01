@@ -889,7 +889,7 @@ impl AddAccountPanel {
                 theme.accent_primary
             }
         } else if hovered {
-            theme.tokens.colors.surface_white_10
+            theme.tokens.colors.lift(0.72)
         } else {
             theme.tokens.colors.surfaces.base
         };

@@ -262,7 +262,7 @@ impl ChangesColumn {
             16.0,
             &count,
             c.text_primary,
-            c.surface_white_10,
+            c.lift(0.72),
             None,
         );
 
@@ -329,7 +329,7 @@ impl ChangesColumn {
             // A quiet surface wash keeps selection discoverable without
             // turning a whole row into a saturated accent block. The accent
             // rail below remains the strong, stable selection cue.
-            draw::fill_rect(scene, t, rrect, c.surface_white_10);
+            draw::fill_rect(scene, t, rrect, c.lift(0.72));
             draw::fill_rect(
                 scene,
                 t,
@@ -391,7 +391,7 @@ impl ChangesColumn {
         // Stage / unstage chevron button on the right.
         let chev = if is_staged { "−" } else { "+" };
         let brect = Rect::new(area.x1 - 28.0, y + 4.0, area.x1 - 8.0, y + ROW_H - 4.0);
-        draw::fill_round(scene, t, brect, 4.0, c.surface_white_10);
+        draw::fill_round(scene, t, brect, 4.0, c.lift(0.72));
         let chw = f64::from(draw::mono_width(tr, chev, 14.0));
         draw::mono(
             scene,
@@ -534,7 +534,7 @@ impl ChangesColumn {
         let bg = if enabled {
             theme.accent_primary
         } else {
-            c.surface_white_10
+            c.lift(0.72)
         };
         let fg = if enabled { Color::WHITE } else { c.neutral[5] };
         draw::fill_round(scene, t, brect, 6.0, bg);

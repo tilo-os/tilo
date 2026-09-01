@@ -532,7 +532,7 @@ impl CollaboratorsOverlay {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.surface_white_5,
+            colors.lift(0.35),
             None,
             &RoundedRect::from_rect(self.activity, f64::from(tokens.radii.sm)),
         );

@@ -16,7 +16,6 @@ $config = Get-Content -Raw -LiteralPath (Join-Path $root 'bridge.json') | Conver
 $secret = [IO.File]::ReadAllBytes((Join-Path $root 'bridge.secret'))
 $appsPath = Join-Path $root 'published-applications.json'
 $railJobsRoot = Join-Path $root 'rail-jobs'
-$networkProxyStatePath = Join-Path $root 'network-proxy-state.json'
 $networkProxyHelper = Join-Path $root 'Start-qOSNetworkProxy.ps1'
 $managedSessionPath = Join-Path $root 'managed-session.json'
 $installerRoot = 'C:\ProgramData\qOS\InstallerSession'
@@ -150,23 +149,6 @@ function Start-FocusedApplication($app) {
     return @{ user = $user; taskName = $taskName; applicationId = $app.id }
 }
 
-function Ensure-SharedNetworkProxy($networkProxy) {
-    if ($null -eq $networkProxy) { return }
-    $existing = $null
-    if (Test-Path -LiteralPath $networkProxyStatePath -PathType Leaf) {
-        try { $existing = Get-Content -Raw -LiteralPath $networkProxyStatePath | ConvertFrom-Json } catch { Remove-Item -LiteralPath $networkProxyStatePath -Force -ErrorAction SilentlyContinue }
-    }
-    if ($null -ne $existing -and ([string]$existing.networkProxy.endpoint -cne [string]$networkProxy.endpoint -or [string]$existing.networkProxy.token -cne [string]$networkProxy.token)) {
-        if ([int]$existing.pid -gt 0) { Stop-Process -Id ([int]$existing.pid) -Force -ErrorAction SilentlyContinue }
-        $existing = $null
-    }
-    if ($null -eq $existing -or -not (Get-Process -Id ([int]$existing.pid) -ErrorAction SilentlyContinue)) {
-        Write-AdminJson $networkProxyStatePath @{ networkProxy = $networkProxy; pid = 0 }
-        $proxy = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File', $networkProxyHelper, '-JobPath', $networkProxyStatePath) -PassThru -WindowStyle Hidden
-        Write-AdminJson $networkProxyStatePath @{ networkProxy = $networkProxy; pid = $proxy.Id }
-    }
-}
-
 function Start-RailApplication($app, $networkProxy, [string]$launchNonce) {
     $managed = Get-ManagedSession
     $path = Resolve-ManagedExecutable $app
@@ -178,16 +160,57 @@ function Start-RailApplication($app, $networkProxy, [string]$launchNonce) {
         # one alias has exactly one pending operation.
         throw 'a qOS RemoteApp operation is already pending for this application'
     }
-    Ensure-SharedNetworkProxy $networkProxy
-    $job = @{ applicationId = [string]$app.id; launchNonce = $launchNonce; expiresAtUnix = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 120); executable = $path; arguments = [string]$app.arguments; networkProxy = $networkProxy }
+    $expiresAtUnix = ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 120)
+    $localProxyPort = $null
+    # This short-lived job authorises exactly one RAIL wrapper invocation.
+    # Its separate runtime marker survives job consumption and is deleted by
+    # that wrapper when the target process exits.
+    $job = @{ applicationId = [string]$app.id; launchNonce = $launchNonce; expiresAtUnix = $expiresAtUnix; executable = $path; arguments = [string]$app.arguments; networkProxy = $networkProxy; localProxyPort = $localProxyPort }
     $job | ConvertTo-Json -Depth 5 -Compress | Set-Content -LiteralPath $jobPath -Encoding UTF8 -NoNewline
+    if ($null -ne $networkProxy) {
+        $credentialBytes = New-Object byte[] 32
+        $credentialRng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        try { $credentialRng.GetBytes($credentialBytes) } finally { $credentialRng.Dispose() }
+        $localProxyCredential = [Convert]::ToBase64String($credentialBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+        $proxyJobPath = Join-Path $root ("network-proxy-" + $launchNonce + '.json')
+        $proxyReadyPath = Join-Path $root ("network-proxy-" + $launchNonce + '.ready')
+        $runtimeMarkerPath = Join-Path $root ("network-runtime-" + $launchNonce + '.marker')
+        Write-AdminJson $runtimeMarkerPath @{ launchNonce = $launchNonce }
+        Write-AdminJson $proxyJobPath @{ networkProxy = $networkProxy; localProxyCredential = $localProxyCredential; localProxyPort = 0; authJobPath = $jobPath; runtimeMarkerPath = $runtimeMarkerPath; readyPath = $proxyReadyPath; pendingExpiresAtUnix = $expiresAtUnix }
+        $proxy = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File', $networkProxyHelper, '-JobPath', $proxyJobPath) -PassThru -WindowStyle Hidden
+        for ($attempt = 0; $attempt -lt 100 -and -not (Test-Path -LiteralPath $proxyReadyPath -PathType Leaf); $attempt++) { Start-Sleep -Milliseconds 50 }
+        if (-not (Test-Path -LiteralPath $proxyReadyPath -PathType Leaf)) {
+            Stop-Process -Id $proxy.Id -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $proxyJobPath, $proxyReadyPath, $runtimeMarkerPath, $jobPath -Force -ErrorAction SilentlyContinue
+            throw 'qOS lease proxy did not become ready'
+        }
+        $ready = Get-Content -Raw -LiteralPath $proxyReadyPath
+        if ($ready -notmatch '^127\.0\.0\.1:([1-9][0-9]{0,4})$' -or [int]$Matches[1] -gt 65535) {
+            Stop-Process -Id $proxy.Id -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $proxyJobPath, $proxyReadyPath, $runtimeMarkerPath, $jobPath -Force -ErrorAction SilentlyContinue
+            throw 'qOS lease proxy returned an invalid loopback endpoint'
+        }
+        $localProxyPort = [int]$Matches[1]
+        $job.localProxyPort = $localProxyPort
+        $job.localProxyCredential = $localProxyCredential
+        $job | ConvertTo-Json -Depth 5 -Compress | Set-Content -LiteralPath $jobPath -Encoding UTF8 -NoNewline
+    }
     # The wrapper runs as the one managed identity. It gets only this one
     # ephemeral job, not the bridge key or administrator publication manifest.
     $acl = Get-Acl -LiteralPath $jobPath
     $account = New-Object System.Security.Principal.NTAccount([string]$managed.username)
-    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($account, 'Read', 'None', 'Allow')
+    # Exact file read+delete is sufficient to consume the one-time auth job.
+    # The runtime marker needs only Delete, so a target cannot prolong a lease
+    # or create a marker for another launch.
+    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($account, 'Read,Delete', 'None', 'Allow')
     [void]$acl.AddAccessRule($rule)
     Set-Acl -LiteralPath $jobPath -AclObject $acl
+    if ($null -ne $networkProxy) {
+        $runtimeAcl = Get-Acl -LiteralPath $runtimeMarkerPath
+        $runtimeRule = New-Object System.Security.AccessControl.FileSystemAccessRule($account, 'Delete', 'None', 'Allow')
+        [void]$runtimeAcl.AddAccessRule($runtimeRule)
+        Set-Acl -LiteralPath $runtimeMarkerPath -AclObject $runtimeAcl
+    }
     return $managed
 }
 
@@ -207,7 +230,10 @@ function Remove-ExpiredRailJobs() {
     foreach ($path in @(Get-ChildItem -LiteralPath $railJobsRoot -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
         try {
             $job = Get-Content -Raw -LiteralPath $path.FullName | ConvertFrom-Json
-            if ([Int64]$job.expiresAtUnix -le $now) { Remove-Item -LiteralPath $path.FullName -Force -ErrorAction SilentlyContinue }
+            if ([Int64]$job.expiresAtUnix -le $now) {
+                $runtimeMarkerPath = Join-Path $root ("network-runtime-" + [string]$job.launchNonce + '.marker')
+                Remove-Item -LiteralPath $runtimeMarkerPath, $path.FullName -Force -ErrorAction SilentlyContinue
+            }
         } catch { Remove-Item -LiteralPath $path.FullName -Force -ErrorAction SilentlyContinue }
     }
 }
@@ -664,13 +690,17 @@ function Set-RemoteAppRegistry($app) {
     $key = Join-Path $base ([string]$app.id)
     New-Item -Path $key -Force | Out-Null
     New-ItemProperty -Path $key -Name Name -PropertyType String -Value ([string]$app.name) -Force | Out-Null
-    New-ItemProperty -Path $key -Name Path -PropertyType String -Value ([string]$app.path) -Force | Out-Null
-    New-ItemProperty -Path $key -Name CommandLine -PropertyType String -Value '' -Force | Out-Null
+    # Dynamic publications use the same fixed wrapper as the initial
+    # administrator-owned catalogue. The authenticated bridge puts the
+    # executable and any network lease only in the one-use job that wrapper
+    # consumes; an RDP client must never be able to invoke a discovered EXE.
+    New-ItemProperty -Path $key -Name Path -PropertyType String -Value "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -Force | Out-Null
+    New-ItemProperty -Path $key -Name CommandLine -PropertyType String -Value "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File `"$root\Start-qOSRemoteApp.ps1`" -ApplicationId $($app.id)" -Force | Out-Null
     New-ItemProperty -Path $key -Name ShowInTSWA -PropertyType DWord -Value 0 -Force | Out-Null
 }
 
 function Publish-DiscoveredCandidate($request) {
-    foreach ($id in @($request.operationId, $request.candidateId, $request.applicationId)) { if (-not (Test-OpaqueId ([string]$id)) { throw 'invalid publication identity' } }
+    foreach ($id in @($request.operationId, $request.candidateId, $request.applicationId)) { if (-not (Test-OpaqueId ([string]$id))) { throw 'invalid publication identity' } }
     $name = ([string]$request.displayName).Trim()
     if ([string]::IsNullOrWhiteSpace($name) -or $name.Length -gt 256 -or $name -match '[\x00-\x1f\x7f]') { throw 'invalid publication display name' }
     $status = Get-InstallationStatus ([string]$request.operationId)

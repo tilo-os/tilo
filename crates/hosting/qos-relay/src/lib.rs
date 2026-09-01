@@ -44,10 +44,11 @@
 //! entry (see [`qos_user_identity::WorkspaceMeta::host_devices`]);
 //! peers pick the nearest available host and fail over on timeout.
 //!
-//! # Non-goals
+//! # Current boundaries
 //!
-//! - No compute offload — the relay does not execute app code, it
-//!   only forwards + persists CRDT deltas.
+//! - The daemon does not yet execute app or compute jobs. [`mesh`] defines the
+//!   capability-bounded placement seam so later workers share host selection,
+//!   identity and workspace authorization instead of becoming a second grid.
 //! - No content byte transfer — content hydration continues to
 //!   travel over `iroh-blobs` inside the `fs/` crate; the relay
 //!   handles only the CRDT-directory tier.
@@ -73,6 +74,7 @@ pub mod client;
 pub mod coedit;
 pub mod config;
 pub mod daemon;
+pub mod mesh;
 pub mod metrics;
 pub mod peer;
 pub mod policy;
@@ -86,6 +88,11 @@ pub use client::{ClientError, RelayClient};
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};
 pub use config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use daemon::{Relay, RelayError, RelayHandle};
+pub use mesh::{
+    DeviceMeshProfile, DeviceRole, Placement, PlacementRequest, RemoteControlRoute,
+    ReplicationIntent, ReplicationResource, ServerAdvertisement, ServiceCapabilities, Workload,
+    place, route_remote_control,
+};
 pub use policy::TrustPolicy;
 pub use transport::{ALPN, Envelope};
 

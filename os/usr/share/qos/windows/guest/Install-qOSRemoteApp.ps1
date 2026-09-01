@@ -40,6 +40,19 @@ foreach ($path in @($bridgeScript, $networkProxyScript, $remoteAppScript, $focus
     if (-not (Test-Path $path -PathType Leaf)) { throw "Missing required qOS guest payload: $path" }
 }
 
+# Parse every PowerShell payload with Windows' own parser before installing or
+# registering a startup task. Linux CI also checks their structure, but this
+# authoritative gate ensures a malformed bridge/helper fails setup visibly
+# instead of producing an appliance whose background bridge never starts.
+foreach ($scriptPath in @($bridgeScript, $networkProxyScript, $remoteAppScript, $focusedScript, $installerScript, $uninstallerScript, $processJobScript, $processJobBrokerScript)) {
+    $tokens = $null
+    $parseErrors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count -ne 0) {
+        throw "Invalid qOS guest PowerShell payload $scriptPath`: $($parseErrors[0].Message)"
+    }
+}
+
 # Native RDS RemoteApp is the supported way to get individual windows on
 # Server. Client Windows uses the same native allow-list as a best-effort
 # integration and can fall back to an app-focused guest surface.
@@ -173,7 +186,7 @@ if ($null -eq $managedAccount) {
     New-LocalUser -Name $managedUser -Password $managedSecurePassword -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword | Out-Null
 } else {
     if ($managedAccount.SID.Value -match '-(500|501|503|504)$') { throw 'A built-in Windows account cannot own the qOS session.' }
-    Set-LocalUser -Name $managedUser -Password $managedSecurePassword -AccountNeverExpires -PasswordNeverExpires $true -UserMayChangePassword $false
+    Set-LocalUser -Name $managedUser -Password $managedSecurePassword -AccountNeverExpires -PasswordNeverExpires -UserMayChangePassword $false
     if (-not $managedAccount.Enabled) { Enable-LocalUser -Name $managedUser }
 }
 Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $managedUser -ErrorAction SilentlyContinue

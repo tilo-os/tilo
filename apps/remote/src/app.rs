@@ -39,6 +39,9 @@ use crate::model::{
     AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, Presence, Screen,
     Workspace,
 };
+use crate::qos_route::{
+    QosRouteDecision, QosRouteProvider, UnavailableQosRouteProvider, short_device_id,
+};
 use crate::session::{SessionStatus, live_sessions_enabled};
 use crate::ssh::{SshConfig, SshSession};
 use crate::theme_ext::ColorExt;
@@ -282,6 +285,11 @@ pub struct RemoteApp {
     fullscreen: bool,
     /// Discoverable qOS peers for the form's device picker.
     qos_devices: Vec<QosDevice>,
+    /// Authenticated device-mesh route source injected by the shell. The live
+    /// app defaults to an explicitly unavailable provider until runtime
+    /// discovery is attached; saved host labels are never treated as proof of
+    /// reachability.
+    qos_routes: Arc<dyn QosRouteProvider>,
 
     /// Root rect, from `apply_layout`.
     rect: Rect,
@@ -355,6 +363,7 @@ impl RemoteApp {
             scale_to_fit: true,
             fullscreen: false,
             qos_devices,
+            qos_routes: Arc::new(UnavailableQosRouteProvider),
             rect: Rect::ZERO,
             hits: Vec::new(),
             pointer: Point::ZERO,
@@ -366,6 +375,12 @@ impl RemoteApp {
             rail_snap: None,
             last_tick: std::time::Instant::now(),
         }
+    }
+
+    /// Attach the shell/device runtime's authenticated route source.
+    pub fn with_qos_route_provider(mut self, provider: Arc<dyn QosRouteProvider>) -> Self {
+        self.qos_routes = provider;
+        self
     }
 
     /// Stage a deterministic state for the single-frame `--shots` renderer.
@@ -603,7 +618,7 @@ impl RemoteApp {
         };
         // Older documents may contain RDP or qOS Relay profiles. Keep them
         // editable, but never make an unavailable transport look connectable.
-        if !c.kind.is_supported() {
+        if !c.kind.can_attempt() {
             self.selected = Some(id);
             return;
         }
@@ -614,7 +629,7 @@ impl RemoteApp {
         self.vnc_buttons = 0;
         self.live = None;
         if live_sessions_enabled() {
-            self.live = Some(Self::start_live(&c));
+            self.live = Some(self.start_live(&c));
             // Record the attempt in "last used"; presence is only marked
             // Online once the transport actually reports Connected (in draw).
             if let Some(m) = self.workspace.get_mut(id) {
@@ -626,7 +641,7 @@ impl RemoteApp {
 
     /// Build the real transport for a connection from its kind + auth and
     /// the process environment (secrets are never stored in the document).
-    fn start_live(c: &Connection) -> LiveSession {
+    fn start_live(&self, c: &Connection) -> LiveSession {
         match c.kind {
             ConnectionKind::Ssh => {
                 let prefer_key = matches!(c.auth, AuthMethod::PublicKey);
@@ -662,6 +677,17 @@ impl RemoteApp {
             }) {
                 Ok(s) => LiveSession::Vnc(s),
                 Err(e) => LiveSession::Error(e.to_string()),
+            },
+            ConnectionKind::Qos => match self.qos_routes.route(&c.host) {
+                Ok(QosRouteDecision::Direct) => LiveSession::Error(
+                    "A direct authenticated route is available, but the local qOS workspace-session adapter is not attached in this build. No input was sent; the target must still grant control and its input firewall remains authoritative."
+                        .to_string(),
+                ),
+                Ok(QosRouteDecision::Relayed { via }) => LiveSession::Error(format!(
+                    "An encrypted relay route via server {} is available, but the local qOS workspace-session adapter is not attached in this build. No input was sent; the target must still grant control and its input firewall remains authoritative.",
+                    short_device_id(&via)
+                )),
+                Err(error) => LiveSession::Error(error),
             },
             other => LiveSession::Error(format!(
                 "{} transport is not implemented yet",
@@ -2008,7 +2034,7 @@ impl RemoteApp {
         let bg = if active {
             tokens.colors.accent[5].at_alpha(0.20)
         } else if hovered {
-            tokens.colors.surface_white_10
+            tokens.colors.lift(0.72)
         } else {
             Color::TRANSPARENT
         };
@@ -2416,14 +2442,18 @@ impl RemoteApp {
             row.x1 - 16.0,
             row.center().y + 16.0,
         );
-        if c.kind.is_supported() {
+        if c.kind.can_attempt() {
             self.draw_button(
                 scene,
                 transform,
                 text_renderer,
                 theme,
                 connect,
-                "Connect",
+                if c.kind == ConnectionKind::Qos {
+                    "Check route"
+                } else {
+                    "Connect"
+                },
                 true,
             );
             self.push_hit(connect, Action::Connect(c.id));
@@ -2787,7 +2817,7 @@ impl RemoteApp {
                 let bg = if picked {
                     tokens.colors.accent[5].at_alpha(0.16)
                 } else if hovered {
-                    tokens.colors.surface_white_10
+                    tokens.colors.lift(0.72)
                 } else {
                     tokens.colors.neutral[0]
                 };
@@ -3194,7 +3224,7 @@ impl RemoteApp {
         let bg = if active {
             tokens.colors.accent[5]
         } else if hovered {
-            tokens.colors.surface_white_10
+            tokens.colors.lift(0.72)
         } else {
             tokens.colors.neutral[0]
         };
@@ -3431,7 +3461,7 @@ impl RemoteApp {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_white_20,
+            ui::tokens::colors::Colors::hairline_on(tokens.colors.surfaces.raised, 51),
             None,
             &rr,
         );
@@ -3848,7 +3878,7 @@ impl RemoteApp {
         let hovered = rect.contains(self.pointer);
         let rr = RoundedRect::from_rect(rect, 8.0);
         let bg = if hovered {
-            tokens.colors.surface_white_10
+            tokens.colors.lift(0.72)
         } else {
             tokens.colors.neutral[0]
         };
@@ -4434,6 +4464,31 @@ mod tests {
             app.live.is_none(),
             "gated build opens no framebuffer transport"
         );
+    }
+
+    #[test]
+    fn qos_session_setup_consumes_route_provider_without_faking_transport() {
+        struct DirectRoute;
+        impl QosRouteProvider for DirectRoute {
+            fn route(&self, _target_hint: &str) -> Result<QosRouteDecision, String> {
+                Ok(QosRouteDecision::Direct)
+            }
+        }
+
+        let app = RemoteApp::new_demo().with_qos_route_provider(Arc::new(DirectRoute));
+        let connection = app
+            .workspace
+            .connections()
+            .iter()
+            .find(|connection| connection.kind == ConnectionKind::Qos)
+            .expect("demo qOS connection");
+        let status = app.start_live(connection).status();
+        let SessionStatus::Failed(message) = status else {
+            panic!("route-only bootstrap must remain an honest failed session")
+        };
+        assert!(message.contains("direct authenticated route"));
+        assert!(message.contains("target must still grant control"));
+        assert!(message.contains("No input was sent"));
     }
 
     #[test]
