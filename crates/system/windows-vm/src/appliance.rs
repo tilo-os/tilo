@@ -479,14 +479,15 @@ where
         self.backend.ensure_singleton(&self.config)?;
         match self.backend.state(&self.config)? {
             DomainState::Running => Ok(()),
-            DomainState::ShutOff => self.backend.start(&self.config).map_err(Into::into),
+            DomainState::ShutOff | DomainState::Crashed => {
+                self.backend.start(&self.config).map_err(Into::into)
+            }
             DomainState::Absent => Err(LaunchError::DomainDisappeared),
             DomainState::Paused
             | DomainState::Suspended
             | DomainState::Starting
             | DomainState::ShuttingDown
             | DomainState::Other => Err(LaunchError::RecoveryRequired),
-            DomainState::Crashed => self.backend.start(&self.config).map_err(Into::into),
         }
     }
 }

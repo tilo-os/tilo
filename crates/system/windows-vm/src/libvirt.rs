@@ -14,6 +14,9 @@ const METADATA_ELEMENT: &str = "<qos:windows-appliance";
 const METADATA_NAMESPACE: &str = "https://qos.dev/vm/1";
 const INSTALL_MEDIA: &str = "/var/lib/qos/windows/install-media.iso";
 const GUEST_TOOLS_MEDIA: &str = "/var/lib/qos/windows/qos-guest-tools.iso";
+/// Fedora's virtio-win package is shipped by qOS as a host-owned, read-only
+/// setup aid. It is detached before the appliance becomes launchable.
+const VIRTIO_DRIVERS_MEDIA: &str = "/usr/share/virtio-win/virtio-win.iso";
 /// The second NIC is never present in the persistent domain definition. It is
 /// attached live only while an authenticated, purpose-bound egress lease is
 /// active. Keeping a separate MAC makes cleanup deterministic after a retry.
@@ -173,7 +176,8 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
             let xml = self.successful(["dumpxml", APPLIANCE_DOMAIN_NAME])?;
             let xml = String::from_utf8(xml.stdout)?;
             let expected_uuid = format!("<uuid>{}</uuid>", config.domain_uuid);
-            let expected_smbios_serial = format!("<entry name='serial'>{}</entry>", config.domain_uuid);
+            let expected_smbios_serial =
+                format!("<entry name='serial'>{}</entry>", config.domain_uuid);
             let expected_smbios_uuid = format!("<entry name='uuid'>{}</entry>", config.domain_uuid);
             if !xml.contains(&expected_uuid)
                 || !xml.contains(&expected_smbios_serial)
@@ -245,12 +249,13 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
     fn shutdown(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
         self.ensure_singleton(config)?;
         match self.state(config)? {
-            DomainState::Absent | DomainState::ShutOff => Ok(()),
-            DomainState::ShuttingDown => Ok(()),
+            DomainState::Absent
+            | DomainState::ShutOff
+            | DomainState::ShuttingDown
+            | DomainState::Crashed => Ok(()),
             DomainState::Running => self
                 .successful(["shutdown", APPLIANCE_DOMAIN_NAME])
                 .map(|_| ()),
-            DomainState::Crashed => Ok(()),
             DomainState::Paused
             | DomainState::Suspended
             | DomainState::Starting
@@ -382,7 +387,7 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
 
     fn retire_installation_media(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
         config.validate()?;
-        for target in ["sdb", "sdc"] {
+        for target in ["sdb", "sdc", "sdd"] {
             let xml = self.successful(["dumpxml", APPLIANCE_DOMAIN_NAME])?;
             let xml = String::from_utf8(xml.stdout)?;
             let single_quoted = format!("dev='{target}'");
@@ -404,8 +409,10 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
 
 /// Builds a headless, local-only Windows 11 domain. There is intentionally no
 /// host directory device, USB redirection, bridged NIC, TCP graphics listener,
-/// or clipboard device. The SPICE graphics device has no listener and exists
-/// solely so an administrator can attach through libvirt for recovery.
+/// or clipboard device. The SPICE graphics device has no listener. Its agent
+/// channel permits app-focused resize/cursor integration when the open guest
+/// agent is installed, while libvirt blocks clipboard and file transfer at
+/// the server even if a guest agent tries to advertise them.
 pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendError> {
     config.validate()?;
     let disk = xml_path(&config.system_disk)?;
@@ -445,13 +452,15 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 <source file='{disk}'/><target dev='sda' bus='scsi'/><serial>qos-windows-system</serial></disk>\
 <disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='{INSTALL_MEDIA}'/><target dev='sdb' bus='scsi'/><readonly/></disk>\
 <disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='{GUEST_TOOLS_MEDIA}'/><target dev='sdc' bus='scsi'/><readonly/></disk>\
+<disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='{VIRTIO_DRIVERS_MEDIA}'/><target dev='sdd' bus='scsi'/><readonly/></disk>\
 <interface type='network'><mac address='52:54:00:71:4f:53'/><source network='{network}'/><model type='virtio'/></interface>\
 <channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>\
+<channel type='spicevmc'><target type='virtio' name='com.redhat.spice.0'/></channel>\
 <vsock model='virtio'><cid auto='no' address='{}'/></vsock>\
 <tpm model='tpm-crb'><backend type='emulator' version='2.0'/></tpm>\
 <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>\
 <video><model type='virtio' heads='1' primary='yes'/></video>\
-<graphics type='spice' autoport='yes'><listen type='none'/></graphics>\
+<graphics type='spice' autoport='yes'><listen type='none'/><clipboard copypaste='no'/><filetransfer enable='no'/></graphics>\
 <sound model='ich9'><codec type='micro'/><audio id='1'/></sound>\
 <audio id='1' type='spice'/>\
 <memballoon model='virtio'/></devices></domain>",
@@ -550,8 +559,17 @@ mod tests {
         assert!(xml.contains("host-passthrough"));
         assert!(xml.contains("<hyperv mode='custom'>"));
         assert!(xml.contains("<tpm model='tpm-crb'>"));
+        assert!(
+            xml.contains("<smbios mode='sysinfo'/>")
+                && xml
+                    .contains("<entry name='serial'>01234567-89ab-cdef-0123-456789abcdef</entry>")
+        );
+        assert!(xml.contains("<serial>qos-windows-system</serial>"));
         assert!(xml.contains("<listen type='none'/>"));
         assert!(xml.contains("<sound model='ich9'>"));
+        assert!(xml.contains("name='com.redhat.spice.0'"));
+        assert!(xml.contains("<clipboard copypaste='no'/>"));
+        assert!(xml.contains("<filetransfer enable='no'/>"));
         assert!(xml.contains("<audio id='1' type='spice'/>"));
         assert!(xml.contains("a&amp;b.qcow2"));
         assert!(xml.contains(INSTALL_MEDIA));
@@ -600,12 +618,14 @@ mod tests {
             CommandOutput::successful("Disk detached"),
             CommandOutput::successful("<disk><target dev=\"sdc\"/></disk>"),
             CommandOutput::successful("Disk detached"),
+            CommandOutput::successful("<disk><target dev='sdd'/></disk>"),
+            CommandOutput::successful("Disk detached"),
         ]);
         let backend = LibvirtBackend::new(runner);
         backend.retire_installation_media(&config()).unwrap();
         let requests = backend.runner.requests.lock().unwrap();
-        assert_eq!(requests.len(), 4);
-        for index in [1, 3] {
+        assert_eq!(requests.len(), 6);
+        for index in [1, 3, 5] {
             assert!(requests[index].args.iter().any(|arg| arg == "--live"));
             assert!(requests[index].args.iter().any(|arg| arg == "--config"));
         }
@@ -617,9 +637,10 @@ mod tests {
         let runner = Runner::new(vec![
             CommandOutput::successful("<domain/>"),
             CommandOutput::successful("<domain/>"),
+            CommandOutput::successful("<domain/>"),
         ]);
         let backend = LibvirtBackend::new(runner);
         backend.retire_installation_media(&config()).unwrap();
-        assert_eq!(backend.runner.requests.lock().unwrap().len(), 2);
+        assert_eq!(backend.runner.requests.lock().unwrap().len(), 3);
     }
 }
