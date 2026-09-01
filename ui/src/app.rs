@@ -3898,6 +3898,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
         }
 
+        let scheduled_deadline = app.root_widget.next_wake_deadline();
+        let scheduled_due = scheduled_deadline.is_some_and(|deadline| deadline <= Instant::now());
+        if scheduled_due {
+            app.needs_sync = true;
+            window.request_redraw();
+        }
+
         // A hover tooltip is not motion, so it reveals even under
         // reduce-motion — requested independently of the animation pump.
         let tooltip_pending = app.tooltip_host.needs_frame();
@@ -3927,16 +3934,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // ~60 Hz tick only while something no winit event surfaces on its
         // own needs draining — a live collab socket, or a root still
         // wanting another frame.
-        if app.collab_manager.is_connected() || needs_frame || tooltip_pending || typing_active {
-            // `Instant::checked_add` is the non-panicking form; 16ms from now can only
-            // fail to represent right at the end of time, in which case waking
-            // immediately is a harmless fallback.
-            let next_tick = Instant::now()
-                .checked_add(Duration::from_millis(16))
-                .unwrap_or_else(Instant::now);
-            event_loop.set_control_flow(ControlFlow::WaitUntil(next_tick));
-        } else {
-            event_loop.set_control_flow(ControlFlow::Wait);
+        let fast_pump = app.collab_manager.is_connected()
+            || needs_frame
+            || tooltip_pending
+            || typing_active
+            || scheduled_due;
+        match (fast_pump, scheduled_deadline) {
+            (true, _) => {
+                // `checked_add` is non-panicking at the end of Instant's range.
+                let next_tick = Instant::now()
+                    .checked_add(Duration::from_millis(16))
+                    .unwrap_or_else(Instant::now);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(next_tick));
+            }
+            (false, Some(deadline)) => {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+            }
+            (false, None) => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 }
@@ -4083,6 +4097,7 @@ mod window_title_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // These tests assert exact values assigned without computation.
 mod pointer_broadcast_tests {
     use super::*;
 
@@ -5296,6 +5311,7 @@ mod focus_trap_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // Exact preference values are part of the test contract.
 mod low_vision_tests {
     use super::*;
     use crate::a11y::contrast_ratio;
@@ -5984,6 +6000,7 @@ impl crate::view::FreezeThaw for App {
 // `broadcast_view_presence` through the presence sink, and
 // `apply_collab_event_for_test` through `apply_remote_presence`.
 #[cfg(test)]
+#[allow(clippy::float_cmp)] // Serialized presence fields are expected to round-trip exactly.
 mod view_presence_tests {
     use super::*;
     use crate::PresenceCtx;

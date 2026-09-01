@@ -37,7 +37,7 @@ additive or refactors a path that was incompatible with native mode.
     `CAP_SYS_ADMIN` and handles a hung client without blocking
     shutdown.
 - `usr/lib/tmpfiles.d/qos.conf` (new): pre-creates
-  `/var/workspace` and `/var/cache/qos-fs` with `0755 root:root` at
+  `/var/workspace` and `/var/cache/quick-fs` with `0755 root:root` at
   boot via `systemd-tmpfiles-setup.service`. The `ExecStartPre=mkdir`
   in `fs.service` becomes a belt-and-suspenders fallback.
 

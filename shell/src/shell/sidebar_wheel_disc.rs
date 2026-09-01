@@ -2249,6 +2249,10 @@ impl SidebarWheelDisc {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact wheel gesture endpoints and clamps are the behavior under test"
+)]
 mod tests {
     use super::*;
     use winit::dpi::PhysicalPosition;
