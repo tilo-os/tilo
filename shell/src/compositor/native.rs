@@ -2164,8 +2164,20 @@ pub fn run() -> ! {
             std::process::exit(1);
         }
     };
+    // Developer E2E harnesses drive an already-booted desktop through the
+    // debug-only control socket. Their deliberately empty XDG roots are test
+    // isolation, not a first-login fixture; letting OOBE capture input would
+    // make every real-client input test time out before its first keypress.
+    // Release builds ignore QOS_TEST_CONTROL entirely via DEV_ENV_OVERRIDES.
+    let test_control_session = test_control_path(
+        crate::compositor::dev_env::DEV_ENV_OVERRIDES,
+        std::env::var_os(TEST_CONTROL_ENV),
+    )
+    .is_some();
     let onboarding_identity_dir =
-        if crate::shell::identity_provisioning::needs_first_run_flow(&identity_store) {
+        if crate::shell::identity_provisioning::needs_first_run_flow(&identity_store)
+            && !test_control_session
+        {
             if let Some(identity_dir) = identity_store
                 .path()
                 .parent()
