@@ -12,20 +12,21 @@
 #     --timezone <Area/City>          IANA time zone (default: system default / UTC)
 #     --keymap <xkb-layout>           keyboard layout, e.g. us, de (default: us)
 #     --keyvariant <xkb-variant>      keyboard variant, e.g. dvorak (default: none)
-#     --encrypt                       LUKS2 full-disk encryption on the root
-#     --pin                           unlock secret on stdin line 2: a TPM2 PIN
+#     --encrypt                       accepted for UI compatibility; native qOS
+#                                     always uses LUKS2 full-disk encryption
+#     --pin                           required unlock secret on stdin line 2: a TPM2 PIN
 #                                     where there is a TPM, otherwise the boot
 #                                     passphrase (requires --encrypt)
 #     --fido2                         also enrol a FIDO2 token (requires --encrypt)
 #
-# (These are optional so an older UI that omits them still works.) We:
+# An older UI may omit `--encrypt`, but the backend still encrypts. It must
+# provide `--pin`; otherwise installation fails closed. We:
 #
 #   1. copy the currently-booted bootc image into local container storage
 #      (`bootc image copy-to-storage` -> containers-storage:localhost/bootc),
 #   2. install from that copied image, in a privileged podman container, onto
-#      the target disk (wipes it, --filesystem layout). Without --encrypt that
-#      is `bootc install to-disk`; with it, qos-disk-encrypt builds the
-#      GPT + LUKS2 layout and bootc installs `to-filesystem` into the opened
+#      the target disk (wipes it, --filesystem layout). qos-disk-encrypt builds
+#      the GPT + LUKS2 layout and bootc installs `to-filesystem` into the opened
 #      mapping — see that script for why the volume is not created by
 #      `--block-setup tpm2-luks`,
 #   3. create the user account: `bootc install` does NOT make users, so we
@@ -160,8 +161,8 @@ HOSTNAME_VAL="qos"
 TIMEZONE_VAL=""      # empty → leave system default (UTC)
 KEYMAP_VAL="us"      # xkb layout (default us)
 KEYVARIANT_VAL=""    # xkb variant (empty → none)
-ENCRYPT=0            # --encrypt → bootc --block-setup tpm2-luks (else direct)
-WANT_PIN=0           # --pin → enroll a TPM2+PIN keyslot (PIN read on stdin line 2)
+ENCRYPT=1            # Native qOS is always installed into a LUKS2 root.
+WANT_PIN=0           # --pin is mandatory; secret arrives on stdin line 2.
 WANT_FIDO2=0         # --fido2 → also enroll a FIDO2 security key if present
 PIN=""
 while [ $# -gt 0 ]; do
@@ -212,10 +213,11 @@ esac
 # Encryption does NOT require a TPM. The volume is created with a recovery key
 # and the TPM is one more slot on top of it, so a machine without one still gets
 # an encrypted disk that it unlocks by typing a secret. See qos-disk-encrypt.
-# The extra factors only make sense on an encrypted disk.
-if [ "$ENCRYPT" -eq 0 ] && { [ "$WANT_PIN" -eq 1 ] || [ "$WANT_FIDO2" -eq 1 ]; }; then
-  die "--pin/--fido2 require --encrypt"
-fi
+# A startup secret is mandatory even with TPM2. Silent TPM-only unlock weakens
+# the physical-access boundary; without TPM2 the same input is the ordinary
+# disk passphrase.
+[ "$WANT_PIN" -eq 1 ] \
+  || die "native qOS requires --pin for its encrypted startup boundary"
 
 # Validate hostname (RFC-1123 label: letters/digits/hyphens, no edge hyphen).
 [ -n "$HOSTNAME_VAL" ] || die "missing --hostname <name>"
@@ -307,6 +309,16 @@ IFS= read -r PASSWORD || true
 if [ "$WANT_PIN" -eq 1 ]; then
   IFS= read -r PIN || true
   [ -n "$PIN" ] || die "--pin set but no PIN received on stdin (line 2)"
+  if [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; then
+    case "$PIN" in
+      *[!0-9]*) die "startup PIN must contain only digits" ;;
+    esac
+    [ "${#PIN}" -ge 6 ] && [ "${#PIN}" -le 12 ] \
+      || die "startup PIN must be 6 to 12 digits"
+  else
+    [ "${#PIN}" -ge 12 ] \
+      || die "disk passphrase must contain at least 12 characters without TPM2"
+  fi
 fi
 
 log "qOS installer"

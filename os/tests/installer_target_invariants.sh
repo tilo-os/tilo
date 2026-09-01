@@ -57,6 +57,15 @@ else
   bad "live-medium disk guard still relies on path-string equality"
 fi
 
+if grep -Fq 'ENCRYPT=1' "$backend" \
+   && grep -Fq 'native qOS requires --pin' "$backend" \
+   && grep -Fq 'startup PIN must be 6 to 12 digits' "$backend" \
+   && grep -Fq 'disk passphrase must contain at least 12 characters' "$backend"; then
+  ok "native qOS installs require LUKS encryption and a startup secret"
+else
+  bad "native qOS installer can bypass encryption or the startup secret"
+fi
+
 if grep -Fq 'CONF_TMP="$(mktemp ' "$backend" \
    && grep -Fq 'chmod 0600 "$CONF_TMP"' "$backend" \
    && grep -Fq 'mv -f "$CONF_TMP" "$CONF"' "$backend"; then
