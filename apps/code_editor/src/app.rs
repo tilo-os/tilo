@@ -1421,6 +1421,7 @@ impl CodeApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.portal = None;
                 self.portal_intent = None;
+                self.finish_resource_file(Err("file picker disconnected".into()));
                 return;
             }
         };
