@@ -9,6 +9,9 @@ boundary contracts. It currently provides:
 - a real no-shell Bubblewrap executor with the qOS seccomp baseline for Wine;
 - a trait boundary to the singleton `windows-vm` appliance;
 - explainable status DTOs for the Windows Apps UI;
+- a per-launch PipeWire/Pulse proxy: playback is always tunnelled to the
+  session sink, while a microphone source exists only for a canonical qOS
+  microphone grant; and
 - an authenticated, bounded session protocol with server-owned entry IDs; and
 - descriptor-anchored, no-follow capsule storage.
 
@@ -20,10 +23,14 @@ launch; the client cannot supply grants, executable or host paths, runner
 settings, or VM intent. The manager uses an empty unavailable state when the
 optional service is absent, while sample applications remain screenshot-only.
 
-Filtered network access uses the existing qOS egress gate. Audio is currently
-denied because qOS does not yet have a playback-only PipeWire proxy, and the
-live VM route is disabled until a privileged authenticated guest-bridge adapter
-implements `VmDelegate`.
+Filtered network access uses the existing qOS egress gate. Audio uses a
+private, short-lived PipeWire graph per launch. The graph contains no device
+discovery: its output tunnel is the only playback path, and its input tunnel
+is created only after the compositor has granted `Device("microphone")`.
+Wine/Proton sees the graph's private native/Pulse sockets, never the session
+socket or `/dev/snd`; revocation terminates the graph. The live VM route is
+disabled until a privileged authenticated guest-bridge adapter implements
+`VmDelegate`.
 
 Also not implemented here: prefix snapshots, runner migration, component
 installation/import, repair/reset, failure-triggered fallback ordering, or

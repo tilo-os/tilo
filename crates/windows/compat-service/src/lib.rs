@@ -27,6 +27,7 @@
     reason = "boundary errors are represented by and documented on typed error enums"
 )]
 
+mod audio_proxy;
 mod catalogue;
 mod execute;
 mod plan;
@@ -36,6 +37,7 @@ mod service;
 mod session;
 mod store;
 
+pub use audio_proxy::{AudioProxyError, AudioProxyLease};
 pub use catalogue::{
     CatalogueLoadError, CatalogueLoadReport, ShippedCataloguePaths, load_shipped_catalogue,
 };

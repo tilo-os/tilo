@@ -30,8 +30,6 @@ const MAX_CLIENT_WORKERS: usize = 8;
 const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(2);
 const VM_DISABLED_REASON: &str =
     "The privileged authenticated Windows guest adapter is not installed in this session.";
-const AUDIO_DISABLED_REASON: &str =
-    "Playback is disabled until qOS has a PipeWire proxy that cannot also capture audio.";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -571,8 +569,11 @@ where
             explanation,
             vm_launch_available: false,
             vm_unavailable_reason: Some(VM_DISABLED_REASON.to_string()),
-            audio_output_available: false,
-            audio_unavailable_reason: Some(AUDIO_DISABLED_REASON.to_string()),
+            // The resource broker gives every Wine/UMU launch a fresh
+            // playback-only PipeWire/Pulse graph. A startup failure is a
+            // launch error, not an imaginary unavailable feature in the UI.
+            audio_output_available: true,
+            audio_unavailable_reason: None,
         });
     }
     Ok(ProtocolResponse::Listed { applications })

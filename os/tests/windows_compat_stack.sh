@@ -16,6 +16,12 @@ for package in wine wine-dxvk gamescope qemu-kvm libvirt-daemon-kvm swtpm edk2-o
     || bad "$package is absent from the Windows compatibility package transaction"
 done
 
+for package in pipewire pipewire-pulseaudio pipewire-utils wireplumber; do
+  grep -q "^    $package \\\\$" "$CF" \
+    && ok "$package provides the brokered Windows audio stack" \
+    || bad "$package is absent from the PipeWire/Pulse compatibility proxy"
+done
+
 grep -q 'umu-launcher/releases/download/1.4.0/' "$CF" \
   && grep -q 'sha256:138ce4b8843608a257d4bee88191ca78a989778bcefd8abb3c1d1aaac3ac6fb8' "$CF" \
   && ok 'UMU launcher artifact is versioned and checksum-pinned' \
