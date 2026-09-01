@@ -1079,7 +1079,8 @@ mod tests {
             })
             .unwrap_or_default();
         Offer {
-            app,
+            app: app.to_string(),
+            broker_peer_id: None,
             descriptor: qos_actions::door::ActionDescriptor {
                 address: qos_actions::door::ActionAddress::new(resource, action),
                 resource_kind: format!("{app}.thing"),

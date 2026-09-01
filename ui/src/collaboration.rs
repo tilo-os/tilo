@@ -48,10 +48,14 @@ pub enum CollabRequest {
     },
     /// Complete document state. The SDK wraps this mutation in a signed
     /// envelope from the certified launcher identity before transmission.
-    DocumentSnapshot { data: Vec<u8> },
+    DocumentSnapshot {
+        data: Vec<u8>,
+    },
     /// Incremental document changes. The SDK wraps this mutation in a signed
     /// envelope from the certified launcher identity before transmission.
-    DocumentIncremental { data: Vec<u8> },
+    DocumentIncremental {
+        data: Vec<u8>,
+    },
     /// Outbound presence update — pointer moved, caret changed, selection
     /// shifted, or arrived/left a keyed object. Fanned out to every
     /// connected peer as `CollabEvent::RemotePresenceUpdate`.
@@ -65,7 +69,9 @@ pub enum CollabRequest {
     ///
     /// `Box`ed to keep the discriminant thin on the stack — `SignedOp` is
     /// large (32-byte pubkey + 64-byte sig + payload + UUIDs).
-    SignedOperation { envelope: Box<SignedOp> },
+    SignedOperation {
+        envelope: Box<SignedOp>,
+    },
     /// Late-join scrollback fetch: up to `max` ops with `seq < before_seq`,
     /// answered with one [`CollabEvent::ScrollbackBatch`].
     ///
@@ -94,6 +100,26 @@ pub enum CollabRequest {
         id: u64,
         update: qos_actions::InvocationUpdate,
     },
+    InvokePublishedAction {
+        request_id: u64,
+        peer_id: u64,
+        resource: String,
+        action: String,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        confirmation: serde_json::Value,
+    },
+    PublishedInvocationStatus {
+        request_id: u64,
+        id: u64,
+    },
+    CancelPublishedInvocation {
+        request_id: u64,
+        id: u64,
+    },
+    LaunchPublishedApplication {
+        request_id: u64,
+        app_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +144,46 @@ pub struct ExportedAction {
     pub params_json: String,
     pub contract_json: String,
     pub input: ExportedInput,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct BrokerActionSurface {
+    pub peer_id: u64,
+    pub app_id: String,
+    pub cluster_id: String,
+    pub record_id: String,
+    pub live: bool,
+    pub actions: Vec<BrokerActionDescriptor>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct BrokerActionDescriptor {
+    pub resource: String,
+    pub action: String,
+    pub resource_kind: String,
+    pub resource_label: String,
+    pub action_label: String,
+    pub description: Option<String>,
+    pub operation_kind: qos_actions::OperationKind,
+    pub params: Vec<qos_actions::ActionParam>,
+    pub contract: qos_actions::ActionContract,
+    pub input: BrokerActionInput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct BrokerActionInput {
+    pub kind: String,
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default)]
+    pub placeholder: String,
+    #[serde(default)]
+    pub wants_content: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct BrokerActionCatalogueWire {
+    surfaces: Vec<BrokerActionSurface>,
 }
 
 /// An explicit typed collaboration route.
@@ -235,6 +301,13 @@ pub enum CollabEvent {
     /// most once; the app-side job decides the next safe stopping boundary.
     InvocationCancellation {
         id: u64,
+    },
+    ActionCatalogue {
+        surfaces: Vec<BrokerActionSurface>,
+    },
+    PublishedInvocationResult {
+        request_id: u64,
+        result: Result<(u64, qos_actions::InvocationUpdate), String>,
     },
 }
 
@@ -1355,6 +1428,7 @@ async fn ensure_sdk_route(
     spawn_context_stream(&channel, inbound_tx).await;
     spawn_action_stream(&channel, inbound_tx).await;
     spawn_invocation_stream(&channel, inbound_tx).await;
+    spawn_action_catalogue_stream(&channel, inbound_tx).await;
     let presence = spawn_presence_stream(&channel, inbound_tx).await;
 
     routes.insert(
@@ -1526,6 +1600,38 @@ async fn spawn_invocation_stream(
                         }
                     }
                 });
+            }
+        });
+    }
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn spawn_action_catalogue_stream(
+    channel: &runtime_collab::ChannelHandle,
+    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+) {
+    if let Ok(stream) = channel.subscribe_action_catalogue().await {
+        let tx = inbound_tx.clone();
+        tokio::task::spawn_local(async move {
+            while let Ok(snapshot) = stream.read().await {
+                match serde_json::from_str::<BrokerActionCatalogueWire>(&snapshot) {
+                    Ok(catalogue) => {
+                        if tx
+                            .send(CollabEvent::ActionCatalogue {
+                                surfaces: catalogue.surfaces,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "collab: invalid broker action catalogue");
+                    }
+                }
             }
         });
     }
@@ -1804,6 +1910,78 @@ async fn dispatch_sdk_request(
             }
             Err(error) => tracing::warn!(%error, id, "collab: encoding action update failed"),
         },
+        CollabRequest::InvokePublishedAction {
+            request_id,
+            peer_id,
+            resource,
+            action,
+            arguments,
+            confirmation,
+        } => {
+            let argument = format!(
+                "{}{}",
+                qos_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::Value::Object(arguments)
+            );
+            let confirmation = confirmation.to_string();
+            let result = route
+                .channel
+                .invoke_published_action(
+                    peer_id,
+                    &resource,
+                    &action,
+                    Some(&argument),
+                    &confirmation,
+                )
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|(id, update)| {
+                    serde_json::from_str(&update)
+                        .map(|update| (id, update))
+                        .map_err(|error| error.to_string())
+                });
+            let _ = inbound_tx.send(CollabEvent::PublishedInvocationResult { request_id, result });
+        }
+        CollabRequest::PublishedInvocationStatus { request_id, id } => {
+            let result = route
+                .channel
+                .published_invocation_status(id)
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|update| {
+                    let update = update.ok_or_else(|| "unknown invocation id".to_string())?;
+                    serde_json::from_str(&update)
+                        .map(|update| (id, update))
+                        .map_err(|error| error.to_string())
+                });
+            let _ = inbound_tx.send(CollabEvent::PublishedInvocationResult { request_id, result });
+        }
+        CollabRequest::CancelPublishedInvocation { request_id, id } => {
+            let result = route
+                .channel
+                .cancel_published_invocation(id)
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|update| {
+                    serde_json::from_str(&update)
+                        .map(|update| (id, update))
+                        .map_err(|error| error.to_string())
+                });
+            let _ = inbound_tx.send(CollabEvent::PublishedInvocationResult { request_id, result });
+        }
+        CollabRequest::LaunchPublishedApplication { request_id, app_id } => {
+            let result = route
+                .channel
+                .launch_published_application(&app_id)
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|(id, update)| {
+                    serde_json::from_str(&update)
+                        .map(|update| (id, update))
+                        .map_err(|error| error.to_string())
+                });
+            let _ = inbound_tx.send(CollabEvent::PublishedInvocationResult { request_id, result });
+        }
     }
 }
 fn signed_document_event(

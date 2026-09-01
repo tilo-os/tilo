@@ -173,6 +173,27 @@ interface ChannelHandle {
   # the result of, so silence and success must not look alike to it.
   completeInvocation @15 (id :UInt64, code :Text, message :Text) -> ();
 
+  # Additive v2 lifecycle update. `updateJson` is a serialized
+  # qos_actions::InvocationUpdate. Legacy clients continue using @15.
+  updateInvocation @17 (id :UInt64, updateJson :Text) -> ();
+  # Cooperative cancellation flag polled by background application jobs.
+  invocationCancellation @18 (id :UInt64) -> (cancelled :Bool);
+
+  # Authenticated, session-wide resource/action directory. The broker
+  # derives the caller from this joined channel; no actor string crosses
+  # the wire. JSON preserves the evolving ActionDescriptor vocabulary.
+  actionCatalogue @19 () -> (catalogueJson :Text);
+  subscribeActionCatalogue @20 () -> (stream :ActionCatalogueStream);
+  invokePublishedAction @21 (peerId :UInt64, resource :Text, action :Text,
+                             argument :Text, hasArgument :Bool,
+                             confirmationJson :Text)
+      -> (id :UInt64, updateJson :Text);
+  publishedInvocationStatus @22 (id :UInt64)
+      -> (found :Bool, updateJson :Text);
+  cancelPublishedInvocation @23 (id :UInt64) -> (updateJson :Text);
+  launchPublishedApplication @24 (appId :Text)
+      -> (id :UInt64, updateJson :Text);
+
   # Ask this session to open the "say something about this" surface.
   #
   # Addressed to the compositor on the other end of the socket rather
@@ -190,6 +211,12 @@ interface ChannelHandle {
   # ordinary action once it is written; asking for the panel is not.
   composeRemark @16 (reference :Text, x :Float32, y :Float32,
                      w :Float32, h :Float32) -> ();
+}
+
+interface ActionCatalogueStream {
+  # Level-triggered: the first read returns the current complete directory,
+  # then each publication/disconnect returns a fresh complete replacement.
+  read @0 () -> (catalogueJson :Text);
 }
 
 # One operation an application exports, as inert data.
@@ -224,6 +251,9 @@ struct ExportedAction {
   # projection so Cap'n Proto clients can forward newer parameter vocabulary
   # without a schema bump; empty means the legacy `input` projection.
   paramsJson @8 :Text;
+  # Versioned JSON encoding of qos_actions::ActionContract. Empty from an
+  # older client selects conservative compatibility defaults.
+  contractJson @9 :Text;
 }
 
 # What one exported action's invocation must supply.
