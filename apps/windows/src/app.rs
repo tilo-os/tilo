@@ -1,6 +1,6 @@
 //! Immediate-mode `QuickUI` surface for compatibility routing.
 use crate::actions;
-use crate::appliance_owner::{ApplianceOwnerClient, LifecycleAction};
+use crate::appliance_owner::{ApplianceOwnerClient, EgressPurpose, LicenseState, LifecycleAction};
 use crate::model::{Catalogue, Route};
 use crate::provider::{CompatibilityProvider, EmptyProvider, LiveProvider, SampleProvider};
 use crate::strings;
@@ -82,6 +82,7 @@ pub struct WindowsApp {
     suspend_windows_button: Button,
     resume_windows_button: Button,
     shutdown_windows_button: Button,
+    connect_windows_button: Button,
     route_signal: Rc<Cell<Option<Route>>>,
     reset_signal: Rc<Cell<bool>>,
     launch_signal: Rc<Cell<bool>>,
@@ -101,6 +102,7 @@ pub struct WindowsApp {
     suspend_windows_signal: Rc<Cell<bool>>,
     resume_windows_signal: Rc<Cell<bool>>,
     shutdown_windows_signal: Rc<Cell<bool>>,
+    connect_windows_signal: Rc<Cell<bool>>,
     portal_rx: Option<OpenFileChannel>,
     iso_portal_rx: Option<OpenFileChannel>,
     appliance_owner: ApplianceOwnerClient,
@@ -146,6 +148,7 @@ impl WindowsApp {
         let suspend_windows_signal = Rc::new(Cell::new(false));
         let resume_windows_signal = Rc::new(Cell::new(false));
         let shutdown_windows_signal = Rc::new(Cell::new(false));
+        let connect_windows_signal = Rc::new(Cell::new(false));
         let route_buttons = Route::ALL
             .iter()
             .map(|route| {
@@ -179,6 +182,7 @@ impl WindowsApp {
         let suspend_windows = Rc::clone(&suspend_windows_signal);
         let resume_windows = Rc::clone(&resume_windows_signal);
         let shutdown_windows = Rc::clone(&shutdown_windows_signal);
+        let connect_windows = Rc::clone(&connect_windows_signal);
         Self {
             provider,
             catalogue,
@@ -320,6 +324,14 @@ impl WindowsApp {
             .with_size(118.0, 32.0)
             .with_enabled(false)
             .on_click(move || shutdown_windows.set(true)),
+            connect_windows_button: Button::new(
+                "windows-connect-temporarily",
+                "windows-connect-temporarily",
+                None,
+            )
+            .with_size(256.0, 32.0)
+            .with_enabled(false)
+            .on_click(move || connect_windows.set(true)),
             route_signal,
             reset_signal,
             launch_signal,
@@ -339,6 +351,7 @@ impl WindowsApp {
             suspend_windows_signal,
             resume_windows_signal,
             shutdown_windows_signal,
+            connect_windows_signal,
             portal_rx: None,
             iso_portal_rx: None,
             appliance_owner: ApplianceOwnerClient::new(),
@@ -373,6 +386,7 @@ impl WindowsApp {
         self.suspend_windows_button.set_enabled(false);
         self.resume_windows_button.set_enabled(false);
         self.shutdown_windows_button.set_enabled(false);
+        self.connect_windows_button.set_enabled(false);
 
         self.route_signal.set(None);
         self.reset_signal.set(false);
@@ -390,6 +404,7 @@ impl WindowsApp {
         self.suspend_windows_signal.set(false);
         self.resume_windows_signal.set(false);
         self.shutdown_windows_signal.set(false);
+        self.connect_windows_signal.set(false);
     }
     fn queue_import_path(&mut self, path: &Path) {
         let source_name = path
@@ -545,6 +560,17 @@ impl WindowsApp {
                 if self.notice.is_none() {
                     self.notice = Some(strings::t(started));
                 }
+            }
+        }
+        if self.connect_windows_signal.replace(false) && !self.appliance_owner.busy() {
+            let purpose = if self.appliance_owner.status().license == LicenseState::Unlicensed {
+                EgressPurpose::Activation
+            } else {
+                EgressPurpose::WindowsUpdate
+            };
+            self.notice = self.appliance_owner.open_temporary_egress(purpose).err();
+            if self.notice.is_none() {
+                self.notice = Some(strings::t("windows-temporary-connection-starting"));
             }
         }
         if self.confirm_capsule_signal.replace(false)
@@ -1082,6 +1108,19 @@ impl Widget for WindowsApp {
                 button.set_enabled(!self.appliance_owner.busy());
                 button.draw(scene, t, tr, theme, presence);
             }
+            let connection = Rect::new(
+                sidebar.x0 + PAD,
+                lifecycle_y + 72.0,
+                sidebar.x1 - PAD,
+                lifecycle_y + 104.0,
+            );
+            self.connect_windows_button
+                .apply_layout_external(connection);
+            self.connect_windows_button.set_style(ButtonStyle::Neutral);
+            self.connect_windows_button
+                .set_enabled(!self.appliance_owner.busy());
+            self.connect_windows_button
+                .draw(scene, t, tr, theme, presence);
         } else {
             let choose_iso = Rect::new(
                 sidebar.x0 + PAD,
@@ -1100,7 +1139,7 @@ impl Widget for WindowsApp {
         }
         let mut y = appliance_y
             + if appliance.is_provisioned() {
-                246.0
+                282.0
             } else {
                 170.0
             };
@@ -1554,6 +1593,8 @@ impl Widget for WindowsApp {
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.shutdown_windows_button
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        self.connect_windows_button
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.apply_control_signals();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1663,6 +1704,10 @@ impl Widget for WindowsApp {
             "windows-shutdown-appliance".into(),
             self.shutdown_windows_button.get_rect(),
         ));
+        rects.push((
+            "windows-connect-temporarily".into(),
+            self.connect_windows_button.get_rect(),
+        ));
         rects
     }
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1689,6 +1734,7 @@ impl Widget for WindowsApp {
         children.push(&self.suspend_windows_button);
         children.push(&self.resume_windows_button);
         children.push(&self.shutdown_windows_button);
+        children.push(&self.connect_windows_button);
         children
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -1715,6 +1761,7 @@ impl Widget for WindowsApp {
         children.push(&mut self.suspend_windows_button);
         children.push(&mut self.resume_windows_button);
         children.push(&mut self.shutdown_windows_button);
+        children.push(&mut self.connect_windows_button);
         children
     }
 }
@@ -1879,6 +1926,7 @@ mod tests {
                 "windows-suspend-appliance",
                 "windows-resume-appliance",
                 "windows-shutdown-appliance",
+                "windows-connect-temporarily",
             ]
         );
     }
@@ -1971,6 +2019,7 @@ mod tests {
         app.suspend_windows_button.set_enabled(true);
         app.resume_windows_button.set_enabled(true);
         app.shutdown_windows_button.set_enabled(true);
+        app.connect_windows_button.set_enabled(true);
         app.route_signal.set(Some(Route::Wine));
         app.reset_signal.set(true);
         app.launch_signal.set(true);
@@ -1984,6 +2033,7 @@ mod tests {
         app.suspend_windows_signal.set(true);
         app.resume_windows_signal.set(true);
         app.shutdown_windows_signal.set(true);
+        app.connect_windows_signal.set(true);
 
         let next = &mut app.catalogue.apps[1];
         next.route_override_available = false;
@@ -2009,6 +2059,7 @@ mod tests {
         assert!(!app.suspend_windows_button.is_enabled());
         assert!(!app.resume_windows_button.is_enabled());
         assert!(!app.shutdown_windows_button.is_enabled());
+        assert!(!app.connect_windows_button.is_enabled());
         assert_eq!(app.route_signal.get(), None);
         assert!(!app.reset_signal.get());
         assert!(!app.launch_signal.get());
@@ -2022,5 +2073,6 @@ mod tests {
         assert!(!app.suspend_windows_signal.get());
         assert!(!app.resume_windows_signal.get());
         assert!(!app.shutdown_windows_signal.get());
+        assert!(!app.connect_windows_signal.get());
     }
 }
