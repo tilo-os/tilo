@@ -20,7 +20,7 @@ debian)
 fedora)
     dnf install -y \
         nodejs git curl gcc gcc-c++ make clang clang-devel cmake perl \
-        pkgconf-pkg-config capnproto file rpm-build \
+        pkgconf-pkg-config capnproto file rpm-build rpmlint \
         libxkbcommon-devel wayland-devel libseat-devel libinput-devel \
         systemd-devel libdrm-devel mesa-libgbm-devel mesa-libGL-devel \
         mesa-libEGL-devel pipewire-devel dbus-devel openssl-devel \
@@ -30,7 +30,7 @@ fedora)
     ;;
 arch)
     pacman -Syu --noconfirm \
-        nodejs git curl base-devel rustup clang cmake pkgconf capnproto file \
+        nodejs git curl base-devel rustup clang cmake pkgconf capnproto file namcap \
         libxkbcommon wayland seatd libinput systemd-libs libdrm mesa \
         pipewire dbus openssl fontconfig freetype2 harfbuzz fuse3 \
         gstreamer gst-plugins-base-libs
