@@ -144,15 +144,19 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
             chmod 1777 "$rootfs/tmp" "$rootfs/var/tmp"
             if [[ $distro == arch ]]; then
                 # The Arch OCI layers omit package-manager state directories
-                # when they are empty. Initialize the complete local and sync
-                # database hierarchy with explicit searchable permissions;
-                # libalpm validates DBPath before it can create either child.
+                # when they are empty. PRoot/QEMU also fails libalpm's realpath
+                # check for the conventional /var/lib/pacman path even after
+                # it is recreated. Copy the initialized database to /tmp,
+                # which is already required and verified for every ARM guest.
                 install -d -m 0755 \
                     "$rootfs/var/lib/pacman" \
                     "$rootfs/var/lib/pacman/local" \
                     "$rootfs/var/lib/pacman/sync" \
-                    "$rootfs/var/cache/pacman" \
-                    "$rootfs/var/cache/pacman/pkg"
+                    "$rootfs/tmp/qos-pacman-db/local" \
+                    "$rootfs/tmp/qos-pacman-db/sync" \
+                    "$rootfs/tmp/qos-pacman-cache"
+                cp -a "$rootfs/var/lib/pacman/." \
+                    "$rootfs/tmp/qos-pacman-db/"
             fi
             if [[ $distro == ubuntu-24.04 || $distro == debian-13 ]]; then
                 install -Dm755 "$repo_root/dist/ci/proot-apt-key" \
@@ -304,15 +308,15 @@ fedora-44)
 arch)
     # pacman 7's download sandbox uses Landlock. The Forgejo/Kata kernel does
     # not expose it; Arch documents DisableSandbox specifically for this case.
+    if [[ $arch == arm64 ]]; then
+        sed -i '/^\[options\]/a CacheDir = /tmp/qos-pacman-cache\nDBPath = /tmp/qos-pacman-db' \
+            /etc/pacman.conf
+        install -d -m 0755 \
+            /tmp/qos-pacman-db/local \
+            /tmp/qos-pacman-db/sync \
+            /tmp/qos-pacman-cache
+    fi
     sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
-    # Empty directories are not represented in an OCI layer and can disappear
-    # when the ARM image is exported rather than started by Docker.
-    install -d -m 0755 \
-        /var/lib/pacman \
-        /var/lib/pacman/local \
-        /var/lib/pacman/sync \
-        /var/cache/pacman \
-        /var/cache/pacman/pkg
     stage=install-dependencies
     dist/ci/install-build-deps.sh arch
     stage=install-compiler-cache
@@ -348,8 +352,6 @@ nix)
         nix_config+=$'\nfilter-syscalls = false'
     fi
     export NIX_CONFIG=$nix_config
-    stage=install-nix-tools
-    nix-env -iA nixpkgs.gzip nixpkgs.file
     stage=build-nix
     nix build --print-build-logs .#qos-session
     stage=inspect-nix
