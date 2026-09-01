@@ -1,11 +1,12 @@
 # Windows compatibility: design target and status
 
-> **Status (2026-09): partial implementation.** The catalogue, deterministic
-> route resolver, metadata adapters, capsule/broker core, VM boundary, and
-> provisioning/guest-payload scaffolding exist. The Windows Apps UI still uses
-> an empty live provider until a session daemon is wired to the broker, so the
-> end-to-end launch, RemoteApp publication, and catalogue update flows below
-> are design targets unless explicitly marked current.
+> **Status (2026-09): partial live implementation.** The catalogue,
+> deterministic route resolver, capsule broker, authenticated compositor
+> session service, and Windows Apps list/launch client are wired. Registered
+> Wine/UMU programs can be listed and launched. The privileged guest adapter,
+> playback-only audio proxy, installer/import portal, route-policy handoff,
+> snapshots, repair/reset, and failure-triggered fallback ordering remain
+> unavailable and are shown as such rather than simulated.
 
 qOS is intended to present Windows programs as applications, not as prefixes,
 compatibility tools, or a second desktop. The target has three execution layers:
@@ -56,6 +57,36 @@ directory. It is launched through the existing per-workspace confinement:
 
 Wine file pickers do not constitute authority to browse the host. qOS grants
 the containing sandbox access; a Windows path alone never does.
+
+The current live protocol does not accept an `.exe`, `.msi`, host path,
+application identity, runner, or capability record from Windows Apps. It can
+launch only an opaque program ID already present in compositor-owned capsule
+state. The app package intentionally advertises no `.exe`/`.msi` association.
+Opening or installing arbitrary Windows files needs a future trusted import
+portal that turns a user-selected document handle into server-owned capsule
+state; accepting a client path would bypass the qOS grant boundary.
+
+## Current session boundary
+
+The compositor loads the immutable qOS, pinned UMU, and metadata-only Bottles
+catalogues and owns the compatibility service. The launcher writes an
+authenticated app/workspace preamble to a connected inherited descriptor. The
+service corroborates the launcher PID and kernel start time with a
+compositor-owned, single-use, short-lived registry record. Requests contain
+only `List`, preview-only `Resolve`, or `Launch { opaque_entry_id }`.
+
+Workspace grants are re-read from the canonical compositor tree for every
+operation. Application query, executable, capsule path, environment, VM
+fallback intent, and grants never arrive from the client. Blocking service I/O
+runs on the Windows Apps worker thread; the render thread paints a bounded
+cache and clears it after an invalid or disconnected response.
+
+The managed-entry registry has a monotonic compositor generation and is
+re-read from capsule state. A running manager retains the exact entry snapshot
+authenticated at its launch. After a trusted installer or importer eventually
+registers another entry, Windows Apps must be closed and reopened to receive a
+new inherited descriptor and generation. This deliberate reconnect boundary
+prevents an already connected process from widening its own authority.
 
 ## Explainable catalogue resolution (implemented core; fallback ordering is roadmap)
 
@@ -124,9 +155,13 @@ security domain: programs inside it can potentially influence each other. The
 UI says this plainly. Programs requiring mutually hostile isolation are not a
 fit for the singleton appliance.
 
-## Management experience (design target)
+## Management experience (partial live implementation; remaining items are targets)
 
-The target Windows Apps system application lists installed programs and exposes:
+Windows Apps currently lists registered programs, explains the selected route,
+shows capsule identity without exposing host paths, displays resolved access
+and disabled reasons, and can launch an available opaque entry. Its fixture
+catalogue exists only in the headless screenshot path; a missing live service
+shows an unavailable/repair state. The broader target also exposes:
 
 - current layer, capsule/appliance identity, and catalogue explanation;
 - runner and Windows compatibility settings;
@@ -134,6 +169,11 @@ The target Windows Apps system application lists installed programs and exposes:
 - active processes and other programs sharing the same state boundary;
 - snapshot, repair, duplicate, export, reset, and delete actions;
 - an explicit route override and a reset-to-catalogue action.
+
+Those mutation controls remain disabled in the live session until they have a
+trusted action handoff. VM launch is disabled until a privileged authenticated
+guest adapter exists, and audio output is disabled until qOS has a
+playback-only proxy that cannot implicitly grant capture.
 
 The eventual operations should exist as qOS actions/resources. Accessibility tools,
 automation, collaborators, and tests therefore use the same semantic surface

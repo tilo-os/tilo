@@ -6,6 +6,9 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use compat_service::{
     BwrapExecutor, CapabilityAuthority, CapsuleStore, CompatSessionHandle, HostSession,
@@ -58,9 +61,74 @@ impl TrustedLauncherRegistry for CompositorLaunchRegistry {
     }
 }
 
+struct EntryRegistryRefresh {
+    stop: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl Drop for EntryRegistryRefresh {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            worker.thread().unpark();
+            let _ = worker.join();
+        }
+    }
+}
+
+pub struct WindowsCompatHandle {
+    #[allow(
+        dead_code,
+        reason = "dropping it closes the authenticated session service"
+    )]
+    service: CompatSessionHandle,
+    #[allow(dead_code, reason = "dropping it cancels and joins registry refresh")]
+    registry_refresh: EntryRegistryRefresh,
+}
+
+fn spawn_entry_registry_refresh(store: CapsuleStore) -> Result<EntryRegistryRefresh, String> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let worker = std::thread::Builder::new()
+        .name("qos-windows-registry".to_string())
+        .spawn(move || {
+            while !thread_stop.load(Ordering::Acquire) {
+                std::thread::park_timeout(Duration::from_secs(2));
+                if thread_stop.load(Ordering::Acquire) {
+                    break;
+                }
+                let entries = match store.registered_programs() {
+                    Ok(entries) => entries,
+                    Err(error) => {
+                        tracing::warn!(%error, "could not refresh managed Windows entries");
+                        continue;
+                    }
+                };
+                let before = super::launcher::windows_compat_entry_generation();
+                let generation = super::launcher::set_windows_compat_entry_ids(
+                    entries.into_iter().map(|entry| entry.entry_id).collect(),
+                );
+                if generation != before {
+                    // Existing connected managers retain the one-shot entry
+                    // snapshot authenticated at their launch. Relaunch is the
+                    // explicit refresh boundary; no client can widen itself.
+                    tracing::info!(
+                        generation,
+                        "managed Windows entries changed; relaunch Windows Apps to refresh"
+                    );
+                }
+            }
+        })
+        .map_err(|error| format!("could not start Windows entry registry refresh: {error}"))?;
+    Ok(EntryRegistryRefresh {
+        stop,
+        worker: Some(worker),
+    })
+}
+
 /// Start the real session broker. Failure is fail-closed: the optional
 /// application service remains absent and Windows Manager shows repair state.
-pub fn spawn(tree: WorkspaceTreeHandle) -> Result<CompatSessionHandle, String> {
+pub fn spawn(tree: WorkspaceTreeHandle) -> Result<WindowsCompatHandle, String> {
     let report = load_shipped_catalogue(&ShippedCataloguePaths::default())
         .map_err(|error| error.to_string())?;
     if !report.skipped_bottles_files.is_empty() {
@@ -78,7 +146,8 @@ pub fn spawn(tree: WorkspaceTreeHandle) -> Result<CompatSessionHandle, String> {
         .into_iter()
         .map(|entry| entry.entry_id)
         .collect();
-    super::launcher::set_windows_compat_entry_ids(allowed_entries);
+    let _generation = super::launcher::set_windows_compat_entry_ids(allowed_entries);
+    let registry_refresh = spawn_entry_registry_refresh(store.clone())?;
 
     let wayland_socket = super::launcher::wayland_socket()
         .ok_or_else(|| "the compositor Wayland socket is not ready".to_string())?;
@@ -108,11 +177,15 @@ pub fn spawn(tree: WorkspaceTreeHandle) -> Result<CompatSessionHandle, String> {
         std::process::id(),
         Arc::new(CompositorLaunchRegistry),
     );
-    spawn_session_service(
+    let service = spawn_session_service(
         launcher::services::socket_for("compat"),
         Arc::new(managed),
         Arc::new(WorkspaceCapabilityAuthority { tree }),
         authenticator,
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+    Ok(WindowsCompatHandle {
+        service,
+        registry_refresh,
+    })
 }
