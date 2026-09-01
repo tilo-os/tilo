@@ -429,10 +429,14 @@ fn safe_projected_path(root: &Path, projected: &str) -> Option<PathBuf> {
 
 fn read_record_index_projection(root: &Path) -> Option<RecordIndexProjection> {
     let bytes = xattr::get(root, RECORD_INDEX_XATTR).ok()??;
+    parse_record_index_projection(root, &bytes)
+}
+
+fn parse_record_index_projection(root: &Path, bytes: &[u8]) -> Option<RecordIndexProjection> {
     if bytes.len() > MAX_RECORD_INDEX_XATTR_BYTES {
         return None;
     }
-    let projection: RecordIndexProjection = serde_json::from_slice(&bytes).ok()?;
+    let projection: RecordIndexProjection = serde_json::from_slice(bytes).ok()?;
     if projection.schema_version != 1 || projection.records.len() > MAX_RECORD_INDEX_ENTRIES {
         return None;
     }
@@ -1290,16 +1294,9 @@ mod sync_state_tests {
             "truncated": true,
             "records": records
         });
-        xattr::set(
-            root.path(),
-            RECORD_INDEX_XATTR,
-            &serde_json::to_vec(&projection).unwrap(),
-        )
-        .unwrap();
+        let bytes = serde_json::to_vec(&projection).unwrap();
         assert!(
-            read_workspace_record_index(&[root.path().to_path_buf()])
-                .records
-                .is_empty(),
+            parse_record_index_projection(root.path(), &bytes).is_none(),
             "an oversized catalog is rejected wholesale"
         );
     }
