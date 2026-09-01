@@ -238,6 +238,8 @@ fedora-44)
     dist/rpm/build-rpm.sh
     stage=inspect-rpm
     rpm -qip dist/rpm/build/RPMS/*/qos-session-*.rpm
+    stage=lint-rpm
+    rpmlint dist/rpm/build/RPMS/*/qos-session-*.rpm
     stage=install-test-rpm
     dist/rpm/test-package.sh dist/rpm/build/RPMS/*/qos-session-*.rpm
     stage=collect-rpm
@@ -259,6 +261,13 @@ arch)
     su builder -c 'cd /workspace && dist/arch/build-arch.sh'
     stage=inspect-arch
     pacman -Qip dist/arch/build/qos-session-*.pkg.tar.*
+    stage=lint-arch
+    namcap_log=$(mktemp)
+    namcap dist/arch/build/qos-session-*.pkg.tar.* | tee "$namcap_log"
+    if grep -q ' E: ' "$namcap_log"; then
+        echo "namcap reported a package error" >&2
+        exit 1
+    fi
     stage=install-test-arch
     dist/arch/test-package.sh dist/arch/build/qos-session-*.pkg.tar.*
     stage=collect-arch
