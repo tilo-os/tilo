@@ -485,19 +485,23 @@ impl RemoteApp {
                 // SetFavorite action.
                 if let Some(target) = self.workspace.get(id).map(|c| !c.favorite) {
                     self.workspace.toggle_favorite(id);
-                    self.actions.dispatch(
+                    let action = crate::actions::set_favorite_action(id, target);
+                    self.actions.dispatch_with_context(
                         state,
                         crate::actions::REMOTE_ACTION_TYPE,
-                        &crate::actions::set_favorite_action(id, target),
+                        &action,
+                        qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
                     );
                 }
             }
             Action::Delete(id) => {
                 self.workspace.remove(id);
-                self.actions.dispatch(
+                let action = crate::actions::delete_action(id);
+                self.actions.dispatch_with_context(
                     state,
                     crate::actions::REMOTE_ACTION_TYPE,
-                    &crate::actions::delete_action(id),
+                    &action,
+                    qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
                 );
                 if self.selected == Some(id) {
                     self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
@@ -751,8 +755,12 @@ impl RemoteApp {
         // deterministic read of the current document (see [`crate::actions`]).
         let action = crate::actions::upsert_action(&conn);
         self.workspace.upsert(conn);
-        self.actions
-            .dispatch(state, crate::actions::REMOTE_ACTION_TYPE, &action);
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::REMOTE_ACTION_TYPE,
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+        );
         self.selected = Some(id);
         self.screen = Screen::List;
         self.blur_field();

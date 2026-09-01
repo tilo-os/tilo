@@ -539,6 +539,7 @@ fn synthetic_entry(i: i32) -> HistoryEntry {
         text_delta: Some((delta_chars, 0)),
         diff_payload: None,
         redaction: None,
+        context: None,
     }
 }
 

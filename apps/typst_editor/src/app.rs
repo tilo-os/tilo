@@ -188,6 +188,9 @@ pub struct TypstApp {
     /// doc access) for the caret readout and change detection. The editor body
     /// and its syntax highlighting live in the shared `SourceEditor` widget.
     source_cache: String,
+    /// A native source splice is committed by the widget host rather than an
+    /// action envelope; this rising edge supplies its durable provenance.
+    native_edit_pending: bool,
 
     // --- view state ---
     /// Editor↔preview horizontal split, 0..1 of the content width.
@@ -324,6 +327,7 @@ impl TypstApp {
             initialized: false,
             last_source: String::new(),
             source_cache: String::new(),
+            native_edit_pending: false,
             split_ratio: 0.46,
             show_diagnostics: false,
             err_count: 0,
@@ -1815,6 +1819,31 @@ impl Widget for TypstApp {
         "TypstEditor"
     }
 
+    fn needs_commit(&self) -> bool {
+        self.native_edit_pending
+    }
+
+    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+        self.native_edit_pending.then(|| {
+            let document = self
+                .documents
+                .get(self.current)
+                .map_or("Untitled.typ", |document| document.name.as_str());
+            ui::qos_actions::ActionContext::for_resource(
+                "Edit source",
+                format!("typst.document:{document}"),
+                "typst.document",
+                document,
+            )
+            .with_app("org.qos.Typst", "Typst")
+            .with_facet(ui::qos_actions::ActionFacet::new("file-type", "Typst"))
+        })
+    }
+
+    fn on_commit(&mut self) {
+        self.native_edit_pending = false;
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -1938,8 +1967,12 @@ impl TypstApp {
             }
         }
         // Route remaining keys to the focused editor.
-        if self.editor.focused && self.editor.handle_key(event, &modifiers, doc, src_id) {
-            *handled = true;
+        if self.editor.focused {
+            let before = doc.pending_ops();
+            if self.editor.handle_key(event, &modifiers, doc, src_id) {
+                *handled = true;
+                self.native_edit_pending |= doc.pending_ops() > before;
+            }
         }
     }
 
@@ -2233,6 +2266,36 @@ mod tests {
         // Welcome demo compiles cleanly into at least one page.
         assert!(app.preview.page_count() >= 1, "rendered a page");
         assert_eq!(app.err_count, 0, "welcome demo has no errors");
+    }
+
+    #[test]
+    fn source_edit_requests_a_semantically_stamped_commit() {
+        let (mut app, mut doc) = fresh();
+        let before = app.read_source(&doc);
+
+        assert!(send(&mut app, &mut doc, &char_press("x")));
+        assert_ne!(app.read_source(&doc), before, "the source really changed");
+        assert!(app.needs_commit());
+
+        let context = app.take_commit_context().expect("native edit provenance");
+        assert_eq!(context.label, "Edit source");
+        assert_eq!(
+            context.app.as_ref().map(|app| app.id.as_str()),
+            Some("org.qos.Typst")
+        );
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.kind.as_str()),
+            Some("typst.document")
+        );
+
+        app.on_commit();
+        assert!(
+            !app.needs_commit(),
+            "commit acknowledgement clears the latch"
+        );
     }
 
     /// A focused editor that isn't compiling or flashing must report no need

@@ -90,9 +90,24 @@ struct Held {
 #[derive(Default)]
 struct ScanState {
     records: Vec<ObservedRecord>,
+    /// Canonical, scan-root-confined document locations. Kept separate from
+    /// public search metadata so callers cannot manufacture arbitrary paths.
+    locations: BTreeMap<RecordId, ValidatedRecordLocation>,
     /// A query before the walk finishes gets whatever is known so far
     /// rather than blocking a keystroke on the disk.
     done: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ValidatedRecordLocation {
+    document: PathBuf,
+    scan_root: PathBuf,
+}
+
+#[derive(Default)]
+struct ScanResult {
+    records: Vec<ObservedRecord>,
+    locations: BTreeMap<RecordId, ValidatedRecordLocation>,
 }
 
 /// What [`RoomRecords::known`] last computed, and what from.
@@ -306,6 +321,22 @@ impl RoomRecords {
             .is_none_or(|s| s.lock().is_ok_and(|st| st.done))
     }
 
+    /// Load a scanned record without opening a [`ui::record::RecordStore`],
+    /// creating directories, touching actor state, or acquiring a writer lock.
+    /// The canonical path and size bound are revalidated on every read so a
+    /// stale or replaced scan result fails closed.
+    pub fn load_local_record(&self, id: &RecordId) -> Option<AutoCommit> {
+        let location = self
+            .scan
+            .as_ref()?
+            .lock()
+            .ok()?
+            .locations
+            .get(id)
+            .cloned()?;
+        read_validated_record_document(id, &location)
+    }
+
     /// Write out every pending index and wait for it to land.
     pub fn flush(&mut self) {
         for slot in self.held.values_mut() {
@@ -449,7 +480,8 @@ fn shared_scan() -> Arc<Mutex<ScanState>> {
             .spawn(move || {
                 let found = scan_record_stores(&root);
                 if let Ok(mut st) = handle.lock() {
-                    st.records = found;
+                    st.records = found.records;
+                    st.locations = found.locations;
                     st.done = true;
                 }
             })
@@ -463,8 +495,11 @@ fn shared_scan() -> Arc<Mutex<ScanState>> {
 /// compositor is the only component that reads across rooms (Super+K
 /// shows records from other rooms, which a sandboxed app cannot see).
 /// Deliberately shallow, bounded by record count, not home size.
-fn scan_record_stores(root: &Path) -> Vec<ObservedRecord> {
-    let mut out = Vec::new();
+fn scan_record_stores(root: &Path) -> ScanResult {
+    let mut out = ScanResult::default();
+    let Ok(scan_root) = root.canonicalize() else {
+        return out;
+    };
     let Ok(rooms) = std::fs::read_dir(root.join(launcher::appdir::ROOMS_DIR)) else {
         return out;
     };
@@ -488,27 +523,73 @@ fn scan_record_stores(root: &Path) -> Vec<ObservedRecord> {
                 continue;
             };
             for entry in entries.flatten() {
-                let doc_path = entry.path().join(app_state::DOCUMENT_FILE);
-                match std::fs::metadata(&doc_path) {
-                    Ok(meta) if meta.len() <= MAX_RECORD_DOC_BYTES => {}
-                    Ok(meta) => {
-                        tracing::debug!(
-                            path = %doc_path.display(),
-                            bytes = meta.len(),
-                            "record document too large to index for search"
-                        );
-                        continue;
-                    }
-                    Err(_) => continue,
-                }
-                let Some(observed) = read_record_header(&doc_path, &package_id) else {
+                let Some(location) = validate_record_location(
+                    &scan_root,
+                    &entry.path().join(app_state::DOCUMENT_FILE),
+                ) else {
                     continue;
                 };
-                out.push(observed);
+                let Some(observed) = read_record_header(&location.document, &package_id) else {
+                    continue;
+                };
+                let replace = out
+                    .locations
+                    .get(&observed.id)
+                    .is_none_or(|current| location.document < current.document);
+                if replace {
+                    out.locations.insert(observed.id.clone(), location);
+                }
+                out.records.push(observed);
             }
         }
     }
+    out.records.sort_by(|a, b| {
+        a.id.cmp(&b.id)
+            .then_with(|| a.package_id.cmp(&b.package_id))
+    });
     out
+}
+
+fn validate_record_location(scan_root: &Path, document: &Path) -> Option<ValidatedRecordLocation> {
+    let document = document.canonicalize().ok()?;
+    if !document.starts_with(scan_root) {
+        tracing::warn!(
+            path = %document.display(),
+            root = %scan_root.display(),
+            "record document escaped the bounded scan root"
+        );
+        return None;
+    }
+    let metadata = std::fs::metadata(&document).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_RECORD_DOC_BYTES {
+        tracing::debug!(
+            path = %document.display(),
+            bytes = metadata.len(),
+            "record document is not a bounded regular file"
+        );
+        return None;
+    }
+    Some(ValidatedRecordLocation {
+        document,
+        scan_root: scan_root.to_path_buf(),
+    })
+}
+
+fn read_validated_record_document(
+    expected: &RecordId,
+    location: &ValidatedRecordLocation,
+) -> Option<AutoCommit> {
+    let current = validate_record_location(&location.scan_root, &location.document)?;
+    let bytes = std::fs::read(&current.document).ok()?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_RECORD_DOC_BYTES {
+        return None;
+    }
+    let doc = AutoCommit::load_with_options(
+        &bytes,
+        LoadOptions::new().on_partial_load(OnPartialLoad::Ignore),
+    )
+    .ok()?;
+    (ui::record::identity(&doc)?.id == *expected).then_some(doc)
 }
 
 /// The path `XDG_DATA_HOME` takes inside an app's directory, derived from
@@ -525,7 +606,7 @@ static SANDBOX_DATA_SUBDIR: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::
 /// Read one record document's identity, type and home room.
 fn read_record_header(path: &Path, package_id: &str) -> Option<ObservedRecord> {
     let bytes = std::fs::read(path).ok()?;
-    if bytes.is_empty() {
+    if bytes.is_empty() || bytes.len() as u64 > MAX_RECORD_DOC_BYTES {
         return None;
     }
     let doc = AutoCommit::load_with_options(
@@ -541,6 +622,12 @@ fn read_record_header(path: &Path, package_id: &str) -> Option<ObservedRecord> {
         home,
         package_id: package_id.to_string(),
     })
+}
+
+impl crate::shell::workspace_history::PersistedRecordHistory for RoomRecords {
+    fn load_record(&self, id: &RecordId) -> Option<AutoCommit> {
+        self.load_local_record(id)
+    }
 }
 
 /// What to call a record in a list. See [`KnownRecord::title`].
@@ -586,6 +673,8 @@ pub fn known_rooms(tree: &crate::shell::state::WorkspaceTree) -> BTreeSet<RoomId
 
 #[cfg(test)]
 mod tests {
+    use automerge::transaction::{CommitOptions, Transactable};
+
     use super::*;
 
     fn room() -> RoomId {
@@ -731,5 +820,32 @@ mod tests {
             "an in-memory index has no scan to wait for"
         );
         assert!(rr.known().is_empty());
+    }
+
+    #[test]
+    fn validated_cold_load_is_read_only_and_checks_record_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let record_dir = temp.path().join("records").join("one");
+        std::fs::create_dir_all(&record_dir).unwrap();
+        let document = record_dir.join(app_state::DOCUMENT_FILE);
+        let expected = RecordId::for_file("cold.md");
+        let mut doc = AutoCommit::new();
+        ui::record::init(&mut doc, &expected, &RecordKind::new("note"), "");
+        doc.put(&automerge::ROOT, "body", "cold history").unwrap();
+        doc.commit_with(CommitOptions::default().with_time(10));
+        std::fs::write(&document, doc.save()).unwrap();
+
+        let root = temp.path().canonicalize().unwrap();
+        let location = validate_record_location(&root, &document).unwrap();
+        let mut loaded = read_validated_record_document(&expected, &location).unwrap();
+        assert!(!loaded.get_heads().is_empty());
+        assert!(
+            read_validated_record_document(&RecordId::minted(), &location).is_none(),
+            "a path may not be reused to answer for a different record"
+        );
+        assert!(
+            !record_dir.join(app_state::LOCK_FILE).exists(),
+            "history reads must not acquire or create a writer lock"
+        );
     }
 }

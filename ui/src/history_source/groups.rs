@@ -138,6 +138,93 @@ pub fn clear_name(doc: &mut AutoCommit, record_id: &str) -> bool {
     doc.delete(automerge::ROOT, record_id).is_ok()
 }
 
+/// Split one named band into two adjacent named bands in the current
+/// transaction. The caller supplies both boundary ids because a CRDT history
+/// is not inherently linear at concurrent branches; guessing adjacency here
+/// would make the operation non-deterministic across peers.
+pub fn split_named_range(
+    doc: &mut AutoCommit,
+    record_id: &str,
+    left_end: &HistoryEntryId,
+    right_start: &HistoryEntryId,
+    left_label: &str,
+    right_label: &str,
+) -> Option<(String, String)> {
+    let original = named_range_record(doc, record_id)?;
+    if !clear_name(doc, record_id) {
+        return None;
+    }
+    let left = name_range(doc, &original.0, Some(left_end), left_label);
+    let right = name_range(doc, right_start, original.1.as_ref(), right_label);
+    Some((left, right))
+}
+
+/// Merge named bands into one caller-resolved range. Every old record must
+/// exist before anything is changed, so a stale UI cannot partially merge a
+/// set that a collaborator has already edited.
+pub fn merge_named_ranges(
+    doc: &mut AutoCommit,
+    record_ids: &[String],
+    start: &HistoryEntryId,
+    end: Option<&HistoryEntryId>,
+    label: &str,
+) -> Option<String> {
+    if record_ids.len() < 2
+        || record_ids
+            .iter()
+            .any(|record| named_range_record(doc, record).is_none())
+    {
+        return None;
+    }
+    for record in record_ids {
+        if !clear_name(doc, record) {
+            return None;
+        }
+    }
+    Some(name_range(doc, start, end, label))
+}
+
+/// Move the boundary between two named bands while preserving both labels.
+/// As with split, the caller resolves the two sides from its displayed causal
+/// order and sends exact ids.
+pub fn move_named_boundary(
+    doc: &mut AutoCommit,
+    left_record: &str,
+    right_record: &str,
+    new_left_end: &HistoryEntryId,
+    new_right_start: &HistoryEntryId,
+) -> Option<(String, String)> {
+    let left = named_range_record(doc, left_record)?;
+    let right = named_range_record(doc, right_record)?;
+    let left_label = str_at_record(doc, left_record, "label")?;
+    let right_label = str_at_record(doc, right_record, "label")?;
+    if !clear_name(doc, left_record) || !clear_name(doc, right_record) {
+        return None;
+    }
+    let new_left = name_range(doc, &left.0, Some(new_left_end), &left_label);
+    let new_right = name_range(doc, new_right_start, right.1.as_ref(), &right_label);
+    Some((new_left, new_right))
+}
+
+fn named_range_record(
+    doc: &AutoCommit,
+    record_id: &str,
+) -> Option<(HistoryEntryId, Option<HistoryEntryId>)> {
+    let start = record_id.strip_prefix(GROUPS_KEY).and_then(from_hex16)?;
+    let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, record_id) else {
+        return None;
+    };
+    let end = str_at(doc, &rec, "end").and_then(|value| from_hex16(&value));
+    Some((start, end))
+}
+
+fn str_at_record(doc: &AutoCommit, record_id: &str, field: &str) -> Option<String> {
+    let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, record_id) else {
+        return None;
+    };
+    str_at(doc, &rec, field)
+}
+
 /// True when every patch in `patches` lands inside the named-range map — used
 /// by the producer to keep naming out of the row list. An empty patch set is
 /// **not** a marker: a change that did nothing visible is still a change, and
@@ -229,6 +316,69 @@ mod tests {
         let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].id, b);
+    }
+
+    #[test]
+    fn split_merge_and_boundary_move_rewrite_named_bands_atomically() {
+        let mut doc = AutoCommit::new();
+        let original = name_range(&mut doc, &id(1), Some(&id(8)), "Whole task");
+        doc.commit();
+
+        let (left, right) =
+            split_named_range(&mut doc, &original, &id(4), &id(5), "Research", "Write")
+                .expect("existing band splits");
+        doc.commit();
+        let split = read_named_ranges(&doc, &AuthorDirectory::new());
+        assert_eq!(split.len(), 2);
+        assert!(split.iter().any(|range| range.label == "Research"));
+        assert!(split.iter().any(|range| range.label == "Write"));
+
+        let (left, right) = move_named_boundary(&mut doc, &left, &right, &id(3), &id(4))
+            .expect("adjacent bands move");
+        doc.commit();
+        let moved = read_named_ranges(&doc, &AuthorDirectory::new());
+        assert!(
+            moved.iter().any(|range| {
+                range.id == left && range.start == id(1) && range.end == Some(id(3))
+            })
+        );
+        assert!(moved.iter().any(|range| {
+            range.id == right && range.start == id(4) && range.end == Some(id(8))
+        }));
+
+        let merged = merge_named_ranges(
+            &mut doc,
+            &[left, right],
+            &id(1),
+            Some(&id(8)),
+            "Finished task",
+        )
+        .expect("two current bands merge");
+        doc.commit();
+        let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].id, merged);
+        assert_eq!(ranges[0].label, "Finished task");
+    }
+
+    #[test]
+    fn stale_group_edits_write_nothing() {
+        let mut doc = AutoCommit::new();
+        let before = doc.get_heads();
+        assert!(
+            split_named_range(&mut doc, "qos:group:missing", &id(1), &id(2), "A", "B").is_none()
+        );
+        assert!(
+            merge_named_ranges(
+                &mut doc,
+                &["missing-a".into(), "missing-b".into()],
+                &id(1),
+                Some(&id(2)),
+                "Nope"
+            )
+            .is_none()
+        );
+        assert_eq!(doc.get_heads(), before);
     }
 
     #[test]
