@@ -32,21 +32,25 @@ use ui::widget::identity_flow::{
 /// and other hosts. Relative values are rejected: turning one into an
 /// identity path using the compositor's working directory would make key
 /// placement depend on the display manager.
+///
+/// # Errors
+///
+/// Returns an error if neither input identifies a home data directory, or if
+/// the selected directory is relative.
 pub fn host_identity_root(
     xdg_data_home: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
 ) -> io::Result<PathBuf> {
-    let base = match xdg_data_home.filter(|value| !value.is_empty()) {
-        Some(value) => PathBuf::from(value),
-        None => {
-            let home = home.filter(|value| !value.is_empty()).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "neither XDG_DATA_HOME nor HOME is set for this login",
-                )
-            })?;
-            PathBuf::from(home).join(".local/share")
-        }
+    let base = if let Some(value) = xdg_data_home.filter(|value| !value.is_empty()) {
+        PathBuf::from(value)
+    } else {
+        let home = home.filter(|value| !value.is_empty()).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "neither XDG_DATA_HOME nor HOME is set for this login",
+            )
+        })?;
+        PathBuf::from(home).join(".local/share")
     };
     if !base.is_absolute() {
         return Err(io::Error::new(
@@ -63,6 +67,11 @@ pub fn host_identity_root(
 /// variable is also inherited by launcher/broker children, keeping every
 /// identity consumer on the same tree. An explicit existing override remains
 /// available for hermetic development and tests.
+///
+/// # Errors
+///
+/// Returns an error if the configured identity root is relative or its
+/// user-private directory tree cannot be safely prepared.
 pub fn configure_host_identity_root() -> io::Result<PathBuf> {
     let root = match std::env::var_os("QOS_IDENTITY_ROOT").filter(|value| !value.is_empty()) {
         Some(root) => PathBuf::from(root),
