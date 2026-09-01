@@ -1069,6 +1069,10 @@ pub struct Collaborator {
 pub struct ChannelContext {
     pub collaborators: Vec<Collaborator>,
     pub permissions: Vec<String>,
+    /// `Some` only for a session-local Follow control frame. The inner
+    /// `None` means stop following; ordinary context snapshots keep this
+    /// field at `None` and replace roster/permissions as before.
+    pub follow_changed: Option<Option<String>>,
 }
 
 /// Client-pulled channel-context stream.
@@ -1123,9 +1127,17 @@ impl ContextStream {
                     .to_owned(),
             );
         }
+        let follow_changed = ctx.get_follow_changed().then(|| {
+            ctx.get_follow_target()
+                .ok()
+                .and_then(|target| target.to_str().ok())
+                .filter(|target| !target.is_empty())
+                .map(str::to_owned)
+        });
         Ok(ChannelContext {
             collaborators,
             permissions,
+            follow_changed,
         })
     }
 }

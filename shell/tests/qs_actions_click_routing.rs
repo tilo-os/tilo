@@ -460,13 +460,25 @@ fn wifi_drill_in_row_click_routes_by_whether_a_passphrase_is_needed() {
 }
 
 #[test]
-fn workspace_settings_copy_button_copies_the_invite_link() {
+fn workspace_settings_copy_button_mints_and_copies_a_signed_invite() {
     use shell::shell::chrome_state::WsTab;
 
     let tree = minimal_tree();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let expected = "opaque-signed-invite".to_string();
+    let returned = expected.clone();
+    host.set_peer_sync_bridge(std::rc::Rc::new(move |request| {
+        assert_eq!(
+            request,
+            shell::shell::overlay_host::PeerSyncRequest::IssueInvite
+        );
+        Ok(returned.clone())
+    }));
     {
         let mut st = chrome.borrow_mut();
+        let owner = st.local_user_id.clone();
+        st.tree_mut().adopt_ownerless_workspaces(&owner);
+        st.peer_sync_enabled = true;
         st.overlays.ws_settings = true;
         st.ws_settings_tab = WsTab::General;
         st.bump();
@@ -489,7 +501,12 @@ fn workspace_settings_copy_button_copies_the_invite_link() {
 
     assert!(
         host.ws_invite_copied_at_for_tests().is_some(),
-        "clicking Copy did not run the copy path — the button is painted but not routed"
+        "clicking Create & copy did not mint and copy an invite"
+    );
+    assert_eq!(
+        host.peer_sync_snapshot().invite_token.as_deref(),
+        Some(expected.as_str()),
+        "the copied value must be the opaque token returned by the signed invite path"
     );
 }
 

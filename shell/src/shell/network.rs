@@ -3,6 +3,7 @@
 //! `NetEvent`s into replica replies re-published as `NetCmd::Publish`s.
 //! Wired in behind `--enable-peer-sync`.
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use iroh::address_lookup::memory::MemoryLookup;
@@ -21,6 +22,62 @@ use crate::shell::state::{RoomId, WorkspaceTreeHandle};
 
 /// Compatibility/control topic used only when a message has no room identity.
 pub const DEFAULT_WS_TOPIC: u64 = 0;
+
+/// One invitation this device has minted and can still resend or cancel.
+///
+/// This inventory is deliberately local to the inviting device: the opaque
+/// bearer token must never be replicated into the room it grants access to.
+/// It is persisted beside the device key with the same user-only ownership.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct PendingInvitation {
+    pub id: String,
+    pub room: RoomId,
+    pub name: String,
+    pub token: String,
+    pub expires_at_unix_seconds: u64,
+}
+
+impl PendingInvitation {
+    pub fn is_expired(&self, now_unix_seconds: u64) -> bool {
+        self.expires_at_unix_seconds < now_unix_seconds
+    }
+}
+
+fn pending_invites_path(keypair_path: &Path) -> PathBuf {
+    keypair_path.with_file_name("pending-invitations.json")
+}
+
+fn now_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+fn load_pending_invitations(path: &Path) -> Vec<PendingInvitation> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+        tracing::warn!(%error, path = %path.display(), "ignoring invalid pending invitation store");
+        Vec::new()
+    })
+}
+
+fn persist_pending_invitations(path: &Path, invitations: &[PendingInvitation]) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if let Err(error) = std::fs::create_dir_all(parent) {
+        tracing::warn!(%error, path = %path.display(), "could not create pending invitation directory");
+        return;
+    }
+    let Ok(bytes) = serde_json::to_vec_pretty(invitations) else {
+        return;
+    };
+    if let Err(error) = atomic_file::write_with_mode(path, &bytes, 0o600) {
+        tracing::warn!(%error, path = %path.display(), "could not persist pending invitations");
+    }
+}
 
 /// Stable transport/host shard for a durable room. Local workspace handles are
 /// deliberately not used: they differ between devices.
@@ -147,6 +204,10 @@ pub struct ShellNetwork {
     /// Unlike the display-name map, unnamed invites also enter this table.
     pending_identity_admissions:
         Mutex<std::collections::HashMap<crate::shell::state::RoomId, String>>,
+    /// Durable local inventory backing resend/cancel/expiry. It is not part
+    /// of the workspace tree because it contains bearer credentials.
+    pending_invitations: Mutex<Vec<PendingInvitation>>,
+    pending_invitations_path: Option<PathBuf>,
     /// Inbound presence updates pushed by [`Self::tick`], drained by the
     /// shell's frame-tick into `PresenceCtx::remote_cursors`.
     inbound_presence: Arc<Mutex<Vec<InboundPresence>>>,
@@ -357,6 +418,32 @@ impl ShellNetwork {
         // Capacity matches `Actor::spawn`'s command-channel default.
         let (event_tx, event_rx) = mpsc::channel(64);
 
+        let pending_invitations_path = pending_invites_path(keypair_path);
+        let now = now_unix_seconds();
+        let pending_invitations: Vec<_> = load_pending_invitations(&pending_invitations_path)
+            .into_iter()
+            .filter(|invite| !invite.is_expired(now))
+            .collect();
+        persist_pending_invitations(&pending_invitations_path, &pending_invitations);
+        let pending_names = pending_invitations
+            .iter()
+            .map(|invite| (invite.room, invite.name.clone()))
+            .collect();
+        if let Ok(replica) = replica.lock() {
+            let mut tree = replica.tree.write();
+            for invite in &pending_invitations {
+                tree.admit_collaborator_in_room(
+                    invite.room,
+                    crate::shell::state::Collaborator::new(
+                        format!("invite:{}", invite.id),
+                        invite.name.clone(),
+                    )
+                    .as_invited(),
+                );
+            }
+            tree.flush_to_disk();
+        }
+
         Ok(Self {
             cmd_tx,
             replica,
@@ -373,8 +460,15 @@ impl ShellNetwork {
             last_sync_kick: Mutex::new(None),
             peer_identities: PeerIdentityStore::new(),
             require_peer_identity: true,
-            pending_invitees: Mutex::new(std::collections::HashMap::new()),
-            pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
+            pending_invitees: Mutex::new(pending_names),
+            pending_identity_admissions: Mutex::new(
+                pending_invitations
+                    .iter()
+                    .map(|invite| (invite.room, invite.name.clone()))
+                    .collect(),
+            ),
+            pending_invitations: Mutex::new(pending_invitations),
+            pending_invitations_path: Some(pending_invitations_path),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
@@ -796,6 +890,98 @@ impl ShellNetwork {
         self.issue_invite_for(local, expiry_seconds_from_now, Some(invitee))
     }
 
+    /// Invitations this device can still resend or cancel, oldest first.
+    /// Expired rows are pruned before the answer is returned.
+    pub fn pending_invitations(&self, room: RoomId) -> Vec<PendingInvitation> {
+        let now = now_unix_seconds();
+        let Ok(mut pending) = self.pending_invitations.lock() else {
+            return Vec::new();
+        };
+        let before = pending.len();
+        pending.retain(|invite| !invite.is_expired(now));
+        if pending.len() != before
+            && let Some(path) = self.pending_invitations_path.as_deref()
+        {
+            persist_pending_invitations(path, &pending);
+        }
+        pending
+            .iter()
+            .filter(|invite| invite.room == room)
+            .cloned()
+            .collect()
+    }
+
+    /// Return the original opaque token for a pending invitation. Resending
+    /// does not mint a second credential or silently extend its expiry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the pending-invitation store cannot be read or
+    /// the invitation no longer exists or has expired.
+    pub fn resend_invitation(&self, id: &str) -> Result<String, String> {
+        self.pending_invitations
+            .lock()
+            .map_err(|_| "pending invitation store lock poisoned".to_string())?
+            .iter()
+            .find(|invite| invite.id == id && !invite.is_expired(now_unix_seconds()))
+            .map(|invite| invite.token.clone())
+            .ok_or_else(|| "invitation is no longer pending".to_string())
+    }
+
+    /// Cancel a pending invitation locally. A canceled credential cannot
+    /// obtain a membership grant when its holder arrives; already-admitted
+    /// people are unaffected and must be removed from the People pane.
+    pub fn cancel_invitation(&self, id: &str) -> bool {
+        let Ok(mut pending) = self.pending_invitations.lock() else {
+            return false;
+        };
+        let room = pending
+            .iter()
+            .find(|invite| invite.id == id)
+            .map(|invite| invite.room);
+        let before = pending.len();
+        pending.retain(|invite| invite.id != id);
+        if pending.len() == before {
+            return false;
+        }
+        if let Some(path) = self.pending_invitations_path.as_deref() {
+            persist_pending_invitations(path, &pending);
+        }
+        if let Some(room) = room {
+            if let Ok(replica) = self.replica.lock() {
+                let mut tree = replica.tree.write();
+                tree.retire_collaborator_in_room(room, &format!("invite:{id}"));
+                tree.flush_to_disk();
+            }
+            let replacement = pending
+                .iter()
+                .rev()
+                .find(|invite| invite.room == room)
+                .map(|invite| invite.name.clone());
+            if let Ok(mut names) = self.pending_invitees.lock() {
+                match replacement.clone() {
+                    Some(name) => {
+                        names.insert(room, name);
+                    }
+                    None => {
+                        names.remove(&room);
+                    }
+                }
+            }
+            if let Ok(mut admissions) = self.pending_identity_admissions.lock() {
+                match replacement {
+                    Some(name) => {
+                        admissions.insert(room, name);
+                    }
+                    None => {
+                        admissions.remove(&room);
+                    }
+                }
+            }
+        }
+        true
+    }
+
     #[allow(
         clippy::significant_drop_tightening,
         reason = "ws is fully chained from tree (via replica's lock); nothing to drop \
@@ -866,16 +1052,46 @@ impl ShellNetwork {
         }
         self.join_topic(room_topic_id(room));
 
-        // And park the invitee's name against the room, for
-        // `name_invitee_on_arrival` to write when they turn up.
+        // Park the invitation locally. The bearer token is persisted beside
+        // the device key (never in the replicated workspace document), so a
+        // restart does not turn a visible Pending row into a dead promise.
         let invitee = invitee.map(str::trim).filter(|name| !name.is_empty());
+        let display_name = invitee.unwrap_or("Member").to_string();
         if let Some(invitee) = invitee
             && let Ok(mut pending) = self.pending_invitees.lock()
         {
             pending.insert(room, invitee.to_string());
         }
         if let Ok(mut pending) = self.pending_identity_admissions.lock() {
-            pending.insert(room, invitee.unwrap_or("Member").to_string());
+            pending.insert(room, display_name.clone());
+        }
+        if let Ok(decoded) = crate::network::invite::validate_invite_token(&token) {
+            let digest = blake3::hash(token.as_bytes()).to_hex().to_string();
+            let invitation = PendingInvitation {
+                id: digest.chars().take(16).collect(),
+                room,
+                name: display_name,
+                token: token.clone(),
+                expires_at_unix_seconds: decoded.expiry_unix_seconds,
+            };
+            if let Ok(mut pending) = self.pending_invitations.lock() {
+                pending.push(invitation.clone());
+                if let Some(path) = self.pending_invitations_path.as_deref() {
+                    persist_pending_invitations(path, &pending);
+                }
+            }
+            if let Ok(replica) = self.replica.lock() {
+                let mut tree = replica.tree.write();
+                tree.admit_collaborator_in_room(
+                    room,
+                    crate::shell::state::Collaborator::new(
+                        format!("invite:{}", invitation.id),
+                        invitation.name,
+                    )
+                    .as_invited(),
+                );
+                tree.flush_to_disk();
+            }
         }
         Ok(token)
     }
@@ -1205,7 +1421,17 @@ impl ShellNetwork {
                 point,
                 ts,
             } => {
-                self.handle_presence_message(peer_hash, user, key, point, ts);
+                let allowed = !self.require_peer_identity
+                    || serde_json::from_str::<ui::presence::PresenceKey>(&key)
+                        .ok()
+                        .and_then(|key| match key {
+                            ui::presence::PresenceKey::Workspace { id } => RoomId::parse(&id),
+                            _ => None,
+                        })
+                        .is_some_and(|room| self.peer_may_access_room(&origin, room));
+                if allowed {
+                    self.handle_presence_message(peer_hash, user, key, point, ts);
+                }
             }
             NeighbourMsg::AppDocument {
                 peer: peer_hash,
@@ -1233,7 +1459,14 @@ impl ShellNetwork {
                 app_id,
                 cluster_id,
                 presence,
-            } => self.dispatch_app_presence_v2(peer_hash, app_id, cluster_id, presence),
+            } => {
+                let allowed = !self.require_peer_identity
+                    || RoomId::parse(&cluster_id)
+                        .is_some_and(|room| self.peer_may_access_room(&origin, room));
+                if allowed {
+                    self.dispatch_app_presence_v2(peer_hash, app_id, cluster_id, presence);
+                }
+            }
             // Cooperative scrollback: skip self-echoes.
             NeighbourMsg::ScrollbackRequest {
                 artifact,
@@ -1303,6 +1536,20 @@ impl ShellNetwork {
     /// additionally names the peer redeeming an invite before the
     /// replica answers, so roster and reply land together.
     fn dispatch_to_replica(&self, peer: iroh::EndpointId, msg: &NeighbourMsg) {
+        let synced_room = match msg {
+            NeighbourMsg::SyncReq { room, .. } | NeighbourMsg::SyncResp { room, .. } => {
+                RoomId::parse(room)
+            }
+            _ => None,
+        };
+        if self.require_peer_identity
+            && synced_room.is_some_and(|room| {
+                !self.peer_may_access_room(&crate::shell::state::PeerOrigin::peer(&peer), room)
+            })
+        {
+            tracing::warn!(%peer, "dropping room sync from a peer without current membership");
+            return;
+        }
         if let NeighbourMsg::SyncReq { room, .. } = msg {
             self.name_invitee_on_arrival(&peer, room);
         }
@@ -1331,6 +1578,37 @@ impl ShellNetwork {
         for out_msg in outgoing {
             let _ = self.publish_message(out_msg);
         }
+    }
+
+    /// Current authority for all new room traffic. A member loses this as
+    /// soon as the governing capability removal lands here; signed app ops,
+    /// room sync, and presence all consult it at receive time. The pinned
+    /// authority is allowed before the first governance snapshot so a newly
+    /// invited guest can bootstrap from its inviter.
+    fn peer_may_access_room(&self, origin: &crate::shell::state::PeerOrigin, room: RoomId) -> bool {
+        let Ok(replica) = self.replica.lock() else {
+            return false;
+        };
+        let tree = replica.tree.read();
+        if matches!(
+            tree.room_authority(room),
+            crate::shell::state::RoomAuthority::Peer(ref authority) if authority == origin
+        ) {
+            return true;
+        }
+        let Some(identity) = self.peer_identities.get(origin) else {
+            return false;
+        };
+        let person = collab_types::caps::Principal::person_from_key(
+            collab_types::Ed25519PublicKey::from_bytes(identity.user_pubkey),
+        )
+        .id()
+        .to_string();
+        tree.workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .and_then(|workspace| workspace.role_of(&person))
+            .is_some()
     }
 
     fn accept_identity_hello(
@@ -1417,11 +1695,19 @@ impl ShellNetwork {
                 .find(|room| room_topic_id(*room) == workspace_topic)
         });
         let Some(room) = room else { return };
-        let name = self
-            .pending_identity_admissions
-            .lock()
-            .ok()
-            .and_then(|pending| pending.get(&room).cloned());
+        let durable = self.pending_invitations.lock().ok().and_then(|pending| {
+            pending
+                .iter()
+                .find(|invite| invite.room == room && !invite.is_expired(now_unix_seconds()))
+                .map(|invite| (invite.id.clone(), invite.name.clone()))
+        });
+        let pending_id = durable.as_ref().map(|(id, _)| id.clone());
+        let name = durable.map(|(_, name)| name).or_else(|| {
+            self.pending_identity_admissions
+                .lock()
+                .ok()
+                .and_then(|pending| pending.get(&room).cloned())
+        });
         let Some(name) = name else { return };
         let collab_types::caps::Principal::Person(person) =
             collab_types::caps::Principal::person_from_key(
@@ -1477,7 +1763,9 @@ impl ShellNetwork {
         tree.sync_room_doc(room);
         tree.flush_to_disk();
         drop(tree);
-        if let Ok(mut pending) = self.pending_identity_admissions.lock() {
+        if let Some(id) = pending_id {
+            let _ = self.cancel_invitation(&id);
+        } else if let Ok(mut pending) = self.pending_identity_admissions.lock() {
             pending.remove(&room);
         }
         tracing::info!(
@@ -1695,6 +1983,8 @@ pub(crate) fn shell_network_for_test(
         require_peer_identity: false,
         pending_invitees: Mutex::new(std::collections::HashMap::new()),
         pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
+        pending_invitations: Mutex::new(Vec::new()),
+        pending_invitations_path: None,
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
@@ -1825,6 +2115,38 @@ mod tests {
                 &envelope,
             ),
             Some(collab_types::Role::Editor),
+        );
+
+        {
+            let replica = net.replica.lock().expect("replica");
+            let mut tree = replica.tree.write();
+            let workspace = tree
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room == room)
+                .expect("workspace");
+            let owner = workspace.owner.clone().expect("workspace owner");
+            let removed =
+                crate::shell::workspace_settings::remove_member(workspace, &owner, &person);
+            assert!(!removed.revoked.is_empty(), "membership was revoked");
+            tree.sync_room_doc(room);
+            drop(tree);
+            drop(replica);
+        }
+        assert!(
+            !net.peer_may_access_room(&origin, room),
+            "removal must stop later room sync and presence"
+        );
+        assert_eq!(
+            net.peer_document_role(
+                &origin,
+                &route.cluster_id,
+                &route.app_id,
+                &route.record_id,
+                &envelope,
+            ),
+            None,
+            "an operation authored offline before or after removal is rejected when it arrives"
         );
 
         let mut revoked = RevocationEntry {
