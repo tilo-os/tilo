@@ -23,7 +23,7 @@
     )
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -91,6 +91,10 @@ pub enum BundleError {
     FileMissing { path: String },
     #[error("file present in payload but not listed in bundle.toml: {path}")]
     FileUnlisted { path: String },
+    #[error("invalid payload path in bundle.toml: {path}")]
+    InvalidPayloadPath { path: String },
+    #[error("payload entry is not a regular file: {path}")]
+    NonRegularFile { path: String },
     #[error("file size mismatch for {path}: expected {expected}, got {actual}")]
     SizeMismatch {
         path: String,
@@ -642,10 +646,21 @@ fn verify_bundle_impl(
     // The manifest itself lives at the root; don't treat it as payload.
     on_disk.remove(BUNDLE_MANIFEST_FILENAME);
 
+    let mut listed = BTreeSet::new();
     for expected in &manifest.files {
+        if !valid_payload_path(&expected.path) || !listed.insert(expected.path.as_str()) {
+            return Err(BundleError::InvalidPayloadPath {
+                path: expected.path.clone(),
+            });
+        }
         let abs = root.join(&expected.path);
         if !abs.exists() {
             return Err(BundleError::FileMissing {
+                path: expected.path.clone(),
+            });
+        }
+        if !fs::symlink_metadata(&abs)?.file_type().is_file() {
+            return Err(BundleError::NonRegularFile {
                 path: expected.path.clone(),
             });
         }
@@ -726,6 +741,15 @@ fn verify_bundle_impl(
     Ok(manifest)
 }
 
+fn valid_payload_path(path: &str) -> bool {
+    !path.is_empty()
+        && path != BUNDLE_MANIFEST_FILENAME
+        && !path.contains('\\')
+        && path
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
 fn decode_fixed_hex<const N: usize>(s: &str, field: &'static str) -> Result<[u8; N], BundleError> {
     let raw = hex::decode(s).map_err(|e| BundleError::SignatureFieldMalformed {
         field,
@@ -759,7 +783,7 @@ fn walk_payload(root: &Path, out: &mut BTreeMap<String, PathBuf>) -> std::io::Re
             let ty = entry.file_type()?;
             if ty.is_dir() {
                 recurse(base, &path, out)?;
-            } else if ty.is_file() {
+            } else {
                 let rel = path
                     .strip_prefix(base)
                     .unwrap_or(&path)
@@ -767,7 +791,6 @@ fn walk_payload(root: &Path, out: &mut BTreeMap<String, PathBuf>) -> std::io::Re
                     .replace('\\', "/");
                 out.insert(rel, path);
             }
-            // symlinks / other: ignore. bundles should be plain files.
         }
         Ok(())
     }
@@ -1203,6 +1226,100 @@ mod tests {
         assert!(matches!(
             verify_bundle_metadata_with(out.path(), &opts),
             Err(BundleError::SizeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn verify_rejects_traversal_and_duplicate_manifest_paths() {
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let out = tempfile::tempdir().unwrap();
+        let mut manifest = build_bundle_with(
+            out.path(),
+            "malformed-paths",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+                extra_libs: &[],
+            },
+        )
+        .unwrap();
+        manifest.files[0].path = "../outside".to_string();
+        fs::write(
+            out.path().join(BUNDLE_MANIFEST_FILENAME),
+            toml::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            verify_bundle(out.path()),
+            Err(BundleError::InvalidPayloadPath { .. })
+        ));
+
+        let mut manifest = build_bundle_with(
+            out.path(),
+            "duplicate-paths",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+                extra_libs: &[],
+            },
+        )
+        .unwrap();
+        manifest.files.push(manifest.files[0].clone());
+        fs::write(
+            out.path().join(BUNDLE_MANIFEST_FILENAME),
+            toml::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            verify_bundle(out.path()),
+            Err(BundleError::InvalidPayloadPath { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_rejects_non_regular_payload_entries() {
+        use std::os::unix::fs::symlink;
+
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let out = tempfile::tempdir().unwrap();
+        let mut manifest = build_bundle_with(
+            out.path(),
+            "plain-files-only",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+                extra_libs: &[],
+            },
+        )
+        .unwrap();
+        symlink("lib/lib64/libc.so.6", out.path().join("unexpected-link")).unwrap();
+        assert!(matches!(
+            verify_bundle(out.path()),
+            Err(BundleError::FileUnlisted { path }) if path == "unexpected-link"
+        ));
+
+        let (hash, size) = hash_file(&out.path().join("unexpected-link")).unwrap();
+        manifest.files.push(BundleFile {
+            path: "unexpected-link".to_string(),
+            hash,
+            size,
+        });
+        manifest.files.sort_by(|a, b| a.path.cmp(&b.path));
+        manifest.root_hash = compute_root_hash(&manifest.files);
+        fs::write(
+            out.path().join(BUNDLE_MANIFEST_FILENAME),
+            toml::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            verify_bundle(out.path()),
+            Err(BundleError::NonRegularFile { path }) if path == "unexpected-link"
         ));
     }
 
