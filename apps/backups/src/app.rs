@@ -3582,16 +3582,21 @@ impl BackupsApp {
                 }
             }
             Hit::RestoreConfirm => {
-                BackupsDoc::set_restore_open(doc, root, false);
-                self.toast_now("Restore started in the background");
+                if let Some(snapshot_id) = self.ui.sel_snapshot.clone() {
+                    let operation = actions::BackupsOperation::Restore { snapshot_id };
+                    if let Err(reason) = self.perform_snapshot_operation(&operation) {
+                        self.toast_now(&reason);
+                    }
+                }
             }
             Hit::RestoreCancel => BackupsDoc::set_restore_open(doc, root, false),
             Hit::Verify => self.toast_now("Verifying snapshot integrity…"),
             Hit::Delete => {
                 if let Some(id) = self.ui.sel_snapshot.clone() {
-                    self.catalog.snapshots.retain(|s| s.id != id);
-                    BackupsDoc::set_selected_snapshot(doc, root, None);
-                    self.toast_now("Snapshot deleted");
+                    let operation = actions::BackupsOperation::Delete { snapshot_id: id };
+                    if let Err(reason) = self.perform_snapshot_operation(&operation) {
+                        self.toast_now(&reason);
+                    }
                 }
             }
             Hit::Dest(id) => {
@@ -3632,6 +3637,35 @@ impl BackupsApp {
             dur: Duration::from_millis(2600),
         });
         self.toast_now("Snapshot started");
+    }
+
+    /// Shared semantic path for the direct snapshot controls and exported
+    /// operations. There is intentionally no simulated success: the live app
+    /// has no storage provider capable of either effect yet.
+    fn perform_snapshot_operation(
+        &mut self,
+        operation: &actions::BackupsOperation,
+    ) -> Result<(), String> {
+        let snapshot_id = match operation {
+            actions::BackupsOperation::Restore { snapshot_id }
+            | actions::BackupsOperation::Delete { snapshot_id } => snapshot_id,
+        };
+        if !self
+            .catalog
+            .snapshots
+            .iter()
+            .any(|snapshot| snapshot.id == *snapshot_id)
+        {
+            return Err("The selected snapshot is no longer available".into());
+        }
+        match operation {
+            actions::BackupsOperation::Restore { .. } => {
+                Err("Restore unavailable: no backup storage backend is configured".into())
+            }
+            actions::BackupsOperation::Delete { .. } => {
+                Err("Delete unavailable: no backup storage backend is configured".into())
+            }
+        }
     }
 
     /// Materialise the just-finished job as a new manual snapshot.
@@ -3893,6 +3927,9 @@ impl Widget for BackupsApp {
     /// (see [`crate::actions`]).
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+        for snapshot in &self.catalog.snapshots {
+            resources.push(actions::snapshot_resource(&snapshot.id));
+        }
         let mut runtime =
             qos_actions::Resource::new("backups.runtime", "backups.service", "Backup service");
         for (id, label, type_id, available, reason) in [
@@ -3961,6 +3998,10 @@ impl Widget for BackupsApp {
     ) -> Result<bool, String> {
         if kind != qos_actions::OperationKind::Effect {
             return Ok(false);
+        }
+        if let Some(operation) = actions::decode_operation(type_id, _payload)? {
+            self.perform_snapshot_operation(&operation)?;
+            return Ok(true);
         }
         match type_id {
             "backups.start" if self.job.is_none() => self.start_job(),
@@ -4336,12 +4377,12 @@ mod tests {
         f.click_hit(|h| matches!(h, Hit::Restore));
         f.click_hit(|h| matches!(h, Hit::RestoreConfirm));
         assert!(
-            !BackupsDoc::restore_open(&f.state.doc, &f.state.root),
-            "Restore selected closes the modal"
+            BackupsDoc::restore_open(&f.state.doc, &f.state.root),
+            "an unavailable restore remains open so it cannot resemble a started job"
         );
         assert_eq!(
             f.app.toast.as_ref().map(|(message, _)| message.as_str()),
-            Some("Restore started in the background")
+            Some("Restore unavailable: no backup storage backend is configured")
         );
     }
 

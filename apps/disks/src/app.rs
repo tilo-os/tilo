@@ -3222,8 +3222,8 @@ impl Widget for DisksApp {
                         risk: RiskLevel::Privileged,
                         confirmation: ConfirmationPolicy::Confirm,
                         retry: RetryPolicy::AtMostOnce,
-                        execution: ExecutionMode::Background { cancellable: false },
-                        result: ResultSpec::Job,
+                        execution: ExecutionMode::Immediate,
+                        result: ResultSpec::None,
                         ..ActionContract::default()
                     }));
                 }
@@ -3284,8 +3284,8 @@ impl Widget for DisksApp {
                             } else {
                                 RetryPolicy::AtMostOnce
                             },
-                            execution: ExecutionMode::Background { cancellable: false },
-                            result: ResultSpec::Job,
+                            execution: ExecutionMode::Immediate,
+                            result: ResultSpec::None,
                             ..ActionContract::default()
                         }));
                     }

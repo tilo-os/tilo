@@ -124,6 +124,11 @@ pub struct ThemesApp {
     /// [`ActionSpec`] does.
     actions: ui::ActionHost,
 
+    /// Theme id accepted through the canonical external-operation route. It is
+    /// drained by `sync`, where mutable document access is available, so the
+    /// store write and active-id action remain one semantic transaction.
+    pending_apply: Option<String>,
+
     /// Vertical scroll of the collapsed (narrow) preview+customizer stack.
     scroll: f64,
     /// Total stacked content height + its viewport, cached in `apply_layout`
@@ -203,6 +208,7 @@ impl ThemesApp {
             status: String::new(),
             structure_dirty: false,
             actions: ui::ActionHost::new(),
+            pending_apply: None,
             scroll: 0.0,
             scroll_content_h: 0.0,
             scroll_viewport_h: 0.0,
@@ -1246,6 +1252,29 @@ impl Widget for ThemesApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != qos_actions::OperationKind::Effect || type_id != "themes.apply" {
+            return Ok(false);
+        }
+        let id: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let exists = doc::load_catalog(doc, &automerge::ROOT)
+            .unwrap_or_default()
+            .iter()
+            .any(|theme| theme.id == id);
+        if !exists {
+            return Err("Theme is no longer available".into());
+        }
+        self.pending_apply = Some(id);
+        Ok(true)
+    }
+
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its Themes action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
@@ -1256,6 +1285,10 @@ impl Widget for ThemesApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         // 1. Seed the document on first run.
         self.seed_document_if_needed(state, path);
+
+        if let Some(id) = self.pending_apply.take() {
+            self.apply_theme(&id, state);
+        }
 
         // `--shots` scenario: force a specific selection for the capture.
         if let Some(id) = self.shot.select.take() {

@@ -24,8 +24,8 @@ use ui::format::bytes as format_bytes;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::qos_actions::{
-    ActionContract, ActionSpec, Availability, ExecutionMode, OperationKind, PermissionRequirement,
-    Resource, ResultSpec, RetryPolicy,
+    ActionContract, ActionSpec, Availability, DiscoveryScope, ExecutionMode, OperationKind,
+    PermissionRequirement, Resource, ResultSpec, RetryPolicy,
 };
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -4452,10 +4452,9 @@ impl Widget for MapsApp {
                 },
                 permission: PermissionRequirement::Read,
                 retry: RetryPolicy::AtMostOnce,
-                execution: ExecutionMode::Background { cancellable: false },
-                result: ResultSpec::Resource {
-                    resource_kind: "maps.location".into(),
-                },
+                execution: ExecutionMode::Immediate,
+                discovery: DiscoveryScope::Launchable,
+                result: ResultSpec::None,
                 ..ActionContract::default()
             }),
         );
