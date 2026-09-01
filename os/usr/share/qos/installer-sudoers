@@ -11,8 +11,8 @@
 # `sudo -n`: the installer (qos-install) and the Finish-screen power action
 # (qos-power, reboot/poweroff).
 #
-# Preserve the optional target-imgref override across the sudo env reset so
-# `QOS_TARGET_IMGREF=... ` set for the installer session reaches the backend.
+# Preserve a release-channel tag/digest override across the sudo env reset.
+# qos-install rejects repositories outside the signature-required qOS origin.
 Defaults env_keep += "QOS_TARGET_IMGREF"
 
 # The installer UI runs under cage with no controlling tty, and that session
