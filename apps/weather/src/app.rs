@@ -40,8 +40,8 @@ use winit::event::WindowEvent;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::qos_actions::{
-    ActionContract, ActionSpec, Availability, ExecutionMode, OperationKind, PermissionRequirement,
-    Resource, ResultSpec, RetryPolicy,
+    ActionContract, ActionSpec, Availability, DiscoveryScope, ExecutionMode, OperationKind,
+    PermissionRequirement, Resource, ResultSpec, RetryPolicy,
 };
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -299,10 +299,9 @@ impl Widget for WeatherApp {
                 },
                 permission: PermissionRequirement::Read,
                 retry: RetryPolicy::Idempotent,
-                execution: ExecutionMode::Background { cancellable: false },
-                result: ResultSpec::Resource {
-                    resource_kind: "weather.forecast".into(),
-                },
+                execution: ExecutionMode::Immediate,
+                discovery: DiscoveryScope::Launchable,
+                result: ResultSpec::None,
                 ..ActionContract::default()
             }));
         }
