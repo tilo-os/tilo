@@ -8,8 +8,7 @@
 use crate::model::{Catalogue, Route};
 use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
 use qos_actions::{
-    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, Resource,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
 };
 use serde::{Deserialize, Serialize};
 
@@ -51,12 +50,8 @@ pub fn encode(action: &WindowsAction) -> EncodedAction {
     })
 }
 fn immediate(id: &str, label: &str, action: &WindowsAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, WINDOWS_ACTION_TYPE, action).unwrap_or_else(|_| ActionSpec {
-        id: id.into(),
-        label: label.into(),
-        description: None,
-        locus: ExecutionLocus::ClientLocal,
-        input: ActionInput::Immediate(encode(action)),
+    ActionSpec::immediate(id, label, WINDOWS_ACTION_TYPE, action).unwrap_or_else(|_| {
+        ActionSpec::immediate_encoded(id, label, action.locus(), encode(action))
     })
 }
 
