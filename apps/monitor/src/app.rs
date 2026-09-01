@@ -2353,10 +2353,59 @@ impl MonitorApp {
         avail_w - self.pills_cluster_width(tr, theme) - GAP < SEARCH_MIN_W
     }
 
+    /// Width of the two process-view controls that stay together in the
+    /// compact toolbar row. The kernel-thread preference gets its own row
+    /// below this pair, which prevents the long labelled controls from being
+    /// squeezed or painted past the left edge on phone-sized windows.
+    fn primary_filter_row_width(&self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        let fs = theme.tokens.typography.scale.sm;
+        let tree_text = if self.tree_mode {
+            "⊟ Tree"
+        } else {
+            "≣ Flat"
+        };
+        let tree_w = f64::from(tr.measure(tree_text, fs, None).0) + 24.0;
+        if self.tree_mode {
+            let sum_text = format!("Σ {}", self.sum_mode.label());
+            tree_w + TOOLBAR_PILL_GAP + f64::from(tr.measure(&sum_text, fs, None).0) + 24.0
+        } else {
+            tree_w
+        }
+    }
+
+    fn kernel_filter_width(tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        f64::from(
+            tr.measure("kernel threads", theme.tokens.typography.scale.sm, None)
+                .0,
+        ) + 44.0
+    }
+
+    fn confirm_filter_width(tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        f64::from(
+            tr.measure("Confirm kills", theme.tokens.typography.scale.sm, None)
+                .0,
+        ) + 24.0
+    }
+
+    /// On very narrow windows a search row plus a single filters row is not
+    /// enough: the labelled tree, aggregation and preferences would run out
+    /// of the toolbar. Give the two preferences a third row instead of
+    /// clipping controls or making their hit targets overlap.
+    fn toolbar_compact_filters(&self, tr: &mut TextRenderer, theme: &Theme, avail_w: f64) -> bool {
+        self.toolbar_stacked(tr, theme, avail_w)
+            && avail_w
+                < self.primary_filter_row_width(tr, theme)
+                    + Self::kernel_filter_width(tr, theme)
+                    + Self::confirm_filter_width(tr, theme)
+                    + 2.0 * TOOLBAR_PILL_GAP
+    }
+
     /// Height the toolbar occupies at `avail_w`: one row when the search box
     /// and pills fit side by side, two rows (search above pills) when narrow.
     fn toolbar_height(&self, tr: &mut TextRenderer, theme: &Theme, avail_w: f64) -> f64 {
-        if self.toolbar_stacked(tr, theme, avail_w) {
+        if self.toolbar_compact_filters(tr, theme, avail_w) {
+            3.0 * TOOLBAR_ROW_H + 2.0 * TOOLBAR_ROW_GAP
+        } else if self.toolbar_stacked(tr, theme, avail_w) {
             2.0 * TOOLBAR_ROW_H + TOOLBAR_ROW_GAP
         } else {
             TOOLBAR_ROW_H
@@ -2694,11 +2743,37 @@ impl MonitorApp {
         theme: &Theme,
         r: Rect,
     ) {
-        // One row (search beside pills) or two (search above pills). Deriving
-        // this from `r.width()` — the width the host allocated this frame —
-        // keeps the toolbar reflowing on every resize rather than freezing to
-        // whatever the first frame chose.
+        // One row (search beside pills), two (search above filters), or three
+        // (search, view controls, preferences). Deriving this from
+        // `r.width()` — the width the host allocated this frame — keeps the
+        // toolbar reflowing on every resize rather than freezing to whatever
+        // the first frame chose.
         let stacked = self.toolbar_stacked(tr, theme, r.width());
+        let compact_filters = self.toolbar_compact_filters(tr, theme, r.width());
+        if compact_filters {
+            let search_row = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_ROW_H);
+            let view_row = Rect::new(
+                r.x0,
+                search_row.y1 + TOOLBAR_ROW_GAP,
+                r.x1,
+                search_row.y1 + TOOLBAR_ROW_GAP + TOOLBAR_ROW_H,
+            );
+            let kernel_row = Rect::new(
+                r.x0,
+                view_row.y1 + TOOLBAR_ROW_GAP,
+                r.x1,
+                view_row.y1 + TOOLBAR_ROW_GAP + TOOLBAR_ROW_H,
+            );
+
+            // The per-process view controls retain their relationship, while
+            // both persisted preferences remain directly reachable below.
+            let next_x1 = self.draw_sum_mode_pill(scene, t, tr, theme, view_row, view_row.x1);
+            self.draw_tree_flat_pill(scene, t, tr, theme, view_row, next_x1);
+            let kernel = self.draw_kernel_toggle_pill(scene, t, tr, theme, kernel_row);
+            self.draw_confirm_kills_pill(scene, t, tr, theme, kernel_row, kernel);
+            self.draw_toolbar_search_box(scene, t, tr, theme, search_row, true, search_row.x1);
+            return;
+        }
         let pills_row = if stacked {
             Rect::new(r.x0, r.y1 - TOOLBAR_ROW_H, r.x1, r.y1)
         } else {
@@ -4844,22 +4919,21 @@ mod tests {
         );
     }
 
-    /// Issue 2: a narrow table viewport makes the columns overflow, so the
-    /// horizontal scroll has a non-zero range and the THR column lives in
-    /// scrollable space rather than overlapping the border.
+    /// Narrow process windows switch to a compact table rather than asking the
+    /// user to scroll sideways to identify the busy process.
     #[test]
-    fn narrow_table_has_horizontal_scroll_range() {
-        // The content area inside the card, minus padding, is what the
-        // renderer hands to `process_columns`. A ~360px content width can't
-        // seat even the five essential columns (USER is already dropped), so
-        // the table still overflows and scrolls.
-        let avail = 360.0 - 2.0 * layout::TABLE_PAD;
-        let cols = layout::process_columns(avail);
-        let total = layout::process_columns_total_w(&cols);
+    fn narrow_table_keeps_primary_columns_in_view() {
+        let mut a = app();
+        draw_at(&mut a, 360.0, 700.0);
         assert!(
-            total > avail,
-            "narrow table columns ({total}) must overflow the viewport ({avail}) \
-             so a horizontal scrollbar appears"
+            a.table_content_w <= a.table_cols_w + 0.5,
+            "compact table must fit its visible band ({} vs {})",
+            a.table_content_w,
+            a.table_cols_w
+        );
+        assert!(
+            a.hit.h_scrollbar.is_none(),
+            "primary data needs no h-scroll"
         );
     }
 
@@ -4923,118 +4997,7 @@ mod tests {
         );
     }
 
-    // ---- new features: h-scroll, tree, sum, context menu ----------------
-
-    /// Bug fix: the horizontal scroll must reach the FULL table width so the
-    /// final column (plus its right padding) scrolls into view. The wheel
-    /// handler clamps against `table_content_w − table_cols_w` (the padded
-    /// columns viewport), so at max scroll the last column's right edge lands
-    /// exactly at the right of the visible band — not `2·TABLE_PAD` short, the
-    /// bug. This asserts on the exact clamp the production wheel path uses.
-    #[test]
-    fn h_scroll_reaches_the_last_column() {
-        let mut a = app();
-        // Simulate a narrow table the renderer would record: content wider
-        // than the padded columns viewport. Derive the content width from the
-        // real column solver at this band width (300px is below the essential
-        // minimum, so the columns overflow) rather than hard-coding a total.
-        a.table_cols_w = 300.0; // padded band (narrow window)
-        a.table_content_w =
-            layout::process_columns_total_w(&layout::process_columns(a.table_cols_w));
-        assert!(
-            a.table_content_w > a.table_cols_w,
-            "columns must overflow at 300px so there is a scroll range"
-        );
-        let max_x = (a.table_content_w - a.table_cols_w).max(0.0) as f32;
-        // The OLD (buggy) clamp used the un-padded viewport width, which is
-        // 2·TABLE_PAD wider, leaving the last 24px unreachable. Prove the new
-        // max exceeds that buggy bound by exactly 2·TABLE_PAD.
-        let buggy_max =
-            (a.table_content_w - (a.table_cols_w + 2.0 * layout::TABLE_PAD)).max(0.0) as f32;
-        assert!(
-            max_x > buggy_max,
-            "fixed clamp {max_x} must exceed buggy {buggy_max}"
-        );
-        assert!((max_x - buggy_max - (2.0 * layout::TABLE_PAD) as f32).abs() < 0.01);
-        // Over-scroll clamps to exactly max_x — the last column reachable.
-        a.table_scroll_x = (a.table_scroll_x + 9999.0).clamp(0.0, max_x);
-        assert_eq!(a.table_scroll_x, max_x);
-        // At max scroll, the last column's content-space right edge maps to
-        // the right of the columns band (within rounding): full width shown.
-        let cols = layout::process_columns(a.table_cols_w);
-        let content_w = layout::process_columns_total_w(&cols);
-        let last_right_in_view = content_w - f64::from(a.table_scroll_x); // relative to band left
-        assert!(
-            (last_right_in_view - a.table_cols_w).abs() < 1.0,
-            "last column right edge {last_right_in_view} must align to band width {}",
-            a.table_cols_w
-        );
-    }
-
-    /// End-to-end h-scroll: lay the app out narrow (so the six columns
-    /// overflow), draw a real frame, then drive the production wheel handler
-    /// with a big shift-scroll. The table must scroll until the final column's
-    /// right edge reaches the visible band's right edge — the whole table
-    /// width, including the last column, becomes reachable.
-    #[test]
-    fn h_scroll_drive_reaches_last_column_end_to_end() {
-        let mut a = app();
-        // Narrow enough that even the five essential columns overflow the table
-        // card (below the essential minimum, once USER is already dropped) — so
-        // the h-scroll path is genuinely exercised. Wider windows now fit the
-        // essentials (THR reads without scrolling), which is the whole point of
-        // the column-priority fix; this test targets the still-overflowing tail.
-        draw_at(&mut a, 430.0, 700.0);
-        assert!(
-            a.table_content_w > a.table_cols_w + 1.0,
-            "columns must overflow at this width ({} vs {})",
-            a.table_content_w,
-            a.table_cols_w
-        );
-        // Park the cursor over the table so the wheel routes to h-scroll.
-        a.last_cursor = a.table_viewport.center();
-        let modifiers = winit::event::Modifiers::default();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy::NodeId::new(0);
-        // A horizontal wheel (x delta dominant) drives the column scroll
-        // through the real `handle_event` path. Drive it hard enough to pin
-        // the clamp ceiling.
-        for _ in 0..40 {
-            let ev = WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(-50.0, 0.0),
-                phase: winit::event::TouchPhase::Moved,
-            };
-            let mut handled = false;
-            let mut focus = None;
-            a.handle_event(
-                &ev,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
-            );
-        }
-        // The real clamp ceiling from this frame's metrics:
-        let max_x = (a.table_content_w - a.table_cols_w).max(0.0) as f32;
-        assert_eq!(a.table_scroll_x, max_x, "wheel drove scroll to its ceiling");
-        // At the ceiling, the last column's content-space right edge maps to
-        // the right of the columns band (within 1px rounding).
-        let cols = layout::process_columns(a.table_cols_w);
-        let content_w = layout::process_columns_total_w(&cols);
-        let last_right_in_band = content_w - f64::from(a.table_scroll_x);
-        assert!(
-            (last_right_in_band - a.table_cols_w).abs() < 1.0,
-            "last column right edge {last_right_in_band} reaches band width {}",
-            a.table_cols_w
-        );
-    }
+    // ---- tree, sum, context menu -----------------------------------------
 
     /// The tree defaults on, Sum subtree by default, and collapsed — so the
     /// first frame shows parents carrying their full subtree totals.
@@ -5371,6 +5334,53 @@ mod tests {
             TOOLBAR_ROW_H,
             "wide toolbar is a single row"
         );
+    }
+
+    /// Below the width where all labelled filters fit on one line, controls
+    /// get their own structural rows. Their real hit rectangles must remain
+    /// visible and disjoint; a clipped or overlapping filter is functionally
+    /// unavailable even if its pixels happen to be painted.
+    #[test]
+    fn compact_toolbar_keeps_every_visible_control_on_screen() {
+        for w in [320.0, 360.0, 400.0] {
+            let mut a = app();
+            draw_at(&mut a, w, 720.0);
+            let content = Rect::new(OUTER_PAD, 0.0, w - OUTER_PAD, 720.0);
+            assert!(
+                a.hit.confirm_toggle != Rect::ZERO,
+                "w={w}: the persisted Confirm kills preference must stay reachable"
+            );
+            let controls = [
+                ("search", a.hit.search),
+                ("tree", a.hit.tree_toggle),
+                ("sum", a.hit.sum_toggle),
+                ("kernel", a.hit.kernel_toggle),
+                ("confirm", a.hit.confirm_toggle),
+            ];
+            for (name, r) in controls {
+                if r == Rect::ZERO {
+                    continue;
+                }
+                assert!(
+                    r.x0 >= content.x0 - 0.5 && r.x1 <= content.x1 + 0.5,
+                    "w={w}: {name} is outside the content band: {r:?}"
+                );
+            }
+            for (i, (left_name, left)) in controls.iter().enumerate() {
+                if *left == Rect::ZERO {
+                    continue;
+                }
+                for (right_name, right) in controls.iter().skip(i + 1) {
+                    if *right == Rect::ZERO {
+                        continue;
+                    }
+                    assert!(
+                        !overlaps(*left, *right),
+                        "w={w}: {left_name} overlaps {right_name}"
+                    );
+                }
+            }
+        }
     }
 
     /// The summary strip's cards grow with the window width but stay on a
@@ -6206,36 +6216,16 @@ mod tests {
         assert!(a.scroll_drag.is_none(), "release ends the drag");
     }
 
-    /// Dragging the horizontal column scrollbar thumb scrolls the columns.
+    /// A narrow table remains a directly scannable process list instead of
+    /// exposing a horizontal scrollbar for its primary columns.
     #[test]
-    fn dragging_column_scrollbar_thumb_scrolls_columns() {
+    fn narrow_table_does_not_expose_column_scrollbar() {
         let mut a = app();
-        // Below the essential-column minimum (USER already dropped) so the five
-        // essentials still overflow and the horizontal scrollbar appears. Wider
-        // windows now fit the essentials — THR reads without scrolling — which
-        // is the column-priority fix; this test targets the overflowing tail.
         draw_at(&mut a, 430.0, 700.0);
-        let sb = a
-            .hit
-            .h_scrollbar
-            .expect("horizontal scrollbar present when columns overflow");
-        dispatch_ev(
-            &mut a,
-            &synth_cursor(sb.thumb.center().x, sb.thumb.center().y),
-        );
-        dispatch_ev(&mut a, &synth_press());
-        assert!(matches!(a.scroll_drag, Some(ScrollDrag::Cols { .. })));
-        let before = a.table_scroll_x;
-        dispatch_ev(
-            &mut a,
-            &synth_cursor(sb.track.x1 - 2.0, sb.thumb.center().y),
-        );
         assert!(
-            a.table_scroll_x > before,
-            "dragging the thumb right scrolls columns"
+            a.hit.h_scrollbar.is_none(),
+            "compact process columns must fit without horizontal scrolling"
         );
-        dispatch_ev(&mut a, &synth_release());
-        assert!(a.scroll_drag.is_none());
     }
 
     /// Dragging the whole-view page scrollbar thumb scrolls the Resources page.

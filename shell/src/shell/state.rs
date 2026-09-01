@@ -1620,9 +1620,9 @@ pub struct WorkspaceTree {
     /// non-closing group" (see [`Self::resolve_active_group`]).
     #[serde(default)]
     pub active_group: HashMap<StripId, GroupId>,
-    /// Tree-level roster, fallback for chrome when the active workspace
-    /// has nobody of its own. `#[serde(skip)]` — reloading it would show
-    /// people who are not there.
+    /// Legacy session-wide presence cache. Ordinary chrome must read the
+    /// active workspace's roster instead: a person present elsewhere is not
+    /// present here. `#[serde(skip)]` prevents stale presence after reload.
     #[serde(skip_deserializing)]
     pub collaborators: Vec<Collaborator>,
     /// Automerge backing doc for peer-sync. The cache (other fields) is
@@ -5745,21 +5745,18 @@ pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
     assigned
 }
 
-/// Peer count for the active workspace, excluding the local user,
-/// falling back to the tree-level roster when it has none of its own —
-/// matches `TopBarChrome::sync_from_tree`'s precedence.
+/// Present collaborator count for the active workspace, excluding the local
+/// user. Presence is workspace-scoped; the legacy tree-level cache must never
+/// make somebody from another workspace appear here.
 pub fn active_workspace_peer_count(tree: &WorkspaceTree) -> usize {
     // Somebody named but not yet arrived is not counted. This drives the
     // avatar cluster's `+N` chip and the wheel disc's presence dot, and
     // both are claims that people are *in* the workspace — an invitation
     // that has not been redeemed is not one of them.
     let present = |c: &&Collaborator| c.id != "me" && !c.invited;
-    let active = tree.active_workspace();
-    let per_ws = active.map_or(0, |w| w.collaborators.iter().filter(present).count());
-    if per_ws > 0 {
-        return per_ws;
-    }
-    tree.collaborators.iter().filter(present).count()
+    tree.active_workspace().map_or(0, |workspace| {
+        workspace.collaborators.iter().filter(present).count()
+    })
 }
 
 #[cfg(test)]
