@@ -42,6 +42,8 @@ pub enum DragTarget {
 }
 
 pub struct ColorPicker {
+    /// Fluent message id spoken for the complete colour control.
+    accessible_name: Option<String>,
     color: Color,
     on_change: Option<Box<dyn FnMut(Color)>>,
     rect: Rect,
@@ -78,6 +80,7 @@ pub struct ColorPicker {
 impl ColorPicker {
     pub fn new(initial: Color) -> Self {
         let mut s = Self {
+            accessible_name: None,
             color: initial,
             on_change: None,
             rect: Rect::ZERO,
@@ -108,6 +111,13 @@ impl ColorPicker {
     /// *programmatic* [`set_color`] is not reported here.
     pub fn take_changed(&mut self) -> Option<Color> {
         self.changed.take()
+    }
+
+    /// Name the colour picker for assistive technology.
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self
     }
 
     /// Push a new "current colour" into the picker from the outside.
@@ -908,6 +918,7 @@ impl Widget for ColorPicker {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::ComboBox)
+                .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
                 .with_value(self.hex_string())
                 .with_state(AccessState {
                     focusable: self.is_focusable(),
