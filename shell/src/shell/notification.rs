@@ -303,6 +303,9 @@ pub struct NotificationStack {
     /// fire after expiry.
     hit_rects: Vec<(u64, Rect, Rect)>,
     rect: Rect,
+    /// Mirrored from the last paint so the frame/deadline hooks can obey
+    /// reduced motion without needing a theme argument.
+    reduce_motion: bool,
 }
 
 impl std::fmt::Debug for NotificationStack {
@@ -352,6 +355,7 @@ impl NotificationStack {
             viewport: Rect::ZERO,
             hit_rects: Vec::new(),
             rect: Rect::ZERO,
+            reduce_motion: false,
         }
     }
 
@@ -363,7 +367,15 @@ impl NotificationStack {
 
     /// Enter/exit alpha + horizontal slide: slides in from the right and
     /// fades over [`ANIM_MS`], fades out near expiry over the same window.
-    fn animation_state(n: &Notification, now: Instant) -> (f32, f64) {
+    fn animation_state(
+        n: &Notification,
+        now: Instant,
+        reduce_motion: bool,
+        travel_width: f64,
+    ) -> (f32, f64) {
+        if reduce_motion {
+            return (1.0, 0.0);
+        }
         let anim_window = Duration::from_millis(ANIM_MS);
         let age = now.saturating_duration_since(n.created_at);
         let remaining = n.dismiss_after.saturating_sub(age);
@@ -385,16 +397,31 @@ impl NotificationStack {
             1.0
         };
         let alpha = (enter * exit).clamp(0.0, 1.0);
-        let slide_dx = (1.0 - f64::from(enter)) * TOAST_WIDTH;
+        let slide_dx = (1.0 - f64::from(enter)) * travel_width;
         (alpha, slide_dx)
+    }
+
+    /// Cards keep their designed width on ordinary displays and shrink on
+    /// compact viewports instead of painting beyond the left edge.
+    fn toast_width(&self) -> f64 {
+        (self.viewport.width() - EDGE_INSET * 2.0)
+            .min(TOAST_WIDTH)
+            .max(0.0)
     }
 
     /// Locked-session collapse: a single redacted card showing only
     /// `count`, no dismiss hit-rects. Returns the card's rect (becomes
     /// `self.rect`). Split out of [`Widget::draw`].
-    fn draw_locked_card(ctx: &mut PaintCtx, x0: f64, y: f64, radius: f64, count: usize) -> Rect {
+    fn draw_locked_card(
+        ctx: &mut PaintCtx,
+        x0: f64,
+        y: f64,
+        width: f64,
+        radius: f64,
+        count: usize,
+    ) -> Rect {
         let title_size = ctx.theme.tokens.typography.scale.sm;
-        let card_rect = Rect::new(x0, y, x0 + TOAST_WIDTH, y + TOAST_HEIGHT);
+        let card_rect = Rect::new(x0, y, x0 + width, y + TOAST_HEIGHT);
         let shape = RoundedRect::from_rect(card_rect, radius);
         ctx.scene.fill(
             Fill::NonZero,
@@ -423,7 +450,7 @@ impl NotificationStack {
                 )
                     .into(),
             ),
-            Some(f64_to_f32_lossy(TOAST_WIDTH - CARD_PADDING_X * 2.0)),
+            Some(f64_to_f32_lossy(width - CARD_PADDING_X * 2.0)),
         );
         card_rect
     }
@@ -435,12 +462,13 @@ impl NotificationStack {
         ctx: &mut PaintCtx,
         x0: f64,
         y: f64,
+        width: f64,
         radius: f64,
         history_count: usize,
     ) -> Rect {
         let body_size = ctx.theme.tokens.typography.scale.xs;
         let pill_h = 30.0;
-        let pill_rect = Rect::new(x0, y, x0 + TOAST_WIDTH, y + pill_h);
+        let pill_rect = Rect::new(x0, y, x0 + width, y + pill_h);
         let shape = RoundedRect::from_rect(pill_rect, radius);
         ctx.scene.fill(
             Fill::NonZero,
@@ -484,7 +512,7 @@ impl NotificationStack {
                 (text_x, pill_rect.y0 + (pill_h - f64::from(body_size)) / 2.0).into(),
             ),
             Some(f64_to_f32_lossy(
-                TOAST_WIDTH - (text_x - pill_rect.x0) - CARD_PADDING_X,
+                width - (text_x - pill_rect.x0) - CARD_PADDING_X,
             )),
         );
         pill_rect
@@ -499,17 +527,18 @@ impl NotificationStack {
         snapshot: &[Notification],
         now: Instant,
         x0_rest: f64,
+        width: f64,
         mut y: f64,
         bounds: &mut StackBounds,
     ) {
         for n in snapshot {
-            let (alpha, slide_dx) = Self::animation_state(n, now);
+            let (alpha, slide_dx) = Self::animation_state(n, now, self.reduce_motion, width);
             if alpha <= 0.0 {
                 y += TOAST_HEIGHT + TOAST_GAP;
                 continue;
             }
             let card_x0 = x0_rest + slide_dx;
-            let card_rect = Rect::new(card_x0, y, card_x0 + TOAST_WIDTH, y + TOAST_HEIGHT);
+            let card_rect = Rect::new(card_x0, y, card_x0 + width, y + TOAST_HEIGHT);
             bounds.expand(card_rect.y0, card_rect.y1);
 
             // This stack owns what to show + click routing; the toast
@@ -596,6 +625,7 @@ impl Widget for NotificationStack {
         _presence: &PresenceCtx,
     ) {
         self.hit_rects.clear();
+        self.reduce_motion = theme.reduce_motion;
         if self.viewport.area() == 0.0 {
             return;
         }
@@ -619,8 +649,13 @@ impl Widget for NotificationStack {
             return;
         }
 
+        let width = self.toast_width();
+        if width <= 0.0 {
+            self.rect = Rect::ZERO;
+            return;
+        }
         let radius = f64::from(theme.tokens.radii.md);
-        let x0_rest = self.viewport.x1 - EDGE_INSET - TOAST_WIDTH;
+        let x0_rest = self.viewport.x1 - EDGE_INSET - width;
         let mut y = self.viewport.y0 + EDGE_INSET;
         let mut ctx = PaintCtx {
             scene,
@@ -632,7 +667,7 @@ impl Widget for NotificationStack {
         // While locked, collapse into a single redacted card: count only,
         // no dismiss hit-rects.
         if locked {
-            self.rect = Self::draw_locked_card(&mut ctx, x0_rest, y, radius, snapshot.len());
+            self.rect = Self::draw_locked_card(&mut ctx, x0_rest, y, width, radius, snapshot.len());
             return;
         }
 
@@ -643,15 +678,15 @@ impl Widget for NotificationStack {
 
         // Muted, no hit-rect — reads as a status chip, not a dismissible toast.
         if dnd {
-            let pill_rect = Self::draw_dnd_pill(&mut ctx, x0_rest, y, radius, history_count);
+            let pill_rect = Self::draw_dnd_pill(&mut ctx, x0_rest, y, width, radius, history_count);
             bounds.expand(pill_rect.y0, pill_rect.y1);
             y += pill_rect.height() + TOAST_GAP;
         }
 
-        self.draw_toast_cards(&mut ctx, &snapshot, now, x0_rest, y, &mut bounds);
+        self.draw_toast_cards(&mut ctx, &snapshot, now, x0_rest, width, y, &mut bounds);
 
         self.rect = if bounds.min_y.is_finite() {
-            Rect::new(x0_rest, bounds.min_y, x0_rest + TOAST_WIDTH, bounds.max_y)
+            Rect::new(x0_rest, bounds.min_y, x0_rest + width, bounds.max_y)
         } else {
             Rect::ZERO
         };
@@ -694,6 +729,47 @@ impl Widget for NotificationStack {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        if self.reduce_motion {
+            return false;
+        }
+        let now = Instant::now();
+        let window = Duration::from_millis(ANIM_MS);
+        self.chrome
+            .borrow()
+            .notifications()
+            .iter()
+            .any(|notification| {
+                let age = now.saturating_duration_since(notification.created_at);
+                let remaining = notification.dismiss_after.saturating_sub(age);
+                age < window || (!remaining.is_zero() && remaining <= window)
+            })
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        let window = Duration::from_millis(ANIM_MS);
+        let now = Instant::now();
+        self.chrome
+            .borrow()
+            .notifications()
+            .iter()
+            .filter_map(|notification| {
+                let expiry = notification
+                    .created_at
+                    .checked_add(notification.dismiss_after)?;
+                if self.reduce_motion {
+                    return Some(expiry);
+                }
+                let exit_start = expiry
+                    .checked_sub(window)
+                    .unwrap_or(notification.created_at);
+                // While an animation is active, the animation-frame hook drives
+                // it; the next useful sleeping deadline is the next phase edge.
+                Some(if exit_start > now { exit_start } else { expiry })
+            })
+            .min()
     }
 
     /// A live region so a screen reader announces a freshly-posted toast.
@@ -772,6 +848,41 @@ mod tests {
         assert_eq!(ch.notifications()[0].title, "Hello");
         assert_eq!(ch.notifications()[0].body, "World");
         assert_eq!(ch.notifications()[0].severity, NotificationSeverity::Info);
+    }
+
+    #[test]
+    fn compact_viewport_keeps_notification_inside_both_edges() {
+        let chrome = new_chrome();
+        let mut stack = NotificationStack::new(chrome);
+        stack.set_viewport(Rect::new(0.0, 0.0, 320.0, 480.0));
+        let width = stack.toast_width();
+        let x0 = stack.viewport.x1 - EDGE_INSET - width;
+        assert_eq!(width, 272.0);
+        assert_eq!(x0, EDGE_INSET);
+    }
+
+    #[test]
+    fn live_notification_requests_entry_frames_and_a_future_exit_wake() {
+        let chrome = new_chrome();
+        chrome.borrow_mut().push_notification("Saved", "Ready");
+        let stack = NotificationStack::new(chrome);
+        assert!(Widget::needs_animation_frame(&stack));
+        assert!(Widget::next_wake_deadline(&stack).is_some());
+    }
+
+    #[test]
+    fn reduced_motion_notification_is_settled_and_only_wakes_for_expiry() {
+        let chrome = new_chrome();
+        chrome.borrow_mut().push_notification("Saved", "Ready");
+        let mut stack = NotificationStack::new(chrome);
+        stack.reduce_motion = true;
+        assert!(!Widget::needs_animation_frame(&stack));
+        assert!(Widget::next_wake_deadline(&stack).is_some());
+        let n = stack.chrome.borrow().notifications()[0].clone();
+        assert_eq!(
+            NotificationStack::animation_state(&n, Instant::now(), true, 272.0),
+            (1.0, 0.0)
+        );
     }
 
     #[test]
