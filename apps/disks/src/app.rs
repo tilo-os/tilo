@@ -3917,6 +3917,7 @@ fn parse_pending(s: &str) -> Option<Pending> {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
 
