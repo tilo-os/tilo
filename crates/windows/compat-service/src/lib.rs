@@ -62,9 +62,9 @@ pub use resources::SystemResourceBroker;
 pub use service::{
     AccessSummary, CompatibilityService, ExplainStatus, InstallOutcome, InstallReceipt,
     LaunchInput, LaunchReceipt, MatchReason, RouteKind, ServiceError, UnavailableVmDelegate,
-    VmAvailability, VmDelegate, VmInstallCandidate, VmInstallConfirmation, VmInstallation,
-    VmInstallationPhase, VmInstallerInput, VmInstallerKind, VmInventory, VmPublishedApplication,
-    VmRouteRequest,
+    VmAvailability, VmCandidatePublication, VmDelegate, VmInstallCandidate, VmInstallConfirmation,
+    VmInstallation, VmInstallationPhase, VmInstallerInput, VmInstallerKind, VmInventory,
+    VmPublishedApplication, VmRouteRequest,
 };
 pub use session::{
     CapabilityAuthority, CompatSessionHandle, LauncherAuthenticator, ManagedCompatibility,
