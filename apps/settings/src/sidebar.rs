@@ -226,11 +226,10 @@ impl Widget for SidebarRow {
         // vertical breathing room so the highlight reads as a deliberate
         // selection chip rather than a full-bleed band.
         let radius = f64::from(theme.tokens.radii.md);
-        let glyph = self.category.glyph();
-        let (glyph_w, _) = text_renderer.measure(glyph, ROW_TEXT_SIZE, None);
+        let icon_size = 18.0;
         // All positions come from one geometry pass so the drawn layout and the
         // alignment test read the exact same math.
-        let geo = RowGeometry::compute(self.rect, f64::from(glyph_w));
+        let geo = RowGeometry::compute(self.rect, icon_size);
 
         let highlight = if self.active {
             Some(theme.accent_primary)
@@ -255,13 +254,17 @@ impl Widget for SidebarRow {
             theme.text_primary
         };
 
-        text_renderer.draw_text(
+        let icon_y = self.rect.center().y - icon_size / 2.0;
+        self.category.icon().draw(
             scene,
-            glyph,
-            ROW_TEXT_SIZE,
+            transform,
+            Rect::new(
+                geo.icon_x,
+                icon_y,
+                geo.icon_x + icon_size,
+                icon_y + icon_size,
+            ),
             fg,
-            transform * Affine::translate((geo.icon_x, geo.text_y)),
-            None,
         );
         let label = self.category.label();
         text_renderer.draw_text(
