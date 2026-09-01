@@ -458,9 +458,9 @@ impl Offer {
         &self.descriptor.address
     }
 
-    /// Whether performing it must supply text.
-    pub fn wants_text(&self) -> bool {
-        self.descriptor.input.wants_text()
+    /// Whether performing it requires a structured argument object.
+    pub fn wants_arguments(&self) -> bool {
+        !self.descriptor.params.is_empty()
     }
 
     /// Whether the text it wants is the address of content some other
@@ -474,6 +474,28 @@ impl Offer {
         self.descriptor.input.wants_content()
     }
 
+    /// Deterministic floor for the common one-text-parameter action. Richer
+    /// shapes are deliberately left to the structured planner; guessing how
+    /// prose maps onto multiple or non-text fields would violate the schema.
+    pub fn arguments_from_literal(
+        &self,
+        instruction: &str,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let [param] = self.descriptor.params.as_slice() else {
+            return None;
+        };
+        if !matches!(
+            param.ty,
+            qos_actions::ParamType::Text | qos_actions::ParamType::Secret
+        ) {
+            return None;
+        }
+        let literal = quoted_literal(instruction)?;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(param.name.to_string(), serde_json::Value::String(literal));
+        Some(arguments)
+    }
+
     /// One line, in the app's own words: what this does and what it does it
     /// to.
     pub fn summary(&self) -> String {
@@ -483,24 +505,15 @@ impl Offer {
             self.descriptor.resource_label,
             self.descriptor.resource_kind
         );
-        if let qos_actions::InputSpec::Text {
-            prompt, collects, ..
-        } = &self.descriptor.input
-        {
-            match collects {
-                qos_actions::Collects::Words => {
-                    let _ = write!(s, "; takes text: {prompt}");
-                }
-                // Said differently on purpose: a reader offered this
-                // alongside a rename must not conclude it can be performed
-                // by saying something.
-                qos_actions::Collects::Content => {
-                    let _ = write!(
-                        s,
-                        "; takes what an earlier step produced, not words: {prompt}"
-                    );
-                }
-            }
+        if !self.descriptor.params.is_empty() {
+            let names = self
+                .descriptor
+                .params
+                .iter()
+                .map(|param| format!("{}: {}", param.name, param.ty.label()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = write!(s, "; arguments {{{names}}}");
         }
         if let Some(d) = &self.descriptor.description {
             let _ = write!(s, ". {d}");
@@ -979,7 +992,7 @@ pub enum NoMatch {
 pub fn from_verbs<'a>(
     rest: &str,
     offers: &'a [Offer],
-) -> Result<(&'a Offer, Option<String>), NoMatch> {
+) -> Result<(&'a Offer, serde_json::Map<String, serde_json::Value>), NoMatch> {
     let words = keywords(rest);
     if words.is_empty() || offers.is_empty() {
         return Err(NoMatch::Nothing);
@@ -1038,10 +1051,10 @@ pub fn from_verbs<'a>(
         return Err(NoMatch::Nothing);
     };
     if !collects_a_value_said(chosen) {
-        return Ok((chosen, None));
+        return Ok((chosen, serde_json::Map::new()));
     }
-    match said {
-        Some(text) => Ok((chosen, Some(text))),
+    match chosen.arguments_from_literal(rest) {
+        Some(arguments) => Ok((chosen, arguments)),
         None => Err(NoMatch::NeedsText(chosen.descriptor.action_label.clone())),
     }
 }
@@ -1057,7 +1070,7 @@ pub fn from_verbs<'a>(
 /// place. This is the question to ask of an instruction and an operation
 /// together — whether what the one said is what the other takes.
 fn collects_a_value_said(offer: &Offer) -> bool {
-    offer.wants_text() && !offer.wants_content()
+    offer.wants_arguments() && !offer.wants_content()
 }
 
 #[cfg(test)]
@@ -1137,6 +1150,15 @@ mod tests {
         label: &str,
         input: qos_actions::InputSpec,
     ) -> Offer {
+        let params = matches!(&input, qos_actions::InputSpec::Text { .. })
+            .then(|| {
+                vec![qos_actions::ActionParam::required(
+                    "value",
+                    qos_actions::ParamType::Text,
+                    "value",
+                )]
+            })
+            .unwrap_or_default();
         Offer {
             app,
             descriptor: ActionDescriptor {
@@ -1148,7 +1170,7 @@ mod tests {
                 locus: qos_actions::ExecutionLocus::ClientLocal,
                 kind: qos_actions::OperationKind::Document,
                 contract: ActionContract::default(),
-                params: Vec::new(),
+                params,
                 input,
             },
         }
@@ -1199,12 +1221,15 @@ mod tests {
             "a quoted region must reach the crop that collects one, not {}",
             chosen.descriptor.action_label,
         );
-        assert_eq!(argument.as_deref(), Some("0.25,0.25,0.5,0.5"));
+        assert_eq!(
+            argument.get("value"),
+            Some(&serde_json::Value::String("0.25,0.25,0.5,0.5".into()))
+        );
 
         let (chosen, argument) = from_verbs("crop the photograph", &offers)
             .expect("with no region said, the crop that needs none is the one that can act");
         assert_eq!(chosen.address().action, "crop-square");
-        assert_eq!(argument, None);
+        assert!(argument.is_empty());
 
         // What is gone is a false ambiguity, not the mechanism: two
         // operations that both take nothing are still not told apart by an
@@ -1420,7 +1445,7 @@ mod tests {
             "an empty room is missing every app the agent speaks"
         );
         assert!(
-            empty.iter().all(|o| !o.wants_text()),
+            empty.iter().all(|o| !o.wants_arguments()),
             "opening an application takes no argument"
         );
 

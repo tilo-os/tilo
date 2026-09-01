@@ -351,6 +351,25 @@ fn hunk_preview(h: &MergeHunk) -> String {
     t
 }
 
+/// Content-derived identity for an externally-derived merge hunk. The model
+/// can be recomputed or reordered without making an old address point at a
+/// different conflict. The occurrence number only distinguishes byte-equal
+/// hunks, which are semantically interchangeable until one changes.
+fn hunk_resource_id(h: &MergeHunk, occurrence: usize) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in h
+        .base
+        .iter()
+        .chain(&h.ours)
+        .chain(&h.theirs)
+        .flat_map(|line| line.bytes().chain([0xff]))
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("diffmerge.conflict:{hash:016x}:{occurrence}")
+}
+
 /// Build the resource tree Diff currently has open: the merge, its change/
 /// conflict hunks (each exporting the take-a-side and custom-resolve actions),
 /// and a merged-output edit at the root — every document-mutating operation
@@ -411,6 +430,7 @@ pub fn provide_resources(ctx: &MergeResourceCtx, _doc: &AutoCommit) -> Vec<Resou
     ));
 
     let mut ordinal = 0usize;
+    let mut identities = std::collections::BTreeMap::<String, usize>::new();
     for (i, h) in ctx.model.hunks.iter().enumerate() {
         if !h.is_change {
             continue;
@@ -428,11 +448,11 @@ pub fn provide_resources(ctx: &MergeResourceCtx, _doc: &AutoCommit) -> Vec<Resou
             format!("{tag} {ordinal}: {preview}")
         };
 
-        let mut hunk_res = Resource::new(
-            format!("diffmerge.conflict:{i}"),
-            "diffmerge.conflict",
-            label,
-        );
+        let identity = hunk_resource_id(h, 0);
+        let occurrence = identities.entry(identity).or_default();
+        let resource_id = hunk_resource_id(h, *occurrence);
+        *occurrence = occurrence.saturating_add(1);
+        let mut hunk_res = Resource::new(resource_id, "diffmerge.conflict", label);
         hunk_res = hunk_res.with_action(immediate_choice(
             &ctx.model,
             i,
@@ -574,6 +594,23 @@ mod tests {
         assert!(
             labels.iter().any(|l| l.contains("Replace merged output")),
             "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn conflict_identity_depends_on_content_not_hunk_position() {
+        let (ctx, hunk) = conflict_ctx();
+        let conflict = &ctx.model.hunks[hunk];
+        let (rebuilt, rebuilt_hunk) = conflict_ctx();
+        assert_eq!(
+            hunk_resource_id(conflict, 0),
+            hunk_resource_id(&rebuilt.model.hunks[rebuilt_hunk], 0),
+            "rebuilding the model preserves the externally visible address"
+        );
+        assert_ne!(
+            hunk_resource_id(conflict, 0),
+            hunk_resource_id(conflict, 1),
+            "byte-identical conflicts still receive distinct addresses"
         );
     }
 

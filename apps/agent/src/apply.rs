@@ -506,6 +506,34 @@ impl Editor {
         Ok((!delta.is_empty()).then_some(delta))
     }
 
+    /// Typed counterpart to [`invoke`](Self::invoke). This is the canonical
+    /// headless path: the descriptor's complete parameter schema is bound by
+    /// the shared door before an app action is decoded or mutates state.
+    pub fn invoke_json(
+        &mut self,
+        view: &View,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        registry: &ActionRegistry,
+    ) -> Result<Option<Vec<u8>>, DoorError> {
+        let resources = self.resources(view);
+        let mut transport = LocalTransport::new();
+        self.doc.set_actor(self.actor.clone());
+        let text_before = block_texts(&self.doc);
+        door::invoke_json(
+            &mut self.doc,
+            &resources,
+            address,
+            arguments,
+            &self.actor.to_bytes(),
+            registry,
+            &mut transport,
+        )?;
+        self.stamp_authorship(&text_before);
+        let delta = self.doc.save_incremental();
+        Ok((!delta.is_empty()).then_some(delta))
+    }
+
     /// Mark whatever text this replica just added with the durable
     /// `author` mark, so the document itself records who wrote it. Read
     /// back by [`qdoc::author_runs`]. A mark rather than a block field

@@ -27,8 +27,9 @@ pub enum Instruction {
     Perform {
         /// `"<resource id>#<action id>"`.
         id: String,
-        /// The text the operation collects, when it collects any.
-        argument: Option<String>,
+        /// Canonical JSON argument object, keyed exactly as the live
+        /// descriptor declares. Empty for a nullary operation.
+        arguments: serde_json::Map<String, serde_json::Value>,
     },
     /// Turn the run of bullets above the instruction into a table.
     Table,
@@ -125,9 +126,9 @@ impl Instruction {
             return by_keyword;
         }
         match surface::from_verbs(rest, offers) {
-            Ok((offer, argument)) => Instruction::Perform {
+            Ok((offer, arguments)) => Instruction::Perform {
                 id: offer.id(),
-                argument,
+                arguments,
             },
             Err(why) => Instruction::Unknown(unmatched(rest, &why)),
         }
@@ -155,7 +156,7 @@ impl Instruction {
     pub fn from_answer(
         id: &str,
         rest: &str,
-        supplied: Option<&str>,
+        supplied: Option<&serde_json::Map<String, serde_json::Value>>,
         offers: &[Offer],
     ) -> Result<Instruction, Refused> {
         if id == NOTHING_FITS {
@@ -170,28 +171,30 @@ impl Instruction {
         if offer.wants_content() {
             return Ok(Instruction::Perform {
                 id: offer.id(),
-                argument: None,
+                arguments: serde_json::Map::new(),
             });
         }
-        if offer.wants_text() {
-            let literal = supplied
-                .map(str::to_string)
-                .or_else(|| surface::quoted_literal(rest))
-                .ok_or_else(|| {
-                    Refused::Unusable(format!(
-                        "{} collects text and neither the answer nor the \
-                         instruction supplied any",
-                        offer.descriptor.action_label
-                    ))
-                })?;
+        if offer.wants_arguments() {
+            let arguments = supplied
+                .cloned()
+                .or_else(|| offer.arguments_from_literal(rest));
+            let arguments = arguments.ok_or_else(|| {
+                Refused::Unusable(format!(
+                    "{} requires structured arguments and neither the answer nor the \
+                     instruction supplied a valid object",
+                    offer.descriptor.action_label
+                ))
+            })?;
+            qos_actions::ActionArgs::bind_json(&offer.descriptor.params, &arguments)
+                .map_err(|error| Refused::Unusable(error.to_string()))?;
             return Ok(Instruction::Perform {
                 id: offer.id(),
-                argument: Some(literal),
+                arguments,
             });
         }
         Ok(Instruction::Perform {
             id: offer.id(),
-            argument: None,
+            arguments: serde_json::Map::new(),
         })
     }
 }
@@ -987,6 +990,16 @@ mod tests {
         label: &str,
         collects: Option<qos_actions::Collects>,
     ) -> Offer {
+        let params = collects
+            .is_some()
+            .then(|| {
+                vec![qos_actions::ActionParam::required(
+                    "value",
+                    qos_actions::ParamType::Text,
+                    "value",
+                )]
+            })
+            .unwrap_or_default();
         Offer {
             app,
             descriptor: qos_actions::door::ActionDescriptor {
@@ -998,7 +1011,7 @@ mod tests {
                 locus: qos_actions::ExecutionLocus::ClientLocal,
                 kind: qos_actions::OperationKind::Document,
                 contract: qos_actions::ActionContract::default(),
-                params: Vec::new(),
+                params,
                 input: match collects {
                     None => qos_actions::InputSpec::None,
                     Some(c) => qos_actions::InputSpec::Text {
@@ -1089,10 +1102,10 @@ mod tests {
         // "centre" and "notes" together land on exactly one offer: the
         // heading's own alignment, not the document's.
         let one = Instruction::from_floor("centre the Notes", &offers);
-        let Instruction::Perform { id, argument } = &one else {
+        let Instruction::Perform { id, arguments } = &one else {
             panic!("a single clear match must resolve to an address, got {one:?}");
         };
-        assert_eq!(*argument, None);
+        assert!(arguments.is_empty());
         assert!(
             surface::find(&offers, id).is_some_and(|o| o
                 .descriptor
@@ -1150,7 +1163,7 @@ mod tests {
                 answered,
                 Ok(Instruction::Perform {
                     id: offer.id(),
-                    argument: None
+                    arguments: serde_json::Map::new()
                 }),
                 "{} is offered but the gate would not dispatch it",
                 offer.id()
@@ -1195,7 +1208,7 @@ mod tests {
             answered,
             Ok(Instruction::Perform {
                 id: "word-processor.section:b7#place-image".into(),
-                argument: None,
+                arguments: serde_json::Map::new(),
             })
         );
     }
@@ -1228,18 +1241,73 @@ mod tests {
             ),
             Ok(Instruction::Perform {
                 id: "files.entry:/a#rename".into(),
-                argument: Some("b.md".into()),
+                arguments: serde_json::Map::from_iter([(
+                    "value".into(),
+                    serde_json::Value::String("b.md".into())
+                )]),
             }),
             "a literal quoted in the instruction is used"
         );
         assert_eq!(
-            Instruction::from_answer("files.entry:/a#rename", "rename it", Some("c.md"), &offers),
+            Instruction::from_answer(
+                "files.entry:/a#rename",
+                "rename it",
+                Some(&serde_json::Map::from_iter([(
+                    "value".into(),
+                    serde_json::Value::String("c.md".into())
+                )])),
+                &offers,
+            ),
             Ok(Instruction::Perform {
                 id: "files.entry:/a#rename".into(),
-                argument: Some("c.md".into()),
+                arguments: serde_json::Map::from_iter([(
+                    "value".into(),
+                    serde_json::Value::String("c.md".into())
+                )]),
             }),
             "a literal the answer itself supplied is used even with no quote in the instruction"
         );
+    }
+
+    #[test]
+    fn structured_answers_preserve_types_and_are_bound_before_dispatch() {
+        let mut rich = offer("sheets", "sheets.range:r1", "fill", "Fill range", None);
+        rich.descriptor.params = vec![
+            qos_actions::ActionParam::required(
+                "count",
+                qos_actions::ParamType::Integer,
+                "Rows to fill",
+            ),
+            qos_actions::ActionParam::required(
+                "enabled",
+                qos_actions::ParamType::Boolean,
+                "Whether formulas are enabled",
+            ),
+        ];
+        let offers = vec![rich];
+        let valid = serde_json::Map::from_iter([
+            ("count".into(), serde_json::json!(3)),
+            ("enabled".into(), serde_json::json!(true)),
+        ]);
+        let instruction =
+            Instruction::from_answer("sheets.range:r1#fill", "fill it", Some(&valid), &offers)
+                .expect("the descriptor accepts its typed object");
+        assert_eq!(
+            instruction,
+            Instruction::Perform {
+                id: "sheets.range:r1#fill".into(),
+                arguments: valid,
+            }
+        );
+
+        let wrong = serde_json::Map::from_iter([
+            ("count".into(), serde_json::json!("3")),
+            ("enabled".into(), serde_json::json!(true)),
+        ]);
+        assert!(matches!(
+            Instruction::from_answer("sheets.range:r1#fill", "fill it", Some(&wrong), &offers,),
+            Err(Refused::Unusable(_))
+        ));
     }
 
     // -- Sequences: Plan, Step, clauses -----------------------------------
@@ -1348,7 +1416,7 @@ mod tests {
 
         let perform = |o: &Offer| Instruction::Perform {
             id: o.id(),
-            argument: None,
+            arguments: serde_json::Map::new(),
         };
         assert!(
             Step::bound(perform(&content), &offers).carries,
@@ -1377,14 +1445,14 @@ mod tests {
         assert!(
             Step::own(Instruction::Perform {
                 id: open.id(),
-                argument: None
+                arguments: serde_json::Map::new()
             })
             .opens_an_application()
         );
         assert!(
             !Step::own(Instruction::Perform {
                 id: ordinary.id(),
-                argument: None
+                arguments: serde_json::Map::new()
             })
             .opens_an_application()
         );
@@ -1417,7 +1485,7 @@ mod tests {
             steps: vec![
                 Step::own(Instruction::Perform {
                     id: open.id(),
-                    argument: None,
+                    arguments: serde_json::Map::new(),
                 }),
                 Step::own(Instruction::Unknown("crop it square".into())),
             ],
@@ -1433,7 +1501,7 @@ mod tests {
                 Step::own(Instruction::Unknown("crop it square".into())),
                 Step::own(Instruction::Perform {
                     id: open.id(),
-                    argument: None,
+                    arguments: serde_json::Map::new(),
                 }),
             ],
         };
