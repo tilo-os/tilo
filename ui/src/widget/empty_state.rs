@@ -256,6 +256,10 @@ pub struct EmptyState {
     title: String,
     message: Option<String>,
     action_label: Option<String>,
+    /// Optional CRDT action key, matching [`super::Button`]'s action-path
+    /// contract. The drain channel remains available for immediate-mode
+    /// parents; a retained shell can instead observe this semantic key.
+    action_path: Option<String>,
     /// Drained flag set when the action pill is clicked.
     action_fired: bool,
     rect: Rect,
@@ -276,6 +280,7 @@ impl EmptyState {
             title: title.into(),
             message: None,
             action_label: None,
+            action_path: None,
             action_fired: false,
             rect: Rect::ZERO,
             action_rect: Rect::ZERO,
@@ -306,6 +311,23 @@ impl EmptyState {
         self
     }
 
+    /// Publish activation at `path` in the app document as well as through
+    /// [`Self::take_action`]. This gives an empty state's primary action the
+    /// same pointer, keyboard and accessibility route as a normal button.
+    #[must_use]
+    pub fn with_action_path(mut self, path: impl Into<String>) -> Self {
+        self.action_path = Some(path.into());
+        self
+    }
+
+    fn fire_action(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.action_fired = true;
+        if let Some(action_path) = &self.action_path {
+            use automerge::transaction::Transactable as _;
+            let _ = state.put(path, action_path, true);
+        }
+    }
+
     /// Drain the "action pill was clicked" signal (fires once per click). The
     /// host reacts by mutating its own model — e.g. opening a compose sheet.
     pub fn take_action(&mut self) -> bool {
@@ -316,6 +338,17 @@ impl EmptyState {
     /// Exposed so tests can assert the hit target without rendering to pixels.
     pub fn action_rect(&self) -> Rect {
         self.action_rect
+    }
+
+    /// Place the empty state inside a rect computed by an immediate-mode
+    /// parent.
+    ///
+    /// Some application shells use Taffy for their root allocation but split
+    /// their internal panes with production-specific geometry. This keeps the
+    /// empty state a real widget (focus, accessibility and activation included)
+    /// without forcing those shells to duplicate its paint and hit-testing.
+    pub fn apply_layout_external(&mut self, rect: Rect) {
+        self.rect = rect;
     }
 
     /// Immediate-mode paint of an empty state centered inside `rect`, for the
@@ -431,8 +464,8 @@ impl Widget for EmptyState {
         event: &WindowEvent,
         scale_factor: f64,
         _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AutoCommit,
+        path: &ObjId,
         handled: &mut bool,
         _focus_target: &mut Option<NodeId>,
         _node_id: NodeId,
@@ -447,7 +480,7 @@ impl Widget for EmptyState {
                 button: MouseButton::Left,
                 ..
             } if self.action_label.is_some() && self.action_rect.contains(self.last_cursor) => {
-                self.action_fired = true;
+                self.fire_action(state, path);
                 *handled = true;
             }
             _ => {}
@@ -477,11 +510,11 @@ impl Widget for EmptyState {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AutoCommit,
+        path: &ObjId,
     ) -> bool {
         if self.action_label.is_some() && matches!(action, crate::a11y::Action::Activate) {
-            self.action_fired = true;
+            self.fire_action(state, path);
             true
         } else {
             false
@@ -742,6 +775,49 @@ mod tests {
             &automerge::ROOT,
         ));
         assert!(es.take_action(), "Enter/Space/AT Activate reaches the CTA");
+    }
+
+    #[test]
+    fn action_path_is_shared_by_pointer_and_accessibility_activation() {
+        use automerge::{ReadDoc as _, Value, transaction::Transactable as _};
+
+        let key = "empty.open";
+        let mut es = EmptyState::new("Nothing here")
+            .with_action("Open")
+            .with_action_path(key);
+        lay_out(&mut es, 600.0, 400.0);
+        let _ = draw(&mut es);
+
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.leaf_node(Style::default());
+        let mut handled = false;
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        for event in [cursor(es.action_rect().center()), press()] {
+            es.handle_event(
+                &event,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
+        }
+        assert!(matches!(
+            doc.get(&root, key),
+            Ok(Some((Value::Scalar(value), _))) if value.as_ref().to_bool() == Some(true)
+        ));
+
+        let _ = doc.put(&root, key, false);
+        assert!(es.perform_action(&crate::a11y::Action::Activate, &mut doc, &root));
+        assert!(matches!(
+            doc.get(&root, key),
+            Ok(Some((Value::Scalar(value), _))) if value.as_ref().to_bool() == Some(true)
+        ));
     }
 
     #[test]
