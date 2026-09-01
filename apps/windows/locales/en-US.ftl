@@ -1,0 +1,17 @@
+windows-app-title = Windows Apps
+windows-catalogue = Compatibility catalogue
+windows-empty-title = No Windows apps yet
+windows-empty-body = Installed Windows software and catalogue recommendations will appear here.
+windows-why-route = Why this opens here
+windows-open-with = Open with
+windows-capsule-access = Capsule and access
+windows-runner = Runner
+windows-capsule = Capsule
+windows-private-data = Private data
+windows-host-access = Host access
+windows-route-wine = Wine
+windows-route-proton = Proton
+windows-route-vm = Windows VM
+windows-use-recommendation = Use recommendation
+windows-route-set = Route updated. Launches still require local confirmation.
+windows-route-reset = Using the catalogue recommendation again.
