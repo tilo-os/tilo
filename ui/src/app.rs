@@ -1929,6 +1929,26 @@ impl App {
         if raw == 0 {
             return None;
         }
+        if raw >= crate::accesskit_bridge::SYNTHETIC_ID_BASE
+            && let Some((owner, path)) =
+                crate::accesskit_bridge::resolve_synthetic_target(self.root_widget.as_ref(), target)
+        {
+            // The resolver's immutable walk has ended; `owner` points into
+            // `root_widget`, which this `&mut self` owns exclusively here.
+            let owner = unsafe { &mut *(owner as *mut dyn Widget) };
+            return match action {
+                Action::Focus => {
+                    if owner.focus_synthetic_accessibility(&path) {
+                        self.needs_sync = true;
+                    }
+                    None
+                }
+                Action::Activate | Action::ToggleCheck => owner
+                    .synthetic_accessibility_rect(&path)
+                    .map(|rect| (rect.center().x, rect.center().y)),
+                _ => None,
+            };
+        }
         let taffy_id = NodeId::from(raw.saturating_sub(1));
         let &w_ptr = self.node_map.get(&taffy_id)?;
 
