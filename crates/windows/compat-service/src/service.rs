@@ -243,6 +243,36 @@ pub struct VmRouteRequest<'a> {
 pub struct VmAvailability {
     pub available: bool,
     pub detail: String,
+    /// Server-derived union of resources currently visible inside the one
+    /// shared Windows user/session. It is never accepted from a manager
+    /// request, because Windows applications in that session are not mutually
+    /// isolated from one another.
+    #[serde(default)]
+    pub shared_session: VmSharedSessionLeaseSummary,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VmSharedSessionGrantKind {
+    AudioPlayback,
+    Clipboard,
+    Microphone,
+    NetworkEgress,
+    PortalFilesReadOnly,
+    PortalFilesReadWrite,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VmSharedSessionContributor {
+    pub published_application_id: String,
+    pub display_name: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VmSharedSessionLeaseSummary {
+    pub active: bool,
+    pub effective_grants: Vec<VmSharedSessionGrantKind>,
+    pub contributors: Vec<VmSharedSessionContributor>,
 }
 
 impl VmAvailability {
@@ -251,6 +281,7 @@ impl VmAvailability {
         Self {
             available: true,
             detail: detail.into(),
+            shared_session: VmSharedSessionLeaseSummary::default(),
         }
     }
 
@@ -259,6 +290,7 @@ impl VmAvailability {
         Self {
             available: false,
             detail: detail.into(),
+            shared_session: VmSharedSessionLeaseSummary::default(),
         }
     }
 }
@@ -1781,6 +1813,7 @@ mod tests {
             Executor,
             Vm {
                 calls: Arc::clone(&calls),
+                install_calls: Arc::new(AtomicUsize::new(0)),
             },
             HostSession {
                 uid: 1000,
