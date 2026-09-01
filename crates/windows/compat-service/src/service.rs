@@ -1644,11 +1644,22 @@ mod tests {
             input: VmInstallerInput,
             mut source: File,
         ) -> Result<VmInstallation, windows_vm::LaunchError> {
-            assert_eq!(workspace_id, "workspace");
-            assert_eq!(input.source_name, "Favorite_App.exe");
+            if workspace_id != "workspace" || input.source_name != "Favorite_App.exe" {
+                return Err(windows_vm::LaunchError::InvalidRequest(
+                    "test retained installer identity",
+                ));
+            }
             let mut bytes = Vec::new();
-            source.read_to_end(&mut bytes).unwrap();
-            assert_eq!(hex_lower(Sha256::digest(&bytes)), input.sha256);
+            source.read_to_end(&mut bytes).map_err(|error| {
+                windows_vm::LaunchError::CapabilityBroker(format!(
+                    "could not read retained test installer: {error}"
+                ))
+            })?;
+            if hex_lower(Sha256::digest(&bytes)) != input.sha256 {
+                return Err(windows_vm::LaunchError::InvalidRequest(
+                    "test retained installer digest",
+                ));
+            }
             self.install_calls.fetch_add(1, Ordering::SeqCst);
             Ok(VmInstallation {
                 detail: "Windows setup is starting.".to_string(),

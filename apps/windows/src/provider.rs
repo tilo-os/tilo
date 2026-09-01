@@ -1132,6 +1132,7 @@ fn catalogue_from_managed(
         .shared_session
         .effective_grants
         .iter()
+        .copied()
         .map(shared_session_grant_label)
         .map(str::to_string)
         .collect::<Vec<_>>();
@@ -1414,7 +1415,7 @@ fn can_escalate_install_to_vm(installation: &ManagedInstallation) -> bool {
         )
 }
 
-fn shared_session_grant_label(grant: &compat_service::VmSharedSessionGrantKind) -> &'static str {
+fn shared_session_grant_label(grant: compat_service::VmSharedSessionGrantKind) -> &'static str {
     match grant {
         compat_service::VmSharedSessionGrantKind::AudioPlayback => "Audio playback",
         compat_service::VmSharedSessionGrantKind::Clipboard => "Clipboard",

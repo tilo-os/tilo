@@ -97,6 +97,7 @@ impl VmSharedSessionTracker {
                 grants,
             },
         );
+        drop(state);
         Ok(())
     }
 
@@ -240,9 +241,9 @@ impl VmPortalAuthority for CanonicalRailPortalAuthority {
 }
 
 /// Materialises channel-only RAIL resources from the canonical projection.
-/// The microphone's actual private PipeWire source is created by
+/// The microphone's actual private `PipeWire` source is created by
 /// [`AudioIsolatedRailLauncher`]; this lease controls whether that source and
-/// the FreeRDP redirectors exist and ensures the shared-session tracker sees
+/// the `FreeRDP` redirectors exist and ensures the shared-session tracker sees
 /// only the materialised result.
 #[derive(Debug, Default)]
 pub struct CanonicalRailCapabilityBroker {
