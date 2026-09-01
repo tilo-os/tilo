@@ -23,6 +23,15 @@ impl Route {
             Self::Vm => "VM",
         }
     }
+    /// Fluent key for a route-selection control. Model consumers that display
+    /// a route resolve this key through their own localized surface.
+    pub const fn button_key(self) -> &'static str {
+        match self {
+            Self::Wine => "windows-route-wine",
+            Self::Proton => "windows-route-proton",
+            Self::Vm => "windows-route-vm",
+        }
+    }
     pub const fn security_summary(self) -> &'static str {
         match self {
             Self::Wine | Self::Proton => {

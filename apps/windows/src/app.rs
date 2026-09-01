@@ -2,12 +2,15 @@
 use crate::actions;
 use crate::model::{Catalogue, Route};
 use crate::provider::{CompatibilityProvider, EmptyProvider, SampleProvider};
+use crate::strings;
 use automerge::{AutoCommit, ObjId};
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{Button, ButtonStyle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
@@ -20,8 +23,6 @@ const ROW_H: f64 = 72.0;
 #[derive(Clone, Copy)]
 enum Hit {
     App(usize),
-    Route(Route),
-    Reset,
 }
 
 pub struct WindowsApp {
@@ -33,6 +34,10 @@ pub struct WindowsApp {
     hits: Vec<(Rect, Hit)>,
     node: Option<NodeId>,
     notice: Option<String>,
+    route_buttons: Vec<Button>,
+    reset_button: Button,
+    route_signal: Rc<Cell<Option<Route>>>,
+    reset_signal: Rc<Cell<bool>>,
 }
 
 impl WindowsApp {
@@ -44,6 +49,23 @@ impl WindowsApp {
     }
     pub fn with_provider(provider: Box<dyn CompatibilityProvider>) -> Self {
         let catalogue = provider.catalogue();
+        let route_signal = Rc::new(Cell::new(None));
+        let reset_signal = Rc::new(Cell::new(false));
+        let route_buttons = Route::ALL
+            .iter()
+            .map(|route| {
+                let signal = Rc::clone(&route_signal);
+                let route = *route;
+                Button::new(
+                    &format!("windows-route-{}", route.short().to_ascii_lowercase()),
+                    route.button_key(),
+                    None,
+                )
+                .with_size(108.0, 32.0)
+                .on_click(move || signal.set(Some(route)))
+            })
+            .collect();
+        let reset = Rc::clone(&reset_signal);
         Self {
             provider,
             catalogue,
@@ -53,6 +75,16 @@ impl WindowsApp {
             hits: Vec::new(),
             node: None,
             notice: None,
+            route_buttons,
+            reset_button: Button::new(
+                "windows-use-recommendation",
+                "windows-use-recommendation",
+                None,
+            )
+            .with_size(195.0, 32.0)
+            .on_click(move || reset.set(true)),
+            route_signal,
+            reset_signal,
         }
     }
     fn selected_app(&self) -> Option<&crate::model::WindowsApp> {
@@ -70,27 +102,26 @@ impl WindowsApp {
                 self.selected = index;
                 self.notice = None;
             }
-            Hit::Route(route) => {
-                if let Some(id) = self.selected_app().map(|app| app.id.clone()) {
-                    self.notice = self.provider.set_route_override(&id, route).err();
-                    if self.notice.is_none() {
-                        self.notice = Some(format!(
-                            "Route set to {}. Launches still require local confirmation.",
-                            route.label()
-                        ));
-                    }
-                    self.refresh();
-                }
+        }
+    }
+    fn apply_control_signals(&mut self) {
+        if let Some(route) = self.route_signal.take()
+            && let Some(id) = self.selected_app().map(|app| app.id.clone())
+        {
+            self.notice = self.provider.set_route_override(&id, route).err();
+            if self.notice.is_none() {
+                self.notice = Some(strings::t("windows-route-set"));
             }
-            Hit::Reset => {
-                if let Some(id) = self.selected_app().map(|app| app.id.clone()) {
-                    self.notice = self.provider.reset_route_override(&id).err();
-                    if self.notice.is_none() {
-                        self.notice = Some("Using the catalogue recommendation again.".into());
-                    }
-                    self.refresh();
-                }
+            self.refresh();
+        }
+        if self.reset_signal.replace(false)
+            && let Some(id) = self.selected_app().map(|app| app.id.clone())
+        {
+            self.notice = self.provider.reset_route_override(&id).err();
+            if self.notice.is_none() {
+                self.notice = Some(strings::t("windows-route-reset"));
             }
+            self.refresh();
         }
     }
     fn fill(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
@@ -202,7 +233,7 @@ impl Widget for WindowsApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &ui::presence::PresenceCtx,
+        presence: &ui::presence::PresenceCtx,
     ) {
         Self::fill(scene, t, self.area, theme.bg_app);
         self.hits.clear();
@@ -218,7 +249,7 @@ impl Widget for WindowsApp {
             scene,
             t,
             Point::new(sidebar.x0 + PAD, sidebar.y0 + 26.0),
-            "Windows Apps",
+            &strings::t("windows-app-title"),
             21.0,
             theme.text_primary,
             TextWeight::Bold,
@@ -228,7 +259,7 @@ impl Widget for WindowsApp {
             scene,
             t,
             Point::new(sidebar.x0 + PAD, sidebar.y0 + 53.0),
-            "Compatibility catalogue",
+            &strings::t("windows-catalogue"),
             12.0,
             theme.text_dim,
             TextWeight::Regular,
@@ -295,7 +326,7 @@ impl Widget for WindowsApp {
                 scene,
                 t,
                 Point::new(detail.x0, detail.y0 + 8.0),
-                "No Windows apps yet",
+                &strings::t("windows-empty-title"),
                 28.0,
                 theme.text_primary,
                 TextWeight::Bold,
@@ -315,7 +346,7 @@ impl Widget for WindowsApp {
                 scene,
                 t,
                 Point::new(detail.x0, detail.y0 + 92.0),
-                "Installed Windows software and catalogue recommendations will appear here.",
+                &strings::t("windows-empty-body"),
                 13.0,
                 theme.text_dim,
                 TextWeight::Regular,
@@ -371,7 +402,7 @@ impl Widget for WindowsApp {
             scene,
             t,
             Point::new(card.x0 + PAD, card.y0 + 16.0),
-            "Why this opens here",
+            &strings::t("windows-why-route"),
             14.0,
             theme.text_primary,
             TextWeight::Bold,
@@ -402,7 +433,7 @@ impl Widget for WindowsApp {
             scene,
             t,
             Point::new(detail.x0, routes_y),
-            "Open with",
+            &strings::t("windows-open-with"),
             14.0,
             theme.text_primary,
             TextWeight::Bold,
@@ -410,27 +441,15 @@ impl Widget for WindowsApp {
         for (index, route) in Route::ALL.iter().enumerate() {
             let x = detail.x0 + 94.0 + index as f64 * 118.0;
             let button = Rect::new(x, routes_y - 8.0, x + 108.0, routes_y + 24.0);
-            Self::pill(
-                scene,
-                t,
-                button,
-                if *route == app.route {
-                    theme.accent_primary
+            if let Some(shared_button) = self.route_buttons.get_mut(index) {
+                shared_button.apply_layout_external(button);
+                shared_button.set_style(if *route == app.route {
+                    ButtonStyle::Primary
                 } else {
-                    theme.bg_primary
-                },
-            );
-            Self::text(
-                tr,
-                scene,
-                t,
-                Point::new(button.x0 + 11.0, button.y0 + 8.0),
-                route.label(),
-                12.0,
-                theme.text_primary,
-                TextWeight::Bold,
-            );
-            self.hits.push((button, Hit::Route(*route)));
+                    ButtonStyle::Neutral
+                });
+                shared_button.draw(scene, t, tr, theme, presence);
+            }
         }
         if app.uses_override() {
             let reset = Rect::new(
@@ -439,18 +458,9 @@ impl Widget for WindowsApp {
                 detail.x0 + 655.0,
                 routes_y + 24.0,
             );
-            Self::pill(scene, t, reset, theme.bg_primary);
-            Self::text(
-                tr,
-                scene,
-                t,
-                Point::new(reset.x0 + 10.0, reset.y0 + 8.0),
-                "Use recommendation",
-                12.0,
-                theme.text_primary,
-                TextWeight::Regular,
-            );
-            self.hits.push((reset, Hit::Reset));
+            self.reset_button.apply_layout_external(reset);
+            self.reset_button.set_style(ButtonStyle::Neutral);
+            self.reset_button.draw(scene, t, tr, theme, presence);
         }
         let info = Rect::new(
             detail.x0,
@@ -464,7 +474,7 @@ impl Widget for WindowsApp {
             scene,
             t,
             Point::new(info.x0 + PAD, info.y0 + 16.0),
-            "Capsule and access",
+            &strings::t("windows-capsule-access"),
             14.0,
             theme.text_primary,
             TextWeight::Bold,
@@ -475,7 +485,7 @@ impl Widget for WindowsApp {
             t,
             info.x0 + PAD,
             info.y0 + 46.0,
-            "Runner",
+            &strings::t("windows-runner"),
             &app.runner,
             theme,
         );
@@ -485,7 +495,7 @@ impl Widget for WindowsApp {
             t,
             info.x0 + PAD,
             info.y0 + 71.0,
-            "Capsule",
+            &strings::t("windows-capsule"),
             &app.capsule,
             theme,
         );
@@ -495,7 +505,7 @@ impl Widget for WindowsApp {
             t,
             info.x0 + PAD,
             info.y0 + 96.0,
-            "Private data",
+            &strings::t("windows-private-data"),
             &app.prefix,
             theme,
         );
@@ -505,7 +515,7 @@ impl Widget for WindowsApp {
             t,
             info.x0 + PAD,
             info.y0 + 121.0,
-            "Host access",
+            &strings::t("windows-host-access"),
             &app.access_summary(),
             theme,
         );
@@ -535,15 +545,21 @@ impl Widget for WindowsApp {
     fn handle_event(
         &mut self,
         event: &WindowEvent,
-        _scale: f64,
-        _mods: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        scale: f64,
+        mods: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
         handled: &mut bool,
-        _focus: &mut Option<NodeId>,
-        _node: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus: &mut Option<NodeId>,
+        node: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
+        for button in &mut self.route_buttons {
+            button.handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        }
+        self.reset_button
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        self.apply_control_signals();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse = Point::new(position.x, position.y);
@@ -578,6 +594,41 @@ impl Widget for WindowsApp {
     fn test_id(&self) -> Option<&str> {
         Some("windows-app")
     }
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        let mut rects = self
+            .route_buttons
+            .iter()
+            .map(|button| {
+                (
+                    button.test_id().unwrap_or_default().to_string(),
+                    button.get_rect(),
+                )
+            })
+            .collect::<Vec<_>>();
+        rects.push((
+            "windows-use-recommendation".into(),
+            self.reset_button.get_rect(),
+        ));
+        rects
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        let mut children = self
+            .route_buttons
+            .iter()
+            .map(|button| button as &dyn Widget)
+            .collect::<Vec<_>>();
+        children.push(&self.reset_button);
+        children
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let mut children = self
+            .route_buttons
+            .iter_mut()
+            .map(|button| button as &mut dyn Widget)
+            .collect::<Vec<_>>();
+        children.push(&mut self.reset_button);
+        children
+    }
 }
 
 #[cfg(test)]
@@ -587,7 +638,8 @@ mod tests {
     fn override_updates_runner_without_changing_capsule_identity() {
         let mut app = WindowsApp::new_offline();
         let capsule = app.catalogue.apps[0].capsule.clone();
-        app.hit(Hit::Route(Route::Vm));
+        app.route_signal.set(Some(Route::Vm));
+        app.apply_control_signals();
         assert_eq!(app.catalogue.apps[0].route, Route::Vm);
         assert_eq!(app.catalogue.apps[0].capsule, capsule);
     }
@@ -595,5 +647,25 @@ mod tests {
     #[test]
     fn live_manager_does_not_claim_fixture_apps_are_installed() {
         assert!(WindowsApp::new_live().catalogue.apps.is_empty());
+    }
+
+    #[test]
+    fn shared_route_controls_have_stable_automation_ids() {
+        let app = WindowsApp::new_offline();
+        assert_eq!(Widget::test_id(&app), Some("windows-app"));
+        let ids = app
+            .children()
+            .iter()
+            .filter_map(|child| child.test_id())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                "windows-route-wine",
+                "windows-route-proton",
+                "windows-route-vm",
+                "windows-use-recommendation",
+            ]
+        );
     }
 }
