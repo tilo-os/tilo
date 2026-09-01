@@ -36,8 +36,8 @@ use automerge::AutoCommit;
 
 use qos_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
-    Resource, ResourceProvider, ResultSpec, RetryPolicy,
+    EncodedAction, ExecutionLocus, OperationKind, ParamType, PermissionRequirement, Resource,
+    ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::RemoteDoc;
@@ -93,10 +93,6 @@ fn connect_spec(connection: &Connection) -> ActionSpec {
     .with_description("Open a live session to this saved connection")
     .with_contract(ActionContract {
         retry: RetryPolicy::AtMostOnce,
-        execution: ExecutionMode::Background { cancellable: true },
-        result: ResultSpec::Resource {
-            resource_kind: "remote.session".into(),
-        },
         tags: vec!["network".into(), "session".into()],
         ..ActionContract::default()
     });
@@ -570,10 +566,11 @@ mod tests {
             .find(|action| action.id == "connect")
             .unwrap();
         assert_eq!(connect.kind, OperationKind::Effect);
-        assert!(matches!(
+        assert_eq!(
             connect.contract.execution,
-            ExecutionMode::Background { cancellable: true }
-        ));
+            qos_actions::ExecutionMode::Immediate
+        );
+        assert_eq!(connect.contract.result, qos_actions::ResultSpec::None);
         assert!(
             r.actions
                 .iter()

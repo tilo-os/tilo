@@ -465,6 +465,11 @@ fn operations(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> 
         }
         revealed.reveal(o.id());
         let _ = write!(s, "  {} — {}", o.id(), o.descriptor.action_label);
+        if let qos_actions::Availability::Unavailable { reason, .. } =
+            &o.descriptor.contract.availability
+        {
+            let _ = write!(s, "; currently unavailable: {reason}");
+        }
         match &o.descriptor.input {
             qos_actions::InputSpec::Text {
                 collects: qos_actions::Collects::Words,
@@ -514,6 +519,49 @@ fn describe(input: &Value, catalogue: &Catalogue) -> String {
     );
     if let Some(description) = &d.description {
         let _ = writeln!(s, "  the application says: {description}");
+    }
+    let c = &d.contract;
+    match &c.availability {
+        qos_actions::Availability::Available => s.push_str("  availability: available\n"),
+        qos_actions::Availability::Unavailable { code, reason } => {
+            let _ = writeln!(s, "  availability: unavailable ({code}) — {reason}");
+        }
+    }
+    let _ = writeln!(
+        s,
+        "  contract: permission={:?}; risk={:?}; confirmation={:?}; retry={:?}; \
+         reversible={}; execution={:?}; result={:?}",
+        c.permission, c.risk, c.confirmation, c.retry, c.reversible, c.execution, c.result
+    );
+    if !d.params.is_empty() {
+        s.push_str("  structured arguments:\n");
+        for p in &d.params {
+            let _ = write!(
+                s,
+                "    {}: {}{} — {}",
+                p.name,
+                p.ty.label(),
+                if p.required {
+                    " (required)"
+                } else {
+                    " (optional)"
+                },
+                p.description
+            );
+            if !p.choices.is_empty() {
+                let choices = p
+                    .choices
+                    .iter()
+                    .map(|choice| choice.as_ref())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let _ = write!(s, "; choices: {choices}");
+            }
+            if let Some(schema) = &p.schema {
+                let _ = write!(s, "; constraints: {schema}");
+            }
+            s.push('\n');
+        }
     }
     match &d.input {
         qos_actions::InputSpec::None => {
@@ -668,6 +716,7 @@ mod tests {
                 description: None,
                 locus: ExecutionLocus::ClientLocal,
                 kind: qos_actions::OperationKind::Document,
+                contract: qos_actions::ActionContract::default(),
                 params: Vec::new(),
                 input,
             },
@@ -739,6 +788,7 @@ mod tests {
                     description: None,
                     locus: ExecutionLocus::ServerPreferred,
                     kind: qos_actions::OperationKind::Effect,
+                    contract: qos_actions::ActionContract::default(),
                     params: Vec::new(),
                     input: InputSpec::None,
                 },

@@ -997,6 +997,7 @@ mod tests {
                 description: None,
                 locus: qos_actions::ExecutionLocus::ClientLocal,
                 kind: qos_actions::OperationKind::Document,
+                contract: qos_actions::ActionContract::default(),
                 params: Vec::new(),
                 input: match collects {
                     None => qos_actions::InputSpec::None,

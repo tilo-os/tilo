@@ -39,8 +39,7 @@ use automerge::AutoCommit;
 
 use qos_actions::{
     Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
-    RetryPolicy,
+    ExecutionLocus, OperationKind, ParamType, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::PhotosDoc;
@@ -73,9 +72,7 @@ fn operation(id: &str, label: &str, op: PhotosOperation) -> Option<ActionSpec> {
     let spec =
         ActionSpec::operation(id, label, OperationKind::Effect, PHOTOS_OPERATION_TYPE, &op).ok()?;
     Some(match op {
-        PhotosOperation::OpenPicker => spec
-            .execution(ExecutionMode::Background { cancellable: true })
-            .retry_policy(RetryPolicy::Idempotent),
+        PhotosOperation::OpenPicker => spec.retry_policy(RetryPolicy::Idempotent),
         PhotosOperation::Copy => spec.retry_policy(RetryPolicy::Idempotent),
         PhotosOperation::SaveSuggested => spec.retry_policy(RetryPolicy::AtMostOnce),
     })
@@ -654,8 +651,9 @@ mod tests {
         let open = res[0].actions.iter().find(|a| a.id == "open").unwrap();
         assert_eq!(
             open.contract.execution,
-            ExecutionMode::Background { cancellable: true }
+            qos_actions::ExecutionMode::Immediate
         );
+        assert_eq!(open.contract.result, qos_actions::ResultSpec::None);
         let copy = res[0].actions.iter().find(|a| a.id == "copy").unwrap();
         assert_eq!(copy.contract.retry, RetryPolicy::Idempotent);
     }
