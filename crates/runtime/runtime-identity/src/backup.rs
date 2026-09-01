@@ -143,6 +143,12 @@ pub fn import_portable_backup(
 /// Restore only when the authenticated envelope contains `expected_key`.
 /// Trusted registry code uses this after deriving a stable local id from a
 /// prior verification, closing the replace-between-verify-and-import race.
+///
+/// # Errors
+///
+/// Returns the same errors as [`import_portable_backup`], and also rejects an
+/// otherwise valid backup whose authenticated public key differs from
+/// `expected_key`.
 pub fn import_portable_backup_matching(
     backup_path: impl AsRef<Path>,
     passphrase: &[u8],
@@ -380,6 +386,10 @@ fn seal_record(record: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>
     Ok(out)
 }
 
+#[allow(
+    clippy::indexing_slicing,
+    reason = "parse_header first proves blob contains the complete fixed-size header"
+)]
 fn open_record(blob: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>>> {
     validate_passphrase(passphrase)?;
     let header = parse_header(blob)?;
@@ -453,6 +463,7 @@ struct Header {
 
 #[allow(
     clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
     reason = "every offset is bounded by fixed HEADER_LEN components"
 )]
 fn encode_header(
@@ -480,6 +491,7 @@ fn encode_header(
 
 #[allow(
     clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
     reason = "the initial HEADER_LEN check bounds every fixed-format offset"
 )]
 fn parse_header(blob: &[u8]) -> io::Result<Header> {
