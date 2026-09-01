@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 
 use qos_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider,
+    OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::EditorDoc;
@@ -66,8 +66,12 @@ fn file_operation(
     kind: OperationKind,
     operation: CodeEditorOperation,
 ) -> ActionSpec {
-    ActionSpec::operation(id, label, kind, CODE_EDITOR_OPERATION_TYPE, &operation)
-        .expect("CodeEditorOperation is always serializable")
+    let spec = ActionSpec::operation(id, label, kind, CODE_EDITOR_OPERATION_TYPE, &operation)
+        .expect("CodeEditorOperation is always serializable");
+    match operation {
+        CodeEditorOperation::Open { .. } => spec.retry_policy(RetryPolicy::Idempotent),
+        CodeEditorOperation::Save { .. } => spec.destructive(),
+    }
 }
 
 /// Every collaborative operation Code exports on the shared document.
