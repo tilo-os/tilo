@@ -30,6 +30,30 @@ pub struct ActionContext {
 }
 
 impl ActionContext {
+    /// Build truthful baseline context from a serializable action enum.
+    ///
+    /// Serde's externally tagged representation exposes the stable variant
+    /// name without requiring every app to duplicate a `match` merely to get a
+    /// readable fallback. Apps should still replace the label and attach a
+    /// resource for important domain actions.
+    pub fn for_action<T: Serialize>(
+        app_id: impl Into<String>,
+        app_label: impl Into<String>,
+        action: &T,
+    ) -> Self {
+        let action_label = serde_json::to_value(action)
+            .ok()
+            .as_ref()
+            .and_then(action_variant)
+            .map(humanize_identifier)
+            .unwrap_or_else(|| "Update".to_string());
+        Self {
+            action_label,
+            ..Self::default()
+        }
+        .with_app(app_id, app_label)
+    }
+
     pub fn for_resource(
         action_label: impl Into<String>,
         id: impl Into<String>,
@@ -121,6 +145,36 @@ impl ActionContext {
     }
 }
 
+fn action_variant(value: &serde_json::Value) -> Option<&str> {
+    match value {
+        serde_json::Value::String(variant) => Some(variant),
+        serde_json::Value::Object(fields) if fields.len() == 1 => {
+            fields.keys().next().map(String::as_str)
+        }
+        _ => None,
+    }
+}
+
+fn humanize_identifier(value: &str) -> String {
+    let mut result = String::with_capacity(value.len() + 4);
+    let mut previous_lowercase_or_digit = false;
+    for character in value.chars() {
+        if character == '_' || character == '-' {
+            if !result.ends_with(' ') {
+                result.push(' ');
+            }
+            previous_lowercase_or_digit = false;
+            continue;
+        }
+        if character.is_uppercase() && previous_lowercase_or_digit {
+            result.push(' ');
+        }
+        previous_lowercase_or_digit = character.is_lowercase() || character.is_ascii_digit();
+        result.push(character);
+    }
+    result
+}
+
 fn nonempty(value: &str) -> Option<String> {
     nonempty_ref(value).map(str::to_string)
 }
@@ -209,5 +263,20 @@ mod tests {
 
         let structural = ActionContext::for_resource("Rename", "id", "kind", "brief.md");
         assert_eq!(structural.summary().as_deref(), Some("Rename · brief.md"));
+    }
+
+    #[test]
+    fn serializable_action_provides_a_readable_truthful_fallback() {
+        #[derive(Serialize)]
+        enum ExampleAction {
+            RenameFile { id: u64 },
+        }
+        let context =
+            ActionContext::for_action("org.qos.Code", "Code", &ExampleAction::RenameFile { id: 7 });
+        assert_eq!(context.action_label, "Rename File");
+        assert_eq!(
+            context.app.as_ref().map(|app| app.label.as_str()),
+            Some("Code")
+        );
     }
 }
