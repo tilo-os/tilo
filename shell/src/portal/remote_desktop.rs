@@ -20,6 +20,14 @@
 //!
 //! [`State::apply_remote_desktop_action`]: crate::compositor::state::State::apply_remote_desktop_action
 
+#![allow(
+    clippy::used_underscore_binding,
+    reason = "the D-Bus method signatures below require unused positional parameters (handle, \
+              options, ...); zbus's #[interface] macro deserialises them into these named \
+              parameters and forwards them by identifier into its generated dispatcher, so the \
+              lint fires on macro-generated code a per-function #[allow] cannot reach"
+)]
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -221,8 +229,7 @@ impl RemoteDesktopBackend {
     /// `CreateSession` — register the session.
     #[allow(
         clippy::needless_pass_by_value,
-        clippy::used_underscore_binding,
-        reason = "argument types and count are fixed by the org.freedesktop.impl.portal.RemoteDesktop.CreateSession D-Bus signature; zbus deserializes owned values here, and its #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
+        reason = "argument types and count are fixed by the org.freedesktop.impl.portal.RemoteDesktop.CreateSession D-Bus signature; zbus deserializes owned values here rather than by reference"
     )]
     fn create_session(
         &self,
@@ -246,10 +253,6 @@ impl RemoteDesktopBackend {
     }
 
     /// `SelectDevices` — request pointer/keyboard/touch access; surfaces the consent prompt and records the granted devices on the session.
-    #[allow(
-        clippy::used_underscore_binding,
-        reason = "zbus's #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
-    )]
     async fn select_devices(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
@@ -299,8 +302,7 @@ impl RemoteDesktopBackend {
     /// `Start` — commit the session. Returns the granted `devices` bitmask.
     #[allow(
         clippy::too_many_arguments,
-        clippy::used_underscore_binding,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.RemoteDesktop.Start D-Bus signature; zbus's #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.RemoteDesktop.Start D-Bus signature"
     )]
     async fn start(
         &self,
@@ -365,8 +367,7 @@ impl RemoteDesktopBackend {
     /// Relative pointer motion.
     #[allow(
         clippy::needless_pass_by_value,
-        clippy::used_underscore_binding,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerMotion D-Bus signature; zbus deserializes owned values here, and its #[interface] dispatch wraps every call in an async task that captures the unused `_options` parameter, tripping used_underscore_binding on the desugared code"
+        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerMotion D-Bus signature; zbus deserializes owned values here rather than by reference"
     )]
     fn notify_pointer_motion(
         &self,
@@ -385,8 +386,7 @@ impl RemoteDesktopBackend {
     /// Absolute pointer motion, relative to a stream node.
     #[allow(
         clippy::needless_pass_by_value,
-        clippy::used_underscore_binding,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerMotionAbsolute D-Bus signature; zbus deserializes owned values here, and its #[interface] dispatch wraps every call in an async task that captures the unused `_options` parameter, tripping used_underscore_binding on the desugared code"
+        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerMotionAbsolute D-Bus signature; zbus deserializes owned values here rather than by reference"
     )]
     fn notify_pointer_motion_absolute(
         &self,
@@ -406,8 +406,7 @@ impl RemoteDesktopBackend {
     /// Pointer button (evdev code + state).
     #[allow(
         clippy::needless_pass_by_value,
-        clippy::used_underscore_binding,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerButton D-Bus signature; zbus deserializes owned values here, and its #[interface] dispatch wraps every call in an async task that captures the unused `_options` parameter, tripping used_underscore_binding on the desugared code"
+        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerButton D-Bus signature; zbus deserializes owned values here rather than by reference"
     )]
     fn notify_pointer_button(
         &self,
@@ -429,8 +428,7 @@ impl RemoteDesktopBackend {
     /// Smooth scroll.
     #[allow(
         clippy::needless_pass_by_value,
-        clippy::used_underscore_binding,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerAxis D-Bus signature; zbus deserializes owned values here, and its #[interface] dispatch wraps every call in an async task that captures the unused `_options` parameter, tripping used_underscore_binding on the desugared code"
+        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerAxis D-Bus signature; zbus deserializes owned values here rather than by reference"
     )]
     fn notify_pointer_axis(
         &self,
@@ -449,8 +447,7 @@ impl RemoteDesktopBackend {
     /// Discrete scroll (`axis` 0 vertical, 1 horizontal).
     #[allow(
         clippy::needless_pass_by_value,
-        clippy::used_underscore_binding,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerAxisDiscrete D-Bus signature; zbus deserializes owned values here, and its #[interface] dispatch wraps every call in an async task that captures the unused `_options` parameter, tripping used_underscore_binding on the desugared code"
+        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerAxisDiscrete D-Bus signature; zbus deserializes owned values here rather than by reference"
     )]
     fn notify_pointer_axis_discrete(
         &self,
@@ -469,8 +466,7 @@ impl RemoteDesktopBackend {
     /// Key press/release by evdev keycode.
     #[allow(
         clippy::needless_pass_by_value,
-        clippy::used_underscore_binding,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyKeyboardKeycode D-Bus signature; zbus deserializes owned values here, and its #[interface] dispatch wraps every call in an async task that captures the unused `_options` parameter, tripping used_underscore_binding on the desugared code"
+        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyKeyboardKeycode D-Bus signature; zbus deserializes owned values here rather than by reference"
     )]
     fn notify_keyboard_keycode(
         &self,
@@ -492,8 +488,7 @@ impl RemoteDesktopBackend {
     /// Key press/release by keysym.
     #[allow(
         clippy::needless_pass_by_value,
-        clippy::used_underscore_binding,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyKeyboardKeysym D-Bus signature; zbus deserializes owned values here, and its #[interface] dispatch wraps every call in an async task that captures the unused `_options` parameter, tripping used_underscore_binding on the desugared code"
+        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyKeyboardKeysym D-Bus signature; zbus deserializes owned values here rather than by reference"
     )]
     fn notify_keyboard_keysym(
         &self,

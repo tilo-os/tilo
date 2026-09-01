@@ -276,7 +276,17 @@ pub enum A11yTarget {
         /// The widget that synthesised the node.
         owner: TaffyNodeId,
         /// Keys from `owner`'s direct synthetic child down to the target.
+        /// Keys, for a widget that identifies a synthetic child by identity
+        /// — `perform_action_at` matches a clip by `hash_key(uuid)`, which is
+        /// nothing like a position.
         key_path: Vec<u64>,
+        /// Ordinals, for a widget that identifies one by position —
+        /// `synthetic_accessibility_rect` indexes into `seg_rects`.
+        ///
+        /// Both are carried because both are genuinely needed, and they differ
+        /// for any node that sets an explicit key. Handing a positional
+        /// implementor a key it never had is a silent mis-target.
+        ordinal_path: Vec<usize>,
     },
 }
 
@@ -336,26 +346,48 @@ fn search_synthetic(
     let owner_id = widget_node_id(Some(owner), 0);
 
     let mut key_path = Vec::new();
-    find_synthetic_path(&access_node.children, owner_id, wanted, &mut key_path)
-        .then_some(A11yTarget::Synthetic { owner, key_path })
+    let mut ordinal_path = Vec::new();
+    find_synthetic_path(
+        &access_node.children,
+        owner_id,
+        wanted,
+        &mut key_path,
+        &mut ordinal_path,
+    )
+    .then_some(A11yTarget::Synthetic {
+        owner,
+        key_path,
+        ordinal_path,
+    })
 }
 
 /// Walk one widget's synthetic forest looking for `wanted`, accumulating the
-/// key path as it descends. Returns `true` (with `path` filled) on a hit.
+/// path as it descends. Returns `true` (with `path` filled) on a hit.
+///
+/// The id is derived from each node's **key**, so it stays stable when a
+/// sibling appears or the list is reordered — that is the whole point of
+/// hashing the path rather than counting a tree-wide walk. The path handed
+/// back is the **ordinal**, because that is what a widget indexes by:
+/// `synthetic_accessibility_rect(&[segment])` reaches into `seg_rects`. Using
+/// the key for both would hand a positional implementor an index it never
+/// had, for any widget that sets an explicit key.
 fn find_synthetic_path(
     children: &[AccessNode],
     parent_id: AkNodeId,
     wanted: AkNodeId,
-    path: &mut Vec<u64>,
+    keys: &mut Vec<u64>,
+    ordinals: &mut Vec<usize>,
 ) -> bool {
     for (ordinal, child) in children.iter().enumerate() {
         let key = child.key.unwrap_or(ordinal as u64);
         let id = synthetic_node_id(parent_id, key);
-        path.push(key);
-        if id == wanted || find_synthetic_path(&child.children, id, wanted, path) {
+        keys.push(key);
+        ordinals.push(ordinal);
+        if id == wanted || find_synthetic_path(&child.children, id, wanted, keys, ordinals) {
             return true;
         }
-        path.pop();
+        keys.pop();
+        ordinals.pop();
     }
     false
 }
@@ -400,6 +432,76 @@ fn accessible_character_lengths(text: &str) -> Vec<u8> {
 ///
 /// Always a full tree; AccessKit's adapters suppress events for unchanged
 /// nodes, so the cost is processing, not spurious AT chatter.
+/// Resolve a synthetic AccessKit id back to the widget that published the
+/// synthetic `AccessNode` and its child-index path. This repeats the same DFS
+/// counter used by `build_tree_update`, so immediate-mode controls can be
+/// focused and activated without pretending they are taffy widgets.
+fn visit_synthetic_widget<'a>(
+    widget: &'a dyn Widget,
+    target: u64,
+    counter: &mut u64,
+) -> Option<(*const (dyn Widget + 'a), Vec<usize>)> {
+    let access = widget.accessibility();
+    *counter = counter.saturating_add(1);
+    if let Some(access) = access {
+        for child in widget.children() {
+            if let Some(found) = visit_synthetic_widget(child, target, counter) {
+                return Some(found);
+            }
+        }
+        for (index, child) in access.children.iter().enumerate() {
+            if let Some(found) = visit_synthetic_child(widget, child, vec![index], target, counter)
+            {
+                return Some(found);
+            }
+        }
+    } else {
+        for child in widget.children() {
+            if let Some(found) = visit_synthetic_widget(child, target, counter) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn visit_synthetic_child<'a>(
+    owner: &'a dyn Widget,
+    child: &AccessNode,
+    path: Vec<usize>,
+    target: u64,
+    counter: &mut u64,
+) -> Option<(*const (dyn Widget + 'a), Vec<usize>)> {
+    let id = SYNTHETIC_ID_BIT.saturating_add(*counter);
+    *counter = counter.saturating_add(1);
+    if id == target {
+        return Some((std::ptr::from_ref(owner), path));
+    }
+    for (index, nested) in child.children.iter().enumerate() {
+        let mut nested_path = path.clone();
+        nested_path.push(index);
+        if let Some(found) = visit_synthetic_child(owner, nested, nested_path, target, counter) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+pub fn resolve_synthetic_target<'a>(
+    root: &'a dyn Widget,
+    target: AkNodeId,
+) -> Option<(*const (dyn Widget + 'a), Vec<usize>)> {
+    // A single test, because synthetic ids sit above every other space:
+    // widget ids are small, the structural fallback is at 1<<48 and text runs
+    // at 1<<62, so bit 63 alone identifies a synthetic node. The old form
+    // compared against 1<<48 — the *fallback* base — which meant a fallback
+    // widget id resolved as a synthetic node.
+    if !is_synthetic_id(target) {
+        return None;
+    }
+    visit_synthetic_widget(root, target.0, &mut 0)
+}
+
 pub fn build_tree_update(
     root: &dyn Widget,
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
@@ -659,7 +761,25 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     if access.state.focusable && !access.state.disabled {
         ak.add_action(AkAction::Focus);
     }
-    if !access.state.disabled {
+    // Click is gated on the roles that can actually be operated. Offering it
+    // on every node — which this used to do — makes an AT read "clickable" on
+    // a plain label. `ListItem` is in the list because a synthetic segmented
+    // control's segments are list items, and without it an AT could see them
+    // but not press them.
+    if !access.state.disabled
+        && matches!(
+            access.role,
+            Role::Button
+                | Role::ToggleButton
+                | Role::Checkbox
+                | Role::RadioButton
+                | Role::Switch
+                | Role::Tab
+                | Role::MenuItem
+                | Role::ListItem
+                | Role::Link
+        )
+    {
         ak.add_action(AkAction::Click);
     }
     match access.role {
@@ -1565,6 +1685,10 @@ mod tests {
             Some(A11yTarget::Synthetic {
                 owner: table_taffy,
                 key_path: vec![1],
+                // No explicit keys in this fixture, so the ordinal path
+                // coincides with the key path — spelled out rather than
+                // assumed, because they diverge as soon as one is set.
+                ordinal_path: vec![1],
             }),
         );
         // A cell: row, then column.
@@ -1573,6 +1697,10 @@ mod tests {
             Some(A11yTarget::Synthetic {
                 owner: table_taffy,
                 key_path: vec![1, 0],
+                // No explicit keys in this fixture, so the ordinal path
+                // coincides with the key path — spelled out rather than
+                // assumed, because they diverge as soon as one is set.
+                ordinal_path: vec![1, 0],
             }),
         );
         assert_eq!(
@@ -1580,6 +1708,10 @@ mod tests {
             Some(A11yTarget::Synthetic {
                 owner: table_taffy,
                 key_path: vec![0, 1],
+                // No explicit keys in this fixture, so the ordinal path
+                // coincides with the key path — spelled out rather than
+                // assumed, because they diverge as soon as one is set.
+                ordinal_path: vec![0, 1],
             }),
         );
         // The widget itself and the window root still resolve to themselves.
@@ -1623,6 +1755,10 @@ mod tests {
             Some(A11yTarget::Synthetic {
                 owner: canvas_taffy,
                 key_path: vec![0, 1],
+                // No explicit keys in this fixture, so the ordinal path
+                // coincides with the key path — spelled out rather than
+                // assumed, because they diverge as soon as one is set.
+                ordinal_path: vec![0, 1],
             }),
             "keyboard target and reader focus must be the same element"
         );

@@ -785,8 +785,12 @@ impl ContactsApp {
     /// caller for immediate UI feedback and reconciled from the document on the
     /// next `sync`.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::ContactsAction) {
-        self.actions
-            .dispatch(doc, crate::actions::CONTACTS_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::CONTACTS_ACTION_TYPE,
+            action,
+            crate::actions::history_context(action),
+        );
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
@@ -911,7 +915,10 @@ impl ContactsApp {
             .and_then(|s| ids.iter().position(|x| *x == s))
             .map_or(-1, |p| p as isize);
         let next = (cur + delta).clamp(0, ids.len() as isize - 1) as usize;
-        self.selected = Some(ids[next]);
+        let Some(&id) = ids.get(next) else {
+            return;
+        };
+        self.selected = Some(id);
         self.detail_scroll = 0.0;
         self.dirty = true;
         self.relayout = true;
@@ -1286,7 +1293,10 @@ impl ContactsApp {
         let half = (w - 10.0) / 2.0;
 
         let (n_phones, n_emails, n_addr) = {
-            let d = &self.form.as_ref().unwrap().draft;
+            let Some(form) = self.form.as_ref() else {
+                return;
+            };
+            let d = &form.draft;
             (d.phones.len(), d.emails.len(), d.addresses.len())
         };
 
@@ -2317,15 +2327,12 @@ impl ContactsApp {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &body);
 
         // Section labels are drawn relative to the first input of each group.
-        let inputs_snapshot: Vec<(Slot, Rect)> = self
-            .form
-            .as_ref()
-            .unwrap()
-            .inputs
-            .iter()
-            .map(|f| (f.slot, f.ti_rect()))
-            .collect();
-        let draft = self.form.as_ref().unwrap().draft.clone();
+        let Some(form) = self.form.as_ref() else {
+            return;
+        };
+        let inputs_snapshot: Vec<(Slot, Rect)> =
+            form.inputs.iter().map(|f| (f.slot, f.ti_rect())).collect();
+        let draft = form.draft.clone();
         self.draw_form_section_labels(scene, t, tr, theme, &inputs_snapshot);
 
         // Draw the embedded inputs, each followed by its dim placeholder hint
@@ -2350,8 +2357,10 @@ impl ContactsApp {
         let off = self.detail_top_offset();
         let x0 = area.x0 + PAD;
 
+        let Some(f) = self.form.as_ref() else {
+            return;
+        };
         let (show_new, draft_name, initials) = {
-            let f = self.form.as_ref().unwrap();
             let d = &f.draft;
             // A brand-new record still reads as "New Contact" only while it has
             // no identifying text; once a name/org is typed the heading follows
@@ -2533,7 +2542,10 @@ impl ContactsApp {
         presence: &PresenceCtx,
     ) {
         let c = &theme.tokens.colors;
-        for f in &mut self.form.as_mut().unwrap().inputs {
+        let Some(form) = self.form.as_mut() else {
+            return;
+        };
+        for f in &mut form.inputs {
             f.ti.draw(scene, t, tr, theme, presence);
             if f.ti.value().is_empty() && !f.ti.is_focused() {
                 let r = f.ti.get_rect();
@@ -2635,7 +2647,9 @@ impl ContactsApp {
         menu_panel(scene, t, theme, panel);
         for (i, r) in rows.iter().enumerate() {
             let hov = r.contains(self.last_mouse);
-            menu_item(scene, t, tr, theme, *r, TYPE_OPTIONS[i], hov, false);
+            if let Some(label) = TYPE_OPTIONS.get(i).copied() {
+                menu_item(scene, t, tr, theme, *r, label, hov, false);
+            }
         }
     }
 
@@ -2654,11 +2668,14 @@ impl ContactsApp {
         menu_panel(scene, t, theme, panel);
         for (i, r) in rows.iter().enumerate() {
             let hov = r.contains(self.last_mouse);
+            let Some(opt) = opts.get(i) else {
+                continue;
+            };
             let sel = match &self.group_filter {
                 None => i == 0,
-                Some(g) => &opts[i] == g,
+                Some(g) => opt == g,
             };
-            menu_item(scene, t, tr, theme, *r, &opts[i], hov, sel);
+            menu_item(scene, t, tr, theme, *r, opt, hov, sel);
         }
     }
 
@@ -2757,7 +2774,9 @@ impl ContactsApp {
         let is_fav = self.store.get(target).is_some_and(|c| c.favorite);
         for (i, r) in rows.iter().enumerate() {
             let hov = r.contains(self.last_mouse);
-            let action = CONTEXT_ACTIONS[i];
+            let Some(action) = CONTEXT_ACTIONS.get(i).copied() else {
+                continue;
+            };
             let label = action.label(is_fav);
             // The destructive "Delete" item reads in the danger color
             // when not hovered (hover inverts to white-on-accent).
@@ -3379,6 +3398,15 @@ impl Widget for ContactsApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
+        // cannot actually return `Err` for a fresh leaf (see the
+        // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
+        // `Widget::build_layout` returns a bare `NodeId` across every
+        // implementor, so there is nowhere to surface a theoretical error.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -3393,7 +3421,7 @@ impl Widget for ContactsApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -4067,20 +4095,13 @@ impl ContactsApp {
             return true;
         }
         // Type chips.
-        if let Some((target, _)) = self
+        if let Some((target, anchor)) = self
             .hit
             .type_chips
             .iter()
             .find(|(_, r)| r.contains(p))
             .copied()
         {
-            let anchor = self
-                .hit
-                .type_chips
-                .iter()
-                .find(|(_, r)| r.contains(p))
-                .map(|(_, r)| *r)
-                .unwrap();
             self.popup = Some(Popup::TypeMenu { target, anchor });
             self.dirty = true;
             return true;
@@ -4221,10 +4242,13 @@ impl ContactsApp {
         }
         let cur = form.inputs.iter().position(|f| f.ti.is_focused());
         let target = match cur {
-            Some(ci) => best_field_in_direction(form.inputs[ci].ti.get_rect(), dir, &rects, ci),
+            Some(ci) => form
+                .inputs
+                .get(ci)
+                .and_then(|f| best_field_in_direction(f.ti.get_rect(), dir, &rects, ci)),
             None => match dir {
-                FieldDir::Down | FieldDir::Right => Some(rects.first().unwrap().0),
-                FieldDir::Up | FieldDir::Left => Some(rects.last().unwrap().0),
+                FieldDir::Down | FieldDir::Right => rects.first().map(|r| r.0),
+                FieldDir::Up | FieldDir::Left => rects.last().map(|r| r.0),
             },
         };
         let Some(ti_idx) = target else {
@@ -4435,7 +4459,9 @@ impl ContactsApp {
             return;
         }
         let p = self.last_mouse;
-        let popup = self.popup.take().unwrap();
+        let Some(popup) = self.popup.take() else {
+            return;
+        };
         *handled = true;
         self.dirty = true;
         match popup {
@@ -4456,9 +4482,11 @@ impl ContactsApp {
     /// email/address row.
     fn handle_popup_type_menu(&mut self, target: TypeTarget, anchor: Rect, p: Point) {
         let (_panel, rows) = self.popup_menu_geometry(anchor, TYPE_OPTIONS.len(), 140.0);
-        if let Some(i) = rows.iter().position(|r| r.contains(p)) {
-            let label = TYPE_OPTIONS[i].to_string();
-            if let Some(form) = &mut self.form {
+        if let Some(i) = rows.iter().position(|r| r.contains(p))
+            && let Some(label) = TYPE_OPTIONS.get(i).map(|s| (*s).to_string())
+            && let Some(form) = &mut self.form
+        {
+            {
                 match target {
                     TypeTarget::Phone(idx) => {
                         if let Some(x) = form.draft.phones.get_mut(idx) {
@@ -4487,7 +4515,7 @@ impl ContactsApp {
         opts.extend(self.store.all_groups());
         let (_panel, rows) = self.popup_menu_geometry(anchor, opts.len(), 180.0);
         if let Some(i) = rows.iter().position(|r| r.contains(p)) {
-            self.group_filter = if i == 0 { None } else { Some(opts[i].clone()) };
+            self.group_filter = if i == 0 { None } else { opts.get(i).cloned() };
             self.list_scroll = 0.0;
             // Keep selection valid.
             if let Some(sel) = self.selected
@@ -4512,7 +4540,10 @@ impl ContactsApp {
         let Some(i) = rows.iter().position(|r| r.contains(p)) else {
             return;
         };
-        match CONTEXT_ACTIONS[i] {
+        let Some(action) = CONTEXT_ACTIONS.get(i).copied() else {
+            return;
+        };
+        match action {
             ContextAction::Edit => {
                 if let Some(c) = self.store.get(target).cloned() {
                     self.selected = Some(target);
@@ -4928,6 +4959,7 @@ impl ContactsApp {
 // =====================================================================
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use automerge::ROOT;

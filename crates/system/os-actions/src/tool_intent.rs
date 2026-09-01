@@ -118,8 +118,10 @@ impl ToolIntent {
                 }
                 Ok(())
             }
-            Self::Firewall { .. } => Ok(()),
-            Self::Disks { .. } | Self::Backups { .. } | Self::WorkspaceSettings { .. } => Ok(()),
+            Self::Firewall { .. }
+            | Self::Disks { .. }
+            | Self::Backups { .. }
+            | Self::WorkspaceSettings { .. } => Ok(()),
         }
     }
 

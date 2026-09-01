@@ -34,7 +34,7 @@ use ui::webview::test_engine::TestEngine;
 use ui::webview::{SharedEngine, WebViewCommand, WebViewEvent, normalise_url};
 use ui::widget::{
     AppKind, AppWidget, Button, Column, Container, IconDescriptor, ProgressBar, Row, TextInput,
-    WebView, Widget,
+    TextInputKind, WebView, Widget,
 };
 
 use crate::address_overlay::AddressSuggestions;
@@ -210,6 +210,7 @@ impl BrowserWidget {
             .with_icon(Icon::Refresh)
             .with_size(NAV_BTN.0, NAV_BTN.1);
         let url_input = TextInput::new(vec![])
+            .with_kind(TextInputKind::Url)
             .with_id(URL_INPUT_ID)
             .with_on_change_path(URL_PATH)
             .with_placeholder("Search or enter address");

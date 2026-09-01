@@ -141,6 +141,20 @@ pub trait Widget {
         None
     }
 
+    /// Geometry for an immediate-mode semantic child from
+    /// [`AccessNode::children`](crate::a11y::AccessNode::children). The path is
+    /// its child-index path beneath this widget's accessibility node. Returning
+    /// a rect lets AccessKit activation inject the same click as pointer input.
+    fn synthetic_accessibility_rect(&self, _path: &[usize]) -> Option<vello::kurbo::Rect> {
+        None
+    }
+
+    /// Move this widget's own immediate-mode focus to a synthetic semantic
+    /// child. Retained widgets continue to use the ordinary taffy focus path.
+    fn focus_synthetic_accessibility(&mut self, _path: &[usize]) -> bool {
+        false
+    }
+
     /// May mutate the CRDT like [`handle_event`](Widget::handle_event).
     /// Default `false` ("not handled") falls back to generic dispatch
     /// (`Focus` moves keyboard focus, `Activate` synthesises a click);
@@ -243,9 +257,21 @@ pub trait Widget {
         false
     }
     fn needs_commit(&self) -> bool {
-        false
+        self.children().iter().any(|child| child.needs_commit())
     }
-    fn on_commit(&mut self) {}
+    /// Drain semantic provenance for the native transaction currently asking
+    /// the host to commit. Use this for CRDT-native edits such as flowing text;
+    /// replayable discrete operations should continue through `ActionHost`.
+    fn take_commit_context(&mut self) -> Option<qos_actions::ActionContext> {
+        self.children_mut()
+            .into_iter()
+            .find_map(Widget::take_commit_context)
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            child.on_commit();
+        }
+    }
     fn get_state(&self) -> Option<String> {
         None
     }
@@ -648,7 +674,7 @@ pub use image::{Image, ImageDecodeError, ImageFit};
 mod slider;
 pub use slider::{Slider, SliderFace};
 mod text_input;
-pub use text_input::TextInput;
+pub use text_input::{TextActionRequest, TextInput, TextInputKind};
 pub mod code_editor;
 pub use code_editor::{
     CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind, token_color,
@@ -799,8 +825,8 @@ pub mod history_scrubber;
 pub mod name_field;
 pub use activity_timeline::ActivityTimeline;
 pub use history::{
-    HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay,
-    format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
+    HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
+    RedactionDisplay, format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
 };
 pub use history_scrubber::HistoryScrubber;
 // The op/artifact vocabulary a `HistoryEntry` is written in. Re-exported so a

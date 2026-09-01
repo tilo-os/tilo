@@ -576,6 +576,7 @@ impl MusicApp {
         // the live-shot loop dispatches it after the usual idle beat.
         let preset_search_at = (!query.is_empty()).then(Instant::now);
         let mut search_input = TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Search)
             .with_plain_chrome()
             .with_font_size(14.0)
             .with_placeholder("Search songs, albums, artists")
@@ -940,8 +941,12 @@ impl MusicApp {
     /// `sync` reconciles it again on the next frame (so a palette dispatch shows
     /// up the same way).
     fn perform_action(&mut self, state: &mut AutoCommit, action: &crate::actions::MusicAction) {
-        self.actions
-            .dispatch(state, crate::actions::MUSIC_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::MUSIC_ACTION_TYPE,
+            action,
+            crate::actions::history_context(action),
+        );
     }
 
     /// The context Ctrl+K needs to build Music's resource tree: the user's
@@ -3758,6 +3763,7 @@ fn image_fetcher() -> ui::Fetcher {
 mod render;
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
 

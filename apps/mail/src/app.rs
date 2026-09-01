@@ -42,7 +42,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{NavPane, NavShell, TextInput, Widget};
+use ui::widget::{NavPane, NavShell, TextInput, Toggle, ToggleFace, Widget};
 
 use crate::account::{Account, AccountStore};
 use crate::compose::{ComposeAction, ComposeWindow};
@@ -1903,6 +1903,7 @@ impl MailApp {
         theme: &Theme,
     ) {
         let c = &theme.tokens.colors;
+        let last_mouse = self.shared.borrow().last_mouse;
         for (rect, hit) in &self.overlay_hits {
             let (on, label) = match hit {
                 OverlayHit::ToggleImapTls => (self.setup_imap_tls, "TLS"),
@@ -1910,20 +1911,11 @@ impl MailApp {
                 _ => continue,
             };
             let pill = Rect::new(rect.x0, rect.y0 + 6.0, rect.x0 + 40.0, rect.y0 + 28.0);
-            fill_round(
+            Toggle::paint(
                 scene,
                 t,
-                pill,
-                11.0,
-                if on { c.accent[5] } else { c.neutral[3] },
-            );
-            let knob_x = if on { pill.x1 - 18.0 } else { pill.x0 + 4.0 };
-            scene.fill(
-                Fill::NonZero,
-                t,
-                Color::WHITE,
-                None,
-                &Circle::new(Point::new(knob_x + 7.0, pill.y0 + 11.0), 8.0),
+                theme,
+                &ToggleFace::new(pill, on).hovered(rect.contains(last_mouse)),
             );
             tr.draw_text(
                 scene,
@@ -2261,26 +2253,36 @@ impl MailApp {
 fn build_setup_inputs(cfg: &AccountConfig) -> Vec<TextInput> {
     vec![
         TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Name)
             .with_initial_value(&cfg.display_name)
             .with_placeholder("Your name"),
         TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Email)
             .with_initial_value(&cfg.email)
             .with_placeholder("you@example.com"),
         TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Username)
             .with_initial_value(&cfg.username)
             .with_placeholder("Usually your email"),
         TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Password)
             .with_initial_value(&cfg.password)
             .with_secret(true)
             .with_placeholder("Account password"),
         TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Url)
             .with_initial_value(&cfg.imap_host)
             .with_placeholder("imap.example.com"),
-        TextInput::local().with_initial_value(&cfg.imap_port.to_string()),
         TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Number)
+            .with_initial_value(&cfg.imap_port.to_string()),
+        TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Url)
             .with_initial_value(&cfg.smtp_host)
             .with_placeholder("smtp.example.com"),
-        TextInput::local().with_initial_value(&cfg.smtp_port.to_string()),
+        TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Number)
+            .with_initial_value(&cfg.smtp_port.to_string()),
     ]
 }
 

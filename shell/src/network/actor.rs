@@ -383,6 +383,12 @@ impl ActorState {
     /// [`InternalEvent::Topic`] arm of [`Self::handle_internal`], split out
     /// to keep that dispatcher short.
     async fn handle_topic_event(&mut self, ws: WorkspaceId, event: GossipEvent) {
+        if matches!(event, GossipEvent::NeighborUp(_)) {
+            // Authenticate this device as soon as the link is usable. State
+            // sync can otherwise arrive before the periodic identity
+            // announcement and be rejected by the peer.
+            self.announce_identity(ws).await;
+        }
         let Some(tx) = self.subscribers.get(&ws) else {
             return;
         };
@@ -525,17 +531,9 @@ impl ActorState {
                 }
             }
         }
-        if let Some(identity) = self.host_identity.as_ref() {
-            for (&ws, topic) in &self.topics {
-                let (cert, revocations) = identity.material_for(ws);
-                let hello = NeighbourMsg::IdentityHello {
-                    cert: Box::new(cert),
-                    revocations,
-                };
-                if let Ok(bytes) = postcard::to_allocvec(&hello) {
-                    let _ = topic.sender.broadcast(Bytes::from(bytes)).await;
-                }
-            }
+        let workspaces: Vec<_> = self.topics.keys().copied().collect();
+        for ws in workspaces {
+            self.announce_identity(ws).await;
         }
         let msg = NeighbourMsg::Heartbeat {
             peer: crate::network::behaviour::peer_liveness_handle(&self.endpoint.id()),
@@ -547,6 +545,33 @@ impl ActorState {
             for topic in self.topics.values() {
                 let _ = topic.sender.broadcast(Bytes::from(bytes.clone())).await;
             }
+        }
+    }
+
+    /// Send this device's certificate to its direct neighbors on `ws`.
+    ///
+    /// Identity announcements are deliberately neighbor-only: receivers bind
+    /// the certificate to the endpoint that delivered it, so forwarding one
+    /// through another gossip peer would make that check fail.
+    async fn announce_identity(&self, ws: WorkspaceId) {
+        let (Some(identity), Some(topic)) = (self.host_identity.as_ref(), self.topics.get(&ws))
+        else {
+            return;
+        };
+        let (cert, revocations) = identity.material_for(ws);
+        let hello = NeighbourMsg::IdentityHello {
+            cert: Box::new(cert),
+            revocations,
+        };
+        let bytes = match postcard::to_allocvec(&hello) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(ws, %error, "could not encode collaboration identity announcement");
+                return;
+            }
+        };
+        if let Err(error) = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await {
+            tracing::warn!(ws, %error, "could not send collaboration identity announcement");
         }
     }
 
@@ -685,23 +710,19 @@ fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32], Re
                 Retention::Delta
             },
         ),
-        NeighbourMsg::AppCrdtSnapshot {
-            app_id, record_id, ..
+        NeighbourMsg::AppDocument {
+            app_id,
+            record_id,
+            envelope,
+            ..
         } => {
             let route = format!("app\0{app_id}\0{record_id}");
-            return Some((
-                *blake3::hash(route.as_bytes()).as_bytes(),
-                Retention::Checkpoint,
-            ));
-        }
-        NeighbourMsg::AppCrdtIncremental {
-            app_id, record_id, ..
-        }
-        | NeighbourMsg::AppCrdtIncrementalSigned {
-            app_id, record_id, ..
-        } => {
-            let route = format!("app\0{app_id}\0{record_id}");
-            return Some((*blake3::hash(route.as_bytes()).as_bytes(), Retention::Delta));
+            let mutation = collab_types::DocumentMutation::decode(&envelope.payload).ok()?;
+            let retention = match mutation {
+                collab_types::DocumentMutation::Snapshot(_) => Retention::Checkpoint,
+                collab_types::DocumentMutation::Incremental(_) => Retention::Delta,
+            };
+            return Some((*blake3::hash(route.as_bytes()).as_bytes(), retention));
         }
         _ => return None,
     };
@@ -800,10 +821,6 @@ fn spawn_host_pump(
             let event = match inbound {
                 HostInbound::Ready { .. } => HostEvent::Ready,
                 HostInbound::Delta { author, data }
-                | HostInbound::SignedDelta {
-                    author,
-                    op_bytes: data,
-                }
                 | HostInbound::Presence {
                     author,
                     payload: data,
@@ -858,6 +875,25 @@ mod tests {
     use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     use tokio::time::timeout;
 
+    fn document(mutation: &collab_types::DocumentMutation) -> NeighbourMsg {
+        let envelope = collab_types::SignedOp::new_unsigned(
+            mutation.encode().expect("typed mutation"),
+            collab_types::ArtifactId::new(),
+            collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+            collab_types::AttestationId::new(),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+        );
+        NeighbourMsg::AppDocument {
+            peer: 1,
+            app_id: "app".into(),
+            cluster_id: "room".into(),
+            record_id: "doc".into(),
+            envelope: Box::new(envelope),
+        }
+    }
+
     #[test]
     fn host_persists_state_but_never_late_session_actions() {
         assert!(matches!(
@@ -882,16 +918,17 @@ mod tests {
         ));
         assert!(matches!(
             retention(
-                &NeighbourMsg::AppCrdtSnapshot {
-                    peer: 1,
-                    app_id: "app".into(),
-                    cluster_id: "room".into(),
-                    record_id: "doc".into(),
-                    data: vec![2],
-                },
+                &document(&collab_types::DocumentMutation::Snapshot(vec![2])),
                 false,
             ),
             Some((_, Retention::Checkpoint))
+        ));
+        assert!(matches!(
+            retention(
+                &document(&collab_types::DocumentMutation::Incremental(vec![2])),
+                false,
+            ),
+            Some((_, Retention::Delta))
         ));
         for live in [
             NeighbourMsg::RemoteInput {
@@ -1017,6 +1054,81 @@ mod tests {
             ) {
                 break;
             }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn actors_announce_identity_when_a_neighbor_connects() {
+        use rand_core::OsRng;
+
+        let root_a = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let root_b = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let (key_a, cert_a) = enrol(&root_a, DeviceCapabilities::primary(), "a");
+        let (key_b, cert_b) = enrol(&root_b, DeviceCapabilities::primary(), "b");
+        let expected_a = cert_a.device_public_key;
+        let expected_b = cert_b.device_public_key;
+        let (endpoint_a, lookup_a) = identified_endpoint(&key_a).await;
+        let (endpoint_b, lookup_b) = identified_endpoint(&key_b).await;
+        let addr_b = endpoint_b.addr();
+        let identity_a = HostIdentity {
+            device_cert: cert_a,
+            device_signing_key: key_a,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let identity_b = HostIdentity {
+            device_cert: cert_b,
+            device_signing_key: key_b,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let (cmd_a, _task_a) = Actor::spawn_reporting_addrs(
+            endpoint_a,
+            lookup_a,
+            Some(identity_a),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (cmd_b, _task_b) = Actor::spawn_reporting_addrs(
+            endpoint_b,
+            lookup_b,
+            Some(identity_b),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (events_a, mut rx_a) = mpsc::channel(16);
+        let (events_b, mut rx_b) = mpsc::channel(16);
+        cmd_a
+            .send(NetCmd::JoinWorkspace {
+                ws: 42,
+                on_event: events_a,
+            })
+            .await
+            .unwrap();
+        cmd_b
+            .send(NetCmd::JoinWorkspace {
+                ws: 42,
+                on_event: events_b,
+            })
+            .await
+            .unwrap();
+        cmd_a.send(NetCmd::Connect { addr: addr_b }).await.unwrap();
+
+        for (rx, expected) in [(&mut rx_a, expected_b), (&mut rx_b, expected_a)] {
+            timeout(Duration::from_secs(4), async {
+                loop {
+                    if let Some(NetEvent::Msg {
+                        msg: NeighbourMsg::IdentityHello { cert, .. },
+                        ..
+                    }) = rx.recv().await
+                        && cert.device_public_key == expected
+                    {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("identity announcement should not wait for the heartbeat");
         }
     }
 

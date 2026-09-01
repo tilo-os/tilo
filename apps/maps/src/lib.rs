@@ -36,6 +36,7 @@
         clippy::string_slice,
         clippy::panic,
         clippy::unreachable,
+        clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
@@ -45,10 +46,12 @@ pub mod app;
 pub mod canvas;
 pub mod doc;
 pub mod draw;
+mod endpoint_editor;
 pub mod geo;
 pub mod livetest;
 pub mod location;
 mod map_controls;
+mod map_info_sheet;
 pub mod model;
 pub mod net;
 mod offline_panel;

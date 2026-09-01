@@ -359,8 +359,12 @@ impl CameraApp {
     /// host records **one** undo boundary bracketing it
     /// ([`ui::widget::Widget::take_committed_action`]).
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::CameraAction) {
-        self.actions
-            .dispatch(doc, crate::actions::CAMERA_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::CAMERA_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Camera", "Camera", action),
+        );
     }
 
     /// The context Ctrl+K needs to build Camera's resource tree: the gallery
@@ -762,7 +766,10 @@ impl CameraApp {
 
 fn cycle<T: Copy + PartialEq>(all: &[T], cur: T) -> T {
     let i = all.iter().position(|x| *x == cur).unwrap_or(0);
-    all[(i + 1) % all.len()]
+    // Callers always pass a non-empty `ALL` array of enum variants; fall
+    // back to `cur` rather than panicking if that ever stops holding.
+    let next = (i + 1) % all.len().max(1);
+    all.get(next).copied().unwrap_or(cur)
 }
 
 /// The frame size to request from a webcam for a chosen resolution preset.
@@ -970,6 +977,8 @@ impl Widget for CameraApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` on a freshly created tree never fails.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -985,7 +994,9 @@ impl Widget for CameraApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -2273,8 +2284,12 @@ impl CameraApp {
         };
         let mut bez = BezPath::new();
         let pts: Vec<Point> = s.corners.iter().map(|c| pt(*c)).collect();
-        bez.move_to(pts[0]);
-        for q in &pts[1..] {
+        // `corners` is a fixed `[(f32, f32); 4]`, so `pts` always has 4 points.
+        let Some((first, rest)) = pts.split_first() else {
+            return;
+        };
+        bez.move_to(*first);
+        for q in rest {
             bez.line_to(*q);
         }
         bez.close_path();
@@ -4211,12 +4226,12 @@ mod tests {
     fn wheel_scrolls_gallery_and_clamps_at_top() {
         let (mut app, mut doc, root) = sample_app();
         app.apply(Action::Nav(Screen::Gallery), &mut doc, &root);
-        assert_eq!(app.gallery_scroll, 0.0);
+        assert!(app.gallery_scroll.abs() < f64::EPSILON);
         // Wheel down moves the roll; wheel far up clamps back to the top.
         assert!(drive(&mut app, &wheel(-3.0), &mut doc, &root));
         assert!(app.gallery_scroll > 0.0);
         assert!(drive(&mut app, &wheel(100.0), &mut doc, &root));
-        assert_eq!(app.gallery_scroll, 0.0);
+        assert!(app.gallery_scroll.abs() < f64::EPSILON);
     }
 
     #[test]

@@ -173,15 +173,21 @@ weakened assertion:
 - Assert the toolbar/menu affordance constructs the **same** `EncodedAction` the
   palette does — one source of truth, proven.
 
-## Adoption status (2026-07-31)
+## Adoption status (2026-09-01)
 
-Landed: `qos_actions` spine; the unified Ctrl+K palette on it; the framework
-`ui::ActionHost` that gives every app the dispatch + undo-boundary plumbing by
-default. Adopters: `ebook` and `calendar` (both on `ActionHost`), `tube`, and
-`contacts` (as a search provider). Every other app still mutates its CRDT
-directly and exports no resources — those are the migration targets, and each
-now wires up by embedding `ui::ActionHost` (see "Wiring existing UI" above)
-rather than copy-pasting a `perform_action` + `DiscardTransport`.
+The `qos_actions` spine, unified Ctrl+K palette/action door, and framework
+`ActionHost` are broadly adopted across the app catalogue. Generic dispatch
+retains the document actor, infers app ownership when a caller omits it, and can
+inherit ambient purpose/work-group context from a task or agent run while
+preserving explicit per-action fields.
+
+Native co-edit editors are the deliberate exception to coarse action replay:
+splitting an atomic text splice into a second `RemoveBlocks`-style action can
+duplicate or reorder collaborative edits. `Widget::take_commit_context()` lets
+Writer and Typst stamp the native commit boundary with the same durable
+`ActionContext` without changing the edit grain or actor. Presentation caches
+and transient settings remain non-semantic; durable settings controls attach
+pane-specific context instead of blanket-labeling mixed state.
 
 ## Where the model does not reach yet: text editing
 

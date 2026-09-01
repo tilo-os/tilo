@@ -6,8 +6,10 @@
 //! against those regions and mutate the CRDT view state.
 
 use automerge::AutoCommit;
+use ui::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::{Button, ButtonFace, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
@@ -2403,8 +2405,8 @@ impl ContainersApp {
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         full: Rect,
-        view: &ViewState,
     ) {
         let c = &theme.tokens.colors;
         scene.fill(
@@ -2450,18 +2452,14 @@ impl ContainersApp {
             TextWeight::Regular,
         );
 
-        let combo_input = self.draw_create_modal_fields(scene, tr, theme, modal, view);
+        let combo_input = self.draw_create_modal_fields(scene, tr, theme, presence, modal);
         self.draw_create_modal_buttons(scene, tr, theme, modal);
 
         // Image suggestion dropdown — drawn LAST so it overlays the rows below.
         if self.combo.open
             && let Some(input) = combo_input
         {
-            let typed = view
-                .create
-                .get(CreateField::Image.index())
-                .cloned()
-                .unwrap_or_default();
+            let typed = self.create_input(CreateField::Image).value().to_string();
             self.draw_image_dropdown(scene, tr, theme, input, &typed);
         }
     }
@@ -2474,8 +2472,8 @@ impl ContainersApp {
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         modal: Rect,
-        view: &ViewState,
     ) -> Option<Rect> {
         let c = &theme.tokens.colors;
         // Deferred so the caller can overlay the combobox dropdown on top of
@@ -2484,8 +2482,8 @@ impl ContainersApp {
 
         let row_step = 56.0;
         let mut y = modal.y0 + 68.0;
-        for (i, field) in CreateField::ALL.iter().enumerate() {
-            let focused = self.create_focus == i;
+        for field in &CreateField::ALL {
+            let focused = self.create_focus == *field;
             draw::text(
                 scene,
                 tr,
@@ -2513,12 +2511,20 @@ impl ContainersApp {
                     c.border_standard
                 },
             );
-            let Some(value) = view.create.get(i) else {
-                y += row_step;
-                continue;
-            };
             let is_image = *field == CreateField::Image;
-            Self::draw_create_field_value(scene, tr, theme, input, *field, value, focused);
+            let text_right = if is_image {
+                input.x1 - 38.0
+            } else {
+                input.x1 - 12.0
+            };
+            let editor = self.create_input_mut(*field);
+            editor.apply_layout_external(Rect::new(
+                input.x0 + 12.0,
+                input.y0,
+                text_right,
+                input.y1,
+            ));
+            Widget::draw(editor, scene, Affine::IDENTITY, tr, theme, presence);
             self.push_hit(input, Hit::CreateField(*field));
             if is_image {
                 // Dropdown chevron toggles the suggestion list.
@@ -2528,56 +2534,6 @@ impl ContainersApp {
             y += row_step;
         }
         combo_input
-    }
-
-    /// The field value (or placeholder) and the focus caret. The Image
-    /// field is the typeable combobox: its text reservation leaves room for
-    /// the dropdown chevron on the right.
-    fn draw_create_field_value(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        input: Rect,
-        field: CreateField,
-        value: &str,
-        focused: bool,
-    ) {
-        let c = &theme.tokens.colors;
-        let text_w = if field == CreateField::Image {
-            input.width() - 24.0 - 28.0
-        } else {
-            input.width() - 24.0
-        };
-        if value.is_empty() {
-            draw::text(
-                scene,
-                tr,
-                field.placeholder(),
-                theme.tokens.typography.scale.sm,
-                draw::with_alpha(c.text_dim, 150),
-                Point::new(input.x0 + 12.0, input.center().y - 7.0),
-                TextWeight::Regular,
-            );
-        } else {
-            draw::text_clip(
-                scene,
-                tr,
-                value,
-                &draw::TextStyle {
-                    size: theme.tokens.typography.scale.sm,
-                    color: c.text_primary,
-                    weight: TextWeight::Regular,
-                },
-                Point::new(input.x0 + 12.0, input.center().y - 7.0),
-                text_w,
-            );
-        }
-        if focused {
-            let (vw, _) = tr.measure(value, theme.tokens.typography.scale.sm, None);
-            let cx = (input.x0 + 12.0 + f64::from(vw)).min(input.x0 + 12.0 + text_w);
-            let caret = Rect::new(cx, input.center().y - 8.0, cx + 1.5, input.center().y + 8.0);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, c.accent[5], None, &caret);
-        }
     }
 
     /// The image field's dropdown-toggle chevron.
@@ -2611,7 +2567,6 @@ impl ContainersApp {
         theme: &Theme,
         modal: Rect,
     ) {
-        let c = &theme.tokens.colors;
         let cancel = Rect::new(
             modal.x1 - 24.0 - 200.0,
             modal.y1 - 52.0,
@@ -2624,43 +2579,28 @@ impl ContainersApp {
             modal.x1 - 24.0,
             modal.y1 - 16.0,
         );
-        draw::fill_round(
+        Button::paint(
             scene,
-            cancel,
-            f64::from(theme.tokens.radii.md),
-            if self.hovered(cancel) {
-                c.surface_white_10
-            } else {
-                c.surface_white_5
-            },
-        );
-        draw::text(
-            scene,
+            draw::base(),
             tr,
-            "Cancel",
-            theme.tokens.typography.scale.sm,
-            c.text_primary,
-            Point::new(cancel.center().x - 22.0, cancel.center().y - 7.0),
-            TextWeight::Medium,
+            theme,
+            &ButtonFace::new(cancel, "Cancel")
+                .radius(f64::from(theme.tokens.radii.md))
+                .text_size(theme.tokens.typography.scale.sm)
+                .weight(TextWeight::Medium)
+                .hovered(self.hovered(cancel)),
         );
-        draw::fill_round(
+        Button::paint(
             scene,
-            create,
-            f64::from(theme.tokens.radii.md),
-            if self.hovered(create) {
-                c.accent[4]
-            } else {
-                c.accent[5]
-            },
-        );
-        draw::text(
-            scene,
+            draw::base(),
             tr,
-            "Create",
-            theme.tokens.typography.scale.sm,
-            Color::WHITE,
-            Point::new(create.center().x - 21.0, create.center().y - 7.0),
-            TextWeight::Semibold,
+            theme,
+            &ButtonFace::new(create, "Create")
+                .primary()
+                .radius(f64::from(theme.tokens.radii.md))
+                .text_size(theme.tokens.typography.scale.sm)
+                .weight(TextWeight::Semibold)
+                .hovered(self.hovered(create)),
         );
         self.push_hit(cancel, Hit::CreateCancel);
         self.push_hit(create, Hit::CreateSubmit);
@@ -3123,7 +3063,7 @@ impl ContainersApp {
             }
             Hit::NewContainer => {
                 self.create_open = true;
-                self.create_focus = CreateField::Image.index();
+                self.focus_create_field(CreateField::Image);
             }
             Hit::SelectContainer(id) => {
                 let already = ViewDoc::selected(doc).as_deref() == Some(id.as_str());
@@ -3161,7 +3101,7 @@ impl ContainersApp {
             }
             Hit::DistroCreate => {
                 self.create_open = true;
-                self.create_focus = 0;
+                self.focus_create_field(CreateField::Name);
             }
             Hit::DetailTab(tab) => {
                 ViewDoc::set_tab(doc, tab);
@@ -3172,7 +3112,7 @@ impl ContainersApp {
             }
             Hit::CreateField(field) => self.apply_hit_create_field(field),
             Hit::ComboToggle => {
-                self.create_focus = CreateField::Image.index();
+                self.focus_create_field(CreateField::Image);
                 self.combo.open = !self.combo.open;
                 self.combo.highlight = 0;
             }
@@ -3182,6 +3122,7 @@ impl ContainersApp {
             }
             Hit::CreateCancel => {
                 self.create_open = false;
+                self.blur_create_fields();
                 self.combo.close();
             }
             Hit::PromptCancel => {
@@ -3268,7 +3209,7 @@ impl ContainersApp {
     }
 
     fn apply_hit_create_field(&mut self, field: CreateField) {
-        self.create_focus = field.index();
+        self.focus_create_field(field);
         // Focusing a non-image field closes the suggestion dropdown.
         if field == CreateField::Image {
             self.combo.open = true;
@@ -3321,11 +3262,19 @@ impl ContainersApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the complete Widget event context to modal-owned shared inputs"
+    )]
     pub(crate) fn on_key(
         &mut self,
         doc: &mut AutoCommit,
+        event: &winit::event::WindowEvent,
         key: &KeyEvent,
-        _modifiers: winit::event::Modifiers,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        path: &automerge::ObjId,
+        focus_target: &mut Option<taffy::NodeId>,
         handled: &mut bool,
     ) {
         if key.state != ElementState::Pressed {
@@ -3351,7 +3300,16 @@ impl ContainersApp {
 
         // Create modal owns the keyboard while open.
         if self.create_open {
-            self.create_modal_key(doc, key, handled);
+            self.create_modal_key(
+                doc,
+                event,
+                key,
+                scale_factor,
+                modifiers,
+                path,
+                focus_target,
+                handled,
+            );
             self.refresh_view(doc);
             return;
         }
@@ -3382,7 +3340,7 @@ impl ContainersApp {
                 }
                 "n" => {
                     self.create_open = true;
-                    self.create_focus = CreateField::Image.index();
+                    self.create_focus = CreateField::Image;
                     *handled = true;
                 }
                 "b" => {
@@ -3396,10 +3354,22 @@ impl ContainersApp {
         self.refresh_view(doc);
     }
 
-    fn create_modal_key(&mut self, doc: &mut AutoCommit, key: &KeyEvent, handled: &mut bool) {
-        let Some(&field) = CreateField::ALL.get(self.create_focus) else {
-            return;
-        };
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "create-modal policy wraps the embedded TextInput Widget event path"
+    )]
+    fn create_modal_key(
+        &mut self,
+        doc: &mut AutoCommit,
+        event: &winit::event::WindowEvent,
+        key: &KeyEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        path: &automerge::ObjId,
+        focus_target: &mut Option<taffy::NodeId>,
+        handled: &mut bool,
+    ) {
+        let field = self.create_focus;
         let on_image = field == CreateField::Image;
         // The combobox owns Up/Down/Enter while its dropdown is open and the
         // image field is focused.
@@ -3439,7 +3409,10 @@ impl ContainersApp {
         }
         match &key.logical_key {
             Key::Named(NamedKey::Tab) => {
-                self.create_focus = (self.create_focus + 1) % CreateField::ALL.len();
+                let next = (self.create_focus.index() + 1) % CreateField::ALL.len();
+                if let Some(field) = CreateField::ALL.get(next).copied() {
+                    self.focus_create_field(field);
+                }
                 self.combo.close();
                 *handled = true;
             }
@@ -3447,33 +3420,20 @@ impl ContainersApp {
                 self.submit_create(doc);
                 *handled = true;
             }
-            Key::Named(NamedKey::Backspace) => {
-                let cur = ViewDoc::create_field(doc, field);
-                let mut chars: Vec<char> = cur.chars().collect();
-                chars.pop();
-                ViewDoc::set_create_field(doc, field, &chars.into_iter().collect::<String>());
-                if on_image {
-                    self.combo.open = true;
-                    self.combo.highlight = 0;
-                }
+            _ => {
+                self.focus_create_field(field);
+                self.route_create_input(
+                    field,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    doc,
+                    path,
+                    focus_target,
+                );
+                self.after_create_input(field);
                 *handled = true;
             }
-            Key::Named(NamedKey::Space) => {
-                let cur = ViewDoc::create_field(doc, field);
-                ViewDoc::set_create_field(doc, field, &format!("{cur} "));
-                *handled = true;
-            }
-            Key::Character(ch) => {
-                let cur = ViewDoc::create_field(doc, field);
-                ViewDoc::set_create_field(doc, field, &format!("{cur}{ch}"));
-                // Typing in the image field re-opens + re-filters the dropdown.
-                if on_image {
-                    self.combo.open = true;
-                    self.combo.highlight = 0;
-                }
-                *handled = true;
-            }
-            _ => {}
         }
     }
 

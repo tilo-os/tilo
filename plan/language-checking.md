@@ -71,8 +71,42 @@ grammar is additive, not the foundation.
 
 ## Integration
 
-One `ui` task: wire hunspell (per-language dictionaries, red wavy squiggles,
-right-click corrections, user dictionary) into the shared block/text editor, with
-language detected per document/paragraph; layer Harper's grammar lints on English
-runs only. Every text-bearing app inherits it — the same build-once pattern as the
-DnD/palette/popover primitives.
+The shared TextInput baseline is now implemented: checking defaults on, follows
+the session or field language, uses persistent installed Hunspell workers with
+an embedded in-process English fallback, paints shaped/wrapped squiggles, and
+offers corrections plus "Add to dictionary" on right-click. Untouched inactive
+fields do no checking; edits are debounced. Structured fields opt out by semantic
+`TextInputKind`, and shared search, number, code, secret, and editable-name
+widgets set that intent automatically. Common offline dictionaries ship in the
+OS image.
+
+Structured fields can explicitly opt back in, and any field can pin its own
+dictionary language independently of the session. Conservative autocorrection
+applies only safe-listed/common typos and first-ranked adjacent transpositions
+at Space, punctuation, Enter, or an equivalent IME commit. Settings exposes
+separate checking and autocorrection switches; immediate Backspace and the
+context menu restore an automatic change, while "Ignore in this field" sits
+between a one-off false positive and the permanent personal dictionary.
+
+Selected text also has an asynchronous action seam. A host registers labels such
+as Translate, Rewrite, Explain, or Check grammar; choosing one yields the exact
+text and byte range without running model work in the widget event handler. The
+host must expose the same capability through its resource/action registry when
+it is user-facing, so keyboard, accessibility, and automation do not depend on a
+right-click.
+
+Grammar is the next layer, not part of synchronous editing:
+
+1. Run Harper only for English paragraphs on a worker after an idle debounce.
+2. Tag every request/result with the document revision and discard stale results.
+3. Return typed diagnostics (range, category, message, replacements), sharing
+   the same decoration/context-action UI as spelling.
+4. Keep the checker behind a small engine trait. A future multilingual local
+   model can be a separate process with explicit download/RAM controls rather
+   than becoming a mandatory dependency of every app.
+
+That engine boundary is the credible OSS unit: corpus + evaluator, typed protocol,
+Harper adapter, cancellation/staleness handling, and editor-agnostic diagnostics.
+It should not bundle qOS UI or CRDT types. Quality gates must be published per
+language; unsupported language is a normal capability result, never a silent
+English fallback.

@@ -321,8 +321,12 @@ impl FirewallApp {
     /// (`firewall-cmd`/`nft`, see [`Self::apply`]) is a separate side effect
     /// driven by the resulting document state — never part of an action.
     fn perform_action(&mut self, state: &mut AutoCommit, action: &FirewallAction) {
-        self.actions
-            .dispatch(state, crate::actions::FIREWALL_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::FIREWALL_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Firewall", "Firewall", action),
+        );
         // Adopt the mutated config so the in-memory view matches the document.
         if let Some(json) = FirewallDoc::load_json(state) {
             if let Some(cfg) = FirewallConfig::from_json(&json) {
@@ -544,6 +548,10 @@ impl FirewallApp {
         };
         let max_rows = ((l.table.y1 - body_top) / row_h).floor().max(0.0) as usize;
         for (vis, &idx) in indices.iter().take(max_rows).enumerate() {
+            // `indices` was just built from this same `z.rules` above.
+            let Some(rule) = z.rules.get(idx) else {
+                continue;
+            };
             let y = body_top + vis as f64 * row_h;
             let rect = Rect::new(inner_x0, y, inner_x1, y + row_h - 4.0);
             let toggle = Rect::new(
@@ -559,7 +567,7 @@ impl FirewallApp {
                 rect.y0 + (rect.height() - 26.0) / 2.0 + 26.0,
             );
             l.rule_rows.push(RuleRow {
-                id: z.rules[idx].id,
+                id: rule.id,
                 rect,
                 toggle,
                 delete,
@@ -674,7 +682,10 @@ impl FirewallApp {
             .unwrap_or(0) as i32;
         let n = ZoneKind::ALL.len() as i32;
         let next = ((cur + delta) % n + n) % n;
-        self.select_zone(ZoneKind::ALL[next as usize]);
+        // `next` is always in `0..n` by construction of the double-modulo above.
+        if let Some(&zone) = ZoneKind::ALL.get(next as usize) {
+            self.select_zone(zone);
+        }
     }
 
     fn set_form_focus(&mut self, f: Option<FocusField>) {
@@ -867,6 +878,8 @@ impl Widget for FirewallApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` on a freshly created tree never fails.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -882,7 +895,9 @@ impl Widget for FirewallApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -1102,8 +1117,10 @@ impl FirewallApp {
             Key::Character(c) => {
                 let s = c.as_str();
                 if let Ok(d) = s.parse::<usize>() {
-                    if (1..=9).contains(&d) {
-                        self.select_zone(ZoneKind::ALL[d - 1]);
+                    if (1..=9).contains(&d)
+                        && let Some(&zone) = ZoneKind::ALL.get(d - 1)
+                    {
+                        self.select_zone(zone);
                         *handled = true;
                     }
                 } else if s.eq_ignore_ascii_case("p") {
@@ -1258,8 +1275,10 @@ impl FirewallApp {
         }
 
         // Filter segmented.
-        if let Some(i) = seg_index(&l.filter_seg, p) {
-            self.filter = Filter::ALL[i];
+        if let Some(i) = seg_index(&l.filter_seg, p)
+            && let Some(&filter) = Filter::ALL.get(i)
+        {
+            self.filter = filter;
             self.selected_rule = None;
             *handled = true;
             self.set_form_focus(None);
@@ -1330,14 +1349,18 @@ impl FirewallApp {
             self.set_form_focus(None);
             return true;
         }
-        if let Some(i) = seg_index(&l.proto_seg, p) {
-            self.form.proto = Proto::ALL[i];
+        if let Some(i) = seg_index(&l.proto_seg, p)
+            && let Some(&proto) = Proto::ALL.get(i)
+        {
+            self.form.proto = proto;
             *handled = true;
             self.set_form_focus(None);
             return true;
         }
-        if let Some(i) = seg_index(&l.action_seg, p) {
-            self.form.action = Action::ALL[i];
+        if let Some(i) = seg_index(&l.action_seg, p)
+            && let Some(&action) = Action::ALL.get(i)
+        {
+            self.form.action = action;
             *handled = true;
             self.set_form_focus(None);
             return true;
@@ -2094,10 +2117,10 @@ impl FirewallApp {
         theme: &Theme,
         l: &Layout,
     ) {
-        if l.filter_seg.is_empty() {
+        let Some(first_seg) = l.filter_seg.first() else {
             return;
-        }
-        let y0 = l.filter_seg[0].y0;
+        };
+        let y0 = first_seg.y0;
         paint::label_v(
             tr,
             scene,
@@ -2107,7 +2130,7 @@ impl FirewallApp {
             theme.text_primary,
             l.summary.x0,
             y0,
-            l.filter_seg[0].height(),
+            first_seg.height(),
             120.0,
         );
         let labels = [
