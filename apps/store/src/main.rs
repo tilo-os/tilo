@@ -111,6 +111,10 @@ impl ui::widget::Widget for LiveStore {
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
         // Drain any snapshots the worker produced since last frame.
         while let Some(snap) = self.worker.try_snapshot() {
+            if let Some(invocation) = snap.invocation {
+                self.inner
+                    .complete_lifecycle_invocation(invocation, snap.operation_error.clone());
+            }
             let applies_items = match snap.query.as_deref() {
                 Some(query) => query == self.inner.query(),
                 None => snap.detail.is_none(),
@@ -133,8 +137,36 @@ impl ui::widget::Widget for LiveStore {
                 self.worker.request(Request::Act(Box::new(item), action));
             }
         }
+        for (id, action, invocation) in self.inner.take_lifecycle_actions() {
+            if let Some(item) = self.inner.items().iter().find(|i| i.id == id).cloned() {
+                if !self
+                    .worker
+                    .request_with_invocation(Request::Act(Box::new(item), action), Some(invocation))
+                {
+                    self.inner.complete_lifecycle_invocation(
+                        invocation,
+                        Some("store worker is unavailable".into()),
+                    );
+                }
+            } else {
+                self.inner.complete_lifecycle_invocation(
+                    invocation,
+                    Some("app is no longer present in the catalog".into()),
+                );
+            }
+        }
         if self.inner.take_refresh_requested() {
             self.worker.request(Request::Refresh);
+        }
+        if let Some(invocation) = self.inner.take_lifecycle_refresh()
+            && !self
+                .worker
+                .request_with_invocation(Request::Refresh, Some(invocation))
+        {
+            self.inner.complete_lifecycle_invocation(
+                invocation,
+                Some("store worker is unavailable".into()),
+            );
         }
         if let Some(query) = self.inner.take_search_requested() {
             self.worker.request(Request::Search(query));

@@ -317,6 +317,8 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
             .with_contract(ActionContract {
                 discovery: DiscoveryScope::Launchable,
                 retry: RetryPolicy::Idempotent,
+                execution: qos_actions::ExecutionMode::Background { cancellable: true },
+                result: qos_actions::ResultSpec::Job,
                 tags: vec!["appearance".into(), "theme".into()],
                 ..ActionContract::default()
             }),
