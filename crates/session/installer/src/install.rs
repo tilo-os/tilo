@@ -21,16 +21,18 @@
 //!   is layered on top of it;
 //! * with `--pin`, the secret on the **second stdin line** (after the account
 //!   password, never on the command line) becomes a **TPM2+PIN** keyslot only
-//!   when Secure Boot and kernel lockdown prove a verified-boot boundary, and
-//!   an ordinary passphrase keyslot otherwise;
+//!   when Secure Boot, kernel lockdown, and a dedicated installed-target
+//!   preflight prove a continuous verified-boot boundary, and an ordinary
+//!   passphrase keyslot otherwise;
 //! * with `--fido2`, a **FIDO2 security key** is enrolled if a token is
 //!   present (its absence does not abort the install).
 //!
-//! Encryption does **not** require a TPM. With verified TPM2 boot, `--pin`
-//! becomes the single startup PIN bound to that TPM; otherwise it becomes the
-//! normal disk-unlock passphrase. The privileged backend independently checks
-//! this boundary and enforces both flags, so an older or malformed UI fails
-//! closed instead of installing plaintext or weakening the credential policy.
+//! Encryption does **not** require a TPM. With verified TPM2 boot through the
+//! installed target, `--pin` becomes the single startup PIN bound to that TPM;
+//! otherwise it becomes the normal disk-unlock passphrase. The privileged
+//! backend independently checks this boundary and enforces both flags, so an
+//! older or malformed UI fails closed instead of installing plaintext or
+//! weakening the credential policy.
 //!
 //! `--yes` is required because the backend has no tty here; the installer's
 //! Review screen is the user's "are you sure" gate. The account password is
