@@ -51,7 +51,7 @@
 )]
 
 use qdoc::snapshot::AttrVal;
-use qdoc::{BlockView, DocSnapshot, MarkSpan};
+use qdoc::{BlockView, DocSnapshot, InlinePlan, MarkSpan};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
@@ -410,10 +410,7 @@ fn push_indent(out: &mut String, indent_level: i64) {
 
 // ---- inline marks -----------------------------------------------------------
 
-/// Render `text` with `marks` applied as RTF control words over the
-/// correct byte ranges. Marks cut the text at byte-offset boundaries,
-/// then each segment toggles the active mark set inside its own group
-/// `{ … }` so toggles never leak.
+/// Render `text` with qdoc's canonical character-offset mark traversal.
 fn render_inline(out: &mut String, text: &str, marks: &[MarkSpan], colors: &ColorTable) {
     if text.is_empty() {
         return;
@@ -423,32 +420,11 @@ fn render_inline(out: &mut String, text: &str, marks: &[MarkSpan], colors: &Colo
         return;
     }
 
-    let mut bounds: Vec<usize> = vec![0, text.len()];
-    for m in marks {
-        for b in [m.start, m.end] {
-            if b <= text.len() && text.is_char_boundary(b) {
-                bounds.push(b);
-            }
-        }
-    }
-    bounds.sort_unstable();
-    bounds.dedup();
-
-    for w in bounds.windows(2) {
-        let &[seg_start, seg_end] = w else {
+    for point in InlinePlan::new(text, marks).points() {
+        let Some(run) = &point.run else {
             continue;
         };
-        if seg_start >= seg_end {
-            continue;
-        }
-        let Some(segment) = text.get(seg_start..seg_end) else {
-            continue;
-        };
-        let active: Vec<&MarkSpan> = marks
-            .iter()
-            .filter(|m| m.start <= seg_start && m.end >= seg_end && m.start < m.end)
-            .collect();
-        render_run(out, segment, &active, colors);
+        render_run(out, run.text, &run.marks, colors);
     }
 }
 

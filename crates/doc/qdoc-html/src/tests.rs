@@ -713,11 +713,10 @@ fn attribute_value_quotes_are_escaped_in_alt() {
 
 #[test]
 fn multibyte_text_with_marks_splits_on_char_boundaries() {
-    // "héllo" — `é` is 2 bytes (U+00E9). Bold over "héll" (bytes 0..5).
+    // qdoc mark offsets count Unicode scalar values, not UTF-8 bytes.
     let text = "héllo";
     let mut p = block("paragraph", text);
-    // bytes: h(0) é(1..3) l(3) l(4) o(5) → end of "héll" is byte 5.
-    p.marks.push(mark(0, 5, "strong", MarkValue::Bool(true)));
+    p.marks.push(mark(0, 4, "strong", MarkValue::Bool(true)));
     let snap = DocSnapshot {
         blocks: vec![p],
         ..empty_snapshot()
