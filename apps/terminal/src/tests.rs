@@ -432,6 +432,9 @@ fn test_terminal_performer_print() {
     let links_id = doc
         .put_object(ROOT, "terminal_links", ObjType::Map)
         .unwrap();
+    let images_id = doc
+        .put_object(ROOT, "terminal_images", ObjType::List)
+        .unwrap();
 
     let cursor_id = doc.put_object(ROOT, "cursor", ObjType::Map).unwrap();
     doc.put(&cursor_id, "x", 0u64).unwrap();
@@ -454,6 +457,7 @@ fn test_terminal_performer_print() {
             alt_grid_id,
             cursor_id,
             links_id,
+            images_id,
             main_line_ids: &mut line_ids,
             alt_line_ids: &mut alt_line_ids,
             alt_active: &mut alt_active,
