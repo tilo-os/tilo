@@ -16,6 +16,12 @@ enum LoadScreen {
     Failed,
 }
 
+fn count_entries() -> Result<usize, String> {
+    std::fs::read_dir(".")
+        .map(|entries| entries.filter_map(Result::ok).count())
+        .map_err(|error| error.to_string())
+}
+
 /// A complete button → worker → typed state → retained subtree loop.
 pub fn app_root() -> Box<dyn Widget> {
     crate::install_catalog();
@@ -26,12 +32,7 @@ pub fn app_root() -> Box<dyn Widget> {
     let run = Button::new("run-task", "task-run", None).on_click(move || {
         let completion = run_task.begin(LoadState::Loading);
         std::thread::spawn(move || {
-            let result = std::fs::read_dir(".")
-                .map(|entries| entries.filter_map(Result::ok).count())
-                .map_or_else(
-                    |error| LoadState::Failed(error.to_string()),
-                    LoadState::Ready,
-                );
+            let result = count_entries().map_or_else(LoadState::Failed, LoadState::Ready);
             let _ = completion.complete(result);
         });
     });
@@ -67,9 +68,27 @@ pub fn app_root() -> Box<dyn Widget> {
         },
     );
 
-    Box::new(ui::column![
+    let root = Box::new(ui::column![
         Text::new("task-title").with_role(TextRole::Title),
         run,
         body,
-    ])
+    ]);
+    crate::resource_actions::background(
+        root,
+        crate::resource_actions::resource(
+            "generated.background-task",
+            "Background task",
+            "run",
+            "Run task",
+            true,
+        ),
+        |_| {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let result = count_entries().map(|_| Default::default());
+                let _ = sender.send(result);
+            });
+            Ok(receiver)
+        },
+    )
 }
