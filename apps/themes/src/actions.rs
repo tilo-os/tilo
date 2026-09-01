@@ -33,8 +33,8 @@ use uuid::Uuid;
 
 use qos_actions::{
     Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
-    ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, ParamType, Resource, ResourceProvider,
-    RetryPolicy, RiskLevel,
+    ConfirmationPolicy, DiscoveryScope, Doc, EncodedAction, ExecutionLocus, OperationKind,
+    ParamType, Resource, ResourceProvider, RetryPolicy, RiskLevel,
 };
 
 use crate::doc;
@@ -305,11 +305,22 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
         );
 
         // Every theme can become the active OS theme.
-        child = child.with_action(immediate_spec(
-            "apply",
-            "Apply as system theme",
-            &set_active_theme_action(spec.id.clone()),
-        ));
+        child = child.with_action(
+            ActionSpec::operation(
+                "apply",
+                "Apply as system theme",
+                OperationKind::Effect,
+                "themes.apply",
+                &spec.id,
+            )
+            .expect("theme id is serializable")
+            .with_contract(ActionContract {
+                discovery: DiscoveryScope::Launchable,
+                retry: RetryPolicy::Idempotent,
+                tags: vec!["appearance".into(), "theme".into()],
+                ..ActionContract::default()
+            }),
+        );
 
         // Every theme can be duplicated into a new editable copy. The copy's uuid
         // is minted at authoring time so replay is deterministic.
@@ -502,6 +513,14 @@ mod tests {
                 .risk,
             RiskLevel::Destructive
         );
+        let apply = custom
+            .actions
+            .iter()
+            .find(|action| action.id == "apply")
+            .expect("apply operation");
+        assert_eq!(apply.kind, OperationKind::Effect);
+        assert_eq!(apply.contract.discovery, DiscoveryScope::Launchable);
+        assert_eq!(apply.contract.result, qos_actions::ResultSpec::None);
 
         // The one palette surfaces the tree's actions as rows.
         let mut palette = ui::ActionPalette::new();
@@ -715,7 +734,8 @@ mod tests {
             "one source of truth for delete"
         );
 
-        // A preset's apply spec == the apply builder.
+        // Applying is an external store effect; the spec carries the stable
+        // theme id to the widget operation handler.
         let builtin = lib
             .children
             .iter()
@@ -723,10 +743,10 @@ mod tests {
             .unwrap();
         let apply_spec = builtin.actions.iter().find(|a| a.id == "apply").unwrap();
         let from_spec = immediate_encode(apply_spec);
-        let from_builder = encode(&set_active_theme_action("qos-blue"));
+        assert_eq!(from_spec.type_id, "themes.apply");
         assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "apply is one source of truth"
+            serde_json::from_slice::<String>(&from_spec.payload).unwrap(),
+            "qos-blue"
         );
 
         // The rename spec == the rename builder for the same name.
