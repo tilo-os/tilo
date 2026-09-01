@@ -59,9 +59,14 @@ use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+mod backup;
 pub mod broker;
 mod secure_store;
 
+pub use backup::{
+    PortableBackupInfo, export_portable_backup, import_portable_backup,
+    import_portable_backup_matching, import_portable_backup_with_provider, verify_portable_backup,
+};
 pub use secure_store::{BrokerFileProvider, SecretProvider};
 
 pub use runtime_portal::NotAvailable;
@@ -70,6 +75,20 @@ pub use runtime_portal::NotAvailable;
 /// [`broker::BROKER_ENV_VAR`] and never sets this for packaged apps.
 pub const IDENTITY_ENV_VAR: &str = "QOS_USER_IDENTITY";
 pub const IDENTITY_SERVICE: &str = "identity";
+const COLLABORATION_JOIN_TAG: &[u8] = b"qos-collaboration-join-v1\0";
+
+/// Domain-separated bytes signed by an enrolled device when joining one
+/// collaboration workspace. The NUL-terminated domain tag and the remaining
+/// workspace bytes make the single-field encoding unambiguous; this exact
+/// concatenation is fixed wire ABI for peer verification.
+#[must_use]
+pub fn collaboration_join_signing_bytes(workspace_id: &str) -> Vec<u8> {
+    let workspace = workspace_id.as_bytes();
+    let mut message = Vec::new();
+    message.extend_from_slice(COLLABORATION_JOIN_TAG);
+    message.extend_from_slice(workspace);
+    message
+}
 
 /// Small synchronous wire protocol used over the launcher-inherited identity
 /// service fd. The launcher writes `Handshake` before the sandbox starts, so
@@ -86,7 +105,26 @@ pub mod wire {
     #[derive(Debug, Serialize, Deserialize)]
     pub enum Request {
         Metadata,
-        Sign { action: String, message: Vec<u8> },
+        Sign {
+            action: String,
+            message: Vec<u8>,
+        },
+        /// Prove possession of the enrolled device key for the workspace the
+        /// launcher bound into the handshake. The broker constructs the
+        /// domain-separated message; callers cannot use this as a generic
+        /// signing escape hatch.
+        CollaborationJoin {
+            workspace_id: String,
+        },
+        /// Sign a pre-constructed `collab_types::SignedOp` only after the
+        /// workspace-bound broker verifies its route, certified device author,
+        /// document payload kind, policy class, timestamp, and live role.
+        CollaborationOp {
+            workspace_id: String,
+            app_id: String,
+            record_id: String,
+            unsigned_op: Vec<u8>,
+        },
     }
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -275,14 +313,24 @@ impl IdentityLock {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(dir.join(LOCK_FILE))?;
-        let meta = file.metadata()?;
-        if !meta.file_type().is_file()
-            || meta.uid() != unsafe { libc::geteuid() }
-            || meta.permissions().mode() & 0o077 != 0
-        {
+        let mut meta = file.metadata()?;
+        if !meta.file_type().is_file() || meta.uid() != unsafe { libc::geteuid() } {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "identity lifecycle lock must be a private user-owned regular file",
+            ));
+        }
+        // Older releases created this non-secret advisory file under a
+        // shared-group umask. Tighten an otherwise valid, user-owned lock in
+        // place so the security check does not strand upgraded identities.
+        if meta.permissions().mode() & 0o077 != 0 {
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+            meta = file.metadata()?;
+        }
+        if meta.permissions().mode() & 0o077 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "identity lifecycle lock must be private",
             ));
         }
         let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
@@ -689,8 +737,11 @@ pub fn remove_identity(dir: &std::path::Path, id: &str) -> io::Result<()> {
 /// Wire-format types the loader deserialises from disk, mirroring
 /// `ui::widget::identity_flow::IdentityRecord`; unknown fields are ignored.
 mod ondisk {
-    use serde::{Deserialize, Serialize};
-    use serde_bytes as serde_bytes_codec;
+    use std::fmt;
+
+    use serde::de::{SeqAccess, Visitor};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use zeroize::Zeroizing;
 
     use crate::{KeyProtection, SecretReference};
 
@@ -734,10 +785,71 @@ mod ondisk {
         pub share_index: u16,
         #[serde(
             default,
-            with = "serde_bytes_codec",
-            skip_serializing_if = "Vec::is_empty"
+            with = "zeroizing_bytes_codec",
+            skip_serializing_if = "zeroizing_bytes_codec::is_empty"
         )]
-        pub secret_bytes: Vec<u8>,
+        pub secret_bytes: Zeroizing<Vec<u8>>,
+    }
+
+    /// `serde_bytes` preserves the compact on-disk representation, but its
+    /// normal deserializer returns a plain `Vec`. Root signing shares parsed
+    /// from a decrypted portable record must remain zeroizing even on every
+    /// error path after deserialization.
+    mod zeroizing_bytes_codec {
+        use super::{Deserializer, SeqAccess, Serializer, Visitor, Zeroizing, fmt};
+
+        pub fn is_empty(bytes: &Zeroizing<Vec<u8>>) -> bool {
+            bytes.is_empty()
+        }
+
+        pub fn serialize<S>(bytes: &Zeroizing<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            serde_bytes::serialize(bytes.as_slice(), serializer)
+        }
+
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<Zeroizing<Vec<u8>>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            struct ZeroizingBytesVisitor;
+
+            impl<'de> Visitor<'de> for ZeroizingBytesVisitor {
+                type Value = Zeroizing<Vec<u8>>;
+
+                fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    formatter.write_str("a byte sequence")
+                }
+
+                fn visit_bytes<E>(self, bytes: &[u8]) -> Result<Self::Value, E>
+                where
+                    E: serde::de::Error,
+                {
+                    Ok(Zeroizing::new(bytes.to_vec()))
+                }
+
+                fn visit_byte_buf<E>(self, bytes: Vec<u8>) -> Result<Self::Value, E>
+                where
+                    E: serde::de::Error,
+                {
+                    Ok(Zeroizing::new(bytes))
+                }
+
+                fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+                where
+                    A: SeqAccess<'de>,
+                {
+                    let mut bytes = Zeroizing::new(Vec::new());
+                    while let Some(byte) = sequence.next_element()? {
+                        bytes.push(byte);
+                    }
+                    Ok(bytes)
+                }
+            }
+
+            deserializer.deserialize_byte_buf(ZeroizingBytesVisitor)
+        }
     }
 }
 
@@ -953,6 +1065,61 @@ impl SigningIdentity {
         }
     }
 
+    /// Prove that this process can ask the workspace-bound identity broker to
+    /// use the certified device key. Unlike [`Self::sign_for`], this is not an
+    /// application action grant: the launcher has already bound the broker
+    /// connection to exactly one workspace, and the broker rejects any other
+    /// workspace id before signing the fixed collaboration-join domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::ConnectionFailed`] when the requested
+    /// workspace differs from the launcher's handshake, the device is no
+    /// longer enrolled, or the signing service is unavailable.
+    pub fn sign_collaboration_join(&self, workspace_id: &str) -> Result<[u8; 64], NotAvailable> {
+        match &self.source {
+            SigningSource::ActionBroker(stream) => {
+                sign_collaboration_join_via_broker(stream, workspace_id)
+            }
+            _ => self.sign(&collaboration_join_signing_bytes(workspace_id)),
+        }
+    }
+
+    /// Ask the workspace-bound identity broker to authorize and sign one
+    /// typed collaboration document operation. The broker parses the complete
+    /// unsigned envelope and checks that its route-derived artifact, author,
+    /// operation class, timestamp, and typed payload match this launch before
+    /// the certified device key signs it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::ConnectionFailed`] if this is not a
+    /// workspace-bound broker connection, the route or operation is invalid,
+    /// the current role cannot edit, or the device is untrusted/revoked.
+    pub fn sign_collaboration_op(
+        &self,
+        workspace_id: &str,
+        app_id: &str,
+        record_id: &str,
+        unsigned_op: &[u8],
+    ) -> Result<[u8; 64], NotAvailable> {
+        match &self.source {
+            SigningSource::ActionBroker(stream) => sign_collaboration_op_via_broker(
+                stream,
+                workspace_id,
+                app_id,
+                record_id,
+                unsigned_op,
+            ),
+            SigningSource::Local(_) | SigningSource::Broker(_) => {
+                Err(NotAvailable::ConnectionFailed(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "certified collaboration operations require the workspace identity service",
+                )))
+            }
+        }
+    }
+
     fn sign_local(&self, message: &[u8]) -> io::Result<[u8; 64]> {
         match &self.source {
             SigningSource::Local(Some(sk)) => Ok(sk.sign(message).to_bytes()),
@@ -1067,7 +1234,49 @@ fn sign_via_action_broker(
             message: message.to_vec(),
         },
     )?;
-    match read_frame::<wire::Response>(&mut stream)? {
+    read_signature_response(&mut stream)
+}
+
+fn sign_collaboration_join_via_broker(
+    stream: &Mutex<UnixStream>,
+    workspace_id: &str,
+) -> Result<[u8; 64], NotAvailable> {
+    let mut stream = stream.lock().map_err(|_| {
+        NotAvailable::ConnectionFailed(io::Error::other("identity broker lock poisoned"))
+    })?;
+    write_frame(
+        &mut stream,
+        &wire::Request::CollaborationJoin {
+            workspace_id: workspace_id.to_string(),
+        },
+    )?;
+    read_signature_response(&mut stream)
+}
+
+fn sign_collaboration_op_via_broker(
+    stream: &Mutex<UnixStream>,
+    workspace_id: &str,
+    app_id: &str,
+    record_id: &str,
+    unsigned_op: &[u8],
+) -> Result<[u8; 64], NotAvailable> {
+    let mut stream = stream.lock().map_err(|_| {
+        NotAvailable::ConnectionFailed(io::Error::other("identity broker lock poisoned"))
+    })?;
+    write_frame(
+        &mut stream,
+        &wire::Request::CollaborationOp {
+            workspace_id: workspace_id.to_string(),
+            app_id: app_id.to_string(),
+            record_id: record_id.to_string(),
+            unsigned_op: unsigned_op.to_vec(),
+        },
+    )?;
+    read_signature_response(&mut stream)
+}
+
+fn read_signature_response(stream: &mut UnixStream) -> Result<[u8; 64], NotAvailable> {
+    match read_frame::<wire::Response>(stream)? {
         wire::Response::Signature(bytes) if bytes.len() == 64 => {
             let mut signature = [0_u8; 64];
             signature.copy_from_slice(&bytes);
@@ -1091,9 +1300,15 @@ fn write_frame<T: serde::Serialize>(
     stream: &mut UnixStream,
     value: &T,
 ) -> Result<(), NotAvailable> {
-    let bytes = serde_json::to_vec(value).map_err(|error| {
+    let bytes = postcard::to_allocvec(value).map_err(|error| {
         NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, error))
     })?;
+    if bytes.len() > MAX_IDENTITY_FRAME_BYTES {
+        return Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "identity frame exceeds 64 MiB",
+        )));
+    }
     let len = u32::try_from(bytes.len()).map_err(|_| {
         NotAvailable::ConnectionFailed(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1110,18 +1325,24 @@ fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> Result
     let mut len = [0_u8; 4];
     stream.read_exact(&mut len)?;
     let len = u32::from_le_bytes(len) as usize;
-    if len > 1024 * 1024 {
+    if len > MAX_IDENTITY_FRAME_BYTES {
         return Err(NotAvailable::ConnectionFailed(io::Error::new(
             io::ErrorKind::InvalidData,
-            "identity frame exceeds 1 MiB",
+            "identity frame exceeds 64 MiB",
         )));
     }
     let mut bytes = vec![0_u8; len];
     stream.read_exact(&mut bytes)?;
-    serde_json::from_slice(&bytes).map_err(|error| {
+    postcard::from_bytes(&bytes).map_err(|error| {
         NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, error))
     })
 }
+
+/// Bound app-controlled broker traffic while allowing real document
+/// snapshots. Postcard keeps byte vectors compact; the preceding JSON wire
+/// represented every byte as a decimal number and hit its 1 MiB cap much
+/// earlier than the underlying document did.
+const MAX_IDENTITY_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 /// Same as [`load`] but reads from a caller-specified path — for tests, or
 /// apps that resolve the identity path themselves.
@@ -1277,7 +1498,7 @@ fn identity_from_record(
     }
 
     let signing_key = if ti.single_device && !secret.is_empty() {
-        let mut scalar = [0u8; 32];
+        let mut scalar = Zeroizing::new([0u8; 32]);
         scalar.copy_from_slice(secret);
         // SigningKey::from_bytes is infallible today; if a future dalek revision
         // surfaces validation errors, catch them here.
@@ -1328,6 +1549,55 @@ fn _static_no_serialize() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_group_writable_lifecycle_lock_is_tightened() {
+        let dir = tempfile::tempdir().expect("identity directory");
+        let lock = dir.path().join(LOCK_FILE);
+        fs::write(&lock, []).expect("legacy lock");
+        fs::set_permissions(&lock, fs::Permissions::from_mode(0o660)).expect("legacy mode");
+
+        assert!(
+            list_identities(dir.path())
+                .expect("upgrade lock")
+                .is_empty()
+        );
+        assert_eq!(
+            fs::metadata(lock)
+                .expect("lock metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn action_frames_keep_multi_megabyte_document_bytes_compact() {
+        let (mut writer, mut reader) = UnixStream::pair().expect("socket pair");
+        let document = vec![0xa5; 2 * 1024 * 1024];
+        let sent = document.clone();
+        let sender = std::thread::spawn(move || {
+            write_frame(
+                &mut writer,
+                &wire::Request::CollaborationOp {
+                    workspace_id: "workspace".into(),
+                    app_id: "dev.qos.notes".into(),
+                    record_id: "record".into(),
+                    unsigned_op: sent,
+                },
+            )
+            .expect("compact action frame");
+        });
+        let wire::Request::CollaborationOp { unsigned_op, .. } =
+            read_frame::<wire::Request>(&mut reader).expect("action frame round trip")
+        else {
+            panic!("wrong request variant");
+        };
+        sender.join().expect("writer thread");
+        assert_eq!(unsigned_op, document);
+    }
 
     fn clear_env() {
         // SAFETY: tests in this module all touch QOS_USER_IDENTITY

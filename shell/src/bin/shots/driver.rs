@@ -382,11 +382,9 @@ impl ShellDriver {
         let index = self.fb.host().room_records();
         let mut index = index.borrow_mut();
         for (i, (path, kind)) in records.iter().enumerate() {
-            index.reference(
-                rooms[i.checked_rem(rooms.len()).unwrap_or(0)],
-                &RecordId::for_file(path),
-                &RecordKind::new(*kind),
-            );
+            let idx = i.checked_rem(rooms.len()).unwrap_or(0);
+            let Some(room) = rooms.get(idx) else { continue };
+            index.reference(*room, &RecordId::for_file(path), &RecordKind::new(*kind));
         }
     }
 
@@ -783,6 +781,49 @@ impl ShellDriver {
         self.fb.host_mut().force_room_activity_settled();
     }
 
+    /// Deterministic scenario entry point for the two history zoom levels.
+    /// It seeds the same collaborative changes as the legacy visual scene,
+    /// then switches through the pane's public API rather than reaching into
+    /// drawing state.
+    pub fn seed_room_activity_for_shots(&mut self, explore: bool) {
+        self.scene_room_activity();
+        self.fb.host_mut().room_activity_mut().set_view(if explore {
+            shell::shell::room_activity::ActivityView::Explore
+        } else {
+            shell::shell::room_activity::ActivityView::CatchUp
+        });
+        self.fb.host_mut().force_room_activity_settled();
+        // Headless snapshots do not render, while this immediate-mode sheet
+        // derives its keyboard order from the controls it actually paints.
+        // Build one CPU-side scene (no adapter/GPU involved) so keyboard
+        // actions exercise the same rendered control set in every mode.
+        let _ = self.fb.paint();
+    }
+
+    pub fn select_room_activity_entry(&mut self, index: usize) {
+        let len = self.fb.host().room_activity().timeline().entries().len();
+        for candidate in index..len {
+            self.fb
+                .host_mut()
+                .room_activity_mut()
+                .timeline_mut()
+                .set_selection(Some((candidate, candidate)));
+            let handle = self.chrome_handle();
+            let state = handle.borrow();
+            let mut tree = state.tree_mut();
+            if self
+                .fb
+                .host()
+                .room_activity()
+                .compare_selection(&mut tree, None)
+                .is_some()
+            {
+                break;
+            }
+        }
+        let _ = self.fb.paint();
+    }
+
     /// Two runs named, one by the peer under its own actor, so the band
     /// reads "named by" someone other than the viewer. Both go in through
     /// the pane's own write path (the [Name] chip's call).
@@ -798,25 +839,29 @@ impl ShellDriver {
             peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
             let end = entries.len().saturating_sub(1);
             let start = entries.len().saturating_sub(3);
-            ui::history_groups::name_range(
-                &mut peer,
-                &entries[start].id,
-                Some(&entries[end].id),
-                "Reading week",
-            );
-            qdoc::history::commit_stamped(&mut peer);
-            let _ = tree.doc.merge(&mut peer);
+            if let (Some(start_entry), Some(end_entry)) = (entries.get(start), entries.get(end)) {
+                ui::history_groups::name_range(
+                    &mut peer,
+                    &start_entry.id,
+                    Some(&end_entry.id),
+                    "Reading week",
+                );
+                qdoc::history::commit_stamped(&mut peer);
+                let _ = tree.doc.merge(&mut peer);
+            }
 
-            let pane = self.fb.host_mut().room_activity_mut();
-            pane.apply_name(
-                &mut tree,
-                &ui::GroupNameRequest {
-                    record_id: None,
-                    start: entries[0].id,
-                    end: entries[3].id,
-                    label: "Set up the room".to_string(),
-                },
-            );
+            if let (Some(first), Some(fourth)) = (entries.first(), entries.get(3)) {
+                let pane = self.fb.host_mut().room_activity_mut();
+                pane.apply_name(
+                    &mut tree,
+                    &ui::GroupNameRequest {
+                        record_id: None,
+                        start: first.id,
+                        end: fourth.id,
+                        label: "Set up the room".to_string(),
+                    },
+                );
+            }
         }
         drop(tree);
         drop(st);
@@ -850,7 +895,9 @@ impl ShellDriver {
         // Backdate `created_at` past the slide-in window: at t=0 a
         // toast's `enter` progress is ~0 and `slide_dx == TOAST_WIDTH`
         // pushes it entirely off-screen-right.
-        let settled_at = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        let settled_at = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
         self.with_chrome(|st| {
             // Severity ramp in one frame; long dismiss windows so
             // the still-image scene captures the stack visible.
@@ -877,7 +924,9 @@ impl ShellDriver {
 
     fn scene_notifications_one(&mut self) {
         use shell::shell::notification::{Notification, NotificationSeverity};
-        let settled_at = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        let settled_at = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
         self.with_chrome(|st| {
             st.push_notification_full(
                 Notification::new("Build finished", "All 524 tests passed")
@@ -890,7 +939,9 @@ impl ShellDriver {
 
     fn scene_notifications_dnd(&mut self) {
         use shell::shell::notification::{Notification, NotificationSeverity};
-        let settled_at = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        let settled_at = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
         self.with_chrome(|st| {
             // One banner posted *before* DND is engaged stays on
             // screen (DND only gates new posts).

@@ -49,6 +49,9 @@ fn shot_viewport(args: &LaunchArgs) -> (u32, u32) {
     mail::shot_viewport(scenario(args))
 }
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.mail", mail::app_root)

@@ -19,8 +19,9 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Scrollable;
 
-use crate::app::{center_text, draw_checkbox, fill_rect, fill_round, stroke_line};
+use crate::app::{center_text, draw_checkbox};
 use crate::date;
+use crate::draw_util::{fill_rect, fill_round, stroke_line};
 use crate::model::{Id, Model, Priority};
 
 const DAYS_SHOWN: i64 = 21;

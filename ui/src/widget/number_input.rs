@@ -19,8 +19,8 @@
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
-use crate::widget::TextInput;
 use crate::widget::Widget;
+use crate::widget::{TextInput, TextInputKind};
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -182,7 +182,7 @@ impl NumberInput {
             decimals: 0,
             suffix: String::new(),
             rect: Rect::ZERO,
-            field: TextInput::local(),
+            field: TextInput::local().with_kind(TextInputKind::Number),
             field_rect: Rect::ZERO,
             minus_rect: Rect::ZERO,
             plus_rect: Rect::ZERO,

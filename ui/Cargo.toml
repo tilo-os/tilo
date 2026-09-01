@@ -76,26 +76,16 @@ adblock = { version = "0.12", optional = true, features = ["content-blocking"] }
 runtime-collab = { path = "../crates/runtime/runtime-collab" }
 capnp-rpc.workspace = true
 runtime-portal = { path = "../crates/runtime/runtime-portal" }
-# On `CollaborationManager` init, load the user's on-disk identity
-# via `runtime-identity::load()` and forward its pubkey bytes to
-# `join_channel` so the broker sees a real caller instead of the
-# empty-identity fallback. Absent when running outside a qOS session
-# (env var unset / file missing) — the manager degrades to the
-# pre-existing empty-identity path in that case.
+# Load the launcher-bound identity and certified device presentation used to
+# authenticate collaboration joins and sign document mutations. Without the
+# identity service or a device certificate, collaboration stays disabled.
 runtime-identity = { path = "../crates/runtime/runtime-identity" }
-# The workspace host / relay tier. `CollaborationManager` can route an
-# app's co-edit deltas + presence through a `RelayCoeditSession` (the
-# `Backend::Relay` path) so they inherit the host's fan-out + on-disk
-# store-and-forward, transparently to the app. Only the co-edit shim +
-# its transport types are named here; the iroh endpoint + identity are
-# owned by the caller (the shell's network actor) that hands the
-# already-joined session in.
-qos-relay = { path = "../crates/hosting/qos-relay" }
 # The canonical per-package Automerge store. Living here rather than in
 # each app is what makes persistence a three-line change in an app's `main`
 # instead of a bespoke storage module per app.
 app-state = { path = "../crates/system/app-state" }
 automerge.workspace = true
+spellcheck = { path = "../crates/text/spellcheck" }
 # Diagnostic event/handler tracing. Off by default at WARN; turn up with
 # `RUST_LOG=ui=debug` to see every MouseInput, CursorMoved, KeyboardInput
 # entering App::window_event + dispatch results. Lets a maintainer
@@ -103,6 +93,7 @@ automerge.workspace = true
 tracing.workspace = true
 # Standard app startup installs the workspace's logging subscriber once.
 tracing-subscriber.workspace = true
+zeroize.workspace = true
 cosmic-text = { version = "0.19.0", default-features = false, features = ["swash", "std"] }
 # Keep this aligned with cosmic-text: text painting needs the font's complete
 # variation-axis order to translate CSS-like axis values for Vello.
@@ -286,16 +277,6 @@ serial_test.workspace = true
 # Same pin runtime-collab tests use.
 capnp.workspace = true
 tokio-util.workspace = true
-# The `Backend::Relay` integration test stands up a real in-process
-# workspace host (`qos_relay::Relay`) + two iroh clients and drives two
-# `CollaborationManager`s through it — the same host path the relay
-# crate's own `coedit_through_host` test exercises, but end-to-end
-# through the toolkit. Identity material is minted with
-# `qos-user-identity`; the iroh endpoints dial the host over the pinned
-# 1.0 stack the rest of the tree resolves.
-qos-user-identity = { path = "../crates/identity/qos-user-identity" }
-iroh.workspace = true
-iroh-base.workspace = true
 
 [[example]]
 name = "ui-lab"

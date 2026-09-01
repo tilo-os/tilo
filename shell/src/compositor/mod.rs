@@ -46,6 +46,41 @@ pub enum Mode {
     Native,
 }
 
+/// Whether this session is part of a complete qOS installation or was added
+/// to an existing Linux host.
+///
+/// This is deliberately an explicit launch contract.  A DRM backend can be
+/// used in both cases, while desktop-name and distribution environment
+/// variables are display-manager implementation details rather than install
+/// identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallMode {
+    /// The qOS image: machine identity material lives in the system identity
+    /// tree and the complete first-login experience is available.
+    FullSystem,
+    /// A qOS session installed alongside another desktop: identity material
+    /// must remain in this login's XDG-owned storage and setup is limited to
+    /// the qOS identity ceremony.
+    HostDesktop,
+}
+
+/// Process-global wrapper around [`parse_install_mode`].
+pub fn parse_install_mode_from_args() -> InstallMode {
+    let owned: Vec<String> = std::env::args().skip(1).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
+    parse_install_mode(&borrowed)
+}
+
+/// Resolve the installation context from the package-owned session wrapper.
+/// Absence means full qOS, preserving the existing image boot path exactly.
+pub fn parse_install_mode(args: &[&str]) -> InstallMode {
+    if args.contains(&"--host-desktop-session") {
+        InstallMode::HostDesktop
+    } else {
+        InstallMode::FullSystem
+    }
+}
+
 /// Which backend `Mode::Native` should drive: `--backend <winit|drm>` (or `--backend=<...>`), unknown/absent falling back to [`BackendKind::Winit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
@@ -167,6 +202,22 @@ pub fn parse_firstboot(args: &[&str]) -> bool {
     args.contains(&"--firstboot")
 }
 
+/// Process-global wrapper around [`parse_firstboot_only`]. This is the
+/// system-unit entry point: perform idempotent first-boot setup and exit
+/// without attempting to run a compositor.
+pub fn parse_firstboot_only_from_args() -> bool {
+    let owned: Vec<String> = std::env::args().skip(1).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
+    parse_firstboot_only(&borrowed)
+}
+
+/// Pure, testable parser for the system-unit-only first-boot entry point.
+/// Unlike [`parse_firstboot`], this flag never falls through to compositor
+/// startup.
+pub fn parse_firstboot_only(args: &[&str]) -> bool {
+    args.contains(&"--firstboot-only")
+}
+
 /// Process-global wrapper around [`parse_provision_identity`].
 pub fn parse_provision_identity_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
@@ -258,6 +309,27 @@ mod tests {
     fn no_flag_defaults_native() {
         // `cargo run -p quick-desktop` (no flags) boots the real smithay server.
         assert!(matches!(parse_mode(&[]), Mode::Native));
+    }
+
+    #[test]
+    fn install_mode_defaults_to_the_full_qos_system() {
+        assert_eq!(parse_install_mode(&[]), InstallMode::FullSystem);
+        assert_eq!(
+            parse_install_mode(&["--backend", "drm"]),
+            InstallMode::FullSystem
+        );
+    }
+
+    #[test]
+    fn package_wrapper_explicitly_selects_a_host_desktop_session() {
+        assert_eq!(
+            parse_install_mode(&["--firstboot", "--host-desktop-session", "--backend", "drm"]),
+            InstallMode::HostDesktop
+        );
+        assert_eq!(
+            parse_install_mode(&["--host-desktop-session", "--mode", "native"]),
+            InstallMode::HostDesktop
+        );
     }
 
     #[test]
@@ -400,6 +472,25 @@ mod tests {
         assert!(parse_firstboot(&["--firstboot"]));
         assert!(parse_firstboot(&["--firstboot", "--mode", "native"]));
         assert!(parse_firstboot(&["--mode=native", "--firstboot"]));
+    }
+
+    // --firstboot-only
+
+    #[test]
+    fn firstboot_only_default_false() {
+        assert!(!parse_firstboot_only(&[]));
+        assert!(!parse_firstboot_only(&["--firstboot"]));
+        assert!(!parse_firstboot_only(&["--mode", "native"]));
+    }
+
+    #[test]
+    fn firstboot_only_flag_present_anywhere() {
+        assert!(parse_firstboot_only(&["--firstboot-only"]));
+        assert!(parse_firstboot_only(&[
+            "--mode",
+            "native",
+            "--firstboot-only"
+        ]));
     }
 
     // peer-sync marker file

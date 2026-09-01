@@ -1,8 +1,9 @@
 //! Automerge document layer for the Install Media app.
 //!
-//! All UI + job state lives in the CRDT so the selected source/target, the
-//! install options, pending confirmations and live progress are undoable
-//! and replicate to collaborators for free. Machine-derived blobs (the
+//! Shared plan and job state lives in the CRDT so the selected source/target,
+//! install options, and live progress are undoable and replicate to
+//! collaborators. Destructive confirmation is deliberately peer-local: a
+//! collaborator cannot arm a write on this machine. Machine-derived blobs (the
 //! probed target list, recent sources, the active install
 //! profile) are serialised as JSON string scalars — they are not edited
 //! character-by-character, so a plain scalar is the right granularity.
@@ -17,7 +18,6 @@
 //! ├── "progress"     (Str)   # serde_json of Progress
 //! ├── "selected"     (Int)   # index into targets (or -1)
 //! ├── "action"       (Str)   # flash | install
-//! ├── "confirm"      (Str)   # the typed device-name confirmation
 //! └── "status"       (Str)   # last status-line message
 //! ```
 
@@ -71,9 +71,6 @@ impl ImagerDoc {
         }
         if Self::get_str(doc, "step").is_none() {
             let _ = doc.put(&ROOT, "step", Step::Source.key());
-        }
-        if Self::get_str(doc, "confirm").is_none() {
-            let _ = doc.put(&ROOT, "confirm", "");
         }
         if Self::get_str(doc, "status").is_none() {
             let _ = doc.put(&ROOT, "status", "");
@@ -173,13 +170,6 @@ impl ImagerDoc {
     }
     pub fn set_step(doc: &mut AutoCommit, s: Step) {
         let _ = doc.put(&ROOT, "step", s.key());
-    }
-
-    pub fn confirm(doc: &AutoCommit) -> String {
-        Self::get_str(doc, "confirm").unwrap_or_default()
-    }
-    pub fn set_confirm(doc: &mut AutoCommit, s: &str) {
-        let _ = doc.put(&ROOT, "confirm", s);
     }
 
     pub fn status(doc: &AutoCommit) -> String {
@@ -327,12 +317,11 @@ mod tests {
     }
 
     #[test]
-    fn confirm_and_status_round_trip() {
+    fn status_round_trips_without_a_replicated_confirmation() {
         let mut doc = seeded();
-        ImagerDoc::set_confirm(&mut doc, "sdb");
         ImagerDoc::set_status(&mut doc, "ready");
-        assert_eq!(ImagerDoc::confirm(&doc), "sdb");
         assert_eq!(ImagerDoc::status(&doc), "ready");
+        assert!(doc.get(&ROOT, "confirm").unwrap().is_none());
     }
 
     #[test]

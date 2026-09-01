@@ -154,12 +154,26 @@ impl UndoLog {
         metadata: Option<String>,
         author: Option<UserId>,
     ) -> bool {
+        self.commit_action_authored_with_message(doc, focused_node_idx, metadata, author, None)
+    }
+
+    /// As [`Self::commit_action_authored`], stamping semantic provenance onto
+    /// native CRDT edits that deliberately do not travel through an action
+    /// envelope (for example, co-edited flowing text).
+    pub fn commit_action_authored_with_message(
+        &mut self,
+        doc: &mut AutoCommit,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+        message: Option<String>,
+    ) -> bool {
         let before = self.last_heads.clone();
         // Stamp the change with wall-clock time. `AutoCommit::commit` leaves
         // automerge's advisory timestamp at zero, which is why a history pane
         // built over a document committed that way can show authorship but not
         // *when* — and why a date-range filter over it matches nothing.
-        if qdoc::history::commit_stamped(doc).is_some() {
+        if qdoc::history::commit_stamped_with_message(doc, message).is_some() {
             let after = doc.get_heads();
             self.undo_stack.push(UndoEntry {
                 before,
@@ -485,6 +499,22 @@ impl State {
             .commit_action_authored(&mut self.doc, focused_node_idx, metadata, author)
     }
 
+    pub fn commit_action_authored_with_context(
+        &mut self,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+        context: Option<qos_actions::ActionContext>,
+    ) -> bool {
+        self.undo.commit_action_authored_with_message(
+            &mut self.doc,
+            focused_node_idx,
+            metadata,
+            author,
+            context.and_then(|context| context.change_message()),
+        )
+    }
+
     /// Inspect the most recently pushed undo entry without popping it.
     pub fn peek_last_undo(&self) -> Option<&UndoEntry> {
         self.undo.peek_last_undo()
@@ -708,7 +738,7 @@ impl State {
     /// `AutoCommit::save_incremental` on another peer) into this document.
     /// Returns the number of ops applied on success.
     ///
-    /// This is how `CollabEvent::CRDTIncremental` is actually merged on the
+    /// This is how an incremental `CollabEvent::Document` is merged on the
     /// receiver side — without it, incremental deltas broadcast by one peer
     /// would never reach another peer's CRDT.
     ///
@@ -1054,6 +1084,32 @@ mod tests {
         assert_eq!(val(&state), "a", "undo reverts to pre-action value");
         state.redo(None, None).unwrap();
         assert_eq!(val(&state), "b", "redo restores the action");
+    }
+
+    #[test]
+    fn native_commit_context_is_stamped_without_changing_undo() {
+        let mut state = State::new();
+        state.doc.put(&ROOT, "body", "hello").unwrap();
+        let context = qos_actions::ActionContext::for_resource(
+            "Edit document",
+            "document:1",
+            "document",
+            "Draft",
+        )
+        .with_app("org.qos.Writer", "Writer");
+        assert!(state.commit_action_authored_with_context(
+            None,
+            None,
+            Some(UserId("ada".into())),
+            Some(context.clone()),
+        ));
+        let changes = state.doc.get_changes(&[]);
+        let change = changes.last().expect("native change");
+        let decoded = change
+            .message()
+            .and_then(|message| qos_actions::ActionContext::from_change_message(message));
+        assert_eq!(decoded.as_ref(), Some(&context));
+        assert!(state.peek_last_undo().is_some());
     }
 
     /// Multiple actions undo in LIFO order, each reverting only its own change.

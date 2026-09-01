@@ -99,6 +99,9 @@ fn live_root() -> Box<dyn Widget> {
     disks::app_root()
 }
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.disks", live_root)

@@ -19,12 +19,15 @@
 //! - **Presentation / transient — never actions.** The selected source, the
 //!   chosen drive, the wizard step, the flash/install mode, the typed
 //!   device-name confirmation, and the status line are per-instance view state.
+//!   Confirmation is additionally peer-local so remote document changes can
+//!   never arm a destructive write.
 //!   The recent-sources list is auto-accumulated MRU bookkeeping written as a
 //!   side effect of selecting a source (itself presentation) with no discrete
 //!   affordance, and the saved-profiles list has no save/delete affordance at
 //!   all — so neither is a user-authored action either. The imager persists
-//!   these in the document for instant-on and replication, but their *nature* is
-//!   view state, so dispatching them as actions would be wrong.
+//!   the non-sensitive view state in the document for instant-on and
+//!   replication, but its *nature* means dispatching it as actions would be
+//!   wrong.
 //!
 //! ## What genuinely lives in the shared document as authored config
 //!

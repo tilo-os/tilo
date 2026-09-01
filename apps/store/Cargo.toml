@@ -14,8 +14,12 @@ path = "src/lib.rs"
 name = "store"
 path = "src/main.rs"
 
+[features]
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
 ui = { path = "../../ui" }
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The registry list, its client and its trust classification. Shared
 # with the desktop's search box, which offers the same registries' apps
 # — one definition, so the two cannot drift into disagreeing about

@@ -17,6 +17,14 @@
 //! [`ScreenCastStreamProvisioner`] lets tests substitute a
 //! [`MockScreenCastProvisioner`] for the real `PipeWire` connection.
 
+#![allow(
+    clippy::used_underscore_binding,
+    reason = "the D-Bus method signatures below require unused positional parameters (handle, \
+              options, ...); zbus's #[interface] macro deserialises them into these named \
+              parameters and forwards them by identifier into its generated dispatcher, so the \
+              lint fires on macro-generated code a per-function #[allow] cannot reach"
+)]
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -137,8 +145,7 @@ impl ScreenCastBackend {
     /// carry the negotiated selection. Consent-neutral: response=0, empty results.
     #[allow(
         clippy::needless_pass_by_value,
-        clippy::used_underscore_binding,
-        reason = "argument types and count are fixed by the org.freedesktop.impl.portal.ScreenCast.CreateSession D-Bus signature; zbus deserializes owned values here, and its #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
+        reason = "argument types and count are fixed by the org.freedesktop.impl.portal.ScreenCast.CreateSession D-Bus signature; zbus deserializes owned values here rather than by reference"
     )]
     fn create_session(
         &self,
@@ -164,10 +171,6 @@ impl ScreenCastBackend {
     /// `SelectSources` — record what the app wants to capture and surface
     /// the consent prompt. A valid `restore_token` pre-approves the session
     /// (no prompt) — how a persisted share re-attaches without re-asking.
-    #[allow(
-        clippy::used_underscore_binding,
-        reason = "zbus's #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
-    )]
     async fn select_sources(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
@@ -249,8 +252,7 @@ impl ScreenCastBackend {
     /// return the streams. Issues a fresh `restore_token` when the session asked to persist.
     #[allow(
         clippy::too_many_arguments,
-        clippy::used_underscore_binding,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.ScreenCast.Start D-Bus signature; zbus's #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.ScreenCast.Start D-Bus signature"
     )]
     async fn start(
         &self,
@@ -344,8 +346,7 @@ impl ScreenCastBackend {
     /// attaches the provisioned nodes to. See the module docs for where this sits relative to the reference frontend.
     #[allow(
         clippy::needless_pass_by_value,
-        clippy::used_underscore_binding,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.ScreenCast.OpenPipeWireRemote D-Bus signature; zbus deserializes owned values here, and its #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
+        reason = "argument types are fixed by the org.freedesktop.impl.portal.ScreenCast.OpenPipeWireRemote D-Bus signature; zbus deserializes owned values here rather than by reference"
     )]
     fn open_pipe_wire_remote(
         &self,

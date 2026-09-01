@@ -40,7 +40,7 @@ use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::TextInput;
+use ui::widget::{TextInput, TextInputKind};
 
 use crate::doc::HexDoc;
 use crate::inspector::{self, Interpretation};
@@ -167,6 +167,7 @@ impl HexView {
             dirty: true,
             overlay: Overlay::None,
             search_input: TextInput::local()
+                .with_kind(TextInputKind::Code)
                 .with_id("hex.search")
                 .with_placeholder("search…")
                 .with_plain_chrome()
@@ -175,6 +176,7 @@ impl HexView {
             matches: Vec::new(),
             match_idx: None,
             goto_input: TextInput::local()
+                .with_kind(TextInputKind::Number)
                 .with_id("hex.goto")
                 .with_placeholder("0x… or decimal")
                 .with_plain_chrome()
@@ -318,8 +320,12 @@ impl HexView {
     /// on peers). The heads captured just before the first action of the event
     /// are stashed so the host records **one** undo boundary bracketing it.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::HexEditorAction) {
-        self.actions
-            .dispatch(doc, crate::actions::HEX_EDITOR_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::HEX_EDITOR_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.HexEditor", "Hex Editor", action),
+        );
     }
 
     // --- file open / save (through the host portal) --------------------
@@ -1641,6 +1647,8 @@ impl Widget for HexView {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` on a freshly created tree never fails.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -1655,7 +1663,9 @@ impl Widget for HexView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -2186,7 +2196,9 @@ fn human_size(n: usize) -> String {
     if u == 0 {
         format!("{n} B")
     } else {
-        format!("{v:.1} {}", UNITS[u])
+        // `u` is bounded above by `UNITS.len() - 1` by the loop condition;
+        // `unwrap_or` just documents that instead of asserting it.
+        format!("{v:.1} {}", UNITS.get(u).copied().unwrap_or("TB"))
     }
 }
 

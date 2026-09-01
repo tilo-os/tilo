@@ -50,7 +50,13 @@ use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
 // references its own module path absolutely as `crate::collab_capnp`
 // — must be included at the crate root with that exact name (the
 // same pattern capnp's own samples use).
-#[allow(clippy::all)]
+#[allow(
+    clippy::all,
+    clippy::nursery,
+    clippy::pedantic,
+    clippy::restriction,
+    reason = "generated Cap'n Proto bindings do not follow repository lint policy"
+)]
 #[allow(unused)]
 #[allow(dead_code)]
 pub mod collab_capnp {
@@ -66,6 +72,52 @@ pub use collab_capnp::context_stream::Client as ContextStreamClient;
 pub use collab_capnp::invocation_stream::Client as InvocationStreamClient;
 pub use collab_capnp::presence_stream::Client as PresenceStreamClient;
 pub use collab_capnp::stream::Client as StreamClient;
+
+/// Version tag distinguishing a certified join presentation from invalid
+/// identity bytes.
+pub const CERTIFIED_JOIN_PREFIX: &[u8] = b"qos-collab-certified-join-v1\0";
+
+/// Peer-verifiable proof that an enrolled device joined one workspace.
+/// `device_certificate` is the JSON form supplied by `runtime-identity`; the
+/// proof is an Ed25519 device-key signature over
+/// `runtime_identity::collaboration_join_signing_bytes(workspace_id)`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CertifiedJoinIdentity {
+    pub workspace_id: String,
+    pub device_certificate: Vec<u8>,
+    pub proof: Vec<u8>,
+}
+
+impl CertifiedJoinIdentity {
+    /// Encode with the reserved version prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns postcard's serialization error if the presentation cannot be
+    /// encoded.
+    pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
+        let encoded = postcard::to_stdvec(self)?;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(CERTIFIED_JOIN_PREFIX);
+        bytes.extend_from_slice(&encoded);
+        Ok(bytes)
+    }
+
+    /// Decode a certified presentation. `Ok(None)` means the bytes do not
+    /// carry the certified prefix and must be rejected by the broker.
+    ///
+    /// # Errors
+    ///
+    /// Returns postcard's deserialization error for malformed certified
+    /// payloads.
+    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, postcard::Error> {
+        let Some(encoded) = bytes.strip_prefix(CERTIFIED_JOIN_PREFIX) else {
+            return Ok(None);
+        };
+        postcard::from_bytes(encoded).map(Some)
+    }
+}
 
 /// Try to dial the qOS collab broker via the launcher-supplied service
 /// fd. Returns [`NotAvailable`] when the env var is unset (likely: app
@@ -121,7 +173,8 @@ impl CollabClient {
     }
 
     /// Join a channel while announcing the participant's display handle.
-    /// Empty handles retain the broker's room/local-identity fallback.
+    /// Empty handles omit the optional display label; authenticated identity
+    /// still comes from the certified join presentation.
     ///
     /// # Errors
     ///
@@ -167,36 +220,6 @@ impl ChannelHandle {
     pub async fn send(&self, op: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.send_request();
         req.get().set_op(op);
-        req.send().promise.await?;
-        Ok(())
-    }
-
-    /// LEGACY — publish an unsigned full-document snapshot, for apps not yet
-    /// provisioned with a signing identity (removed once the whole fleet is
-    /// provisioned). Prefer [`Self::send`] with a signed op.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable or
-    /// drops during the call.
-    pub async fn send_unsigned_snapshot(&self, data: &[u8]) -> Result<(), NotAvailable> {
-        let mut req = self.inner.send_unsigned_snapshot_request();
-        req.get().set_data(data);
-        req.send().promise.await?;
-        Ok(())
-    }
-
-    /// LEGACY — publish an unsigned incremental Automerge change
-    /// blob. Same transitional contract as
-    /// [`Self::send_unsigned_snapshot`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable or
-    /// drops during the call.
-    pub async fn send_unsigned_incremental(&self, data: &[u8]) -> Result<(), NotAvailable> {
-        let mut req = self.inner.send_unsigned_incremental_request();
-        req.get().set_data(data);
         req.send().promise.await?;
         Ok(())
     }
@@ -523,31 +546,13 @@ impl ChannelHandle {
     }
 }
 
-/// What an [`OpEvent`]'s bytes are.
-///
-/// Three kinds of frame share the op stream and are not interchangeable:
-/// a delta applies on top of the document the reader holds, a whole
-/// document merges into it, a signed envelope decodes before either.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum OpKind {
-    /// `op` is a postcard-encoded `SignedOp`.
-    #[default]
-    Signed,
-    /// `op` is a raw Automerge change delta.
-    UnsignedIncremental,
-    /// `op` is a whole Automerge document.
-    UnsignedSnapshot,
-}
-
-/// A single op as delivered by [`OpStream::read`]. `kind` says what `op`
-/// is; `from_user_id` is the broker's attribution string for the author
-/// — duplicated on the RPC so non-Rust clients can route by author
-/// without decoding the payload.
+/// A signed op as delivered by [`OpStream::read`]. `from_user_id` is the
+/// broker's attribution string for the author—duplicated on the RPC so
+/// non-Rust clients can route by author without decoding the envelope.
 #[derive(Debug, Clone)]
 pub struct OpEvent {
     pub op: Vec<u8>,
     pub from_user_id: String,
-    pub kind: OpKind,
 }
 
 /// Client-pulled op stream. Each `.read()` is a single RPC.
@@ -575,20 +580,13 @@ impl OpStream {
             .to_str()
             .map_err(|e| capnp::Error::failed(format!("invalid utf8 from_user_id: {e}")))?
             .to_owned();
-        // An unrecognised ordinal comes from a newer broker naming a kind
-        // this build has no handler for. Reading it as `Signed` would hand
-        // raw bytes to the envelope decoder; leaving it unmapped and letting
-        // the caller ignore it is the honest direction.
-        let kind = match r.get_kind() {
-            Ok(collab_capnp::OpKind::Signed) | Err(_) => OpKind::Signed,
-            Ok(collab_capnp::OpKind::UnsignedIncremental) => OpKind::UnsignedIncremental,
-            Ok(collab_capnp::OpKind::UnsignedSnapshot) => OpKind::UnsignedSnapshot,
-        };
-        Ok(OpEvent {
-            op,
-            from_user_id,
-            kind,
-        })
+        if !matches!(r.get_kind(), Ok(collab_capnp::OpKind::Signed)) {
+            return Err(NotAvailable::ConnectionFailed(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "collaboration stream carried a retired unsigned frame",
+            )));
+        }
+        Ok(OpEvent { op, from_user_id })
     }
 }
 
@@ -1121,6 +1119,32 @@ pub struct ScrollbackBatch {
 /// reach below the idiomatic wrappers (server impls, tests).
 pub mod raw {
     pub use super::collab_capnp::*;
+}
+
+#[cfg(test)]
+mod certified_join_tests {
+    use super::*;
+
+    #[test]
+    fn certified_join_round_trips_and_prefixed_garbage_never_downgrades() {
+        let identity = CertifiedJoinIdentity {
+            workspace_id: "workspace-a".into(),
+            device_certificate: vec![1, 2, 3],
+            proof: vec![4; 64],
+        };
+        let encoded = identity.encode().expect("encode");
+        assert_eq!(
+            CertifiedJoinIdentity::decode(&encoded).expect("decode"),
+            Some(identity)
+        );
+        assert_eq!(
+            CertifiedJoinIdentity::decode(b"uncertified identity").expect("uncertified bytes"),
+            None
+        );
+        let mut malformed = CERTIFIED_JOIN_PREFIX.to_vec();
+        malformed.extend_from_slice(b"not postcard");
+        assert!(CertifiedJoinIdentity::decode(&malformed).is_err());
+    }
 }
 
 #[cfg(test)]

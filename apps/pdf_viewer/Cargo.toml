@@ -13,7 +13,11 @@ path = "src/lib.rs"
 name = "pdf_viewer"
 path = "src/main.rs"
 
+[features]
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui", features = ["portal"] }
 automerge.workspace = true
 # The qOS ACTION model: the reader's `actions` module exports its markup-store
@@ -22,7 +26,6 @@ qos-actions = { path = "../../crates/collab/actions" }
 serde.workspace = true
 uuid.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

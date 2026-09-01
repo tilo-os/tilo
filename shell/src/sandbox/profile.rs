@@ -70,7 +70,9 @@ fn scan_dir_memoised(
 ) -> Vec<PathBuf> {
     let key = (dir.to_path_buf(), filter_tag);
     {
-        let cache = SCAN_MEMO.lock().expect("SCAN_MEMO poisoned");
+        let cache = SCAN_MEMO
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some((entries, captured)) = cache.get(&key)
             && captured.elapsed() < SCAN_MEMO_TTL
         {
@@ -91,7 +93,9 @@ fn scan_dir_memoised(
             }
         }
     }
-    let mut cache = SCAN_MEMO.lock().expect("SCAN_MEMO poisoned");
+    let mut cache = SCAN_MEMO
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     cache.insert(key, (out.clone(), Instant::now()));
     out
 }

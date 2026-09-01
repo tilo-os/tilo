@@ -663,8 +663,12 @@ impl Rasterizer {
                             .map_err(|e| anyhow!("flattening highlight: {e:?}"))?;
                     }
                     AnnoKind::Ink { points } if points.len() >= 2 => {
+                        // The guard above guarantees at least two points.
+                        let Some((first, rest)) = points.split_first() else {
+                            continue;
+                        };
                         let stroke = PdfColor::new(r8, g8, b8, 255);
-                        let (x0, y0) = pt_tl_to_pdf(points[0].0, points[0].1, page_h);
+                        let (x0, y0) = pt_tl_to_pdf(first.0, first.1, page_h);
                         let mut path = PdfPagePathObject::new(
                             &doc,
                             x0,
@@ -674,7 +678,7 @@ impl Rasterizer {
                             None,
                         )
                         .map_err(|e| anyhow!("starting ink path: {e:?}"))?;
-                        for p in &points[1..] {
+                        for p in rest {
                             let (x, y) = pt_tl_to_pdf(p.0, p.1, page_h);
                             path.line_to(x, y)
                                 .map_err(|e| anyhow!("ink line_to: {e:?}"))?;
@@ -748,12 +752,16 @@ impl Rasterizer {
                     if stroke.len() < 2 {
                         continue;
                     }
+                    // The check above guarantees at least two points.
+                    let Some((first, rest)) = stroke.split_first() else {
+                        continue;
+                    };
                     let map = |nx: f64, ny: f64| {
                         let x = stroke_area.x + nx.clamp(0.0, 1.0) * stroke_area.w;
                         let y = stroke_area.y + ny.clamp(0.0, 1.0) * stroke_area.h;
                         pt_tl_to_pdf(x, y, page_h)
                     };
-                    let (x0, y0) = map(stroke[0].0, stroke[0].1);
+                    let (x0, y0) = map(first.0, first.1);
                     let mut path = PdfPagePathObject::new(
                         doc,
                         x0,
@@ -763,7 +771,7 @@ impl Rasterizer {
                         None,
                     )
                     .map_err(|e| anyhow!("starting signature stroke: {e:?}"))?;
-                    for p in &stroke[1..] {
+                    for p in rest {
                         let (x, y) = map(p.0, p.1);
                         path.line_to(x, y)
                             .map_err(|e| anyhow!("signature line_to: {e:?}"))?;

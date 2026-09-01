@@ -137,6 +137,14 @@ impl Driver {
     }
 
     fn dispatch(&mut self, event: &winit::event::WindowEvent) {
+        self.dispatch_modifiers(event, winit::event::Modifiers::default());
+    }
+
+    fn dispatch_modifiers(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        modifiers: winit::event::Modifiers,
+    ) {
         let mut taffy = TaffyTree::<()>::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
         let mut handled = false;
@@ -144,7 +152,7 @@ impl Driver {
         self.app.handle_event(
             event,
             1.0,
-            &winit::event::Modifiers::default(),
+            &modifiers,
             &mut self.doc,
             &self.root,
             &mut handled,
@@ -359,6 +367,97 @@ fn typing_custom_image_keeps_value_not_in_list() {
         combobox::filter_options(&all, &typed).is_empty(),
         "custom value matches no local image, yet remains the field value"
     );
+}
+
+#[test]
+fn create_field_selection_replacement_uses_shared_input_path() {
+    let mut d = Driver::offline();
+    d.frame();
+    d.app.open_create_with_combo();
+    ViewDoc::set_create_field(&mut d.doc, CreateField::Image, "nginx:latest");
+    d.frame();
+
+    d.dispatch_modifiers(
+        &char_press("a"),
+        winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
+    );
+    d.type_char("p");
+    assert_eq!(
+        ViewDoc::create_field(&mut d.doc, CreateField::Image),
+        "p",
+        "Ctrl+A then typing replaces the selection instead of appending"
+    );
+}
+
+#[test]
+fn create_field_ime_commit_replicates_as_crdt_text() {
+    let mut d = Driver::offline();
+    d.frame();
+    d.app.open_create_with_combo();
+    let mut peer = d.doc.fork();
+
+    d.dispatch(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit(
+        "接続".into(),
+    )));
+    assert_eq!(
+        ViewDoc::create_field(&mut d.doc, CreateField::Image),
+        "接続"
+    );
+    peer.merge(&mut d.doc).expect("peer merge");
+    assert_eq!(
+        ViewDoc::create_field(&mut peer, CreateField::Image),
+        "接続",
+        "the shared input splices the existing collaborative Text object"
+    );
+}
+
+#[test]
+fn tab_keeps_dynamic_form_order_and_image_combo_policy() {
+    let mut d = Driver::offline();
+    d.frame();
+    d.app.open_create_with_combo();
+    assert!(d.app.is_combo_open());
+
+    d.key(winit::keyboard::NamedKey::Tab);
+    assert!(
+        !d.app.is_combo_open(),
+        "leaving Image closes its suggestions"
+    );
+    d.type_char("8");
+    assert_eq!(
+        ViewDoc::create_field(&mut d.doc, CreateField::Ports),
+        "8",
+        "Tab advances from Image to Ports in the existing six-field order"
+    );
+}
+
+#[test]
+fn create_footer_preserves_click_validation_and_keyboard_policy() {
+    // Exercise Containers' existing hit/action policy; only paint is shared.
+    let mut d = Driver::offline();
+    d.frame();
+    d.app.open_create_with_combo();
+    d.frame();
+
+    // Button centres for the 520×540 modal in this 1280×800 driver.
+    d.click(828.0, 636.0);
+    assert!(d.app.is_create_open());
+
+    ViewDoc::set_create_field(&mut d.doc, CreateField::Image, "nginx:latest");
+    d.frame();
+    d.key(winit::keyboard::NamedKey::Enter);
+    assert!(!d.app.is_create_open());
+
+    d.app.open_create_with_combo();
+    d.frame();
+    d.click(722.0, 636.0);
+    assert!(!d.app.is_create_open());
+
+    d.app.open_create_with_combo();
+    d.key(winit::keyboard::NamedKey::Escape);
+    assert!(d.app.is_create_open() && !d.app.is_combo_open());
+    d.key(winit::keyboard::NamedKey::Escape);
+    assert!(!d.app.is_create_open());
 }
 
 // =====================================================================

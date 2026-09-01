@@ -11,7 +11,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
@@ -173,12 +173,29 @@ impl<C: Widget> ModalDialog<C> {
         self
     }
 
+    /// Updates the dialog's size cap after construction. Detached hosts use
+    /// this when their responsive dialog width depends on the live viewport.
+    pub fn set_max_size(&mut self, max_w: f64, max_h: f64) {
+        self.max_w = max_w.max(1.0);
+        self.max_h = max_h.max(1.0);
+        self.recompute_layout();
+    }
+
     pub fn content(&self) -> &C {
         &self.content
     }
 
     pub fn content_mut(&mut self) -> &mut C {
         &mut self.content
+    }
+
+    /// Lay out a dialog embedded by an immediate-mode host that does not mount
+    /// it in the host's retained Taffy tree. The dialog still lays out its own
+    /// content normally; only the full-viewport wrapper is supplied directly.
+    pub fn layout_in(&mut self, viewport: Rect, theme: &Theme, text_renderer: &mut TextRenderer) {
+        self.viewport = viewport;
+        self.recompute_layout();
+        self.place_content(theme, text_renderer);
     }
 
     /// Sets the viewport rect outside a taffy pass and re-centers the box
@@ -373,6 +390,43 @@ fn draw_action_button(
         transform * Affine::translate((text_x, text_y)),
         None,
     );
+}
+
+impl<C: Widget + 'static> ModalDialog<C> {
+    /// Route an event when an immediate-mode host embeds this dialog outside
+    /// its retained widget tree. This is the event-side counterpart to
+    /// [`Self::layout_in`] and removes the need for every app to manufacture a
+    /// throwaway Taffy leaf and focus target.
+    pub fn handle_detached(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if !self.open {
+            return false;
+        }
+        let mut taffy = TaffyTree::new();
+        let Ok(node) = taffy.new_leaf(Style::default()) else {
+            return true;
+        };
+        let mut handled = false;
+        let mut focus_target = None;
+        self.handle_event(
+            event,
+            scale_factor,
+            &modifiers,
+            state,
+            path,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        handled
+    }
 }
 
 impl<C: Widget + 'static> Widget for ModalDialog<C> {
@@ -877,6 +931,46 @@ mod tests {
             .unwrap();
         d.apply_layout(&taffy, node, Point::ZERO);
         (d, events)
+    }
+
+    #[test]
+    fn detached_layout_places_dialog_and_content() {
+        let content = CountingContent::default();
+        let mut dialog = ModalDialog::new("Detached", content).open(true);
+        dialog.layout_in(
+            Rect::new(20.0, 30.0, 820.0, 630.0),
+            &Theme::dark(),
+            &mut TextRenderer::new(),
+        );
+
+        assert_eq!(dialog.get_rect(), Rect::new(180.0, 170.0, 660.0, 490.0));
+        assert_ne!(dialog.content().get_rect(), Rect::ZERO);
+
+        dialog.set_max_size(400.0, 200.0);
+        dialog.layout_in(
+            Rect::new(20.0, 30.0, 820.0, 630.0),
+            &Theme::dark(),
+            &mut TextRenderer::new(),
+        );
+        assert_eq!(dialog.get_rect(), Rect::new(220.0, 230.0, 620.0, 430.0));
+    }
+
+    #[test]
+    fn detached_event_path_preserves_modal_dismissal() {
+        let dismissed = Rc::new(Cell::new(false));
+        let flag = Rc::clone(&dismissed);
+        let mut dialog = ModalDialog::new("Detached", TestContent)
+            .on_dismiss(move || flag.set(true))
+            .open(true);
+
+        assert!(dialog.handle_detached(
+            &key_press_event(NamedKey::Escape),
+            1.0,
+            Modifiers::default(),
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert!(dismissed.get());
     }
 
     fn color_fill_count<C: Widget + 'static>(d: &mut ModalDialog<C>) -> usize {

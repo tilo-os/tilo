@@ -1292,11 +1292,16 @@ impl CompositorHandler for State {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-        // Every accepted client is initialised with a `ClientState` in `native::run`; violating that should panic loudly, not corrupt state.
-        &client
-            .get_data::<ClientState>()
-            .expect("client missing ClientState user-data")
-            .compositor_state
+        // Every accepted client is initialised with a `ClientState` in
+        // `native::run`, so this is never expected to miss. Still, `shell`
+        // runs with `panic = "abort"`: a panic here would end every
+        // collaborator's session, not just this client's, so a missing
+        // slot degrades to a shared fallback instead.
+        static FALLBACK: std::sync::OnceLock<CompositorClientState> = std::sync::OnceLock::new();
+        client.get_data::<ClientState>().map_or_else(
+            || FALLBACK.get_or_init(CompositorClientState::default),
+            |d| &d.compositor_state,
+        )
     }
 
     fn commit(&mut self, surface: &WlSurface) {

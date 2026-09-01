@@ -142,16 +142,13 @@ pub fn validate(surface: Surface, scenarios: &[Scenario]) -> Result<(), String> 
         if scenario.name.is_empty() || scenario.summary.is_empty() {
             return Err(format!("registry entry {index} has empty metadata"));
         }
-        if scenarios[..index]
-            .iter()
-            .any(|other| other.name == scenario.name)
-        {
+        // `index` comes from `enumerate()` over this same slice, so it is
+        // always in bounds.
+        let seen = scenarios.get(..index).unwrap_or_default();
+        if seen.iter().any(|other| other.name == scenario.name) {
             return Err(format!("duplicate scenario name {:?}", scenario.name));
         }
-        if scenarios[..index]
-            .iter()
-            .any(|other| other.source == scenario.source)
-        {
+        if seen.iter().any(|other| other.source == scenario.source) {
             return Err(format!("duplicate scenario source {:?}", scenario.source));
         }
         if !expected.contains(&scenario.source) {

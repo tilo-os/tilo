@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::shell::launcher::{self, LaunchEvent, LaunchEventKind};
 use crate::shell::state::{CapOverride, RoomId};
@@ -33,7 +33,7 @@ const FAILED_REFRESH_BACKOFF: Duration = Duration::from_secs(30);
 /// --json` prints; the crate that prints them pins the same names in
 /// its own test, so changing one without the other fails loudly
 /// instead of silently producing an empty catalogue.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct CatalogueApp {
     pub package_id: String,
     pub display_name: String,
@@ -49,7 +49,7 @@ pub struct CatalogueApp {
 }
 
 /// The envelope `qos-catalogue list --json` prints.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct CatalogueListing {
     #[serde(default)]
     pub apps: Vec<CatalogueApp>,
@@ -57,7 +57,7 @@ pub struct CatalogueListing {
     pub unreachable: Vec<UnreachableRegistry>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct UnreachableRegistry {
     pub name: String,
     pub detail: String,
@@ -70,6 +70,9 @@ pub struct UnreachableRegistry {
 static CATALOGUE: Mutex<Option<(Vec<CatalogueApp>, Instant)>> = Mutex::new(None);
 /// So a burst of keystrokes schedules one refresh, not one per character.
 static REFRESHING: AtomicBool = AtomicBool::new(false);
+/// The small search-metadata cache is read once per shell process. App
+/// payloads remain uncached until the user opens one.
+static DISK_CACHE_LOADED: AtomicBool = AtomicBool::new(false);
 /// Per package, so the frame thread can retire it when the app starts.
 static PENDING_NOTICES: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
 
@@ -125,13 +128,46 @@ pub fn parse_listing(stdout: &str) -> Result<CatalogueListing, String> {
     serde_json::from_str(stdout).map_err(|e| e.to_string())
 }
 
+fn listing_cache_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("QOS_CATALOGUE_CACHE_FILE") {
+        return Some(PathBuf::from(path));
+    }
+    dirs::cache_dir().map(|dir| dir.join("qos-store/catalogue.json"))
+}
+
+fn read_cached_listing(path: &std::path::Path) -> Result<CatalogueListing, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    parse_listing(&text)
+}
+
+/// Seed palette search from the last complete, verified catalogue response.
+/// This is deliberately synchronous: it is one small local read, while the
+/// network refresh it enables us to hide remains on the worker thread.
+fn load_disk_cache_once() -> bool {
+    if DISK_CACHE_LOADED.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    let Some(path) = listing_cache_path() else {
+        return false;
+    };
+    let Ok(listing) = read_cached_listing(&path) else {
+        return false;
+    };
+    *lock_catalogue() = Some((listing.apps, Instant::now()));
+    true
+}
+
 /// Returns immediately: a cold or stale cache schedules a refresh and
 /// answers with whatever it currently holds.
 pub fn available_apps() -> Vec<CatalogueApp> {
+    let loaded_from_disk = load_disk_cache_once();
     let (apps, needs_refresh) = {
         let cache = lock_catalogue();
         match cache.as_ref() {
-            Some((apps, at)) => (apps.clone(), at.elapsed() >= CATALOGUE_TTL),
+            Some((apps, at)) => (
+                apps.clone(),
+                loaded_from_disk || at.elapsed() >= CATALOGUE_TTL,
+            ),
             None => (Vec::new(), true),
         }
     };
@@ -184,6 +220,13 @@ fn schedule_refresh() {
                                 );
                             }
                             let fresh = listing.unreachable.is_empty();
+                            if fresh
+                                && let Some(path) = listing_cache_path()
+                                && let Ok(encoded) = serde_json::to_vec(&listing)
+                                && let Err(e) = atomic_file::write_creating_parent(&path, &encoded)
+                            {
+                                eprintln!("[catalogue] could not save search cache: {e}");
+                            }
                             (listing.apps, fresh)
                         }
                         Err(e) => {
@@ -357,6 +400,20 @@ mod tests {
             "an unparseable listing must be reported, not silently read as \
              'nothing is available'"
         );
+    }
+
+    #[test]
+    fn persisted_metadata_can_seed_a_cold_palette() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("catalogue.json");
+        std::fs::write(
+            &path,
+            r#"{"apps":[{"package_id":"dev.qos.remote","display_name":"Remote",
+                "version":"1.0.0","registry":"team","trust":"verified"}]}"#,
+        )
+        .unwrap();
+        let listing = read_cached_listing(&path).expect("cached listing should parse");
+        assert_eq!(listing.apps[0].package_id, "dev.qos.remote");
     }
 
     /// A pending notice belongs to exactly one open, and taking it

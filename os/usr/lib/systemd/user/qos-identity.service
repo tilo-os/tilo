@@ -1,28 +1,19 @@
 [Unit]
-Description=qOS signing identity for this user
+Description=qOS identity-chain migration and repair for this user
 Documentation=man:shell(1)
-# A signing identity is personal. It is minted in the person's own session,
-# with its private root in their home and a certified per-device key in the
-# qos-identity group-owned system directory.  That device key is the shared
-# Iroh identity used by the shell, filesystem sync, and hosted relay.
-#
-# Ordered before the graphical session so the compositor and every app it
-# launches can find an identity on the very first login rather than starting
-# a session without one.
+# This is deliberately not the first-login identity ceremony. The compositor
+# OOBE creates a missing personal identity after the user acknowledges it.
+# When an identity already exists, this unit idempotently repairs or
+# migrates its certified shared device-key chain.
 Before=graphical-session-pre.target
 PartOf=graphical-session.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# Idempotent: exits immediately when an identity is already present, so this
-# is safe to leave enabled for every login rather than guarded by a stamp
-# file that could drift out of sync with the actual key.
+# Resolver-aware, idempotent migration/repair. A missing identity is a clean
+# no-op; only trusted compositor chrome may run the interactive OOBE.
 ExecStart=/usr/bin/shell --provision-identity
-# Never block login. A machine that cannot mint an identity should still let
-# its owner in and say so, rather than failing the session.
-SuccessExitStatus=0 1
-TimeoutStartSec=30s
 
 # The identity file is the most sensitive thing this user owns. Keep the
 # minting process away from everything it does not need.
@@ -37,7 +28,7 @@ ProtectClock=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
-# Minting is local key generation. It has no reason to touch the network.
+# Repair is local key/certificate work. It has no reason to touch the network.
 PrivateNetwork=yes
 RestrictAddressFamilies=AF_UNIX
 SystemCallArchitectures=native

@@ -47,7 +47,7 @@
 mod base64;
 
 use qdoc::snapshot::AttrVal;
-use qdoc::{BlockView, DocSnapshot, MarkSpan};
+use qdoc::{BlockView, DocSnapshot, InlinePlan, MarkSpan};
 use std::fmt::Write as _;
 
 /// Options controlling the shape of the emitted HTML.
@@ -144,18 +144,13 @@ fn style_prop_to_css(prop: &str, val: &AttrVal) -> Option<String> {
         "font" | "fontFamily" => format!("font-family: {};", css_font_family(&attr_as_str(val))),
         "size" | "fontSize" => format!("font-size: {};", css_size(val)),
         "align" => format!("text-align: {};", css_value(&attr_as_str(val))),
-        "bold" | "strong" => {
-            if matches!(val, AttrVal::Bool(true)) {
-                "font-weight: bold;".to_string()
-            } else {
+        "bold" | "strong" | "italic" | "em" => {
+            if !matches!(val, AttrVal::Bool(true)) {
                 return None;
             }
-        }
-        "italic" | "em" => {
-            if matches!(val, AttrVal::Bool(true)) {
-                "font-style: italic;".to_string()
-            } else {
-                return None;
+            match prop {
+                "bold" | "strong" => "font-weight: bold;".to_string(),
+                _ => "font-style: italic;".to_string(),
             }
         }
         // `name` is metadata, not a visual property; anything else is unrecognised.
@@ -566,55 +561,20 @@ fn block_attrs(block: &BlockView) -> String {
 
 // ---- inline marks -----------------------------------------------------------
 
-/// Render `text` with `marks` applied as inline HTML over the correct
-/// byte-offset ranges (matching how qdoc materializes them) — cut at
-/// every mark boundary, then open the active mark set per segment.
+/// Render `text` with qdoc's canonical character-offset mark traversal.
 fn render_inline(text: &str, marks: &[MarkSpan]) -> String {
-    if marks.is_empty() {
-        return escape_text(text);
-    }
     if text.is_empty() {
         return String::new();
     }
 
-    // Collect all boundary byte-offsets (clamped) so we split into
-    // segments over which the active mark-set is constant.
-    let mut bounds: Vec<usize> = vec![0, text.len()];
-    for m in marks {
-        for b in [m.start, m.end] {
-            if b <= text.len() && text.is_char_boundary(b) {
-                bounds.push(b);
-            }
-        }
-    }
-    bounds.sort_unstable();
-    bounds.dedup();
-
     let mut out = String::new();
-    for w in bounds.windows(2) {
-        // `windows(2)` guarantees exactly 2 elements per window, so both
-        // `.first()`/`.get(1)` are always `Some`.
-        let (Some(&seg_start), Some(&seg_end)) = (w.first(), w.get(1)) else {
+    for point in InlinePlan::new(text, marks).points() {
+        let Some(run) = &point.run else {
             continue;
         };
-        if seg_start >= seg_end {
-            continue;
-        }
-        // Every value pushed into `bounds` above is either `0`, `text.len()`,
-        // or filtered through `is_char_boundary`, so this range always lands
-        // on valid UTF-8 boundaries — `.get()` still degrades to skipping
-        // the segment instead of panicking if that invariant is ever broken.
-        let Some(segment) = text.get(seg_start..seg_end) else {
-            continue;
-        };
-        // Marks active over this whole segment (a mark covers [start, end)).
-        let active: Vec<&MarkSpan> = marks
-            .iter()
-            .filter(|m| m.start <= seg_start && m.end >= seg_end && m.start < m.end)
-            .collect();
-        let (open, close) = mark_tags(&active);
+        let (open, close) = mark_tags(&run.marks);
         out.push_str(&open);
-        out.push_str(&escape_text(segment));
+        out.push_str(&escape_text(run.text));
         out.push_str(&close);
     }
     out

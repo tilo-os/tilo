@@ -25,8 +25,8 @@
 //! `QOS_IMAGER_ALLOW_WRITE=1` allow-gate in [`write`]. With the gate off the
 //! same progress UI runs against a simulated worker that touches no device.
 //!
-//! `app_root()` is the single integration point used by both the live event
-//! loop and the `--shots` offscreen renderer. The live binary sets
+//! `app_root()` is the live integration point; `app_root_for_shot()` stages
+//! only peer-local capture state before returning the same widget. The live binary sets
 //! `IMAGER_LIVE=1` so the drive list comes from a real `lsblk` probe and the
 //! app starts genuinely blank; `--shots` / `--demo` seed sample content so the
 //! screenshot is deterministic offline.
@@ -55,6 +55,7 @@
         clippy::string_slice,
         clippy::panic,
         clippy::unreachable,
+        clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
@@ -63,6 +64,7 @@ pub mod actions;
 pub mod app;
 pub mod customize;
 pub mod doc;
+mod export_dialog;
 pub mod model;
 pub mod probe;
 pub mod write;
@@ -81,6 +83,18 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(ImagerApp::new())
 }
 
+/// Build the same widget as [`app_root`], with only peer-local shot state
+/// staged outside the collaborative document.
+pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
+    let mut app = ImagerApp::new();
+    if scenario == "confirm" {
+        app.seed_confirmation_for_shot("sdb");
+    } else if scenario == "export" {
+        app.seed_export_for_shot();
+    }
+    Box::new(app)
+}
+
 /// The ordered `--shots` scenarios: one per meaningful wizard station, named so
 /// the offscreen renderer can walk them and the gallery reads top-to-bottom.
 pub const SHOT_SCENARIOS: &[&str] = &[
@@ -90,6 +104,7 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "drive-empty",
     "drive-internal",
     "customize",
+    "export",
     "confirm",
     "progress",
     "done",
@@ -210,7 +225,7 @@ fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
             ImagerDoc::set_step(doc, Step::Drive);
             ImagerDoc::set_status(doc, "1 removable, 2 total");
         }
-        "customize" => {
+        "customize" | "export" => {
             ImagerDoc::set_selected(doc, Some(0));
             ImagerDoc::set_action(doc, Action::Flash);
             ImagerDoc::set_step(doc, Step::Customize);
@@ -220,7 +235,6 @@ fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
             ImagerDoc::set_selected(doc, Some(0));
             ImagerDoc::set_action(doc, Action::Flash);
             ImagerDoc::set_step(doc, Step::Confirm);
-            ImagerDoc::set_confirm(doc, "sdb"); // armed
             ImagerDoc::set_status(doc, "Ready to write qOS 1.0 → /dev/sdb");
         }
         "progress" => {

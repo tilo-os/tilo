@@ -307,6 +307,20 @@ impl Scope {
     /// artifact/action of `a`, `FsPath(p)` covers every path under `p`. A
     /// scope from a different enforcement point than the resource simply
     /// doesn't match — inert, never permissive.
+    #[allow(
+        clippy::unnested_or_patterns,
+        reason = "the `App`/`Artifact`/`Action` alternatives already share the `Scope::App(a)` \
+                  first component; they cannot nest further since each binds `b` out of a \
+                  different resource shape (a bare tuple field vs. an `Option`-wrapped struct \
+                  field vs. a plain struct field)"
+    )]
+    #[allow(
+        clippy::match_same_arms,
+        reason = "several arms reduce to a bare `x == y` (app id, device id, resource kind, \
+                  resource instance), which looks like duplication to a body-shape check but \
+                  each compares a different domain under a different Scope/ResourceRef pairing; \
+                  merging them would erase which pairing licenses the match"
+    )]
     pub fn matches_resource(&self, resource: &ResourceRef) -> bool {
         match (self, resource) {
             (Scope::Workspace, _) => true,
