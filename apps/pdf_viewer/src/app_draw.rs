@@ -1199,39 +1199,14 @@ impl PdfApp {
         if note.is_empty() {
             return;
         }
-        let c = &theme.tokens.colors;
-        let size = theme.tokens.typography.scale.sm;
-        let (tw, _) = tr.measure(note, size, None);
-        let pad_x = 14.0;
-        let w = (f64::from(tw) + 2.0 * pad_x).min(self.canvas_rect.width() - 24.0);
-        let h = 30.0;
-        let cx = f64::midpoint(self.canvas_rect.x0, self.canvas_rect.x1);
-        let y1 = self.canvas_rect.y1 - 18.0;
-        let r = Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1);
-        let shape = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.full));
-        let sh = RoundedRect::new(
-            r.x0,
-            r.y0 + 3.0,
-            r.x1,
-            r.y1 + 3.0,
-            f64::from(theme.tokens.radii.full),
-        );
-        scene.fill(
-            Fill::NonZero,
-            base,
-            Color::from_rgba8(0, 0, 0, 70),
-            None,
-            &sh,
-        );
-        scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &shape);
-        scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &shape);
-        tr.draw_text(
+        paint_transient(
             scene,
-            note,
-            size,
-            c.text_primary,
-            base * Affine::translate((r.x0 + pad_x, vcenter(r, size))),
-            Some((w - 2.0 * pad_x) as f32),
+            base,
+            tr,
+            theme,
+            self.canvas_rect,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new(note, ToastKind::Info),
         );
     }
 
