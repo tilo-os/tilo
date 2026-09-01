@@ -33,6 +33,7 @@ use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::{PathSegment, PresenceCtx, PresenceKey};
 
 use crate::WpFormat;
+use crate::document_status::{DocumentStatus, DocumentStatusView};
 use crate::find_bar::{FindBar, FindEffect, FindPalette};
 use crate::i18n::{arg, t, t_args};
 use crate::num;
@@ -1641,16 +1642,8 @@ pub struct WordProcessorWidget {
     scrub: Option<ScrubState>,
     /// Local page scale plus its toolbar drawing and hit-testing.
     zoom: ZoomControl,
-    /// Transient floating status readout (word/char count + modified dot,
-    /// filename and format), in place of a permanent bottom status strip. Pokes
-    /// on a label change, reveals while the pointer hovers the bottom-right
-    /// corner band, then fades. See `draw_status_bubble`.
-    status_bubble: ui::StatusBubble,
-    /// Last composed bubble label, so the bubble pokes only on a real change
-    /// (the readout is recomputed every frame).
-    last_status: String,
-    /// `--shots`: pin the status bubble fully visible for a single headless frame.
-    shots_status: bool,
+    /// Floating document statistics, file status, and fade lifecycle.
+    document_status: DocumentStatus,
     /// Number of toolbar rows the controls wrapped into this frame (>=1). Drives
     /// the canvas top offset so no control is ever clipped.
     toolbar_rows: usize,
@@ -1788,9 +1781,7 @@ impl WordProcessorWidget {
             edit_buf: String::new(),
             scrub: None,
             zoom: ZoomControl::new(),
-            status_bubble: ui::StatusBubble::new(),
-            last_status: String::new(),
-            shots_status: false,
+            document_status: DocumentStatus::default(),
             toolbar_rows: 1,
             notes: Vec::new(),
             dict: None,
@@ -4578,8 +4569,8 @@ impl WordProcessorWidget {
         let tb = Rect::new(full.x0, full.y0, full.x1, full.y0 + tb_h);
         self.draw_toolbar(scene, transform, text_renderer, theme, tb);
 
-        // No bottom status strip: its readout floats as a transient bubble (see
-        // `draw_status_bubble`), so the content spans down to the layout bar and
+        // No bottom status strip: its readout floats as a transient component,
+        // so the content spans down to the layout bar and
         // reclaims the strip's height. The layout bar now sits at the very bottom.
         let content_bottom = full.y1.max(full.y0 + tb_h);
         let layout_bar_top = (content_bottom - LAYOUT_BAR_H).max(full.y0 + tb_h);
@@ -6858,7 +6849,7 @@ impl WordProcessorWidget {
             *handled = true;
             return true;
         }
-        // Bottom layout bar (mode chips) sits at the very bottom; its readout floats via `status_bubble`.
+        // Bottom layout bar sits at the very bottom; document status floats above it.
         let lbar_top = self.rect.y1 - LAYOUT_BAR_H;
         if self.pointer.y >= lbar_top {
             if let Some(mode) = self
@@ -7534,7 +7525,7 @@ impl Widget for WordProcessorWidget {
         // Keep frames coming only while the floating status bubble is lingering /
         // fading, so it hides itself without needing a stray pointer event. Idle
         // otherwise.
-        self.status_bubble.needs_frame(std::time::Instant::now())
+        self.document_status.needs_frame(std::time::Instant::now())
     }
 
     fn draw(
@@ -7672,11 +7663,11 @@ impl Widget for WordProcessorWidget {
         let lbar = Rect::new(full.x0, fg.layout_bar_top, full.x1, fg.content_bottom);
         self.draw_layout_bar(scene, transform, text_renderer, theme, lbar);
 
-        // Transient floating status readout (bottom-right, above the layout bar),
+        // Transient floating status readout (bottom-left, above the layout bar),
         // in place of the old permanent bottom status strip. Drawn last so it
         // composites over the page; contextual menus/toasts (in `draw_overlay`)
         // still stack above it.
-        self.draw_status_bubble(scene, transform, text_renderer, theme);
+        self.draw_document_status(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -9135,39 +9126,25 @@ impl WordProcessorWidget {
             .collect()
     }
 
-    /// Draw the transient floating status bubble at the bottom-left of the window
-    /// (just above the layout bar): word/char count, modified dot, filename and
-    /// format — on a change or while the pointer hovers the band, then fades.
-    /// Anchored left so it clears the right-side styles panel. Colours from theme.
-    fn draw_status_bubble(
+    fn draw_document_status(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = std::time::Instant::now();
         let words: usize = self
             .blocks
             .iter()
             .map(|b| b.text.split_whitespace().count())
             .sum();
         let chars: usize = self.blocks.iter().map(|b| b.text.chars().count()).sum();
-        let count = t_args(
-            "status-count",
-            &[
-                arg("words", num::i64_of_usize(words)),
-                arg("chars", num::i64_of_usize(chars)),
-            ],
-        );
-        let untitled = t("status-untitled");
-        let fname = self
+        let file_name = self
             .path
             .as_ref()
             .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or(&untitled);
-        let kind = match self.format {
+            .and_then(|name| name.to_str());
+        let format = match self.format {
             Some(WpFormat::Odt) => t("format-odt"),
             Some(WpFormat::Docx) => t("format-docx"),
             Some(WpFormat::Markdown) => t("format-markdown"),
@@ -9177,60 +9154,28 @@ impl WordProcessorWidget {
             Some(WpFormat::Epub) => t("format-epub"),
             None => String::new(),
         };
-        let dot = if self.modified { "●  " } else { "" };
-        // Compose one compact readout combining the count and the file/format info.
-        let label = if kind.is_empty() {
-            format!("{count}    ·    {dot}{fname}")
-        } else {
-            format!("{count}    ·    {dot}{fname}    ·    {kind}")
-        };
-        // Poke only on a real change, so the every-frame recompute doesn't pin it
-        // open forever.
-        if label != self.last_status {
-            self.status_bubble.poke(now);
-            self.last_status.clone_from(&label);
-        }
-        let text_size = 12.0f32;
-        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
-        let margin = 14.0;
-        // Float above the bottom layout bar so the two never overlap.
-        let anchor_bottom = self.rect.y1 - LAYOUT_BAR_H - margin;
-        let rect = Rect::new(
-            self.rect.x0 + margin,
-            anchor_bottom - h,
-            self.rect.x0 + margin + w,
-            anchor_bottom,
-        );
-        // Reveal zone: the bottom-left corner band (plus the pill), above the
-        // layout bar — nudging the pointer there re-surfaces the readout.
-        let zone = Rect::new(
-            self.rect.x0,
-            rect.y0 - 24.0,
-            rect.x1 + 40.0,
-            self.rect.y1 - LAYOUT_BAR_H,
-        );
-        let over = self.shots_status || zone.contains(self.pointer);
-        self.status_bubble.set_hover(over, now);
-        let alpha = self.status_bubble.alpha(now);
-        if alpha <= 0.0 {
-            return;
-        }
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            alpha,
+        self.document_status.draw(
+            scene,
             transform,
-            &rect.inflate(12.0, 14.0),
+            tr,
+            theme,
+            self.rect,
+            LAYOUT_BAR_H,
+            self.pointer,
+            &DocumentStatusView {
+                words,
+                chars,
+                modified: self.modified,
+                file_name,
+                format: (!format.is_empty()).then_some(format.as_str()),
+            },
         );
-        ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
-        scene.pop_layer();
     }
 
     /// `--shots`: pin the status bubble fully visible so a single headless frame
     /// captures the floating readout pill.
     pub fn arm_status_bubble_for_shots(&mut self) {
-        self.shots_status = true;
-        self.status_bubble.poke(std::time::Instant::now());
+        self.document_status.pin_for_shot(std::time::Instant::now());
     }
 
     /// Draw the zoom component in the toolbar's last row.
