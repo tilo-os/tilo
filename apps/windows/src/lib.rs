@@ -29,8 +29,8 @@
 )]
 
 pub mod actions;
-pub mod appliance_owner;
 pub mod app;
+pub mod appliance_owner;
 pub mod model;
 pub mod provider;
 pub mod strings;
