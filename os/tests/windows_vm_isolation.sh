@@ -18,6 +18,8 @@ BRIDGE="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSGuestBridge.ps1"
 FOCUSED="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSFocusedApp.ps1"
 INSTALLER="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSInstaller.ps1"
 UNINSTALLER="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSUninstaller.ps1"
+PROCESS_JOB="$OS_ROOT/usr/share/qos/windows/guest/qOS-ProcessJob.ps1"
+PROCESS_JOB_BROKER="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSProcessJobBroker.ps1"
 CONTAINERFILE="$OS_ROOT/Containerfile"
 
 fails=0
@@ -27,7 +29,7 @@ need() { [ -r "$1" ] && ok "$(basename "$1") exists" || fail "missing $1"; }
 has() { grep -Fq -- "$2" "$1" && ok "$3" || fail "$3"; }
 lacks() { grep -Fq -- "$2" "$1" && fail "$3" || ok "$3"; }
 
-for file in "$NET" "$UNIT" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$OWNER" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER" "$UNINSTALLER"; do need "$file"; done
+for file in "$NET" "$UNIT" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$OWNER" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER" "$UNINSTALLER" "$PROCESS_JOB" "$PROCESS_JOB_BROKER"; do need "$file"; done
 
 has "$NET" '<forward mode="none"/>' 'libvirt bridge has no forwarding'
 has "$NET" '<qos:windows-hostonly ' 'network has qOS ownership marker'
@@ -88,8 +90,23 @@ has "$CONTAINERFILE" 'virt-viewer' 'image wires explicit recovery viewer'
 has "$PROVISION" 'Start-qOSFocusedApp.ps1' 'guest tools carry the focused-app helper'
 has "$PROVISION" 'Start-qOSInstaller.ps1' 'guest tools carry the managed installer helper'
 has "$PROVISION" 'Start-qOSUninstaller.ps1' 'guest tools carry the typed uninstaller helper'
+has "$PROVISION" 'qOS-ProcessJob.ps1' 'guest tools carry the shared native process-job helper'
+has "$PROVISION" 'Start-qOSProcessJobBroker.ps1' 'guest tools carry the typed UAC process-job broker'
+has "$INSTALL" "Join-Path \$focusRoot 'qOS-ProcessJob.ps1'" 'guest install places the job helper beside focused launches'
+has "$INSTALL" "Join-Path \$installerRoot 'qOS-ProcessJob.ps1'" 'guest install places the job helper in the protected installer root'
+has "$BRIDGE" "Join-Path \$operationDirectory 'Start-qOSProcessJobBroker.ps1'" 'installer operation receives its fixed local UAC broker'
 has "$FOCUSED" 'Stop-Process -Id' 'focused fallback suppresses Explorer while running'
 has "$FOCUSED" 'Start-Process -FilePath "$env:WINDIR\explorer.exe"' 'focused fallback restores Explorer'
+has "$FOCUSED" 'RunFocusedApplication' 'focused fallback waits through the shared process-tree job'
+lacks "$FOCUSED" 'Wait-Process' 'focused fallback never waits only for the bootstrap PID'
+has "$PROCESS_JOB" 'CreateSuspended = 0x00000004' 'managed process starts with its primary thread suspended'
+has "$PROCESS_JOB" 'AssignProcessToJobObject(job, process.hProcess)' 'suspended process is assigned to the qOS job before execution'
+has "$PROCESS_JOB" 'ResumeThread(process.hThread)' 'managed process resumes only after job assignment'
+has "$PROCESS_JOB" 'JobObjectLimitKillOnJobClose = 0x00002000' 'abandoned helpers tear down their contained process tree'
+has "$PROCESS_JOB" 'accounting.ActiveProcesses == 0' 'Explorer restoration waits for the whole job to become empty'
+has "$PROCESS_JOB" 'The process is already in an incompatible parent job.' 'incompatible nested jobs fail closed before resume'
+lacks "$PROCESS_JOB" 'const uint JobObjectLimitBreakaway' 'qOS does not permit explicit job breakaway'
+lacks "$PROCESS_JOB" 'shell32.dll' 'native containment helper never launches through a shell broker'
 has "$BRIDGE" 'Require-UploadAuth' 'installer upload has a metadata-bound HMAC contract'
 has "$BRIDGE" 'installer upload needs an exact content length' 'installer upload requires an exact size'
 has "$BRIDGE" 'TransformFinalBlock' 'guest recomputes installer SHA-256 while streaming'
@@ -104,15 +121,24 @@ has "$BRIDGE" 'expectedGeneration' 'publication changes use optimistic generatio
 has "$BRIDGE" "'Traverse', 'None', 'None'" 'installer parent ACL grants traversal only'
 lacks "$BRIDGE" "ReadAndExecute', 'ContainerInherit,ObjectInherit'.*\$installerRoot" 'staged payload root is not recursively exposed'
 has "$INSTALLER" 'Get-FileHash -LiteralPath $package -Algorithm SHA256' 'interactive helper rechecks accepted package digest'
-has "$INSTALLER" "-ArgumentList @('/i', \$package)" 'MSI helper has one typed fixed invocation'
-has "$INSTALLER" 'Start-Process -FilePath $package -Wait -PassThru' 'EXE helper invokes only the accepted file without arguments'
+has "$INSTALLER" 'RunMsiInstaller' 'MSI helper has one typed fixed invocation'
+has "$INSTALLER" 'RunExecutableInstaller($package)' 'EXE helper invokes only the accepted file without arguments'
+lacks "$INSTALLER" 'Start-Process -FilePath $package' 'installer package cannot bypass suspended job assignment'
+has "$INSTALLER" '-Verb RunAs' 'requireAdministrator EXEs show standard Windows UAC for the fixed qOS broker'
+has "$INSTALLER" 'UAC consent was canceled' 'UAC cancellation is reported explicitly'
 has "$INSTALLER" 'Where-Object { $_.SessionId -eq $sessionId }' 'installer hides Explorer only in its managed session'
 lacks "$INSTALLER" 'Invoke-Expression' 'installer helper has no free-form command evaluator'
+has "$PROCESS_JOB_BROKER" "[string]\$job.kind -ne 'exe'" 'elevated broker accepts only the typed EXE operation'
+has "$PROCESS_JOB_BROKER" '[string]$Matches.operation -cne $pathOperationId' 'elevated broker binds package and job to one operation directory'
+has "$PROCESS_JOB_BROKER" 'Get-FileHash -LiteralPath $package -Algorithm SHA256' 'elevated broker rechecks the accepted digest after UAC'
+has "$PROCESS_JOB_BROKER" 'RunExecutableInstaller($package)' 'elevated broker uses suspended native creation without package arguments'
+lacks "$PROCESS_JOB_BROKER" 'Invoke-Expression' 'elevated broker has no free-form command evaluator'
 has "$BRIDGE" 'uninstallAvailable = $canUninstall' 'authenticated catalogue persists uninstall availability'
 has "$BRIDGE" "operationKind = 'uninstallation'" 'uninstall has a distinct typed operation'
 has "$BRIDGE" 'Reset-UninstallRecord' 'failed uninstall operations become safely retryable'
 has "$BRIDGE" 'Complete-UninstallPublication' 'successful uninstall retracts its publication'
-has "$UNINSTALLER" "-ArgumentList @('/x', [string]\$job.productCode)" 'uninstaller accepts only a parsed MSI product code'
+has "$UNINSTALLER" 'RunMsiUninstaller' 'uninstaller accepts only a parsed MSI product code'
+lacks "$UNINSTALLER" "-ArgumentList @('/x'" 'uninstaller cannot bypass its contained typed method'
 has "$UNINSTALLER" 'Where-Object { $_.SessionId -eq $sessionId }' 'uninstaller hides Explorer only in its managed session'
 lacks "$UNINSTALLER" 'UninstallString' 'registry uninstall command strings are never executed'
 lacks "$UNINSTALLER" 'Invoke-Expression' 'uninstaller has no free-form command evaluator'

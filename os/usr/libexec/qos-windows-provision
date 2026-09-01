@@ -70,6 +70,8 @@ prepare() {
     cp -- "$GUEST_SOURCE/Start-qOSFocusedApp.ps1" "$stage/"
     cp -- "$GUEST_SOURCE/Start-qOSInstaller.ps1" "$stage/"
     cp -- "$GUEST_SOURCE/Start-qOSUninstaller.ps1" "$stage/"
+    cp -- "$GUEST_SOURCE/qOS-ProcessJob.ps1" "$stage/"
+    cp -- "$GUEST_SOURCE/Start-qOSProcessJobBroker.ps1" "$stage/"
     head -c 32 /dev/urandom > "$stage/qos-bridge.secret"
     install -m 0640 -o root -g qos-identity "$stage/qos-bridge.secret" "$SECRET"
     cat > "$stage/qos-bridge.json" <<'EOF'
