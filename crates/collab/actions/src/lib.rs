@@ -56,6 +56,7 @@
 )]
 
 pub mod action;
+pub mod context;
 pub mod door;
 pub mod envelope;
 pub mod executor;
@@ -63,11 +64,15 @@ pub mod registry;
 pub mod resource;
 
 pub use action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
+pub use context::{
+    ActionApp, ActionContext, ActionFacet, ActionGroup, ActionResource, CHANGE_MESSAGE_PREFIX,
+};
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec};
 pub use envelope::ActionEnvelope;
 pub use executor::{
     ActionTransport, Dispatched, HostDecision, LocalTransport, apply_local, apply_local_by,
-    dispatch, dispatch_by, replay,
+    apply_local_with_context, dispatch, dispatch_by, dispatch_by_with_context,
+    dispatch_with_context, replay,
 };
 pub use registry::ActionRegistry;
 pub use resource::{
@@ -301,6 +306,7 @@ mod tests {
             timestamp: 0,
             locus: ExecutionLocus::ClientLocal,
             actor: None,
+            context: None,
         };
         assert!(matches!(
             replay(&mut doc, &env, &reg),
