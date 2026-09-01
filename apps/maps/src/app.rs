@@ -4039,6 +4039,15 @@ impl MapsApp {
 // Widget impl
 // ===========================================================================
 impl Widget for MapsApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[
+            "maps.locate",
+            "maps.toggle-traffic",
+            "maps.open-place",
+            "maps.directions",
+        ]
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         // Pull any background network results into the model first.
         self.drain_net();

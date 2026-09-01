@@ -7409,6 +7409,10 @@ impl WordProcessorWidget {
 }
 
 impl Widget for WordProcessorWidget {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::WORD_PROCESSOR_OPERATION_TYPE]
+    }
+
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,

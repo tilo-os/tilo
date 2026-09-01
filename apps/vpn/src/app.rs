@@ -2583,6 +2583,10 @@ fn synth_logs(c: &Connection, activity: &[String], xfer: Option<Transfer>) -> Ve
 }
 
 impl Widget for VpnApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["vpn.toggle-tunnel"]
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         // Fold in a completed portal import (if any), then read the vault and
         // reconcile real interface state, then poll real throughput counters.

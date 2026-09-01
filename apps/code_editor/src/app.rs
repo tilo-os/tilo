@@ -3209,6 +3209,10 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
 }
 
 impl Widget for CodeApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::CODE_EDITOR_OPERATION_TYPE]
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if !self.seeded {
             self.seed_terminal();

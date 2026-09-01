@@ -3192,6 +3192,10 @@ fn status_color(theme: &Theme, status: SmartStatus) -> Color {
 }
 
 impl Widget for DisksApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["disks.operation"]
+    }
+
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("disks", "disks.system", "Storage devices");
         for drive in &self.topo.drives {

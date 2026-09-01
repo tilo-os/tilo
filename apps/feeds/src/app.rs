@@ -3653,6 +3653,10 @@ fn chrono_date(published: i64, now: i64) -> String {
 // ---------------------------------------------------------------------
 
 impl Widget for FeedsApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::FEEDS_OPERATION_TYPE]
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         self.now = chrono::Utc::now().timestamp();
         if !self.synced {
