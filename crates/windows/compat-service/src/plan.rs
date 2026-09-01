@@ -473,6 +473,9 @@ fn map_granted_files(
     landlock_write: &mut Vec<PathBuf>,
 ) {
     for (index, source) in capabilities.ro_paths.iter().enumerate() {
+        if is_host_microphone_endpoint(capabilities, source) {
+            continue;
+        }
         if source.starts_with("/dev") {
             bind(argv, "--ro-bind-try", source, source);
             landlock_read.push(source.clone());
@@ -483,25 +486,31 @@ fn map_granted_files(
         landlock_read.push(destination);
     }
     for (index, source) in capabilities.rw_paths.iter().enumerate() {
+        if is_host_microphone_endpoint(capabilities, source) {
+            // `CapabilityPlan`'s native-app projection includes the host
+            // PipeWire socket and `/dev/snd` for a microphone grant. A Wine
+            // capsule gets neither: both would bypass its short-lived audio
+            // proxy and turn an output capability into raw device access.
+            continue;
+        }
         if source.starts_with("/dev") {
             bind(argv, "--dev-bind-try", source, source);
             landlock_write.push(source.clone());
-            continue;
-        }
-        if capabilities
-            .devices
-            .iter()
-            .any(|device| device == "microphone")
-            && source.file_name().is_some_and(|name| name == "pipewire-0")
-        {
-            // The ordinary launcher binds this directly for native clients.
-            // Wine gets a playback/capture-filtered broker socket instead.
             continue;
         }
         let destination = PathBuf::from(format!("{FILES_MOUNT}/write/{index:03}"));
         bind(argv, "--bind-try", source, &destination);
         landlock_write.push(destination);
     }
+}
+
+fn is_host_microphone_endpoint(capabilities: &CapabilityPlan, source: &Path) -> bool {
+    capabilities
+        .devices
+        .iter()
+        .any(|device| device == "microphone")
+        && (source == Path::new("/dev/snd")
+            || source.file_name().is_some_and(|name| name == "pipewire-0"))
 }
 
 fn push_audio(
@@ -866,6 +875,69 @@ mod tests {
                 .bwrap_argv
                 .iter()
                 .any(|arg| arg.starts_with(&format!("/proc/{}/fd/", std::process::id())))
+        );
+    }
+
+    #[test]
+    fn microphone_capsule_uses_brokered_audio_without_raw_sound_device() {
+        let route = route(Layer::Wine);
+        let (_directory, store, state, program) = setup(&route);
+        let registry = SystemRuntimeRegistry::new();
+        let host = session();
+        let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+        let capabilities = CapabilityPlan {
+            rw_paths: vec![
+                PathBuf::from("/run/user/1000/pipewire-0"),
+                PathBuf::from("/dev/snd"),
+            ],
+            devices: vec!["microphone".to_string()],
+            ..CapabilityPlan::empty()
+        };
+        let lease = LaunchLease {
+            id: "audio-lease".to_string(),
+            audio: vec![
+                AudioBinding {
+                    protocol: AudioProtocol::PipeWire,
+                    host_socket: PathBuf::from(
+                        "/run/qos/windows-compat/leases/audio-lease/audio/pipewire-0",
+                    ),
+                    input_enabled: true,
+                },
+                AudioBinding {
+                    protocol: AudioProtocol::Pulse,
+                    host_socket: PathBuf::from(
+                        "/run/qos/windows-compat/leases/audio-lease/audio/pulse/native",
+                    ),
+                    input_enabled: true,
+                },
+            ],
+            net_gate: None,
+        };
+        let command = planner
+            .plan(&route, &state, &program, &capabilities, "workspace", &lease)
+            .unwrap();
+        assert!(
+            command
+                .bwrap_argv
+                .iter()
+                .any(|arg| arg == "/run/qos/windows-compat/leases/audio-lease/audio/pipewire-0")
+        );
+        assert!(
+            command
+                .bwrap_argv
+                .iter()
+                .any(|arg| arg == "/run/qos/windows-compat/leases/audio-lease/audio/pulse/native")
+        );
+        assert!(!command.bwrap_argv.iter().any(|arg| arg == "/dev/snd"));
+        // The sandbox must name its own runtime destination so clients can
+        // resolve the private PipeWire endpoint. The host socket occurs only
+        // as the source half of the explicit broker bind above, never as a
+        // capability-derived bind.
+        assert!(
+            command
+                .bwrap_argv
+                .iter()
+                .any(|arg| arg == "/run/user/1000/pipewire-0")
         );
     }
 
