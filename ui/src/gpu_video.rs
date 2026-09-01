@@ -80,11 +80,12 @@ pub fn upload_planar(
     let ch = height.div_ceil(2);
 
     let mut planes = Vec::with_capacity(2);
-    for (i, (fmt, (w, h))) in [(luma_fmt, (width, height)), (chroma_fmt, (cw, ch))]
-        .into_iter()
+    for (i, (src, (fmt, (w, h)))) in img
+        .planes
+        .iter()
+        .zip([(luma_fmt, (width, height)), (chroma_fmt, (cw, ch))])
         .enumerate()
     {
-        let src = &img.planes[i];
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(if i == 0 { "video-luma" } else { "video-chroma" }),
             size: wgpu::Extent3d {
@@ -101,8 +102,14 @@ pub fn upload_planar(
         });
         // The decoder pads rows; `bytes_per_row` is the source stride, not the
         // packed width, or every row after the first lands offset.
-        let needed = src.stride as usize * h as usize;
-        if src.bytes.len() < needed {
+        let Some(needed) = (src.stride as usize).checked_mul(h as usize) else {
+            tracing::warn!(
+                "gpu_video: plane {i} dimensions overflow for {w}x{h} at stride {}",
+                src.stride
+            );
+            return None;
+        };
+        let Some(bytes) = src.bytes.get(..needed) else {
             tracing::warn!(
                 "gpu_video: plane {i} has {} bytes, needs {needed} for {}x{h} at stride {}",
                 src.bytes.len(),
@@ -110,7 +117,7 @@ pub fn upload_planar(
                 src.stride
             );
             return None;
-        }
+        };
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &tex,
@@ -118,7 +125,7 @@ pub fn upload_planar(
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &src.bytes[..needed],
+            bytes,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(src.stride),
@@ -185,14 +192,17 @@ impl ConvertUniform {
 
     fn as_bytes(&self) -> [u8; 32] {
         let mut out = [0u8; 32];
-        for (i, v) in self.coeffs.iter().chain(self.range.iter()).enumerate() {
-            out[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
+        for (slot, value) in out
+            .chunks_exact_mut(std::mem::size_of::<f32>())
+            .zip(self.coeffs.iter().chain(&self.range))
+        {
+            slot.copy_from_slice(&value.to_ne_bytes());
         }
         out
     }
 }
 
-const SHADER: &str = r#"
+const SHADER: &str = r"
 struct Convert {
     // r_cr, g_cb, g_cr, b_cb
     coeffs: vec4<f32>,
@@ -257,7 +267,7 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     let b = yy + cv.coeffs.w * u;
     return vec4<f32>(clamp(vec3<f32>(r, g, b), vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }
-"#;
+";
 
 /// Turns YUV planes into one RGBA texture with a fullscreen pass.
 ///
@@ -274,6 +284,34 @@ pub struct YuvConverter {
 }
 
 impl YuvConverter {
+    fn create_target(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> (wgpu::Texture, u32, u32) {
+        (
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("video-rgba"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            }),
+            width,
+            height,
+        )
+    }
+
     /// Build a converter producing `format` (use the surface's format so the
     /// result can be composited directly).
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
@@ -326,13 +364,13 @@ impl YuvConverter {
                 module: &shader,
                 entry_point: Some("vs"),
                 buffers: &[],
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs"),
                 targets: &[Some(format.into())],
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
@@ -368,6 +406,12 @@ impl YuvConverter {
     ///
     /// The output texture is reused across calls while the frame size holds,
     /// so a steady stream of same-sized frames allocates nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `planes` contains no textures. Every supported plane layout
+    /// has at least one texture, and the constructors in this module enforce
+    /// that invariant.
     pub fn convert(
         &mut self,
         device: &wgpu::Device,
@@ -377,26 +421,7 @@ impl YuvConverter {
         let (w, h) = (planes.width.max(1), planes.height.max(1));
         let stale = !matches!(&self.target, Some((_, tw, th)) if *tw == w && *th == h);
         if stale {
-            self.target = Some((
-                device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("video-rgba"),
-                    size: wgpu::Extent3d {
-                        width: w,
-                        height: h,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: self.format,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::COPY_SRC,
-                    view_formats: &[],
-                }),
-                w,
-                h,
-            ));
+            self.target = Some(Self::create_target(device, self.format, w, h));
         }
 
         queue.write_buffer(
@@ -407,12 +432,17 @@ impl YuvConverter {
 
         // A packed 4:2:2 frame has one texture; bind it twice so the layout is
         // satisfied without a second pipeline.
-        let luma = planes.planes[0].create_view(&Default::default());
+        #[allow(clippy::expect_used, reason = "documented VideoPlanes invariant")]
+        let luma_texture = planes
+            .planes
+            .first()
+            .expect("video planes must contain a luma or packed texture");
+        let luma = luma_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let chroma = planes
             .planes
             .get(1)
-            .unwrap_or(&planes.planes[0])
-            .create_view(&Default::default());
+            .unwrap_or(luma_texture)
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("yuv-to-rgba"),
             layout: &self.layout,
@@ -436,8 +466,10 @@ impl YuvConverter {
             ],
         });
 
-        let target = &self.target.as_ref().expect("just built").0;
-        let view = target.create_view(&Default::default());
+        let (target, _, _) = self
+            .target
+            .get_or_insert_with(|| Self::create_target(device, self.format, w, h));
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("yuv-to-rgba"),
         });
