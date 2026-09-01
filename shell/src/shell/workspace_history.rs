@@ -192,6 +192,13 @@ impl WorkspaceHistoryIndex {
         &mut self.authors
     }
 
+    pub fn set_authors(&mut self, authors: AuthorDirectory) {
+        if self.authors != authors {
+            self.authors = authors;
+            self.fingerprint = None;
+        }
+    }
+
     pub fn entries(&self) -> &[WorkspaceHistoryEntry] {
         &self.entries
     }
@@ -315,13 +322,17 @@ impl WorkspaceHistoryIndex {
 
         let mut entries: Vec<_> = by_id.into_values().collect();
         entries.sort_by(|a, b| {
-            b.entry
+            a.entry
                 .timestamp
-                .cmp(&a.entry.timestamp)
+                .cmp(&b.entry.timestamp)
                 .then_with(|| a.id.origin.cmp(&b.id.origin))
                 .then_with(|| a.id.change.as_bytes().cmp(b.id.change.as_bytes()))
         });
-        entries.truncate(limit);
+        // ActivityTimeline/group_entries require oldest-first input. Keep the
+        // newest suffix when applying the bound, then preserve that order.
+        if entries.len() > limit {
+            entries.drain(..entries.len().saturating_sub(limit));
+        }
 
         let unavailable_records = referenced
             .iter()
@@ -514,5 +525,34 @@ mod tests {
         );
         assert!(!index.coverage().is_complete());
         assert_eq!(index.coverage().unavailable_records, vec![missing]);
+    }
+
+    #[test]
+    fn aggregate_is_oldest_first_while_retaining_the_newest_bound() {
+        let (mut tree, room) = tree_and_room();
+        let records = RecordStore::in_memory();
+        for (name, time) in [("older.md", 10), ("newer.md", 20)] {
+            let record = action_record(&records, RecordId::for_file(name), room, time);
+            tree.room_records_held
+                .entry(room)
+                .or_default()
+                .insert(record.id.to_string(), record.kind.to_string());
+        }
+        let mut index = WorkspaceHistoryIndex::new();
+        index.refresh(
+            &mut tree,
+            &records,
+            WorkspaceHistoryQuery {
+                room: Some(room),
+                limit: 2,
+            },
+        );
+        let times: Vec<_> = index
+            .entries()
+            .iter()
+            .map(|row| row.entry.timestamp)
+            .collect();
+        assert!(times.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert_eq!(times.len(), 2);
     }
 }

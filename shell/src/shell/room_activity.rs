@@ -208,6 +208,13 @@ pub struct RoomActivityOutcome {
     pub named: bool,
     pub open_target: Option<ui::HistoryResourceTarget>,
     pub compared: bool,
+    pub undo_partial: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct UndoApply {
+    wrote: bool,
+    partial: bool,
 }
 
 /// The room-activity sheet.
@@ -220,6 +227,7 @@ pub struct RoomActivityPane {
     /// Same handshake as `revert_intent`; `RefCell` since the payload isn't `Copy`.
     name_intent: Rc<RefCell<Option<GroupNameRequest>>>,
     undo_intent: Rc<RefCell<Option<BandUndoRequest>>>,
+    clear_filters_intent: Rc<Cell<bool>>,
     named: Vec<NamedRange>,
     /// Heads at the last rebuild, so a no-op frame skips re-deriving.
     last_heads: Vec<ChangeHash>,
@@ -269,6 +277,7 @@ pub struct RoomActivityPane {
     keyboard_focus: Option<ActivityFocus>,
     detail_action_rects: Vec<(DetailAction, Rect)>,
     comparison: Option<HistoryComparison>,
+    comparison_selection: Vec<HistoryEntryId>,
     narrative: Option<ui::GroundedNarrative>,
 }
 
@@ -283,14 +292,17 @@ impl RoomActivityPane {
         let revert_intent = Rc::new(Cell::new(None));
         let name_intent: Rc<RefCell<Option<GroupNameRequest>>> = Rc::new(RefCell::new(None));
         let undo_intent: Rc<RefCell<Option<BandUndoRequest>>> = Rc::new(RefCell::new(None));
+        let clear_filters_intent = Rc::new(Cell::new(false));
         let ri = Rc::clone(&revert_intent);
         let ni = Rc::clone(&name_intent);
         let ui = Rc::clone(&undo_intent);
+        let ci = Rc::clone(&clear_filters_intent);
         Self {
             timeline: {
                 let mut t = ActivityTimeline::new()
                     .on_revert(move |id| ri.set(Some(*id)))
                     .on_undo_band(move |req| *ui.borrow_mut() = Some(req.clone()))
+                    .on_clear_filters(move || ci.set(true))
                     .on_name_group(move |req| *ni.borrow_mut() = Some(req.clone()));
                 t.set_draws_own_surface(false);
                 t
@@ -300,6 +312,7 @@ impl RoomActivityPane {
             revert_intent,
             name_intent,
             undo_intent,
+            clear_filters_intent,
             named: Vec::new(),
             last_heads: Vec::new(),
             period: Period::default(),
@@ -333,6 +346,7 @@ impl RoomActivityPane {
             keyboard_focus: None,
             detail_action_rects: Vec::new(),
             comparison: None,
+            comparison_selection: Vec::new(),
             narrative: None,
         }
     }
@@ -431,7 +445,42 @@ impl RoomActivityPane {
             bytes.copy_from_slice(&entry.id.as_bytes()[..8]);
             u64::from_le_bytes(bytes)
         });
-        (self.digest.headline(), unread, pulse)
+        (
+            self.digest_for_workspace(workspace).headline(),
+            unread,
+            pulse,
+        )
+    }
+
+    pub fn digest_for_workspace(&self, workspace: u64) -> ActivityDigest {
+        let frontier = self
+            .seen_frontiers
+            .get(&workspace)
+            .cloned()
+            .unwrap_or_default();
+        ActivityDigest::from_unseen(self.timeline.entries(), &frontier, 5)
+    }
+
+    fn open_brief_in_explorer(&mut self, index: usize) {
+        let Some(brief) = self.digest.briefs.get(index) else {
+            return;
+        };
+        let positions: Vec<usize> = brief
+            .entry_ids
+            .iter()
+            .filter_map(|id| {
+                self.timeline
+                    .entries()
+                    .iter()
+                    .position(|entry| entry.id == *id)
+            })
+            .collect();
+        if let (Some(start), Some(end)) = (positions.iter().min(), positions.iter().max()) {
+            self.timeline.set_selection(Some((*start, *end)));
+            self.view = ActivityView::Explore;
+            self.expanded_brief = None;
+            self.clear_comparison();
+        }
     }
 
     fn rebuild_digest_since_frontier(&mut self) {
@@ -499,11 +548,36 @@ impl RoomActivityPane {
     }
 
     pub fn selection_detail(&self) -> Option<HistorySelectionDetail> {
-        let range = self
-            .timeline
+        let range = self.timeline.selection()?;
+        let mut detail = HistorySelectionDetail::from_range(self.timeline.entries(), range)?;
+        let mut origin = None;
+        for id in &detail.entry_ids {
+            let next = self
+                .projected_origins
+                .get(id)
+                .map(|address| address.origin.clone())
+                .unwrap_or(crate::shell::workspace_history::HistoryOrigin::WorkspaceTree);
+            if origin.as_ref().is_some_and(|current| current != &next) {
+                detail.can_compare = false;
+                detail.can_undo = false;
+                break;
+            }
+            origin = Some(next);
+        }
+        Some(detail)
+    }
+
+    fn selected_ids(&self) -> Vec<HistoryEntryId> {
+        self.timeline
             .selection()
-            .or_else(|| (!self.timeline.entries().is_empty()).then_some((0, 0)))?;
-        HistorySelectionDetail::from_range(self.timeline.entries(), range)
+            .and_then(|(start, end)| self.timeline.entries().get(start..=end))
+            .map(|entries| entries.iter().map(|entry| entry.id).collect())
+            .unwrap_or_default()
+    }
+
+    fn clear_comparison(&mut self) {
+        self.comparison = None;
+        self.comparison_selection.clear();
     }
 
     /// Materialize the exact before/after document for the current selection.
@@ -585,6 +659,7 @@ impl RoomActivityPane {
 
     /// Op-class chips and author typeahead are the widget's own, left alone.
     fn reinstall_filter(&mut self) {
+        let prior_selection = self.selected_ids();
         let mut filter = HistoryFilter {
             time_range: self.period.range(self.now()),
             ..HistoryFilter::default()
@@ -606,6 +681,9 @@ impl RoomActivityPane {
             }
         }
         self.timeline.set_filter(filter);
+        if self.selected_ids() != prior_selection {
+            self.clear_comparison();
+        }
         self.timeline.set_time_range_label(match self.period {
             Period::AllTime => None,
             p => Some(p.label().to_string()),
@@ -703,6 +781,8 @@ impl RoomActivityPane {
     /// that room. The projected id map keeps callbacks compact while every
     /// authoritative operation can still resolve the originating document.
     pub fn refresh_records(&mut self, tree: &mut WorkspaceTree, records: &RecordStore) {
+        self.history_index
+            .set_authors(self.source.authors().clone());
         let query = match self.scope {
             RoomScope::ThisRoom => tree
                 .active_workspace()
@@ -710,12 +790,15 @@ impl RoomActivityPane {
                 .unwrap_or_default(),
             RoomScope::AllWorkspaces => WorkspaceHistoryQuery::default(),
         };
-        let _ = self.history_index.refresh_with_workspace_entries(
+        let changed = self.history_index.refresh_with_workspace_entries(
             tree,
             records,
             query,
             &self.scoped_tree_rows,
         );
+        if !changed {
+            return;
+        }
         self.feed_coverage = self.history_index.coverage().clone();
         self.projected_origins.clear();
         let rows: Vec<HistoryEntry> = self
@@ -736,6 +819,7 @@ impl RoomActivityPane {
     }
 
     fn install_rows(&mut self, rows: Vec<HistoryEntry>) {
+        let prior_selection = self.selected_ids();
         self.total_entries = rows.len();
         self.facet_index = HistoryFacetIndex::from_entries(&rows);
         self.digest = ActivityDigest::from_unseen(&rows, &self.catchup_frontier, 5);
@@ -756,6 +840,9 @@ impl RoomActivityPane {
         }
 
         self.timeline.set_entries(rows);
+        if self.selected_ids() != prior_selection {
+            self.clear_comparison();
+        }
         self.timeline.set_named_ranges(self.named.clone());
         self.reinstall_filter();
     }
@@ -1158,10 +1245,26 @@ impl RoomActivityPane {
                 self.detail_action_rects.push((action, rect));
                 x += 66.0;
             }
-            if let Some(comparison) = &self.comparison {
+            let selected_ids = self.selected_ids();
+            if self.comparison_selection == selected_ids
+                && let Some(comparison) = &self.comparison
+            {
+                let mut lines = vec![format!(
+                    "Before {} B · After {} B · {} patches",
+                    comparison.before_document.len(),
+                    comparison.after_document.len(),
+                    comparison.patches.len()
+                )];
+                lines.extend(
+                    comparison
+                        .patches
+                        .iter()
+                        .take(4)
+                        .map(|patch| format!("{:?}", patch.action)),
+                );
                 tr.draw_text(
                     scene,
-                    &format!("Exact comparison · {} changes", comparison.patches.len()),
+                    &lines.join("\n"),
                     size,
                     theme.tokens.colors.text_dim,
                     at(transform, right.x0 + 12.0, right.y0 + 214.0),
@@ -1305,7 +1408,7 @@ impl RoomActivityPane {
                 }
                 tr.draw_text(
                     scene,
-                    &provenance,
+                    &format!("{provenance}\nOpen in Explorer →"),
                     theme.tokens.typography.scale.sm,
                     theme.tokens.colors.text_dim,
                     at(transform, rect.x0 + 12.0, rect.y0 + 76.0),
@@ -1340,10 +1443,11 @@ impl RoomActivityPane {
             None,
         );
         let sub_size = (tokens.typography.scale.sm - 1.0).max(10.0);
-        let people = if self.digest.people == 1 {
+        let contributor_count = self.contributors.len();
+        let people = if contributor_count == 1 {
             "1 person".to_string()
         } else {
-            format!("{} people", self.digest.people)
+            format!("{contributor_count} people")
         };
         let mut subtitle = match self.scope {
             RoomScope::ThisRoom => {
@@ -1361,10 +1465,16 @@ impl RoomActivityPane {
         };
         if !self.feed_coverage.is_complete() {
             let missing = self.feed_coverage.unavailable_records.len();
-            subtitle.push_str(&format!(
-                " · {missing} record{} unavailable",
-                if missing == 1 { "" } else { "s" }
-            ));
+            let capped = self.feed_coverage.capped_records;
+            if missing > 0 {
+                subtitle.push_str(&format!(
+                    " · {missing} record{} unavailable",
+                    if missing == 1 { "" } else { "s" }
+                ));
+            }
+            if capped > 0 {
+                subtitle.push_str(&format!(" · {capped} additional records truncated"));
+            }
         }
         #[allow(
             clippy::cast_possible_truncation,
@@ -1594,7 +1704,11 @@ impl RoomActivityPane {
                 for (index, rect) in self.brief_rects.clone() {
                     if rect.contains(p) {
                         self.keyboard_focus = Some(ActivityFocus::Brief(index));
-                        self.expanded_brief = (self.expanded_brief != Some(index)).then_some(index);
+                        if self.expanded_brief == Some(index) {
+                            self.open_brief_in_explorer(index);
+                        } else {
+                            self.expanded_brief = Some(index);
+                        }
                         return RoomActivityOutcome {
                             handled: true,
                             ..RoomActivityOutcome::default()
@@ -1617,6 +1731,7 @@ impl RoomActivityPane {
                         }
                         DetailAction::Compare => {
                             self.comparison = self.compare_selection(tree, records);
+                            self.comparison_selection = self.selected_ids();
                             out.compared = self.comparison.is_some();
                         }
                         DetailAction::Undo => {
@@ -1632,7 +1747,9 @@ impl RoomActivityPane {
                                     label: self.selection_detail().map(|detail| detail.title),
                                     authors: Vec::new(),
                                 };
-                                out.reverted = self.undo_band(tree, records, &request);
+                                let applied = self.undo_band(tree, records, &request);
+                                out.reverted = applied.wrote;
+                                out.undo_partial = applied.partial;
                             }
                         }
                     }
@@ -1705,9 +1822,9 @@ impl RoomActivityPane {
         let undo_req = self.undo_intent.borrow_mut().take();
         if let Some(req) = undo_req {
             out.handled = true;
-            if self.undo_band(tree, records, &req) {
-                out.reverted = true;
-            }
+            let applied = self.undo_band(tree, records, &req);
+            out.reverted = applied.wrote;
+            out.undo_partial = applied.partial;
         }
         let name_req = self.name_intent.borrow_mut().take();
         if let Some(req) = name_req {
@@ -1715,6 +1832,13 @@ impl RoomActivityPane {
             if self.apply_name(tree, &req) {
                 out.named = true;
             }
+        }
+        if self.clear_filters_intent.replace(false) {
+            self.period = Period::AllTime;
+            self.author = None;
+            self.lens = LensSelection::All;
+            self.reinstall_filter();
+            out.handled = true;
         }
         out
     }
@@ -1844,7 +1968,11 @@ impl RoomActivityPane {
             ActivityFocus::Period(value) => self.set_period(value),
             ActivityFocus::Author(value) => self.set_author_filter(value),
             ActivityFocus::Brief(index) => {
-                self.expanded_brief = (self.expanded_brief != Some(index)).then_some(index);
+                if self.expanded_brief == Some(index) {
+                    self.open_brief_in_explorer(index);
+                } else {
+                    self.expanded_brief = Some(index);
+                }
             }
             ActivityFocus::Lens(value) => {
                 self.lens = value;
@@ -1857,6 +1985,7 @@ impl RoomActivityPane {
             }
             ActivityFocus::Detail(DetailAction::Compare) => {
                 self.comparison = self.compare_selection(tree, records);
+                self.comparison_selection = self.selected_ids();
                 outcome.compared = self.comparison.is_some();
             }
             ActivityFocus::Detail(DetailAction::Undo) => {
@@ -1872,7 +2001,9 @@ impl RoomActivityPane {
                         label: self.selection_detail().map(|detail| detail.title),
                         authors: Vec::new(),
                     };
-                    outcome.reverted = self.undo_band(tree, records, &request);
+                    let applied = self.undo_band(tree, records, &request);
+                    outcome.reverted = applied.wrote;
+                    outcome.undo_partial = applied.partial;
                 }
             }
         }
@@ -2130,7 +2261,32 @@ impl RoomActivityPane {
         tree: &mut WorkspaceTree,
         records: Option<&RecordStore>,
         request: &BandUndoRequest,
-    ) -> bool {
+    ) -> UndoApply {
+        let positions = (
+            self.timeline
+                .entries()
+                .iter()
+                .position(|entry| entry.id == request.start),
+            self.timeline
+                .entries()
+                .iter()
+                .position(|entry| entry.id == request.end),
+        );
+        if let (Some(a), Some(b)) = positions {
+            let (start_index, end_index) = (a.min(b), a.max(b));
+            let mut expected = None;
+            for entry in &self.timeline.entries()[start_index..=end_index] {
+                let origin = self
+                    .projected_origins
+                    .get(&entry.id)
+                    .map(|address| address.origin.clone())
+                    .unwrap_or(crate::shell::workspace_history::HistoryOrigin::WorkspaceTree);
+                if expected.as_ref().is_some_and(|value| value != &origin) {
+                    return UndoApply::default();
+                }
+                expected = Some(origin);
+            }
+        }
         let start = self.projected_origins.get(&request.start).cloned();
         let end = self.projected_origins.get(&request.end).cloned();
         match (start, end) {
@@ -2141,29 +2297,37 @@ impl RoomActivityPane {
                         let Ok(outcome) =
                             ui::revert_run(&mut tree.doc, &run, None, self.source.authors())
                         else {
-                            return false;
+                            return UndoApply::default();
                         };
                         if !outcome.wrote {
-                            return false;
+                            return UndoApply::default();
                         }
                         tree.commit_room_change();
                         tree.resync_cache_from_doc();
                         self.last_heads.clear();
                         self.refresh(tree);
-                        true
+                        UndoApply {
+                            wrote: true,
+                            partial: !outcome.is_complete(),
+                        }
                     }
                     crate::shell::workspace_history::HistoryOrigin::Record { id, .. } => records
-                        .is_some_and(|records| {
+                        .map_or_else(UndoApply::default, |records| {
                             records
                                 .with(&id, |doc| {
                                     let Ok(outcome) =
                                         ui::revert_run(doc, &run, None, self.source.authors())
                                     else {
-                                        return false;
+                                        return UndoApply::default();
                                     };
-                                    outcome.wrote && qdoc::history::commit_stamped(doc).is_some()
+                                    let committed = outcome.wrote
+                                        && qdoc::history::commit_stamped(doc).is_some();
+                                    UndoApply {
+                                        wrote: committed,
+                                        partial: committed && !outcome.is_complete(),
+                                    }
                                 })
-                                .unwrap_or(false)
+                                .unwrap_or_default()
                         }),
                 }
             }
@@ -2172,18 +2336,21 @@ impl RoomActivityPane {
                 let run = ChangeRun::new(request.start, request.end);
                 let Ok(outcome) = ui::revert_run(&mut tree.doc, &run, None, self.source.authors())
                 else {
-                    return false;
+                    return UndoApply::default();
                 };
                 if !outcome.wrote {
-                    return false;
+                    return UndoApply::default();
                 }
                 tree.commit_room_change();
                 tree.resync_cache_from_doc();
                 self.last_heads.clear();
                 self.refresh(tree);
-                true
+                UndoApply {
+                    wrote: true,
+                    partial: !outcome.is_complete(),
+                }
             }
-            _ => false,
+            _ => UndoApply::default(),
         }
     }
 

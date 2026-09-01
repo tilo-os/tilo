@@ -3930,13 +3930,16 @@ impl ShellOverlayHost {
             tree.active.raw()
         };
         let (headline, unread, pulse) = self.room_activity.glance_signal(workspace);
-        let focus = self.room_activity.digest().briefs.first().map(|brief| {
-            crate::shell::chrome_state::ActivityFocus {
-                author: brief.authors.first().map(|author| author.name.clone()),
-                group_id: brief.group_id.clone(),
-                entry_id: None,
-            }
-        });
+        let passive_digest = self.room_activity.digest_for_workspace(workspace);
+        let focus =
+            passive_digest
+                .briefs
+                .first()
+                .map(|brief| crate::shell::chrome_state::ActivityFocus {
+                    author: brief.authors.first().map(|author| author.name.clone()),
+                    group_id: brief.group_id.clone(),
+                    entry_id: None,
+                });
         chrome
             .borrow_mut()
             .publish_activity_glance(headline, unread, pulse, focus);
@@ -4613,10 +4616,17 @@ impl ShellOverlayHost {
             if outcome.reverted {
                 let mut st = chrome.borrow_mut();
                 st.bump();
-                st.push_notification(
-                    "Reverted a room change",
-                    "Written forward: the version you reverted from is still in the history.",
-                );
+                if outcome.undo_partial {
+                    st.push_notification(
+                        "Partially undid the selected work",
+                        "Later collaborator edits were preserved. History shows which parts were left intact.",
+                    );
+                } else {
+                    st.push_notification(
+                        "Reverted a room change",
+                        "Written forward: the version you reverted from is still in the history.",
+                    );
+                }
             }
             if let Some(target) = outcome.open_target {
                 let app_id = target.app_id.as_deref();
