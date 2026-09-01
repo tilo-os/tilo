@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use ui::LatestRequest;
 use ui::widget::virtual_list::{ListModel, ListModelChange, ListRowState, VirtualList};
-use ui::widget::{Button, Column, Container, Row, Text, Widget};
+use ui::widget::{Button, Container, Text, Widget};
 
 const ITEM_COUNT: usize = 100_000_000;
 
@@ -128,51 +128,45 @@ impl ListModel for ActivityModel {
 /// accessible without turning a button press into a row-selection gesture.
 pub fn app_root() -> Box<dyn Widget> {
     crate::install_catalog();
-    let list = VirtualList::new_async(
-        ActivityModel::new(ITEM_COUNT),
-        48.0,
-        |model, index, key, state| {
-            let height = if index % 5 == 0 { 72.0 } else { 44.0 };
-            match state {
-                ListRowState::Ready => {
-                    let label = model.item(index).map_or("", |item| item.label.as_str());
-                    Box::new(
-                        Container::new().with_height(height).with_child(Box::new(
-                            Row::new()
-                                .push(Box::new(
-                                    Column::new()
-                                        .with_no_padding()
-                                        .push(Box::new(Text::new(label))),
-                                ))
-                                .push(Box::new(
-                                    Button::new(
-                                        &format!("open-{key}"),
-                                        "list-open",
-                                        Some("open-requested"),
-                                    )
-                                    .with_click_value(key.to_string())
-                                    .fit_content(36.0),
-                                )),
-                        )),
-                    )
+    let list =
+        VirtualList::new_async(
+            ActivityModel::new(ITEM_COUNT),
+            48.0,
+            |model, index, key, state| {
+                let height = if index % 5 == 0 { 72.0 } else { 44.0 };
+                match state {
+                    ListRowState::Ready => {
+                        let label = model.item(index).map_or("", |item| item.label.as_str());
+                        Box::new(Container::new().with_height(height).with_child(Box::new(
+                            ui::row![
+                                ui::column![Text::new(label)].with_no_padding(),
+                                Button::new(
+                                    &format!("open-{key}"),
+                                    "list-open",
+                                    Some("open-requested"),
+                                )
+                                .with_click_value(key.to_string())
+                                .fit_content(36.0),
+                            ],
+                        )))
+                    }
+                    ListRowState::Loading => Box::new(
+                        Container::new()
+                            .with_height(height)
+                            .with_child(Box::new(Text::new("list-loading"))),
+                    ),
+                    ListRowState::Error(message) => Box::new(
+                        Container::new()
+                            .with_height(height)
+                            .with_child(Box::new(Text::new(message))),
+                    ),
                 }
-                ListRowState::Loading => Box::new(
-                    Container::new()
-                        .with_height(height)
-                        .with_child(Box::new(Text::new("list-loading"))),
-                ),
-                ListRowState::Error(message) => Box::new(
-                    Container::new()
-                        .with_height(height)
-                        .with_child(Box::new(Text::new(message))),
-                ),
-            }
-        },
-    )
-    .with_id("activity-list")
-    .with_accessible_name("list-accessible-name")
-    .with_semantic_key(u64::to_string)
-    .with_viewport_height(420.0)
-    .multi_select(true);
+            },
+        )
+        .with_id("activity-list")
+        .with_accessible_name("list-accessible-name")
+        .with_semantic_key(u64::to_string)
+        .with_viewport_height(420.0)
+        .multi_select(true);
     Box::new(list)
 }

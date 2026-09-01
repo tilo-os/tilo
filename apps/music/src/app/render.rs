@@ -19,6 +19,7 @@ use super::{
     is_live_playlist_id, lyrics, rrect,
 };
 
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use vello::kurbo::Shape;
 use vello::peniko::BlendMode;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -1152,7 +1153,7 @@ impl MusicApp {
         // Queue hover preview floats above the now-playing bar's queue button.
         self.draw_queue_preview(scene, t, tr, &c);
 
-        self.draw_toast(scene, t, tr, &c);
+        self.draw_toast(scene, t, tr, theme);
 
         // Name-input overlay (create / rename playlist) — the shared
         // ModalDialog paints its own scrim, box, title, footer, and field.
@@ -6469,28 +6470,25 @@ impl MusicApp {
 
     // ---- toast ------------------------------------------------------------
 
-    fn draw_toast(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette) {
-        if let Some((msg, _)) = self.toast.clone() {
-            let (tw, _) = tr.measure_weighted(&msg, 13.0, None, TextWeight::Medium);
-            let w = f64::from(tw) + 40.0;
-            let x = f64::midpoint(self.rect.x1, self.rect.x0) - w / 2.0;
-            let yb = self.rect.y1 - NOWPLAYING_H - 56.0;
-            let rect = Rect::new(x, yb, x + w, yb + 38.0);
-            fill_rrect(scene, t, rect, 19.0, c.toast_bg);
-            scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(rect, 19.0));
-            draw_text(
-                tr,
-                scene,
-                t,
-                &msg,
-                x + 20.0,
-                vy(yb, 38.0, 13.0),
-                13.0,
-                c.text,
-                TextWeight::Medium,
-                None,
-            );
-        }
+    fn draw_toast(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let Some((msg, _)) = self.toast.as_ref() else {
+            return;
+        };
+        let area = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y1 - NOWPLAYING_H,
+        );
+        paint_transient(
+            scene,
+            t,
+            tr,
+            theme,
+            area,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new(msg, ToastKind::Info),
+        );
     }
 
     // ---- gather helpers (own data so draw can borrow &mut self) -----------

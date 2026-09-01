@@ -1238,15 +1238,11 @@ impl ImageExport {
 
 /// Sniff an image's extension + media type from its magic bytes.
 fn image_ext_and_media(bytes: &[u8]) -> (&'static str, &'static str) {
-    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
-        ("png", "image/png")
-    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        ("jpg", "image/jpeg")
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        ("gif", "image/gif")
-    } else {
-        ("bin", "application/octet-stream")
-    }
+    crate::export::detect_image_media(bytes)
+        .filter(|media| matches!(media.extension, "png" | "jpg" | "gif"))
+        .map_or(("bin", "application/octet-stream"), |media| {
+            (media.extension, media.mime)
+        })
 }
 
 /// The model `anchor` value of an image block (default `inline`).
