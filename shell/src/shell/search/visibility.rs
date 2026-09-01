@@ -29,20 +29,25 @@ pub fn required_capability(
     kind: &ResourceKind,
 ) -> Option<(CapResource, Verb)> {
     if resource.provider == super::providers::live_app_actions::PROVIDER_ID
-        && let Some((app, operation_kind, action)) =
+        && let Some((app, permission, action)) =
             super::providers::live_app_actions::LiveAppActionsProvider::capability_target(
                 &resource.id,
             )
     {
-        if operation_kind == qos_actions::OperationKind::View {
-            return None;
-        }
+        let verb = match permission {
+            qos_actions::PermissionRequirement::None => return None,
+            qos_actions::PermissionRequirement::Read => Verb::Read,
+            qos_actions::PermissionRequirement::Comment => Verb::Comment,
+            qos_actions::PermissionRequirement::Write => Verb::Write,
+            qos_actions::PermissionRequirement::Invite => Verb::Invite,
+            qos_actions::PermissionRequirement::Admin => Verb::Admin,
+        };
         return Some((
             CapResource::Action {
                 app: app.to_string(),
                 action: action.to_string(),
             },
-            Verb::Write,
+            verb,
         ));
     }
     match kind {
