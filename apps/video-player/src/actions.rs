@@ -2,8 +2,8 @@
 
 use automerge::AutoCommit;
 use qos_actions::{
-    ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
-    OperationKind, ParamType, Resource, ResultSpec, RetryPolicy,
+    ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
+    Resource, RetryPolicy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -28,10 +28,6 @@ fn encode(op: &PlayerOperation) -> EncodedAction {
 pub fn resources(title: &str, has_media: bool, _doc: &AutoCommit) -> Vec<Resource> {
     let open_contract = ActionContract {
         retry: RetryPolicy::AtMostOnce,
-        execution: ExecutionMode::Background { cancellable: true },
-        result: ResultSpec::Resource {
-            resource_kind: "media.video".into(),
-        },
         tags: vec!["filesystem".into(), "media".into()],
         ..ActionContract::default()
     };
@@ -125,6 +121,12 @@ mod tests {
     fn idle_player_keeps_controls_discoverable_with_reasons_and_typed_seek() {
         let resources = resources("No media", false, &AutoCommit::new());
         let actions = &resources[0].actions;
+        let open = actions.iter().find(|a| a.id == "open").unwrap();
+        assert_eq!(
+            open.contract.execution,
+            qos_actions::ExecutionMode::Immediate
+        );
+        assert_eq!(open.contract.result, qos_actions::ResultSpec::None);
         let play = actions.iter().find(|a| a.id == "play-pause").unwrap();
         assert!(!play.contract.availability.is_available());
         let seek = actions.iter().find(|a| a.id == "seek").unwrap();
