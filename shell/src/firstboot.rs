@@ -10,8 +10,9 @@
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -25,6 +26,11 @@ use ui::widget::identity_flow::IdentityRecord;
 /// what the runtime identity broker migrates and what `DiskIdentityStore`
 /// writes via the UI's identity-flow ceremony.
 const PRIMARY_IDENTITY_FILE: &str = "primary.json";
+
+/// Sequence for same-directory temporary owner-claim files.  The final claim
+/// is a hard link, not this name; `create_new` simply prevents a stale temp
+/// file from ever being overwritten.
+static OWNER_CLAIM_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Process-global entry point. Resolves the user's XDG config dir from
 /// `$XDG_CONFIG_HOME` (falling back to `$HOME/.config`) and creates
@@ -201,14 +207,7 @@ pub fn ensure_collaboration_identity(
     // The first identity to claim the machine owns its legacy system-facing
     // certificate. Later OS users keep their own root and receive a separate
     // identity-keyed certificate for the same device key.
-    let device_owner = if paths.user_pubkey.exists() {
-        let stored = persist::read_public_key(&paths.user_pubkey)
-            .map_err(|e| io::Error::other(e.to_string()))?;
-        stored == root_public
-    } else {
-        persist::write_public_key(&paths.user_pubkey, &root_public)?;
-        true
-    };
+    let device_owner = claim_device_owner(&paths.user_pubkey, &root_public)?;
 
     let (device, _) =
         persist::load_or_create_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
@@ -272,6 +271,95 @@ pub fn ensure_collaboration_identity(
     }
 
     Ok(outcome)
+}
+
+/// Atomically elect the legacy system-facing identity owner.
+///
+/// The owner key is shared by every OS user on a machine.  An `exists` check
+/// followed by a normal write lets two first logins both observe an empty path
+/// and lets the later write replace the first owner's key.  Write the complete
+/// candidate to a same-directory temporary file, then hard-link it into its
+/// final name: link creation is an atomic no-clobber claim on the target
+/// directory entry.  A competing caller reads (and therefore validates) the
+/// winner rather than ever replacing it.
+///
+/// A hard link is deliberately used instead of `rename`: `rename` atomically
+/// replaces an existing target, which is exactly the election race we must
+/// avoid.  qOS stores this identity tree on a local Linux filesystem, where
+/// hard links are available and both paths share a directory/filesystem.
+fn claim_device_owner(path: &Path, root_public: &[u8; 32]) -> io::Result<bool> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "system identity public-key path has no parent",
+        )
+    })?;
+
+    let temp = create_owner_claim_temp(parent, root_public)?;
+    let claim = fs::hard_link(&temp, path);
+    // The final path is the claim.  The temp link contains no secret and is
+    // removed in all outcomes; a removal error must not obscure a successful
+    // (or failed) election result.
+    let _ = fs::remove_file(&temp);
+
+    match claim {
+        Ok(()) => {
+            // Validate our own published winner too: a filesystem anomaly or
+            // future refactor must fail closed instead of issuing a legacy
+            // certificate against an unverified owner record.
+            let stored = read_claimed_owner(path)?;
+            if stored != *root_public {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "atomic owner claim did not contain the claimed public key",
+                ));
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            // Someone else won.  Preserve the existing owner exactly as the
+            // old sequential path did, but validate it before deciding this
+            // identity is a non-owner.
+            Ok(read_claimed_owner(path)? == *root_public)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Create and synchronously fill a uniquely named same-directory temporary
+/// claim file.  The bounded retry is only for stale files left by a killed
+/// process; the process-local sequence makes normal collisions impossible.
+fn create_owner_claim_temp(parent: &Path, root_public: &[u8; 32]) -> io::Result<PathBuf> {
+    for _ in 0..16 {
+        let sequence = OWNER_CLAIM_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temp = parent.join(format!(
+            ".qos-owner-claim-{}-{sequence}",
+            std::process::id()
+        ));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+        {
+            Ok(mut file) => {
+                if let Err(error) = file.write_all(root_public).and_then(|()| file.sync_all()) {
+                    let _ = fs::remove_file(&temp);
+                    return Err(error);
+                }
+                return Ok(temp);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate an owner-claim temporary file",
+    ))
+}
+
+fn read_claimed_owner(path: &Path) -> io::Result<[u8; 32]> {
+    persist::read_public_key(path).map_err(|error| io::Error::other(error.to_string()))
 }
 
 /// Enrol the machine's existing device key under an imported local identity.
@@ -392,6 +480,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+    use std::sync::{Arc, Barrier};
 
     /// Minimal tempdir helper (avoids pulling `tempfile` as a dev-dep — the only test in `quick-shell` that needs one).
     struct TmpDir(PathBuf);
@@ -586,6 +675,54 @@ mod tests {
                 .expect("device key")
                 .verifying_key()
                 .to_bytes()
+        );
+    }
+
+    #[test]
+    fn simultaneous_owner_claims_elect_one_valid_winner_without_clobbering() {
+        let tmp = TmpDir::new("simultaneous-owner-election");
+        let path = tmp.path().join("system/user-identity/pubkey.bin");
+        std::fs::create_dir_all(path.parent().expect("claim parent")).expect("claim parent");
+
+        // Distinct roots model two OS users completing their first identity
+        // ceremony at once.  Start both claim attempts together, rather than
+        // relying on an incidental scheduler race.
+        let alice = [0xA1; 32];
+        let bob = [0xB2; 32];
+        let start = Arc::new(Barrier::new(3));
+        let alice_start = Arc::clone(&start);
+        let alice_path = path.clone();
+        let alice_thread = std::thread::spawn(move || {
+            alice_start.wait();
+            (alice, claim_device_owner(&alice_path, &alice))
+        });
+        let bob_start = Arc::clone(&start);
+        let bob_path = path.clone();
+        let bob_thread = std::thread::spawn(move || {
+            bob_start.wait();
+            (bob, claim_device_owner(&bob_path, &bob))
+        });
+        start.wait();
+
+        let (alice_key, alice_claim) = alice_thread.join().expect("alice claim thread");
+        let (bob_key, bob_claim) = bob_thread.join().expect("bob claim thread");
+        let alice_claim = alice_claim.expect("alice claim result");
+        let bob_claim = bob_claim.expect("bob claim result");
+        assert_ne!(
+            alice_claim, bob_claim,
+            "exactly one distinct root owns the device"
+        );
+
+        let winner = persist::read_public_key(&path).expect("valid owner key");
+        let claimed_winner = if alice_claim { alice_key } else { bob_key };
+        assert_eq!(
+            winner, claimed_winner,
+            "the elected owner was never overwritten"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("owner key bytes").len(),
+            32,
+            "concurrent readers can only observe a complete winner file"
         );
     }
 
