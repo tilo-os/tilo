@@ -197,13 +197,17 @@ impl<T: Clone> LocalBinding<T> {
         self.observed_revision = revision;
         Some(self.state.with(Clone::clone))
     }
+
+    pub(crate) fn publish_by(&mut self, value: &T, equal: impl FnOnce(&T, &T) -> bool) {
+        if !self.state.with(|current| equal(current, value)) {
+            self.observed_revision = self.state.replace(value.clone());
+        }
+    }
 }
 
 impl<T: Clone + PartialEq> LocalBinding<T> {
     pub(crate) fn publish(&mut self, value: &T) {
-        if self.state.with(|current| current != value) {
-            self.observed_revision = self.state.replace(value.clone());
-        }
+        self.publish_by(value, PartialEq::eq);
     }
 }
 
