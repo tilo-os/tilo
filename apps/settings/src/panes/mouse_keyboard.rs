@@ -62,6 +62,7 @@ pub struct MouseKeyboardPane {
     pending_add_id: Option<String>,
     needs_seed: bool,
     structure_dirty: bool,
+    commit_context_pending: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -96,6 +97,7 @@ impl MouseKeyboardPane {
             pending_add_id: None,
             needs_seed: true,
             structure_dirty: false,
+            commit_context_pending: false,
             composed: None,
             rect: Rect::ZERO,
         }
@@ -116,6 +118,7 @@ impl MouseKeyboardPane {
             pending_add_id: None,
             needs_seed: true,
             structure_dirty: false,
+            commit_context_pending: false,
             composed: None,
             rect: Rect::ZERO,
         }
@@ -766,6 +769,7 @@ impl Widget for MouseKeyboardPane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        let was_handled = *handled;
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
             && let Some(&cn) = children.first()
@@ -782,6 +786,7 @@ impl Widget for MouseKeyboardPane {
                 taffy,
             );
         }
+        self.commit_context_pending |= !was_handled && *handled;
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -798,6 +803,22 @@ impl Widget for MouseKeyboardPane {
             .map(|c| c.as_mut() as &mut (dyn Widget + '_))
             .into_iter()
             .collect()
+    }
+
+    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+        // The add/reorder/remove source edge keys are transient internally,
+        // but they exist only to apply a durable keyboard-source preference.
+        let pending = std::mem::take(&mut self.commit_context_pending)
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|content| content.needs_commit());
+        crate::panes::preference_commit_context(
+            pending,
+            "input",
+            "Mouse & keyboard",
+            "Change input preferences",
+        )
     }
 
     fn name(&self) -> &'static str {

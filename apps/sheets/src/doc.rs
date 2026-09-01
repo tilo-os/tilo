@@ -127,6 +127,29 @@ impl SheetsDoc {
         }
     }
 
+    /// Stable logical identity for history, search and the action palette.
+    /// Legacy sheets fall back to their Automerge object id; structural moves
+    /// copy that value into the replacement map so identity survives index and
+    /// name changes.
+    pub fn sheet_resource_id(doc: &AutoCommit, idx: usize) -> Option<String> {
+        let Ok(Some((Value::Object(ObjType::Map), wb))) = doc.get(&ROOT, "wb") else {
+            return None;
+        };
+        let Ok(Some((Value::Object(ObjType::List), sheets))) = doc.get(&wb, "sheets") else {
+            return None;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), sheet))) = doc.get(&sheets, idx) else {
+            return None;
+        };
+        match doc.get(&sheet, "resource_id") {
+            Ok(Some((Value::Scalar(value), _))) => value
+                .to_str()
+                .map(str::to_string)
+                .or_else(|| Some(sheet.to_string())),
+            _ => Some(sheet.to_string()),
+        }
+    }
+
     /// The `cells` Map for sheet `idx`, creating it if missing.
     fn cells_map(doc: &mut AutoCommit, idx: usize) -> Option<ObjId> {
         let sheet = Self::sheet_map(doc, idx)?;
@@ -141,6 +164,7 @@ impl SheetsDoc {
         let sheets = Self::sheets_list(doc);
         let idx = doc.length(&sheets);
         let sheet = Self::insert_object_or_panic(doc, &sheets, idx, ObjType::Map);
+        let _ = doc.put(&sheet, "resource_id", sheet.to_string());
         let _ = doc.put(&sheet, "name", name);
         let _ = doc.put_object(&sheet, "cells", ObjType::Map);
         idx
@@ -159,6 +183,7 @@ impl SheetsDoc {
         let sheets = Self::sheets_list(doc);
         let at = at.min(doc.length(&sheets));
         let sheet = Self::insert_object_or_panic(doc, &sheets, at, ObjType::Map);
+        let _ = doc.put(&sheet, "resource_id", sheet.to_string());
         let _ = doc.put(&sheet, "name", name);
         let _ = doc.put_object(&sheet, "cells", ObjType::Map);
         at
@@ -203,10 +228,14 @@ impl SheetsDoc {
         }
         let snap = Self::snapshot_sheet(doc, from, Currency::USD);
         let color = Self::sheet_color(doc, from);
+        let resource_id = Self::sheet_resource_id(doc, from);
         let sheets = Self::sheets_list(doc);
         let _ = doc.delete(&sheets, from);
         let insert_at = to.min(len - 1);
         let sheet = Self::insert_object_or_panic(doc, &sheets, insert_at, ObjType::Map);
+        if let Some(resource_id) = resource_id {
+            let _ = doc.put(&sheet, "resource_id", resource_id);
+        }
         let _ = doc.put(&sheet, "name", &snap.name);
         let _ = doc.put_object(&sheet, "cells", ObjType::Map);
         for (addr, raw) in &snap.raw {
@@ -578,11 +607,13 @@ mod tests {
         let a = SheetsDoc::add_sheet(&mut doc, "A");
         SheetsDoc::add_sheet(&mut doc, "B");
         SheetsDoc::add_sheet(&mut doc, "C");
+        let stable = SheetsDoc::sheet_resource_id(&doc, a).expect("sheet identity");
         SheetsDoc::set_cell_raw(&mut doc, a, (0, 0), "keep");
         // Move A (idx 0) to the right (idx 1): order becomes B, A, C.
         SheetsDoc::move_sheet(&mut doc, 0, 1);
         assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["B", "A", "C"]);
         // A's content survived the move.
         assert_eq!(SheetsDoc::cell_raw(&mut doc, 1, (0, 0)), "keep");
+        assert_eq!(SheetsDoc::sheet_resource_id(&doc, 1), Some(stable));
     }
 }
