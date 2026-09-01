@@ -62,13 +62,6 @@ dev-session = []
 atomic-file = { path = "../crates/system/atomic-file" }
 # One owner for ~/.config/qos/settings.json.
 settings-store = { path = "../crates/system/settings-store" }
-# The action-parameter vocabulary (`ParamType` / `ActionParam` / `ArgValue` /
-# strict `ActionArgs::bind`). Defined once there and re-exported by
-# `shell::search::action_api`, so the headless action surface and an app's own
-# actions cannot drift into two spellings of the same argument. `qos-actions`
-# is a leaf crate (automerge + serde + uuid + thiserror), so this adds no cycle
-# and no render dependency.
-qos-actions = { path = "../crates/collab/actions" }
 desktop-policy = { path = "../crates/system/desktop-policy" }
 tokio = { workspace = true, features = ["full"] }
 serde.workspace = true

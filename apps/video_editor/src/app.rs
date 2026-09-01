@@ -46,7 +46,9 @@ use crate::model::{
 };
 use crate::param::{Interp, Param};
 use crate::portal::{self, ImportChannel, ImportOutcome};
-use crate::preview::{self, CompositedFrame, Rgb};
+use crate::preview;
+#[cfg(test)]
+use crate::preview::CompositedFrame;
 use crate::probe;
 use crate::timecode::{clock, frame_step, snap_to_frame, timecode};
 
@@ -996,15 +998,6 @@ enum ScrollPane {
     Inspector,
     /// The media bin's vertical axis (px).
     Bin,
-}
-
-/// Which inspector slider a drag is editing. Brightness/contrast/saturation
-/// share one code path; the variant disambiguates the field.
-#[derive(Clone, Copy)]
-enum FilterField {
-    Brightness,
-    Contrast,
-    Saturation,
 }
 
 /// One-shot capture scenarios selected by the `--shots` entry points. Each
@@ -4423,14 +4416,6 @@ impl VideoEditorApp {
             .max(0.01)
     }
 
-    fn set_filter(&mut self, doc: &mut AutoCommit, field: FilterField, v: f64) {
-        let v = v.clamp(0.0, 1.0);
-        self.edit_selected(doc, move |c| match field {
-            FilterField::Brightness => c.filters.brightness = v,
-            FilterField::Contrast => c.filters.contrast = v,
-            FilterField::Saturation => c.filters.saturation = v,
-        });
-    }
     fn set_transition(&mut self, doc: &mut AutoCommit, t: Transition) {
         self.edit_selected(doc, move |c| c.transition = t);
     }
@@ -5317,7 +5302,6 @@ impl VideoEditorApp {
             return l;
         }
         let clip = selected.expect("checked above");
-        let id = clip.id;
         let media = self.project.media(clip.media);
         let is_video = media.map(|m| m.kind.is_visual()).unwrap_or(true);
         let is_title = media.map(|m| m.text.is_some()).unwrap_or(false);
@@ -5402,7 +5386,7 @@ impl VideoEditorApp {
         // ---- collapsible sections ------------------------------------
         // Each opens with a header row that folds it; a folded section
         // contributes only its header (and still states what is inside it).
-        let mut header = |l: &mut InspectorLayout, y: &mut f64, s: Section| -> bool {
+        let header = |l: &mut InspectorLayout, y: &mut f64, s: Section| -> bool {
             l.sections.push((s, Rect::new(x0, *y, x1, *y + SECTION_H)));
             *y += SECTION_H + 4.0;
             !self.collapsed.contains(&s)
@@ -6475,7 +6459,10 @@ impl VideoEditorApp {
                 self.playhead = 4.0;
                 // Push the saturation up a touch through the real edit path so
                 // the grade is unmistakable in the capture.
-                self.set_filter(state, FilterField::Saturation, 0.72);
+                self.set_num(NumField::Saturation, 0.72);
+                if let Some(id) = self.selected() {
+                    self.dispatch_clip(state, id);
+                }
                 self.zoom = 30.0;
             }
             ShotScenario::Composed => {
@@ -14536,7 +14523,6 @@ impl VideoEditorApp {
             self.draw_project_section(scene, tf, tr, theme, &l, x0);
             return;
         };
-        let id = clip.id;
         let media = self.project.media(clip.media).cloned();
         let is_video = media.as_ref().is_none_or(|m| m.kind.is_visual());
         let track_name = self
@@ -18078,16 +18064,6 @@ fn clip_color(theme: &Theme, palette: u8) -> Color {
         5 => c.semantic.danger,
         _ => c.neutral[5],
     }
-}
-
-/// Convert a normalised preview [`Rgb`] (the graded representative colour)
-/// to a Vello `Color`.
-fn rgb_to_color(c: Rgb) -> Color {
-    Color::from_rgb8(
-        (c.r * 255.0).round() as u8,
-        (c.g * 255.0).round() as u8,
-        (c.b * 255.0).round() as u8,
-    )
 }
 
 fn with_alpha(c: Color, a: f64) -> Color {
@@ -24192,7 +24168,7 @@ mod tests {
     /// act — and that it cannot act at any other time.
     #[test]
     fn the_history_buttons_are_dead_until_the_host_says_otherwise() {
-        let (mut app, _doc) = app_and_doc();
+        let (app, _doc) = app_and_doc();
         let r = app.regions();
         let rects = app.history_buttons(&r);
         assert_eq!(rects.len(), 2, "undo and redo both get a slot");
@@ -24943,7 +24919,8 @@ mod tests {
             CompositedFrame::Clip { base, .. } => base.luma(),
             _ => panic!("expected clip"),
         };
-        app.set_filter(&mut doc, FilterField::Brightness, 0.95);
+        app.set_num(NumField::Brightness, 0.95);
+        app.dispatch_clip(&mut doc, id);
         // Reload from the CRDT so we're reading the persisted grade, not the
         // in-memory mirror.
         app.sync(&mut doc, &automerge::ROOT);
