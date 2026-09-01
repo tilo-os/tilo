@@ -1196,6 +1196,10 @@ impl SessionError {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Seek;
+
+    use tempfile::NamedTempFile;
+
     use super::*;
 
     #[test]
@@ -1243,6 +1247,35 @@ mod tests {
             read_frame::<ProtocolRequest>(&mut reader, MAX_FRAME_BYTES),
             Err(SessionError::FrameTooLarge)
         ));
+    }
+
+    #[test]
+    fn install_frame_transfers_exactly_one_open_descriptor() {
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        let mut selected = NamedTempFile::new().unwrap();
+        selected.write_all(b"portal-selected bytes").unwrap();
+        selected.flush().unwrap();
+        write_frame_with_fd(
+            &mut writer,
+            &ProtocolRequest::Install {
+                version: PROTOCOL_VERSION,
+                source_name: "favorite.exe".to_string(),
+            },
+            MAX_FRAME_BYTES,
+            selected.as_file().as_raw_fd(),
+        )
+        .unwrap();
+
+        let (request, descriptor) = read_request_frame(&mut reader, MAX_FRAME_BYTES).unwrap();
+        assert!(matches!(
+            request,
+            ProtocolRequest::Install { source_name, .. } if source_name == "favorite.exe"
+        ));
+        let mut received = File::from(descriptor.unwrap());
+        received.rewind().unwrap();
+        let mut bytes = Vec::new();
+        received.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"portal-selected bytes");
     }
 
     #[test]
