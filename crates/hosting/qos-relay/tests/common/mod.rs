@@ -117,7 +117,11 @@ pub async fn spawn_relay_on(
         ..Default::default()
     };
     for id in workspaces {
-        cfg.workspaces.push(WorkspaceBinding { id: *id, pin: true });
+        cfg.workspaces.push(WorkspaceBinding {
+            id: *id,
+            pin: true,
+            replication: qos_relay::ReplicationIntent::FullWorkspace,
+        });
     }
     let identity = RelayIdentity {
         user_public_key: user.user_pk,
