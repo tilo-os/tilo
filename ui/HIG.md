@@ -634,6 +634,15 @@ Selector for scope, not a bespoke dialog per entry point. Specifically:
 - A peer address the user has to type is a `TextInput` with validation and a
   paste path, never a painted field, and never the only way in — discovery and
   a share code are the primary routes.
+- Ordinary prose `TextInput`s spell-check by default. Fields whose contents are
+  structured opt out with semantic intent: `TextInputKind::Search`, `Name`,
+  `Username`, `Email`, `Url`, `Path`, `Code`, `Number`, or `Password`. Shared
+  search, number, code, secret, and editable-name widgets set that intent for
+  their callers automatically. `with_spellcheck(true)` explicitly opts a
+  structured field back in. Set `with_spell_language` when a field's content
+  language differs from the session locale. High-confidence autocorrection
+  happens only at a word boundary, respects Settings and personal vocabulary,
+  and must be immediately reversible with Backspace.
 - Per-peer colour comes from `presence::user_color` and is used consistently in
   every surface that mentions that peer (roster, cursor, tab badge, invite row).
 

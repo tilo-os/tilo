@@ -802,6 +802,7 @@ fn finish(mut cmd: Command) -> Result<(), String> {
 pub const REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
 

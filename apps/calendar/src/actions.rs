@@ -204,6 +204,31 @@ pub enum CalendarAction {
     DeleteTask { id: String, subtasks: Vec<String> },
 }
 
+/// Durable, browseable history metadata for a calendar mutation.
+pub fn history_context(action: &CalendarAction) -> qos_actions::ActionContext {
+    let mut context =
+        qos_actions::ActionContext::for_action("org.qos.Calendar", "Calendar", action);
+    let (label, id, kind, title) = match action {
+        CalendarAction::UpsertEvent(event) => {
+            ("Update event", &event.id, "calendar.event", &event.title)
+        }
+        CalendarAction::SetEventCalendar { event, .. } => {
+            ("Move event", &event.id, "calendar.event", &event.title)
+        }
+        CalendarAction::DeleteEvent { id, .. } => ("Delete event", id, "calendar.event", id),
+        CalendarAction::UpsertTask(task) => ("Update task", &task.id, "calendar.task", &task.title),
+        CalendarAction::ToggleTask { id } => ("Toggle task", id, "calendar.task", id),
+        CalendarAction::DeleteTask { id, .. } => ("Delete task", id, "calendar.task", id),
+    };
+    context.action_label = label.to_string();
+    context.resource = Some(qos_actions::ActionResource {
+        id: format!("{kind}:{id}"),
+        kind: kind.to_string(),
+        label: title.clone(),
+    });
+    context
+}
+
 impl Action for CalendarAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {

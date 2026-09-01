@@ -8,8 +8,8 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::widget::TaffyTreeExt;
-use crate::widget::TextInput;
 use crate::widget::Widget;
+use crate::widget::{TextInput, TextInputKind};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -90,7 +90,7 @@ impl ColorPicker {
             drag_target: None,
             last_cursor: Point::ZERO,
             is_focused: false,
-            hex_input: TextInput::local(),
+            hex_input: TextInput::local().with_kind(TextInputKind::Code),
             hex_input_rect: Rect::ZERO,
             #[cfg(any(test, debug_assertions))]
             hex_input_force_dirty_for_test: false,

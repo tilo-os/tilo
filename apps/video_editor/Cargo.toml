@@ -25,6 +25,7 @@ path = "src/main.rs"
 # paints hardware-decoded frames with. Without it every decoded frame
 # would have to be converted to RGBA on the CPU first.
 ui = { path = "../../ui", features = ["portal", "gpu-video"] }
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
@@ -60,6 +61,9 @@ serial_test.workspace = true
 png.workspace = true
 
 [features]
+# Shared-runtime build, as the rest of the fleet has adopted: links the
+# toolkit as a dylib so an app stays small.
+thin = ["dep:runtime-dylib"]
 # A normally-built editor decodes real frames *and* writes a real file, which
 # is what the other media apps do (`music`, `tube`, `camera` and `chat` all
 # ship their GStreamer feature on by default) and what an editor is for: one

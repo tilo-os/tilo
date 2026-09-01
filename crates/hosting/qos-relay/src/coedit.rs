@@ -18,17 +18,11 @@
 //! # Correspondence with the toolkit protocol
 //!
 //! [`CoeditPayload`] is the self-describing body carried inside an
-//! `Envelope::Delta`, so the signed and unsigned toolkit variants both
-//! survive the round trip (the host treats the bytes as opaque):
-//!
-//! | toolkit (`ui::collaboration`)                    | this module                     |
-//! |--------------------------------------------------|---------------------------------|
-//! | `CollabRequest::SyncIncremental { data }`        | [`RelayCoeditSession::publish_delta`]   |
-//! | `CollabRequest::SignedSyncIncremental { env }`   | [`RelayCoeditSession::publish_signed`]  |
-//! | `CollabRequest::Presence { .. }`                 | [`RelayCoeditSession::publish_presence`]|
-//! | `CollabEvent::CRDTIncremental { data }`          | [`Inbound::Delta`]              |
-//! | `CollabEvent::SignedCRDTIncremental { env, .. }` | [`Inbound::SignedDelta`]       |
-//! | `CollabEvent::RemotePresenceUpdate { .. }`       | [`Inbound::Presence`]          |
+//! `Envelope::Delta`. The production shell uses retained checkpoints and
+//! messages to carry its authenticated `NeighbourMsg` protocol through the
+//! durable host. Apps do not publish raw document bytes here; they use the
+//! certified local collaboration service, which signs and authorizes them
+//! before the shell transports them.
 //!
 //! Keeping the mapping here — rather than importing `ui` — mirrors the
 //! native shell collaboration service, which likewise translates the toolkit
@@ -59,19 +53,11 @@ use crate::client::RelayClient;
 use crate::transport::Envelope;
 
 /// Body carried inside an [`Envelope::Delta`]. Self-describing so the
-/// receiver can route unsigned vs. signed toolkit deltas without extra
-/// wire state. Retention metadata is deliberately visible to the host while
-/// the document body remains opaque.
+/// receiver can distinguish retained checkpoints from their incremental tail.
+/// Retention metadata is deliberately visible to the host while the document
+/// body remains opaque.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CoeditPayload {
-    /// A raw Automerge incremental delta — the `SyncIncremental` /
-    /// `CRDTIncremental` toolkit path.
-    Unsigned(Vec<u8>),
-    /// A postcard-encoded `collab_types::SignedOp` — the
-    /// `SignedSyncIncremental` / `SignedCRDTIncremental` path. Opaque
-    /// here; signature + role validation is the broker/host's job, not
-    /// the transport's.
-    Signed(Vec<u8>),
     /// A complete, idempotent state checkpoint for one logical document.
     /// The host replaces the previous checkpoint and its older tail for the
     /// same channel, allowing a device with no prior queue to bootstrap.
@@ -158,15 +144,6 @@ pub enum Inbound {
         /// Raw Automerge incremental delta bytes.
         data: Vec<u8>,
     },
-    /// A signed document op. `op_bytes` is the postcard-encoded
-    /// `SignedOp`; the consumer validates + applies it (the
-    /// `SignedCRDTIncremental` path).
-    SignedDelta {
-        /// Publishing device's public key.
-        author: [u8; 32],
-        /// Postcard-encoded `collab_types::SignedOp`.
-        op_bytes: Vec<u8>,
-    },
     /// An ephemeral presence payload fanned out by the host. Not
     /// persisted; dropped if no peer is subscribed.
     Presence {
@@ -252,31 +229,6 @@ impl RelayCoeditSession {
     /// The workspace this session is bound to.
     pub fn workspace_id(&self) -> u64 {
         self.workspace_id
-    }
-
-    /// Publish a raw Automerge incremental delta — the toolkit
-    /// `SyncIncremental` path. The host fans it out to online peers and
-    /// queues it on disk for offline members.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoeditError::Disconnected`] if the relay connection is
-    /// gone, or [`CoeditError::Encode`] if the payload can't be
-    /// postcard-encoded.
-    pub fn publish_delta(&self, delta: Vec<u8>) -> Result<(), CoeditError> {
-        self.publish_payload(&CoeditPayload::Unsigned(delta))
-    }
-
-    /// Publish a signed op's postcard bytes — the toolkit
-    /// `SignedSyncIncremental` path.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CoeditError::Disconnected`] if the relay connection is
-    /// gone, or [`CoeditError::Encode`] if the payload can't be
-    /// postcard-encoded.
-    pub fn publish_signed(&self, op_bytes: Vec<u8>) -> Result<(), CoeditError> {
-        self.publish_payload(&CoeditPayload::Signed(op_bytes))
     }
 
     /// Publish and retain a complete checkpoint for `channel`.
@@ -370,19 +322,12 @@ impl RelayCoeditSession {
                     // won't decode — skip it rather than mis-apply.
                     match CoeditPayload::decode(&delta) {
                         Some(
-                            CoeditPayload::Unsigned(data)
-                            | CoeditPayload::Checkpoint { body: data, .. }
+                            CoeditPayload::Checkpoint { body: data, .. }
                             | CoeditPayload::RetainedDelta { body: data, .. },
                         ) => {
                             return Some(Inbound::Delta {
                                 author: author_device_public_key,
                                 data,
-                            });
-                        }
-                        Some(CoeditPayload::Signed(op_bytes)) => {
-                            return Some(Inbound::SignedDelta {
-                                author: author_device_public_key,
-                                op_bytes,
                             });
                         }
                         None => {}
@@ -440,8 +385,6 @@ mod tests {
 
     #[test]
     fn coedit_payload_round_trips_all_variants() {
-        let unsigned = CoeditPayload::Unsigned(vec![1, 2, 3, 4]);
-        let signed = CoeditPayload::Signed(vec![9, 8, 7]);
         let checkpoint = CoeditPayload::Checkpoint {
             channel: [3; 32],
             body: vec![6, 5],
@@ -451,7 +394,7 @@ mod tests {
             body: vec![2, 1],
         };
 
-        for payload in [unsigned, signed, checkpoint, retained] {
+        for payload in [checkpoint, retained] {
             assert_eq!(
                 CoeditPayload::decode(&payload.encode().unwrap()),
                 Some(payload)

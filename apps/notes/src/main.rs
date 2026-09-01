@@ -33,6 +33,9 @@
     )
 )]
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 use notes::NotesApp;
 use notes::shots::{self, DEFAULT_SHOTS_VIEWPORT};
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};

@@ -8,7 +8,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use crate::support::{MemoryRelay, headless_app, pump};
+use crate::support::{MemoryRelay, document_mutation, headless_app, pump};
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui::permissions::{Actor, AppKind, PermissionContext, PermissionScope, Role, UserId, Verb};
 use ui::presence::{PathSegment, PresenceKey};
@@ -20,7 +20,7 @@ fn memory_relay_fans_out_presence_updates_to_both_peers() {
     let alice = relay.attach("alice");
     let bob = relay.attach("bob");
 
-    alice.send(CollabRequest::SyncIncremental {
+    alice.send(CollabRequest::DocumentIncremental {
         data: vec![1, 2, 3],
     });
 
@@ -28,11 +28,12 @@ fn memory_relay_fans_out_presence_updates_to_both_peers() {
     pump(&mut relay);
 
     let events = bob.poll();
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, CollabEvent::CRDTIncremental { .. }))
-    );
+    assert!(events.iter().any(|event| {
+        matches!(
+            document_mutation(event),
+            Some(collab_types::DocumentMutation::Incremental(_))
+        )
+    }));
     // Sender should not receive its own broadcast.
     let alice_events = alice.poll();
     assert!(alice_events.is_empty());
@@ -128,7 +129,7 @@ fn two_apps_sync_presence_caret_via_memory_relay() {
         path: vec![PathSegment::Field("body".into())],
     };
 
-    alice_peer.send(CollabRequest::SyncIncremental { data: vec![] });
+    alice_peer.send(CollabRequest::DocumentIncremental { data: vec![] });
     relay.drain_peer_outbox(&alice_peer);
     pump(&mut relay);
 
@@ -301,19 +302,22 @@ fn crdt_incremental_deltas_replay_on_remote_peer() {
         "save_incremental must emit non-empty bytes after a mutation"
     );
 
-    alice_peer.send(CollabRequest::SyncIncremental { data: delta });
+    alice_peer.send(CollabRequest::DocumentIncremental { data: delta });
     relay.drain_peer_outbox(&alice_peer);
     pump(&mut relay);
 
     let events = bob_peer.poll();
     let mut applied = false;
     for ev in events {
-        if matches!(ev, CollabEvent::CRDTIncremental { .. }) {
+        if matches!(
+            document_mutation(&ev),
+            Some(collab_types::DocumentMutation::Incremental(_))
+        ) {
             applied = true;
         }
         bob_app.apply_collab_event_for_test(ev);
     }
-    assert!(applied, "bob must receive the CRDTIncremental event");
+    assert!(applied, "bob must receive the incremental document event");
 
     let state = bob_app.state_mut_for_test();
     let got = state

@@ -77,11 +77,16 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.chat", chat::app_root)
             .shot_handler(shot_handler)
-            .scenarios(&["narrow", "compact", "starter", "context", "attach"])
+            .scenarios(&[
+                "narrow", "compact", "starter", "context", "attach", "edit", "composer",
+            ])
             .open_state(open_state)
             .configure_app(|app| chat::actions::register(app.action_registry_mut())),
     );

@@ -56,6 +56,9 @@ use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 /// # Errors
 ///
 /// Returns an error if launching the app or running a `--shots` capture fails.

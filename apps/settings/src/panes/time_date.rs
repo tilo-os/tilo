@@ -166,6 +166,7 @@ struct TimeZoneMap {
     hover: Option<usize>,
     last_cursor: Point,
     focused: bool,
+    needs_commit: bool,
     rect: Rect,
 }
 
@@ -180,6 +181,7 @@ impl TimeZoneMap {
             hover: None,
             last_cursor: Point::ZERO,
             focused: false,
+            needs_commit: false,
             rect: Rect::ZERO,
         }
     }
@@ -264,11 +266,15 @@ impl TimeZoneMap {
 
     fn commit(&mut self, index: usize, state: &mut AutoCommit, root: &ObjId) {
         if let Some(point) = self.points.get(index) {
+            if self.selected == point.id {
+                return;
+            }
             self.selected.clone_from(&point.id);
             self.cursor = Some(index);
             // The parent pane validates this against the timedated-derived
             // list before dispatching it to the privileged authority.
             let _ = state.put(root, TIMEZONE_KEY, point.id.as_str());
+            self.needs_commit = true;
         }
     }
 
@@ -313,6 +319,14 @@ impl Widget for TimeZoneMap {
             .unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    fn needs_commit(&self) -> bool {
+        self.needs_commit
+    }
+
+    fn on_commit(&mut self) {
+        self.needs_commit = false;
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -684,6 +698,7 @@ pub struct TimeDatePane {
     notice: Option<String>,
     needs_seed: bool,
     structure_dirty: bool,
+    commit_context_pending: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -728,6 +743,7 @@ impl TimeDatePane {
             notice: None,
             needs_seed: true,
             structure_dirty: false,
+            commit_context_pending: false,
             composed: None,
             rect: Rect::ZERO,
         }
@@ -763,6 +779,7 @@ impl TimeDatePane {
             notice: None,
             needs_seed: true,
             structure_dirty: false,
+            commit_context_pending: false,
             composed: None,
             rect: Rect::ZERO,
         }
@@ -1008,6 +1025,7 @@ impl Widget for TimeDatePane {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        let was_handled = *handled;
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
             && let Some(&cn) = children.first()
@@ -1024,6 +1042,7 @@ impl Widget for TimeDatePane {
                 taffy,
             );
         }
+        self.commit_context_pending |= !was_handled && *handled;
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1040,6 +1059,20 @@ impl Widget for TimeDatePane {
             .map(|c| c.as_mut() as &mut (dyn Widget + '_))
             .into_iter()
             .collect()
+    }
+
+    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+        let pending = std::mem::take(&mut self.commit_context_pending)
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|content| content.needs_commit());
+        crate::panes::preference_commit_context(
+            pending,
+            "time-date",
+            "Time & date",
+            "Change time and date preferences",
+        )
     }
 
     fn name(&self) -> &'static str {
@@ -1174,6 +1207,9 @@ mod tests {
             read_text_setting(&doc, &root, TIMEZONE_KEY).as_deref(),
             Some("Europe/Berlin")
         );
+        assert!(map.needs_commit(), "a real timezone choice is durable");
+        map.on_commit();
+        assert!(!map.needs_commit());
         assert!(!map.perform_action(
             &ui::a11y::Action::SetValue("Mars/Olympus_Mons".to_string()),
             &mut doc,

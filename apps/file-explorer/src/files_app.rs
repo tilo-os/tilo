@@ -314,6 +314,7 @@ impl FileExplorerWidget {
             rename_buffer: String::new(),
             rename_seed_pending: false,
             rename_input: TextInput::new(vec![])
+                .with_kind(ui::widget::TextInputKind::Name)
                 .with_id("files.rename_input")
                 .with_on_change_path(RENAME_QUERY_PATH)
                 .with_placeholder("New name"),
@@ -3395,6 +3396,7 @@ mod open_with_tests {
 /// `apply_command`, `sync`, and the fs mutations (never through a tautological
 /// helper). These are the paths the review flagged as untested.
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod command_path_tests {
     use super::*;
     use crate::model::Entry;
@@ -4137,6 +4139,7 @@ mod command_path_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod responsive_body_tests {
     //! The places list is a *navigation* sidebar over the file view, on the
     //! shared `NavShell`: a comfortably-wide window docks it beside the files;

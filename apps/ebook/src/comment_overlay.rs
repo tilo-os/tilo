@@ -4,14 +4,18 @@
 //! component owns the overlay's open/anchor state, paints the panel, and keeps
 //! its hit regions private so clicks cannot fall through to the page beneath.
 
+use automerge::{AutoCommit, ObjId};
+use taffy::{NodeId, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
+use winit::event::{Modifiers, WindowEvent};
 
 use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::{TextInput, Widget};
 
 use crate::model::{AnnoKind, Annotation, HiColor};
 use crate::paint;
@@ -35,11 +39,30 @@ struct Hit {
     action: CommentAction,
 }
 
-#[derive(Default)]
 pub(crate) struct CommentOverlay {
     group: Option<Uuid>,
     anchor: Option<(f64, f64, f64, f64)>,
     hits: Vec<Hit>,
+    editing: Option<Uuid>,
+    editor: TextInput,
+}
+
+impl Default for CommentOverlay {
+    fn default() -> Self {
+        Self {
+            group: None,
+            anchor: None,
+            hits: Vec::new(),
+            editing: None,
+            editor: TextInput::local()
+                .with_id("ebook_highlight_comment")
+                .with_font_size(13.0)
+                .with_plain_chrome()
+                .multiline(true)
+                .with_enter_submits(true)
+                .with_placeholder("Write a comment…"),
+        }
+    }
 }
 
 /// Highlight color, quoted excerpt, and note comments belonging to `group`.
@@ -77,11 +100,9 @@ fn gather_content(
     (color, excerpt, comments)
 }
 
-/// Text shown for a note row: the live composing caret, an empty-state label, or the note itself.
-fn comment_display(a: &Annotation, composing: Option<Uuid>) -> String {
-    if composing == Some(a.id) {
-        format!("{}\u{2502}", a.note)
-    } else if a.note.trim().is_empty() {
+/// Text shown for a note row when its shared editor is not active.
+fn comment_display(a: &Annotation) -> String {
+    if a.note.trim().is_empty() {
         "Empty comment".to_string()
     } else {
         a.note.clone()
@@ -92,18 +113,16 @@ fn comment_display(a: &Annotation, composing: Option<Uuid>) -> String {
 fn comment_row_heights(
     tr: &mut TextRenderer,
     comments: &[Annotation],
-    composing: Option<Uuid>,
+    editing: Option<Uuid>,
     text_w: f32,
 ) -> Vec<f64> {
     comments
         .iter()
         .map(|a| {
-            f64::from(
-                tr.measure(&comment_display(a, composing), 13.0, Some(text_w))
-                    .1,
-            )
-            .max(18.0)
-                + 16.0
+            if editing == Some(a.id) {
+                return 76.0;
+            }
+            f64::from(tr.measure(&comment_display(a), 13.0, Some(text_w)).1).max(18.0) + 16.0
         })
         .collect()
 }
@@ -117,6 +136,7 @@ impl CommentOverlay {
         self.group = None;
         self.anchor = None;
         self.hits.clear();
+        self.finish_editing();
     }
 
     pub(crate) fn group(&self) -> Option<Uuid> {
@@ -125,6 +145,61 @@ impl CommentOverlay {
 
     pub(crate) fn is_open(&self) -> bool {
         self.group.is_some()
+    }
+
+    pub(crate) fn begin_editing(&mut self, id: Uuid, text: &str) {
+        self.editing = Some(id);
+        self.editor.set_text(text);
+        self.editor.set_focus(true);
+    }
+
+    pub(crate) fn finish_editing(&mut self) {
+        self.editing = None;
+        self.editor.set_focus(false);
+    }
+
+    pub(crate) fn editing_id(&self) -> Option<Uuid> {
+        self.editing
+    }
+
+    /// Route native editing events through the shared multiline input. The
+    /// overlay owns transient editing state and emits only domain-ready text.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+        handled: &mut bool,
+    ) -> (Option<(Uuid, String)>, bool) {
+        let Some(id) = self.editing else {
+            return (None, false);
+        };
+        let mut focus_target = None;
+        self.editor.handle_event(
+            event,
+            scale_factor,
+            &modifiers,
+            state,
+            root,
+            handled,
+            &mut focus_target,
+            node_id,
+            taffy,
+        );
+        if focus_target.is_some() {
+            self.editor.set_focus(true);
+        }
+        let changed = self.editor.take_dirty().map(|text| (id, text));
+        let submitted = self.editor.take_submit();
+        if submitted {
+            self.finish_editing();
+        }
+        (changed, submitted)
     }
 
     pub(crate) fn set_anchor(&mut self, anchor: Option<(f64, f64, f64, f64)>) {
@@ -267,7 +342,6 @@ impl CommentOverlay {
         mut y: f64,
         comments: &[Annotation],
         row_heights: &[f64],
-        composing: Option<Uuid>,
         text_w: f32,
         gap: f64,
     ) -> f64 {
@@ -276,22 +350,34 @@ impl CommentOverlay {
             let height = *height;
             let row = Rect::new(ix0, y, ix1, y + height);
             paint::fill_round(scene, t, row, 8.0, colors.surfaces.overlay);
-            if composing == Some(annotation.id) {
+            let editing = self.editing == Some(annotation.id);
+            if editing {
                 paint::stroke_round(scene, t, row, 8.0, theme.border_focus, 1.4);
             }
-            let text = comment_display(annotation, composing);
-            tr.draw_text(
-                scene,
-                &text,
-                13.0,
-                if annotation.note.trim().is_empty() && composing != Some(annotation.id) {
-                    colors.text_dim
-                } else {
-                    colors.text_primary
-                },
-                t * Affine::translate((ix0 + 10.0, y + 8.0)),
-                Some(text_w),
-            );
+            if editing {
+                self.editor.apply_layout_external(Rect::new(
+                    ix0 + 8.0,
+                    y + 6.0,
+                    ix1 - 52.0,
+                    y + height - 6.0,
+                ));
+                self.editor
+                    .draw(scene, t, tr, theme, &ui::presence::PresenceCtx::empty());
+            } else {
+                let text = comment_display(annotation);
+                tr.draw_text(
+                    scene,
+                    &text,
+                    13.0,
+                    if annotation.note.trim().is_empty() {
+                        colors.text_dim
+                    } else {
+                        colors.text_primary
+                    },
+                    t * Affine::translate((ix0 + 10.0, y + 8.0)),
+                    Some(text_w),
+                );
+            }
             let delete = Rect::new(ix1 - 24.0, y + 4.0, ix1 - 2.0, y + 26.0);
             let delete_hover = delete.contains(cursor);
             paint::close(
@@ -318,7 +404,7 @@ impl CommentOverlay {
                 },
                 1.4,
             );
-            if composing != Some(annotation.id) {
+            if !editing {
                 self.push_hit(edit, CommentAction::Edit(annotation.id));
             }
             y += height + gap;
@@ -381,7 +467,6 @@ impl CommentOverlay {
         cursor: Point,
         annotations: &[Annotation],
         default_color: HiColor,
-        composing: Option<Uuid>,
     ) {
         self.begin_frame();
         let Some(group) = self.group else { return };
@@ -396,7 +481,7 @@ impl CommentOverlay {
         let inner_w = (cw - pad * 2.0) as f32;
         let text_w = inner_w - 52.0;
         let (_, excerpt_h) = tr.measure(&excerpt, 12.0, Some(inner_w));
-        let row_heights = comment_row_heights(tr, &comments, composing, text_w);
+        let row_heights = comment_row_heights(tr, &comments, self.editing, text_w);
 
         let header_h = 28.0;
         let gap = 8.0;
@@ -433,7 +518,6 @@ impl CommentOverlay {
             y,
             &comments,
             &row_heights,
-            composing,
             text_w,
             gap,
         );
@@ -454,6 +538,28 @@ impl CommentOverlay {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use winit::event::{ElementState, KeyEvent};
+    use winit::keyboard::{Key, NamedKey, PhysicalKey};
+
+    fn key(logical_key: Key) -> WindowEvent {
+        let text = match &logical_key {
+            Key::Character(text) => Some(text.clone()),
+            _ => None,
+        };
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.physical_key =
+            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        event.logical_key = logical_key;
+        event.location = winit::keyboard::KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        event.text = text;
+        WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event,
+            is_synthetic: false,
+        }
+    }
 
     fn annotation(kind: AnnoKind, group: Uuid, note: &str) -> Annotation {
         let mut a = Annotation::new("book", kind, 0, 0).with_group(group);
@@ -481,7 +587,6 @@ mod tests {
             Point::ZERO,
             &annotations,
             HiColor::Yellow,
-            None,
         );
 
         let edit = overlay
@@ -514,7 +619,6 @@ mod tests {
             Point::ZERO,
             &annotations,
             HiColor::Yellow,
-            None,
         );
         assert!(overlay.hit_test(Point::ZERO).is_some());
         overlay.begin_frame();
@@ -525,5 +629,43 @@ mod tests {
         overlay.close();
         assert!(!overlay.is_open());
         assert!(overlay.hit_test(Point::ZERO).is_none());
+    }
+
+    #[test]
+    fn comment_editor_uses_shared_selection_editing_and_submit() {
+        let id = Uuid::new_v4();
+        let mut overlay = CommentOverlay::default();
+        overlay.begin_editing(id, "hello");
+        overlay.editor.select_all();
+        let mut doc = AutoCommit::new();
+        let taffy = TaffyTree::new();
+        let modifiers = Modifiers::default();
+        let mut handled = false;
+
+        let (changed, submitted) = overlay.handle_event(
+            &key(Key::Character("world".into())),
+            1.0,
+            modifiers,
+            &mut doc,
+            &automerge::ROOT,
+            NodeId::new(0),
+            &taffy,
+            &mut handled,
+        );
+        assert_eq!(changed, Some((id, "world".into())));
+        assert!(!submitted);
+
+        let (_, submitted) = overlay.handle_event(
+            &key(Key::Named(NamedKey::Enter)),
+            1.0,
+            modifiers,
+            &mut doc,
+            &automerge::ROOT,
+            NodeId::new(0),
+            &taffy,
+            &mut handled,
+        );
+        assert!(submitted);
+        assert_eq!(overlay.editing_id(), None);
     }
 }

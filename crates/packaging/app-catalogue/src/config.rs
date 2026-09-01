@@ -20,6 +20,26 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("the registry name cannot be empty")]
+    EmptyName,
+    #[error("registry '{0}' already exists")]
+    DuplicateName(String),
+    #[error("registry '{0}' is not configured")]
+    NotFound(String),
+    #[error("the registry URL must be http or https")]
+    InvalidUrl,
+    #[error("the owner key must be 64 hexadecimal characters")]
+    InvalidOwnerKey,
+    #[error("could not determine the qOS Store config directory")]
+    NoConfigDir,
+    #[error("could not encode the registry configuration: {0}")]
+    Encode(#[from] toml::ser::Error),
+    #[error("could not save the registry configuration: {0}")]
+    Write(#[from] std::io::Error),
+}
+
 /// Default hosted registry base URL. Overridable per-entry in the
 /// config file; this is only used to seed the default `registries.toml`.
 pub const DEFAULT_REGISTRY_BASE_URL: &str = "https://registry.qos.dev";
@@ -141,6 +161,89 @@ pub fn load_registries() -> RegistriesFile {
     seeded
 }
 
+/// Durably replace the shared Store/catalogue registry configuration.
+///
+/// # Errors
+///
+/// Returns an error when no config directory is available, serialization
+/// fails, or the crash-safe write cannot be completed.
+pub fn save_registries(registries: &RegistriesFile) -> Result<(), ConfigError> {
+    let path = registries_path().ok_or(ConfigError::NoConfigDir)?;
+    let text = toml::to_string_pretty(registries)?;
+    atomic_file::write_creating_parent(&path, text.as_bytes())?;
+    Ok(())
+}
+
+/// Add a registry after validating the fields users most often mistype.
+///
+/// # Errors
+///
+/// Returns an error for an empty/duplicate name, a non-HTTP(S) URL, or a
+/// malformed non-empty owner key.
+pub fn add_registry(
+    registries: &mut RegistriesFile,
+    name: &str,
+    base_url: &str,
+    owner_pubkey_hex: &str,
+) -> Result<(), ConfigError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(ConfigError::EmptyName);
+    }
+    if registries.registries.iter().any(|r| r.name == name) {
+        return Err(ConfigError::DuplicateName(name.to_string()));
+    }
+    let url = reqwest::Url::parse(base_url).map_err(|_| ConfigError::InvalidUrl)?;
+    if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
+        return Err(ConfigError::InvalidUrl);
+    }
+    if !owner_pubkey_hex.is_empty()
+        && (owner_pubkey_hex.len() != 64 || hex::decode(owner_pubkey_hex).is_err())
+    {
+        return Err(ConfigError::InvalidOwnerKey);
+    }
+    registries.registries.push(RegistryConfig {
+        name: name.to_string(),
+        base_url: base_url.trim_end_matches('/').to_string(),
+        owner_pubkey_hex: owner_pubkey_hex.to_ascii_lowercase(),
+        enabled: true,
+    });
+    Ok(())
+}
+
+/// Remove the registry named `name`.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::NotFound`] when there is no exact name match.
+pub fn remove_registry(registries: &mut RegistriesFile, name: &str) -> Result<(), ConfigError> {
+    let before = registries.registries.len();
+    registries.registries.retain(|r| r.name != name);
+    if registries.registries.len() == before {
+        return Err(ConfigError::NotFound(name.to_string()));
+    }
+    Ok(())
+}
+
+/// Enable or disable the registry named `name`.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::NotFound`] when there is no exact name match.
+pub fn set_registry_enabled(
+    registries: &mut RegistriesFile,
+    name: &str,
+    enabled: bool,
+) -> Result<(), ConfigError> {
+    let registry = registries
+        .registries
+        .iter_mut()
+        .find(|r| r.name == name)
+        .ok_or_else(|| ConfigError::NotFound(name.to_string()))?;
+    registry.enabled = enabled;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +343,42 @@ enabled = false
         assert_eq!(regs.registries.len(), 1);
         assert_eq!(regs.registries[0].name, "local");
         assert!(regs.registries[0].enabled, "enabled defaults to true");
+    }
+
+    #[test]
+    fn registry_mutations_validate_and_roundtrip() {
+        let td = TempDir::new().unwrap();
+        let _g = scoped_dir(&td);
+        let mut regs = RegistriesFile::default();
+        add_registry(
+            &mut regs,
+            "team",
+            "https://apps.example.test/",
+            &"ab".repeat(32),
+        )
+        .unwrap();
+        assert_eq!(regs.registries[0].base_url, "https://apps.example.test");
+        set_registry_enabled(&mut regs, "team", false).unwrap();
+        save_registries(&regs).unwrap();
+        assert_eq!(load_registries(), regs);
+        remove_registry(&mut regs, "team").unwrap();
+        assert!(regs.registries.is_empty());
+    }
+
+    #[test]
+    fn registry_mutations_reject_ambiguous_input() {
+        let mut regs = RegistriesFile::default();
+        assert!(matches!(
+            add_registry(&mut regs, "", "https://example.test", ""),
+            Err(ConfigError::EmptyName)
+        ));
+        assert!(matches!(
+            add_registry(&mut regs, "x", "file:///tmp/apps", ""),
+            Err(ConfigError::InvalidUrl)
+        ));
+        assert!(matches!(
+            add_registry(&mut regs, "x", "https://example.test", "bad"),
+            Err(ConfigError::InvalidOwnerKey)
+        ));
     }
 }

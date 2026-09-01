@@ -14,6 +14,7 @@ name = "video-player"
 path = "src/main.rs"
 
 [features]
+thin = ["dep:runtime-dylib"]
 # A video player's core is decoding video, so `decode` ships on by default: a
 # normally-built `video-player` really decodes the opened file/stream through
 # the shared media layer (GStreamer). `--shots` still renders the synthesized
@@ -28,8 +29,10 @@ decode = ["media/decode"]
 portal = ["ui/portal"]
 
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui" }
 media = { path = "../../crates/media" }
+collab-types = { path = "../../crates/collab/collab-types" }
 automerge.workspace = true
 tracing.workspace = true
 vello.workspace = true

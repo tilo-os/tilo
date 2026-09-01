@@ -68,6 +68,10 @@ pub(crate) struct ReadingSettings {
     numbers: NumberControls,
 }
 
+/// One font pill as laid out: `(id, label, width, selected)`. Named because
+/// the four-tuple appears in both the layout's return type and the draw pass.
+type FontPill = (String, String, f64, bool);
+
 impl ReadingSettings {
     pub(crate) fn is_open(&self) -> bool {
         self.open
@@ -113,7 +117,7 @@ impl ReadingSettings {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         root: &ObjId,
         node_id: NodeId,
@@ -124,7 +128,7 @@ impl ReadingSettings {
             .handle_event(
                 event,
                 scale_factor,
-                *modifiers,
+                modifiers,
                 state,
                 root,
                 node_id,
@@ -174,7 +178,7 @@ impl ReadingSettings {
         // The page remains an undimmed live preview. The viewport hit below
         // is only a modal outside-click target; later panel hits win.
         self.push_hit(viewport, ReadingSettingsAction::Dismiss);
-        let layout = self.layout(
+        let layout = Self::layout(
             text,
             viewport,
             content_x0,
@@ -184,23 +188,7 @@ impl ReadingSettings {
             default_font_id,
             schemes,
         );
-        let colors = &theme.tokens.colors;
-        paint::fill_round(
-            scene,
-            transform,
-            layout.panel,
-            f64::from(theme.tokens.radii.lg),
-            colors.surfaces.raised,
-        );
-        paint::stroke_round(
-            scene,
-            transform,
-            layout.panel,
-            f64::from(theme.tokens.radii.lg),
-            colors.border_standard,
-            1.0,
-        );
-        self.push_hit(layout.panel, ReadingSettingsAction::Swallow);
+        self.draw_panel_background(scene, transform, theme, layout.panel);
 
         let mut y = layout.panel.y0 + layout.pad;
         y = self.draw_header(
@@ -274,9 +262,37 @@ impl ReadingSettings {
         );
     }
 
+    /// Paint the popover's rounded panel background + border and register it
+    /// as a modal "swallow" hit so a click inside the panel (but on no more
+    /// specific control) doesn't fall through to the outside-dismiss hit.
+    fn draw_panel_background(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        panel: Rect,
+    ) {
+        let colors = &theme.tokens.colors;
+        paint::fill_round(
+            scene,
+            transform,
+            panel,
+            f64::from(theme.tokens.radii.lg),
+            colors.surfaces.raised,
+        );
+        paint::stroke_round(
+            scene,
+            transform,
+            panel,
+            f64::from(theme.tokens.radii.lg),
+            colors.border_standard,
+            1.0,
+        );
+        self.push_hit(panel, ReadingSettingsAction::Swallow);
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn layout(
-        &self,
         text: &mut TextRenderer,
         viewport: Rect,
         content_x0: f64,
@@ -293,71 +309,9 @@ impl ReadingSettings {
         let (px0, px1) = Self::panel_x_bounds(viewport, content_x0, content_x1);
         let inner_w = px1 - px0 - pad * 2.0;
 
-        let shown: Vec<&FontEntry> = {
-            let enabled: Vec<_> = fonts.iter().filter(|font| font.shown).collect();
-            if enabled.is_empty() {
-                fonts.iter().collect()
-            } else {
-                enabled
-            }
-        };
-        let wanted = if settings.font_id.is_empty() {
-            default_font_id
-        } else {
-            settings.font_id.as_str()
-        };
-        let active_id = fonts
-            .iter()
-            .find(|font| font.id == wanted)
-            .or_else(|| fonts.iter().find(|font| font.id == "serif"))
-            .or_else(|| fonts.first())
-            .map_or("", |font| font.id.as_str());
-        let font_pills: Vec<_> = shown
-            .into_iter()
-            .map(|font| {
-                let width = f64::from(
-                    text.measure_weighted(&font.name, 12.5, None, TextWeight::Medium)
-                        .0,
-                ) + 24.0;
-                (
-                    font.id.clone(),
-                    font.name.clone(),
-                    width,
-                    font.id == active_id,
-                )
-            })
-            .collect();
-        let font_widths: Vec<_> = font_pills.iter().map(|pill| pill.2).collect();
+        let (font_pills, font_widths) = Self::font_pills(text, fonts, settings, default_font_id);
+        let (scheme_pills, scheme_widths) = Self::scheme_pills(text, schemes, settings);
 
-        let scheme_pills: Vec<_> = schemes
-            .iter()
-            .filter(|scheme| scheme.enabled)
-            .map(|scheme| {
-                if scheme.builtin {
-                    let read_theme = ReadTheme::from_str(&scheme.id);
-                    SchemePill {
-                        label: scheme.name.clone(),
-                        action: ReadingSettingsAction::SetReadTheme(read_theme),
-                        active: settings.scheme_id.is_empty() && settings.theme == read_theme,
-                    }
-                } else {
-                    SchemePill {
-                        label: scheme.name.clone(),
-                        action: ReadingSettingsAction::SetScheme(scheme.id.clone()),
-                        active: settings.scheme_id == scheme.id,
-                    }
-                }
-            })
-            .collect();
-        let scheme_widths: Vec<_> = scheme_pills
-            .iter()
-            .map(|pill| {
-                f64::from(
-                    text.measure_weighted(&pill.label, 12.5, None, TextWeight::Medium)
-                        .0,
-                ) + 24.0
-            })
-            .collect();
         let font_rows = wrap_row_count(&font_widths, inner_w, pill_gap);
         let scheme_rows = wrap_row_count(&scheme_widths, inner_w, pill_gap);
         let header_h = 30.0;
@@ -395,6 +349,93 @@ impl ReadingSettings {
             scheme_pills,
             scheme_widths,
         }
+    }
+
+    /// The typeface quick-picker pills: one per shown font (falling back to
+    /// every registered font if none are marked `shown`), each labelled with
+    /// its display name and flagged active against the resolved current font.
+    fn font_pills(
+        text: &mut TextRenderer,
+        fonts: &[FontEntry],
+        settings: &Settings,
+        default_font_id: &str,
+    ) -> (Vec<FontPill>, Vec<f64>) {
+        let shown: Vec<&FontEntry> = {
+            let enabled: Vec<_> = fonts.iter().filter(|font| font.shown).collect();
+            if enabled.is_empty() {
+                fonts.iter().collect()
+            } else {
+                enabled
+            }
+        };
+        let wanted = if settings.font_id.is_empty() {
+            default_font_id
+        } else {
+            settings.font_id.as_str()
+        };
+        let active_id = fonts
+            .iter()
+            .find(|font| font.id == wanted)
+            .or_else(|| fonts.iter().find(|font| font.id == "serif"))
+            .or_else(|| fonts.first())
+            .map_or("", |font| font.id.as_str());
+        let font_pills: Vec<_> = shown
+            .into_iter()
+            .map(|font| {
+                let width = f64::from(
+                    text.measure_weighted(&font.name, 12.5, None, TextWeight::Medium)
+                        .0,
+                ) + 24.0;
+                (
+                    font.id.clone(),
+                    font.name.clone(),
+                    width,
+                    font.id == active_id,
+                )
+            })
+            .collect();
+        let font_widths: Vec<_> = font_pills.iter().map(|pill| pill.2).collect();
+        (font_pills, font_widths)
+    }
+
+    /// The colour-scheme quick-picker pills: one per enabled scheme, resolving
+    /// built-ins to the matching [`ReadTheme`] action and custom schemes to a
+    /// direct scheme-id action, flagged active against the current settings.
+    fn scheme_pills(
+        text: &mut TextRenderer,
+        schemes: &[ColorScheme],
+        settings: &Settings,
+    ) -> (Vec<SchemePill>, Vec<f64>) {
+        let scheme_pills: Vec<_> = schemes
+            .iter()
+            .filter(|scheme| scheme.enabled)
+            .map(|scheme| {
+                if scheme.builtin {
+                    let read_theme = ReadTheme::from_str(&scheme.id);
+                    SchemePill {
+                        label: scheme.name.clone(),
+                        action: ReadingSettingsAction::SetReadTheme(read_theme),
+                        active: settings.scheme_id.is_empty() && settings.theme == read_theme,
+                    }
+                } else {
+                    SchemePill {
+                        label: scheme.name.clone(),
+                        action: ReadingSettingsAction::SetScheme(scheme.id.clone()),
+                        active: settings.scheme_id == scheme.id,
+                    }
+                }
+            })
+            .collect();
+        let scheme_widths: Vec<_> = scheme_pills
+            .iter()
+            .map(|pill| {
+                f64::from(
+                    text.measure_weighted(&pill.label, 12.5, None, TextWeight::Medium)
+                        .0,
+                ) + 24.0
+            })
+            .collect();
+        (scheme_pills, scheme_widths)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -458,7 +499,7 @@ impl ReadingSettings {
             row_h,
             "Text size",
             f64::from(settings.font_scale) * 100.0,
-            NumberField::FontScale,
+            &NumberField::FontScale,
         );
         let y = y + row_h + 10.0;
         self.stepper(
@@ -472,7 +513,7 @@ impl ReadingSettings {
             row_h,
             "Line spacing",
             f64::from(settings.line_spacing),
-            NumberField::LineSpacing,
+            &NumberField::LineSpacing,
         );
         y + row_h + 22.0
     }
@@ -490,7 +531,7 @@ impl ReadingSettings {
         height: f64,
         label: &str,
         value: f64,
-        field: NumberField,
+        field: &NumberField,
     ) {
         text.draw_text_weighted(
             scene,
@@ -503,7 +544,7 @@ impl ReadingSettings {
         );
         let width = (height * 2.0 + 62.0).min((x1 - x0) * 0.58);
         self.numbers.draw(
-            &field,
+            field,
             value,
             Rect::new(x1 - width, y, x1, y + height),
             scene,
@@ -527,11 +568,11 @@ impl ReadingSettings {
         gap: f64,
         settings: &Settings,
     ) -> f64 {
-        self.section_label(scene, transform, text, theme, x0, y, "LAYOUT");
+        Self::section_label(scene, transform, text, theme, x0, y, "LAYOUT");
         y += 16.0;
         let mut x = x0;
         for mode in ReadMode::ALL {
-            let width = self.pill_width(text, mode.label(), 12.5);
+            let width = Self::pill_width(text, mode.label(), 12.5);
             if x + width > x1 && x > x0 {
                 x = x0;
                 y += height + gap;
@@ -571,7 +612,7 @@ impl ReadingSettings {
         gap: f64,
         settings: &Settings,
     ) -> f64 {
-        self.section_label(scene, transform, text, theme, x0, y, "COMPOSITION");
+        Self::section_label(scene, transform, text, theme, x0, y, "COMPOSITION");
         y += 16.0;
         let mut x = x0;
         for composition in CompositionStyle::ALL {
@@ -611,7 +652,7 @@ impl ReadingSettings {
         gap: f64,
         pills: &[(String, String, f64, bool)],
     ) -> f64 {
-        self.section_label(scene, transform, text, theme, x0, y, "TYPEFACE");
+        Self::section_label(scene, transform, text, theme, x0, y, "TYPEFACE");
         y += 16.0;
         let mut x = x0;
         for (id, label, width, active) in pills {
@@ -655,7 +696,7 @@ impl ReadingSettings {
         pills: &[SchemePill],
         widths: &[f64],
     ) {
-        self.section_label(scene, transform, text, theme, x0, y, "PAGE");
+        Self::section_label(scene, transform, text, theme, x0, y, "PAGE");
         y += 16.0;
         let mut x = x0;
         for (pill, width) in pills.iter().zip(widths) {
@@ -685,7 +726,6 @@ impl ReadingSettings {
 
     #[allow(clippy::too_many_arguments)]
     fn section_label(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
@@ -705,7 +745,7 @@ impl ReadingSettings {
         );
     }
 
-    fn pill_width(&self, text: &mut TextRenderer, label: &str, size: f32) -> f64 {
+    fn pill_width(text: &mut TextRenderer, label: &str, size: f32) -> f64 {
         f64::from(
             text.measure_weighted(label, size, None, TextWeight::Medium)
                 .0,
@@ -726,7 +766,7 @@ impl ReadingSettings {
         active: bool,
         action: ReadingSettingsAction,
     ) -> f64 {
-        let width = self.pill_width(text, label, 12.5);
+        let width = Self::pill_width(text, label, 12.5);
         let rect = Rect::new(x, y, x + width, y + height);
         let colors = &theme.tokens.colors;
         let background = if active {

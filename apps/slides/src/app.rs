@@ -433,9 +433,8 @@ pub struct SlidesApp {
     editing_text: bool,
     caret: usize,
     editing_notes: bool,
-    notes_caret: usize,
-    /// Selection anchor (char index) for the active on-canvas text / notes
-    /// editor. `sel_anchor == active_caret()` means "no live selection"; the
+    /// Selection anchor (char index) for the active on-canvas text editor.
+    /// `sel_anchor == active_caret()` means "no live selection"; the
     /// pair is a [`ui::text_selection::Selection`] over the CRDT-backed text, so
     /// the on-canvas editor gets the same selection semantics as every other
     /// `ui` text field (shift+arrow, word-wise, drag-select, select-all,
@@ -569,6 +568,10 @@ pub struct SlidesApp {
     /// (full selection: double-click word, Shift+Arrow, drag, Ctrl+A/C/X/V). Live
     /// while [`Self::editing_title`]; its edits diff-splice into the CRDT title.
     title_input: TextInput,
+    /// Directly bound to the current slide's Automerge notes text while open.
+    /// The shared editor owns multiline layout, selection, clipboard, scrolling
+    /// and IME; `editing_notes` only owns the inspector's open state.
+    notes_input: TextInput,
     /// Set when the popover opens so the next `draw` (which has the theme, hence
     /// can resolve a colour *role* to a concrete colour) seeds the picker with
     /// the selected element's current fill.
@@ -676,7 +679,6 @@ impl SlidesApp {
             editing_text: false,
             caret: 0,
             editing_notes: false,
-            notes_caret: 0,
             sel_anchor: 0,
             editing_title: false,
             title_caret: 0,
@@ -717,9 +719,15 @@ impl SlidesApp {
             fill_picker_open: false,
             fill_picker_needs_init: false,
             title_input: TextInput::local()
+                .with_kind(ui::widget::TextInputKind::Name)
                 .with_plain_chrome()
                 .with_font_size(17.0)
                 .with_id("slides-title"),
+            notes_input: TextInput::local()
+                .multiline(true)
+                .with_plain_chrome()
+                .with_font_size(12.5)
+                .with_id("slides-speaker-notes"),
             demo_menu: None,
             demo_reorder: false,
             demo_delete_zone: false,
@@ -813,12 +821,6 @@ impl SlidesApp {
                 self.cur_slide = 1;
                 self.sel = None;
                 self.editing_notes = true;
-                self.notes_caret = self
-                    .deck
-                    .slides
-                    .get(1)
-                    .map_or(0, |s| s.notes.chars().count());
-                self.sel_anchor = self.notes_caret;
                 self.bootstrapped = true;
             }
             // The docked, nothing-selected inspector (slide-level properties:
@@ -1094,8 +1096,12 @@ impl SlidesApp {
     /// the next `reload` / `sync`. Callers never also call [`Self::mark`] — that
     /// would double-record the undo boundary the host already records.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::SlidesAction) {
-        self.actions
-            .dispatch(doc, crate::actions::SLIDES_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::SLIDES_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Slides", "Slides", action),
+        );
     }
 
     /// The context Ctrl+K needs to build the deck's resource tree: the deck
@@ -2258,10 +2264,7 @@ impl SlidesApp {
                 self.perform_action(doc, &actions::set_deck_palette_action(p));
             }
             Hit::EditNotes => {
-                self.editing_notes = true;
-                self.editing_text = false;
-                self.notes_caret = self.slide().map_or(0, |s| s.notes.chars().count());
-                self.sel_anchor = self.notes_caret;
+                self.begin_notes_edit(doc);
             }
             Hit::ToggleRail => self.rail_flap.toggle(self.rail_layout()),
             Hit::ToggleInspector => self.inspector_flap.toggle(self.inspector_layout()),
@@ -2640,13 +2643,6 @@ impl SlidesApp {
         // Typing over a selection replaces it (delete first, then insert at the
         // collapsed caret).
         self.delete_selection(doc);
-        if self.editing_notes {
-            SlidesDoc::splice_notes(doc, self.cur_slide, self.notes_caret, 0, s);
-            self.notes_caret += s.chars().count();
-            self.sel_anchor = self.notes_caret;
-            self.reload(doc);
-            return;
-        }
         if let Some(id) = self.sel.clone() {
             SlidesDoc::splice_element_text(doc, self.cur_slide, &id, self.caret, 0, s);
             self.caret += s.chars().count();
@@ -2667,16 +2663,6 @@ impl SlidesApp {
         }
         // A live selection is deleted whole; otherwise delete the char before.
         if self.delete_selection(doc) {
-            return;
-        }
-        if self.editing_notes {
-            if self.notes_caret > 0 {
-                SlidesDoc::splice_notes(doc, self.cur_slide, self.notes_caret - 1, 1, "");
-                self.notes_caret -= 1;
-                self.sel_anchor = self.notes_caret;
-                self.mark();
-                self.reload(doc);
-            }
             return;
         }
         if let Some(id) = self.sel.clone()
@@ -2706,14 +2692,6 @@ impl SlidesApp {
             return;
         }
         let len = self.cur_text_len();
-        if self.editing_notes {
-            if self.notes_caret < len {
-                SlidesDoc::splice_notes(doc, self.cur_slide, self.notes_caret, 1, "");
-                self.mark();
-                self.reload(doc);
-            }
-            return;
-        }
         if let Some(id) = self.sel.clone()
             && self.caret < len
         {
@@ -2726,8 +2704,6 @@ impl SlidesApp {
     fn cur_text_len(&self) -> usize {
         if self.editing_title {
             self.deck.title.chars().count()
-        } else if self.editing_notes {
-            self.slide().map_or(0, |s| s.notes.chars().count())
         } else {
             self.selected_element()
                 .map_or(0, |e| e.text.chars().count())
@@ -2739,8 +2715,6 @@ impl SlidesApp {
     fn cur_edit_text(&self) -> String {
         if self.editing_title {
             self.deck.title.clone()
-        } else if self.editing_notes {
-            self.slide().map(|s| s.notes.clone()).unwrap_or_default()
         } else {
             self.selected_element()
                 .map(|e| e.text.clone())
@@ -2772,6 +2746,39 @@ impl SlidesApp {
         Widget::set_focus(&mut self.title_input, false);
         self.mark();
         self.reload(doc);
+    }
+
+    /// Bind the shared multiline editor to the current slide's real Automerge
+    /// text. Rebinding is needed only when navigation changes slides; ordinary
+    /// sync preserves the live caret/selection while folding in peer edits.
+    fn sync_notes_input(&mut self, doc: &mut AutoCommit, place_at_end: bool) {
+        let Some(obj) = SlidesDoc::notes_text_obj(doc, self.cur_slide) else {
+            self.end_notes_edit();
+            return;
+        };
+        let rebound = self.notes_input.bound_obj() != Some(&obj);
+        if rebound {
+            self.notes_input.bind_text(obj);
+        }
+        Widget::sync(&mut self.notes_input, doc, &automerge::ROOT);
+        if rebound || place_at_end {
+            let end = self.notes_input.value().len();
+            self.notes_input.set_cursor_pos(end);
+        }
+        Widget::set_focus(&mut self.notes_input, true);
+    }
+
+    fn begin_notes_edit(&mut self, doc: &mut AutoCommit) {
+        self.editing_notes = true;
+        self.editing_text = false;
+        self.sel = None;
+        self.sync_notes_input(doc, true);
+    }
+
+    fn end_notes_edit(&mut self) {
+        self.editing_notes = false;
+        Widget::set_focus(&mut self.notes_input, false);
+        self.mark();
     }
 
     /// The rect the inline title editor occupies in the toolbar.
@@ -2860,12 +2867,78 @@ impl SlidesApp {
         true
     }
 
+    /// Route the inspector notes box through its directly-bound multiline
+    /// [`TextInput`]. Escape or a press outside ends editing; all editor events
+    /// otherwise stay in the shared caret/selection/IME path.
+    #[allow(clippy::too_many_arguments)]
+    fn route_notes_edit(
+        &mut self,
+        event: &WindowEvent,
+        sf: f64,
+        mods: Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if !self.editing_notes {
+            return false;
+        }
+        let Some(rect) = self.compute_chrome().notes_box else {
+            self.end_notes_edit();
+            return false;
+        };
+        self.notes_input.apply_layout_external(rect);
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_mouse = Point::new(position.x / sf, position.y / sf);
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                self.end_notes_edit();
+                return true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left | MouseButton::Right,
+                ..
+            } if !rect.contains(self.last_mouse) => {
+                self.end_notes_edit();
+                return false;
+            }
+            _ => {}
+        }
+        let mut input_handled = false;
+        self.notes_input.handle_event(
+            event,
+            sf,
+            &mods,
+            state,
+            path,
+            &mut input_handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
+        if self.notes_input.take_dirty().is_some() {
+            self.mark();
+            self.reload(state);
+        }
+        input_handled
+    }
+
     /// The char-index caret of whatever text is being edited.
     fn active_caret(&self) -> usize {
         if self.editing_title {
             self.title_caret
-        } else if self.editing_notes {
-            self.notes_caret
         } else {
             self.caret
         }
@@ -2874,8 +2947,6 @@ impl SlidesApp {
     fn set_active_caret(&mut self, v: usize) {
         if self.editing_title {
             self.title_caret = v;
-        } else if self.editing_notes {
-            self.notes_caret = v;
         } else {
             self.caret = v;
         }
@@ -2919,10 +2990,7 @@ impl SlidesApp {
             return false;
         }
         let (a, b) = (sel.min(), sel.max());
-        if self.editing_notes {
-            SlidesDoc::splice_notes(doc, self.cur_slide, a, b - a, "");
-            self.notes_caret = a;
-        } else if let Some(id) = self.sel.clone() {
+        if let Some(id) = self.sel.clone() {
             SlidesDoc::splice_element_text(doc, self.cur_slide, &id, a, b - a, "");
             self.caret = a;
         } else {
@@ -3483,7 +3551,7 @@ impl SlidesApp {
                   argument list as a throwaway struct"
     )]
     fn draw_editor_inspector_layer(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -3512,8 +3580,11 @@ impl SlidesApp {
                 self.draw_button(scene, t, tr, theme, pal, b);
             }
         }
-        if let (Some(nb), Some(slide)) = (chrome.notes_box, self.slide()) {
-            self.draw_notes(scene, t, tr, theme, nb, &slide.notes);
+        if let (Some(nb), Some(notes)) = (
+            chrome.notes_box,
+            self.slide().map(|slide| slide.notes.clone()),
+        ) {
+            self.draw_notes(scene, t, tr, theme, nb, &notes);
         }
         for l in &chrome.labels {
             if Self::in_inspector(chrome, Point::new(l.pos.x, l.pos.y)) {
@@ -4295,7 +4366,7 @@ impl SlidesApp {
     }
 
     fn draw_notes(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -4322,69 +4393,35 @@ impl SlidesApp {
             },
             1.0,
         );
-        let display = if notes.is_empty() {
-            "Click to add speaker notes…".to_string()
-        } else {
-            notes.to_string()
-        };
-        let col = if notes.is_empty() {
-            c.text_dim
-        } else {
-            c.text_primary
-        };
-        tr.draw_text_weighted(
-            scene,
-            &display,
-            12.5,
-            col,
-            t * Affine::translate((nb.x0 + 10.0, nb.y0 + 9.0)),
-            Some((nb.width() - 20.0) as f32),
-            TextWeight::Regular,
-        );
-        // Blinking-free caret while the notes field is focused. The text area's
-        // width is sized so the caret helper's wrap width matches the draw call
-        // above (`er.width() + 4 == nb.width() - 20`), and notes are top-anchored
-        // and left-aligned.
         if self.editing_notes {
-            let er = Rect::new(
-                nb.x0 + 10.0,
-                nb.y0 + 9.0,
-                nb.x0 + 10.0 + (nb.width() - 24.0),
-                nb.y1 - 9.0,
-            );
-            // Selection highlight (same shared caret / selection core as the
-            // canvas text) behind the caret.
-            let sel = self.selection();
-            if !sel.is_collapsed() {
-                let hl = render::with_alpha(self.palette(theme).accent, 70);
-                for r in self.selection_rects_in_box(
-                    tr,
-                    notes,
-                    sel.min(),
-                    sel.max(),
-                    er,
+            self.notes_input.apply_layout_external(nb);
+            if self.notes_input.value().is_empty() {
+                tr.draw_text_weighted(
+                    scene,
+                    "Click to add speaker notes…",
                     12.5,
+                    c.text_dim,
+                    t * Affine::translate((nb.x0 + 10.0, nb.y0 + 9.0)),
+                    Some((nb.width() - 20.0) as f32),
                     TextWeight::Regular,
-                    false,
-                    TextAlign::Left,
-                    false,
-                ) {
-                    chrome::fill_rrect(scene, t, r, 2.0, hl);
-                }
+                );
             }
-            self.draw_caret_in_box(
+            self.notes_input
+                .draw(scene, t, tr, theme, &PresenceCtx::empty());
+        } else {
+            let (display, col) = if notes.is_empty() {
+                ("Click to add speaker notes…", c.text_dim)
+            } else {
+                (notes, c.text_primary)
+            };
+            tr.draw_text_weighted(
                 scene,
-                t,
-                tr,
-                self.palette(theme).accent,
-                notes,
-                self.notes_caret,
-                er,
+                display,
                 12.5,
+                col,
+                t * Affine::translate((nb.x0 + 10.0, nb.y0 + 9.0)),
+                Some((nb.width() - 20.0) as f32),
                 TextWeight::Regular,
-                false,
-                TextAlign::Left,
-                false,
             );
         }
     }
@@ -5217,6 +5254,9 @@ impl Widget for SlidesApp {
             }
             self.bootstrapped = true;
         }
+        if self.editing_notes {
+            self.sync_notes_input(state, false);
+        }
     }
 
     fn build_layout(
@@ -5403,6 +5443,19 @@ impl Widget for SlidesApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        if self.route_notes_edit(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
+            *handled = true;
+            return;
+        }
         // A right-press (re)opens a context menu — handled before the modal
         // routing so it works even while another menu is already up.
         if let WindowEvent::MouseInput {
@@ -5466,6 +5519,25 @@ impl Widget for SlidesApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.editing_notes {
+            return self.notes_input.cursor_shape(point);
+        }
+        None
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.editing_notes
+            .then(|| self.notes_input.ime_cursor_rect())
+            .flatten()
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.editing_notes
+            .then(|| self.notes_input.ime_purpose())
+            .flatten()
     }
 
     fn needs_commit(&self) -> bool {
@@ -6661,12 +6733,10 @@ impl SlidesApp {
             return;
         }
 
-        // Text / notes / title editing intercepts most keys. The on-canvas text
-        // and speaker-notes editors share the `ui` caret / selection core:
-        // shift+arrow extends, ctrl+arrow is word-wise, ctrl+A selects all, and
-        // C/X/V go through the shared clipboard — all splicing the real CRDT.
-        // (Title rename is consumed earlier by the shared `TextInput`; it only
-        // reaches here defensively.)
+        // Text editing intercepts most keys. Speaker notes and title rename are
+        // consumed earlier by their shared `TextInput`s; they reach here only
+        // for shortcuts the fields intentionally leave to the toolkit (notably
+        // global undo/redo).
         if self.editing_text || self.editing_notes || self.editing_title {
             self.on_key_editing_text(doc, key, text, mods, ctrl, handled);
             return;
@@ -7103,6 +7173,7 @@ impl SlidesApp {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use crate::model::{Deck, ElementKind, Layout, PaletteKind, Slide};
@@ -8442,7 +8513,16 @@ mod tests {
 
     // === embedded inspector widgets (NumberInput / ColorPicker) ===========
 
-    fn app_dispatch(app: &mut SlidesApp, doc: &mut AutoCommit, ev: &WindowEvent) {
+    fn app_dispatch(app: &mut SlidesApp, doc: &mut AutoCommit, ev: &WindowEvent) -> bool {
+        app_dispatch_mods(app, doc, Modifiers::default(), ev)
+    }
+
+    fn app_dispatch_mods(
+        app: &mut SlidesApp,
+        doc: &mut AutoCommit,
+        modifiers: Modifiers,
+        ev: &WindowEvent,
+    ) -> bool {
         let mut taffy = TaffyTree::<()>::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
         let mut handled = false;
@@ -8451,7 +8531,7 @@ mod tests {
         app.handle_event(
             ev,
             1.0,
-            &Modifiers::default(),
+            &modifiers,
             doc,
             &root,
             &mut handled,
@@ -8459,6 +8539,7 @@ mod tests {
             node,
             &taffy,
         );
+        handled
     }
     fn cursor_ev(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
@@ -8829,30 +8910,54 @@ mod tests {
         assert_eq!(caret_line_home_end(t, 1, true), 3);
     }
 
-    // --- speaker notes editing (no caret + no vertical nav before) ----------
+    // --- shared multiline speaker-notes editor ------------------------------
 
     #[test]
     fn notes_typing_writes_through_and_up_down_move_the_caret() {
         let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
+        sized(&mut app, 1280.0, 800.0);
         // Seed two lines of notes on slide 0.
         crate::doc::SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "line one\nsecond");
         app.reload(&doc);
         app.apply_hit(&mut doc, Hit::EditNotes);
         assert!(app.editing_notes, "clicking notes enters the notes editor");
-        let len = app.slide().unwrap().notes.chars().count();
-        assert_eq!(app.notes_caret, len, "caret opens at the end of the notes");
+        let len = "line one\nsecond".len();
+        assert_eq!(
+            app.notes_input.cursor_pos(),
+            len,
+            "caret opens at the end of the notes"
+        );
+
+        // The shared multiline editor resolves vertical movement from the same
+        // wrapped layout it paints, so build one deterministic inspector frame.
+        let nb = app.compute_chrome().notes_box.expect("notes box");
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        app.draw_notes(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            nb,
+            "line one\nsecond",
+        );
 
         // ArrowUp jumps to the first line (keeping the column), ArrowDown back.
-        assert!(keyn(&mut app, &mut doc, NamedKey::ArrowUp));
-        assert_eq!(
-            app.notes_caret, 6,
-            "ArrowUp moved the notes caret up one line"
+        app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::ArrowUp));
+        assert!(
+            app.notes_input.cursor_pos() < "line one".len(),
+            "ArrowUp moved the notes caret onto the first shaped line"
         );
-        assert!(keyn(&mut app, &mut doc, NamedKey::ArrowDown));
-        assert_eq!(app.notes_caret, len, "ArrowDown returns to the second line");
+        app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::ArrowDown));
+        assert_eq!(
+            app.notes_input.cursor_pos(),
+            len,
+            "ArrowDown returns to the second line"
+        );
 
         // Typing splices into the CRDT notes at the caret.
-        assert!(keyc(&mut app, &mut doc, "!"));
+        app_dispatch(&mut app, &mut doc, &char_ev("!"));
         assert_eq!(
             loaded(&doc).slides[0].notes,
             "line one\nsecond!",
@@ -9362,29 +9467,51 @@ mod tests {
         );
     }
 
-    /// Speaker notes editing shares the same selection / delete core and edits
-    /// the real CRDT notes text.
+    /// Selection replacement, IME and multiline insertion all travel through
+    /// the real root-widget event path into the directly-bound notes text.
     #[test]
-    fn notes_selection_shares_the_caret_core_and_edits_the_crdt() {
+    fn notes_selection_ime_and_multiline_edit_the_bound_crdt_text() {
         use winit::keyboard::ModifiersState;
         let mut s = Slide::new(Layout::TitleContent);
         s.notes = "abc".into();
         let (mut app, mut doc) = app_doc(s);
-        app.editing_notes = true;
-        app.notes_caret = 3;
-        app.sel_anchor = 3;
-        assert!(key_char_mods(
+        sized(&mut app, 1280.0, 800.0);
+        app.apply_hit(&mut doc, Hit::EditNotes);
+
+        app_dispatch_mods(
             &mut app,
             &mut doc,
-            "a",
-            ModifiersState::CONTROL
-        ));
-        assert_eq!(app.selected_text(), "abc", "Ctrl+A selects the notes");
-        assert!(keyn(&mut app, &mut doc, NamedKey::Backspace));
+            Modifiers::from(ModifiersState::CONTROL),
+            &char_ev("a"),
+        );
+        assert_eq!(
+            app.notes_input.selection_range_public(),
+            Some((0, 3)),
+            "Ctrl+A selects the notes in the shared editor"
+        );
+
+        app_dispatch(
+            &mut app,
+            &mut doc,
+            &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
+        );
+        app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Enter));
+        app_dispatch(&mut app, &mut doc, &char_ev("agenda"));
         assert_eq!(
             loaded(&doc).slides[0].notes,
-            "",
-            "notes use the shared selection/delete path into the CRDT"
+            "東京\nagenda",
+            "IME replacement and newline insertion persist to the CRDT"
+        );
+
+        let handled = app_dispatch_mods(
+            &mut app,
+            &mut doc,
+            Modifiers::from(ModifiersState::CONTROL),
+            &char_ev("z"),
+        );
+        assert!(
+            !handled,
+            "Ctrl+Z falls through to the toolkit's global undo handler"
         );
     }
 

@@ -4,7 +4,7 @@
 //! Generalizes `real_socket_two_peer.rs` to three peers, asserting the two
 //! properties that matter for N > 2:
 //!
-//!   1. **Fan-out excludes the sender.** A `SyncIncremental` from peer A
+//!   1. **Fan-out excludes the sender.** A `DocumentIncremental` from peer A
 //!      reaches B and C exactly once each, and never echoes back to A.
 //!   2. **Presence is attributed per peer.** A presence from A and B
 //!      arrives at C tagged with the id each announced — so the two are
@@ -23,7 +23,7 @@
 use std::thread;
 use std::time::Duration;
 
-use crate::support::typed_collab::TypedBroker;
+use crate::support::{document_mutation, typed_collab::TypedBroker};
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui::presence::PresenceKey;
 
@@ -41,14 +41,19 @@ fn n_peer_fanout_and_per_peer_attribution() {
     let _ = c.poll();
 
     // --- 1. Fan-out excludes the sender -----------------------------
-    a.send(CollabRequest::SyncIncremental {
+    a.send(CollabRequest::DocumentIncremental {
         data: b"X".to_vec(),
     });
     thread::sleep(Duration::from_millis(150));
 
     let count_incremental = |evs: &[CollabEvent]| {
         evs.iter()
-            .filter(|e| matches!(e, CollabEvent::CRDTIncremental { data } if data == b"X"))
+            .filter(|event| {
+                matches!(
+                    document_mutation(event),
+                    Some(collab_types::DocumentMutation::Incremental(data)) if data == b"X"
+                )
+            })
             .count()
     };
     let b_evs = b.poll();

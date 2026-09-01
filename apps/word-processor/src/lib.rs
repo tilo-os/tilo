@@ -32,16 +32,19 @@
         clippy::string_slice,
         clippy::panic,
         clippy::unreachable,
+        clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
 pub mod actions;
+mod document_status;
 mod find_bar;
 pub mod history_panel;
 pub mod i18n;
 mod outline_pane;
 mod recovery_banner;
+mod review_overlay;
 mod ruler;
 mod style_color_picker;
 mod zoom_control;

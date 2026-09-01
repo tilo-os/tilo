@@ -45,7 +45,7 @@ use ui::gesture::{DragSelect, Granularity};
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{EditOutcome, EditableLabel, FlapState, SplitLayout, Widget};
+use ui::widget::{EditOutcome, EditableLabel, FlapState, SplitLayout, Toggle, ToggleFace, Widget};
 
 use crate::color_picker::{ColorEdit, ColorPicker, PickTarget, PickerPress};
 use crate::comment_overlay::{CommentAction, CommentOverlay};
@@ -377,11 +377,6 @@ impl BooksApp {
     }
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each bool is an independent per-peer view-state flag (dirty, mouse_down, \
-              dragging_sel, ...), not a combinatorial state machine"
-)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag spanning unrelated \
@@ -1405,7 +1400,9 @@ impl BooksApp {
         }
         self.book_idx = i.min(self.library.len() - 1);
         self.view = View::Reader;
-        let id = self.library[self.book_idx].id.clone();
+        let Some(id) = self.library.get(self.book_idx).map(|b| b.id.clone()) else {
+            return;
+        };
         let mut p = BooksDoc::read_progress(doc, &id);
         let nchap = self.num_chapters().saturating_sub(1);
         self.chapter = p.chapter.min(nchap);
@@ -1552,10 +1549,10 @@ impl BooksApp {
             Action::JumpTo(id) => self.on_jump_to(id),
             Action::Delete(id) => self.on_delete_annotation(id, doc),
             Action::OpenComments(group) => self.on_open_comments(group),
-            Action::CloseComments => self.on_close_comments(doc),
+            Action::CloseComments => self.on_close_comments(),
             Action::DeleteHighlight(group) => self.on_delete_highlight(group, doc),
             Action::AddComment(group) => self.on_add_comment(group, doc),
-            Action::EditComment(id) => self.composing = Some(id),
+            Action::EditComment(id) => self.on_edit_comment(id),
             Action::DeleteComment(id) => self.on_delete_comment(id, doc),
             Action::OpenViaPortal => self.request_open_via_portal(),
             Action::ShareToWorkspace(i) => self.on_share_to_workspace(i, doc),
@@ -1721,8 +1718,9 @@ impl BooksApp {
         if !shown.is_empty() {
             let cur = self.active_font().id;
             let idx = shown.iter().position(|f| f.id == cur).unwrap_or(0);
-            let next = shown[(idx + 1) % shown.len()].id.clone();
-            self.bump_setting(doc, |s| s.font_id = next);
+            if let Some(next) = shown.get((idx + 1) % shown.len()).map(|f| f.id.clone()) {
+                self.bump_setting(doc, |s| s.font_id = next);
+            }
         }
     }
 
@@ -1814,11 +1812,8 @@ impl BooksApp {
         self.comment_overlay.open(group);
     }
 
-    fn on_close_comments(&mut self, doc: &mut AutoCommit) {
-        // Finish any comment mid-composition so its text is saved.
-        if self.composing.is_some() {
-            self.finish_composing(doc);
-        }
+    fn on_close_comments(&mut self) {
+        self.comment_overlay.finish_editing();
         self.comment_overlay.close();
     }
 
@@ -1833,9 +1828,7 @@ impl BooksApp {
 
     fn on_add_comment(&mut self, group: Uuid, doc: &mut AutoCommit) {
         // Anchor to the highlight's first piece so it sorts with the range.
-        if self.composing.is_some() {
-            self.finish_composing(doc);
-        }
+        self.comment_overlay.finish_editing();
         let anchor = self
             .annotations
             .iter()
@@ -1859,14 +1852,23 @@ impl BooksApp {
             );
             self.perform_action(doc, &action);
             self.comment_overlay.open(group);
-            self.composing = Some(id);
+            self.comment_overlay.begin_editing(id, "");
+        }
+    }
+
+    fn on_edit_comment(&mut self, id: Uuid) {
+        if let Some(comment) = self
+            .annotations
+            .iter()
+            .find(|annotation| annotation.id == id && annotation.kind == AnnoKind::Note)
+        {
+            self.comment_overlay.begin_editing(id, &comment.note);
         }
     }
 
     fn on_delete_comment(&mut self, id: Uuid, doc: &mut AutoCommit) {
-        if self.composing == Some(id) {
-            self.composing = None;
-            self.note_composer.close();
+        if self.comment_overlay.editing_id() == Some(id) {
+            self.comment_overlay.finish_editing();
         }
         self.perform_action(doc, &crate::actions::delete_annotation_action(id));
     }
@@ -2019,7 +2021,8 @@ impl BooksApp {
             .schemes
             .iter()
             .find(|s| s.id == id)
-            .map_or([0x80, 0x80, 0x80], |s| s.slots()[slot].1);
+            .and_then(|s| s.slots().get(slot).map(|&(_, c)| c))
+            .unwrap_or([0x80, 0x80, 0x80]);
         self.color_picker.open(PickTarget::Slot(id, slot), cur);
     }
 
@@ -2272,7 +2275,8 @@ impl BooksApp {
             .or_else(|| self.fonts.iter().find(|f| f.id == "serif"))
             .or_else(|| self.fonts.first())
             .cloned()
-            .unwrap_or_else(|| default_fonts()[0].clone())
+            .or_else(|| default_fonts().first().cloned())
+            .unwrap_or_else(|| FontEntry::new("default", FontKind::Default, "Default", 1.0, true))
     }
 
     /// The fonts offered in the quick display-settings picker.
@@ -2547,8 +2551,12 @@ impl BooksApp {
     /// single mutation path shared with the Ctrl+K palette, via the
     /// framework's [`ActionHost`](ui::ActionHost).
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::EbookAction) {
-        self.actions
-            .dispatch(doc, crate::actions::EBOOK_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::EBOOK_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Ebook", "Ebook", action),
+        );
     }
 
     /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-page
@@ -2903,38 +2911,22 @@ impl BooksApp {
         self.perform_action(doc, &action);
     }
 
-    /// Append/erase a character on the note currently being composed. Each
-    /// keystroke rewrites the note's scalar in the CRDT — coarse-grained but
-    /// genuinely collaborative at the annotation level.
-    fn edit_note_text(&mut self, doc: &mut AutoCommit, edit: NoteEdit) -> bool {
-        let Some(id) = self.composing else {
-            return false;
-        };
-        let Some(mut a) = self.annotations.iter().find(|a| a.id == id).cloned() else {
-            self.composing = None;
-            return false;
-        };
-        match edit {
-            NoteEdit::Insert(s) => a.note.push_str(&s),
-            NoteEdit::Backspace => {
-                a.note.pop();
-            }
-            NoteEdit::Done => {
-                self.composing = None;
-                a.created = a.created.max(now_ms());
-            }
-        }
-        BooksDoc::upsert_annotation(doc, &a);
-        true
-    }
-
     fn set_composing_text(&mut self, doc: &mut AutoCommit, text: String) -> bool {
         let Some(id) = self.composing else {
             return false;
         };
+        self.set_annotation_text(doc, id, text)
+    }
+
+    fn set_annotation_text(&mut self, doc: &mut AutoCommit, id: Uuid, text: String) -> bool {
         let Some(mut annotation) = self.annotations.iter().find(|a| a.id == id).cloned() else {
-            self.composing = None;
-            self.note_composer.close();
+            if self.composing == Some(id) {
+                self.composing = None;
+                self.note_composer.close();
+            }
+            if self.comment_overlay.editing_id() == Some(id) {
+                self.comment_overlay.finish_editing();
+            }
             return false;
         };
         annotation.note = text;
@@ -2943,12 +2935,19 @@ impl BooksApp {
     }
 
     fn finish_composing(&mut self, doc: &mut AutoCommit) -> bool {
+        let Some(id) = self.composing.take() else {
+            return false;
+        };
         let note_editor_open = self.note_composer.is_open();
-        let handled = self.edit_note_text(doc, NoteEdit::Done);
         if note_editor_open {
             self.note_composer.close();
         }
-        handled
+        let Some(mut annotation) = self.annotations.iter().find(|a| a.id == id).cloned() else {
+            return false;
+        };
+        annotation.created = annotation.created.max(now_ms());
+        BooksDoc::upsert_annotation(doc, &annotation);
+        true
     }
 
     // --- Hit-test helpers ----------------------------------------------------
@@ -2960,12 +2959,6 @@ impl BooksApp {
     fn is_hover(&self, rect: Rect) -> bool {
         rect.contains(self.cursor)
     }
-}
-
-enum NoteEdit {
-    Insert(String),
-    Backspace,
-    Done,
 }
 
 impl Widget for BooksApp {
@@ -3100,6 +3093,15 @@ impl Widget for BooksApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
+        // cannot actually return `Err` for a fresh leaf (see the
+        // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
+        // `Widget::build_layout` returns a bare `NodeId` across every
+        // implementor, so there is nowhere to surface a theoretical error.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -3114,7 +3116,7 @@ impl Widget for BooksApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -3186,7 +3188,7 @@ impl Widget for BooksApp {
         if self.forward_shared_input_event(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             doc,
             path,
             node_id,
@@ -3273,7 +3275,7 @@ impl BooksApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         path: &ObjId,
         node_id: NodeId,
@@ -3281,10 +3283,27 @@ impl BooksApp {
         handled: &mut bool,
     ) -> bool {
         let mut input_handled = false;
+        let (comment_text, comment_submitted) = self.comment_overlay.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            doc,
+            path,
+            node_id,
+            taffy,
+            &mut input_handled,
+        );
+        if let Some((id, text)) = comment_text {
+            self.set_annotation_text(doc, id, text);
+        }
+        if comment_submitted {
+            input_handled = true;
+        }
+
         let (note_text, submit) = self.note_composer.handle_event(
             event,
             scale_factor,
-            *modifiers,
+            modifiers,
             doc,
             path,
             node_id,
@@ -3316,7 +3335,7 @@ impl BooksApp {
         let changes = self.number_controls.handle_event(
             event,
             scale_factor,
-            *modifiers,
+            modifiers,
             doc,
             path,
             node_id,
@@ -3464,18 +3483,18 @@ impl BooksApp {
         }
     }
 
-    fn handle_left_press(
-        &mut self,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        handled: &mut bool,
-    ) {
+    /// Early-out hit-testing for the reading-settings popover, color picker
+    /// and note composer, which each own a private hit stack outside the
+    /// app-wide `self.hits` list and must be asked before it. Returns
+    /// whether any of them consumed the press, so the caller can return
+    /// immediately without falling through.
+    fn handle_left_press_overlay(&mut self, doc: &mut AutoCommit, handled: &mut bool) -> bool {
         if let Some(action) = self.reading_settings.hit_test(self.cursor) {
             self.dispatch_reading_settings(action, doc);
             self.refresh_from_doc(doc);
             self.dirty = true;
             *handled = true;
-            return;
+            return true;
         }
         if let Some(action) = self.color_picker.press(self.cursor) {
             self.mouse_down = true;
@@ -3488,7 +3507,7 @@ impl BooksApp {
             self.refresh_from_doc(doc);
             self.dirty = true;
             *handled = true;
-            return;
+            return true;
         }
         if let Some(action) = self.note_composer.hit_test(self.cursor) {
             match action {
@@ -3501,6 +3520,18 @@ impl BooksApp {
             self.refresh_from_doc(doc);
             self.dirty = true;
             *handled = true;
+            return true;
+        }
+        false
+    }
+
+    fn handle_left_press(
+        &mut self,
+        modifiers: Modifiers,
+        doc: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        if self.handle_left_press_overlay(doc, handled) {
             return;
         }
         // The comment panel owns a modal, private hit stack. Ask it
@@ -3789,7 +3820,8 @@ impl BooksApp {
             return self.handle_settings_escape_key(key, doc);
         }
 
-        // While composing a note, characters feed the note text.
+        // The note's shared TextInput owns editing. Escape remains app-level
+        // policy so it can finish and dismiss the floating composer.
         if self.composing.is_some() {
             return self.handle_composing_key(key, doc);
         }
@@ -3820,15 +3852,7 @@ impl BooksApp {
     }
 
     fn handle_composing_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
-        match key {
-            Key::Named(NamedKey::Escape | NamedKey::Enter) => {
-                self.edit_note_text(doc, NoteEdit::Done)
-            }
-            Key::Named(NamedKey::Backspace) => self.edit_note_text(doc, NoteEdit::Backspace),
-            Key::Named(NamedKey::Space) => self.edit_note_text(doc, NoteEdit::Insert(" ".into())),
-            Key::Character(c) => self.edit_note_text(doc, NoteEdit::Insert(c.to_string())),
-            _ => false,
-        }
+        matches!(key, Key::Named(NamedKey::Escape)) && self.finish_composing(doc)
     }
 
     fn handle_reader_key(&mut self, key: &Key, mods: ModifiersState, doc: &mut AutoCommit) -> bool {
@@ -4158,43 +4182,21 @@ impl BooksApp {
         self.push_hit(rect, action);
     }
 
-    /// A toggle switch (track + knob). `w`/`h` are the track size. Pushes a hit
-    /// for `action` and returns the track rect.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "t/c/x/y/w/h are the standard transform/colours/geometry names shared by \
-                  every draw helper in this chrome section"
-    )]
+    /// Draw a shared toggle face and retain the app-specific action routing.
     fn switch(
         &mut self,
         scene: &mut Scene,
         t: Affine,
         theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        y: f64,
-        w: f64,
-        h: f64,
+        track: Rect,
         on: bool,
         action: Action,
     ) {
-        let track = Rect::new(x, y, x + w, y + h);
-        let bg = if on {
-            theme.accent_primary
-        } else {
-            c.neutral[3]
-        };
-        paint::fill_round(scene, t, track, h / 2.0, bg);
-        let kr = h / 2.0 - 2.5;
-        let kx = if on { x + w - h / 2.0 } else { x + h / 2.0 };
-        paint::circle(
+        Toggle::paint(
             scene,
             t,
-            Point::new(kx, y + h / 2.0),
-            kr,
-            Color::from_rgb8(250, 250, 252),
+            theme,
+            &ToggleFace::new(track, on).hovered(self.is_hover(track)),
         );
         self.push_hit(track, action);
     }
@@ -4213,7 +4215,7 @@ impl BooksApp {
         right_x: f64,
         cy: f64,
         value: f64,
-        field: NumberField,
+        field: &NumberField,
     ) -> f64 {
         let btn = 28.0;
         let vslot_w = 52.0;
@@ -4221,7 +4223,7 @@ impl BooksApp {
         let width = btn * 2.0 + vslot_w + 8.0;
         let minus_x = right_x - width;
         self.number_controls.draw(
-            &field,
+            field,
             value,
             Rect::new(minus_x, by, right_x, by + btn),
             scene,
@@ -4747,21 +4749,35 @@ impl BooksApp {
     /// key (ties broken by title so the order is stable).
     fn shelf_display_order(&self, lib: &[Book]) -> Vec<usize> {
         use crate::model::LibrarySort;
-        let frac = |i: usize| self.shelf_fraction.get(&lib[i].id).copied().unwrap_or(0.0);
-        let opened = |i: usize| self.shelf_opened.get(&lib[i].id).copied().unwrap_or(0);
-        let title = |i: usize| lib[i].title.to_lowercase();
+        // `i`/`a`/`b` below are always drawn from `0..lib.len()` (or from
+        // `idx`, which is built from that same range), so every lookup is
+        // in-bounds by construction — `.get()` still keeps the closures
+        // panic-free for clippy without depending on that invariant.
+        let frac = |i: usize| {
+            lib.get(i).map_or(0.0, |b| {
+                self.shelf_fraction.get(&b.id).copied().unwrap_or(0.0)
+            })
+        };
+        let opened = |i: usize| {
+            lib.get(i)
+                .map_or(0, |b| self.shelf_opened.get(&b.id).copied().unwrap_or(0))
+        };
+        let title = |i: usize| {
+            lib.get(i)
+                .map_or_else(String::new, |b| b.title.to_lowercase())
+        };
+        let author = |i: usize| {
+            lib.get(i)
+                .map_or_else(String::new, |b| b.author.to_lowercase())
+        };
         let mut idx: Vec<usize> = (0..lib.len())
             .filter(|&i| !self.library_prefs.hide_read || frac(i) < 0.985)
             .collect();
         match self.library_prefs.sort {
             LibrarySort::Title => idx.sort_by_key(|&a| title(a)),
-            LibrarySort::Author => idx.sort_by(|&a, &b| {
-                lib[a]
-                    .author
-                    .to_lowercase()
-                    .cmp(&lib[b].author.to_lowercase())
-                    .then(title(a).cmp(&title(b)))
-            }),
+            LibrarySort::Author => {
+                idx.sort_by(|&a, &b| author(a).cmp(&author(b)).then(title(a).cmp(&title(b))));
+            }
             LibrarySort::Recent => {
                 idx.sort_by(|&a, &b| opened(b).cmp(&opened(a)).then(title(a).cmp(&title(b))));
             }
@@ -5206,33 +5222,41 @@ impl BooksApp {
         );
 
         // Plus mark inside a soft accent disc.
-        let cx = x + w / 2.0;
-        let disc_cy = y + cover_h * 0.40;
-        let disc_r = 24.0;
+        let disc_centre_x = x + w / 2.0;
+        let disc_centre_y = y + cover_h * 0.40;
+        let disc_radius = 24.0;
         paint::circle(
             scene,
             t,
-            Point::new(cx, disc_cy),
-            disc_r,
+            Point::new(disc_centre_x, disc_centre_y),
+            disc_radius,
             theme.accent_primary.with_alpha_factor(0.16),
         );
         paint::plus(
             scene,
             t,
-            Rect::new(cx - 11.0, disc_cy - 11.0, cx + 11.0, disc_cy + 11.0),
+            Rect::new(
+                disc_centre_x - 11.0,
+                disc_centre_y - 11.0,
+                disc_centre_x + 11.0,
+                disc_centre_y + 11.0,
+            ),
             theme.accent_primary,
             2.2,
         );
 
         // Title + hint, centred under the mark.
-        let title = "Add a book";
-        let (title_w, _) = tr.measure_weighted(title, 15.0, None, TextWeight::Semibold);
+        let label = "Add a book";
+        let (label_w, _) = tr.measure_weighted(label, 15.0, None, TextWeight::Semibold);
         tr.draw_text_weighted(
             scene,
-            title,
+            label,
             15.0,
             c.text_primary,
-            t * Affine::translate((cx - f64::from(title_w) / 2.0, disc_cy + disc_r + 16.0)),
+            t * Affine::translate((
+                disc_centre_x - f64::from(label_w) / 2.0,
+                disc_centre_y + disc_radius + 16.0,
+            )),
             None,
             TextWeight::Semibold,
         );
@@ -5243,7 +5267,10 @@ impl BooksApp {
             hint,
             12.0,
             c.text_dim,
-            t * Affine::translate((cx - f64::from(hint_w) / 2.0, disc_cy + disc_r + 38.0)),
+            t * Affine::translate((
+                disc_centre_x - f64::from(hint_w) / 2.0,
+                disc_centre_y + disc_radius + 38.0,
+            )),
             None,
         );
 
@@ -5505,7 +5532,6 @@ impl BooksApp {
             self.cursor,
             &self.annotations,
             self.hi_color,
-            self.composing,
         );
         // Reading-settings floats above everything and owns its own modal hit
         // stack; only the available reader span is supplied by the host.
@@ -5725,14 +5751,14 @@ impl BooksApp {
         }
 
         // first visible block on the top-left pane → bookmark target
-        self.page_top_block = {
-            let (ts, te) = (panes[0].win_start, panes[0].win_end);
+        self.page_top_block = panes.first().map_or(0, |pane| {
+            let (ts, te) = (pane.win_start, pane.win_end);
             layout
                 .blocks
                 .iter()
                 .find(|b| b.lines.iter().any(|l| l.y >= ts - 0.5 && l.y < te))
                 .map_or(0, |b| b.index)
-        };
+        });
         panes
     }
 
@@ -6013,11 +6039,11 @@ impl BooksApp {
                 .iter()
                 .filter(|l| pane.shows(l.y, b.line_height))
                 .collect();
-            if visible.is_empty() {
+            let (Some(first), Some(last)) = (visible.first(), visible.last()) else {
                 continue;
-            }
-            let by0 = pane.screen_y(visible.first().unwrap().y) - 3.0;
-            let by1 = pane.screen_y(visible.last().unwrap().y) + f64::from(b.line_height);
+            };
+            let by0 = pane.screen_y(first.y) - 3.0;
+            let by1 = pane.screen_y(last.y) + f64::from(b.line_height);
             for a in annos
                 .iter()
                 .filter(|a| a.chapter == chapter && a.block == b.index)
@@ -6236,7 +6262,9 @@ impl BooksApp {
                 if lo < hi {
                     let (bx0, bx1) =
                         run_sub_x(x0, f64::from(w), run.char_start, run.char_len, lo, hi);
-                    grow(&mut hi_span[i], bx0, bx1);
+                    if let Some(span) = hi_span.get_mut(i) {
+                        grow(span, bx0, bx1);
+                    }
                 }
             }
         }
@@ -6287,7 +6315,7 @@ impl BooksApp {
             &mut hi_span,
         );
         for (i, a) in block_ranged.iter().enumerate() {
-            if let Some((mnx, mxx)) = hi_span[i] {
+            if let Some((mnx, mxx)) = hi_span.get(i).copied().flatten() {
                 let band = Rect::new(mnx - 2.0, ly - 1.0, mxx + 2.0, ly + lh - 2.0);
                 paint::fill_round(scene, t, band, 4.0, palette.highlight_fill(a.color));
                 self.hi_bands.push(band);
@@ -6605,9 +6633,12 @@ impl BooksApp {
             let mapped = match action {
                 ui::HudAction::Copy => Action::CopySelection,
                 ui::HudAction::Note => Action::AddNote,
-                ui::HudAction::Highlight(i) => {
-                    Action::SetColor(HiColor::ALL[i.min(HiColor::ALL.len() - 1)])
-                }
+                ui::HudAction::Highlight(i) => Action::SetColor(
+                    HiColor::ALL
+                        .get(i.min(HiColor::ALL.len() - 1))
+                        .copied()
+                        .unwrap_or(HiColor::ALL[0]),
+                ),
                 ui::HudAction::Delete => match del_group {
                     Some(g) => Action::DeleteHighlight(g),
                     None => Action::Swallow,
@@ -7673,9 +7704,10 @@ impl BooksApp {
             }
             let s = p.to_string_lossy().to_string();
             match &home {
-                Some(h) if !h.is_empty() && s.starts_with(h.as_str()) => {
-                    format!("~{}", &s[h.len()..])
-                }
+                Some(h) if !h.is_empty() => match s.strip_prefix(h.as_str()) {
+                    Some(rest) => format!("~{rest}"),
+                    None => s,
+                },
                 _ => s,
             }
         };
@@ -7714,11 +7746,12 @@ impl BooksApp {
                 scene,
                 t,
                 theme,
-                c,
-                x + w - 18.0 - tog_w,
-                y + (row_h - tog_h) / 2.0,
-                tog_w,
-                tog_h,
+                Rect::new(
+                    x + w - 18.0 - tog_w,
+                    y + (row_h - tog_h) / 2.0,
+                    x + w - 18.0,
+                    y + f64::midpoint(row_h, tog_h),
+                ),
                 watched,
                 Action::ToggleWatchFolder(folder.clone()),
             );
@@ -8013,7 +8046,7 @@ impl BooksApp {
             size_right,
             cy,
             f64::from(f.size_mult),
-            NumberField::FontMult(f.id.clone()),
+            &NumberField::FontMult(f.id.clone()),
         );
         // Enable/disable toggle (= whether it appears in quick settings).
         let tog_w = 40.0;
@@ -8023,11 +8056,7 @@ impl BooksApp {
             scene,
             t,
             theme,
-            c,
-            tog_x,
-            cy - tog_h / 2.0,
-            tog_w,
-            tog_h,
+            Rect::new(tog_x, cy - tog_h / 2.0, tog_x + tog_w, cy + tog_h / 2.0),
             f.shown,
             Action::ToggleFontShown(f.id.clone()),
         );
@@ -8430,11 +8459,7 @@ impl BooksApp {
             scene,
             t,
             theme,
-            c,
-            rx,
-            cy - tog_h / 2.0,
-            tog_w,
-            tog_h,
+            Rect::new(rx, cy - tog_h / 2.0, rx + tog_w, cy + tog_h / 2.0),
             s.enabled,
             Action::ToggleSchemeEnabled(s.id.clone()),
         );
@@ -8951,7 +8976,10 @@ fn ellipsize(
     let mut lo = 0;
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
-        let candidate: String = chars[..mid].iter().collect::<String>() + "…";
+        let candidate: String = chars
+            .get(..mid)
+            .map_or_else(String::new, |s| s.iter().collect())
+            + "…";
         if f64::from(tr.measure_weighted(&candidate, size, None, weight).0) <= max_w {
             best = candidate;
             lo = mid;
@@ -11938,7 +11966,10 @@ mod interaction_tests {
         // Add the first comment and type it.
         let add = find_hit(&app, |a| matches!(a, Action::AddComment(_))).expect("add-comment");
         assert!(click(&mut app, &mut doc, add), "add handled");
-        assert!(app.composing.is_some(), "the new comment is being composed");
+        assert!(
+            app.comment_overlay.editing_id().is_some(),
+            "the new comment is being composed"
+        );
         for ch in ["H", "i"] {
             key_char(&mut app, &mut doc, ch);
         }
@@ -11964,7 +11995,10 @@ mod interaction_tests {
         let edit =
             find_hit(&app, |a| matches!(a, Action::EditComment(_))).expect("an edit affordance");
         assert!(click(&mut app, &mut doc, edit), "edit handled");
-        assert!(app.composing.is_some(), "a comment reopened for editing");
+        assert!(
+            app.comment_overlay.editing_id().is_some(),
+            "a comment reopened for editing"
+        );
         key_named(&mut app, &mut doc, NamedKey::Enter);
 
         // Delete one comment.

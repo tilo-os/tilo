@@ -1165,6 +1165,51 @@ impl ShotScenario {
     /// Parse a `--scenario <name>` selector. Returns `None` for an unknown
     /// name so the caller can fall back to the plain editor rather than
     /// silently capturing the wrong thing.
+    /// Every name [`Self::from_arg`] accepts.
+    ///
+    /// The launcher validates `--scenario` against a list, so it needs one;
+    /// `from_arg` is a match and cannot be enumerated. A test asserts every
+    /// name here parses and that the counts agree, so the two cannot drift
+    /// into "this scenario exists but the launcher rejects it".
+    pub const ALL_NAMES: &'static [&'static str] = &[
+        "filters",
+        "split",
+        "menu",
+        "rename",
+        "drag",
+        "effects",
+        "multiselect",
+        "locked",
+        "scrolled",
+        "clipmenu",
+        "marquee",
+        "composed",
+        "geometry",
+        "keymask",
+        "title",
+        "keyframes",
+        "markers",
+        "keymenu",
+        "help",
+        "goto",
+        "projectmenu",
+        "filedrop",
+        "discard",
+        "saved",
+        "curves",
+        "collaborators",
+        "exporting",
+        "exportfailed",
+        "range",
+        "format",
+        "focusinspector",
+        "focusbin",
+        "focustransport",
+        "shuttle",
+        "linked",
+        "mix",
+    ];
+
     pub fn from_arg(name: &str) -> Option<Self> {
         Some(match name {
             "filters" => ShotScenario::SelectedFilters,
@@ -18186,6 +18231,30 @@ fn nice_tick(px_per_sec: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    /// The launcher's scenario list and the parser agree, in both directions.
+    #[test]
+    fn every_named_scenario_parses_and_none_is_missing() {
+        for name in ShotScenario::ALL_NAMES {
+            assert!(
+                ShotScenario::from_arg(name).is_some(),
+                "`{name}` is offered to the launcher but the parser rejects it",
+            );
+        }
+        // The other direction: a scenario the parser knows but the list omits
+        // is one a caller cannot select. Counting distinct parsed values
+        // catches an addition to `from_arg` that never reached the list.
+        let mut seen = std::collections::HashSet::new();
+        for name in ShotScenario::ALL_NAMES {
+            seen.insert(format!("{:?}", ShotScenario::from_arg(name).expect(name)));
+        }
+        assert_eq!(
+            seen.len(),
+            ShotScenario::ALL_NAMES.len(),
+            "two names in the list resolve to the same scenario, so one of \
+             them is a typo: {seen:?}",
+        );
+    }
+
     use super::*;
 
     fn app_with_sample() -> VideoEditorApp {

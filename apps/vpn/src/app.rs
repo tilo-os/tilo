@@ -626,10 +626,12 @@ impl VpnApp {
                 Ok(out) => {
                     // The routing command is the external side effect; flipping
                     // the stored preference is the action (undo + replay for free).
-                    self.actions.dispatch(
+                    let action = actions::set_tor_global_action(on);
+                    self.actions.dispatch_with_context(
                         doc,
                         VPN_ACTION_TYPE,
-                        &actions::set_tor_global_action(on),
+                        &action,
+                        qos_actions::ActionContext::for_action("org.qos.Vpn", "VPN", &action),
                     );
                     self.log(format!("$ {}  → ok {}", plan.display(), out));
                 }
@@ -725,10 +727,12 @@ impl VpnApp {
                     // NetworkManager import above is the external side effect;
                     // adding the resulting profile to the shared document is the
                     // same action the add form dispatches — one source of truth.
-                    self.actions.dispatch(
+                    let action = actions::add_connection_action(conn);
+                    self.actions.dispatch_with_context(
                         doc,
                         VPN_ACTION_TYPE,
-                        &actions::add_connection_action(conn),
+                        &action,
+                        qos_actions::ActionContext::for_action("org.qos.Vpn", "VPN", &action),
                     );
                     self.refresh(doc);
                     self.select(doc, id);
@@ -749,10 +753,12 @@ impl VpnApp {
 
     pub(crate) fn toggle_conn_tor(&mut self, doc: &mut AutoCommit, id: ConnId) {
         let next = self.vault.get(id).is_none_or(|c| !c.tor);
-        self.actions.dispatch(
+        let action = actions::set_conn_tor_action(id, next);
+        self.actions.dispatch_with_context(
             doc,
             VPN_ACTION_TYPE,
-            &actions::set_conn_tor_action(id, next),
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Vpn", "VPN", &action),
         );
         self.refresh(doc);
     }
@@ -774,8 +780,13 @@ impl VpnApp {
         let name = c.name.clone();
         let id = c.id;
         // Dispatch the SAME action the Ctrl+K "Add … connection" entry does.
-        self.actions
-            .dispatch(doc, VPN_ACTION_TYPE, &actions::add_connection_action(c));
+        let action = actions::add_connection_action(c);
+        self.actions.dispatch_with_context(
+            doc,
+            VPN_ACTION_TYPE,
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Vpn", "VPN", &action),
+        );
         self.modal = Modal::None;
         self.add_name.set_focus(false);
         self.add_endpoint.set_focus(false);
@@ -2284,34 +2295,8 @@ impl VpnApp {
             return;
         };
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = cd.dialog.build_layout(&mut taffy, &theme, &mut node_map);
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_with_children only errors for a NodeId from a different tree, and `node` was just created in this same fresh `taffy`"
-        )]
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(rect.width() as f32),
-                        height: Dimension::length(rect.height() as f32),
-                    },
-                    ..Default::default()
-                },
-                &[node],
-            )
-            .unwrap();
-        let _ = taffy.compute_layout(
-            root,
-            Size {
-                width: taffy::AvailableSpace::Definite(rect.width() as f32),
-                height: taffy::AvailableSpace::Definite(rect.height() as f32),
-            },
-        );
-        cd.dialog
-            .apply_layout(&taffy, node, Point::new(rect.x0, rect.y0));
+        let mut text_renderer = TextRenderer::new();
+        cd.dialog.layout_in(rect, &theme, &mut text_renderer);
     }
 
     /// Route an event into the open confirm dialog, then apply the flags its
@@ -2352,29 +2337,13 @@ impl VpnApp {
         }
         self.ensure_confirm_dialog();
         self.layout_confirm_dialog();
-        let root = automerge::ROOT;
         let (ok, cancel) = {
             let Some(cd) = self.confirm_dialog.as_mut() else {
                 return;
             };
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            #[allow(
-                clippy::unwrap_used,
-                reason = "taffy 0.10's new_leaf always inserts and returns Ok; see ui::widget::TaffyTreeExt's doc comment"
-            )]
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            let mut focus_target = None;
-            cd.dialog.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                doc,
-                &root,
-                handled,
-                &mut focus_target,
-                node,
-                &taffy,
-            );
+            *handled =
+                cd.dialog
+                    .handle_detached(event, scale_factor, modifiers, doc, &automerge::ROOT);
             (cd.confirm.replace(false), cd.cancel.replace(false))
         };
         if ok {

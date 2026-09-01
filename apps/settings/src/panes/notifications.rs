@@ -251,7 +251,12 @@ impl NotificationsPane {
     /// separate side effect driven by the resulting document state — never part
     /// of an action.
     fn perform_action(&mut self, state: &mut AutoCommit, action: &SettingsAction) {
-        self.actions.dispatch(state, SETTINGS_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            state,
+            SETTINGS_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Settings", "Settings", action),
+        );
     }
 
     /// Reconcile one boolean setting between its widget scratch key and its

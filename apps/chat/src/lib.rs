@@ -49,6 +49,7 @@
         clippy::string_slice,
         clippy::panic,
         clippy::unreachable,
+        clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
@@ -101,6 +102,7 @@ pub fn app_root() -> Box<dyn Widget> {
 /// * `"starter"` — the real first-run empty workspace (no demo content).
 /// * `"context"` — open a channel context menu.
 /// * `"attach"` — open the workspace file picker over the composer.
+/// * `"edit"` — show the shared inline editor on a sent message.
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     let mut app = ChatApp::new_ephemeral();
     app.seed_shot_scenario(scenario);

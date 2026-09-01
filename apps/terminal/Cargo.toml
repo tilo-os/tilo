@@ -13,7 +13,11 @@ path = "src/lib.rs"
 name = "terminal"
 path = "src/main.rs"
 
+[features]
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { path = "../../ui" }
 automerge.workspace = true
 serde_json.workspace = true
