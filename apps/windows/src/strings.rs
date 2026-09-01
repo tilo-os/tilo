@@ -30,6 +30,7 @@ mod tests {
             "windows-use-recommendation",
             "windows-choose-windows-iso",
             "windows-open-recovery-desktop",
+            "windows-start-appliance",
             "windows-escalate-install-to-vm",
             "windows-restart-appliance",
             "windows-suspend-appliance",

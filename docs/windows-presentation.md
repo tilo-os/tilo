@@ -64,7 +64,7 @@ RAIL process exits. A file projection is represented end-to-end as an opaque
 portal handle plus its exact `read-only` or `read-write` decision. The launch
 boundary rejects duplicate handles and rejects a broker attempt to turn a
 read-only handle into a writable RDP drive. A materialising broker must expose
-only a per-lease directory below `/run/qos/windows-vm/leases/<lease>/`; its
+only a per-lease directory below `$XDG_RUNTIME_DIR/qos/windows-vm/leases/<lease>/`; its
 rootless bubblewrap mount namespace overlays read-only drives with `--ro-bind`,
 rather than trusting an advisory FreeRDP flag. The projection is removed on
 revocation.

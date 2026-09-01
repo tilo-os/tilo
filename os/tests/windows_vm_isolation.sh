@@ -27,6 +27,8 @@ PROCESS_JOB_BROKER="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSProcessJobBrok
 NETWORK_PROXY="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSNetworkProxy.ps1"
 REMOTE_APP_WRAPPER="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSRemoteApp.ps1"
 COMPAT_DOC="$OS_ROOT/../docs/windows-compatibility.md"
+COMPAT_PROTOCOL="$OS_ROOT/../crates/windows/compat-service/src/protocol.rs"
+COMPAT_SESSION="$OS_ROOT/../crates/windows/compat-service/src/session.rs"
 CONTAINERFILE="$OS_ROOT/Containerfile"
 
 fails=0
@@ -36,7 +38,13 @@ need() { [ -r "$1" ] && ok "$(basename "$1") exists" || fail "missing $1"; }
 has() { grep -Fq -- "$2" "$1" && ok "$3" || fail "$3"; }
 lacks() { grep -Fq -- "$2" "$1" && fail "$3" || ok "$3"; }
 
-for file in "$NET" "$EGRESS_NET" "$UNIT" "$REAPER" "$REAPER_TIMER" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$OWNER" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER" "$UNINSTALLER" "$PROCESS_JOB" "$PROCESS_JOB_BROKER" "$NETWORK_PROXY" "$REMOTE_APP_WRAPPER" "$COMPAT_DOC"; do need "$file"; done
+if python3 "$HERE/windows_guest_powershell_syntax.py" "$OS_ROOT/usr/share/qos/windows/guest"; then
+    ok 'guest PowerShell structure and fixed-wrapper contracts hold'
+else
+    fail 'guest PowerShell structure or fixed-wrapper contract failed'
+fi
+
+for file in "$NET" "$EGRESS_NET" "$UNIT" "$REAPER" "$REAPER_TIMER" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$OWNER" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER" "$UNINSTALLER" "$PROCESS_JOB" "$PROCESS_JOB_BROKER" "$NETWORK_PROXY" "$REMOTE_APP_WRAPPER" "$COMPAT_DOC" "$COMPAT_PROTOCOL" "$COMPAT_SESSION"; do need "$file"; done
 
 has "$NET" '<forward mode="none"/>' 'libvirt bridge has no forwarding'
 has "$NET" '<qos:windows-hostonly ' 'network has qOS ownership marker'
@@ -50,6 +58,17 @@ has "$REAPER" 'egress-reap' 'root service reaps expired egress leases'
 has "$REAPER_TIMER" 'OnUnitActiveSec=30s' 'egress lease reaper runs periodically'
 has "$VM_CONTROL_SOURCE" 'write_lease' 'egress lease is recorded before NIC attachment'
 has "$VM_CONTROL_SOURCE" 'egress-reap' 'controller has a crash-safe lease reaper action'
+has "$VM_CONTROL_SOURCE" 'CONTROLLER_LOCK' 'controller has one exclusive lock for lifecycle and egress mutations'
+has "$VM_CONTROL_SOURCE" 'libc::LOCK_EX' 'controller holds an advisory exclusive mutation lock'
+has "$VM_CONTROL_SOURCE" '"graphics-attach"' 'controller lock covers graphics/domain XML mutation'
+has "$VM_CONTROL_SOURCE" '"define"' 'controller lock covers domain definition mutation'
+has "$VM_CONTROL_SOURCE" 'if active_lease()?.is_some()' 'egress open rejects any existing lease before creating a NIC'
+has "$VM_CONTROL_SOURCE" 'STATUS_SUMMARY' 'controller publishes a sanitized runtime status summary'
+has "$VM_CONTROL_SOURCE" 'write_status_summary' 'lifecycle and egress changes atomically refresh status summary'
+has "$VM_CONTROL_SOURCE" 'rollback_attached_egress' 'failed egress setup has one rollback path'
+has "$VM_CONTROL_SOURCE" 'lease was retained for retry' 'detach failure preserves the reaper/revoke record'
+has "$COMPAT_SESSION" 'PortalDocumentAccess::ReadOnly' 'portal Open file is server-fixed read-only'
+lacks "$COMPAT_PROTOCOL" 'writable: bool' 'portal Open file has no client-controlled writeback bit'
 has "$NETWORK_TOOL" 'existing $NAME is not a qOS host-only network' 'foreign network collision fails closed'
 has "$NETWORK_TOOL" "net-define" 'network is defined through libvirt'
 has "$UNIT" 'RestrictAddressFamilies=AF_UNIX' 'network setup is Unix-socket-only'
@@ -98,6 +117,7 @@ has "$BRIDGE" 'SHA256]::HashData($cert.RawData)' 'RDP and bridge certificate is 
 has "$BRIDGE" 'FixedTimeEquals' 'bridge compares authentication in constant time'
 has "$BRIDGE" 'replayed bridge nonce' 'bridge rejects nonce reuse'
 has "$INSTALL" 'managed-session.json' 'provisioning binds one persistent managed Windows identity'
+has "$INSTALL" 'Language.Parser]::ParseFile' 'guest setup parses every PowerShell payload with the authoritative Windows parser'
 has "$INSTALL" "\$managedUser = 'qos-user'" 'managed session identity is fixed rather than user selected'
 has "$INSTALL" 'RandomNumberGenerator' 'managed session credential is generated cryptographically'
 has "$INSTALL" 'RotateManagedSessionCredential' 'managed session credential rotation is explicit and idempotent'
@@ -110,23 +130,41 @@ has "$INSTALL" 'fSingleSessionPerUser' 'Windows is constrained to one session fo
 has "$INSTALL" 'Start-qOSRemoteApp.ps1' 'published aliases use the fixed qOS wrapper'
 has "$INSTALL" 'Start-qOSNetworkProxy.ps1' 'wrapper receives the guest local proxy helper'
 has "$REMOTE_APP_WRAPPER" 'HTTP_PROXY' 'wrapper routes target process trees through loopback proxy'
-has "$REMOTE_APP_WRAPPER" 'Remove-Item -LiteralPath $jobPath' 'wrapper revokes the guest job deterministically'
+has "$REMOTE_APP_WRAPPER" 'Consume the one-time auth job' 'wrapper consumes the short-lived authenticated launch job before target execution'
+has "$REMOTE_APP_WRAPPER" 'network-runtime-' 'wrapper deletes its nonce-specific runtime marker after target exit'
 has "$REMOTE_APP_WRAPPER" 'expiresAtUnix' 'wrapper rejects expired RAIL jobs'
-has "$REMOTE_APP_WRAPPER" 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' 'wrapper applies the lease proxy only to the managed user'
+has "$REMOTE_APP_WRAPPER" 'localProxyPort' 'wrapper receives the exact authenticated per-launch loopback port'
+has "$REMOTE_APP_WRAPPER" 'localProxyCredential' 'wrapper receives a separate per-lease loopback credential'
+has "$REMOTE_APP_WRAPPER" 'qos:$credential@127.0.0.1' 'wrapper supplies standard Basic proxy URL credentials'
 lacks "$REMOTE_APP_WRAPPER" 'netsh winhttp' 'wrapper never sets machine-wide WinHTTP proxy state'
-has "$REMOTE_APP_WRAPPER" 'Exit-qOSWinInetLease' 'last wrapper restores prior managed-user proxy state'
-has "$REMOTE_APP_WRAPPER" 'Local\qOS-WindowsNetworkLease' 'WinINet proxy refcount is serialized in the managed session'
-has "$REMOTE_APP_WRAPPER" 'InternetSetOption' 'wrapper refreshes WinINet settings after lease changes'
+lacks "$REMOTE_APP_WRAPPER" 'Internet Settings' 'wrapper never mutates shared WinINet state across leases'
+lacks "$REMOTE_APP_WRAPPER" '18080' 'wrapper never uses a shared fixed loopback proxy port'
 has "$NETWORK_PROXY" '192.168.251.1' 'guest proxy can connect only to the host-only gateway'
 has "$NETWORK_PROXY" 'Proxy-Authorization: Bearer' 'guest proxy authenticates the short-lived host lease'
+has "$NETWORK_PROXY" 'Authorised(head' 'guest proxy requires its local lease credential for ordinary loopback requests'
+has "$NETWORK_PROXY" '"Basic "' 'guest proxy requires standard Basic local proxy authentication'
+has "$NETWORK_PROXY" 'StripLocalAuthorization' 'plain HTTP forwarding removes the local credential header'
+has "$NETWORK_PROXY" 'static bool Same' 'guest proxy compares local credentials without early-exit equality as hardening'
 has "$NETWORK_PROXY" 'Add-Type -TypeDefinition' 'guest proxy uses a real CLR concurrent relay, not PowerShell threadpool scriptblocks'
+has "$NETWORK_PROXY" 'File.Exists(runtimeMarkerPath)' 'proxy follows its exact runtime marker rather than a shared session state'
+has "$NETWORK_PROXY" 'pendingExpiresAtUnix' 'proxy bounds only an unconsumed launch handoff, not app runtime'
+has "$NETWORK_PROXY" 'readyPath' 'proxy publishes a listener readiness handshake before launch'
+lacks "$NETWORK_PROXY" 'Loopback,18080' 'proxy allocates an independent loopback port per lease'
 lacks "$NETWORK_PROXY" 'QueueUserWorkItem({' 'guest proxy does not use a PowerShell scriptblock without a Runspace'
+lacks "$NETWORK_PROXY" 'processJobName' 'guest proxy does not overclaim same-user job membership isolation'
+lacks "$BRIDGE" 'processJobName' 'bridge does not publish an unusable cross-session job identity'
 lacks "$BRIDGE" 'New-LocalUser' 'native RAIL launches never create extra Windows accounts'
 has "$BRIDGE" 'Get-ManagedSession' 'native RAIL reuses the provisioned managed identity'
 has "$BRIDGE" 'requestedPresentation -ne' 'focused SPICE does not mint RDP credentials'
 has "$BRIDGE" 'Start-FocusedApplication' 'SPICE launch invokes the managed guest focus helper'
 has "$BRIDGE" 'Start-RailApplication' 'RAIL launch writes an authenticated wrapper operation'
-has "$BRIDGE" 'Ensure-SharedNetworkProxy' 'SYSTEM bridge owns one shared loopback proxy lifecycle'
+has "$BRIDGE" 'network-proxy-' 'SYSTEM bridge creates a proxy configuration per launch nonce'
+has "$BRIDGE" 'RandomNumberGenerator' 'bridge generates an unguessable per-lease loopback credential'
+has "$BRIDGE" 'proxy did not become ready' 'bridge refuses launch until the per-lease listener is ready'
+has "$BRIDGE" "'Read,Delete'" 'wrapper can consume its exact marker without directory write authority'
+has "$BRIDGE" "'Delete'" 'wrapper can delete its exact runtime marker without write authority'
+has "$BRIDGE" 'network-runtime-' 'bridge uses a nonce-specific runtime marker separate from the auth job'
+lacks "$BRIDGE" 'Ensure-SharedNetworkProxy' 'bridge never replaces another launch proxy with a shared bearer'
 has "$BRIDGE" 'Get-NetworkProxyLease' 'bridge validates host-only network lease details'
 has "$BRIDGE" 'Remove-ExpiredRailJobs' 'bridge reaps stale RAIL jobs after failed clients'
 has "$BRIDGE" 'no managed interactive session exists' 'SPICE fails honestly without a visible session'

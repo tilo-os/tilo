@@ -230,14 +230,15 @@ broker. The presentation/file-transfer channel exposes only the resources in
 the lease, and all leases are revoked when the RemoteApp session ends.
 The shipped appliance network is host-only with forwarding disabled; it has no
 NAT or physical-network access by default. Native RAIL can materialize exact
-canonical `NetHost` grants as a short-lived, host-only CONNECT relay and a
-guest-local proxy inherited only by the fixed RemoteApp wrapper's target
+host-authorized `NetHost` requests as a short-lived, host-only CONNECT relay
+and a guest-local proxy inherited by the fixed RemoteApp wrapper's target
 process tree. The relay reuses qOS's ordinary NetHost matcher and post-DNS
 device-local protection, and dropping its lease closes the listener rather
-than attaching an egress NIC. The shared-session UI reports the effective
-lease union because Windows applications in that one session are not mutually
-isolated. Clipboard is off unless the workspace grant permits it and its
-enabled state is visible in window chrome.
+than attaching an egress NIC. These are host-side lease controls, not
+per-process Windows isolation: all programs in the one persistent Windows
+user/session must be treated as the effective union of active redirects and
+host-authorized requests. Clipboard is off unless the workspace grant permits
+it and its enabled state is visible in window chrome.
 
 Guest compromise remains possible, so the appliance is treated as one shared
 security domain: programs inside it can potentially influence each other. The
