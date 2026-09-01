@@ -118,7 +118,7 @@ impl<R: CommandRunner> RemoteAppLauncher for FreeRdpLauncher<R> {
     }
 }
 
-/// Upstream virt-viewer/remote-viewer fallback for hosts without a local RAIL
+/// Upstream virt-viewer fallback for hosts without a local RAIL
 /// surface. The guest bridge is responsible for focusing the requested
 /// application before this command is issued. This is a whole guest display,
 /// not a seamless window; the qOS UI must label that distinction. No
@@ -135,7 +135,7 @@ impl<R> AppFocusedSpiceLauncher<R> {
     pub fn new(runner: R) -> Self {
         Self {
             runner,
-            binary: OsString::from("remote-viewer"),
+            binary: OsString::from("virt-viewer"),
         }
     }
 
@@ -164,14 +164,9 @@ impl<R> AppFocusedSpiceLauncher<R> {
             return Err(RemoteAppError::SpiceCapabilityRequiresRail);
         }
         Ok(CommandRequest::new(self.binary.clone())
-            .args([
-                "--connect",
-                "qemu:///system",
-                "--attach",
-                crate::APPLIANCE_DOMAIN_NAME,
-                "--wait",
-            ])
-            .arg(format!("--title=qOS — {}", guest.remote_app_alias)))
+            .args(["--connect", "qemu:///system", "--attach", "--wait"])
+            .arg(format!("--title=qOS — {}", guest.remote_app_alias))
+            .arg(crate::APPLIANCE_DOMAIN_NAME))
     }
 }
 
@@ -362,7 +357,7 @@ mod tests {
         let request = launcher
             .command(&guest(), &BrokeredLaunch::deny_all("lease"))
             .unwrap();
-        assert_eq!(request.program, OsString::from("remote-viewer"));
+        assert_eq!(request.program, OsString::from("virt-viewer"));
         let args = request
             .args
             .iter()
