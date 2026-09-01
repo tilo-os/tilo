@@ -204,9 +204,9 @@ pub trait VmPortalAuthority: Send + Sync {
 ///
 /// Clipboard is represented by the ordinary `Device("clipboard")` grant and
 /// microphone by `Device("microphone")`. Files are deliberately absent: a
-/// filesystem path is not an opaque portal document handle. Network is also
-/// absent because `CapabilityPlan::net_hosts` may be filtered while the
-/// Windows appliance currently has only an all-or-nothing NAT NIC.
+/// filesystem path is not an opaque portal document handle. `NetHost` values
+/// are preserved verbatim for the lease relay; this does not attach a NAT NIC
+/// or convert a filtered grant into unrestricted guest networking.
 #[derive(Clone, Copy, Debug)]
 pub struct CanonicalRailPortalAuthority {
     native_rail: bool,
@@ -232,7 +232,12 @@ impl VmPortalAuthority for CanonicalRailPortalAuthority {
             self.native_rail && capabilities.devices.iter().any(|device| device == name)
         };
         Ok(windows_vm::VmLaunchGrants {
-            network: false,
+            network_hosts: if self.native_rail {
+                capabilities.net_hosts.clone()
+            } else {
+                Vec::new()
+            },
+            network: self.native_rail && !capabilities.net_hosts.is_empty(),
             clipboard: device_granted("clipboard"),
             microphone: device_granted("microphone"),
             portal_documents: Vec::new(),
@@ -245,9 +250,20 @@ impl VmPortalAuthority for CanonicalRailPortalAuthority {
 /// [`AudioIsolatedRailLauncher`]; this lease controls whether that source and
 /// the `FreeRDP` redirectors exist and ensures the shared-session tracker sees
 /// only the materialised result.
-#[derive(Debug, Default)]
 pub struct CanonicalRailCapabilityBroker {
     next: AtomicU64,
+    /// Keeping a proxy here is the lease: removing it closes the host-only
+    /// listener and drops all authenticated guest egress immediately.
+    network_leases: Mutex<BTreeMap<String, windows_vm::GuestNetworkProxy>>,
+}
+
+impl Default for CanonicalRailCapabilityBroker {
+    fn default() -> Self {
+        Self {
+            next: AtomicU64::new(0),
+            network_leases: Mutex::new(BTreeMap::new()),
+        }
+    }
 }
 
 impl windows_vm::CapabilityBroker for CanonicalRailCapabilityBroker {
@@ -255,22 +271,53 @@ impl windows_vm::CapabilityBroker for CanonicalRailCapabilityBroker {
         &self,
         request: &windows_vm::LaunchRequest,
     ) -> Result<windows_vm::BrokeredLaunch, windows_vm::LaunchError> {
-        if request.grants.network || !request.grants.portal_documents.is_empty() {
+        if request.grants.network != !request.grants.network_hosts.is_empty()
+            || !request.grants.portal_documents.is_empty()
+        {
             return Err(windows_vm::LaunchError::CapabilityBroker(
                 "the Windows appliance received a grant without an exact live broker".to_string(),
             ));
         }
         let sequence = self.next.fetch_add(1, Ordering::Relaxed);
+        let lease_id = format!("rail-{}-{sequence}", std::process::id());
+        let network_proxy = if request.grants.network {
+            Some(
+                windows_vm::GuestNetworkProxy::start(request.grants.network_hosts.clone())
+                    .map_err(|error| {
+                        windows_vm::LaunchError::CapabilityBroker(error.to_string())
+                    })?,
+            )
+        } else {
+            None
+        };
+        let network_binding = network_proxy.as_ref().map(|proxy| proxy.binding().clone());
+        if let Some(proxy) = network_proxy {
+            self.network_leases
+                .lock()
+                .map_err(|_| {
+                    windows_vm::LaunchError::CapabilityBroker(
+                        "Windows network lease state is unavailable".to_string(),
+                    )
+                })?
+                .insert(lease_id.clone(), proxy);
+        }
         Ok(windows_vm::BrokeredLaunch {
-            lease_id: format!("rail-{}-{sequence}", std::process::id()),
-            network: false,
+            lease_id,
+            network: network_binding.is_some(),
+            network_binding,
             clipboard: request.grants.clipboard,
             microphone: request.grants.microphone,
             shares: Vec::new(),
         })
     }
 
-    fn revoke(&self, _lease_id: &str) {}
+    fn revoke(&self, lease_id: &str) {
+        if let Ok(mut leases) = self.network_leases.lock() {
+            // Drop before returning: listener and token cease to exist before
+            // the shared-session UI says the lease is gone.
+            leases.remove(lease_id);
+        }
+    }
 }
 
 /// Safe authority for the live app-focused SPICE presentation. `RemoteApp`
@@ -1038,7 +1085,13 @@ fn validate_portal_projection(
     grants: &windows_vm::VmLaunchGrants,
     capabilities: &CapabilityPlan,
 ) -> Result<(), windows_vm::LaunchError> {
-    if grants.network && !capabilities.allow_network {
+    if grants.network != !grants.network_hosts.is_empty()
+        || (grants.network && !capabilities.allow_network)
+        || grants
+            .network_hosts
+            .iter()
+            .any(|host| !capabilities.net_hosts.contains(host))
+    {
         return Err(windows_vm::LaunchError::BrokerEscalated("network"));
     }
     if grants.microphone
@@ -1076,7 +1129,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_rail_projection_materializes_only_exact_device_grants() {
+    fn canonical_rail_projection_keeps_exact_nethosts_for_the_lease_broker() {
         use windows_vm::CapabilityBroker as _;
 
         let authority =
@@ -1092,9 +1145,19 @@ mod tests {
             .grants_for("app", "workspace", &capabilities)
             .unwrap();
         assert!(grants.clipboard && grants.microphone);
-        assert!(!grants.network);
+        assert!(grants.network);
+        assert_eq!(grants.network_hosts, vec!["example.test"]);
         assert!(grants.portal_documents.is_empty());
 
+        // The actual host-only address belongs to libvirt, not a unit test
+        // process. Exercise the non-network portions here; GuestNetworkProxy
+        // has its own loopback listener tests and production fails closed if
+        // the dedicated address is not available.
+        let grants = windows_vm::VmLaunchGrants {
+            network: false,
+            network_hosts: Vec::new(),
+            ..grants
+        };
         let lease = CanonicalRailCapabilityBroker::default()
             .materialize(&windows_vm::LaunchRequest {
                 workspace_id: "workspace".to_string(),
@@ -1135,6 +1198,7 @@ mod tests {
                 Ok(windows_vm::BrokeredLaunch {
                     lease_id: "server-lease".to_string(),
                     network: false,
+                    network_binding: None,
                     clipboard: true,
                     microphone: false,
                     shares: vec![windows_vm::ShareBinding {
@@ -1166,10 +1230,14 @@ mod tests {
             workspace_id: "workspace".to_string(),
             application_id: "published.app".to_string(),
             grants: windows_vm::VmLaunchGrants {
+                network_hosts: Vec::new(),
                 network: false,
                 clipboard: true,
                 microphone: false,
-                portal_documents: vec!["portal-document".to_string()],
+                portal_documents: vec![windows_vm::PortalDocumentGrant {
+                    handle: "portal-document".to_string(),
+                    access: windows_vm::PortalDocumentAccess::ReadOnly,
+                }],
             },
         };
         let lease = broker.materialize(&request).unwrap();
@@ -1198,6 +1266,7 @@ mod tests {
     fn a_portal_cannot_project_ungranted_network_or_microphone() {
         let result = validate_portal_projection(
             &windows_vm::VmLaunchGrants {
+                network_hosts: vec!["example.test".to_string()],
                 network: true,
                 clipboard: false,
                 microphone: true,
@@ -1212,6 +1281,7 @@ mod tests {
 
         let result = validate_portal_projection(
             &windows_vm::VmLaunchGrants {
+                network_hosts: Vec::new(),
                 network: false,
                 clipboard: false,
                 microphone: true,

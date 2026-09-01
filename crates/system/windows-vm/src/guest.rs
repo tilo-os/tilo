@@ -10,7 +10,7 @@ use crate::https_guest::{
     PreparedUninstallation, PublicationResult, StagedInstaller, UninstallationOperationId,
     UninstallationStatus,
 };
-use crate::{ApplicationPresentation, Catalog, CatalogError, LicenseState};
+use crate::{ApplicationPresentation, Catalog, CatalogError, GuestNetworkBinding, LicenseState};
 
 /// A secret whose formatter never exposes its contents and whose allocation is
 /// cleared before release. It is deliberately not `Clone`.
@@ -88,6 +88,7 @@ pub trait GuestAgent: Send + Sync {
         &self,
         session: &GuestSession,
         application_id: &str,
+        network: Option<&GuestNetworkBinding>,
     ) -> Result<GuestLaunch, AgentError>;
 
     fn stage_installer<R>(
