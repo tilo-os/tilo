@@ -113,7 +113,9 @@ impl ApplianceOwnerClient {
             sender,
             status_pending: false,
             action_pending: false,
-            next_refresh: Instant::now() - STATUS_INTERVAL,
+            next_refresh: Instant::now()
+                .checked_sub(STATUS_INTERVAL)
+                .unwrap_or_else(Instant::now),
             status: ApplianceStatus::unavailable("Checking the Windows appliance…"),
         };
         client.refresh();
@@ -142,6 +144,9 @@ impl ApplianceOwnerClient {
         });
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if an appliance action is already active.
     pub fn import_iso(&mut self, source: File) -> Result<(), String> {
         if self.action_pending {
             return Err("A Windows appliance action is already in progress.".into());
@@ -159,12 +164,16 @@ impl ApplianceOwnerClient {
                 .map_err(|error| {
                     format!("Could not start the standard authorisation prompt: {error}")
                 })
-                .and_then(success_output);
+                .and_then(|output| success_output(&output));
             let _ = sender.send(OwnerEvent::Imported(result));
         });
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the appliance is not provisioned or an action is
+    /// already active.
     pub fn open_recovery(&mut self) -> Result<(), String> {
         if self.action_pending {
             return Err("A Windows appliance action is already in progress.".into());
@@ -195,7 +204,7 @@ impl ApplianceOwnerClient {
                 .map_err(|error| {
                     format!("Could not start the standard authorisation prompt: {error}")
                 })
-                .and_then(success_output)
+                .and_then(|output| success_output(&output))
                 .and_then(|()| {
                     Command::new(RECOVERY_CONSOLE)
                         .arg("--owner-authorized")
@@ -244,16 +253,12 @@ impl ApplianceOwnerClient {
                         notice = Some(error);
                     }
                 }
-                OwnerEvent::Imported(Err(error)) => {
-                    self.action_pending = false;
-                    notice = Some(error);
-                }
                 OwnerEvent::Recovery(Ok(())) => {
                     self.action_pending = false;
                     notice =
                         Some("The authorised Windows setup or recovery desktop is open.".into());
                 }
-                OwnerEvent::Recovery(Err(error)) => {
+                OwnerEvent::Imported(Err(error)) | OwnerEvent::Recovery(Err(error)) => {
                     self.action_pending = false;
                     notice = Some(error);
                 }
@@ -278,11 +283,17 @@ fn read_status() -> Result<ApplianceStatus, String> {
         .map_err(|error| format!("Windows appliance returned invalid status: {error}"))
 }
 
-fn success_output(output: std::process::Output) -> Result<(), String> {
+fn success_output(output: &std::process::Output) -> Result<(), String> {
     if output.status.success() {
         Ok(())
     } else {
         Err(output_error(&output.stderr))
+    }
+}
+
+impl Default for ApplianceOwnerClient {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

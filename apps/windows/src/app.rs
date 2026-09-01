@@ -113,6 +113,10 @@ impl WindowsApp {
     pub fn new_offline() -> Self {
         Self::with_provider(Box::new(SampleProvider::new()))
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the constructor keeps retained controls and their signals adjacent for auditable UI wiring"
+    )]
     pub fn with_provider(mut provider: Box<dyn CompatibilityProvider>) -> Self {
         let catalogue = provider.catalogue();
         let route_signal = Rc::new(Cell::new(None));
@@ -854,7 +858,20 @@ impl Widget for WindowsApp {
             theme.text_dim,
             TextWeight::Regular,
         );
-        if !appliance.is_provisioned() {
+        if appliance.is_provisioned() {
+            let recovery = Rect::new(
+                sidebar.x0 + PAD,
+                appliance_y + 60.0,
+                sidebar.x1 - PAD,
+                appliance_y + 92.0,
+            );
+            self.recovery_desktop_button.apply_layout_external(recovery);
+            self.recovery_desktop_button.set_style(ButtonStyle::Neutral);
+            self.recovery_desktop_button
+                .set_enabled(appliance.recovery_available && !self.appliance_owner.busy());
+            self.recovery_desktop_button
+                .draw(scene, t, tr, theme, presence);
+        } else {
             let choose_iso = Rect::new(
                 sidebar.x0 + PAD,
                 appliance_y + 60.0,
@@ -868,19 +885,6 @@ impl Widget for WindowsApp {
             self.choose_windows_iso_button
                 .set_enabled(!self.appliance_owner.busy() && self.iso_portal_rx.is_none());
             self.choose_windows_iso_button
-                .draw(scene, t, tr, theme, presence);
-        } else {
-            let recovery = Rect::new(
-                sidebar.x0 + PAD,
-                appliance_y + 60.0,
-                sidebar.x1 - PAD,
-                appliance_y + 92.0,
-            );
-            self.recovery_desktop_button.apply_layout_external(recovery);
-            self.recovery_desktop_button.set_style(ButtonStyle::Neutral);
-            self.recovery_desktop_button
-                .set_enabled(appliance.recovery_available && !self.appliance_owner.busy());
-            self.recovery_desktop_button
                 .draw(scene, t, tr, theme, presence);
         }
         let mut y = appliance_y + 108.0;
