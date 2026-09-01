@@ -5,11 +5,11 @@
 //! via the App's top-layer [`Widget::draw_overlay`] pass — a real overlay,
 //! not an inline expander that shoves siblings down.
 //!
-//! Like [`crate::widget::TextInput`], the chosen value lives in the CRDT, not
-//! on the widget: the constructor takes a `value_path`, and selection splices
-//! the chosen string into the Automerge `Text` object there (creating it if
-//! absent) so a host reading that path sees the change with no extra wiring.
-//! `sync` mirrors it back; a scalar string at the path is also accepted.
+//! Like [`crate::widget::TextInput`], the chosen value can live in either an
+//! explicit durable or process-local model. [`Dropdown::new`] takes a CRDT
+//! `value_path` and splices selection into the Automerge `Text` object there;
+//! [`Dropdown::from_state`] binds a typed [`crate::LocalState<String>`]. In
+//! both forms `sync` mirrors model changes back without app-owned fan-out.
 //!
 //! Keyboard (while focused): Enter/Space/Down open; Up/Down move the
 //! highlight; Enter selects + closes; Esc dismisses; printable characters
@@ -51,6 +51,8 @@ const CHEVRON_W: f64 = 30.0;
 const FONT: f32 = 15.0;
 const LINE_PX: f32 = 60.0;
 
+type SelectionChangeCallback = Box<dyn FnMut(&str)>;
+
 /// Widens a row/option count to `f64` for layout math, through `u32` (exact
 /// in `f64`) with a saturating fallback rather than an `as` cast — a
 /// dropdown never approaches `u32::MAX` options.
@@ -90,6 +92,8 @@ pub struct Dropdown {
     accessible_name: Option<String>,
     options: Vec<String>,
     value_path: String,
+    local_state: Option<crate::local_state::LocalBinding<String>>,
+    on_change: Option<SelectionChangeCallback>,
     placeholder: String,
 
     /// Mirror of the CRDT value at `value_path`. Empty when unset.
@@ -127,6 +131,8 @@ impl Dropdown {
             accessible_name: None,
             options,
             value_path: value_path.to_string(),
+            local_state: None,
+            on_change: None,
             placeholder: String::new(),
             selected: String::new(),
             open: false,
@@ -142,6 +148,31 @@ impl Dropdown {
             last_cursor: Point::ZERO,
             enabled: true,
         }
+    }
+
+    /// Create a dropdown bound to typed process-local selected state.
+    ///
+    /// User selection updates `state`; mutations through any clone update
+    /// this dropdown on the next synchronization pass. The selected string is
+    /// intentionally not restricted to `options`, so asynchronously loaded
+    /// choices can preserve their model value while options catch up.
+    pub fn from_state(options: Vec<String>, state: &crate::LocalState<String>) -> Self {
+        let (selected, binding) = crate::local_state::LocalBinding::new(state);
+        Self {
+            selected,
+            local_state: Some(binding),
+            ..Self::new(options, "")
+        }
+    }
+
+    /// Observe selections produced by user interaction.
+    ///
+    /// Model synchronization and [`Self::set_selected`] do not invoke this
+    /// callback.
+    #[must_use]
+    pub fn on_change(mut self, callback: impl FnMut(&str) + 'static) -> Self {
+        self.on_change = Some(Box::new(callback));
+        self
     }
 
     /// Stable identifier for the e2e harness (`Widget::test_id`).
@@ -205,6 +236,21 @@ impl Dropdown {
     }
     pub fn selected(&self) -> &str {
         &self.selected
+    }
+
+    /// Set the selected model value programmatically.
+    ///
+    /// A bound [`crate::LocalState`] is updated immediately; this does not
+    /// invoke [`Self::on_change`].
+    pub fn set_selected(&mut self, selected: impl Into<String>) {
+        self.selected = selected.into();
+        self.publish_local_state();
+    }
+
+    fn publish_local_state(&mut self) {
+        if let Some(binding) = &mut self.local_state {
+            binding.publish(&self.selected);
+        }
     }
 
     /// Place the dropdown at an absolute rect without going through taffy —
@@ -336,19 +382,25 @@ impl Dropdown {
     /// Commit `value` into the CRDT `Text` at `value_path` (creating the
     /// object if needed) and mirror it locally.
     fn commit_value(&mut self, value: &str, state: &mut AutoCommit, root: &ObjId) {
-        let obj = match state.get(root, self.value_path.as_str()) {
-            Ok(Some((Value::Object(ObjType::Text), obj))) => Some(obj),
-            _ => state
-                .put_object(root, self.value_path.as_str(), ObjType::Text)
-                .ok(),
-        };
-        if let Some(obj) = obj {
-            crate::doc::splice_text_diffed(state, &obj, value);
-        } else {
-            // Last resort: store as a scalar string (still readable).
-            let _ = state.put(root, self.value_path.as_str(), value);
+        if self.local_state.is_none() {
+            let obj = match state.get(root, self.value_path.as_str()) {
+                Ok(Some((Value::Object(ObjType::Text), obj))) => Some(obj),
+                _ => state
+                    .put_object(root, self.value_path.as_str(), ObjType::Text)
+                    .ok(),
+            };
+            if let Some(obj) = obj {
+                crate::doc::splice_text_diffed(state, &obj, value);
+            } else {
+                // Last resort: store as a scalar string (still readable).
+                let _ = state.put(root, self.value_path.as_str(), value);
+            }
         }
         self.selected = value.to_string();
+        self.publish_local_state();
+        if let Some(callback) = self.on_change.as_mut() {
+            callback(value);
+        }
     }
 
     /// Select the highlighted option (if any) and close.
@@ -503,8 +555,12 @@ impl Dropdown {
 
 impl Widget for Dropdown {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(v) = Self::read_value(state, root, self.value_path.as_str()) {
-            self.selected = v;
+        if let Some(binding) = &mut self.local_state {
+            if let Some(selected) = binding.poll() {
+                self.selected = selected;
+            }
+        } else if let Some(value) = Self::read_value(state, root, self.value_path.as_str()) {
+            self.selected = value;
         }
         if self.align_highlight_on_sync {
             self.align_highlight_on_sync = false;
@@ -868,6 +924,51 @@ impl Widget for Dropdown {
             node = node.with_position(idx.saturating_add(1), self.options.len());
         }
         Some(node)
+    }
+
+    /// Accessibility and headless control of the combobox.
+    ///
+    /// Expand/collapse mirrors pointer opening, Activate toggles the popup,
+    /// and `SetValue` selects one exact option through the same model mutation
+    /// path as keyboard or pointer selection.
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        root: &ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+        if !self.enabled {
+            return false;
+        }
+        match action {
+            Action::Expand => {
+                self.do_open();
+                true
+            }
+            Action::Collapse => {
+                self.close();
+                true
+            }
+            Action::Activate => {
+                if self.open {
+                    self.close();
+                } else {
+                    self.do_open();
+                }
+                true
+            }
+            Action::SetValue(value) => {
+                let Some(value) = self.options.iter().find(|option| *option == value).cloned()
+                else {
+                    return false;
+                };
+                self.commit_value(&value, state, root);
+                self.close();
+                true
+            }
+            _ => false,
+        }
     }
 
     /// While open, grabs every event — see module docs.
@@ -1326,6 +1427,76 @@ mod tests {
             doc.save().len(),
             before,
             "re-selecting the already-selected option must not grow the document"
+        );
+    }
+
+    #[test]
+    fn local_state_binding_is_two_way_across_dropdowns() {
+        let state = crate::LocalState::new(String::from("UTC"));
+        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = std::rc::Rc::clone(&changes);
+        let mut first = Dropdown::from_state(opts(), &state)
+            .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
+        let mut second = Dropdown::from_state(opts(), &state);
+        let mut document = AutoCommit::new();
+
+        state.set(String::from("Asia/Tokyo"));
+        Widget::sync(&mut first, &mut document, &automerge::ROOT);
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert_eq!(first.selected(), "Asia/Tokyo");
+        assert_eq!(second.selected(), "Asia/Tokyo");
+        assert!(changes.borrow().is_empty(), "model sync is not user intent");
+
+        assert!(Widget::perform_action(
+            &mut first,
+            &crate::a11y::Action::SetValue(String::from("Europe/Amsterdam")),
+            &mut document,
+            &automerge::ROOT,
+        ));
+        assert_eq!(state.get(), "Europe/Amsterdam");
+        assert_eq!(&*changes.borrow(), &["Europe/Amsterdam"]);
+        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        assert_eq!(second.selected(), "Europe/Amsterdam");
+
+        second.set_selected("America/New_York");
+        assert_eq!(state.get(), "America/New_York");
+        Widget::sync(&mut first, &mut document, &automerge::ROOT);
+        assert_eq!(first.selected(), "America/New_York");
+        assert_eq!(&*changes.borrow(), &["Europe/Amsterdam"]);
+    }
+
+    #[test]
+    fn semantic_actions_expand_collapse_and_reject_unknown_values() {
+        use crate::a11y::Action;
+
+        let mut dropdown = Dropdown::new(opts(), "tz");
+        let (mut document, root) = doc_with_tz("UTC");
+        Widget::sync(&mut dropdown, &mut document, &root);
+
+        assert!(Widget::perform_action(
+            &mut dropdown,
+            &Action::Expand,
+            &mut document,
+            &root,
+        ));
+        assert!(dropdown.is_open());
+        assert!(Widget::perform_action(
+            &mut dropdown,
+            &Action::Collapse,
+            &mut document,
+            &root,
+        ));
+        assert!(!dropdown.is_open());
+        assert!(!Widget::perform_action(
+            &mut dropdown,
+            &Action::SetValue(String::from("not an option")),
+            &mut document,
+            &root,
+        ));
+        assert_eq!(dropdown.selected(), "UTC");
+        assert_eq!(
+            Dropdown::read_value(&document, &root, "tz").as_deref(),
+            Some("UTC")
         );
     }
 

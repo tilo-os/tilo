@@ -846,7 +846,6 @@ fn validate_document_route(
     if envelope.artifact != document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id)
         || envelope.attestation_id
             != document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id)
-        || envelope.op_class != OpClass::Splice
         || envelope.encryption.is_some()
     {
         return Err(ValidationError::DocumentRouteMismatch);
