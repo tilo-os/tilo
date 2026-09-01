@@ -37,6 +37,7 @@ package_qos-session() {
   install -Dm644 pam/qos-unlock "$pkgdir/etc/pam.d/qos-unlock"
   install -Dm644 wayland-sessions/qos.desktop -t "$pkgdir/usr/share/wayland-sessions"
   install -Dm644 portal/qos.portal -t "$pkgdir/usr/share/xdg-desktop-portal/portals"
+  install -Dm644 license/LICENSE "$pkgdir/usr/share/licenses/qos-session/LICENSE"
 }
 
 package_qos-session-devel() {

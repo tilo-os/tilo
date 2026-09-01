@@ -23,12 +23,13 @@ stage=$work/stage
 
 main=$work/qos-session
 dev=$work/qos-session-devel
-mkdir -p "$main"/{DEBIAN,etc/pam.d,usr/bin,usr/libexec,usr/share/wayland-sessions,usr/share/xdg-desktop-portal/portals}
+mkdir -p "$main"/{DEBIAN,etc/pam.d,usr/bin,usr/libexec,usr/share/wayland-sessions,usr/share/xdg-desktop-portal/portals,usr/share/doc/qos-session}
 install -pm 0755 "$stage/bin/qos-shell" "$stage/bin/qos-launcher" "$main/usr/bin/"
 install -pm 0755 "$stage/libexec/qos-unlock-helper" "$stage/libexec/qos-session" "$main/usr/libexec/"
 install -pm 0644 "$stage/pam/qos-unlock" "$main/etc/pam.d/"
 install -pm 0644 "$stage/wayland-sessions/qos.desktop" "$main/usr/share/wayland-sessions/"
 install -pm 0644 "$stage/portal/qos.portal" "$main/usr/share/xdg-desktop-portal/portals/"
+install -pm 0644 "$stage/license/LICENSE" "$main/usr/share/doc/qos-session/copyright"
 
 mkdir -p "$dev"/{DEBIAN,usr/libexec,usr/share/wayland-sessions}
 install -pm 0755 "$stage/libexec/qos-session-dev" "$dev/usr/libexec/"

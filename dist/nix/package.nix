@@ -68,6 +68,7 @@ rustPlatform.buildRustPackage rec {
     install -Dm644 "$p/pam/qos-unlock" "$out/etc/pam.d/qos-unlock"
     install -Dm644 "$p/wayland-sessions/qos.desktop" "$out/share/wayland-sessions/qos.desktop"
     install -Dm644 "$p/portal/qos.portal" "$out/share/xdg-desktop-portal/portals/qos.portal"
+    install -Dm644 "$p/license/LICENSE" "$out/share/licenses/qos-session/LICENSE"
 
     # Store paths replace FHS paths in the wrapper and session entry.
     substituteInPlace "$out/libexec/qos-session" \

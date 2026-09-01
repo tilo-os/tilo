@@ -16,6 +16,11 @@ for file in /etc/pam.d/qos-unlock \
             /usr/share/xdg-desktop-portal/portals/qos.portal; do
     [[ -f $(path "$file") ]] || { echo "missing file: $file" >&2; exit 1; }
 done
+if [[ ! -f $(path /usr/share/licenses/qos-session/LICENSE) \
+      && ! -f $(path /usr/share/doc/qos-session/copyright) ]]; then
+    echo "missing qOS license text" >&2
+    exit 1
+fi
 
 grep -q '^Exec=/usr/libexec/qos-session$' "$(path /usr/share/wayland-sessions/qos.desktop)"
 grep -q '^TryExec=/usr/bin/qos-shell$' "$(path /usr/share/wayland-sessions/qos.desktop)"

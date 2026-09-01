@@ -114,6 +114,8 @@ install -Dpm 0644 wayland-sessions/qos.desktop \
 # inside a qOS session — under any other desktop these files sit inert.
 install -Dpm 0644 portal/qos.portal \
                   %{buildroot}%{_datadir}/xdg-desktop-portal/portals/qos.portal
+install -Dpm 0644 license/LICENSE \
+                  %{buildroot}%{_datadir}/licenses/%{name}/LICENSE
 
 install -Dpm 0755 libexec/qos-session-dev   %{buildroot}%{_libexecdir}/qos-session-dev
 install -Dpm 0644 wayland-sessions/qos-dev.desktop \
@@ -158,6 +160,7 @@ test ! -e %{buildroot}%{_userunitdir}/qos-portal.service
 %config(noreplace) %{_sysconfdir}/pam.d/qos-unlock
 %{_datadir}/wayland-sessions/qos.desktop
 %{_datadir}/xdg-desktop-portal/portals/qos.portal
+%license %{_datadir}/licenses/%{name}/LICENSE
 
 %files devel
 %{_libexecdir}/qos-session-dev
