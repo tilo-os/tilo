@@ -23,10 +23,11 @@
 //!   blob is fed into [`crate::ics::parse`] to produce [`Event`] / [`Task`]
 //!   values, tagged with their source [`RemoteCalendar`]'s colour and id.
 //!
-//! Two-way sync — pushing local edits back with an `ETag`-guarded `PUT`, and
-//! incremental `sync-token` pulls — is not implemented here; the local calendar
-//! is the source of truth for edits, and `.ics` export is the outbound path. The
-//! `Sync` affordance therefore only pulls, and says so.
+//! Two-way sync uploads queued local changes with `PUT`, removes queued remote
+//! deletions with `DELETE`, then pulls the collection again. Incremental
+//! `sync-token` pulls are not implemented: each pass queries the configured
+//! window. The Sync affordance reports partial failures and keeps unconfirmed
+//! changes queued rather than claiming success.
 //!
 //! That HTTP + TLS stack is deliberately kept out of the headless build so it
 //! stays small and green; the seam is this module, and the data types

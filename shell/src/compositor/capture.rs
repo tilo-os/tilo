@@ -1,0 +1,2296 @@
+//! Production execution for the shell capture studio.
+//!
+//! The widget emits semantic [`CaptureIntent`]s. This module is the compositor
+//! side: it chooses the unclipped live source, builds the requested composition,
+//! performs GPU readback, and writes/copies the resulting pixels. Keeping this
+//! here (rather than in the widget) is what lets a full-app capture include
+//! content outside the physical monitor.
+
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "capture geometry is clamped to finite positive pixel dimensions before conversion"
+)]
+
+use std::collections::VecDeque;
+#[cfg(not(feature = "hdr-decode"))]
+use std::fs::File;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use ui::floating_surface::{FloatingRole, FloatingSource, FloatingSurfaceRequest};
+use ui::offscreen::OffscreenRenderer;
+use ui::widget::{
+    AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
+    CapturePreview, PipLayout, RecordingCommand, ReplayCommand, ScreenshotCommand,
+};
+use vello::Scene;
+use vello::kurbo::{Affine, BezPath, Point, Rect, Size, Stroke};
+use vello::peniko::{BlendMode, Color, Fill};
+
+use crate::compositor::frame::FrameBuilder;
+use crate::shell::overlay_host::CaptureMirrorHandoffLayer;
+
+const MAX_CAPTURE_EDGE: f64 = 8_192.0;
+const GRID_GAP: f64 = 16.0;
+const STACK_OFFSET: f64 = 28.0;
+const REPLAY_FPS: u32 = 30;
+const REPLAY_SECONDS: usize = 30;
+const REPLAY_FRAMES: usize = REPLAY_SECONDS * REPLAY_FPS as usize;
+const REPLAY_KEYFRAME_INTERVAL: u32 = REPLAY_FPS * 2;
+const REPLAY_MAX_VIDEO_BYTES: usize = 128 * 1024 * 1024;
+#[cfg(feature = "hdr-decode")]
+const AUDIO_BYTES_PER_VIDEO_FRAME: usize = 48_000 / REPLAY_FPS as usize * 4;
+#[cfg(feature = "hdr-decode")]
+const REPLAY_MAX_AUDIO_BYTES: usize = REPLAY_SECONDS * 48_000 * 4;
+
+pub fn recording_audio_availability() -> (bool, bool) {
+    #[cfg(feature = "hdr-decode")]
+    {
+        let availability = super::audio_capture::availability();
+        (availability.system, availability.microphone)
+    }
+    #[cfg(not(feature = "hdr-decode"))]
+    {
+        (false, false)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CaptureOutcome {
+    Saved(PathBuf),
+    Copied { width: u32, height: u32 },
+    Floated { id: String },
+    Pinned { id: String },
+    FloatingClosed { id: String },
+    RecordingStarted(PathBuf),
+    RecordingPaused { path: PathBuf, paused: bool },
+    RecordingAudioLost { path: PathBuf, reason: String },
+    RecordingStopped { path: PathBuf, frames: u64 },
+    RecordingOpened(PathBuf),
+    RecordingRevealed(PathBuf),
+    ReplayStarted,
+    ReplaySaved { path: PathBuf, seconds: u8 },
+    ReplayStopped,
+    ReplayAudioLost(String),
+    ScreenshotOpened(PathBuf),
+    ScreenshotMarkupOpened(PathBuf),
+    ScreenshotMarkupClosed,
+    ScreenshotRevealed(PathBuf),
+    Failed(String),
+}
+
+pub struct CaptureExecutor {
+    sequence: u64,
+    live_mirrors: Vec<LiveMirror>,
+    recording: Option<RecordingSession>,
+    last_recording: Option<PathBuf>,
+    last_screenshot: Option<PathBuf>,
+    replay: Option<ReplaySession>,
+    /// Requests from sandboxed app service connections. Kept separate from
+    /// in-process widget handoffs: external clients cannot participate in the
+    /// shell's second widget draw pass, so call/navigation sources become live
+    /// mirrors until native sub-surface ownership is negotiated.
+    external_floating: Vec<FloatingSurfaceRequest>,
+    external_updates: Vec<(String, Rect, String, Rect)>,
+    external_dismissals: Vec<String>,
+}
+
+struct LiveMirror {
+    id: String,
+    title: String,
+    intent: CaptureIntent,
+    renderer: Option<OffscreenRenderer>,
+    preferred_size: Option<Size>,
+    /// App-local semantic binding re-resolved against the owner's current
+    /// compositor surface each frame. Generic PiP therefore follows strip
+    /// movement and window resizing instead of sampling stale desktop pixels.
+    tracking_source: Option<FloatingSource>,
+    /// In-process app mirrors expose their activity edge through the shared
+    /// widget tree. Shell-created and service-owned mirrors have separate
+    /// lifecycles and must not be retired by that set.
+    close_when_app_inactive: bool,
+    /// Consumed on first presentation so the PiP grows out of the selected
+    /// pixels instead of appearing as an unrelated centered window.
+    spawn_from: Option<Rect>,
+}
+
+struct RecordingSession {
+    intent: CaptureIntent,
+    renderer: OffscreenRenderer,
+    encoder: crate::network::encoder::H264Encoder,
+    output: RecordingOutput,
+    path: PathBuf,
+    width: u32,
+    height: u32,
+    last_frame: Instant,
+    frames: u64,
+    paused: bool,
+    #[cfg(feature = "hdr-decode")]
+    audio_tracks: Vec<ActiveAudioTrack>,
+    audio_warning: Option<String>,
+}
+
+#[cfg(feature = "hdr-decode")]
+struct ActiveAudioTrack {
+    source: super::audio_capture::AudioSource,
+    capture: super::audio_capture::AudioCapture,
+    mux_index: usize,
+}
+
+struct ReplaySession {
+    intent: CaptureIntent,
+    renderer: OffscreenRenderer,
+    encoder: crate::network::encoder::H264Encoder,
+    width: u32,
+    height: u32,
+    last_frame: Instant,
+    frames: VecDeque<BufferedReplayFrame>,
+    video_bytes: usize,
+    #[cfg(feature = "hdr-decode")]
+    audio_tracks: Vec<ReplayAudioTrack>,
+    audio_warning: Option<String>,
+}
+
+struct BufferedReplayFrame {
+    access_unit: Vec<u8>,
+    keyframe: bool,
+}
+
+#[cfg(feature = "hdr-decode")]
+struct ReplayAudioTrack {
+    source: super::audio_capture::AudioSource,
+    capture: super::audio_capture::AudioCapture,
+    pcm: VecDeque<u8>,
+}
+
+enum RecordingOutput {
+    #[cfg(feature = "hdr-decode")]
+    Mp4(super::mp4_recording::Mp4Recording),
+    #[cfg(not(feature = "hdr-decode"))]
+    Raw(File),
+}
+
+impl RecordingOutput {
+    fn new(
+        path: &Path,
+        width: u32,
+        height: u32,
+        fps: u32,
+        audio_track_names: Vec<String>,
+    ) -> Result<Self, String> {
+        #[cfg(feature = "hdr-decode")]
+        {
+            Ok(Self::Mp4(super::mp4_recording::Mp4Recording::new(
+                path.to_path_buf(),
+                width,
+                height,
+                fps,
+                audio_track_names,
+            )))
+        }
+        #[cfg(not(feature = "hdr-decode"))]
+        {
+            let _ = (width, height, fps, audio_track_names);
+            File::create(path)
+                .map(Self::Raw)
+                .map_err(|error| format!("create recording {}: {error}", path.display()))
+        }
+    }
+
+    fn write_access_unit(&mut self, bytes: &[u8]) -> Result<(), String> {
+        match self {
+            #[cfg(feature = "hdr-decode")]
+            Self::Mp4(output) => output.write_access_unit(bytes),
+            #[cfg(not(feature = "hdr-decode"))]
+            Self::Raw(file) => file
+                .write_all(bytes)
+                .map_err(|error| format!("write raw H.264 access unit: {error}")),
+        }
+    }
+
+    #[cfg(feature = "hdr-decode")]
+    fn write_pcm_audio(&mut self, track_index: usize, bytes: &[u8]) -> Result<(), String> {
+        let Self::Mp4(output) = self;
+        output.write_pcm_audio(track_index, bytes)
+    }
+
+    fn finish(self, path: &Path) -> Result<(), String> {
+        match self {
+            #[cfg(feature = "hdr-decode")]
+            Self::Mp4(output) => {
+                let _ = path;
+                output.finish()
+            }
+            #[cfg(not(feature = "hdr-decode"))]
+            Self::Raw(mut file) => file
+                .flush()
+                .map_err(|error| format!("flush recording {}: {error}", path.display())),
+        }
+    }
+}
+
+impl Default for CaptureExecutor {
+    fn default() -> Self {
+        Self {
+            sequence: 0,
+            live_mirrors: Vec::new(),
+            recording: None,
+            last_recording: None,
+            last_screenshot: None,
+            replay: None,
+            external_floating: Vec::new(),
+            external_updates: Vec::new(),
+            external_dismissals: Vec::new(),
+        }
+    }
+}
+
+impl CaptureExecutor {
+    pub fn queue_external_floating(&mut self, request: FloatingSurfaceRequest) {
+        self.external_floating.push(request);
+    }
+
+    pub fn update_external_floating_region(
+        &mut self,
+        id: String,
+        region: Rect,
+        app_id: String,
+        local_region: Rect,
+    ) {
+        self.external_updates
+            .push((id, region, app_id, local_region));
+    }
+
+    pub fn dismiss_external_floating(&mut self, id: String) {
+        self.external_dismissals.push(id);
+    }
+
+    /// Drain picker intents and advance continuous recording/mirror work.
+    pub fn execute_ready(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+        clean_screen_scene: &mut Scene,
+    ) -> Vec<CaptureOutcome> {
+        let closed = frame_builder.take_closed_capture_mirrors();
+        let mut outcomes: Vec<CaptureOutcome> = closed
+            .iter()
+            .cloned()
+            .map(|id| CaptureOutcome::FloatingClosed { id })
+            .collect();
+        for id in &closed {
+            frame_builder.on_floating_surface_host_message(
+                &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: id.clone() },
+            );
+        }
+        self.live_mirrors
+            .retain(|mirror| !closed.iter().any(|id| id == &mirror.id));
+
+        let dismissals = std::mem::take(&mut self.external_dismissals);
+        self.live_mirrors
+            .retain(|mirror| !dismissals.iter().any(|id| id == &mirror.id));
+
+        let active_app_floats: std::collections::HashSet<String> = frame_builder
+            .active_floating_surface_ids()
+            .into_iter()
+            .collect();
+        let app_closed = self
+            .live_mirrors
+            .iter()
+            .filter(|mirror| {
+                mirror.close_when_app_inactive && !active_app_floats.contains(&mirror.id)
+            })
+            .map(|mirror| mirror.id.clone())
+            .collect::<Vec<_>>();
+        self.live_mirrors
+            .retain(|mirror| !app_closed.iter().any(|id| id == &mirror.id));
+        for id in &app_closed {
+            frame_builder.on_floating_surface_host_message(
+                &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: id.clone() },
+            );
+        }
+        outcomes.extend(
+            app_closed
+                .into_iter()
+                .map(|id| CaptureOutcome::FloatingClosed { id }),
+        );
+
+        for (id, region, app_id, local_region) in std::mem::take(&mut self.external_updates) {
+            if let Some(mirror) = self.live_mirrors.iter_mut().find(|mirror| mirror.id == id) {
+                mirror.intent.regions = vec![region];
+                mirror.tracking_source = Some(updated_local_tracking_source(
+                    mirror.tracking_source.take(),
+                    app_id,
+                    local_region,
+                ));
+            }
+        }
+        for (id, region) in frame_builder.take_floating_surface_source_updates() {
+            if let Some(mirror) = self
+                .live_mirrors
+                .iter_mut()
+                .find(|mirror| mirror.id == id && mirror.close_when_app_inactive)
+            {
+                mirror.intent.regions = vec![region];
+            }
+        }
+
+        for request in std::mem::take(&mut self.external_floating) {
+            match self.adopt_floating_request(frame_builder, request, false) {
+                Ok(Some(id)) => outcomes.push(CaptureOutcome::Floated { id }),
+                Ok(None) => {}
+                Err(error) => outcomes.push(CaptureOutcome::Failed(error)),
+            }
+        }
+        for request in frame_builder.take_floating_surface_requests() {
+            let public_id = request.id.clone();
+            let adopted_rect = request.initial_rect.map_or(
+                [0.0, 0.0, 1.0, 1.0],
+                ui::floating_surface::protocol_rect_array,
+            );
+            // Calls use the exact app widget in the shell's second paint pass,
+            // retaining controls and pointer capture. Other app-region/media
+            // sources use the generic live mirror host below.
+            if matches!(
+                request.role,
+                FloatingRole::ActiveCall | FloatingRole::Navigation
+            ) {
+                frame_builder.on_floating_surface_host_message(
+                    &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                        id: public_id,
+                        rect: adopted_rect,
+                    },
+                );
+                tracing::debug!(id = %request.id, ?request.role, "shell adopted live app-owned surface");
+                continue;
+            }
+            match self.adopt_floating_request(frame_builder, request, true) {
+                Ok(Some(id)) => {
+                    frame_builder.on_floating_surface_host_message(
+                        &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                            id: public_id,
+                            rect: adopted_rect,
+                        },
+                    );
+                    outcomes.push(CaptureOutcome::Floated { id });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    frame_builder.on_floating_surface_host_message(
+                        &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: public_id },
+                    );
+                    outcomes.push(CaptureOutcome::Failed(error));
+                }
+            }
+        }
+
+        for command in frame_builder.host_mut().take_screenshot_markup_commands() {
+            let outcome = match command {
+                ui::widget::ScreenshotMarkupCommand::Save(export) => {
+                    let path = next_screenshot_path(self.sequence);
+                    self.sequence = self.sequence.saturating_add(1);
+                    match write_png(&path, export.width, export.height, &export.rgba) {
+                        Ok(()) => {
+                            self.last_screenshot = Some(path.clone());
+                            frame_builder.host_mut().close_screenshot_markup();
+                            CaptureOutcome::Saved(path)
+                        }
+                        Err(error) => CaptureOutcome::Failed(error),
+                    }
+                }
+                ui::widget::ScreenshotMarkupCommand::Copy(export) => {
+                    if ui::clipboard_copy_image(
+                        export.width as usize,
+                        export.height as usize,
+                        &export.rgba,
+                    ) {
+                        CaptureOutcome::Copied {
+                            width: export.width,
+                            height: export.height,
+                        }
+                    } else {
+                        CaptureOutcome::Failed("the clipboard refused marked-up pixels".into())
+                    }
+                }
+                ui::widget::ScreenshotMarkupCommand::OpenExternal => self
+                    .open_last_screenshot()
+                    .unwrap_or_else(CaptureOutcome::Failed),
+                ui::widget::ScreenshotMarkupCommand::Cancel => {
+                    frame_builder.host_mut().close_screenshot_markup();
+                    CaptureOutcome::ScreenshotMarkupClosed
+                }
+            };
+            outcomes.push(outcome);
+        }
+
+        let intents = frame_builder.take_capture_intents();
+        for intent in intents {
+            let outcome = if let Some(command) = intent.screenshot_command {
+                match command {
+                    ScreenshotCommand::MarkupLast => self
+                        .open_last_screenshot_markup(frame_builder, &intent.regions)
+                        .unwrap_or_else(CaptureOutcome::Failed),
+                    ScreenshotCommand::OpenLast => self
+                        .open_last_screenshot()
+                        .unwrap_or_else(CaptureOutcome::Failed),
+                    ScreenshotCommand::PinLast => {
+                        match self.pin_last_screenshot(frame_builder, &intent.regions) {
+                            Ok(outcome) => {
+                                // The current clean scene already contains the
+                                // receipt proxy. Clearing widget state now
+                                // makes the next laid-out frame replace it
+                                // directly with the newly inserted surface.
+                                frame_builder.set_capture_screenshot_pinned();
+                                outcome
+                            }
+                            Err(error) => {
+                                frame_builder.set_capture_screenshot_pin_pending(false);
+                                CaptureOutcome::Failed(error)
+                            }
+                        }
+                    }
+                    ScreenshotCommand::RevealLast => self
+                        .reveal_last_screenshot()
+                        .unwrap_or_else(CaptureOutcome::Failed),
+                    ScreenshotCommand::CopyLast => self
+                        .copy_last_screenshot(frame_builder)
+                        .unwrap_or_else(CaptureOutcome::Failed),
+                }
+            } else if let Some(command) = intent.replay_command {
+                match command {
+                    ReplayCommand::Start => self
+                        .start_replay(frame_builder, clean_screen_scene, intent)
+                        .unwrap_or_else(CaptureOutcome::Failed),
+                    ReplayCommand::SaveRecent => self
+                        .save_replay(frame_builder)
+                        .unwrap_or_else(CaptureOutcome::Failed),
+                    ReplayCommand::Stop => self
+                        .stop_replay(frame_builder)
+                        .unwrap_or_else(CaptureOutcome::Failed),
+                }
+            } else if let Some(command) = intent.recording_command {
+                match command {
+                    RecordingCommand::Start => {
+                        match self.start_recording(frame_builder, clean_screen_scene, intent) {
+                            Ok(outcome) => outcome,
+                            Err(error) => {
+                                // Clear the immediate, non-modal Preparing UI.
+                                // A failed encoder/output setup must never
+                                // leave the shell implying work is ongoing.
+                                frame_builder.set_capture_recording_active(false);
+                                CaptureOutcome::Failed(error)
+                            }
+                        }
+                    }
+                    RecordingCommand::Pause => self
+                        .set_recording_paused(frame_builder, true)
+                        .unwrap_or_else(CaptureOutcome::Failed),
+                    RecordingCommand::Resume => self
+                        .set_recording_paused(frame_builder, false)
+                        .unwrap_or_else(CaptureOutcome::Failed),
+                    RecordingCommand::Stop => self
+                        .stop_recording(frame_builder)
+                        .unwrap_or_else(CaptureOutcome::Failed),
+                    RecordingCommand::OpenLast => self
+                        .open_last_recording()
+                        .unwrap_or_else(CaptureOutcome::Failed),
+                    RecordingCommand::RevealLast => self
+                        .reveal_last_recording()
+                        .unwrap_or_else(CaptureOutcome::Failed),
+                }
+            } else if intent.destination == CaptureDestination::FloatingWindow {
+                let id = format!("capture-mirror:{}", self.sequence);
+                self.sequence = self.sequence.saturating_add(1);
+                let title = intent.targets.first().map_or_else(
+                    || match intent.source {
+                        ui::widget::SourceMode::Region => "Live selection".to_string(),
+                        ui::widget::SourceMode::Window => "Live app".to_string(),
+                        ui::widget::SourceMode::Display => "Live screen".to_string(),
+                        ui::widget::SourceMode::Multi => {
+                            format!("{} live areas", intent.regions.len())
+                        }
+                    },
+                    |target| target.title.clone(),
+                );
+                let spawn_from = intent_spawn_bounds(&intent);
+                self.live_mirrors.push(LiveMirror {
+                    id: id.clone(),
+                    title,
+                    intent,
+                    renderer: None,
+                    preferred_size: None,
+                    spawn_from,
+                    tracking_source: None,
+                    close_when_app_inactive: false,
+                });
+                CaptureOutcome::Floated { id }
+            } else {
+                self.execute_screenshot(frame_builder, clean_screen_scene, &intent)
+                    .unwrap_or_else(CaptureOutcome::Failed)
+            };
+            outcomes.push(outcome);
+        }
+
+        for mirror in &mut self.live_mirrors {
+            match refresh_mirror(frame_builder, clean_screen_scene, mirror) {
+                Ok(()) => {}
+                Err(error) => {
+                    outcomes.push(CaptureOutcome::Failed(format!("{}: {error}", mirror.title)))
+                }
+            }
+        }
+        if let Some(mut recording) = self.recording.take() {
+            match record_frame(frame_builder, clean_screen_scene, &mut recording) {
+                Ok(()) => {
+                    if let Some(reason) = recording.audio_warning.take() {
+                        outcomes.push(CaptureOutcome::RecordingAudioLost {
+                            path: recording.path.clone(),
+                            reason,
+                        });
+                    }
+                    self.recording = Some(recording);
+                }
+                Err(error) => {
+                    let path = recording.path.clone();
+                    frame_builder.set_capture_recording_active(false);
+                    outcomes.push(CaptureOutcome::Failed(format!(
+                        "recording {} stopped: {error}",
+                        path.display()
+                    )));
+                }
+            }
+        }
+        if let Some(mut replay) = self.replay.take() {
+            match record_replay_frame(frame_builder, clean_screen_scene, &mut replay) {
+                Ok(()) => {
+                    frame_builder.set_capture_replay_buffered_seconds(
+                        (replay.frames.len() / REPLAY_FPS as usize).min(REPLAY_SECONDS) as u8,
+                    );
+                    if let Some(reason) = replay.audio_warning.take() {
+                        outcomes.push(CaptureOutcome::ReplayAudioLost(reason));
+                    }
+                    self.replay = Some(replay);
+                }
+                Err(error) => {
+                    frame_builder.set_capture_replay_active(false, AudioCaptureMode::None);
+                    outcomes.push(CaptureOutcome::Failed(format!(
+                        "recent capture stopped: {error}"
+                    )));
+                }
+            }
+        }
+        // A just-created mirror was inserted after the clean desktop's layout
+        // pass. Reconcile structural nodes now so its very first appended
+        // frame has real geometry at `spawn_from` rather than Rect::ZERO.
+        // This shared gate removes the blank first frame for both live PiP and
+        // frozen screenshot pins.
+        frame_builder.relayout();
+        // Appended only after every mirror sampled the clean desktop, so a
+        // region overlapping its own PiP never feeds back recursively.
+        frame_builder.draw_capture_overlays(clean_screen_scene);
+        outcomes
+    }
+
+    pub fn has_live_mirrors(&self) -> bool {
+        !self.live_mirrors.is_empty()
+    }
+
+    pub fn is_recording(&self) -> bool {
+        self.recording.is_some()
+    }
+
+    fn adopt_floating_request(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+        request: FloatingSurfaceRequest,
+        close_when_app_inactive: bool,
+    ) -> Result<Option<String>, String> {
+        if self
+            .live_mirrors
+            .iter()
+            .any(|mirror| mirror.id == request.id)
+        {
+            return Ok(None);
+        }
+        let regions = floating_source_regions(frame_builder, &request.source);
+        if regions.is_empty() {
+            return Err(format!("{} has no visible source to float", request.title));
+        }
+        let id = request.id;
+        let source = if regions.len() > 1 {
+            ui::widget::SourceMode::Multi
+        } else {
+            ui::widget::SourceMode::Region
+        };
+        let spawn_from = region_bounds(&regions);
+        self.live_mirrors.push(LiveMirror {
+            id: id.clone(),
+            title: request.title,
+            intent: CaptureIntent {
+                mode: CaptureMode::Screenshot,
+                source,
+                destination: CaptureDestination::FloatingWindow,
+                regions,
+                include_pointer: false,
+                audio: AudioCaptureMode::None,
+                extent: CaptureExtent::Visible,
+                pip_layout: PipLayout::Auto,
+                targets: Vec::new(),
+                recording_command: None,
+                replay_command: None,
+                screenshot_command: None,
+            },
+            renderer: None,
+            preferred_size: Some(request.preferred_size),
+            spawn_from,
+            tracking_source: request.tracking_source,
+            close_when_app_inactive,
+        });
+        Ok(Some(id))
+    }
+
+    fn start_recording(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+        clean_screen_scene: &Scene,
+        intent: CaptureIntent,
+    ) -> Result<CaptureOutcome, String> {
+        if self.recording.is_some() {
+            return Err("a recording is already active; use Stop before starting another".into());
+        }
+        if self.replay.is_some() {
+            return Err("turn off recent capture before starting a recording".into());
+        }
+        #[cfg(not(feature = "hdr-decode"))]
+        if intent.audio != AudioCaptureMode::None {
+            return Err(
+                "audio capture is unavailable in this compositor build; turn audio off to record"
+                    .into(),
+            );
+        }
+        let (source, regions) = capture_source(frame_builder, clean_screen_scene, &intent);
+        let (_, width, height) = compose_scene(&source, &regions, intent.pip_layout)?;
+        let renderer = OffscreenRenderer::try_new(width, height)
+            .map_err(|error| format!("recording renderer {width}×{height}: {error}"))?;
+        let encoder = crate::network::encoder::H264Encoder::new(width, height, 30)
+            .map_err(|error| format!("H.264 encoder {width}×{height}: {error}"))?;
+        let path = next_recording_path(self.sequence, intent.audio != AudioCaptureMode::None);
+        self.sequence = self.sequence.saturating_add(1);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!("create recording folder {}: {error}", parent.display())
+            })?;
+        }
+        #[cfg(feature = "hdr-decode")]
+        let audio_sources = selected_audio_sources(intent.audio);
+        #[cfg(feature = "hdr-decode")]
+        let mut audio_tracks = Vec::with_capacity(audio_sources.len());
+        #[cfg(feature = "hdr-decode")]
+        for (mux_index, source) in audio_sources.iter().copied().enumerate() {
+            audio_tracks.push(ActiveAudioTrack {
+                source,
+                capture: super::audio_capture::AudioCapture::start(source)?,
+                mux_index,
+            });
+        }
+        #[cfg(feature = "hdr-decode")]
+        let audio_track_names = audio_sources
+            .iter()
+            .map(|source| source.track_name().to_string())
+            .collect();
+        #[cfg(not(feature = "hdr-decode"))]
+        let audio_track_names = Vec::new();
+        let output = RecordingOutput::new(&path, width, height, 30, audio_track_names)?;
+        self.recording = Some(RecordingSession {
+            intent,
+            renderer,
+            encoder,
+            output,
+            path: path.clone(),
+            width,
+            height,
+            last_frame: Instant::now() - Duration::from_millis(34),
+            frames: 0,
+            paused: false,
+            #[cfg(feature = "hdr-decode")]
+            audio_tracks,
+            audio_warning: None,
+        });
+        frame_builder.set_capture_recording_active(true);
+        Ok(CaptureOutcome::RecordingStarted(path))
+    }
+
+    fn set_recording_paused(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+        paused: bool,
+    ) -> Result<CaptureOutcome, String> {
+        let Some(recording) = self.recording.as_mut() else {
+            frame_builder.set_capture_recording_active(false);
+            return Err("there is no active recording to pause or resume".into());
+        };
+        recording.paused = paused;
+        #[cfg(feature = "hdr-decode")]
+        drain_audio_tracks(recording, false)?;
+        if !paused {
+            // Resume with a fresh frame immediately; never make the user wait
+            // for the cadence left over from before the pause.
+            recording.last_frame = Instant::now() - Duration::from_millis(34);
+        }
+        frame_builder.set_capture_recording_paused(paused);
+        Ok(CaptureOutcome::RecordingPaused {
+            path: recording.path.clone(),
+            paused,
+        })
+    }
+
+    fn stop_recording(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+    ) -> Result<CaptureOutcome, String> {
+        let Some(recording) = self.recording.take() else {
+            frame_builder.set_capture_recording_active(false);
+            return Err("there is no active recording to stop".into());
+        };
+        #[cfg(feature = "hdr-decode")]
+        let mut recording = recording;
+        let path = recording.path.clone();
+        let frames = recording.frames;
+        #[cfg(feature = "hdr-decode")]
+        let mut output = recording.output;
+        #[cfg(not(feature = "hdr-decode"))]
+        let output = recording.output;
+        #[cfg(feature = "hdr-decode")]
+        for track in &mut recording.audio_tracks {
+            if let Ok(bytes) = track.capture.drain(true)
+                && !bytes.is_empty()
+            {
+                output.write_pcm_audio(track.mux_index, &bytes)?;
+            }
+        }
+        output.finish(&path)?;
+        self.last_recording = Some(path.clone());
+        frame_builder.set_capture_recording_finished();
+        Ok(CaptureOutcome::RecordingStopped { path, frames })
+    }
+
+    fn reveal_last_recording(&self) -> Result<CaptureOutcome, String> {
+        let path = self
+            .last_recording
+            .as_ref()
+            .ok_or_else(|| "there is no completed recording to reveal".to_string())?;
+        let folder = path
+            .parent()
+            .ok_or_else(|| format!("recording path has no parent: {}", path.display()))?;
+        std::process::Command::new("xdg-open")
+            .arg(folder)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|error| format!("show recording in Files: {error}"))?;
+        Ok(CaptureOutcome::RecordingRevealed(path.clone()))
+    }
+
+    fn open_last_recording(&self) -> Result<CaptureOutcome, String> {
+        let path = self
+            .last_recording
+            .as_ref()
+            .ok_or_else(|| "there is no completed recording to play".to_string())?;
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|error| format!("play recording {}: {error}", path.display()))?;
+        Ok(CaptureOutcome::RecordingOpened(path.clone()))
+    }
+
+    fn start_replay(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+        clean_screen_scene: &Scene,
+        intent: CaptureIntent,
+    ) -> Result<CaptureOutcome, String> {
+        if self.replay.is_some() {
+            return Err("recent capture is already active".into());
+        }
+        if self.recording.is_some() {
+            return Err("stop the active recording before enabling recent capture".into());
+        }
+        #[cfg(not(feature = "hdr-decode"))]
+        if intent.audio != AudioCaptureMode::None {
+            return Err("audio is unavailable in this compositor build".into());
+        }
+        let (source, regions) = capture_source(frame_builder, clean_screen_scene, &intent);
+        let (_, width, height) = compose_scene(&source, &regions, intent.pip_layout)?;
+        let renderer = OffscreenRenderer::try_new(width, height)
+            .map_err(|error| format!("recent-capture renderer {width}×{height}: {error}"))?;
+        let encoder = crate::network::encoder::H264Encoder::new_with_bitrate_and_keyframe_interval(
+            width,
+            height,
+            REPLAY_FPS,
+            4_000_000,
+            REPLAY_KEYFRAME_INTERVAL,
+        )
+        .map_err(|error| format!("recent-capture encoder {width}×{height}: {error}"))?;
+        #[cfg(feature = "hdr-decode")]
+        let mut audio_tracks = Vec::new();
+        #[cfg(feature = "hdr-decode")]
+        for source in selected_audio_sources(intent.audio) {
+            audio_tracks.push(ReplayAudioTrack {
+                source,
+                capture: super::audio_capture::AudioCapture::start(source)?,
+                pcm: VecDeque::new(),
+            });
+        }
+        let audio = intent.audio;
+        self.replay = Some(ReplaySession {
+            intent,
+            renderer,
+            encoder,
+            width,
+            height,
+            last_frame: Instant::now() - Duration::from_millis(34),
+            frames: VecDeque::with_capacity(REPLAY_FRAMES + REPLAY_KEYFRAME_INTERVAL as usize),
+            video_bytes: 0,
+            #[cfg(feature = "hdr-decode")]
+            audio_tracks,
+            audio_warning: None,
+        });
+        frame_builder.set_capture_replay_active(true, audio);
+        Ok(CaptureOutcome::ReplayStarted)
+    }
+
+    fn save_replay(&mut self, frame_builder: &mut FrameBuilder) -> Result<CaptureOutcome, String> {
+        let sequence = self.sequence;
+        self.sequence = self.sequence.saturating_add(1);
+        let replay = self
+            .replay
+            .as_mut()
+            .ok_or_else(|| "recent capture is not active".to_string())?;
+        if replay.frames.is_empty() {
+            return Err("recent capture is still warming up".into());
+        }
+        let include_audio = {
+            #[cfg(feature = "hdr-decode")]
+            {
+                !replay.audio_tracks.is_empty()
+            }
+            #[cfg(not(feature = "hdr-decode"))]
+            {
+                false
+            }
+        };
+        let path = next_replay_path(sequence, include_audio);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("create replay folder {}: {error}", parent.display()))?;
+        }
+        #[cfg(feature = "hdr-decode")]
+        let audio_track_names = replay
+            .audio_tracks
+            .iter()
+            .map(|track| track.source.track_name().to_string())
+            .collect();
+        #[cfg(not(feature = "hdr-decode"))]
+        let audio_track_names = Vec::new();
+        let mut output = RecordingOutput::new(
+            &path,
+            replay.width,
+            replay.height,
+            REPLAY_FPS,
+            audio_track_names,
+        )?;
+        #[cfg(feature = "hdr-decode")]
+        let audio: Vec<Vec<u8>> = replay
+            .audio_tracks
+            .iter()
+            .map(|track| replay_audio_tail(&track.pcm, replay.frames.len()))
+            .collect();
+        for (_frame_index, frame) in replay.frames.iter().enumerate() {
+            output.write_access_unit(&frame.access_unit)?;
+            #[cfg(feature = "hdr-decode")]
+            for (track_index, pcm) in audio.iter().enumerate() {
+                let start = _frame_index * AUDIO_BYTES_PER_VIDEO_FRAME;
+                let end = start + AUDIO_BYTES_PER_VIDEO_FRAME;
+                output.write_pcm_audio(track_index, &pcm[start..end])?;
+            }
+        }
+        output.finish(&path)?;
+        let seconds = ((replay.frames.len() + REPLAY_FPS as usize - 1) / REPLAY_FPS as usize)
+            .min(REPLAY_SECONDS) as u8;
+        self.last_recording = Some(path.clone());
+        frame_builder.set_capture_replay_saved();
+        Ok(CaptureOutcome::ReplaySaved { path, seconds })
+    }
+
+    fn stop_replay(&mut self, frame_builder: &mut FrameBuilder) -> Result<CaptureOutcome, String> {
+        if self.replay.take().is_none() {
+            return Err("recent capture is not active".into());
+        }
+        frame_builder.set_capture_replay_active(false, AudioCaptureMode::None);
+        Ok(CaptureOutcome::ReplayStopped)
+    }
+
+    fn reveal_last_screenshot(&self) -> Result<CaptureOutcome, String> {
+        let path = self
+            .last_screenshot
+            .as_ref()
+            .ok_or_else(|| "there is no saved screenshot to reveal".to_string())?;
+        let folder = path
+            .parent()
+            .ok_or_else(|| format!("screenshot path has no parent: {}", path.display()))?;
+        std::process::Command::new("xdg-open")
+            .arg(folder)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|error| format!("show screenshot in Files: {error}"))?;
+        Ok(CaptureOutcome::ScreenshotRevealed(path.clone()))
+    }
+
+    fn open_last_screenshot(&self) -> Result<CaptureOutcome, String> {
+        let path = self
+            .last_screenshot
+            .as_ref()
+            .ok_or_else(|| "there is no saved screenshot to open".to_string())?;
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|error| format!("open screenshot {}: {error}", path.display()))?;
+        Ok(CaptureOutcome::ScreenshotOpened(path.clone()))
+    }
+
+    fn open_last_screenshot_markup(
+        &self,
+        frame_builder: &mut FrameBuilder,
+        spawn_regions: &[Rect],
+    ) -> Result<CaptureOutcome, String> {
+        let path = self
+            .last_screenshot
+            .as_ref()
+            .ok_or_else(|| "there is no saved screenshot to mark up".to_string())?;
+        let (width, height, rgba) = read_png_rgba(path)?;
+        frame_builder.host_mut().open_screenshot_markup(
+            std::sync::Arc::from(rgba),
+            width,
+            height,
+            region_bounds(spawn_regions),
+        );
+        Ok(CaptureOutcome::ScreenshotMarkupOpened(path.clone()))
+    }
+
+    fn pin_last_screenshot(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+        spawn_regions: &[Rect],
+    ) -> Result<CaptureOutcome, String> {
+        let path = self
+            .last_screenshot
+            .as_ref()
+            .ok_or_else(|| "there is no saved screenshot to pin".to_string())?;
+        let (width, height, rgba) = read_png_rgba(path)?;
+        let preview = capture_preview(&rgba, width, height);
+        let id = format!("pinned-capture:{}", self.sequence);
+        self.sequence = self.sequence.saturating_add(1);
+        let title = format!("Screenshot · {width} × {height}");
+        frame_builder.host_mut().insert_pinned_capture(
+            &id,
+            &title,
+            std::sync::Arc::from(rgba),
+            width,
+            height,
+            region_bounds(spawn_regions),
+            preview,
+        );
+        Ok(CaptureOutcome::Pinned { id })
+    }
+
+    fn copy_last_screenshot(
+        &self,
+        frame_builder: &mut FrameBuilder,
+    ) -> Result<CaptureOutcome, String> {
+        // Decode the finished artifact rather than recapturing a desktop that
+        // may already have changed. Keeping the raw frame resident would cost
+        // as much as 256 MiB for an 8192×8192 extended-canvas screenshot.
+        let path = self
+            .last_screenshot
+            .as_ref()
+            .ok_or_else(|| "there is no saved screenshot to copy".to_string())?;
+        let (width, height, rgba) = read_png_rgba(path)?;
+        if !ui::clipboard_copy_image(width as usize, height as usize, &rgba) {
+            return Err("the clipboard refused image data".into());
+        }
+        frame_builder.set_capture_screenshot_finished(
+            true,
+            width,
+            height,
+            capture_preview(&rgba, width, height),
+        );
+        Ok(CaptureOutcome::Copied { width, height })
+    }
+
+    fn execute_screenshot(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+        clean_screen_scene: &Scene,
+        intent: &CaptureIntent,
+    ) -> Result<CaptureOutcome, String> {
+        let (source, regions) = capture_source(frame_builder, clean_screen_scene, intent);
+        if regions.is_empty() {
+            return Err("the selected source has no paintable pixels".into());
+        }
+        let (composed, width, height) = compose_scene(&source, &regions, intent.pip_layout)?;
+        let mut renderer = OffscreenRenderer::try_new(width, height)
+            .map_err(|error| format!("capture renderer {width}×{height}: {error}"))?;
+        let rgba = render_capture_rgba(&mut renderer, &composed);
+        let preview = capture_preview(&rgba, width, height);
+        match intent.destination {
+            CaptureDestination::Clipboard => {
+                let copied = ui::clipboard_copy_image(width as usize, height as usize, &rgba);
+                if copied {
+                    frame_builder.set_capture_screenshot_finished(true, width, height, preview);
+                    Ok(CaptureOutcome::Copied { width, height })
+                } else {
+                    Err("the clipboard refused image data".into())
+                }
+            }
+            CaptureDestination::File => {
+                let path = next_screenshot_path(self.sequence);
+                self.sequence = self.sequence.saturating_add(1);
+                write_png(&path, width, height, &rgba)?;
+                self.last_screenshot = Some(path.clone());
+                frame_builder.set_capture_screenshot_finished(false, width, height, preview);
+                Ok(CaptureOutcome::Saved(path))
+            }
+            CaptureDestination::FloatingWindow => {
+                Err("floating captures must be started as live mirrors".into())
+            }
+        }
+    }
+}
+
+fn refresh_mirror(
+    frame_builder: &mut FrameBuilder,
+    clean_screen_scene: &Scene,
+    mirror: &mut LiveMirror,
+) -> Result<(), String> {
+    if let Some(source) = mirror.tracking_source.as_ref() {
+        let tracked = tracked_source_regions(frame_builder, source);
+        if !tracked.is_empty() {
+            mirror.intent.regions = tracked;
+        }
+    }
+    let (source, regions) = capture_source(frame_builder, clean_screen_scene, &mirror.intent);
+    let first_presentation = mirror.spawn_from.is_some();
+    // Grid and Stack deliberately rearrange disjoint sources. Keep each
+    // selected region as an independent layer for the first presentation so
+    // it can travel from its exact source coordinates into its final slot.
+    let handoff_layers =
+        if first_presentation && regions.len() > 1 && mirror.intent.pip_layout != PipLayout::Auto {
+            build_handoff_layers(&source, &regions, mirror.intent.pip_layout)?
+        } else {
+            Vec::new()
+        };
+    let (composed, width, height) = compose_scene(&source, &regions, mirror.intent.pip_layout)?;
+    let stale = mirror
+        .renderer
+        .as_ref()
+        .is_none_or(|renderer| renderer.width != width || renderer.height != height);
+    if stale {
+        mirror.renderer = Some(
+            OffscreenRenderer::try_new(width, height)
+                .map_err(|error| format!("live mirror renderer {width}×{height}: {error}"))?,
+        );
+    }
+    let rgba = mirror
+        .renderer
+        .as_mut()
+        .map(|renderer| render_capture_rgba(renderer, &composed))
+        .ok_or_else(|| "live mirror renderer disappeared".to_string())?;
+    frame_builder.host_mut().upsert_capture_mirror(
+        &mirror.id,
+        &mirror.title,
+        std::sync::Arc::from(rgba),
+        width,
+        height,
+        mirror.preferred_size,
+        mirror.spawn_from.take(),
+        handoff_layers,
+    );
+    Ok(())
+}
+
+fn build_handoff_layers(
+    source: &Scene,
+    regions: &[Rect],
+    layout: PipLayout,
+) -> Result<Vec<CaptureMirrorHandoffLayer>, String> {
+    let source_bounds =
+        union_rects(regions).ok_or_else(|| "capture regions are empty".to_string())?;
+    let (target_width, target_height, target_rects) = match layout {
+        PipLayout::Grid => grid_geometry(regions),
+        PipLayout::Stack => stack_geometry(regions),
+        PipLayout::Auto => return Ok(Vec::new()),
+    };
+    let mut layers = Vec::with_capacity(regions.len());
+    for (region, target) in regions.iter().zip(target_rects) {
+        let (single, width, height) = compose_spatial(source, &[*region])?;
+        let mut renderer = OffscreenRenderer::try_new(width, height).map_err(|error| {
+            format!("live mirror region handoff renderer {width}×{height}: {error}")
+        })?;
+        layers.push(CaptureMirrorHandoffLayer {
+            rgba: std::sync::Arc::from(render_capture_rgba(&mut renderer, &single)),
+            width,
+            height,
+            source: normalized_rect(*region, source_bounds),
+            target: normalized_rect(target, Rect::new(0.0, 0.0, target_width, target_height)),
+        });
+    }
+    Ok(layers)
+}
+
+fn normalized_rect(rect: Rect, bounds: Rect) -> Rect {
+    Rect::new(
+        (rect.x0 - bounds.x0) / bounds.width(),
+        (rect.y0 - bounds.y0) / bounds.height(),
+        (rect.x1 - bounds.x0) / bounds.width(),
+        (rect.y1 - bounds.y0) / bounds.height(),
+    )
+}
+
+fn region_bounds(regions: &[Rect]) -> Option<Rect> {
+    let mut iter = regions.iter().copied().filter(|region| region.area() > 0.0);
+    let first = iter.next()?;
+    Some(iter.fold(first, |bounds, region| bounds.union(region)))
+}
+
+fn intent_spawn_bounds(intent: &CaptureIntent) -> Option<Rect> {
+    region_bounds(&intent.regions).or_else(|| {
+        // A wholly off-screen app has deliberately empty visible regions in
+        // the picker. Its target still carries continuous-desktop geometry;
+        // preserve that provenance so the shell can animate the PiP through
+        // the correct physical edge instead of treating it as source-less.
+        let virtual_regions: Vec<Rect> = intent
+            .targets
+            .iter()
+            .map(|target| target.virtual_rect)
+            .collect();
+        region_bounds(&virtual_regions)
+    })
+}
+
+fn updated_local_tracking_source(
+    source: Option<FloatingSource>,
+    app_id: String,
+    region: Rect,
+) -> FloatingSource {
+    match source {
+        Some(FloatingSource::AppElement {
+            app_id: source_app,
+            element_id,
+            ..
+        }) if source_app == app_id => FloatingSource::AppElement {
+            app_id,
+            element_id,
+            region,
+        },
+        _ => FloatingSource::AppRegion { app_id, region },
+    }
+}
+
+fn floating_source_regions(frame_builder: &mut FrameBuilder, source: &FloatingSource) -> Vec<Rect> {
+    match source {
+        FloatingSource::AppRegion { region, .. } => vec![*region],
+        FloatingSource::Surface { surface_id } => frame_builder
+            .foreign_surface_rect(*surface_id)
+            .into_iter()
+            .collect(),
+        FloatingSource::Composite(sources) => sources
+            .iter()
+            .flat_map(|source| floating_source_regions(frame_builder, source))
+            .collect(),
+        FloatingSource::AppElement { region, .. } => vec![*region],
+    }
+}
+
+fn tracked_source_regions(frame_builder: &mut FrameBuilder, source: &FloatingSource) -> Vec<Rect> {
+    match source {
+        FloatingSource::AppRegion { app_id, region } => frame_builder
+            .foreign_surface_for_app(app_id)
+            .and_then(|(_, app_rect)| app_local_region_on_surface(*region, app_rect))
+            .into_iter()
+            .collect(),
+        FloatingSource::Surface { surface_id } => frame_builder
+            .foreign_surface_rect(*surface_id)
+            .into_iter()
+            .collect(),
+        FloatingSource::Composite(sources) => sources
+            .iter()
+            .flat_map(|source| tracked_source_regions(frame_builder, source))
+            .collect(),
+        FloatingSource::AppElement { app_id, region, .. } => frame_builder
+            .foreign_surface_for_app(app_id)
+            .and_then(|(_, app_rect)| app_local_region_on_surface(*region, app_rect))
+            .into_iter()
+            .collect(),
+    }
+}
+
+fn app_local_region_on_surface(region: Rect, app_rect: Rect) -> Option<Rect> {
+    let local_bounds = Rect::from_origin_size(Point::ZERO, app_rect.size());
+    let local = region.intersect(local_bounds);
+    (local.area() > 0.0).then_some(local + app_rect.origin().to_vec2())
+}
+
+fn record_frame(
+    frame_builder: &mut FrameBuilder,
+    clean_screen_scene: &Scene,
+    recording: &mut RecordingSession,
+) -> Result<(), String> {
+    if recording.paused {
+        #[cfg(feature = "hdr-decode")]
+        drain_audio_tracks(recording, false)?;
+        return Ok(());
+    }
+    if recording_frame_due(false, recording.last_frame.elapsed()) {
+        let (source, regions) =
+            capture_source(frame_builder, clean_screen_scene, &recording.intent);
+        let (composed, current_w, current_h) =
+            compose_scene(&source, &regions, recording.intent.pip_layout)?;
+        let frame_scene = if current_w == recording.width && current_h == recording.height {
+            composed
+        } else {
+            // H.264 streams have fixed dimensions. If the selected app resizes,
+            // fit its new geometry into the original recording canvas instead of
+            // aborting or changing the encoded sequence mid-file.
+            let sx = f64::from(recording.width) / f64::from(current_w.max(1));
+            let sy = f64::from(recording.height) / f64::from(current_h.max(1));
+            let scale = sx.min(sy);
+            let dx = (f64::from(recording.width) - f64::from(current_w) * scale) / 2.0;
+            let dy = (f64::from(recording.height) - f64::from(current_h) * scale) / 2.0;
+            let mut fitted = Scene::new();
+            fitted.append(
+                &composed,
+                Some(Affine::translate((dx, dy)) * Affine::scale(scale)),
+            );
+            fitted
+        };
+        let rgba = render_capture_rgba(&mut recording.renderer, &frame_scene);
+        let nalus = recording
+            .encoder
+            .encode(&rgba)
+            .map_err(|error| format!("encode frame: {error}"))?;
+        if !nalus.is_empty() {
+            recording.output.write_access_unit(&nalus)?;
+        }
+        recording.frames = recording.frames.saturating_add(1);
+        recording.last_frame = Instant::now();
+    }
+    #[cfg(feature = "hdr-decode")]
+    drain_audio_tracks(recording, true)?;
+    Ok(())
+}
+
+fn record_replay_frame(
+    frame_builder: &mut FrameBuilder,
+    clean_screen_scene: &Scene,
+    replay: &mut ReplaySession,
+) -> Result<(), String> {
+    if replay.last_frame.elapsed() >= Duration::from_millis(33) {
+        let (source, regions) = capture_source(frame_builder, clean_screen_scene, &replay.intent);
+        let (composed, current_w, current_h) =
+            compose_scene(&source, &regions, replay.intent.pip_layout)?;
+        let frame_scene = if current_w == replay.width && current_h == replay.height {
+            composed
+        } else {
+            let sx = f64::from(replay.width) / f64::from(current_w.max(1));
+            let sy = f64::from(replay.height) / f64::from(current_h.max(1));
+            let scale = sx.min(sy);
+            let dx = (f64::from(replay.width) - f64::from(current_w) * scale) / 2.0;
+            let dy = (f64::from(replay.height) - f64::from(current_h) * scale) / 2.0;
+            let mut fitted = Scene::new();
+            fitted.append(
+                &composed,
+                Some(Affine::translate((dx, dy)) * Affine::scale(scale)),
+            );
+            fitted
+        };
+        let rgba = render_capture_rgba(&mut replay.renderer, &frame_scene);
+        let access_unit = replay
+            .encoder
+            .encode(&rgba)
+            .map_err(|error| format!("encode recent frame: {error}"))?;
+        if !access_unit.is_empty() {
+            let keyframe = qos_callstream::session::is_h264_keyframe(&access_unit);
+            replay.video_bytes = replay.video_bytes.saturating_add(access_unit.len());
+            replay.frames.push_back(BufferedReplayFrame {
+                access_unit,
+                keyframe,
+            });
+            trim_replay_video_frames(&mut replay.frames, &mut replay.video_bytes);
+        }
+        replay.last_frame = Instant::now();
+    }
+    #[cfg(feature = "hdr-decode")]
+    drain_replay_audio(replay);
+    Ok(())
+}
+
+fn trim_replay_video_frames(frames: &mut VecDeque<BufferedReplayFrame>, video_bytes: &mut usize) {
+    while frames.len() > REPLAY_FRAMES || *video_bytes > REPLAY_MAX_VIDEO_BYTES {
+        let Some(frame) = frames.pop_front() else {
+            break;
+        };
+        *video_bytes = (*video_bytes).saturating_sub(frame.access_unit.len());
+    }
+    // A decoder may only enter on an IDR. Sacrifice at most one GOP rather
+    // than writing a nominally 30-second clip whose opening seconds are gray.
+    while frames.front().is_some_and(|frame| !frame.keyframe) {
+        let Some(frame) = frames.pop_front() else {
+            break;
+        };
+        *video_bytes = (*video_bytes).saturating_sub(frame.access_unit.len());
+    }
+}
+
+#[cfg(feature = "hdr-decode")]
+fn drain_replay_audio(replay: &mut ReplaySession) {
+    let mut ended = Vec::new();
+    for (index, track) in replay.audio_tracks.iter_mut().enumerate() {
+        match track.capture.drain(true) {
+            Ok(bytes) => {
+                track.pcm.extend(bytes);
+                if track.pcm.len() > REPLAY_MAX_AUDIO_BYTES {
+                    let excess = (track.pcm.len() - REPLAY_MAX_AUDIO_BYTES) / 4 * 4;
+                    track.pcm.drain(..excess);
+                }
+            }
+            Err(error) => ended.push((index, track.source.track_name(), error)),
+        }
+    }
+    if !ended.is_empty() {
+        let reason = ended
+            .iter()
+            .map(|(_, name, error)| format!("{name}: {error}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        for (index, _, _) in ended.into_iter().rev() {
+            replay.audio_tracks.remove(index);
+        }
+        replay.audio_warning = Some(reason);
+    }
+}
+
+#[cfg(feature = "hdr-decode")]
+fn replay_audio_tail(pcm: &VecDeque<u8>, video_frames: usize) -> Vec<u8> {
+    let target_len = video_frames.saturating_mul(AUDIO_BYTES_PER_VIDEO_FRAME);
+    let available = pcm.len().min(target_len);
+    let mut out = vec![0; target_len];
+    let source_start = pcm.len().saturating_sub(available);
+    let target_start = target_len.saturating_sub(available);
+    for (target, source) in out[target_start..]
+        .iter_mut()
+        .zip(pcm.iter().skip(source_start))
+    {
+        *target = *source;
+    }
+    out
+}
+
+#[cfg(feature = "hdr-decode")]
+fn selected_audio_sources(mode: AudioCaptureMode) -> Vec<super::audio_capture::AudioSource> {
+    let mut sources = Vec::with_capacity(2);
+    if mode.includes_system() {
+        sources.push(super::audio_capture::AudioSource::System);
+    }
+    if mode.includes_microphone() {
+        sources.push(super::audio_capture::AudioSource::Microphone);
+    }
+    sources
+}
+
+#[cfg(feature = "hdr-decode")]
+fn drain_audio_tracks(recording: &mut RecordingSession, keep: bool) -> Result<(), String> {
+    let mut ended = Vec::new();
+    for index in 0..recording.audio_tracks.len() {
+        let track = &mut recording.audio_tracks[index];
+        match track.capture.drain(keep) {
+            Ok(bytes) if keep && !bytes.is_empty() => {
+                recording.output.write_pcm_audio(track.mux_index, &bytes)?;
+            }
+            Ok(_) => {}
+            Err(error) => ended.push((index, track.source.track_name(), error)),
+        }
+    }
+    if !ended.is_empty() {
+        let reasons = ended
+            .iter()
+            .map(|(_, name, error)| format!("{name}: {error}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        tracing::warn!(reason = %reasons, "audio source ended during recording");
+        for (index, _, _) in ended.into_iter().rev() {
+            recording.audio_tracks.remove(index);
+        }
+        recording.audio_warning = Some(reasons);
+    }
+    Ok(())
+}
+
+fn recording_frame_due(paused: bool, since_last_frame: Duration) -> bool {
+    !paused && since_last_frame >= Duration::from_millis(33)
+}
+
+fn capture_source(
+    frame_builder: &mut FrameBuilder,
+    clean_screen_scene: &Scene,
+    intent: &CaptureIntent,
+) -> (Scene, Vec<Rect>) {
+    let (mut source, regions) = match intent.extent {
+        CaptureExtent::Visible => (clean_screen_scene.clone(), intent.regions.clone()),
+        CaptureExtent::FullApp | CaptureExtent::WholeStrip => {
+            let ids: Vec<String> = intent
+                .targets
+                .iter()
+                .map(|target| target.id.clone())
+                .collect();
+            let complete_semantic_content =
+                intent.mode == CaptureMode::Screenshot && intent.extent == CaptureExtent::FullApp;
+            let (scene, live_rects) =
+                frame_builder.paint_capture_targets(&ids, intent.extent, complete_semantic_content);
+            // Geometry and pixels must come from the same live paint. Falling
+            // back to an intent-time rectangle after its widget disappeared
+            // produced a correctly-sized but transparent "successful"
+            // screenshot. Whole-strip capture is atomic too: never silently
+            // omit an app that closed between confirmation and execution.
+            let regions = (live_rects.len() == ids.len() && !ids.is_empty())
+                .then_some(live_rects)
+                .unwrap_or_default();
+            (scene, regions)
+        }
+    };
+    if intent.include_pointer
+        && let Some(pointer) = frame_builder.capture_pointer_position()
+    {
+        draw_pointer(&mut source, pointer);
+    }
+    (source, regions)
+}
+
+/// Captures do not have an interactive renderer's throwaway warm-up frame.
+/// Route every screenshot/mirror/video frame through the shared bounded
+/// resilience path so a Vello bump-buffer growth is never encoded as black.
+fn render_capture_rgba(renderer: &mut OffscreenRenderer, scene: &Scene) -> Vec<u8> {
+    renderer.render_rgba_resilient(scene)
+}
+
+fn draw_pointer(scene: &mut Scene, at: vello::kurbo::Point) {
+    let mut cursor = BezPath::new();
+    cursor.move_to((at.x, at.y));
+    cursor.line_to((at.x + 4.5, at.y + 20.0));
+    cursor.line_to((at.x + 9.0, at.y + 13.0));
+    cursor.line_to((at.x + 15.5, at.y + 13.0));
+    cursor.close_path();
+    scene.fill(Fill::NonZero, Affine::IDENTITY, Color::WHITE, None, &cursor);
+    scene.stroke(
+        &Stroke::new(2.0),
+        Affine::IDENTITY,
+        Color::BLACK,
+        None,
+        &cursor,
+    );
+}
+
+fn append_clipped(scene: &mut Scene, source: &Scene, region: Rect, transform: Affine) {
+    let mut clipped = Scene::new();
+    clipped.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &region,
+    );
+    clipped.append(source, None);
+    clipped.pop_layer();
+    scene.append(&clipped, Some(transform));
+}
+
+/// Reframe source-space regions into a compact capture scene. `Auto` preserves
+/// their spatial relationship; Grid and Stack intentionally remove large
+/// desktop gaps so multi-window captures remain useful rather than mostly
+/// transparent pixels.
+fn compose_scene(
+    source: &Scene,
+    regions: &[Rect],
+    layout: PipLayout,
+) -> Result<(Scene, u32, u32), String> {
+    let regions: Vec<Rect> = regions
+        .iter()
+        .copied()
+        .filter(|rect| rect.is_finite() && rect.area() > 0.0)
+        .collect();
+    if regions.is_empty() {
+        return Err("capture regions are empty".into());
+    }
+    match layout {
+        PipLayout::Auto => compose_spatial(source, &regions),
+        PipLayout::Grid => compose_grid(source, &regions),
+        PipLayout::Stack => compose_stack(source, &regions),
+    }
+}
+
+fn compose_spatial(source: &Scene, regions: &[Rect]) -> Result<(Scene, u32, u32), String> {
+    let bounds = union_rects(regions).ok_or_else(|| "capture regions are empty".to_string())?;
+    let (width, height, scale) = output_dimensions(bounds.width(), bounds.height())?;
+    let mut scene = Scene::new();
+    let transform = Affine::scale(scale) * Affine::translate((-bounds.x0, -bounds.y0));
+    for region in regions {
+        append_clipped(&mut scene, source, *region, transform);
+    }
+    Ok((scene, width, height))
+}
+
+fn compose_grid(source: &Scene, regions: &[Rect]) -> Result<(Scene, u32, u32), String> {
+    let (raw_w, raw_h, placements) = grid_geometry(regions);
+    let (width, height, global_scale) = output_dimensions(raw_w, raw_h)?;
+    let mut scene = Scene::new();
+    for (region, placement) in regions.iter().zip(placements) {
+        let local_scale = placement.width() / region.width();
+        let transform = Affine::scale(global_scale)
+            * Affine::translate((placement.x0, placement.y0))
+            * Affine::scale(local_scale)
+            * Affine::translate((-region.x0, -region.y0));
+        append_clipped(&mut scene, source, *region, transform);
+    }
+    Ok((scene, width, height))
+}
+
+fn compose_stack(source: &Scene, regions: &[Rect]) -> Result<(Scene, u32, u32), String> {
+    let (raw_w, raw_h, placements) = stack_geometry(regions);
+    let (width, height, global_scale) = output_dimensions(raw_w, raw_h)?;
+    let mut scene = Scene::new();
+    for (region, placement) in regions.iter().zip(placements) {
+        let local_scale = placement.width() / region.width();
+        let transform = Affine::scale(global_scale)
+            * Affine::translate((placement.x0, placement.y0))
+            * Affine::scale(local_scale)
+            * Affine::translate((-region.x0, -region.y0));
+        append_clipped(&mut scene, source, *region, transform);
+    }
+    Ok((scene, width, height))
+}
+
+fn grid_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
+    let count = regions.len();
+    let cols = (count as f64).sqrt().ceil().max(1.0) as usize;
+    let rows = count.div_ceil(cols);
+    let cell_w = regions.iter().map(Rect::width).fold(1.0_f64, f64::max);
+    let cell_h = regions.iter().map(Rect::height).fold(1.0_f64, f64::max);
+    let raw_w = cols as f64 * cell_w + cols.saturating_sub(1) as f64 * GRID_GAP;
+    let raw_h = rows as f64 * cell_h + rows.saturating_sub(1) as f64 * GRID_GAP;
+    let placements = regions
+        .iter()
+        .enumerate()
+        .map(|(index, region)| {
+            let col = index % cols;
+            let row = index / cols;
+            let local_scale = (cell_w / region.width()).min(cell_h / region.height());
+            let draw_w = region.width() * local_scale;
+            let draw_h = region.height() * local_scale;
+            let x = col as f64 * (cell_w + GRID_GAP) + (cell_w - draw_w) / 2.0;
+            let y = row as f64 * (cell_h + GRID_GAP) + (cell_h - draw_h) / 2.0;
+            Rect::new(x, y, x + draw_w, y + draw_h)
+        })
+        .collect();
+    (raw_w, raw_h, placements)
+}
+
+fn stack_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
+    let card_w = regions.iter().map(Rect::width).fold(1.0_f64, f64::max);
+    let card_h = regions.iter().map(Rect::height).fold(1.0_f64, f64::max);
+    let depth = regions.len().saturating_sub(1) as f64 * STACK_OFFSET;
+    let placements = regions
+        .iter()
+        .enumerate()
+        .map(|(index, region)| {
+            let local_scale = (card_w / region.width()).min(card_h / region.height());
+            let offset = index as f64 * STACK_OFFSET;
+            Rect::new(
+                offset,
+                offset,
+                offset + region.width() * local_scale,
+                offset + region.height() * local_scale,
+            )
+        })
+        .collect();
+    (card_w + depth, card_h + depth, placements)
+}
+
+fn union_rects(rects: &[Rect]) -> Option<Rect> {
+    let first = *rects.first()?;
+    Some(rects.iter().skip(1).fold(first, |bounds, rect| {
+        Rect::new(
+            bounds.x0.min(rect.x0),
+            bounds.y0.min(rect.y0),
+            bounds.x1.max(rect.x1),
+            bounds.y1.max(rect.y1),
+        )
+    }))
+}
+
+fn output_dimensions(width: f64, height: f64) -> Result<(u32, u32, f64), String> {
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return Err(format!("invalid capture size {width}×{height}"));
+    }
+    let scale = (MAX_CAPTURE_EDGE / width)
+        .min(MAX_CAPTURE_EDGE / height)
+        .min(1.0);
+    let width = (width * scale).ceil().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
+    let height = (height * scale).ceil().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
+    Ok((width, height, scale))
+}
+
+fn next_screenshot_path(sequence: u64) -> PathBuf {
+    let root = dirs::picture_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Screenshots");
+    let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
+    let suffix = if sequence == 0 {
+        String::new()
+    } else {
+        format!("-{sequence}")
+    };
+    root.join(format!("qOS Screenshot {stamp}{suffix}.png"))
+}
+
+fn next_recording_path(sequence: u64, include_audio: bool) -> PathBuf {
+    let root = dirs::video_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Screen Recordings");
+    let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
+    #[cfg(feature = "hdr-decode")]
+    let extension = if include_audio { "mov" } else { "mp4" };
+    #[cfg(not(feature = "hdr-decode"))]
+    let extension = {
+        let _ = include_audio;
+        "h264"
+    };
+    root.join(format!("qOS Recording {stamp}-{sequence}.{extension}"))
+}
+
+fn next_replay_path(sequence: u64, include_audio: bool) -> PathBuf {
+    let root = dirs::video_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Screen Recordings");
+    let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
+    #[cfg(feature = "hdr-decode")]
+    let extension = if include_audio { "mov" } else { "mp4" };
+    #[cfg(not(feature = "hdr-decode"))]
+    let extension = {
+        let _ = include_audio;
+        "h264"
+    };
+    root.join(format!("qOS Recent {stamp}-{sequence}.{extension}"))
+}
+
+fn capture_preview(rgba: &[u8], width: u32, height: u32) -> CapturePreview {
+    const COLUMNS: usize = 6;
+    const ROWS: usize = 4;
+    const SAMPLES: usize = 4;
+    let width_usize = width as usize;
+    let height_usize = height as usize;
+    let mut pixels = Vec::with_capacity(COLUMNS * ROWS);
+    for row in 0..ROWS {
+        for column in 0..COLUMNS {
+            let x0 = column * width_usize / COLUMNS;
+            let x1 = ((column + 1) * width_usize / COLUMNS).max(x0 + 1);
+            let y0 = row * height_usize / ROWS;
+            let y1 = ((row + 1) * height_usize / ROWS).max(y0 + 1);
+            let mut sums = [0u32; 4];
+            let mut count = 0u32;
+            for sample_y in 0..SAMPLES {
+                let y = (y0 + (2 * sample_y + 1) * (y1 - y0) / (2 * SAMPLES))
+                    .min(height_usize.saturating_sub(1));
+                for sample_x in 0..SAMPLES {
+                    let x = (x0 + (2 * sample_x + 1) * (x1 - x0) / (2 * SAMPLES))
+                        .min(width_usize.saturating_sub(1));
+                    let index = (y * width_usize + x) * 4;
+                    if let Some(sample) = rgba.get(index..index + 4) {
+                        for channel in 0..4 {
+                            sums[channel] =
+                                sums[channel].saturating_add(u32::from(sample[channel]));
+                        }
+                        count = count.saturating_add(1);
+                    }
+                }
+            }
+            pixels.push(if count == 0 {
+                [0, 0, 0, 255]
+            } else {
+                [
+                    (sums[0] / count) as u8,
+                    (sums[1] / count) as u8,
+                    (sums[2] / count) as u8,
+                    (sums[3] / count) as u8,
+                ]
+            });
+        }
+    }
+    CapturePreview {
+        columns: COLUMNS as u8,
+        rows: ROWS as u8,
+        pixels,
+    }
+}
+
+fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create screenshot folder {}: {error}", parent.display()))?;
+    }
+    let file = std::fs::File::create(path)
+        .map_err(|error| format!("create screenshot {}: {error}", path.display()))?;
+    let mut writer = std::io::BufWriter::new(file);
+    let mut encoder = png::Encoder::new(&mut writer, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut png = encoder
+        .write_header()
+        .map_err(|error| format!("write screenshot header {}: {error}", path.display()))?;
+    png.write_image_data(rgba)
+        .map_err(|error| format!("write screenshot pixels {}: {error}", path.display()))?;
+    drop(png);
+    writer
+        .flush()
+        .map_err(|error| format!("flush screenshot {}: {error}", path.display()))
+}
+
+/// Read back one of our RGBA8 screenshot artifacts for receipt actions. This
+/// preserves the exact captured pixels while keeping large, off-screen app and
+/// strip captures out of the shell's steady-state memory footprint.
+fn read_png_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>), String> {
+    let file = std::fs::File::open(path)
+        .map_err(|error| format!("open screenshot {}: {error}", path.display()))?;
+    let decoder = png::Decoder::new(std::io::BufReader::new(file));
+    let mut reader = decoder
+        .read_info()
+        .map_err(|error| format!("read screenshot header {}: {error}", path.display()))?;
+    let size = reader
+        .output_buffer_size()
+        .ok_or_else(|| format!("screenshot is too large to decode: {}", path.display()))?;
+    let mut rgba = vec![0; size];
+    let info = reader
+        .next_frame(&mut rgba)
+        .map_err(|error| format!("read screenshot pixels {}: {error}", path.display()))?;
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return Err(format!(
+            "saved screenshot has unsupported format {:?}/{:?}: {}",
+            info.color_type,
+            info.bit_depth,
+            path.display()
+        ));
+    }
+    rgba.truncate(info.buffer_size());
+    Ok((info.width, info.height, rgba))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shell::state::{AppKind, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
+    use ui::Widget;
+    use vello::kurbo::RoundedRect;
+    use vello::peniko::{Color, Fill};
+
+    fn two_source_cards() -> Scene {
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(220, 48, 64),
+            None,
+            &RoundedRect::from_rect(Rect::new(-300.0, 20.0, -100.0, 120.0), 12.0),
+        );
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(48, 96, 220),
+            None,
+            &RoundedRect::from_rect(Rect::new(900.0, 40.0, 1_100.0, 140.0), 12.0),
+        );
+        scene
+    }
+
+    #[test]
+    fn saved_screenshot_round_trips_exact_pixels_for_receipt_copy() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("finished-capture.png");
+        let pixels = vec![
+            18, 32, 64, 255, 240, 120, 30, 255, 4, 220, 180, 96, 255, 255, 255, 0,
+        ];
+
+        write_png(&path, 2, 2, &pixels).unwrap();
+        let (width, height, decoded) = read_png_rgba(&path).unwrap();
+
+        assert_eq!((width, height), (2, 2));
+        assert_eq!(decoded, pixels);
+    }
+
+    #[test]
+    fn screenshot_open_requires_a_finished_file_artifact() {
+        let executor = CaptureExecutor::default();
+        assert_eq!(
+            executor.open_last_screenshot().unwrap_err(),
+            "there is no saved screenshot to open"
+        );
+    }
+
+    #[test]
+    fn pin_uses_finished_pixels_and_does_not_create_a_live_mirror() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("finished-capture.png");
+        let pixels = vec![18, 32, 64, 255, 240, 120, 30, 255];
+        write_png(&path, 2, 1, &pixels).unwrap();
+
+        let mut executor = CaptureExecutor::default();
+        executor.last_screenshot = Some(path);
+        let mut frame_builder = FrameBuilder::new((800, 600));
+        let spawn = Rect::new(280.0, 6.0, 326.0, 30.0);
+        let outcome = executor
+            .pin_last_screenshot(&mut frame_builder, &[spawn])
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            CaptureOutcome::Pinned {
+                id: "pinned-capture:0".into()
+            }
+        );
+        assert!(
+            executor.live_mirrors.is_empty(),
+            "a pinned still must never enter the live refresh loop"
+        );
+        assert_eq!(frame_builder.host_mut().capture_mirror_count_for_tests(), 1);
+    }
+
+    #[test]
+    fn in_process_pip_retires_when_its_app_activity_disappears() {
+        let mut executor = CaptureExecutor::default();
+        executor.live_mirrors.push(LiveMirror {
+            id: "browser.media-pip".into(),
+            title: "Video".into(),
+            intent: CaptureIntent {
+                mode: CaptureMode::Pip,
+                source: ui::widget::SourceMode::Region,
+                destination: CaptureDestination::FloatingWindow,
+                regions: vec![Rect::new(100.0, 80.0, 500.0, 305.0)],
+                include_pointer: false,
+                audio: AudioCaptureMode::None,
+                extent: CaptureExtent::Visible,
+                pip_layout: PipLayout::Auto,
+                targets: Vec::new(),
+                recording_command: None,
+                replay_command: None,
+                screenshot_command: None,
+            },
+            renderer: None,
+            preferred_size: Some(Size::new(400.0, 225.0)),
+            tracking_source: None,
+            close_when_app_inactive: true,
+            spawn_from: None,
+        });
+        let mut frame_builder = FrameBuilder::new((800, 600));
+        let mut clean = frame_builder.paint();
+
+        let outcomes = executor.execute_ready(&mut frame_builder, &mut clean);
+        assert_eq!(
+            outcomes,
+            vec![CaptureOutcome::FloatingClosed {
+                id: "browser.media-pip".into()
+            }]
+        );
+        assert!(executor.live_mirrors.is_empty());
+    }
+
+    #[test]
+    fn screenshot_preview_preserves_spatial_color_structure() {
+        let mut rgba = Vec::new();
+        for row in 0..4u8 {
+            for column in 0..6u8 {
+                rgba.extend_from_slice(&[
+                    column.saturating_mul(30),
+                    row.saturating_mul(50),
+                    column.saturating_add(row).saturating_mul(20),
+                    255,
+                ]);
+            }
+        }
+        let preview = capture_preview(&rgba, 6, 4);
+        assert_eq!((preview.columns, preview.rows), (6, 4));
+        assert_eq!(preview.pixels.len(), 24);
+        assert_eq!(preview.pixels[0], [0, 0, 0, 255]);
+        assert_eq!(preview.pixels[5], [150, 0, 100, 255]);
+        assert_eq!(preview.pixels[18], [0, 150, 60, 255]);
+        assert_eq!(preview.pixels[23], [150, 150, 160, 255]);
+    }
+
+    #[test]
+    fn spatial_capture_can_frame_content_beyond_both_screen_edges() {
+        let source = two_source_cards();
+        let regions = [
+            Rect::new(-300.0, 20.0, -100.0, 120.0),
+            Rect::new(900.0, 40.0, 1_100.0, 140.0),
+        ];
+        let (scene, width, height) = compose_scene(&source, &regions, PipLayout::Auto).unwrap();
+        assert_eq!((width, height), (1_400, 120));
+        assert!(!scene.encoding().is_empty());
+    }
+
+    #[test]
+    fn grid_removes_the_unused_virtual_desktop_gap() {
+        let source = two_source_cards();
+        let regions = [
+            Rect::new(-300.0, 20.0, -100.0, 120.0),
+            Rect::new(900.0, 40.0, 1_100.0, 140.0),
+        ];
+        let (_, width, height) = compose_scene(&source, &regions, PipLayout::Grid).unwrap();
+        assert_eq!((width, height), (416, 100));
+    }
+
+    #[test]
+    fn multi_region_handoff_geometry_preserves_source_and_grid_endpoints() {
+        let regions = [
+            Rect::new(250.0, 180.0, 710.0, 410.0),
+            Rect::new(760.0, 310.0, 1_170.0, 590.0),
+        ];
+        let source_bounds = union_rects(&regions).unwrap();
+        let first_source = normalized_rect(regions[0], source_bounds);
+        assert_eq!(first_source.x0, 0.0);
+        assert_eq!(first_source.y0, 0.0);
+        assert!(first_source.x1 < 0.51);
+
+        let (width, height, placements) = grid_geometry(&regions);
+        let target_bounds = Rect::new(0.0, 0.0, width, height);
+        let first_target = normalized_rect(placements[0], target_bounds);
+        let second_target = normalized_rect(placements[1], target_bounds);
+        assert!(first_target.x1 < second_target.x0, "grid gap must survive");
+        assert!(first_target.height() < 1.0, "wide source is letterboxed");
+        assert_eq!(second_target.y0, 0.0);
+        assert_eq!(second_target.y1, 1.0);
+    }
+
+    #[test]
+    fn oversized_capture_scales_down_without_changing_aspect_ratio() {
+        let (_, _, scale) = output_dimensions(16_384.0, 8_192.0).unwrap();
+        assert_eq!(scale, 0.5);
+        assert_eq!(output_dimensions(16_384.0, 8_192.0).unwrap().0, 8_192);
+        assert_eq!(output_dimensions(16_384.0, 8_192.0).unwrap().1, 4_096);
+    }
+
+    #[test]
+    fn full_app_capture_paints_a_wholly_offscreen_live_group() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let (strip_id, target_group, target_tab) = {
+            let workspace = tree
+                .active_workspace_mut()
+                .expect("bootstrap has an active workspace");
+            let strip = workspace.strips.first_mut().expect("bootstrap has a strip");
+            let target = strip
+                .window_groups
+                .first_mut()
+                .expect("bootstrap has a window group");
+            target.tabs.truncate(1);
+            target.active_tab = target.tabs[0].id;
+            target.width = WindowWidth::Fraction(1_000);
+            let target_group = target.id;
+            let target_tab = target.active_tab;
+            for (group_id, tab_id, label) in
+                [(70_001, 80_001, "Middle"), (70_002, 80_002, "Visible")]
+            {
+                strip.window_groups.push(WindowGroup {
+                    id: group_id,
+                    tabs: vec![Tab {
+                        id: tab_id,
+                        title: label.into(),
+                        tile: TileContent::Stub {
+                            kind: AppKind::Settings,
+                            label: label.into(),
+                        },
+                    }],
+                    active_tab: tab_id,
+                    width: WindowWidth::Fraction(1_000),
+                    maximized: false,
+                });
+            }
+            (strip.id, target_group, target_tab)
+        };
+        tree.set_active_group(strip_id, 70_002);
+
+        let mut frame_builder = FrameBuilder::with_tree(tree, (800, 600));
+        let _ = frame_builder.paint();
+        let long_note = (1..=72)
+            .map(|line| {
+                format!(
+                    "Capture foundation {line}: export the complete document without moving its live window."
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        frame_builder
+            .host_mut()
+            .group_at_for_tests(strip_id, 0)
+            .and_then(|group| group.active_host_mut())
+            .expect("target Notes host")
+            .replace_content(ui::widget::TileContent::App(Box::new(
+                crate::shell::notes_app::NotesApp::with_seed(long_note),
+            )));
+        frame_builder.relayout();
+        let _ = frame_builder.paint();
+        assert!(
+            frame_builder
+                .host_mut()
+                .group_row_mut_for_tests(strip_id)
+                .expect("live strip row")
+                .scroll_group_into_view(70_002),
+            "the last group must require scrolling"
+        );
+        frame_builder.relayout();
+        let clean_screen = frame_builder.paint();
+        let target_group_ref = frame_builder
+            .host_mut()
+            .group_at_for_tests(strip_id, 0)
+            .expect("offscreen target group");
+        let live_rect = target_group_ref.get_rect();
+        let target_rect = target_group_ref
+            .complete_capture_rect()
+            .expect("long Notes document has complete capture geometry");
+        assert!(
+            target_rect.height() > live_rect.height(),
+            "semantic app capture must extend below its live window"
+        );
+        assert_eq!(
+            target_rect
+                .intersect(Rect::new(0.0, 0.0, 800.0, 600.0))
+                .area(),
+            0.0,
+            "precondition: the selected app is wholly outside the physical output; got {target_rect:?}"
+        );
+
+        let intent = CaptureIntent {
+            mode: ui::widget::CaptureMode::Screenshot,
+            source: ui::widget::SourceMode::Window,
+            destination: CaptureDestination::File,
+            regions: Vec::new(),
+            include_pointer: false,
+            audio: AudioCaptureMode::None,
+            extent: CaptureExtent::FullApp,
+            pip_layout: PipLayout::Auto,
+            targets: vec![ui::widget::CaptureTarget {
+                id: format!("group:{target_group}:tab:{target_tab}"),
+                title: "Notes".into(),
+                app_id: "dev.qos.notes".into(),
+                visible_rect: Rect::ZERO,
+                // Deliberately stale: the live draw must win over picker-time
+                // geometry after strip motion.
+                virtual_rect: Rect::new(10_000.0, 0.0, 10_100.0, 100.0),
+                complete_rect: Some(Rect::new(10_000.0, 0.0, 10_100.0, 200.0)),
+            }],
+            recording_command: None,
+            replay_command: None,
+            screenshot_command: None,
+        };
+        let (source, regions) = capture_source(&mut frame_builder, &clean_screen, &intent);
+        assert_eq!(regions, vec![target_rect]);
+        assert!(
+            !source.encoding().is_empty(),
+            "the offscreen app must paint"
+        );
+        let (capture, width, height) = compose_scene(&source, &regions, PipLayout::Auto).unwrap();
+        assert_eq!(width, target_rect.width().ceil() as u32);
+        assert_eq!(height, target_rect.height().ceil() as u32);
+        let mut live_intent = intent.clone();
+        live_intent.mode = CaptureMode::Pip;
+        live_intent.destination = CaptureDestination::FloatingWindow;
+        let (_, live_regions) = capture_source(&mut frame_builder, &clean_screen, &live_intent);
+        assert_eq!(
+            live_regions,
+            vec![live_rect],
+            "PiP must keep the offscreen app window readable rather than flattening the complete document"
+        );
+        let Ok(mut renderer) = OffscreenRenderer::try_new(width, height) else {
+            eprintln!("skipping pixel assertion: no offscreen GPU adapter");
+            return;
+        };
+        let rgba = render_capture_rgba(&mut renderer, &capture);
+        assert!(
+            rgba.chunks_exact(4).any(|pixel| pixel[3] != 0),
+            "the compositor returned dimensions but no captured app pixels"
+        );
+    }
+
+    #[test]
+    fn vanished_full_app_never_falls_back_to_a_blank_success() {
+        let mut frame_builder = FrameBuilder::new((800, 600));
+        let clean_screen = frame_builder.paint();
+        let intent = CaptureIntent {
+            mode: ui::widget::CaptureMode::Screenshot,
+            source: ui::widget::SourceMode::Window,
+            destination: CaptureDestination::File,
+            regions: Vec::new(),
+            include_pointer: false,
+            audio: AudioCaptureMode::None,
+            extent: CaptureExtent::FullApp,
+            pip_layout: PipLayout::Auto,
+            targets: vec![ui::widget::CaptureTarget {
+                id: "group:999999:tab:999999".into(),
+                title: "Gone".into(),
+                app_id: "dev.qos.gone".into(),
+                visible_rect: Rect::ZERO,
+                virtual_rect: Rect::new(1_000.0, 100.0, 1_800.0, 700.0),
+                complete_rect: None,
+            }],
+            recording_command: None,
+            replay_command: None,
+            screenshot_command: None,
+        };
+        let (_, regions) = capture_source(&mut frame_builder, &clean_screen, &intent);
+        assert!(regions.is_empty());
+        assert!(
+            compose_scene(&Scene::new(), &regions, PipLayout::Auto).is_err(),
+            "a vanished target must report failure instead of saving transparent pixels"
+        );
+    }
+
+    #[test]
+    fn tracked_app_region_follows_its_surface_without_changing_local_content() {
+        let local_video = Rect::new(80.0, 120.0, 560.0, 390.0);
+        let first_app = Rect::new(200.0, 60.0, 1_000.0, 660.0);
+        let moved_app = Rect::new(640.0, 90.0, 1_440.0, 690.0);
+        let first = app_local_region_on_surface(local_video, first_app).unwrap();
+        let moved = app_local_region_on_surface(local_video, moved_app).unwrap();
+        assert_eq!(first, Rect::new(280.0, 180.0, 760.0, 450.0));
+        assert_eq!(moved, Rect::new(720.0, 210.0, 1_200.0, 480.0));
+        assert_eq!(first.size(), moved.size());
+    }
+
+    #[test]
+    fn offscreen_target_retains_virtual_bounds_for_pip_handoff() {
+        let virtual_rect = Rect::new(-1_300.0, 120.0, -300.0, 820.0);
+        let intent = CaptureIntent {
+            mode: CaptureMode::Pip,
+            source: ui::widget::SourceMode::Window,
+            destination: CaptureDestination::FloatingWindow,
+            regions: Vec::new(),
+            include_pointer: false,
+            audio: AudioCaptureMode::None,
+            extent: CaptureExtent::FullApp,
+            pip_layout: PipLayout::Auto,
+            targets: vec![ui::widget::CaptureTarget {
+                id: "notes".into(),
+                title: "Notes".into(),
+                app_id: "dev.qos.notes".into(),
+                visible_rect: Rect::ZERO,
+                virtual_rect,
+                complete_rect: Some(Rect::new(-1_300.0, 120.0, 10.0, 1_308.0)),
+            }],
+            recording_command: None,
+            replay_command: None,
+            screenshot_command: None,
+        };
+        assert_eq!(intent_spawn_bounds(&intent), Some(virtual_rect));
+    }
+
+    #[test]
+    fn semantic_region_update_preserves_element_identity() {
+        let updated = updated_local_tracking_source(
+            Some(FloatingSource::AppElement {
+                app_id: "dev.qos.browser".into(),
+                element_id: "media:7".into(),
+                region: Rect::new(10.0, 20.0, 410.0, 245.0),
+            }),
+            "dev.qos.browser".into(),
+            Rect::new(24.0, 36.0, 624.0, 374.0),
+        );
+        assert_eq!(
+            updated,
+            FloatingSource::AppElement {
+                app_id: "dev.qos.browser".into(),
+                element_id: "media:7".into(),
+                region: Rect::new(24.0, 36.0, 624.0, 374.0),
+            }
+        );
+    }
+
+    #[test]
+    fn paused_recording_never_schedules_an_encoder_frame() {
+        assert!(!recording_frame_due(true, Duration::from_secs(30)));
+        assert!(!recording_frame_due(false, Duration::from_millis(32)));
+        assert!(recording_frame_due(false, Duration::from_millis(33)));
+    }
+
+    #[test]
+    fn replay_ring_is_bounded_and_always_begins_on_a_keyframe() {
+        let mut frames: VecDeque<_> = (0..REPLAY_FRAMES + 17)
+            .map(|index| BufferedReplayFrame {
+                access_unit: vec![index as u8],
+                keyframe: index % REPLAY_KEYFRAME_INTERVAL as usize == 0,
+            })
+            .collect();
+        let mut bytes = frames.len();
+        trim_replay_video_frames(&mut frames, &mut bytes);
+        assert!(frames.len() <= REPLAY_FRAMES);
+        assert!(frames.front().is_some_and(|frame| frame.keyframe));
+        assert_eq!(bytes, frames.len());
+    }
+
+    #[cfg(feature = "hdr-decode")]
+    #[test]
+    fn replay_audio_tail_pads_warmup_and_keeps_the_newest_samples() {
+        let pcm: VecDeque<u8> = (0..12).collect();
+        let padded = replay_audio_tail(&pcm, 1);
+        assert_eq!(padded.len(), AUDIO_BYTES_PER_VIDEO_FRAME);
+        assert_eq!(&padded[padded.len() - 12..], &(0..12).collect::<Vec<_>>());
+
+        let pcm: VecDeque<u8> = (0..AUDIO_BYTES_PER_VIDEO_FRAME + 8)
+            .map(|value| value as u8)
+            .collect();
+        let tail = replay_audio_tail(&pcm, 1);
+        assert_eq!(tail[0], 8);
+        assert_eq!(tail.len(), AUDIO_BYTES_PER_VIDEO_FRAME);
+    }
+
+    #[test]
+    fn spatial_multi_capture_leaves_unselected_gap_transparent() {
+        let source = two_source_cards();
+        let regions = [
+            Rect::new(-300.0, 20.0, -100.0, 120.0),
+            Rect::new(900.0, 40.0, 1_100.0, 140.0),
+        ];
+        let (scene, width, height) = compose_scene(&source, &regions, PipLayout::Auto).unwrap();
+        let Ok(mut renderer) = OffscreenRenderer::try_new(width, height) else {
+            eprintln!("skipping pixel assertion: no offscreen GPU adapter");
+            return;
+        };
+        let rgba = renderer.render_rgba(&scene);
+        let alpha = |x: u32, y: u32| rgba[((y * width + x) * 4 + 3) as usize];
+        assert!(alpha(100, 50) > 0, "selected left card is present");
+        assert_eq!(
+            alpha(700, 50),
+            0,
+            "desktop pixels between selected regions must not leak into export"
+        );
+        assert!(alpha(1_300, 70) > 0, "selected right card is present");
+    }
+}

@@ -59,8 +59,13 @@ use crate::wgpu_engine::WgpuEngine;
 /// to reach for when a scene renders with pieces missing.
 const LOG_ENV: &str = "VELLO_BUMP_LOG";
 
-/// Set to `upstream` to start from upstream vello's budget constants and
-/// disable adaptive growth.
+/// Set to `upstream` to reserve upstream vello's constants and never
+/// measure or grow. A field name (`lines`, `binning`, `tiles`,
+/// `seg_counts`, `segments`, `blend`, or `ptcl`) pins only that reservation
+/// to its upstream value while the others remain adaptive. `ptcl=N` accepts
+/// an exact diagnostic word count. These variants are A/B tools for finding an
+/// allocator whose counter/failure signal does not yet cover a real workload;
+/// they are intentionally not production fallbacks.
 ///
 /// Scene and viewport safety floors still apply, so this is a conservative
 /// fallback rather than an exact reproduction of upstream allocation sizes.
@@ -92,13 +97,40 @@ const TILE_SIZE: u32 = 16;
 
 impl BudgetTracker {
     pub(crate) fn new() -> Self {
-        let pinned = std::env::var_os(BUDGET_ENV).is_some_and(|v| v == "upstream");
+        let override_name = std::env::var_os(BUDGET_ENV);
+        let pinned = override_name.as_deref().is_some_and(|v| v == "upstream");
+        let mut budget = if pinned {
+            BumpBudget::UPSTREAM
+        } else {
+            BumpBudget::INITIAL
+        };
+        if let Some(name) = override_name.as_deref().and_then(|name| name.to_str()) {
+            match name {
+                "lines" => budget.lines = BumpBudget::UPSTREAM.lines,
+                "binning" => budget.binning = BumpBudget::UPSTREAM.binning,
+                "tiles" => budget.tiles = BumpBudget::UPSTREAM.tiles,
+                "seg_counts" => budget.seg_counts = BumpBudget::UPSTREAM.seg_counts,
+                "segments" => budget.segments = BumpBudget::UPSTREAM.segments,
+                "blend" => budget.blend_spill = BumpBudget::UPSTREAM.blend_spill,
+                "ptcl" => budget.ptcl = BumpBudget::UPSTREAM.ptcl,
+                "upstream" | "" => {}
+                exact if exact.starts_with("ptcl=") => {
+                    if let Some(words) = exact
+                        .strip_prefix("ptcl=")
+                        .and_then(|words| words.parse::<u32>().ok())
+                    {
+                        budget.ptcl = words.min(BumpBudget::CEILING.ptcl);
+                    } else {
+                        eprintln!("vello: ignoring invalid {BUDGET_ENV}={exact:?}");
+                    }
+                }
+                other => eprintln!(
+                    "vello: ignoring unknown {BUDGET_ENV}={other:?}; expected upstream or an allocator field"
+                ),
+            }
+        }
         Self {
-            budget: if pinned {
-                BumpBudget::UPSTREAM
-            } else {
-                BumpBudget::INITIAL
-            },
+            budget,
             pending: None,
             log: std::env::var_os(LOG_ENV).is_some_and(|v| !v.is_empty()),
             pinned,
@@ -150,18 +182,23 @@ impl BudgetTracker {
         !self.pinned
     }
 
+    pub(crate) fn has_pending_readback(&self) -> bool {
+        self.pending.is_some()
+    }
+
     /// Collect a finished readback, if there is one, and grow the budget
     /// to cover what it reports.
     ///
-    /// Returns `true` when the budget changed, which is the caller's cue
-    /// to drop pooled buffers at the sizes no longer asked for.
+    /// Returns `(changed, overflowed)`: `changed` tells the caller to drop
+    /// pooled buffers at obsolete sizes, while `overflowed` lets a one-shot
+    /// renderer reject the incomplete pixels and immediately submit again.
     #[allow(
         clippy::print_stderr,
         reason = "qOS applications do not install a log-to-tracing bridge"
     )]
-    pub(crate) fn collect(&mut self, device: &Device, engine: &mut WgpuEngine) -> bool {
+    pub(crate) fn collect(&mut self, device: &Device, engine: &mut WgpuEngine) -> (bool, bool) {
         let Some(pending) = self.pending.take() else {
-            return false;
+            return (false, false);
         };
         // Non-blocking: this only gives already-finished callbacks a
         // chance to run. wgpu also runs them on submit, so by the top of
@@ -175,15 +212,17 @@ impl BudgetTracker {
         let Some(ok) = ready else {
             // Still in flight. Put it back and look again next frame.
             self.pending = Some(pending);
-            return false;
+            return (false, false);
         };
         let before = self.effective();
         let mut changed = false;
+        let mut overflowed = false;
         if ok && let Some(buf) = engine.get_download(pending.proxy) {
             let used: BumpAllocators = {
                 let view = buf.slice(..).get_mapped_range();
                 bytemuck::pod_read_unaligned(&view)
             };
+            overflowed = used.failed != 0;
             buf.unmap();
             let in_effect = self.effective();
             let budget_changed = !self.pinned && self.budget.observe(&used);
@@ -208,7 +247,7 @@ impl BudgetTracker {
             }
         }
         engine.free_download(pending.proxy);
-        changed
+        (changed, overflowed)
     }
 
     /// Grow from counters the caller has already read back itself.

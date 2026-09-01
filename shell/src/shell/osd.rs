@@ -225,7 +225,7 @@ fn draw_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     scene.stroke(
         &Stroke::new(1.0),
         transform,
-        colors.border_white_10,
+        ui::tokens::colors::Colors::hairline_on(colors.surfaces.overlay, 26),
         None,
         &body,
     );
@@ -290,7 +290,7 @@ fn draw_level_bar(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Them
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.surface_white_10,
+        colors.lift(0.72),
         None,
         &RoundedRect::from_rect(bar, bar_h / 2.0),
     );

@@ -1241,10 +1241,16 @@ impl SheetsApp {
         self.status = format!("Imported {count} cells from {}", file_label(path));
     }
 
-    /// Build an export table for the active sheet from its computed values.
-    fn active_table(&self, doc: &mut AutoCommit) -> crate::xlsx::SheetTable {
+    /// Build an interchange table for one sheet from its computed values.
+    ///
+    /// This is intentionally explicit about the sheet index: CSV is a
+    /// single-table format and exports only the active sheet, while workbook
+    /// formats (`.xlsx`/`.ods`) must preserve every tab. Keeping the common
+    /// materialisation here also ensures formulas and propagated formats take
+    /// the same path for both kinds of export.
+    fn table_for_sheet(&self, doc: &mut AutoCommit, sheet: usize) -> crate::xlsx::SheetTable {
         let cur = self.default_currency();
-        let snap = SheetsDoc::snapshot_sheet(doc, self.active_sheet, cur);
+        let snap = SheetsDoc::snapshot_sheet(doc, sheet, cur);
         let values = formula::recalculate(&snap.raw);
         // Re-apply format propagation so exported computed cells carry units.
         let mut fmt = snap.fmt.clone();
@@ -1257,6 +1263,15 @@ impl SheetsApp {
             }
         }
         crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values)
+    }
+
+    /// Materialise the whole workbook in tab order for workbook interchange.
+    /// Export runs only after the user chooses a destination, so this work is
+    /// never paid on an interaction/render frame.
+    fn workbook_tables(&self, doc: &mut AutoCommit) -> Vec<crate::xlsx::SheetTable> {
+        (0..SheetsDoc::sheet_count(doc))
+            .map(|sheet| self.table_for_sheet(doc, sheet))
+            .collect()
     }
 
     fn export_csv(&mut self, _doc: &mut AutoCommit) {
@@ -1294,10 +1309,10 @@ impl SheetsApp {
         self.begin_export(Interchange::Xlsx);
     }
 
-    /// Core: write the active sheet to `path` as an `.xlsx` workbook.
+    /// Core: write every sheet to `path` as an `.xlsx` workbook.
     fn export_xlsx_to(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
-        let table = self.active_table(doc);
-        match crate::xlsx::write_xlsx(path, std::slice::from_ref(&table)) {
+        let tables = self.workbook_tables(doc);
+        match crate::xlsx::write_xlsx(path, &tables) {
             Ok(()) => self.status = format!("Exported {}", file_label(path)),
             Err(e) => self.status = format!("Excel export failed: {e}"),
         }
@@ -1307,10 +1322,10 @@ impl SheetsApp {
         self.begin_export(Interchange::Ods);
     }
 
-    /// Core: write the active sheet to `path` as an `.ods` spreadsheet.
+    /// Core: write every sheet to `path` as an `.ods` spreadsheet.
     fn export_ods_to(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
-        let table = self.active_table(doc);
-        match crate::ods::write_ods(path, std::slice::from_ref(&table)) {
+        let tables = self.workbook_tables(doc);
+        match crate::ods::write_ods(path, &tables) {
             Ok(()) => self.status = format!("Exported {}", file_label(path)),
             Err(e) => self.status = format!("Calc export failed: {e}"),
         }
@@ -4819,7 +4834,7 @@ mod tests {
     fn xlsx_export_import_restores_live_formulas() {
         let (app, mut doc) = seeded_app();
         // Budget!E2 = =SUM(B2:D2) = 3600 in the seed.
-        let table = app.active_table(&mut doc);
+        let table = app.table_for_sheet(&mut doc, app.active_sheet);
         let path = std::env::temp_dir().join("sheets-app-formula-rt.xlsx");
         crate::xlsx::write_xlsx(&path, std::slice::from_ref(&table)).unwrap();
         let tables = crate::xlsx::read_xlsx(&path).unwrap();
@@ -5579,11 +5594,14 @@ mod tests {
         assert!(path.exists(), "no .{ext} written to {path:?}");
 
         let before = SheetsDoc::sheet_count(&mut doc);
+        // CSV is deliberately one active table; real workbook formats carry
+        // the whole two-tab workbook.
+        let expected_added = if ext == "csv" { 1 } else { before };
         import_from(&mut app, &mut doc, &path);
         assert_eq!(
             SheetsDoc::sheet_count(&mut doc),
-            before + 1,
-            "import must add a sheet"
+            before + expected_added,
+            "import must restore every table carried by the format"
         );
         assert!(
             app.status.starts_with("Imported"),
@@ -5591,8 +5609,14 @@ mod tests {
             app.status
         );
         // The re-imported sheet carries the Budget header text through the file.
-        let last = SheetsDoc::sheet_count(&mut doc) - 1;
-        assert_eq!(SheetsDoc::cell_raw(&mut doc, last, (0, 0)), "Category");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, before, (0, 0)), "Category");
+        if ext != "csv" {
+            assert_eq!(
+                SheetsDoc::cell_raw(&mut doc, before + 1, (0, 0)),
+                "Region",
+                "the second workbook tab is not silently discarded"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

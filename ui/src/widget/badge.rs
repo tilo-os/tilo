@@ -139,7 +139,7 @@ impl Badge {
             size,
             theme.tokens.colors.ink_on_any(
                 &[tint],
-                Color::WHITE,
+                theme.tokens.colors.text_primary,
                 crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
             ),
             translated(
@@ -281,7 +281,7 @@ impl Widget for Badge {
                         text_size,
                         theme.tokens.colors.ink_on_any(
                             &[bg],
-                            Color::WHITE,
+                            theme.tokens.colors.text_primary,
                             crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
                         ),
                         translated(transform, tx, ty),

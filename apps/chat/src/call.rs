@@ -18,7 +18,7 @@
 //!   silent no-op otherwise (so `--shots` and headless CI never need an
 //!   audio device).
 
-use vello::kurbo::{Point, Rect, Vec2};
+use vello::kurbo::{Rect, Size};
 
 /// A discrete call action that flows through the permission seam before it
 /// takes effect. Keeping these in one enum means a future real permission
@@ -150,9 +150,9 @@ pub struct CallState {
     pub channel: String,
     /// Expanded (full-window grid) vs. the docked floating overlay.
     pub expanded: bool,
-    /// Offset (logical px) the user has dragged the floating overlay from
-    /// its anchored home position. Reset when the call ends or expands.
-    pub overlay_offset: Vec2,
+    /// Shared attachment/drag state used by call, navigation, browser `PiP`,
+    /// and shell-owned floating surfaces.
+    pub placement: ui::floating_surface::FloatingPlacement,
     /// Whether the participant list inside the overlay is expanded. Auto
     /// behaviour: small calls expand, large calls collapse to a count chip
     /// until the user opens it.
@@ -176,7 +176,7 @@ impl Default for CallState {
             active: false,
             channel: String::new(),
             expanded: false,
-            overlay_offset: Vec2::ZERO,
+            placement: ui::floating_surface::FloatingPlacement::attached(Size::new(360.0, 220.0)),
             participants_expanded: true,
             muted: false,
             deafened: false,
@@ -187,12 +187,41 @@ impl Default for CallState {
 }
 
 impl CallState {
+    /// Semantic hand-off used when the call huddle is dragged out of the chat
+    /// window. The shell adopts this exact region; chat keeps owning call
+    /// state and controls, so detaching never creates a second call UI.
+    pub fn floating_request(
+        &self,
+        source_region: Rect,
+        initial_rect: Rect,
+    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        self.active
+            .then(|| ui::floating_surface::FloatingSurfaceRequest {
+                id: format!("chat-call:{}", self.channel),
+                title: "Active call".into(),
+                role: ui::floating_surface::FloatingRole::ActiveCall,
+                source: ui::floating_surface::FloatingSource::AppElement {
+                    app_id: "dev.qos.chat".into(),
+                    element_id: format!("active-call:{}", self.channel),
+                    region: source_region,
+                },
+                preferred_size: vello::kurbo::Size::new(
+                    initial_rect.width(),
+                    initial_rect.height(),
+                ),
+                aspect_ratio: None,
+                initial_rect: Some(initial_rect),
+                presentation_rect: None,
+                tracking_source: None,
+            })
+    }
+
     /// Begin a call in `channel`, resetting transient overlay layout.
     pub fn join(&mut self, channel: impl Into<String>) {
         self.active = true;
         self.channel = channel.into();
         self.expanded = false;
-        self.overlay_offset = Vec2::ZERO;
+        self.placement.reset_attached();
         self.deafened = false;
         self.sharing = false;
     }
@@ -201,7 +230,7 @@ impl CallState {
     pub fn leave(&mut self) {
         self.active = false;
         self.expanded = false;
-        self.overlay_offset = Vec2::ZERO;
+        self.placement.reset_attached();
         self.sharing = false;
     }
 
@@ -227,35 +256,6 @@ impl CallState {
     pub fn auto_participants_expanded(n: usize) -> bool {
         n <= 8
     }
-
-    /// Clamp the dragged overlay so its `home` rect (after offset) stays at
-    /// least partly inside `bounds`, so it can never be lost off-screen.
-    pub fn clamp_offset(&mut self, home: Rect, bounds: Rect) {
-        let margin = 48.0;
-        let moved = home + self.overlay_offset;
-        let mut dx = 0.0;
-        let mut dy = 0.0;
-        if moved.x1 < bounds.x0 + margin {
-            dx = bounds.x0 + margin - moved.x1;
-        } else if moved.x0 > bounds.x1 - margin {
-            dx = bounds.x1 - margin - moved.x0;
-        }
-        if moved.y0 < bounds.y0 {
-            dy = bounds.y0 - moved.y0;
-        } else if moved.y0 > bounds.y1 - margin {
-            dy = bounds.y1 - margin - moved.y0;
-        }
-        self.overlay_offset += Vec2::new(dx, dy);
-    }
-}
-
-/// An in-progress drag of the floating call overlay.
-#[derive(Clone, Copy, Debug)]
-pub struct OverlayDrag {
-    /// Pointer position where the drag began.
-    pub origin: Point,
-    /// `overlay_offset` at the moment the drag began.
-    pub start_offset: Vec2,
 }
 
 /// A short call cue.
@@ -302,30 +302,57 @@ mod tests {
     }
 
     #[test]
-    fn dragged_overlay_is_clamped_back_into_bounds() {
+    fn call_uses_shared_floating_handoff() {
         let mut c = CallState::default();
-        let bounds = Rect::new(0.0, 0.0, 1000.0, 800.0);
-        let home = Rect::new(600.0, 400.0, 880.0, 700.0);
-        // Drag it far off the right edge.
-        c.overlay_offset = Vec2::new(5000.0, 0.0);
-        c.clamp_offset(home, bounds);
-        let moved = home + c.overlay_offset;
-        assert!(moved.x0 < bounds.x1, "overlay pulled back on-screen");
+        let app = Rect::new(100.0, 80.0, 900.0, 700.0);
+        let desktop = Rect::new(0.0, 0.0, 1400.0, 900.0);
+        c.placement
+            .begin_drag(vello::kurbo::Point::new(700.0, 140.0), app, desktop);
+        assert_eq!(
+            c.placement
+                .update_drag(vello::kurbo::Point::new(950.0, 140.0), app, desktop),
+            ui::floating_surface::Handoff::Detached
+        );
+    }
+
+    #[test]
+    fn call_handoff_names_the_semantic_app_element() {
+        let mut c = CallState::default();
+        c.join("c_huddle");
+        let region = Rect::new(40.0, 28.0, 432.0, 288.0);
+        let request = c
+            .floating_request(region, Rect::new(48.0, 36.0, 424.0, 280.0))
+            .expect("an active call can be handed to the shared floating host");
+        assert_eq!(request.id, "chat-call:c_huddle");
+        assert_eq!(
+            request.source,
+            ui::floating_surface::FloatingSource::AppElement {
+                app_id: "dev.qos.chat".into(),
+                element_id: "active-call:c_huddle".into(),
+                region,
+            }
+        );
     }
 
     #[test]
     fn join_and_leave_reset_overlay_layout() {
         let mut c = CallState {
-            overlay_offset: Vec2::new(120.0, -30.0),
             expanded: true,
             ..CallState::default()
         };
         c.leave();
         assert!(!c.active && !c.expanded);
-        assert_eq!(c.overlay_offset, Vec2::ZERO);
+        assert!(matches!(
+            c.placement.attachment(),
+            ui::floating_surface::Attachment::App { .. }
+        ));
         c.join("c_warroom");
         assert!(c.active);
         assert_eq!(c.channel, "c_warroom");
+        assert!(matches!(
+            c.placement.attachment(),
+            ui::floating_surface::Attachment::App { .. }
+        ));
     }
 
     #[test]

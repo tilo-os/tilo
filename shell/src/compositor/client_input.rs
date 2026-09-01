@@ -1160,6 +1160,11 @@ pub fn touch_target(
     {
         return Some((surface_id, (rect.x0, rect.y0)));
     }
+    if let Some((surface_id, rect)) = fb.floating_surface_hit((*x, *y))
+        && state.client_input.surfaces.contains_key(&surface_id)
+    {
+        return Some((surface_id, (rect.x0, rect.y0)));
+    }
     let hit = {
         let chrome = fb.chrome();
         let tree = chrome.tree();
@@ -1375,12 +1380,18 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
     let tiles: Vec<(u64, Rect)> = {
         let chrome = fb.chrome();
         let tree = chrome.tree();
-        foreign_tiles(&tree, fb.host())
+        let mut tiles = foreign_tiles(&tree, fb.host())
             .into_iter()
             // A tab whose surface the compositor no longer holds is not a place input can land, for the local user or a remote one.
             .filter(|hit| state.client_input.surfaces.contains_key(&hit.surface_id))
             .map(|hit| (hit.surface_id, hit.rect))
-            .collect()
+            .collect::<Vec<_>>();
+        tiles.extend(
+            fb.floating_surface_rects()
+                .into_iter()
+                .filter(|(surface_id, _)| state.client_input.surfaces.contains_key(surface_id)),
+        );
+        tiles
     };
     let view = crate::network::input_firewall::ShellView::new(
         tiles,
@@ -1505,7 +1516,9 @@ fn route_mouse_input(
                 // keyboard focus. Pointer focus moves to the OSK, but
                 // raising/focusing it would deactivate the very
                 // text-input session the tap is meant to feed.
-                if state.osk_surface != Some(h.surface_id) {
+                if state.osk_surface != Some(h.surface_id)
+                    && !state.is_floating_toplevel(h.surface_id)
+                {
                     raise_group(fb, h.strip, h.group);
                     sync_keyboard_focus(state, fb);
                 }
@@ -1748,6 +1761,15 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
                     rect,
                 });
             }
+            if state.is_floating_toplevel(surface_id) {
+                let rect = fb.floating_surface_rect(surface_id)?;
+                return Some(TileHit {
+                    surface_id,
+                    strip: StripId::default(),
+                    group: 0,
+                    rect,
+                });
+            }
             let (strip, group) = *state.client_input.placements.get(&surface_id)?;
             let rect = fb.host().active_tile_rect(group)?;
             Some(TileHit {
@@ -1763,6 +1785,16 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
             }
             if let Some((surface_id, rect)) = fb.osk_surface_hit(state.client_input.cursor())
                 && state.osk_surface == Some(surface_id)
+                && state.client_input.surfaces.contains_key(&surface_id)
+            {
+                return Some(TileHit {
+                    surface_id,
+                    strip: StripId::default(),
+                    group: 0,
+                    rect,
+                });
+            }
+            if let Some((surface_id, rect)) = fb.floating_surface_hit(state.client_input.cursor())
                 && state.client_input.surfaces.contains_key(&surface_id)
             {
                 return Some(TileHit {

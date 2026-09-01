@@ -43,6 +43,9 @@ os-actions = { path = "../../crates/system/os-actions" }
 # Settings state; switching writes only the non-secret active id.
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 runtime-fs = { path = "../../crates/runtime/runtime-fs" }
+# Device role, workspace residency and server relay policy use the same types
+# the real qos-relay daemon loads; Settings never keeps a shadow sync model.
+qos-relay = { path = "../../crates/hosting/qos-relay" }
 qos-bluez = { path = "../../crates/system/qos-bluez" }
 runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg" }
 # The shared multi-account store + encrypted secret vault. Settings reads and

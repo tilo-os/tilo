@@ -3,7 +3,15 @@
 The bar: everything we ship must be **genuinely usable for most users**, not just
 toy/demo use cases. No mock/example data — apps start empty and operate on real
 state. Design is governed by `ui/HIG.md`; per-app open issues are tracked in
-`apps/MISSING.md`; this document is the canonical scope + intent.
+the current [`ui-ux-overview.md`](ui-ux-overview.md) release ledger; this
+document is the canonical scope + intent.
+
+The current adoption audience is **tinkerers**: people willing to explore an
+unreleased system and inspect how it works, but who should not need to be app or
+OS developers. This affects first-run prominence—not capability tiers. Terminal
+and system tools are easy to discover without displacing ordinary work. The
+long-term product remains a general-purpose OS, so early technical affordances
+must not harden into a builder-only information architecture.
 
 ## Standard apps
 
