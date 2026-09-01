@@ -172,6 +172,19 @@ pub trait VmDelegate: Send + Sync {
     ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError>;
 }
 
+impl<T: VmDelegate + ?Sized> VmDelegate for Box<T> {
+    fn availability(&self) -> VmAvailability {
+        (**self).availability()
+    }
+
+    fn launch(
+        &self,
+        request: VmRouteRequest<'_>,
+    ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
+        (**self).launch(request)
+    }
+}
+
 /// Fail-closed adapter used until the privileged authenticated guest bridge is
 /// available in the compositor session. The protocol exposes this state as a
 /// disabled route instead of pretending the VM can launch.

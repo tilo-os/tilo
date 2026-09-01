@@ -72,4 +72,6 @@ pub use store::{
     CAPSULE_SCHEMA_VERSION, CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore,
     InstallationRecord, InstallationStatus, InstallerKind, ProgramKind, RegisteredProgram,
 };
-pub use vm_adapter::{DenyAllVmPortalAuthority, LiveVmDelegate, VmPortalAuthority};
+pub use vm_adapter::{
+    DenyAllVmCapabilityBroker, DenyAllVmPortalAuthority, LiveVmDelegate, VmPortalAuthority,
+};

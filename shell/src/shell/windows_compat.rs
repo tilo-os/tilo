@@ -5,16 +5,21 @@
 //! and workspace capabilities are re-read for every list and launch request.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use compat_service::{
-    BwrapExecutor, CapabilityAuthority, CapsuleStore, CompatSessionHandle, HostSession,
-    LauncherAuthenticator, ManagedCompatibility, ShippedCataloguePaths, SystemResourceBroker,
-    SystemRuntimeRegistry, TrustedLauncherRegistry, UnavailableVmDelegate, load_shipped_catalogue,
-    spawn_session_service,
+    BwrapExecutor, CapabilityAuthority, CapsuleStore, CompatSessionHandle,
+    DenyAllVmCapabilityBroker, DenyAllVmPortalAuthority, HostSession, LauncherAuthenticator,
+    LiveVmDelegate, ManagedCompatibility, ShippedCataloguePaths, SystemResourceBroker,
+    SystemRuntimeRegistry, TrustedLauncherRegistry, VmAvailability, VmDelegate, VmRouteRequest,
+    load_shipped_catalogue, spawn_session_service,
+};
+use windows_vm::{
+    AppFocusedSpiceLauncher, ApplianceConfig, ApplicationPresentation, GuestBridgeConfig,
+    HttpsGuestBridge, LibvirtBackend, ProvisioningStore, StdCommandRunner, WindowsAppliance,
 };
 
 use crate::shell::state::WorkspaceTreeHandle;
@@ -86,6 +91,91 @@ pub struct WindowsCompatHandle {
     registry_refresh: EntryRegistryRefresh,
 }
 
+fn live_vm_delegate() -> Result<Arc<dyn VmDelegate>, String> {
+    const ROOT: &str = "/var/lib/qos/windows";
+    let domain_uuid = std::fs::read_to_string(format!("{ROOT}/domain.uuid"))
+        .map_err(|error| format!("could not read singleton VM identity: {error}"))?;
+    let domain_uuid = domain_uuid.trim();
+    let presentation = ApplicationPresentation::AppFocusedSpice;
+    let configuration = ApplianceConfig::recommended(
+        domain_uuid,
+        format!("{ROOT}/system.qcow2"),
+        format!("{ROOT}/nvram.fd"),
+    );
+    configuration
+        .validate()
+        .map_err(|error| format!("invalid singleton VM configuration: {error}"))?;
+    let bridge = HttpsGuestBridge::new(GuestBridgeConfig {
+        endpoint: "192.168.251.2:49888"
+            .parse()
+            .map_err(|error| format!("invalid fixed guest endpoint: {error}"))?,
+        bootstrap_secret: format!("{ROOT}/bridge/bootstrap.secret").into(),
+        pin_directory: format!("{ROOT}/session").into(),
+        presentation,
+    })
+    .map_err(|error| format!("could not open authenticated guest bridge: {error}"))?;
+    let runner = StdCommandRunner;
+    let appliance = WindowsAppliance::new(
+        configuration,
+        ProvisioningStore::new(format!("{ROOT}/session/state.json")),
+        LibvirtBackend::new(runner),
+        bridge,
+        DenyAllVmCapabilityBroker::default(),
+        AppFocusedSpiceLauncher::new(runner),
+    );
+    Ok(Arc::new(LiveVmDelegate::new(
+        appliance,
+        DenyAllVmPortalAuthority,
+        presentation,
+    )))
+}
+
+#[derive(Default)]
+struct SessionVmDelegate {
+    live: Mutex<Option<Arc<dyn VmDelegate>>>,
+}
+
+impl SessionVmDelegate {
+    fn get(&self) -> Result<Arc<dyn VmDelegate>, String> {
+        if let Some(delegate) = self
+            .live
+            .lock()
+            .map_err(|_| "Windows VM delegate state is unavailable".to_string())?
+            .clone()
+        {
+            return Ok(delegate);
+        }
+        let candidate = live_vm_delegate()?;
+        let mut slot = self
+            .live
+            .lock()
+            .map_err(|_| "Windows VM delegate state is unavailable".to_string())?;
+        Ok(slot.get_or_insert_with(|| Arc::clone(&candidate)).clone())
+    }
+}
+
+impl VmDelegate for SessionVmDelegate {
+    fn availability(&self) -> VmAvailability {
+        match self.get() {
+            Ok(delegate) => delegate.availability(),
+            Err(error) => VmAvailability::unavailable(error),
+        }
+    }
+
+    fn launch(
+        &self,
+        request: VmRouteRequest<'_>,
+    ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
+        self.get()
+            .map_err(windows_vm::AgentError::Transport)?
+            .launch(request)
+    }
+}
+
+fn vm_delegate() -> Box<dyn VmDelegate> {
+    Box::new(SessionVmDelegate::default())
+}
+
 fn spawn_entry_registry_refresh(store: CapsuleStore) -> Result<EntryRegistryRefresh, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
@@ -128,6 +218,11 @@ fn spawn_entry_registry_refresh(store: CapsuleStore) -> Result<EntryRegistryRefr
 
 /// Start the real session broker. Failure is fail-closed: the optional
 /// application service remains absent and Windows Manager shows repair state.
+///
+/// # Errors
+///
+/// Returns an error when the catalogue, capsule store, compositor resources,
+/// launcher authentication, or bounded service socket cannot be initialized.
 pub fn spawn(tree: WorkspaceTreeHandle) -> Result<WindowsCompatHandle, String> {
     let report = load_shipped_catalogue(&ShippedCataloguePaths::default())
         .map_err(|error| error.to_string())?;
@@ -167,7 +262,7 @@ pub fn spawn(tree: WorkspaceTreeHandle) -> Result<WindowsCompatHandle, String> {
         SystemRuntimeRegistry::new(),
         SystemResourceBroker::new(),
         BwrapExecutor,
-        UnavailableVmDelegate,
+        vm_delegate(),
         session,
     )
     .map_err(|error| error.to_string())?;

@@ -1,23 +1,25 @@
 # Windows fallback VM
 
-> **Status (2026-09): provisioning and boundary scaffolding.** The singleton
-> appliance model, host-only libvirt network, guest payload, authenticated
-> RemoteApp DTOs, and capability checks exist as components. The qOS session
-> daemon has not yet connected these pieces end to end, so ordinary launches do
-> not currently provision or publish live RemoteApps. The operational flow
-> below is the target unless explicitly marked implemented.
+> **Status (2026-09): live, provisioned fallback.** The qOS session composes the
+> singleton libvirt appliance, authenticated and certificate-pinned guest
+> bridge, published-app catalogue, and app-focused SPICE presentation. An
+> unprovisioned or unhealthy guest remains unavailable without affecting
+> Wine/Proton applications.
 
-qOS has one Windows appliance per user. It is a last-resort compatibility
+qOS has one Windows appliance on the system. It is a last-resort compatibility
 domain, not a second qOS session and not a way to place arbitrary programs in
 a less confined desktop.
 
-## Provisioning (target operational flow)
+## Provisioning
 
 The owner supplies a Windows installation ISO to `qos-windows-provision
 prepare --iso /absolute/path`. The tool copies it to root-only state, creates
-one qcow2 disk, and makes a small guest-tools ISO. It deliberately does not
-accept, log, or retain a product key. Complete Windows Setup and enter any
-licence in the explicitly owner-authorised provisioning console.
+one qcow2 disk, makes a small guest-tools ISO, and starts the headless singleton.
+It deliberately does not open a viewer or accept, log, or retain a product key.
+Complete Windows Setup and enter any licence in the explicitly owner-authorised
+provisioning console. The singleton domain attaches the copied installer and
+guest-tools images as read-only CD-ROMs; its empty disk falls through to the
+installer on first boot and takes priority after Windows is installed.
 
 For the best normal qOS application presentation, use a Windows Server ISO
 licensed for the official Remote Desktop Services RemoteApp role. qOS also
@@ -38,11 +40,11 @@ the application is running, restores it on exit, and removes its job file and
 task. If Windows has no active console user, the bridge returns an explicit
 `no managed interactive session` error and qOS does not open an empty desktop.
 
-## Guest setup (target operational flow)
+## Guest setup
 
-In the provisioning console, attach `qos-guest-tools.iso`, copy the example
-application manifest to a local administrator-controlled location, replace its
-entries with the exact approved applications, then run:
+In the provisioning console, open the attached `qos-guest-tools.iso`, copy the
+example application manifest to a local administrator-controlled location,
+replace its entries with the exact approved applications, then run:
 
 ```powershell
 Set-ExecutionPolicy RemoteSigned -Scope Process
@@ -52,26 +54,28 @@ Set-ExecutionPolicy RemoteSigned -Scope Process
 The script accepts only existing executables under `C:\Program Files`,
 `C:\Program Files (x86)`, or `C:\Windows`; it writes the native RemoteApp
 allow-list and keeps each published alias stable. On Server this is consumed
-by the official RDS role; on client Windows it is the documented compatibility
-surface used by WinApps-like clients. Discovery does not equate to publication.
+by the official RDS role; on client Windows it is the native but unsupported
+compatibility surface used by WinApps-like clients. Discovery does not equate
+to publication.
 
 qOS also ships a pinned copy of Bottles' upstream program metadata to improve
 catalogue matching. It is read-only reference data: only identities and runner
 hints may be imported. qOS never executes a record's Steps, URLs, shell text,
 or dependency instructions.
 
-Detach the guest-tools ISO immediately after setup through the owner-authorised
-console. It carries a bootstrap key for first enrollment and must not remain
-readable to RemoteApp users.
+Once the authenticated bridge proves enrollment, qOS automatically detaches
+both setup ISOs from the running guest and its persistent libvirt definition
+before marking the appliance launchable. The tools image carries the one-time
+enrollment key and therefore never remains readable to application users.
 
-## Boundary (implemented contract; end-to-end wiring is roadmap)
+## Boundary
 
 The libvirt network has `forward mode='none'`; it is host-only, without a
 bridge to a physical NIC or a NAT escape hatch. RDP accepts only its host-side
 address. The guest bridge is HTTPS on that network and requires fresh HMAC
-headers from a root-only bootstrap key. qOS pins the guest TLS fingerprint
-after authenticated enrollment; a change requires repair rather than an
-automatic trust update.
+headers from an owner-session-readable, host-protected bootstrap key. qOS pins
+the guest TLS fingerprint after authenticated enrollment; a change requires
+repair rather than an automatic trust update.
 
 The target bridge returns a fresh temporary RemoteApp account and password for
 one launch. The account is removed after ten minutes even if the client crashes.
