@@ -25,12 +25,57 @@ use qdoc::{Containers, DocMut};
 use crate::num;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, OperationKind, Resource, ResourceProvider,
 };
 
 /// Registry `type_id` for every word-processor action.
 pub const WORD_PROCESSOR_ACTION_TYPE: &str = "word-processor.action";
+pub const WORD_PROCESSOR_OPERATION_TYPE: &str = "word-processor.operation";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WordProcessorOperation {
+    Open,
+    Save,
+    SaveAs,
+    Find,
+    ZoomIn,
+    ZoomOut,
+    ToggleSpellcheck,
+    ToggleMarkup,
+    ToggleStyles,
+    ToggleRuler,
+    ToggleOutline,
+    ToggleHistory,
+}
+
+pub fn decode_operation(
+    type_id: &str,
+    payload: &[u8],
+) -> Result<Option<WordProcessorOperation>, String> {
+    if type_id != WORD_PROCESSOR_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn operation(
+    id: &str,
+    label: &str,
+    kind: OperationKind,
+    value: WordProcessorOperation,
+) -> ActionSpec {
+    let spec = ActionSpec::operation(id, label, kind, WORD_PROCESSOR_OPERATION_TYPE, &value)
+        .expect("WordProcessorOperation is always serializable");
+    match value {
+        WordProcessorOperation::Open
+        | WordProcessorOperation::Save
+        | WordProcessorOperation::SaveAs => spec.destructive(),
+        _ => spec.with_contract(ActionContract::view()),
+    }
+}
 
 /// Which page region a text/formatting op addresses. Mirrors [`qdoc::model::Region`]
 /// (which is not itself serializable) so the region travels in the payload.
@@ -763,7 +808,13 @@ fn immediate_spec(id: &str, label: &str, action: &WordProcessorAction) -> Action
     // Through the constructor rather than a struct literal: `ActionSpec`
     // carries private `params`/`build` fields, so a literal cannot name
     // them and the shared defaults would be bypassed if it could.
-    ActionSpec::immediate_encoded(id, label, action.locus(), encode(action))
+    let spec =
+        ActionSpec::immediate_encoded(id, label, action.locus(), encode(action)).reversible();
+    if id.contains("delete") || id.contains("remove") {
+        spec.destructive()
+    } else {
+        spec
+    }
 }
 
 /// A short label for a structural block in the palette.
@@ -789,6 +840,83 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
         "word_processor.document",
         "Document",
     );
+
+    for (id, label, kind, value) in [
+        (
+            "open",
+            "Open document",
+            OperationKind::Effect,
+            WordProcessorOperation::Open,
+        ),
+        (
+            "save",
+            "Save document",
+            OperationKind::Effect,
+            WordProcessorOperation::Save,
+        ),
+        (
+            "save-as",
+            "Save document as",
+            OperationKind::Effect,
+            WordProcessorOperation::SaveAs,
+        ),
+        (
+            "find",
+            "Find in document",
+            OperationKind::View,
+            WordProcessorOperation::Find,
+        ),
+        (
+            "zoom-in",
+            "Zoom in",
+            OperationKind::View,
+            WordProcessorOperation::ZoomIn,
+        ),
+        (
+            "zoom-out",
+            "Zoom out",
+            OperationKind::View,
+            WordProcessorOperation::ZoomOut,
+        ),
+        (
+            "spellcheck",
+            "Toggle spellcheck",
+            OperationKind::View,
+            WordProcessorOperation::ToggleSpellcheck,
+        ),
+        (
+            "markup",
+            "Toggle review markup",
+            OperationKind::View,
+            WordProcessorOperation::ToggleMarkup,
+        ),
+        (
+            "styles",
+            "Toggle styles panel",
+            OperationKind::View,
+            WordProcessorOperation::ToggleStyles,
+        ),
+        (
+            "ruler",
+            "Toggle ruler",
+            OperationKind::View,
+            WordProcessorOperation::ToggleRuler,
+        ),
+        (
+            "outline",
+            "Toggle outline",
+            OperationKind::View,
+            WordProcessorOperation::ToggleOutline,
+        ),
+        (
+            "history",
+            "Toggle history",
+            OperationKind::View,
+            WordProcessorOperation::ToggleHistory,
+        ),
+    ] {
+        root = root.with_action(operation(id, label, kind, value));
+    }
 
     // Document-level structural inserts, anchored on the caret.
     root = root.with_action(immediate_spec(
@@ -1278,15 +1406,20 @@ mod tests {
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
+        palette.set_query("Insert table");
         let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Insert table")),
             "{labels:?}"
         );
+        palette.set_query("Delete image");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Delete image")),
             "{labels:?}"
         );
+        palette.set_query("Delete table");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Delete table")),
             "{labels:?}"

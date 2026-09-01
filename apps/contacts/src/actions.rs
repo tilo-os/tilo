@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 
 use qos_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    ExecutionMode, OperationKind, Resource, ResourceProvider, RetryPolicy,
+    OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::ContactsDoc;
@@ -65,12 +65,11 @@ fn contact_operation(
         .expect("ContactsOperation is always serializable");
     match operation {
         ContactsOperation::Open { .. } => spec.retry_policy(RetryPolicy::Idempotent),
-        ContactsOperation::ImportVcard => {
-            spec.execution(ExecutionMode::Background { cancellable: true })
-        }
-        ContactsOperation::ExportAllVcard => spec
-            .execution(ExecutionMode::Background { cancellable: true })
-            .destructive(),
+        // These invocations synchronously enqueue a host-portal request and
+        // return. The app has no durable job handle or cancellation channel,
+        // so advertising a cancellable background lifecycle would be false.
+        ContactsOperation::ImportVcard => spec,
+        ContactsOperation::ExportAllVcard => spec.destructive(),
     }
 }
 

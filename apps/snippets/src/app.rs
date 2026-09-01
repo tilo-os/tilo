@@ -669,6 +669,32 @@ impl Default for SnippetsApp {
 }
 
 impl ui::widget::Widget for SnippetsApp {
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            actions::SnippetsOperation::OpenSnippet { id } => {
+                if self.library.get(id).is_none() {
+                    return Err("snippet no longer exists".into());
+                }
+                self.open_snippet(id);
+            }
+            actions::SnippetsOperation::FocusSearch => self.search_input.set_focus(true),
+        }
+        Ok(true)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         self.sync_library(state);
     }

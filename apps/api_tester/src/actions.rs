@@ -48,7 +48,7 @@ use uuid::Uuid;
 
 use qos_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    ExecutionMode, OperationKind, Resource, ResourceProvider, ResultSpec,
+    OperationKind, Resource, ResourceProvider, ResultSpec,
 };
 
 use crate::doc::ApiDoc;
@@ -83,7 +83,6 @@ pub fn send_request_operation(collection_id: Uuid, request_id: Uuid) -> ActionSp
     )
     .expect("ApiTesterOperation is always serializable")
     .with_description("Send this saved request using the active environment")
-    .execution(ExecutionMode::Background { cancellable: false })
     .returns(ResultSpec::Json {
         schema: serde_json::json!({
             "type": "object",

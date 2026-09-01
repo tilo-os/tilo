@@ -628,6 +628,32 @@ impl Default for DiffMergeApp {
 }
 
 impl Widget for DiffMergeApp {
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        use crate::actions::DiffmergeOperation;
+        self.act(match operation {
+            DiffmergeOperation::ShowDiff => Action::ModeDiff,
+            DiffmergeOperation::ShowMerge => Action::ModeMerge,
+            DiffmergeOperation::PreviousChange => Action::PrevChange,
+            DiffmergeOperation::NextChange => Action::NextChange,
+            DiffmergeOperation::OpenFiles => Action::Open,
+            DiffmergeOperation::LoadSample => Action::LoadSample,
+        });
+        Ok(true)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         // Pull in any file the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).

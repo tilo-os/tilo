@@ -7409,6 +7409,45 @@ impl WordProcessorWidget {
 }
 
 impl Widget for WordProcessorWidget {
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        use crate::actions::WordProcessorOperation;
+        match operation {
+            WordProcessorOperation::Open => self.request_open_document(),
+            WordProcessorOperation::Save => self.save(doc),
+            WordProcessorOperation::SaveAs => self.request_save_as(),
+            WordProcessorOperation::Find => self.open_find(doc),
+            WordProcessorOperation::ZoomIn => {
+                self.zoom_by(0.1);
+            }
+            WordProcessorOperation::ZoomOut => {
+                self.zoom_by(-0.1);
+            }
+            WordProcessorOperation::ToggleSpellcheck => self.toggle_spellcheck(),
+            WordProcessorOperation::ToggleMarkup => self.toggle_markup(),
+            WordProcessorOperation::ToggleStyles => {
+                self.styles_panel_open = !self.styles_panel_open;
+            }
+            WordProcessorOperation::ToggleRuler => self.ruler_on = !self.ruler_on,
+            WordProcessorOperation::ToggleOutline => self.outline.toggle(),
+            WordProcessorOperation::ToggleHistory => self.history.toggle(),
+        }
+        self.dirty = true;
+        Ok(true)
+    }
+
     /// The document being edited is a record; its identity is its path. Two
     /// editors on two different files in one room announce two different
     /// records, so they are never handed each other's text — "share this
