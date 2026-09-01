@@ -28,8 +28,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Availability,
+    ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, ParamType, PermissionRequirement,
+    Resource, ResourceProvider, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::AuthDoc;
@@ -255,7 +256,19 @@ pub fn move_down_action(id: AccountId) -> TotpAction {
     reason = "TotpAction's fields are all JSON-safe primitives, and id/label are static strings; see encode()'s # Panics doc"
 )]
 fn encode_spec(id: &str, label: &str, action: &TotpAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, TOTP_ACTION_TYPE, action).expect("encode totp action")
+    ActionSpec::immediate(id, label, TOTP_ACTION_TYPE, action)
+        .expect("encode totp action")
+        .with_contract(vault_contract())
+}
+
+fn vault_contract() -> ActionContract {
+    ActionContract {
+        permission: PermissionRequirement::Write,
+        retry: RetryPolicy::Idempotent,
+        reversible: true,
+        tags: vec!["security".into(), "credential".into()],
+        ..ActionContract::default()
+    }
 }
 
 /// One-line palette label for an account resource.
@@ -285,39 +298,55 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     // pinned from the current vault, so the built envelope replays deterministically.
     let next_order = accounts.iter().map(|a| a.order).max().map_or(0, |m| m + 1);
     let next_color = (accounts.len() % 7) as u8;
-    root = root.with_action(ActionSpec::prompted(
-        "add-account",
-        "Add account",
-        "otpauth:// link",
-        "otpauth://totp/Issuer:you@example.com?secret=\u{2026}",
-        ExecutionLocus::ClientLocal,
-        move |uri: &str| {
-            let action = match parse_otpauth_uri(uri, Uuid::new_v4()) {
-                Ok(mut acc) => {
-                    acc.color = next_color;
-                    add_account_action(&acc, next_order)
-                }
-                // A malformed link yields an AddAccount with an empty secret,
-                // which `apply` no-ops — never a partial account.
-                Err(_) => TotpAction::AddAccount {
-                    id: Uuid::nil().to_string(),
-                    issuer: String::new(),
-                    label: String::new(),
-                    secret: String::new(),
-                    algorithm: Algorithm::Sha1.as_str().to_string(),
-                    digits: 6,
-                    period: 30,
-                    color: 0,
-                    order: 0,
-                },
-            };
-            encode(&action)
-        },
-    ));
+    root = root.with_action(
+        ActionSpec::typed(
+            "add-account",
+            "Add account",
+            "otpauth://totp/Issuer:you@example.com?secret=\u{2026}",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required(
+                    "uri",
+                    ParamType::Secret,
+                    "otpauth setup URI; redacted from logs",
+                )
+                .with_schema(serde_json::json!({ "pattern": "^otpauth://totp/" })),
+            ],
+            move |args| {
+                let uri = args.text("uri").unwrap_or_default();
+                let action = match parse_otpauth_uri(uri, Uuid::new_v4()) {
+                    Ok(mut acc) => {
+                        acc.color = next_color;
+                        add_account_action(&acc, next_order)
+                    }
+                    // A malformed link yields an AddAccount with an empty secret,
+                    // which `apply` no-ops — never a partial account.
+                    Err(_) => TotpAction::AddAccount {
+                        id: Uuid::nil().to_string(),
+                        issuer: String::new(),
+                        label: String::new(),
+                        secret: String::new(),
+                        algorithm: Algorithm::Sha1.as_str().to_string(),
+                        digits: 6,
+                        period: 30,
+                        color: 0,
+                        order: 0,
+                    },
+                };
+                encode(&action)
+            },
+        )
+        .with_contract(ActionContract {
+            risk: RiskLevel::Privileged,
+            confirmation: ConfirmationPolicy::Confirm,
+            ..vault_contract()
+        }),
+    );
 
     // One resource per account, exporting rename / relabel / recolour / reorder /
     // delete — the same actions the on-screen affordances dispatch.
-    for acc in &accounts {
+    let account_count = accounts.len();
+    for (index, acc) in accounts.iter().enumerate() {
         let id = acc.id;
         let cur_color = acc.color;
         let mut child = Resource::new(
@@ -326,43 +355,104 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
             account_label(acc),
         );
 
-        child = child.with_action(ActionSpec::prompted(
-            "rename",
-            "Rename",
-            "Issuer",
-            "e.g. GitHub",
-            ExecutionLocus::ClientLocal,
-            move |s: &str| encode(&set_issuer_action(id, s.trim())),
-        ));
-        child = child.with_action(ActionSpec::prompted(
-            "relabel",
-            "Relabel account",
-            "Account label",
-            "e.g. you@example.com",
-            ExecutionLocus::ClientLocal,
-            move |s: &str| encode(&set_label_action(id, s.trim())),
-        ));
-        child = child.with_action(ActionSpec::prompted(
-            "set-color",
-            "Set colour",
-            "Colour (0\u{2013}6)",
-            "0",
-            ExecutionLocus::ClientLocal,
-            // An unparseable colour keeps the current one — never a no-op error.
-            move |s: &str| {
-                encode(&set_color_action(
-                    id,
-                    s.trim().parse::<u8>().unwrap_or(cur_color),
-                ))
-            },
-        ));
-        child = child.with_action(encode_spec("move-up", "Move up", &move_up_action(id)));
-        child = child.with_action(encode_spec("move-down", "Move down", &move_down_action(id)));
-        child = child.with_action(encode_spec(
-            "delete",
-            "Delete account",
-            &delete_account_action(id),
-        ));
+        child = child.with_action(
+            ActionSpec::typed(
+                "rename",
+                "Rename",
+                "e.g. GitHub",
+                ExecutionLocus::ClientLocal,
+                vec![ActionParam::required(
+                    "issuer",
+                    ParamType::Text,
+                    "Account issuer",
+                )],
+                move |args| {
+                    encode(&set_issuer_action(
+                        id,
+                        args.text("issuer").unwrap_or_default().trim(),
+                    ))
+                },
+            )
+            .with_contract(vault_contract()),
+        );
+        child = child.with_action(
+            ActionSpec::typed(
+                "relabel",
+                "Relabel account",
+                "e.g. you@example.com",
+                ExecutionLocus::ClientLocal,
+                vec![ActionParam::required(
+                    "label",
+                    ParamType::Text,
+                    "Account label",
+                )],
+                move |args| {
+                    encode(&set_label_action(
+                        id,
+                        args.text("label").unwrap_or_default().trim(),
+                    ))
+                },
+            )
+            .with_contract(vault_contract()),
+        );
+        child = child.with_action(
+            ActionSpec::typed(
+                "set-color",
+                "Set colour",
+                "0",
+                ExecutionLocus::ClientLocal,
+                vec![
+                    ActionParam::required("colour", ParamType::Integer, "Colour index")
+                        .with_schema(serde_json::json!({ "minimum": 0, "maximum": 6 })),
+                ],
+                move |args| {
+                    encode(&set_color_action(
+                        id,
+                        args.integer("colour")
+                            .and_then(|value| u8::try_from(value).ok())
+                            .unwrap_or(cur_color),
+                    ))
+                },
+            )
+            .with_contract(vault_contract()),
+        );
+        child = child.with_action(
+            encode_spec("move-up", "Move up", &move_up_action(id)).with_contract(ActionContract {
+                availability: if index > 0 {
+                    Availability::Available
+                } else {
+                    Availability::Unavailable {
+                        code: "already_first".into(),
+                        reason: "This account is already first".into(),
+                    }
+                },
+                ..vault_contract()
+            }),
+        );
+        child = child.with_action(
+            encode_spec("move-down", "Move down", &move_down_action(id)).with_contract(
+                ActionContract {
+                    availability: if index + 1 < account_count {
+                        Availability::Available
+                    } else {
+                        Availability::Unavailable {
+                            code: "already_last".into(),
+                            reason: "This account is already last".into(),
+                        }
+                    },
+                    ..vault_contract()
+                },
+            ),
+        );
+        child = child.with_action(
+            encode_spec("delete", "Delete account", &delete_account_action(id)).with_contract(
+                ActionContract {
+                    risk: RiskLevel::Destructive,
+                    confirmation: ConfirmationPolicy::Confirm,
+                    ..vault_contract()
+                },
+            ),
+        );
 
         root = root.with_child(child);
     }
@@ -457,6 +547,12 @@ mod tests {
             vault.actions.iter().any(|a| a.id == "add-account"),
             "the vault exports add-account"
         );
+        let add = vault
+            .actions
+            .iter()
+            .find(|action| action.id == "add-account")
+            .unwrap();
+        assert_eq!(add.params()[0].ty, ParamType::Secret);
         assert!(
             !vault.children.is_empty(),
             "each account is a nested resource"
@@ -466,6 +562,8 @@ mod tests {
         assert_eq!(acct.kind, "totp.account");
         let ids: Vec<&str> = acct.actions.iter().map(|a| a.id.as_str()).collect();
         for want in [
+            "open",
+            "copy-code",
             "rename",
             "relabel",
             "set-color",
@@ -475,6 +573,15 @@ mod tests {
         ] {
             assert!(ids.contains(&want), "account exports {want}: {ids:?}");
         }
+        assert!(matches!(
+            acct.actions
+                .iter()
+                .find(|action| action.id == "move-up")
+                .expect("move-up")
+                .contract
+                .availability,
+            Availability::Unavailable { .. }
+        ));
 
         // The one palette surfaces the tree's actions as rows.
         let mut palette = ui::ActionPalette::new();
@@ -486,7 +593,7 @@ mod tests {
             "{labels:?}"
         );
         assert!(
-            labels.iter().any(|l| l.contains("Delete account")),
+            labels.iter().any(|l| l.contains("Copy current code")),
             "{labels:?}"
         );
     }

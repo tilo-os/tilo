@@ -30,6 +30,9 @@ use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
+use ui::qos_actions::{
+    ActionContract, ActionSpec, OperationKind, PermissionRequirement, RetryPolicy, RiskLevel,
+};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
@@ -884,7 +887,78 @@ impl Widget for AuthenticatorApp {
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
     /// [`crate::actions`], which reads the accounts straight from the document.
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+        if let Some(root) = resources.first_mut() {
+            for account in self.vault.ordered() {
+                if let Some(resource) = root
+                    .children
+                    .iter_mut()
+                    .find(|resource| resource.id.0 == format!("totp.account:{}", account.id))
+                {
+                    resource.actions.insert(
+                        0,
+                        ActionSpec::operation(
+                            "copy-code",
+                            "Copy current code",
+                            OperationKind::Effect,
+                            "totp.copy-code",
+                            &account.id.to_string(),
+                        )
+                        .expect("TOTP account id is serializable")
+                        .with_contract(ActionContract {
+                            permission: PermissionRequirement::Read,
+                            risk: RiskLevel::Privileged,
+                            retry: RetryPolicy::AtMostOnce,
+                            tags: vec!["security".into(), "clipboard".into()],
+                            ..ActionContract::default()
+                        }),
+                    );
+                    resource.actions.insert(
+                        0,
+                        ActionSpec::operation(
+                            "open",
+                            "Open account",
+                            OperationKind::View,
+                            "totp.open-account",
+                            &account.id.to_string(),
+                        )
+                        .expect("TOTP account id is serializable")
+                        .with_contract(ActionContract::view()),
+                    );
+                }
+            }
+        }
+        resources
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if !matches!(
+            (kind, type_id),
+            (OperationKind::View, "totp.open-account") | (OperationKind::Effect, "totp.copy-code")
+        ) {
+            return Ok(false);
+        }
+        let raw: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let id = raw
+            .parse()
+            .map_err(|_| "Invalid authenticator account id".to_string())?;
+        if self.vault.get(id).is_none() {
+            return Err("Authenticator account is no longer available".into());
+        }
+        self.selected = Some(id);
+        self.search.set_text("");
+        self.list_dirty = true;
+        if kind == OperationKind::Effect {
+            self.copy_account(id);
+        }
+        Ok(true)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -942,6 +1016,25 @@ mod tests {
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
         (app, state)
+    }
+
+    #[test]
+    fn resource_copy_invokes_the_same_clipboard_semantics_as_the_row() {
+        let (mut app, state) = app_with_state();
+        let id = app.vault.ordered()[0].id;
+        let payload = serde_json::to_vec(&id.to_string()).unwrap();
+        assert!(
+            app.invoke_resource_operation(
+                OperationKind::Effect,
+                "totp.copy-code",
+                &payload,
+                &state.doc,
+                &state.root,
+            )
+            .unwrap()
+        );
+        assert_eq!(app.selected, Some(id));
+        assert!(app.last_copied().is_some());
     }
 
     /// Run the app's real layout passes at a concrete window size, the same
