@@ -232,9 +232,20 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
         export QOS_DEB_REVISION="$revision"
         export CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS="$cargo_jobs" CARGO_TERM_COLOR=never
         export QOS_QEMU_BINARY="/host-rootfs$tools_dir/qemu-aarch64"
+        proot_package_binds=()
+        if [[ $distro == arch ]]; then
+            # libalpm could not see databases through PRoot's implicit rootfs
+            # translation even though the guest shell could stat them. Bind
+            # the host-seeded directories explicitly at their guest paths.
+            proot_package_binds=(
+                -b "$rootfs/var/lib/qos-pacman:/var/lib/qos-pacman"
+                -b "$rootfs/var/cache/qos-pacman:/var/cache/qos-pacman"
+            )
+        fi
         set +e
         "$tools_dir/proot" -0 -q "$tools_dir/qemu-argv0-wrapper" \
             -r "$rootfs" -b /proc -b /dev -b /sys -b /etc/resolv.conf \
+            "${proot_package_binds[@]}" \
             -w /workspace /bin/sh -c "$inner_command" 2>&1 | tee "$start_log"
         container_status=${PIPESTATUS[0]}
         set -e
@@ -358,7 +369,7 @@ arch)
     # pacman 7's download sandbox uses Landlock. The Forgejo/Kata kernel does
     # not expose it; Arch documents DisableSandbox specifically for this case.
     if [[ $arch == arm64 ]]; then
-        sed -i '/^\[options\]/a CacheDir = /var/cache/qos-pacman/\nDBPath = /var/lib/qos-pacman/' \
+        sed -i '/^\[options\]/a CacheDir = /var/cache/qos-pacman\nDBPath = /var/lib/qos-pacman' \
             /etc/pacman.conf
         install -d -m 0755 \
             /var/lib/qos-pacman/local \
@@ -367,6 +378,8 @@ arch)
         for repo in core extra alarm aur; do
             test -s "/var/lib/qos-pacman/sync/$repo.db"
         done
+        test "$(pacman-conf DBPath)" = /var/lib/qos-pacman
+        pacman -Sii filesystem >/dev/null
     fi
     sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
     stage=install-dependencies
