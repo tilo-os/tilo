@@ -10,7 +10,7 @@ use std::fmt;
 /// The only normal application presentation modes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApplicationPresentation {
-    /// FreeRDP's upstream RAIL client, when qOS has a RAIL-capable local
+    /// `FreeRDP`'s upstream RAIL client, when qOS has a RAIL-capable local
     /// surface (for example an Xwayland bridge or a future native adapter).
     NativeRail,
     /// A guest-focused SPICE surface. The guest helper starts/focuses the
