@@ -31,7 +31,8 @@ use ui::{
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::shell::state::WorkspaceTree;
 
@@ -76,6 +77,19 @@ enum LensSelection {
     All,
     App(String),
     ResourceKind(String),
+}
+
+/// Stable logical focus, independent of the rectangles produced by a frame.
+/// Keeping values rather than row numbers means a refreshed history feed does
+/// not silently move keyboard focus onto a different person or lens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ActivityFocus {
+    Scope(RoomScope),
+    View(ActivityView),
+    Period(Period),
+    Author(Option<String>),
+    Brief(usize),
+    Lens(LensSelection),
 }
 
 /// Compose `transform` with a translation to `(dx, dy)`. `Affine`'s `Mul`
@@ -214,6 +228,7 @@ pub struct RoomActivityPane {
     facet_index: HistoryFacetIndex,
     lens: LensSelection,
     lens_rects: Vec<(LensSelection, Rect)>,
+    keyboard_focus: Option<ActivityFocus>,
 }
 
 impl Default for RoomActivityPane {
@@ -266,6 +281,7 @@ impl RoomActivityPane {
             facet_index: HistoryFacetIndex::default(),
             lens: LensSelection::default(),
             lens_rects: Vec::new(),
+            keyboard_focus: None,
         }
     }
 
@@ -671,6 +687,23 @@ impl RoomActivityPane {
                 self.timeline.draw(scene, transform, tr, theme, presence);
             }
         }
+        self.draw_keyboard_focus(scene, transform, theme);
+    }
+
+    /// Paint one unambiguous two-pixel focus ring. It is deliberately static:
+    /// focus must remain visible with reduced-motion enabled and must not rely
+    /// on a pulse or fade to be noticed.
+    fn draw_keyboard_focus(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let Some(rect) = self.focused_rect() else {
+            return;
+        };
+        scene.stroke(
+            &Stroke::new(2.0),
+            transform,
+            theme.tokens.colors.border_focus,
+            None,
+            &RoundedRect::from_rect(rect.inset(-2.0), 7.0),
+        );
     }
 
     fn draw_explorer_sidebars(
@@ -1146,6 +1179,30 @@ impl RoomActivityPane {
     ) -> RoomActivityOutcome {
         let mut out = RoomActivityOutcome::default();
 
+        if self.timeline.wants_keyboard() {
+            // The inline group-name editor owns every unchorded key until it
+            // commits or cancels; Tab included, so a half-typed name cannot be
+            // abandoned by the pane-level focus controller.
+        } else if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+            && !modifiers.state().control_key()
+            && !modifiers.state().super_key()
+            && !modifiers.state().alt_key()
+            && self.handle_navigation_key(logical_key, modifiers.state().shift_key(), tree)
+        {
+            return RoomActivityOutcome {
+                handled: true,
+                ..RoomActivityOutcome::default()
+            };
+        }
+
         // The shell's own chip rows first — they sit above the timeline and
         // the timeline would otherwise treat a chip click as a click on its
         // own filter strip.
@@ -1155,6 +1212,7 @@ impl RoomActivityPane {
         {
             for (scope, rect) in self.scope_rects.clone() {
                 if rect.contains(p) {
+                    self.keyboard_focus = Some(ActivityFocus::Scope(scope));
                     self.set_scope(scope, tree);
                     return RoomActivityOutcome {
                         handled: true,
@@ -1165,6 +1223,7 @@ impl RoomActivityPane {
             }
             for (view, rect) in self.view_rects.clone() {
                 if rect.contains(p) {
+                    self.keyboard_focus = Some(ActivityFocus::View(view));
                     self.set_view(view);
                     return RoomActivityOutcome {
                         handled: true,
@@ -1176,6 +1235,7 @@ impl RoomActivityPane {
             if self.view == ActivityView::CatchUp {
                 for (index, rect) in self.brief_rects.clone() {
                     if rect.contains(p) {
+                        self.keyboard_focus = Some(ActivityFocus::Brief(index));
                         self.expanded_brief = (self.expanded_brief != Some(index)).then_some(index);
                         return RoomActivityOutcome {
                             handled: true,
@@ -1188,6 +1248,7 @@ impl RoomActivityPane {
             if self.view == ActivityView::Explore {
                 for (lens, rect) in self.lens_rects.clone() {
                     if rect.contains(p) {
+                        self.keyboard_focus = Some(ActivityFocus::Lens(lens.clone()));
                         self.lens = lens;
                         self.reinstall_filter();
                         return RoomActivityOutcome {
@@ -1200,6 +1261,7 @@ impl RoomActivityPane {
             }
             for (period, rect) in self.period_rects.clone() {
                 if rect.contains(p) {
+                    self.keyboard_focus = Some(ActivityFocus::Period(period));
                     self.set_period(period);
                     return RoomActivityOutcome {
                         handled: true,
@@ -1210,6 +1272,7 @@ impl RoomActivityPane {
             }
             for (author, rect) in self.author_rects.clone() {
                 if rect.contains(p) {
+                    self.keyboard_focus = Some(ActivityFocus::Author(author.clone()));
                     self.set_author_filter(author);
                     return RoomActivityOutcome {
                         handled: true,
@@ -1258,6 +1321,261 @@ impl RoomActivityPane {
             }
         }
         out
+    }
+
+    fn focus_order(&self) -> Vec<ActivityFocus> {
+        let mut order = Vec::new();
+        order.extend(
+            self.scope_rects
+                .iter()
+                .map(|(scope, _)| ActivityFocus::Scope(*scope)),
+        );
+        order.extend(
+            self.view_rects
+                .iter()
+                .map(|(view, _)| ActivityFocus::View(*view)),
+        );
+        match self.view {
+            ActivityView::CatchUp => order.extend(
+                self.brief_rects
+                    .iter()
+                    .map(|(index, _)| ActivityFocus::Brief(*index)),
+            ),
+            ActivityView::Explore => {
+                order.extend(
+                    self.period_rects
+                        .iter()
+                        .map(|(period, _)| ActivityFocus::Period(*period)),
+                );
+                order.extend(
+                    self.author_rects
+                        .iter()
+                        .map(|(author, _)| ActivityFocus::Author(author.clone())),
+                );
+                order.extend(
+                    self.lens_rects
+                        .iter()
+                        .map(|(lens, _)| ActivityFocus::Lens(lens.clone())),
+                );
+            }
+        }
+        order
+    }
+
+    fn focused_rect(&self) -> Option<Rect> {
+        match self.keyboard_focus.as_ref()? {
+            ActivityFocus::Scope(value) => self
+                .scope_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::View(value) => self
+                .view_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::Period(value) => self
+                .period_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::Author(value) => self
+                .author_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::Brief(value) => self
+                .brief_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::Lens(value) => self
+                .lens_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+        }
+    }
+
+    fn move_focus(&mut self, backwards: bool, to_edge: Option<bool>) {
+        let order = self.focus_order();
+        if order.is_empty() {
+            self.keyboard_focus = None;
+            return;
+        }
+        let next = if let Some(end) = to_edge {
+            if end {
+                order.len().saturating_sub(1)
+            } else {
+                0
+            }
+        } else if let Some(current) = self
+            .keyboard_focus
+            .as_ref()
+            .and_then(|focus| order.iter().position(|candidate| candidate == focus))
+        {
+            if backwards {
+                current.checked_sub(1).unwrap_or_else(|| order.len() - 1)
+            } else {
+                current.saturating_add(1) % order.len()
+            }
+        } else if backwards {
+            order.len() - 1
+        } else {
+            0
+        };
+        self.keyboard_focus = order.get(next).cloned();
+    }
+
+    fn activate_focus(&mut self, tree: &WorkspaceTree) -> bool {
+        let Some(focus) = self.keyboard_focus.clone() else {
+            return false;
+        };
+        match focus {
+            ActivityFocus::Scope(value) => self.set_scope(value, tree),
+            ActivityFocus::View(value) => self.set_view(value),
+            ActivityFocus::Period(value) => self.set_period(value),
+            ActivityFocus::Author(value) => self.set_author_filter(value),
+            ActivityFocus::Brief(index) => {
+                self.expanded_brief = (self.expanded_brief != Some(index)).then_some(index);
+            }
+            ActivityFocus::Lens(value) => {
+                self.lens = value;
+                self.reinstall_filter();
+            }
+        }
+        true
+    }
+
+    fn handle_navigation_key(&mut self, key: &Key, shift: bool, tree: &WorkspaceTree) -> bool {
+        match key {
+            Key::Named(NamedKey::Tab) => self.move_focus(shift, None),
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) => {
+                self.move_focus(false, None);
+            }
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) => {
+                self.move_focus(true, None);
+            }
+            Key::Named(NamedKey::Home) => self.move_focus(false, Some(false)),
+            Key::Named(NamedKey::End) => self.move_focus(false, Some(true)),
+            Key::Named(NamedKey::Enter | NamedKey::Space) => return self.activate_focus(tree),
+            _ => return false,
+        }
+        true
+    }
+
+    /// The label currently carrying keyboard focus. Besides making focus
+    /// observable in tests, this is the stable hand-off point for the shell's
+    /// overlay AccessKit bridge (immediate-mode overlays have no `NodeId`).
+    pub fn focused_control_label(&self) -> Option<String> {
+        Self::focus_label(self.keyboard_focus.as_ref()?, &self.digest)
+    }
+
+    fn focus_label(focus: &ActivityFocus, digest: &ActivityDigest) -> Option<String> {
+        match focus {
+            ActivityFocus::Scope(value) => Some(value.label().to_string()),
+            ActivityFocus::View(value) => Some(value.label().to_string()),
+            ActivityFocus::Period(value) => Some(value.label().to_string()),
+            ActivityFocus::Author(Some(value)) => Some(value.clone()),
+            ActivityFocus::Author(None) => Some("Everyone".to_string()),
+            ActivityFocus::Brief(index) => {
+                digest.briefs.get(*index).map(|brief| brief.title.clone())
+            }
+            ActivityFocus::Lens(LensSelection::All) => Some("Everything".to_string()),
+            ActivityFocus::Lens(LensSelection::App(value))
+            | ActivityFocus::Lens(LensSelection::ResourceKind(value)) => Some(value.clone()),
+        }
+    }
+
+    /// Semantic mirror of this immediate-mode overlay. Shell overlays are not
+    /// backed by taffy `NodeId`s, so the app-level widget walker cannot infer
+    /// this tree. The overlay accessibility bridge can publish this snapshot
+    /// verbatim; state is derived from the same values used for paint and hit
+    /// testing, preventing spoken and visible selection from drifting apart.
+    pub fn accessibility_snapshot(&self) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let mut root = AccessNode::new(Role::Dialog)
+            .with_name("Room activity")
+            .with_description(match self.view {
+                ActivityView::CatchUp => {
+                    "A summary of outcomes since this device last viewed the room"
+                }
+                ActivityView::Explore => {
+                    "The complete workspace history with filters and provenance"
+                }
+            })
+            .with_state(AccessState::new().modal(true));
+        let order = self.focus_order();
+        let set_size = order.len();
+        root.children = order
+            .iter()
+            .enumerate()
+            .filter_map(|(index, focus)| {
+                let label = Self::focus_label(focus, &self.digest)?;
+                let (role, selected, expanded, description) = match focus {
+                    ActivityFocus::Scope(value) => (
+                        Role::RadioButton,
+                        self.scope == *value,
+                        None,
+                        Some("History scope".to_string()),
+                    ),
+                    ActivityFocus::View(value) => (
+                        Role::Tab,
+                        self.view == *value,
+                        None,
+                        Some("History view".to_string()),
+                    ),
+                    ActivityFocus::Period(value) => (
+                        Role::RadioButton,
+                        self.period == *value,
+                        None,
+                        Some("Time range".to_string()),
+                    ),
+                    ActivityFocus::Author(value) => (
+                        Role::RadioButton,
+                        self.author == *value,
+                        None,
+                        Some("Person filter".to_string()),
+                    ),
+                    ActivityFocus::Brief(brief_index) => {
+                        let brief = self.digest.briefs.get(*brief_index)?;
+                        (
+                            Role::Button,
+                            false,
+                            Some(self.expanded_brief == Some(*brief_index)),
+                            Some(format!(
+                                "{}; {} changes by {}",
+                                brief.detail,
+                                brief.changes,
+                                brief
+                                    .authors
+                                    .iter()
+                                    .map(|author| author.name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )),
+                        )
+                    }
+                    ActivityFocus::Lens(value) => (
+                        Role::RadioButton,
+                        self.lens == *value,
+                        None,
+                        Some("History lens".to_string()),
+                    ),
+                };
+                let mut state = AccessState::new()
+                    .focusable(true)
+                    .focused(self.keyboard_focus.as_ref() == Some(focus))
+                    .selected(selected);
+                if let Some(value) = expanded {
+                    state = state.expanded(value);
+                }
+                let mut node = AccessNode::new(role)
+                    .with_name(label)
+                    .with_state(state)
+                    .with_position(index.saturating_add(1), set_size);
+                if let Some(value) = description {
+                    node = node.with_description(value);
+                }
+                Some(node)
+            })
+            .collect();
+        root
     }
 
     /// Write (or remove, for an empty label) a name over a run of the
@@ -2984,6 +3302,188 @@ mod tests {
             pane.timeline().group_at_row(band).map(|(k, _)| k),
             Some(key.as_str()),
             "the band moved under the toggle"
+        );
+    }
+
+    #[test]
+    fn keyboard_traverses_wraps_and_activates_modal_controls() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        paint(&mut pane);
+        let modifiers = Modifiers::default();
+
+        let home = pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Home)),
+            1.0,
+            &modifiers,
+            None,
+            &mut tree,
+        );
+        assert!(home.handled);
+        assert_eq!(pane.focused_control_label().as_deref(), Some("This room"));
+
+        pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::ArrowRight,
+            )),
+            1.0,
+            &modifiers,
+            None,
+            &mut tree,
+        );
+        assert_eq!(
+            pane.focused_control_label().as_deref(),
+            Some("All workspaces")
+        );
+        pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Enter,
+            )),
+            1.0,
+            &modifiers,
+            None,
+            &mut tree,
+        );
+        assert_eq!(pane.scope(), RoomScope::AllWorkspaces);
+
+        // End addresses the last rendered control; Tab wraps within this
+        // modal instead of leaking keyboard focus into the desktop beneath it.
+        pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::End)),
+            1.0,
+            &modifiers,
+            None,
+            &mut tree,
+        );
+        pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab)),
+            1.0,
+            &modifiers,
+            None,
+            &mut tree,
+        );
+        assert_eq!(pane.focused_control_label().as_deref(), Some("This room"));
+    }
+
+    #[test]
+    fn catch_up_outcomes_expand_from_the_keyboard() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        pane.set_view(ActivityView::CatchUp);
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        paint(&mut pane);
+        assert!(
+            !pane.brief_rects.is_empty(),
+            "fixture has catch-up outcomes"
+        );
+
+        pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::End)),
+            1.0,
+            &Modifiers::default(),
+            None,
+            &mut tree,
+        );
+        let focused = pane.focused_control_label().expect("last outcome focused");
+        let last = pane.brief_rects.last().expect("last outcome").0;
+        assert_eq!(focused, pane.digest.briefs[last].title);
+
+        let out = pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Space,
+            )),
+            1.0,
+            &Modifiers::default(),
+            None,
+            &mut tree,
+        );
+        assert!(out.handled);
+        assert_eq!(pane.expanded_brief, Some(last));
+    }
+
+    #[test]
+    fn explorer_lenses_are_in_the_keyboard_focus_order() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        pane.set_view(ActivityView::Explore);
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        paint(&mut pane);
+        assert!(!pane.lens_rects.is_empty());
+
+        pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::End)),
+            1.0,
+            &Modifiers::default(),
+            None,
+            &mut tree,
+        );
+        let label = pane.focused_control_label().expect("last lens focused");
+        assert!(
+            pane.lens_rects.iter().any(|(lens, _)| match lens {
+                LensSelection::All => label == "Everything",
+                LensSelection::App(value) | LensSelection::ResourceKind(value) => value == &label,
+            }),
+            "focused control is a rendered lens: {label}"
+        );
+        assert!(
+            pane.handle_event(
+                &key_press(winit::keyboard::Key::Named(
+                    winit::keyboard::NamedKey::Enter,
+                )),
+                1.0,
+                &Modifiers::default(),
+                None,
+                &mut tree,
+            )
+            .handled
+        );
+    }
+
+    #[test]
+    fn accessibility_snapshot_matches_visible_focus_selection_and_disclosure() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        pane.set_view(ActivityView::CatchUp);
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        paint(&mut pane);
+        pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::End)),
+            1.0,
+            &Modifiers::default(),
+            None,
+            &mut tree,
+        );
+        pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Enter,
+            )),
+            1.0,
+            &Modifiers::default(),
+            None,
+            &mut tree,
+        );
+
+        let snapshot = pane.accessibility_snapshot();
+        assert_eq!(snapshot.role, ui::a11y::Role::Dialog);
+        assert!(snapshot.state.modal);
+        assert!(
+            snapshot.children.iter().any(|node| {
+                node.role == ui::a11y::Role::Tab
+                    && node.name.as_deref() == Some("Catch up")
+                    && node.state.selected
+            }),
+            "selected tab is announced"
+        );
+        let focused = snapshot
+            .children
+            .iter()
+            .find(|node| node.state.focused)
+            .expect("one control carries semantic focus");
+        assert_eq!(focused.name, pane.focused_control_label());
+        assert_eq!(focused.state.expanded, Some(true));
+        assert!(
+            snapshot.children.iter().all(|node| node.state.focusable),
+            "every published child is keyboard reachable"
         );
     }
 

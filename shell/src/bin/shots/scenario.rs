@@ -117,6 +117,12 @@ pub enum Action {
     /// setup steps where dispatching real events would be brittle —
     /// e.g. opening the palette before typing a query).
     OpenPalette,
+    /// Seed real collaborative room changes and open one of the two history
+    /// surfaces. `explore = false` captures outcome-first Catch up;
+    /// `true` captures the full three-panel browser.
+    SeedRoomActivity {
+        explore: bool,
+    },
     /// Open a window, the way opening one actually happens: adopt a
     /// toplevel for `app_id` into the chrome's tree through the
     /// production `tab_binding::adopt_toplevel`, so the placement rule
@@ -444,6 +450,9 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             driver.set_modifiers(ModifiersState::CONTROL);
             driver.press_key(&Key::Character(winit::keyboard::SmolStr::new("k")));
             driver.set_modifiers(ModifiersState::empty());
+        }
+        Action::SeedRoomActivity { explore } => {
+            driver.seed_room_activity_for_shots(*explore);
         }
         _ => {}
     }
@@ -1095,6 +1104,24 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     out.push(',');
     push_kv_bool(&mut out, "overlay_room_activity", st.overlays.room_activity);
     out.push(',');
+    push_kv_str(
+        &mut out,
+        "room_activity_view",
+        match host.room_activity().view() {
+            shell::shell::room_activity::ActivityView::CatchUp => "catch_up",
+            shell::shell::room_activity::ActivityView::Explore => "explore",
+        },
+    );
+    out.push(',');
+    push_kv_str(
+        &mut out,
+        "room_activity_focus",
+        host.room_activity()
+            .focused_control_label()
+            .as_deref()
+            .unwrap_or(""),
+    );
+    out.push(',');
     push_kv_str(&mut out, "qs_level", qs_level);
     out.push(',');
     push_kv_str(&mut out, "ws_settings_tab", ws_tab);
@@ -1271,6 +1298,8 @@ pub fn catalogue() -> Vec<Scenario> {
         cycle_all_tabs(),
         word_processor_tile(),
         room_activity_from_palette(),
+        room_activity_catch_up_keyboard(),
+        room_activity_explore_keyboard(),
         window_open_beside_selection(),
         window_open_into_tabbed_group(),
         window_open_at_visible_seam(),
@@ -1875,6 +1904,40 @@ fn room_activity_from_palette() -> Scenario {
             Action::Key(Key::Named(NamedKey::Enter)),
             Action::Wait(20),
             Action::Snapshot("03-room-activity-open"),
+        ],
+    }
+}
+
+/// Outcome cards at rest, then the exact state reached without a pointer:
+/// Tab through the modal controls and expand the first summary with Enter.
+fn room_activity_catch_up_keyboard() -> Scenario {
+    Scenario {
+        name: "room_activity_catch_up_keyboard",
+        description: "Open Catch up, traverse its controls by keyboard, and expand an outcome.",
+        actions: vec![
+            Action::SeedRoomActivity { explore: false },
+            Action::Relayout,
+            Action::Snapshot("01-catch-up"),
+            Action::Key(Key::Named(NamedKey::End)),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Snapshot("02-last-outcome-expanded-focus-visible"),
+        ],
+    }
+}
+
+/// Wide Explorer plus a keyboard-selected lens. This gives both the PNG
+/// reviewer and headless state dumps a stable focused-control assertion.
+fn room_activity_explore_keyboard() -> Scenario {
+    Scenario {
+        name: "room_activity_explore_keyboard",
+        description: "Open the three-panel Explorer and choose a lens without a pointer.",
+        actions: vec![
+            Action::SeedRoomActivity { explore: true },
+            Action::Relayout,
+            Action::Snapshot("01-explorer-three-panel"),
+            Action::Key(Key::Named(NamedKey::End)),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Snapshot("02-explorer-lens-focus-visible"),
         ],
     }
 }
