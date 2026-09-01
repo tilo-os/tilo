@@ -59,9 +59,14 @@ use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+mod backup;
 pub mod broker;
 mod secure_store;
 
+pub use backup::{
+    PortableBackupInfo, export_portable_backup, import_portable_backup,
+    import_portable_backup_with_provider, verify_portable_backup,
+};
 pub use secure_store::{BrokerFileProvider, SecretProvider};
 
 pub use runtime_portal::NotAvailable;
