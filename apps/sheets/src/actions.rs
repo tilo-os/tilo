@@ -156,6 +156,120 @@ pub enum SheetsAction {
     },
 }
 
+/// Durable, browseable history metadata for a workbook mutation.
+pub fn history_context(action: &SheetsAction) -> qos_actions::ActionContext {
+    let mut context = qos_actions::ActionContext::for_action("org.qos.Sheets", "Sheets", action);
+    let (label, id, kind, resource_label) = match action {
+        SheetsAction::SetCell {
+            sheet, col, row, ..
+        } => (
+            "Edit cell",
+            format!("sheets.cell:{sheet}:{col}:{row}"),
+            "sheets.cell",
+            format!("{}{}", column_label(*col), row + 1),
+        ),
+        SheetsAction::SetFormat {
+            sheet, col, row, ..
+        } => (
+            "Format cell",
+            format!("sheets.cell:{sheet}:{col}:{row}"),
+            "sheets.cell",
+            format!("{}{}", column_label(*col), row + 1),
+        ),
+        SheetsAction::SetCells { sheet, cells } => (
+            "Edit range",
+            format!("sheets.range:{sheet}"),
+            "sheets.range",
+            format!("{} cells", cells.len()),
+        ),
+        SheetsAction::SetFormats { sheet, cells } => (
+            "Format range",
+            format!("sheets.range:{sheet}"),
+            "sheets.range",
+            format!("{} cells", cells.len()),
+        ),
+        SheetsAction::AddSheet { name } => (
+            "Add sheet",
+            format!("sheets.sheet:{name}"),
+            "sheets.sheet",
+            name.clone(),
+        ),
+        SheetsAction::InsertSheet { at, name } => (
+            "Insert sheet",
+            format!("sheets.sheet:{at}"),
+            "sheets.sheet",
+            name.clone(),
+        ),
+        SheetsAction::DeleteSheet { idx } => (
+            "Delete sheet",
+            format!("sheets.sheet:{idx}"),
+            "sheets.sheet",
+            format!("Sheet {}", idx + 1),
+        ),
+        SheetsAction::RenameSheet { idx, name } => (
+            "Rename sheet",
+            format!("sheets.sheet:{idx}"),
+            "sheets.sheet",
+            name.clone(),
+        ),
+        SheetsAction::MoveSheet { from, .. } => (
+            "Move sheet",
+            format!("sheets.sheet:{from}"),
+            "sheets.sheet",
+            format!("Sheet {}", from + 1),
+        ),
+        SheetsAction::DuplicateSheet { idx } => (
+            "Duplicate sheet",
+            format!("sheets.sheet:{idx}"),
+            "sheets.sheet",
+            format!("Sheet {}", idx + 1),
+        ),
+        SheetsAction::SetSheetColor { idx, .. } => (
+            "Change sheet color",
+            format!("sheets.sheet:{idx}"),
+            "sheets.sheet",
+            format!("Sheet {}", idx + 1),
+        ),
+        SheetsAction::InsertRow { sheet, at } => (
+            "Insert row",
+            format!("sheets.row:{sheet}:{at}"),
+            "sheets.row",
+            format!("Row {}", at + 1),
+        ),
+        SheetsAction::DeleteRow { sheet, at } => (
+            "Delete row",
+            format!("sheets.row:{sheet}:{at}"),
+            "sheets.row",
+            format!("Row {}", at + 1),
+        ),
+        SheetsAction::InsertColumn { sheet, at } => (
+            "Insert column",
+            format!("sheets.column:{sheet}:{at}"),
+            "sheets.column",
+            column_label(*at),
+        ),
+        SheetsAction::DeleteColumn { sheet, at } => (
+            "Delete column",
+            format!("sheets.column:{sheet}:{at}"),
+            "sheets.column",
+            column_label(*at),
+        ),
+        SheetsAction::SetDocSettings { .. } => (
+            "Update workbook settings",
+            "sheets.workbook".to_string(),
+            "sheets.workbook",
+            "Workbook".to_string(),
+        ),
+    };
+    context.action_label = label.to_string();
+    context.resource = Some(qos_actions::ActionResource {
+        id,
+        kind: kind.to_string(),
+        label: resource_label,
+    });
+    context
+}
+
 impl Action for SheetsAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
@@ -911,5 +1025,20 @@ mod tests {
             from_spec.payload, from_builder.payload,
             "insert-row is one source of truth"
         );
+    }
+
+    #[test]
+    fn cell_action_history_has_coordinate_resource() {
+        let context = history_context(&SheetsAction::SetCell {
+            sheet: 2,
+            col: 1,
+            row: 4,
+            raw: "42".into(),
+            fmt: None,
+        });
+        assert_eq!(context.action_label, "Edit cell");
+        let resource = context.resource.expect("cell resource");
+        assert_eq!(resource.id, "sheets.cell:2:1:4");
+        assert_eq!(resource.label, "B5");
     }
 }

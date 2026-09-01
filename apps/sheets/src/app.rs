@@ -498,8 +498,12 @@ impl SheetsApp {
     /// change, so it replays byte-identically on peers), exactly as the palette
     /// does. This app supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &SheetsAction) {
-        self.actions
-            .dispatch(doc, actions::SHEETS_ACTION_TYPE, action);
+        self.actions.dispatch_with_context(
+            doc,
+            actions::SHEETS_ACTION_TYPE,
+            action,
+            actions::history_context(action),
+        );
     }
 
     /// The presentation context the Ctrl+K resource tree is built from: the open
