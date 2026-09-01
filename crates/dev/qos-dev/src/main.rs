@@ -93,6 +93,16 @@ enum AddCommand {
         #[command(flatten)]
         options: AddOptions,
     },
+    /// Add a reusable Rust component under src/components/.
+    Component {
+        /// Lowercase kebab-case component name.
+        name: String,
+        /// Common component shape to scaffold.
+        #[arg(long, value_enum, default_value = "display")]
+        template: ComponentTemplateArg,
+        #[command(flatten)]
+        options: AddOptions,
+    },
 }
 
 #[derive(clap::Args)]
@@ -449,6 +459,15 @@ enum ScreenTemplateArg {
     EmptyState,
 }
 
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+enum ComponentTemplateArg {
+    /// Typed props rendered as an accessible heading and detail.
+    #[default]
+    Display,
+    /// Typed local state bound to labeled text and boolean controls.
+    Form,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
@@ -602,6 +621,20 @@ fn run_add(args: AddArgs) -> Result<()> {
         AddCommand::Locale { locale, options } => {
             (qos_dev::AddArtifact::Locale { locale }, options)
         }
+        AddCommand::Component {
+            name,
+            template,
+            options,
+        } => (
+            qos_dev::AddArtifact::Component {
+                name,
+                template: match template {
+                    ComponentTemplateArg::Display => qos_dev::ComponentTemplate::Display,
+                    ComponentTemplateArg::Form => qos_dev::ComponentTemplate::Form,
+                },
+            },
+            options,
+        ),
     };
     let start = options.app.map_or_else(std::env::current_dir, Ok)?;
     let outcome = qos_dev::add_app_artifact(qos_dev::AddRequest {
@@ -930,6 +963,34 @@ mod tests {
         assert_eq!(options.app, Some(PathBuf::from("apps/demo/src")));
         assert!(options.dry_run);
         assert!(!options.force);
+
+        let component = Cli::try_parse_from([
+            "qos-dev",
+            "add",
+            "component",
+            "profile-card",
+            "--template",
+            "form",
+            "--app",
+            "apps/demo",
+            "--dry-run",
+        ])
+        .expect("component command");
+        let Command::Add(AddArgs {
+            command:
+                Some(AddCommand::Component {
+                    name,
+                    template,
+                    options,
+                }),
+        }) = component.command
+        else {
+            panic!("expected add component command");
+        };
+        assert_eq!(name, "profile-card");
+        assert!(matches!(template, ComponentTemplateArg::Form));
+        assert_eq!(options.app, Some(PathBuf::from("apps/demo")));
+        assert!(options.dry_run);
 
         let locale = Cli::try_parse_from(["qos-dev", "add", "locale", "de-DE", "--force"])
             .expect("locale command");

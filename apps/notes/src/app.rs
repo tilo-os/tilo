@@ -1748,6 +1748,35 @@ impl Widget for NotesApp {
         self.rect
     }
 
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+                .with_name("Notes")
+                .with_description("Workspace notes and page editor"),
+        )
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        let mut children: Vec<&dyn Widget> = Vec::with_capacity(3);
+        if !self.built_narrow || self.drawer.is_open() {
+            children.push(&self.sidebar);
+        }
+        children.push(&self.main);
+        children.push(&self.shortcuts);
+        children
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
+        let show_sidebar = !self.built_narrow || self.drawer.is_open();
+        let mut children: Vec<&mut dyn Widget> = Vec::with_capacity(3);
+        if show_sidebar {
+            children.push(&mut self.sidebar);
+        }
+        children.push(&mut self.main);
+        children.push(&mut self.shortcuts);
+        children
+    }
+
     fn is_focusable(&self) -> bool {
         self.palette.is_visible()
     }
