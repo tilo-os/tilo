@@ -30,8 +30,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
+    RetryPolicy,
 };
 
 use crate::doc::CalDoc;
@@ -39,6 +40,37 @@ use crate::model::{Event, Id, Palette, Priority, Recurrence, Task};
 
 /// Registry `type_id` for every calendar action.
 pub const CALENDAR_ACTION_TYPE: &str = "calendar.action";
+pub const CALENDAR_OPERATION_TYPE: &str = "calendar.operation";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CalendarOperation {
+    ShowMonth,
+    ShowWeek,
+    ShowDay,
+    ShowAgenda,
+    Sync,
+    ExportIcs,
+}
+
+fn calendar_operation(
+    id: &str,
+    label: &str,
+    kind: OperationKind,
+    operation: CalendarOperation,
+) -> ActionSpec {
+    let spec = ActionSpec::operation(id, label, kind, CALENDAR_OPERATION_TYPE, &operation)
+        .expect("CalendarOperation is always serializable");
+    match operation {
+        CalendarOperation::ShowMonth
+        | CalendarOperation::ShowWeek
+        | CalendarOperation::ShowDay
+        | CalendarOperation::ShowAgenda => spec.retry_policy(RetryPolicy::Idempotent),
+        CalendarOperation::Sync => spec
+            .execution(ExecutionMode::Background { cancellable: false })
+            .retry_policy(RetryPolicy::Idempotent),
+        CalendarOperation::ExportIcs => spec.destructive(),
+    }
+}
 
 /// The datetime format events are stored in — matches [`crate::doc`].
 const DT_FMT: &str = "%Y-%m-%dT%H:%M";
@@ -383,6 +415,9 @@ pub struct CalendarResourceCtx {
     pub new_event: EventData,
     pub events: Vec<EventResource>,
     pub tasks: Vec<TaskResource>,
+    pub can_sync: bool,
+    pub syncing: bool,
+    pub can_export: bool,
 }
 
 /// A one-line label for an event in the palette.
@@ -422,6 +457,55 @@ fn immediate_spec(id: &str, label: &str, action: &CalendarAction) -> ActionSpec 
 /// same action the on-screen affordance dispatches.
 pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("calendar.calendar", "calendar.calendar", "Calendar");
+
+    root = root.with_action(
+        ActionSpec::typed_operation(
+            "show-view",
+            "Show calendar view",
+            "month / week / day / agenda",
+            OperationKind::View,
+            vec![
+                ActionParam::required("view", ParamType::Text, "Calendar view to show")
+                    .with_choices(["month", "week", "day", "agenda"]),
+            ],
+            |args| {
+                let operation = match args.text("view").unwrap_or("month") {
+                    "week" => CalendarOperation::ShowWeek,
+                    "day" => CalendarOperation::ShowDay,
+                    "agenda" => CalendarOperation::ShowAgenda,
+                    _ => CalendarOperation::ShowMonth,
+                };
+                EncodedAction::encode_operation(CALENDAR_OPERATION_TYPE, &operation)
+                    .expect("CalendarOperation is always serializable")
+            },
+        )
+        .retry_policy(RetryPolicy::Idempotent),
+    );
+    let mut sync = calendar_operation(
+        "sync",
+        "Sync calendars",
+        OperationKind::Effect,
+        CalendarOperation::Sync,
+    );
+    if ctx.syncing {
+        sync = sync.unavailable(
+            "already_running",
+            "Calendar synchronization is already running",
+        );
+    } else if !ctx.can_sync {
+        sync = sync.unavailable("no_accounts", "Add a calendar account before synchronizing");
+    }
+    root = root.with_action(sync);
+    let mut export = calendar_operation(
+        "export",
+        "Export as ICS",
+        OperationKind::Effect,
+        CalendarOperation::ExportIcs,
+    );
+    if !ctx.can_export {
+        export = export.unavailable("calendar_empty", "There are no events or tasks to export");
+    }
+    root = root.with_action(export);
 
     // Calendar-level: create an event from the current view. The uuid is minted
     // once when the title argument is committed, then baked into the envelope, so

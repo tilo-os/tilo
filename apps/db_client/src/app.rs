@@ -33,7 +33,9 @@ use winit::keyboard::{Key, NamedKey};
 
 use uuid::Uuid;
 
-use qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
+use qos_actions::{
+    ActionSpec, EncodedAction, ExecutionMode, OperationKind, Resource, ResultSpec, RetryPolicy,
+};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -437,14 +439,22 @@ impl DbClientApp {
 impl Widget for DbClientApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("database", "database.workspace", "Database");
-        root.actions.push(ActionSpec::prompted_operation(
+        let mut query = ActionSpec::prompted_operation(
             "query",
             "Run SQL",
             "SQL query",
             "SELECT …",
             OperationKind::Effect,
             |sql| EncodedAction::encode_operation("db_client.query", &sql).expect("string payload"),
-        ));
+        )
+        .execution(ExecutionMode::Background { cancellable: false })
+        .returns(ResultSpec::Json {
+            schema: serde_json::json!({"type":"object","description":"tabular query result"}),
+        });
+        if self.session.active_connection().is_none() {
+            query = query.unavailable("not_connected", "Connect to a database before running SQL");
+        }
+        root.actions.push(query);
         for connection in &self.session.connections {
             let id = connection.id;
             let mut resource = Resource::new(
@@ -459,7 +469,10 @@ impl Widget for DbClientApp {
                 "db_client.connect",
                 &id.to_string(),
             ) {
-                resource.actions.push(spec);
+                resource.actions.push(
+                    spec.execution(ExecutionMode::Background { cancellable: false })
+                        .retry_policy(RetryPolicy::Idempotent),
+                );
             }
             if !self.demo {
                 let remove = crate::actions::remove_connection_action(id);
@@ -469,18 +482,24 @@ impl Widget for DbClientApp {
                     crate::actions::DB_ACTION_TYPE,
                     &remove,
                 ) {
-                    resource.actions.push(spec);
+                    resource.actions.push(spec.destructive());
                 }
-                resource.actions.push(ActionSpec::prompted(
-                    "rename",
-                    "Rename",
-                    "Connection name",
-                    &connection.name,
-                    qos_actions::ExecutionLocus::ClientLocal,
-                    move |name| {
-                        crate::actions::encode(&crate::actions::rename_connection_action(id, name))
-                    },
-                ));
+                resource.actions.push(
+                    ActionSpec::prompted(
+                        "rename",
+                        "Rename",
+                        "Connection name",
+                        &connection.name,
+                        qos_actions::ExecutionLocus::ClientLocal,
+                        move |name| {
+                            crate::actions::encode(&crate::actions::rename_connection_action(
+                                id, name,
+                            ))
+                        },
+                    )
+                    .reversible()
+                    .retry_policy(RetryPolicy::Idempotent),
+                );
             }
             root.children.push(resource);
         }
