@@ -42,7 +42,9 @@ use winit::event::WindowEvent;
 
 use ui::ColorCompat;
 use ui::permissions::PermissionContext;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+#[cfg(target_os = "linux")]
+use ui::portal::{FileFilter, PickRequest};
+use ui::portal::{PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -2664,18 +2666,25 @@ impl ImagerApp {
     }
 
     fn open_file_picker(&mut self, state: &mut AutoCommit) {
-        self.portal_rx = Some(
-            PickRequest::open("Choose a disk image", "Choose")
-                .filter(
-                    FileFilter::new("Disk images")
-                        .glob("*.iso")
-                        .glob("*.img")
-                        .glob("*.raw")
-                        .mimetype("application/x-iso9660-image"),
-                )
-                .thread_name("imager-portal")
-                .send(),
-        );
+        #[cfg(target_os = "linux")]
+        {
+            self.portal_rx = Some(
+                PickRequest::open("Choose a disk image", "Choose")
+                    .filter(
+                        FileFilter::new("Disk images")
+                            .glob("*.iso")
+                            .glob("*.img")
+                            .glob("*.raw")
+                            .mimetype("application/x-iso9660-image"),
+                    )
+                    .thread_name("imager-portal")
+                    .send(),
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.portal_rx = Some(crate::probe::pick_image_native());
+        }
         self.set_status(state, "Opening the file picker…");
         self.dirty = true;
     }

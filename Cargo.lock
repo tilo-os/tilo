@@ -6759,6 +6759,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "os-actions",
+ "serde_json",
  "taffy",
  "tracing-subscriber",
  "ui",
