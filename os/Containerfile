@@ -670,8 +670,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 
 # Windows compatibility engines. Wine is the tested desktop-program baseline;
 # UMU + its pinned Proton build are copied below for non-Steam games. The
-# appliance packages provide one KVM-accelerated, TPM-backed Windows fallback
-# whose normal presentation is FreeRDP RemoteApp rather than a nested desktop.
+# appliance packages provide one KVM-accelerated, TPM-backed Windows fallback.
+# The live presentation is app-focused, whole-surface SPICE; FreeRDP RemoteApp
+# is usable only after qOS has probed a compatible local RAIL surface.
 # Changing this list requires refreshing RPMS_REF (see the file header).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     wine \
