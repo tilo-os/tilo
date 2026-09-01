@@ -19,4 +19,4 @@ EOF
     exit 2
 }
 
-exec remote-viewer --connect qemu:///system --attach qos-windows-appliance
+exec virt-viewer --connect qemu:///system --attach qos-windows-appliance
