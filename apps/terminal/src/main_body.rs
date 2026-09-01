@@ -3842,8 +3842,9 @@ impl TerminalPerformer<'_> {
                 .get(&placement, "alternate_screen")
                 .ok()
                 .flatten()
-                .and_then(|(value, _)| match value.into_scalar()?.as_ref() {
-                    automerge::ScalarValue::Boolean(value) => Some(*value),
+                .and_then(|(value, _)| value.into_scalar().ok())
+                .and_then(|value| match value {
+                    automerge::ScalarValue::Boolean(value) => Some(value),
                     _ => None,
                 })
                 .unwrap_or(false);
@@ -3855,7 +3856,7 @@ impl TerminalPerformer<'_> {
                 .get(&placement, "row")
                 .ok()
                 .flatten()
-                .and_then(|(value, _)| value.into_scalar())
+                .and_then(|(value, _)| value.into_scalar().ok())
                 .and_then(|value| value.to_u64())
                 .and_then(|value| usize::try_from(value).ok())
                 .unwrap_or(0);
