@@ -590,7 +590,8 @@ pub fn build_tree_update_with_resources<S: std::hash::BuildHasher>(
         &mut root_children,
         &mut active_descendant,
     );
-    append_resource_nodes(resources, &mut nodes, &mut root_children);
+    let mut resource_ids = HashMap::new();
+    append_resource_nodes(resources, &mut nodes, &mut root_children, &mut resource_ids);
     root_node.set_children(root_children);
     nodes.push((ROOT_ID, root_node));
 
@@ -621,9 +622,19 @@ fn append_resource_nodes(
     resources: &[qos_actions::Resource],
     nodes: &mut Vec<(AkNodeId, AkNode)>,
     parent_children: &mut Vec<AkNodeId>,
+    claimed: &mut HashMap<AkNodeId, String>,
 ) {
     for resource in resources {
         let id = resource_node_id(resource.id.as_str());
+        if let Some(existing) = claimed.insert(id, resource.id.0.clone()) {
+            tracing::error!(
+                node_id = id.0,
+                existing,
+                duplicate = resource.id.as_str(),
+                "resource accessibility id collision; refusing duplicate"
+            );
+            continue;
+        }
         let mut node = AkNode::new(AkRole::Group);
         node.set_label(resource.label.clone());
         node.set_description(format!("{} resource", resource.kind));
@@ -631,6 +642,21 @@ fn append_resource_nodes(
 
         for action in &resource.actions {
             let action_id = resource_action_node_id(resource.id.as_str(), &action.id);
+            let address = format!(
+                "{}{}{}",
+                resource.id.as_str(),
+                qos_actions::KEY_SEP,
+                action.id
+            );
+            if let Some(existing) = claimed.insert(action_id, address.clone()) {
+                tracing::error!(
+                    node_id = action_id.0,
+                    existing,
+                    duplicate = address,
+                    "resource action accessibility id collision; refusing duplicate"
+                );
+                continue;
+            }
             let mut action_node = AkNode::new(AkRole::Button);
             action_node.set_label(action.label.clone());
             let operation = action.kind.as_str();
@@ -653,7 +679,7 @@ fn append_resource_nodes(
             children.push(action_id);
         }
 
-        append_resource_nodes(&resource.children, nodes, &mut children);
+        append_resource_nodes(&resource.children, nodes, &mut children, claimed);
         node.set_children(children);
         nodes.push((id, node));
         parent_children.push(id);
@@ -1578,6 +1604,7 @@ mod tests {
             "Text to find",
             "query",
             qos_actions::OperationKind::View,
+            "test.find",
             |value| qos_actions::EncodedAction::encode_operation("test.find", &value).unwrap(),
         );
         let resources = [

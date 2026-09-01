@@ -912,6 +912,7 @@ impl Widget for AuthenticatorApp {
                         .with_contract(ActionContract {
                             permission: PermissionRequirement::Read,
                             risk: RiskLevel::Privileged,
+                            confirmation: qos_actions::ConfirmationPolicy::Confirm,
                             retry: RetryPolicy::AtMostOnce,
                             tags: vec!["security".into(), "clipboard".into()],
                             ..ActionContract::default()
