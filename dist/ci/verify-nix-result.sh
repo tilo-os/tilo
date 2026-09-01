@@ -31,26 +31,42 @@ grep -q '^UseIn=nirios$' "$portal"
 grep -Fqx "QOS_SHELL=$result/bin/qos-shell" "$wrapper"
 grep -q -- '--firstboot' "$wrapper"
 
-for elf in bin/qos-shell bin/qos-launcher libexec/qos-unlock-helper; do
+launcher_elf=
+for installed in bin/qos-shell bin/qos-launcher libexec/qos-unlock-helper; do
+    directory=$(dirname "$installed")
+    basename=$(basename "$installed")
+    elf=$result/$installed
+    if [[ -x $result/$directory/.$basename-wrapped ]]; then
+        elf=$result/$directory/.$basename-wrapped
+    fi
+    [[ $installed != bin/qos-launcher ]] || launcher_elf=$elf
     # e_ident[EI_CLASS] is byte 4 (2 = ELF64), and little-endian e_machine is
     # the 16-bit word at byte 18 (62 = x86-64, 183 = AArch64). Using POSIX
     # tooling already present in the Nix image avoids mutating its emulated
     # user profile merely to install `file` before the real build starts.
-    class=$(od -An -t u1 -j 4 -N 1 "$result/$elf" | tr -d ' ')
-    machine=$(od -An -t u2 -j 18 -N 2 "$result/$elf" | tr -d ' ')
-    [[ $class == 2 ]] || { echo "not a 64-bit ELF: $elf" >&2; exit 1; }
+    class=$(od -An -t u1 -j 4 -N 1 "$elf" | tr -d ' ')
+    machine=$(od -An -t u2 -j 18 -N 2 "$elf" | tr -d ' ')
+    [[ $class == 2 ]] || { echo "not a 64-bit ELF: $installed" >&2; exit 1; }
     if [[ $arch == amd64 ]]; then
         [[ $machine == 62 ]]
     else
         [[ $machine == 183 ]]
     fi
     if [[ $execution_arch == "$arch" ]]; then
-        if ldd "$result/$elf" | tee /dev/stderr | grep -q 'not found'; then
-            echo "unresolved shared library in $elf" >&2
+        if ldd "$elf" | tee /dev/stderr | grep -q 'not found'; then
+            echo "unresolved shared library in $installed" >&2
             exit 1
         fi
     fi
 done
+
+# The cross target still executes a harmless command through qemu, proving
+# that its Nix-store interpreter and runtime library closure resolve. This is
+# stronger than accepting a correctly labelled but unloadable ELF.
+if [[ $execution_arch != "$arch" ]]; then
+    [[ -x /qemu-aarch64 ]]
+    /qemu-aarch64 "$launcher_elf" --help >/dev/null
+fi
 
 # Cross-built binaries cannot be executed by host `ldd`. Verify the output's
 # content hash and require Nix to resolve its complete registered closure; the

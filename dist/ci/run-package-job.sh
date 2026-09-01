@@ -104,6 +104,34 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
         } > "$output/CI_FAILURE"
         exit "$container_status"
     fi
+    if [[ $distro == nix && $arch == arm64 ]]; then
+        # The package itself is cross-built natively, but its install test
+        # still executes the ARM launcher through a pinned static qemu. This
+        # catches an absent Nix interpreter or unresolved target closure.
+        qemu_image=docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+        qemu_log=$log_dir/nix-qemu.log
+        set +e
+        (
+            set -e
+            docker create --platform linux/amd64 "$qemu_image" \
+                > "$log_dir/tool-container-id"
+            tool_container=$(<"$log_dir/tool-container-id")
+            docker cp "$tool_container:/usr/bin/qemu-aarch64" "$log_dir/qemu-aarch64"
+            docker cp "$log_dir/qemu-aarch64" "$container:/qemu-aarch64"
+        ) > >(tee "$qemu_log") 2>&1
+        tool_status=$?
+        set -e
+        if [[ -s $log_dir/tool-container-id ]]; then
+            tool_container=$(<"$log_dir/tool-container-id")
+        fi
+        if (( tool_status != 0 )); then
+            {
+                printf 'stage=prepare-nix-arm-smoke status=%s\n' "$tool_status"
+                tail -n 8 "$qemu_log"
+            } > "$output/CI_FAILURE"
+            exit "$tool_status"
+        fi
+    fi
     # docker cp works with Docker-in-Docker and socket-mounted runners where a
     # bind path inside the runner is not a real path from the daemon's view.
     copy_in_log=$log_dir/copy-in.log
