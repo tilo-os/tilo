@@ -358,7 +358,7 @@ arch)
     # pacman 7's download sandbox uses Landlock. The Forgejo/Kata kernel does
     # not expose it; Arch documents DisableSandbox specifically for this case.
     if [[ $arch == arm64 ]]; then
-        sed -i '/^\[options\]/a CacheDir = /var/cache/qos-pacman\nDBPath = /var/lib/qos-pacman' \
+        sed -i '/^\[options\]/a CacheDir = /var/cache/qos-pacman/\nDBPath = /var/lib/qos-pacman/' \
             /etc/pacman.conf
         install -d -m 0755 \
             /var/lib/qos-pacman/local \
