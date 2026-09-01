@@ -51,15 +51,13 @@ pub mod transport;
 /// generated module is named after the schema file (kebab → snake).
 #[allow(
     clippy::all,
+    clippy::nursery,
     clippy::pedantic,
-    unused_imports,
-    unused_qualifications,
-    unused_results,
-    non_camel_case_types,
-    missing_docs,
-    dead_code,
-    unsafe_code
+    clippy::restriction,
+    reason = "generated Cap'n Proto bindings do not follow repository lint policy"
 )]
+#[allow(unused)]
+#[allow(dead_code)]
 pub mod app_host_capnp {
     include!(concat!(env!("OUT_DIR"), "/app_host_capnp.rs"));
 }
