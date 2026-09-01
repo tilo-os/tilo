@@ -100,13 +100,14 @@ pub enum ComponentTemplate {
 enum GraphPropsContract {
     DisplayV1,
     FormV1,
+    FormV2,
 }
 
 impl GraphPropsContract {
     fn for_template(template: ComponentTemplate) -> Option<Self> {
         match template {
             ComponentTemplate::Display => Some(Self::DisplayV1),
-            ComponentTemplate::Form => Some(Self::FormV1),
+            ComponentTemplate::Form => Some(Self::FormV2),
             ComponentTemplate::Tree
             | ComponentTemplate::List
             | ComponentTemplate::Table
@@ -132,6 +133,15 @@ impl GraphPropsContract {
                     None
                 }
             }
+            Self::FormV2 => ["value_path", "enabled_path"]
+                .into_iter()
+                .find_map(|field| {
+                    props
+                        .get(field)
+                        .and_then(serde_json::Value::as_str)
+                        .is_none_or(|path| path.trim().is_empty())
+                        .then(|| format!("requires non-empty string prop {field:?}"))
+                }),
         }
     }
 }
@@ -217,18 +227,18 @@ impl ComponentMount {
         }
     }
 
-    /// Create an append-to-root form mount with empty initial input and the
-    /// generated boolean control enabled.
+    /// Create an append-to-root form mount bound to component-namespaced root
+    /// document paths.
     #[must_use]
-    pub fn form(screen: impl Into<String>) -> Self {
+    pub fn form(screen: impl Into<String>, component_name: &str) -> Self {
         Self {
             screen: screen.into(),
             id: None,
             parent: "root".into(),
             index: None,
             props: serde_json::json!({
-                "value": "",
-                "enabled": true,
+                "value_path": format!("{component_name}-value"),
+                "enabled_path": format!("{component_name}-enabled"),
             })
             .to_string(),
         }
@@ -677,9 +687,23 @@ fn prompt_component_artifact(
             serde_json::json!({ "title": title, "detail": detail }).to_string()
         }
         ComponentTemplate::Form => {
-            let value = prompt(input, output, "Initial value", Some(""))?;
-            let enabled = prompt_confirm(input, output, "Initially enabled", true)?;
-            serde_json::json!({ "value": value, "enabled": enabled }).to_string()
+            let value_path = prompt(
+                input,
+                output,
+                "Value document path",
+                Some(&format!("{name}-value")),
+            )?;
+            let enabled_path = prompt(
+                input,
+                output,
+                "Enabled document path",
+                Some(&format!("{name}-enabled")),
+            )?;
+            serde_json::json!({
+                "value_path": value_path,
+                "enabled_path": enabled_path,
+            })
+            .to_string()
         }
         _ => bail!("this component template requires an app-supplied model and cannot be mounted"),
     };
@@ -2509,7 +2533,7 @@ fn form_component_source(
     let value_placeholder = ScreenMessage::new(name, "value-placeholder", "Enter a value");
     let enabled_label = ScreenMessage::new(name, "enabled-label", "Enabled");
     let source = format!(
-        r##"// qos-dev:graph-props=form-v1
+        r##"// qos-dev:graph-props=form-v2
 use ui::widget::{{Checkbox, Element, TextInput, labeled_check, labeled_field}};
 use ui::{{LocalState, UiBuildContext, UiComponentRequest}};
 
@@ -2544,33 +2568,50 @@ pub fn {module_name}(id: &str, state: &{type_name}State) -> ui::widget::Column {
     .with_no_padding()
 }}
 
-/// Build this stateful component from a serialized UI graph node.
+/// Build one `{name}` form whose controls bind directly to the app document.
 ///
-/// Each graph instance owns independent `LocalState` initialized by its typed
-/// `value` and `enabled` props. The retained controls keep that state alive.
+/// Reusing either path in another component or ordinary graph control creates
+/// another synchronized view of the same persistent, undoable value.
+pub fn {module_name}_from_document(
+    id: &str,
+    value_path: &str,
+    enabled_path: &str,
+) -> ui::widget::Column {{
+    let value_id = format!("{{id}}-value");
+    let enabled_id = format!("{{id}}-enabled");
+    let value = TextInput::from_document_string(value_path)
+        .with_id(&value_id)
+        .with_placeholder("{name}-value-placeholder");
+    let enabled = Checkbox::new(&enabled_id, enabled_path).with_id(&enabled_id);
+    ui::column![
+        labeled_field("{name}-value-label", value),
+        labeled_check("{name}-enabled-label", enabled),
+    ]
+    .with_no_padding()
+}}
+
+/// Build this document-bound component from a serialized UI graph node.
+///
+/// Each graph instance receives explicit `value_path` and `enabled_path` props.
+/// Paths may be unique per instance or deliberately shared across views.
 ///
 /// # Errors
 ///
-/// Returns a field-specific error when `value` is not a string or `enabled`
-/// is not a boolean.
+/// Returns a field-specific error when either binding path is missing or empty.
 pub fn from_ui_graph(request: UiComponentRequest<'_>) -> Result<Element, String> {{
-    let value = request
-        .props
-        .get("value")
-        .and_then(|value| value.as_str())
-        .map(str::to_owned)
-        .ok_or_else(|| "value must be a string".to_owned())?;
-    let enabled = request
-        .props
-        .get("enabled")
-        .ok_or_else(|| "enabled must be a boolean".to_owned())?
-        .as_bool()
-        .ok_or_else(|| "enabled must be a boolean".to_owned())?;
-    let state = {type_name}State {{
-        value: LocalState::new(value),
-        enabled: LocalState::new(enabled),
+    let path = |key| {{
+        request
+            .props
+            .get(key)
+            .and_then(|value| value.as_str())
+            .filter(|path| !path.trim().is_empty())
+            .ok_or_else(|| format!("{{key}} must be a non-empty string"))
     }};
-    Ok(Box::new({module_name}(request.id, &state)))
+    Ok(Box::new({module_name}_from_document(
+        request.id,
+        path("value_path")?,
+        path("enabled_path")?,
+    )))
 }}
 
 /// Register this component's stable graph factory name.
@@ -2608,9 +2649,9 @@ mod tests {{
     }}
 
     #[test]
-    fn graph_factory_builds_independent_typed_state() {{
+    fn graph_factory_binds_shared_document_state() {{
         let document = ui::UiDocument::from_json(
-            r#"{{"version":1,"root":{{"type":"component","id":"example","name":"{name}","props":{{"value":"Ada","enabled":false}}}}}}"#,
+            r#"{{"version":1,"root":{{"type":"column","id":"root","children":[{{"type":"component","id":"first","name":"{name}","props":{{"value_path":"shared-value","enabled_path":"shared-enabled"}}}},{{"type":"component","id":"second","name":"{name}","props":{{"value_path":"shared-value","enabled_path":"shared-enabled"}}}}]}}}}"#,
         )
         .expect("valid component graph");
         let context = register_ui_graph(UiBuildContext::default());
@@ -2621,29 +2662,43 @@ mod tests {{
         )
         .expect("registered form component");
         let mut app = ui::headless::Driver::new(ui::State::new(), widget, (480, 240));
+        app.perform_named("first-value", &Action::SetValue("Ada".into()))
+            .expect("first graph form edits shared text");
         app.expect(
-            &SemanticExpectation::named("example-value")
+            &SemanticExpectation::named("second-value")
                 .role(Role::TextInput)
                 .value("Ada"),
         )
-        .expect("serialized value initializes retained state");
+        .expect("second graph form observes shared document text");
+        app.perform_named("first-enabled", &Action::ToggleCheck)
+            .expect("first graph form edits shared boolean");
         app.expect(
-            &SemanticExpectation::named("example-enabled")
+            &SemanticExpectation::named("second-enabled")
+                .role(Role::Checkbox)
+                .checked(true),
+        )
+        .expect("second graph form observes shared document boolean");
+        assert!(app.perform_undo(), "document-bound toggle is undoable");
+        app.expect(
+            &SemanticExpectation::named("second-enabled")
                 .role(Role::Checkbox)
                 .checked(false),
         )
-        .expect("serialized boolean initializes retained state");
-        app.perform_named("example-value", &Action::SetValue("Grace".into()))
-            .expect("graph form remains interactive");
+        .expect("undo updates every bound view");
+        assert!(app.perform_redo(), "document-bound toggle is redoable");
+        let state = app.dump_json();
+        assert!(state.contains("shared-value"));
+        assert!(state.contains("Ada"));
+        assert!(state.contains("shared-enabled"));
 
         let invalid = ui::UiDocument::from_json(
-            r#"{{"version":1,"root":{{"type":"component","id":"invalid","name":"{name}","props":{{"value":42,"enabled":true}}}}}}"#,
+            r#"{{"version":1,"root":{{"type":"component","id":"invalid","name":"{name}","props":{{"value_path":"","enabled_path":"enabled"}}}}}}"#,
         )
         .expect("structurally valid component graph");
         assert!(matches!(
             ui::UiDocumentExt::build_with(&invalid, &ui::Theme::default(), &context),
             Err(ui::UiGraphError::ComponentBuild {{ message, .. }})
-                if message == "value must be a string"
+                if message == "value_path must be a non-empty string"
         ));
     }}
 }}
@@ -5401,6 +5456,7 @@ fn graph_props_contract(name: &str, source: &str) -> Result<GraphPropsContract> 
     match markers.as_slice() {
         [] | ["display-v1"] => Ok(GraphPropsContract::DisplayV1),
         ["form-v1"] => Ok(GraphPropsContract::FormV1),
+        ["form-v2"] => Ok(GraphPropsContract::FormV2),
         [unknown] => bail!("graph component {name:?} has unknown props contract {unknown:?}"),
         _ => bail!("graph component {name:?} declares more than one props contract"),
     }
@@ -7238,7 +7294,7 @@ fn app_readme(spec: &AppSpec) -> String {
     if spec.template == Template::Graph {
         let _ = writeln!(
             out,
-            "\nOpen the serialized screen with `qos-dev ui edit ui/main.json`. Script or review it with `qos-dev ui tree`, `qos-dev ui set`, `qos-dev ui apply`, `qos-dev ui insert`, `qos-dev ui move`, and `qos-dev ui validate`. Generate, register, and place an app-owned retained component atomically with `qos-dev add component profile-card --mount main --props '{{\"title\":\"Ada\",\"detail\":\"Owner\"}}'`, or mount an interactive form with `qos-dev add component profile-form --template form --mount main --props '{{\"value\":\"Ada\",\"enabled\":true}}'`. The generated component registry makes graph-compatible components available to every generated screen automatically."
+            "\nOpen the serialized screen with `qos-dev ui edit ui/main.json`. Script or review it with `qos-dev ui tree`, `qos-dev ui set`, `qos-dev ui apply`, `qos-dev ui insert`, `qos-dev ui move`, and `qos-dev ui validate`. Generate, register, and place an app-owned retained component atomically with `qos-dev add component profile-card --mount main --props '{{\"title\":\"Ada\",\"detail\":\"Owner\"}}'`, or mount a document-bound form with `qos-dev add component profile-form --template form --mount main --props '{{\"value_path\":\"profile-name\",\"enabled_path\":\"profile-enabled\"}}'`. The generated component registry makes graph-compatible components available to every generated screen automatically."
         );
     }
     if spec.template == Template::Async {
@@ -7819,7 +7875,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("demo");
         minimal_generated_graph_app(&app);
-        let mut input = std::io::Cursor::new(b"4\nprofile-form\n2\n\nAda\nn\n\n".to_vec());
+        let mut input = std::io::Cursor::new(
+            b"4\nprofile-form\n2\n\nprofile-name\nprofile-enabled\n\n".to_vec(),
+        );
         let mut output = Vec::new();
 
         let outcome =
@@ -7830,12 +7888,12 @@ mod tests {
             load_ui_graph(&app.join("ui/main.json")).unwrap().node("profile-form"),
             Some(qos_ui_graph::UiNode::Component { name, props, .. })
                 if name == "profile-form"
-                    && props.get("value") == Some(&serde_json::json!("Ada"))
-                    && props.get("enabled") == Some(&serde_json::json!(false))
+                    && props.get("value_path") == Some(&serde_json::json!("profile-name"))
+                    && props.get("enabled_path") == Some(&serde_json::json!("profile-enabled"))
         ));
         let transcript = String::from_utf8(output).unwrap();
-        assert!(transcript.contains("Initial value"));
-        assert!(transcript.contains("Initially enabled"));
+        assert!(transcript.contains("Value document path"));
+        assert!(transcript.contains("Enabled document path"));
         assert!(transcript.contains("component \"profile-form\" (form) mounted in \"main\""));
     }
 
@@ -8178,13 +8236,13 @@ mod tests {
             vec![
                 UiGraphEdit::SetProperty {
                     id: "profile-card".into(),
-                    property: "props.value".into(),
-                    value: serde_json::json!("Ada"),
+                    property: "props.value_path".into(),
+                    value: serde_json::json!("profile-name"),
                 },
                 UiGraphEdit::SetProperty {
                     id: "profile-card".into(),
-                    property: "props.enabled".into(),
-                    value: serde_json::json!(true),
+                    property: "props.enabled_path".into(),
+                    value: serde_json::json!("profile-enabled"),
                 },
                 UiGraphEdit::UnsetProperty {
                     id: "profile-card".into(),
@@ -8230,8 +8288,9 @@ mod tests {
                 name: "broken-form".into(),
                 template: ComponentTemplate::Form,
                 mount: ComponentMount {
-                    props: serde_json::json!({"value": "Ada", "enabled": "yes"}).to_string(),
-                    ..ComponentMount::form("main")
+                    props: serde_json::json!({"value_path": "profile-name", "enabled_path": ""})
+                        .to_string(),
+                    ..ComponentMount::form("main", "broken-form")
                 },
             },
             force: false,
@@ -8241,7 +8300,7 @@ mod tests {
         assert!(
             invalid_mount
                 .to_string()
-                .contains("requires boolean prop \"enabled\"")
+                .contains("requires non-empty string prop \"enabled_path\"")
         );
         assert!(!app.join("src/components/broken_form.rs").exists());
         assert_eq!(
@@ -8254,10 +8313,7 @@ mod tests {
             artifact: AddArtifact::GraphComponent {
                 name: "profile-form".into(),
                 template: ComponentTemplate::Form,
-                mount: ComponentMount {
-                    props: serde_json::json!({"value": "Ada", "enabled": false}).to_string(),
-                    ..ComponentMount::form("main")
-                },
+                mount: ComponentMount::form("main", "profile-form"),
             },
             force: false,
             dry_run: false,
@@ -8269,11 +8325,12 @@ mod tests {
             load_ui_graph(&app.join("ui/main.json")).unwrap().node("profile-form"),
             Some(qos_ui_graph::UiNode::Component { name, props, .. })
                 if name == "profile-form"
-                    && props.get("value") == Some(&serde_json::json!("Ada"))
-                    && props.get("enabled") == Some(&serde_json::json!(false))
+                    && props.get("value_path") == Some(&serde_json::json!("profile-form-value"))
+                    && props.get("enabled_path") == Some(&serde_json::json!("profile-form-enabled"))
         ));
         let source = std::fs::read_to_string(app.join("src/components/profile_form.rs")).unwrap();
-        assert!(source.contains("// qos-dev:graph-props=form-v1"));
+        assert!(source.contains("// qos-dev:graph-props=form-v2"));
+        assert!(source.contains("TextInput::from_document_string(value_path)"));
         assert!(source.contains("pub fn register_ui_graph("));
         let report = doctor_app(&app).unwrap();
         assert!(report.is_ready(), "{}", report.summary());
@@ -8287,8 +8344,8 @@ mod tests {
             &app.join("ui/main.json"),
             UiGraphEdit::SetProperty {
                 id: "profile-form".into(),
-                property: "props.enabled".into(),
-                value: serde_json::json!("yes"),
+                property: "props.enabled_path".into(),
+                value: serde_json::json!(""),
             },
         )
         .unwrap();
@@ -8296,7 +8353,9 @@ mod tests {
         assert!(!invalid.is_ready());
         assert!(invalid.checks.iter().any(|check| {
             check.label == "UI component"
-                && check.detail.contains("requires boolean prop \"enabled\"")
+                && check
+                    .detail
+                    .contains("requires non-empty string prop \"enabled_path\"")
         }));
     }
 
@@ -10008,6 +10067,18 @@ mod tests {
         assert!(!report.checks.iter().any(|check| {
             check.label == "component registry" && check.status == DoctorStatus::Fail
         }));
+    }
+
+    #[test]
+    fn doctor_keeps_the_generated_form_v1_props_contract_readable() {
+        let contract = graph_props_contract(
+            "legacy-form",
+            "// qos-dev:graph-props=form-v1\npub fn register_ui_graph() {}\n",
+        )
+        .unwrap();
+        assert_eq!(contract, GraphPropsContract::FormV1);
+        let props = serde_json::json!({"value": "Ada", "enabled": true});
+        assert!(contract.invalid_props(props.as_object().unwrap()).is_none());
     }
 
     #[test]

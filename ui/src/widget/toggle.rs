@@ -388,12 +388,18 @@ impl Widget for Toggle {
             }
             return;
         }
-        if let Ok(Some((val, _))) = state.get(root, self.on_toggle_path.as_str())
-            && let Value::Scalar(s) = val
-            && let automerge::ScalarValue::Boolean(b) = s.as_ref()
-        {
-            self.is_checked = *b;
-        }
+        self.is_checked = state
+            .get(root, self.on_toggle_path.as_str())
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| match value {
+                Value::Scalar(scalar) => match scalar.as_ref() {
+                    automerge::ScalarValue::Boolean(checked) => Some(*checked),
+                    _ => None,
+                },
+                Value::Object(_) => None,
+            })
+            .unwrap_or(false);
     }
 
     fn build_layout(
@@ -788,6 +794,24 @@ mod tests {
             &[false],
             "programmatic mutation does not invoke the user callback"
         );
+    }
+
+    #[test]
+    fn document_binding_resets_after_the_boolean_path_disappears() {
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut toggle = Toggle::new("any", "enabled");
+        doc.put(&root, "enabled", true).unwrap();
+        Widget::sync(&mut toggle, &mut doc, &root);
+        assert!(toggle.is_checked());
+
+        doc.delete(&root, "enabled").unwrap();
+        Widget::sync(&mut toggle, &mut doc, &root);
+        assert!(!toggle.is_checked(), "a removed path means off");
+
+        doc.put(&root, "enabled", "not-a-boolean").unwrap();
+        Widget::sync(&mut toggle, &mut doc, &root);
+        assert!(!toggle.is_checked(), "a mistyped path cannot stay stale");
     }
 
     #[test]
