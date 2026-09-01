@@ -32,9 +32,18 @@ to infer present product behaviour.
   screenshot-only claim.
 - Shared empty states, permission prompts, keyboard focus and reduced-motion
   behaviour are available in the redesigned shell journeys.
-- Files, Notes, Settings, Monitor, Maps and Git Client have targeted hierarchy
-  and narrow-layout improvements. This does **not** mean their full release
-  acceptance is complete; see the gates below.
+- Chat has exactly two contextual destinations: the active qOS Workspace and a
+  system Inbox that groups cross-workspace messages by their source. Chat no
+  longer creates a second, contradictory kind of "workspace".
+- Git Client, Notes, Monitor and Maps expose their primary controls through the
+  assistive semantic tree, route semantic activation through the same hit
+  targets as pointer input, and preserve normal Tab navigation.
+- Collaboration invitations are signed, independently correlated credentials.
+  Pending invitations survive restart in private local storage and can be
+  resent, canceled or allowed to expire from Workspace Settings.
+- Shared workspaces replicate their strips and windows. Focus remains personal;
+  Follow is the explicit opt-in that also drives supported app viewport and
+  view-mode state, and direct interaction stops Follow.
 
 ## Capability honesty
 
@@ -55,24 +64,34 @@ These are gates, not a claim that every item is blocked by the same subsystem.
 An item leaves this list only with an executable test or an inspectable manual
 acceptance record.
 
-1. **Collaboration truth.** An invitation must create durable, authenticated
-   pending state and be accepted through the production transport—not by a shot
-   fixture. The product must define and implement member/device revocation,
-   including what immediately stops, what historical data remains readable and
-   how keys rotate.
-2. **Accessibility parity.** Chat, Git Client, Notes, Maps and Monitor need
-   complete semantic trees and keyboard equivalents for their primary actions.
-   Core journeys require screen-reader, focus, 200% scale and high-contrast
-   acceptance evidence.
-3. **Localisation.** Public shell and app strings need Fluent ownership and
+1. **Accessibility acceptance.** Core journeys still require recorded
+   screen-reader, 200% scale and high-contrast acceptance evidence on the
+   supported desktop stack. The semantic and keyboard implementation is no
+   longer the blocker.
+2. **Localisation.** Public shell and app strings need Fluent ownership and
    expansion-safe layouts. English literals are not a release-ready fallback.
-4. **App capability audit.** Every visible control must either operate on a
+3. **App capability audit.** Every visible control must either operate on a
    production backend, be clearly presented as unavailable, or be removed.
    Experimental apps need an explicit experimental label rather than the same
    implied readiness as product-proof apps.
-5. **Responsive coverage.** Product-proof journeys require visual and driven
+4. **Responsive coverage.** Product-proof journeys require visual and driven
    acceptance at phone portrait, small tablet/half-screen, laptop and large
    desktop widths.
+
+## Collaboration revocation contract
+
+- Canceling a pending invitation prevents that credential from admitting a new
+  member. Invitations are independent, so canceling one does not affect another
+  invitation for the same workspace.
+- Removing a member takes effect at the authoritative current-membership check:
+  later sync, presence and signed document operations from that identity are
+  rejected, including operations delivered after an offline period.
+- Revocation is not retroactive deletion. Data already downloaded to another
+  device cannot be clawed back, and the UI says so plainly.
+- qOS does not add a second encryption/governance stack for this. Existing
+  signed workspace authority remains the source of truth; future content-key
+  rotation is a separate confidentiality feature, not a prerequisite for
+  correct membership enforcement.
 
 ## Acceptance discipline
 
