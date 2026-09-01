@@ -167,6 +167,7 @@ fn hello_world_runs() {
         no_services: false,
         runtime_root: None,
         bwrap_bin: Some(bwrap),
+        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_qos-launcher"))),
         minimal_libs: false,
         landlock_enforce: true,
         mode: launcher::run::LaunchMode::Gui,
