@@ -248,7 +248,7 @@ impl RoomScope {
 
     pub fn label(self) -> &'static str {
         match self {
-            RoomScope::ThisRoom => "This room",
+            RoomScope::ThisRoom => "This workspace",
             RoomScope::AllWorkspaces => "All workspaces",
         }
     }
@@ -1741,8 +1741,7 @@ impl RoomActivityPane {
         let colors = &tokens.colors;
         let title_size = tokens.typography.scale.lg;
         let title = match self.scope {
-            RoomScope::ThisRoom => "Room activity",
-            RoomScope::AllWorkspaces => "Workspace activity",
+            RoomScope::ThisRoom | RoomScope::AllWorkspaces => "Workspace activity",
         };
         tr.draw_text(
             scene,
@@ -1761,12 +1760,15 @@ impl RoomActivityPane {
         };
         let mut subtitle = match self.scope {
             RoomScope::ThisRoom => {
-                let room = if self.room_name.is_empty() {
-                    "This room"
+                let workspace = if self.room_name.is_empty() {
+                    "This workspace"
                 } else {
                     self.room_name.as_str()
                 };
-                format!("{room} \u{00b7} {} changes by {people}", self.total_entries)
+                format!(
+                    "{workspace} \u{00b7} {} changes by {people}",
+                    self.total_entries
+                )
             }
             RoomScope::AllWorkspaces => format!(
                 "Every workspace on this machine \u{00b7} {} changes by {people}",
@@ -2591,10 +2593,10 @@ impl RoomActivityPane {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let mut root = AccessNode::new(Role::Dialog)
-            .with_name("Room activity")
+            .with_name("Workspace activity")
             .with_description(match self.view {
                 ActivityView::CatchUp => {
-                    "A summary of outcomes since this device last viewed the room"
+                    "A summary of outcomes since this device last viewed the workspace"
                 }
                 ActivityView::Explore => {
                     "The complete workspace history with filters and provenance"
@@ -3417,10 +3419,13 @@ impl PatchCounts {
             return Some((s, OpClass::Govern));
         }
         if self.owner_set {
-            return Some(("Set the room owner".to_string(), OpClass::Govern));
+            return Some(("Set the workspace owner".to_string(), OpClass::Govern));
         }
         if self.room_set {
-            return Some(("Assigned the room identity".to_string(), OpClass::Govern));
+            return Some((
+                "Assigned the workspace identity".to_string(),
+                OpClass::Govern,
+            ));
         }
         if let Some(name) = self.names.first() {
             let s = if name.is_empty() {
@@ -3514,7 +3519,7 @@ fn describe_capability(cap: &CapOverride) -> String {
 
 fn describe_scope(scope: &Scope) -> String {
     match scope {
-        Scope::Workspace => "this workspace".to_string(),
+        Scope::Workspace | Scope::Room(_) => "this workspace".to_string(),
         Scope::App(a) => a.clone(),
         Scope::ResourceType(k) => format!("every {k:?}"),
         Scope::ResourceInstance(_) => "one artifact".to_string(),
@@ -3525,7 +3530,6 @@ fn describe_scope(scope: &Scope) -> String {
         Scope::Device(d) => d.clone(),
         Scope::NetHost(h) => format!("network {h}"),
         Scope::Action { app, action } => format!("{app}:{action}"),
-        Scope::Room(_) => "this room".to_string(),
     }
 }
 
@@ -3543,7 +3547,7 @@ fn describe_principal(p: &Principal) -> String {
         Principal::App(a) => a.clone(),
         Principal::Agent(a) => format!("agent {a}"),
         Principal::Token(_) => "an invite token".to_string(),
-        Principal::Room(_) => "this room".to_string(),
+        Principal::Room(_) => "this workspace".to_string(),
     }
 }
 
@@ -3788,7 +3792,7 @@ mod tests {
         let owner_rows: Vec<String> = pane
             .entries()
             .iter()
-            .filter(|e| e.summary.contains("Set the room owner"))
+            .filter(|e| e.summary.contains("Set the workspace owner"))
             .map(|e| e.summary.clone())
             .collect();
         assert!(
@@ -4816,7 +4820,10 @@ mod tests {
             &mut tree,
         );
         assert!(home.handled);
-        assert_eq!(pane.focused_control_label().as_deref(), Some("This room"));
+        assert_eq!(
+            pane.focused_control_label().as_deref(),
+            Some("This workspace")
+        );
 
         pane.handle_event(
             &key_press(winit::keyboard::Key::Named(
@@ -4858,7 +4865,10 @@ mod tests {
             None,
             &mut tree,
         );
-        assert_eq!(pane.focused_control_label().as_deref(), Some("This room"));
+        assert_eq!(
+            pane.focused_control_label().as_deref(),
+            Some("This workspace")
+        );
     }
 
     #[test]

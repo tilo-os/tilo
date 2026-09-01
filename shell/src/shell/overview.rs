@@ -1,14 +1,15 @@
-//! What the workspace overview is made of.
+//! Plain-data projection for the workspace overview.
 //!
-//! A workspace in qOS is a **room** — a host, people, permissions,
-//! shared files — so the overview answers questions about rooms (who
-//! else is here, what is shared), not window/tab counts. Derived from
-//! the authoritative [`WorkspaceTree`] as plain data, so the draw pass
-//! has no vocabulary of its own to drift with.
+//! The overview is the one shell surface that deliberately reveals the
+//! complete layout hierarchy: workspace -> strip -> window group -> tab.
+//! It also attaches present collaborators to the tab they are looking at.
+//! Permissions and the full sharing inventory belong to workspace settings;
+//! keeping them out of this projection lets the overview remain a spatial
+//! explanation instead of becoming a second settings screen.
 
 use crate::shell::state::{
-    CapRole, Collaborator, Effect, Principal, Subject, UserId, Workspace, WorkspaceId,
-    WorkspaceTree, local_user_id, now_unix,
+    CapRole, Collaborator, Effect, GroupId, Principal, StripId, Subject, TabId, UserId, Workspace,
+    WorkspaceId, WorkspaceTree, local_user_id, now_unix,
 };
 
 /// Cached, plain-data snapshot of a single workspace for rendering a card.
@@ -109,6 +110,51 @@ pub struct RoomShare {
     pub writable: bool,
 }
 
+/// One tab nested inside its window group in the overview.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OverviewTab {
+    pub id: TabId,
+    pub title: String,
+    pub is_active: bool,
+    /// Present collaborators whose published focus points at this tab.
+    /// The local person is deliberately absent: an untouched solo workspace
+    /// should look like a desktop, not a collaboration dashboard.
+    pub people: Vec<RoomPerson>,
+}
+
+/// One non-overlapping window group in a strip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OverviewGroup {
+    pub id: GroupId,
+    /// Persisted share of the strip's usable width. Rendering may compress
+    /// all groups to fit, but retains these proportions.
+    pub width_permille: u16,
+    pub is_current: bool,
+    pub tabs: Vec<OverviewTab>,
+}
+
+impl OverviewGroup {
+    pub fn active_title(&self) -> &str {
+        self.tabs
+            .iter()
+            .find(|tab| tab.is_active)
+            .or_else(|| self.tabs.first())
+            .map_or("Empty window", |tab| tab.title.as_str())
+    }
+
+    pub fn present_people(&self) -> impl Iterator<Item = &RoomPerson> {
+        self.tabs.iter().flat_map(|tab| tab.people.iter())
+    }
+}
+
+/// One cheap, anonymous row of non-overlapping window groups.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OverviewStrip {
+    pub id: StripId,
+    pub is_current: bool,
+    pub groups: Vec<OverviewGroup>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoomCard {
     pub id: WorkspaceId,
@@ -118,6 +164,8 @@ pub struct RoomCard {
     pub people: Vec<RoomPerson>,
     /// Most-shared first.
     pub shares: Vec<RoomShare>,
+    /// Spatial contents, preserving tree order at every level.
+    pub strips: Vec<OverviewStrip>,
 }
 
 impl RoomCard {
@@ -131,6 +179,10 @@ impl RoomCard {
 
     pub fn is_private(&self) -> bool {
         self.others().next().is_none()
+    }
+
+    pub fn group_count(&self) -> usize {
+        self.strips.iter().map(|strip| strip.groups.len()).sum()
     }
 }
 
@@ -233,6 +285,59 @@ pub fn room_cards(tree: &WorkspaceTree) -> Vec<RoomCard> {
             is_current: ws.id == tree.active,
             people: room_people(ws, tree),
             shares: room_shares(ws, tree),
+            strips: overview_strips(ws, tree),
+        })
+        .collect()
+}
+
+fn overview_strips(ws: &Workspace, tree: &WorkspaceTree) -> Vec<OverviewStrip> {
+    let people = room_people(ws, tree);
+    let active_strip = tree.active_strip.get(&ws.id).copied();
+    ws.strips
+        .iter()
+        .map(|strip| {
+            let active_group = tree.active_group_for(strip.id);
+            OverviewStrip {
+                id: strip.id,
+                is_current: ws.id == tree.active && active_strip == Some(strip.id),
+                groups: strip
+                    .window_groups
+                    .iter()
+                    .map(|group| OverviewGroup {
+                        id: group.id,
+                        width_permille: group.width.permille(),
+                        is_current: ws.id == tree.active
+                            && active_strip == Some(strip.id)
+                            && active_group == Some(group.id),
+                        tabs: group
+                            .tabs
+                            .iter()
+                            .map(|tab| OverviewTab {
+                                id: tab.id,
+                                title: if tab.title.trim().is_empty() {
+                                    "Untitled".to_string()
+                                } else {
+                                    tab.title.clone()
+                                },
+                                is_active: tab.id == group.active_tab,
+                                people: people
+                                    .iter()
+                                    .filter(|person| {
+                                        !person.is_you
+                                            && person.present
+                                            && ws
+                                                .collaborators
+                                                .iter()
+                                                .find(|collaborator| collaborator.id == person.id)
+                                                .is_some_and(|c| c.active_tab == Some(tab.id))
+                                    })
+                                    .cloned()
+                                    .collect(),
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            }
         })
         .collect()
 }
@@ -246,7 +351,7 @@ pub fn room_access_label(card: &RoomCard) -> String {
         0 => {
             if card.people.is_empty() {
                 // No owner, no membership capability recorded at all.
-                "No members".to_string()
+                "No one has access".to_string()
             } else {
                 "Private to you".to_string()
             }
@@ -297,10 +402,28 @@ pub fn room_presence_label(card: &RoomCard) -> Option<String> {
     }
 }
 
+/// Collaboration-only summary for the spatial overview. A private workspace
+/// returns `None`, so the solo state does not announce the local person back
+/// to themselves.
+pub fn overview_people_label(card: &RoomCard) -> Option<String> {
+    let present: Vec<&RoomPerson> = card.others().filter(|person| person.present).collect();
+    match present.len() {
+        0 if card.is_private() => None,
+        0 => Some(room_access_label(card)),
+        1 => Some(format!(
+            "{} is here",
+            present.first().map_or("", |person| person.name.as_str())
+        )),
+        n => Some(format!("{n} collaborators are here")),
+    }
+}
+
 #[cfg(test)]
 mod room_tests {
     use super::*;
-    use crate::shell::state::{CapOverride, Scope, Verb};
+    use crate::shell::state::{
+        AppKind, CapOverride, Scope, Strip, Tab, TileContent, Verb, WindowGroup, WindowWidth,
+    };
 
     fn ws(name: &str) -> Workspace {
         let mut w = Workspace::new(WorkspaceId::new(), name);
@@ -436,6 +559,25 @@ mod room_tests {
     }
 
     #[test]
+    fn private_overview_stays_quiet_but_shared_overview_names_presence() {
+        let private_tree = tree_with(vec![ws("Home")]);
+        assert_eq!(overview_people_label(&room_cards(&private_tree)[0]), None);
+
+        let mut shared = ws("Design");
+        shared.capabilities.push(CapOverride::grant(
+            Subject::person("ada"),
+            Scope::Room(shared.id.raw().to_string()),
+            Verb::Write,
+        ));
+        shared.collaborators.push(Collaborator::new("ada", "Ada"));
+        let shared_tree = tree_with(vec![shared]);
+        assert_eq!(
+            overview_people_label(&room_cards(&shared_tree)[0]).as_deref(),
+            Some("Ada is here")
+        );
+    }
+
+    #[test]
     fn expired_grants_neither_admit_members_nor_count_as_shares() {
         use crate::shell::state::Expiry;
         let mut w = ws("Design");
@@ -472,5 +614,99 @@ mod room_tests {
         let tree = tree_with(vec![w]);
         let card = &room_cards(&tree)[0];
         assert_eq!(room_access_label(card), "Shared with ada and 3 others");
+    }
+
+    #[test]
+    fn spatial_projection_preserves_strip_group_and_tab_nesting() {
+        let mut w = ws("Design");
+        let strip_id = StripId::new();
+        let group_id = 41;
+        let first_tab = 51;
+        let second_tab = 52;
+        w.strips = vec![Strip {
+            id: strip_id,
+            name: "ignored spatial label".to_string(),
+            window_groups: vec![WindowGroup {
+                id: group_id,
+                tabs: vec![
+                    Tab {
+                        id: first_tab,
+                        title: "Brief".to_string(),
+                        tile: TileContent::Stub {
+                            kind: AppKind::Other("Notes".to_string()),
+                            label: "Brief".to_string(),
+                        },
+                    },
+                    Tab {
+                        id: second_tab,
+                        title: "References".to_string(),
+                        tile: TileContent::Stub {
+                            kind: AppKind::Browser,
+                            label: "References".to_string(),
+                        },
+                    },
+                ],
+                active_tab: second_tab,
+                width: WindowWidth::Wide,
+                maximized: false,
+            }],
+        }];
+        let mut tree = tree_with(vec![w]);
+        let ws_id = tree.active;
+        tree.active_strip.insert(ws_id, strip_id);
+        tree.set_active_group(strip_id, group_id);
+
+        let card = &room_cards(&tree)[0];
+        assert_eq!(card.strips.len(), 1);
+        assert!(card.strips[0].is_current);
+        assert_eq!(card.strips[0].groups.len(), 1);
+        let group = &card.strips[0].groups[0];
+        assert!(group.is_current);
+        assert_eq!(group.tabs.len(), 2);
+        assert_eq!(group.active_title(), "References");
+        assert_eq!(group.width_permille, WindowWidth::Wide.permille());
+    }
+
+    #[test]
+    fn collaborator_focus_is_attached_to_the_tab_not_the_workspace_header() {
+        let mut w = ws("Design");
+        let strip_id = StripId::new();
+        let tab_id = 71;
+        w.capabilities.push(CapOverride::grant(
+            Subject::person("ada"),
+            Scope::Room(w.id.raw().to_string()),
+            Verb::Write,
+        ));
+        w.collaborators
+            .push(Collaborator::with_active_tab("ada", "Ada", tab_id));
+        w.strips = vec![Strip {
+            id: strip_id,
+            name: String::new(),
+            window_groups: vec![WindowGroup {
+                id: 72,
+                tabs: vec![Tab {
+                    id: tab_id,
+                    title: "Brief".to_string(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Notes".to_string()),
+                        label: "Brief".to_string(),
+                    },
+                }],
+                active_tab: tab_id,
+                width: WindowWidth::Normal,
+                maximized: false,
+            }],
+        }];
+        let tree = tree_with(vec![w]);
+
+        let tab = &room_cards(&tree)[0].strips[0].groups[0].tabs[0];
+        assert_eq!(
+            tab.people
+                .iter()
+                .map(|person| person.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Ada"]
+        );
+        assert!(tab.people.iter().all(|person| !person.is_you));
     }
 }

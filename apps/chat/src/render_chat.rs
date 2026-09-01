@@ -307,7 +307,14 @@ impl ChatApp {
 
         let header = self.draw_sidebar_header(scene, tf, tr, theme, side, hits);
         self.draw_sidebar_tree(scene, tf, tr, theme, presence, side, header, hits);
-        self.draw_sidebar_identity_bar(scene, tf, tr, theme, side, hits);
+        // qOS stays calm while a workspace is private. The shell already owns
+        // the current person's identity; repeating an "Available" row in a
+        // one-person Chat workspace only turns an empty conversation into
+        // collaboration chrome. It becomes useful once there is someone to be
+        // available to, or while a call is active.
+        if self.has_other_collaborator() || self.call.active {
+            self.draw_sidebar_identity_bar(scene, tf, tr, theme, side, hits);
+        }
     }
 
     /// Workspace title, online-count pill, and the "+ category" affordance
@@ -342,38 +349,53 @@ impl ChatApp {
             side.x0 + 16.0,
             side.y0 + 17.0,
         );
-        // a tiny "presence count" pill
-        let online = self
-            .users
-            .iter()
-            .filter(|u| u.status == Presence::Online)
-            .count();
-        let pill_txt = format!("{online} online");
-        let (pw, _) = tr.measure(&pill_txt, 10.5, None);
-        let pill = Rect::new(
-            side.x1 - f64::from(pw) - 28.0,
-            side.y0 + 16.0,
-            side.x1 - 12.0,
-            side.y0 + 34.0,
-        );
-        fill_round(scene, tf, pill, 9.0, c.surface_white_10);
-        fill_circle(
-            scene,
-            tf,
-            Point::new(pill.x0 + 10.0, pill.center().y),
-            3.0,
-            c.semantic.success,
-        );
-        label(
-            scene,
-            tr,
-            tf,
-            &pill_txt,
-            10.5,
-            c.text_dim,
-            pill.x0 + 17.0,
-            pill.center().y - 7.0,
-        );
+        // Presence is meaningful only when this workspace has another person
+        // in it. Do not surface "1 person online" as a pseudo-status in a
+        // private workspace.
+        if self.has_other_collaborator() {
+            let online = self
+                .users
+                .iter()
+                .filter(|u| u.status == Presence::Online)
+                .count();
+            let noun = if self.users.iter().any(|u| u.is_agent) {
+                if online == 1 {
+                    "collaborator"
+                } else {
+                    "collaborators"
+                }
+            } else if online == 1 {
+                "person"
+            } else {
+                "people"
+            };
+            let pill_txt = format!("{online} {noun} online");
+            let (pw, _) = tr.measure(&pill_txt, 10.5, None);
+            let pill = Rect::new(
+                side.x1 - f64::from(pw) - 28.0,
+                side.y0 + 16.0,
+                side.x1 - 12.0,
+                side.y0 + 34.0,
+            );
+            fill_round(scene, tf, pill, 9.0, c.surface_white_10);
+            fill_circle(
+                scene,
+                tf,
+                Point::new(pill.x0 + 10.0, pill.center().y),
+                3.0,
+                c.semantic.success,
+            );
+            label(
+                scene,
+                tr,
+                tf,
+                &pill_txt,
+                10.5,
+                c.text_dim,
+                pill.x0 + 17.0,
+                pill.center().y - 7.0,
+            );
+        }
         hline(
             scene,
             tf,
@@ -1094,7 +1116,13 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
         let c = &theme.tokens.colors;
-        let members = self.users.len();
+        let collaborators = self.has_other_collaborator();
+        // Calls and the People roster matter after a workspace is shared. In
+        // a private workspace the unadorned conversation header is the useful
+        // resting state; invitation belongs to the workspace surface.
+        if !collaborators {
+            return h.x1;
+        }
         let call_w = 84.0;
         let mem_w = 52.0;
         let gap = 8.0;
@@ -1144,7 +1172,7 @@ impl ChatApp {
             scene,
             tr,
             tf,
-            &format!("👥 {members}"),
+            &format!("👥 {}", self.users.len()),
             12.5,
             if mem_on { c.accent[7] } else { c.text_dim },
             mem.x0 + 9.0,
@@ -1220,6 +1248,11 @@ impl ChatApp {
         theme: &Theme,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        // A narrow thread is a pushed detail view with its own Back control;
+        // do not leave a menu button floating on top of that content.
+        if self.right_mode == crate::responsive::FlapMode::Overlay && self.thread_open.is_some() {
+            return;
+        }
         let c = &theme.tokens.colors;
         let docked_open =
             self.left_flap_open() && self.left_mode == crate::responsive::FlapMode::Docked;
@@ -1407,7 +1440,11 @@ impl ChatApp {
             TextWeight::Bold,
             None,
         );
-        let sub = format!("This is the start of the {title} channel.");
+        let sub = if self.can_participate() {
+            format!("This is the start of {title}. Write the first message to begin.")
+        } else {
+            format!("There are no messages in {title} yet.")
+        };
         let (sw, _) = tr.measure(&sub, 13.0, None);
         label(
             scene,
@@ -2400,6 +2437,11 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let rect = self.composer_rect(tr);
+        if !self.can_participate() {
+            self.composer_main.set_focus(false);
+            Self::draw_read_only_composer(scene, tf, tr, theme, rect);
+            return;
+        }
         // While an inline message edit is in progress the caret lives in the
         // editor, not the composer.
         let focused = matches!(self.focus, crate::app::Focus::Main) && self.editing.is_none();
@@ -2419,6 +2461,31 @@ impl ChatApp {
         self.composer_main.apply_layout_external(inner);
         self.composer_main.set_focus(focused);
         self.composer_main.draw(scene, tf, tr, theme, presence);
+    }
+
+    /// A viewer must never be handed an editable-looking field that silently
+    /// drops a send. This keeps the permission boundary visible at the exact
+    /// point where someone would otherwise try to act.
+    fn draw_read_only_composer(
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        fill_round(scene, tf, rect, 14.0, c.surface_white_5);
+        stroke_round(scene, tf, rect, 14.0, c.border_standard, 1.0);
+        label(
+            scene,
+            tr,
+            tf,
+            "🔒 View-only access to this workspace",
+            14.0,
+            c.text_dim,
+            rect.x0 + 16.0,
+            rect.center().y - 8.0,
+        );
     }
 
     /// Draw the composer box chrome — the rounded field, the attach `+`, the
@@ -2585,6 +2652,11 @@ impl ChatApp {
             panel.x1 - 12.0,
             panel.y1 - 12.0,
         );
+        if !self.can_participate() {
+            self.composer_thread.set_focus(false);
+            Self::draw_read_only_composer(scene, tf, tr, theme, comp);
+            return;
+        }
         let focused = matches!(self.focus, crate::app::Focus::Thread) && self.editing.is_none();
         let send_enabled = !self.composer_thread.value().trim().is_empty();
         let inner = Self::draw_input_box(
@@ -2618,6 +2690,12 @@ impl ChatApp {
     ) -> Rect {
         let c = &theme.tokens.colors;
         let head = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 52.0);
+        let narrow_detail = self.right_mode == crate::responsive::FlapMode::Overlay;
+        let title_x = if narrow_detail {
+            panel.x0 + 92.0
+        } else {
+            panel.x0 + 16.0
+        };
         label(
             scene,
             tr,
@@ -2625,7 +2703,7 @@ impl ChatApp {
             "Thread",
             15.0,
             c.text_primary,
-            panel.x0 + 16.0,
+            title_x,
             panel.y0 + 12.0,
         );
         let chn = self
@@ -2639,23 +2717,33 @@ impl ChatApp {
             &chn,
             11.5,
             c.text_dim,
-            panel.x0 + 16.0,
+            title_x,
             panel.y0 + 31.0,
         );
-        let close = Rect::new(
-            panel.x1 - 40.0,
-            panel.y0 + 12.0,
-            panel.x1 - 12.0,
-            panel.y0 + 40.0,
-        );
+        let close = if narrow_detail {
+            Rect::new(
+                panel.x0 + 12.0,
+                panel.y0 + 10.0,
+                panel.x0 + 78.0,
+                panel.y0 + 42.0,
+            )
+        } else {
+            Rect::new(
+                panel.x1 - 40.0,
+                panel.y0 + 12.0,
+                panel.x1 - 12.0,
+                panel.y0 + 40.0,
+            )
+        };
         fill_round(scene, tf, close, 8.0, c.surface_white_10);
-        let (xw, xh) = tr.measure("✕", 14.0, None);
+        let close_label = if narrow_detail { "← Back" } else { "✕" };
+        let (xw, xh) = tr.measure(close_label, 13.0, None);
         text(
             scene,
             tr,
             tf,
-            "✕",
-            14.0,
+            close_label,
+            13.0,
             c.text_primary,
             close.center().x - f64::from(xw) / 2.0,
             close.center().y - f64::from(xh) / 2.0,
@@ -2858,8 +2946,9 @@ impl ChatApp {
         yy + 10.0
     }
 
-    // ---------------------------------------------------------- members roster
-    /// The workspace members roster — the other half of the right flap, shown
+    // ----------------------------------------------------------- people roster
+    /// The workspace People/Collaborators roster — the other half of the right
+    /// flap, shown
     /// when no thread is open (the "👥 N" header pill's panel). Every user in
     /// the workspace with their presence and, when connected, the voice channel
     /// they're in. Pure projection of the shared user list + voice membership;
@@ -2891,7 +2980,8 @@ impl ChatApp {
         self.draw_members_rows(scene, tf, tr, theme, panel, head_y1, &rows);
     }
 
-    /// "Members" + the workspace name (with the roster count), and the
+    /// A precise People/Collaborators label, the workspace name and roster
+    /// count, plus the
     /// close control. Returns the y-coordinate the scrollable roster starts
     /// beneath.
     #[allow(
@@ -2905,7 +2995,7 @@ impl ChatApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         panel: Rect,
-        member_count: usize,
+        people_count: usize,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
         let c = &theme.tokens.colors;
@@ -2913,7 +3003,7 @@ impl ChatApp {
             scene,
             tr,
             tf,
-            "Members",
+            self.roster_label(),
             15.0,
             c.text_primary,
             panel.x0 + 16.0,
@@ -2925,7 +3015,18 @@ impl ChatApp {
             .find(|w| w.id == self.active_ws)
             .map(|w| w.name.clone())
             .unwrap_or_default();
-        let sub = format!("{ws_name} · {member_count}");
+        let noun = if self.users.iter().any(|u| u.is_agent) {
+            if people_count == 1 {
+                "collaborator"
+            } else {
+                "collaborators"
+            }
+        } else if people_count == 1 {
+            "person"
+        } else {
+            "people"
+        };
+        let sub = format!("{people_count} {noun} · {ws_name}");
         let sub = truncate_to(tr, &sub, 11.5, panel.width() - 70.0);
         label(
             scene,
@@ -3010,6 +3111,8 @@ impl ChatApp {
             let nx = avc.x + 16.0 + 12.0;
             let display = if self.is_me(&u.id) {
                 format!("{} (you)", u.name)
+            } else if u.is_agent {
+                format!("{} (agent)", u.name)
             } else {
                 u.name.clone()
             };

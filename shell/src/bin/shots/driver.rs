@@ -449,6 +449,168 @@ impl ShellDriver {
         self.with_chrome(|_| {});
     }
 
+    /// Scenario-facing wrapper for the canonical shared-workspace fixture.
+    /// Keeping the mutation here ensures screenshots use the same
+    /// authority-checked capabilities and presence data as legacy scenes.
+    pub fn seed_shared_workspace_for_shots(&mut self) {
+        self.seed_shared_room();
+    }
+
+    /// Materialise the durable half of an invite without pretending the
+    /// recipient is already online. The membership record takes the same
+    /// authority-checked path as workspace settings; the `invited` presence
+    /// row is intentionally non-followable until a session arrives.
+    pub fn seed_invite_pending_for_shots(&mut self) {
+        use shell::shell::state::{CapOverride, Collaborator, Subject, Verb};
+
+        let handle = self.chrome_handle();
+        let owner = handle.borrow().local_user_id.clone();
+        {
+            let st = handle.borrow();
+            let mut tree = st.tree_mut();
+            tree.adopt_ownerless_workspaces(&owner);
+            let workspace = tree.active;
+            tree.grant_in_workspace(
+                workspace,
+                &owner,
+                CapOverride::membership(
+                    Subject::person("ada"),
+                    workspace.raw().to_string(),
+                    Verb::Write,
+                ),
+            );
+            if let Some(ws) = tree.active_workspace_mut()
+                && !ws.collaborators.iter().any(|person| person.id == "ada")
+            {
+                ws.collaborators
+                    .push(Collaborator::new("ada", "Ada").as_invited());
+            }
+        }
+        self.with_chrome(|state| {
+            state.overlays.collaborators = true;
+            state.bump();
+        });
+    }
+
+    /// Turn the same invited identity into live presence on Notes. This is a
+    /// separate transition because a sent invite is access, whereas an active
+    /// tab is session-only information that must not appear prematurely.
+    pub fn admit_invited_collaborator_for_shots(&mut self) -> bool {
+        let handle = self.chrome_handle();
+        let mut admitted = false;
+        {
+            let st = handle.borrow();
+            let mut tree = st.tree_mut();
+            let notes_tab = tree.active_workspace().and_then(|ws| {
+                ws.strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .find(|tab| tab.title == "Notes")
+                    .map(|tab| tab.id)
+            });
+            if let (Some(notes_tab), Some(ws)) = (notes_tab, tree.active_workspace_mut())
+                && let Some(ada) = ws
+                    .collaborators
+                    .iter_mut()
+                    .find(|person| person.id == "ada")
+            {
+                ada.invited = false;
+                ada.active_tab = Some(notes_tab);
+                admitted = true;
+            }
+        }
+        self.with_chrome(|state| {
+            state.overlays.collaborators = true;
+            state.bump();
+        });
+        admitted
+    }
+
+    /// Revert the earliest non-current entry that can produce a forward
+    /// change. The room activity pane owns the operation, so the scenario
+    /// exercises the same immutable-history recovery path as its button.
+    pub fn revert_room_activity_for_shots(&mut self) -> bool {
+        let candidates: Vec<_> = self
+            .host()
+            .room_activity()
+            .entries()
+            .iter()
+            .map(|entry| entry.id)
+            .collect();
+        let handle = self.chrome_handle();
+        for id in candidates {
+            let changed = {
+                let st = handle.borrow();
+                let mut tree = st.tree_mut();
+                self.host_mut()
+                    .room_activity_mut()
+                    .revert_to(&mut tree, &id)
+            };
+            if changed {
+                self.with_chrome(|state| {
+                    state.overlays.room_activity = false;
+                    state.overlays.collaborators = false;
+                    state.bump();
+                    state.push_notification(
+                        "Reverted a workspace change",
+                        "Written forward: the version you reverted from is still in the history.",
+                    );
+                });
+                self.host_mut().force_room_activity_closed_for_shots();
+                // Prime the notification host. It drains newly queued chrome
+                // notifications during paint, so the named recovery frame
+                // must be the frame that displays the result, not the next
+                // unrelated step in the journey.
+                let _ = self.fb.paint();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Show that presence attaches to app content. We focus the real Files
+    /// hosted window and move Ada's location to its tab; it is not a second
+    /// shell-only mock of the same avatar.
+    pub fn show_collaborator_in_files_for_shots(&mut self) -> bool {
+        let target = {
+            let state = self.chrome();
+            let tree = state.tree();
+            tree.active_workspace().and_then(|ws| {
+                ws.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .find(|tab| tab.title == "Files")
+                            .map(|tab| (strip.id, group.id, tab.id))
+                    })
+                })
+            })
+        };
+        let Some((strip, group, files_tab)) = target else {
+            return false;
+        };
+        self.host_mut()
+            .focus_window_on_strip(strip, group, files_tab);
+        self.with_chrome(|state| {
+            let mut tree = state.tree_mut();
+            if let Some(ada) = tree.active_workspace_mut().and_then(|ws| {
+                ws.collaborators
+                    .iter_mut()
+                    .find(|person| person.id == "ada")
+            }) {
+                ada.invited = false;
+                ada.active_tab = Some(files_tab);
+            }
+            drop(tree);
+            state.overlays.room_activity = false;
+            state.overlays.collaborators = true;
+            state.bump();
+        });
+        true
+    }
+
     /// Seeds the active workspace with membership and granted capabilities
     /// via `WorkspaceTree::grant_in_workspace` — the same authority-checked
     /// path the settings panel and portal use, so this is a state the
@@ -800,9 +962,41 @@ impl ShellDriver {
         let _ = self.fb.paint();
     }
 
+    /// Select Ada in the contributor controls using the history surface's
+    /// public filter API. Returns false if the seeded remote replica failed
+    /// to produce an authored change, rather than emitting a misleading PNG.
+    pub fn filter_room_activity_to_ada_for_shots(&mut self) -> bool {
+        let ada = self
+            .fb
+            .host()
+            .room_activity()
+            .contributors()
+            .iter()
+            .find(|name| name.eq_ignore_ascii_case("ada"))
+            .cloned();
+        let Some(ada) = ada else {
+            return false;
+        };
+        self.fb
+            .host_mut()
+            .room_activity_mut()
+            .set_author_filter(Some(ada));
+        self.fb.host_mut().force_room_activity_settled();
+        let _ = self.fb.paint();
+        true
+    }
+
     pub fn select_room_activity_entry(&mut self, index: usize) {
-        let len = self.fb.host().room_activity().timeline().entries().len();
-        for candidate in index..len {
+        let (start, len) = {
+            let activity = self.fb.host().room_activity();
+            let entries = activity.timeline().entries();
+            let start = activity
+                .visible_entry(index)
+                .and_then(|visible| entries.iter().position(|entry| entry.id == visible.id))
+                .unwrap_or(index);
+            (start, entries.len())
+        };
+        for candidate in start..len {
             self.fb
                 .host_mut()
                 .room_activity_mut()
@@ -1292,6 +1486,40 @@ pub fn key_press_event(key: &Key) -> WindowEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collaboration_fixture_keeps_pending_invite_out_of_live_presence() {
+        let mut d = ShellDriver::new((1600, 900));
+        d.seed_invite_pending_for_shots();
+        let invited = d
+            .chrome()
+            .tree()
+            .active_workspace()
+            .and_then(|ws| ws.collaborators.iter().find(|person| person.id == "ada"))
+            .cloned()
+            .expect("pending invitation creates Ada's durable row");
+        assert!(invited.invited);
+        assert_eq!(invited.active_tab, None);
+
+        assert!(d.admit_invited_collaborator_for_shots());
+        let live = d
+            .chrome()
+            .tree()
+            .active_workspace()
+            .and_then(|ws| ws.collaborators.iter().find(|person| person.id == "ada"))
+            .cloned()
+            .expect("acceptance retains the same identity");
+        assert!(!live.invited);
+        let notes = d.chrome().tree().active_workspace().and_then(|ws| {
+            ws.strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .find(|tab| tab.title == "Notes")
+                .map(|tab| tab.id)
+        });
+        assert_eq!(live.active_tab, notes);
+    }
 
     /// Drive Cmd+Tab through `dispatch` and verify the chrome's
     /// `overlays.overview` flag flips. Mirrors the live binary's

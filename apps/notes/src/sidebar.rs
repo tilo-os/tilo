@@ -899,7 +899,7 @@ impl Widget for NoteTreeView {
 }
 
 impl NoteTreeView {
-    /// The "PAGES" label + "+" new-page button header strip.
+    /// The "Pages" label + "+" new-page button header strip.
     fn draw_header(
         &self,
         scene: &mut Scene,
@@ -911,8 +911,8 @@ impl NoteTreeView {
         let header_text_y = self.rect.y0 + (HEADER_HEIGHT - f64::from(ROW_TEXT_SIZE)) / 2.0;
         text_renderer.draw_text(
             scene,
-            "PAGES",
-            ROW_TEXT_SIZE - 2.0,
+            "Pages",
+            ROW_TEXT_SIZE,
             tokens.colors.text_dim,
             transform * Affine::translate((self.rect.x0 + ROW_INSET_X, header_text_y)),
             Some(num::f32_of_f64(

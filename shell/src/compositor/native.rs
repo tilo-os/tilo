@@ -416,7 +416,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         // Through the tree's entry point, not `grant_as` directly, so this answers
         // with the same authority the rest of the compositor grants under.
         let granted = tree.grant_in_workspace(ws_id, &user, cap).ok_or_else(|| {
-            format!("{user} may not administer this room, so nothing was granted")
+            format!("{user} may not administer this workspace, so nothing was granted")
         })?;
         // Nothing past this point touches the tree.
         drop(tree);
@@ -446,7 +446,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         let may = ws.may_administer(&user);
         if !may {
             return Err(format!(
-                "{user} may not administer this room, so nothing was revoked"
+                "{user} may not administer this workspace, so nothing was revoked"
             ));
         }
         let removed = ws.revoke_as(&user, id);
