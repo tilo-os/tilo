@@ -191,7 +191,8 @@ impl OnboardingView {
     /// advances the exact same transition on animation frames.
     #[doc(hidden)]
     pub fn settle_motion_for_snapshot(&mut self) {
-        self.transition_started = Instant::now() - Duration::from_secs(1);
+        let now = Instant::now();
+        self.transition_started = now.checked_sub(Duration::from_secs(1)).unwrap_or(now);
     }
 
     fn build_composition(&self, theme: &Theme, panel_height: f32) -> Box<dyn Widget> {
@@ -207,6 +208,11 @@ impl OnboardingView {
             Screen::Done => self.done(theme),
         };
         let spacing = &theme.tokens.spacing;
+        let progress_value = match step {
+            1 => 1.0 / 3.0,
+            2 => 2.0 / 3.0,
+            _ => 1.0,
+        };
         let progress = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -225,7 +231,7 @@ impl OnboardingView {
                             .with_color(theme.text_dim),
                     )),
             ))
-            .push(Box::new(ProgressBar::new(step as f32 / 3.0).with_label(
+            .push(Box::new(ProgressBar::new(progress_value).with_label(
                 format!("Identity setup, step {step} of 3: {stage}"),
             )));
         let content = Column::new()
@@ -241,7 +247,7 @@ impl OnboardingView {
         )
     }
 
-    fn intro(&self, theme: &Theme) -> Box<dyn Widget> {
+    fn intro(theme: &Theme) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
         let mut list = Column::new().with_no_padding().with_gap(spacing.s3);
         for point in INTRO_POINTS {
@@ -374,6 +380,10 @@ impl OnboardingView {
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the completion card is kept together so its backup and finish states remain coherent"
+    )]
     fn done(&self, theme: &Theme) -> Box<dyn Widget> {
         if let Some(err) = &self.error {
             return Box::new(
@@ -583,6 +593,10 @@ impl Drop for OnboardingView {
 }
 
 impl Widget for OnboardingView {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered reducer owns all modal OOBE actions and secret cleanup transitions"
+    )]
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let before = self.flow.screen();
 
@@ -725,9 +739,7 @@ impl Widget for OnboardingView {
                     Ok(identity) => {
                         self.error = None;
                         self.flow.complete_connected(identity);
-                        if let Ok(mut value) = self.connect_passphrase.lock() {
-                            value.clear();
-                        }
+                        clear_secret(&self.connect_passphrase);
                     }
                     Err(error) => {
                         tracing::error!(target: "qos::onboarding", %error, "identity import failed");
@@ -911,6 +923,10 @@ impl Widget for OnboardingView {
             } else {
                 (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0)
             };
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "the eased value is clamped to 0..=1 before conversion for vello opacity"
+            )]
             let reveal = if theme.reduce_motion {
                 1.0
             } else {
