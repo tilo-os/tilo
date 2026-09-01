@@ -19,6 +19,7 @@ $installerRoot = 'C:\ProgramData\qOS\InstallerSession'
 $installerStateRoot = Join-Path $root 'installer-state'
 $packageStateRoot = Join-Path $installerStateRoot 'packages'
 $operationStateRoot = Join-Path $installerStateRoot 'operations'
+$uninstallRecordsPath = Join-Path $root 'uninstall-records.json'
 $maximumInstallerBytes = [UInt64]17179869184
 $maximumStagedBytes = [UInt64]34359738368
 $port = [int]$config.bridgePort
@@ -140,9 +141,11 @@ function Get-PublishedCatalog() {
     # but those never leave the Windows SYSTEM bridge. The host receives only
     # opaque published ids and aliases that `WindowsAppliance` validates.
     $source = Get-PublishedManifest
+    $uninstallStore = Get-UninstallRecordStore
     $published = @()
     foreach ($app in @($source.applications)) {
-        $published += @{ id = [string]$app.id; displayName = [string]$app.name; remoteAppAlias = [string]$app.id; associations = @() }
+        $canUninstall = @($uninstallStore.records | Where-Object { $_.applicationId -eq [string]$app.id -and -not [bool]$_.consumed }).Count -eq 1
+        $published += @{ id = [string]$app.id; displayName = [string]$app.name; remoteAppAlias = [string]$app.id; associations = @(); uninstallAvailable = $canUninstall }
     }
     return @{ generation = $source.generation; applications = $published }
 }
@@ -214,6 +217,15 @@ function Remove-OperationResources($operation) {
     }
 }
 
+function Reset-UninstallRecord($operation) {
+    if ([string]$operation.operationKind -ne 'uninstallation' -or -not (Test-OpaqueId ([string]$operation.applicationId)) -or -not (Test-OpaqueId ([string]$operation.uninstallerId))) { return }
+    $store = Get-UninstallRecordStore
+    $record = @($store.records | Where-Object { $_.applicationId -eq [string]$operation.applicationId -and $_.id -eq [string]$operation.uninstallerId }) | Select-Object -First 1
+    if ($null -eq $record) { return }
+    $record.consumed = $false
+    Write-AdminJson $uninstallRecordsPath @{ schemaVersion = 1; records = @($store.records | Where-Object { $_.applicationId -ne [string]$operation.applicationId }) + @($record) }
+}
+
 function Invoke-InstallerCleanup() {
     $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); $visited = 0
     foreach ($metadataPath in @(Get-ChildItem -LiteralPath $packageStateRoot -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
@@ -237,6 +249,7 @@ function Invoke-InstallerCleanup() {
             } elseif ([Int64]$operation.startedAtUnix -lt ($now - 86400)) {
                 $operation.state = 'failed'; $operation.exitCode = $null; $operation.candidates = @()
                 Write-AdminJson $operationPath.FullName $operation
+                Reset-UninstallRecord $operation
                 Remove-OperationResources $operation
             }
         } catch { }
@@ -325,6 +338,20 @@ function ConvertTo-SafeOptionalMetadata($value) {
     return $text.Substring(0, [Math]::Min(256, $text.Length))
 }
 
+function Get-SafeUninstallProjection($record) {
+    if ($null -eq $record) { return $null }
+    return @{ id = [string]$record.id; displayName = [string]$record.displayName; displayVersion = $record.displayVersion; publisher = $record.publisher }
+}
+
+function Get-UninstallRecordStore() {
+    if (-not (Test-Path -LiteralPath $uninstallRecordsPath -PathType Leaf)) {
+        return @{ schemaVersion = 1; records = @() }
+    }
+    $store = Get-Content -Raw -LiteralPath $uninstallRecordsPath | ConvertFrom-Json
+    if ([int]$store.schemaVersion -ne 1 -or $null -eq $store.records) { throw 'uninstall record store is invalid' }
+    return @{ schemaVersion = 1; records = @($store.records) }
+}
+
 function Get-UninstallMetadata([string]$candidatePath, [string]$operationId) {
     $locations = @(
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
@@ -336,9 +363,11 @@ function Get-UninstallMetadata([string]$candidatePath, [string]$operationId) {
         if ([string]::IsNullOrWhiteSpace($location) -or [string]::IsNullOrWhiteSpace($name)) { continue }
         try { $resolved = [IO.Path]::GetFullPath($location).TrimEnd('\') + '\' } catch { continue }
         if (-not $candidatePath.StartsWith($resolved, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $productCode = [string]$entry.PSChildName
+        if ($productCode -notmatch '^\{[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}\}$') { continue }
         $safeName = ConvertTo-SafeOptionalMetadata $name
         if ($null -eq $safeName) { continue }
-        return @{ id = "uninstall-$((Get-TextDigest "$operationId|$($entry.PSPath)").Substring(0, 32))"; displayName = $safeName; displayVersion = (ConvertTo-SafeOptionalMetadata $entry.DisplayVersion); publisher = (ConvertTo-SafeOptionalMetadata $entry.Publisher) }
+        return @{ id = "uninstall-$((Get-TextDigest "$operationId|$($entry.PSPath)").Substring(0, 32))"; displayName = $safeName; displayVersion = (ConvertTo-SafeOptionalMetadata $entry.DisplayVersion); publisher = (ConvertTo-SafeOptionalMetadata $entry.Publisher); productCode = $productCode.ToUpperInvariant() }
     }
     return $null
 }
@@ -410,7 +439,7 @@ function Start-InstallerOperation($request) {
     Write-AdminJson $jobPath @{ operationId = [string]$request.operationId; packagePath = $operationPayload; kind = [string]$package.kind; byteLen = [UInt64]$package.byteLen; sha256 = [string]$package.sha256 }
     $helper = Join-Path $operationDirectory 'Start-qOSInstaller.ps1'
     Copy-Item -LiteralPath (Join-Path $installerRoot 'Start-qOSInstaller.ps1') -Destination $helper
-    $operation = @{ operationId = [string]$request.operationId; packageId = [string]$request.packageId; taskName = $taskName; startedAtUnix = $now; state = 'starting'; exitCode = $null; beforeExecutableHashes = $before; candidates = $null }
+    $operation = @{ operationKind = 'installation'; operationId = [string]$request.operationId; packageId = [string]$request.packageId; taskName = $taskName; startedAtUnix = $now; state = 'starting'; exitCode = $null; beforeExecutableHashes = $before; candidates = $null }
     Write-AdminJson $operationPath $operation
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File `"$helper`" -JobPath `"$jobPath`""
     $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType InteractiveToken -RunLevel Limited
@@ -442,9 +471,10 @@ function Get-InstallationStatus([string]$operationId) {
     $path = Join-Path $operationStateRoot "$operationId.json"
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'installation operation is unknown' }
     $operation = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+    if ([string]$operation.operationKind -ne 'installation') { throw 'operation is not an installation' }
     if ([string]$operation.state -in @('completed', 'failed')) {
         $terminalCandidates = if ([string]$operation.state -eq 'completed') { @($operation.candidates) } else { @() }
-        $safeTerminal = @($terminalCandidates | ForEach-Object { @{ id = [string]$_.id; displayName = [string]$_.displayName; productName = $_.productName; publisher = $_.publisher; version = $_.version; uninstall = $_.uninstall } })
+        $safeTerminal = @($terminalCandidates | ForEach-Object { @{ id = [string]$_.id; displayName = [string]$_.displayName; productName = $_.productName; publisher = $_.publisher; version = $_.version; uninstall = (Get-SafeUninstallProjection $_.uninstall) } })
         return @{ operationId = $operationId; state = [string]$operation.state; exitCode = $operation.exitCode; candidates = $safeTerminal }
     }
     $task = Get-ScheduledTask -TaskName ([string]$operation.taskName) -ErrorAction SilentlyContinue
@@ -464,7 +494,7 @@ function Get-InstallationStatus([string]$operationId) {
     $operation.candidates = @(Get-DiscoveredCandidates $operation)
     Write-AdminJson $path $operation
     Remove-OperationResources $operation
-    $safeCandidates = @($operation.candidates | ForEach-Object { @{ id = [string]$_.id; displayName = [string]$_.displayName; productName = $_.productName; publisher = $_.publisher; version = $_.version; uninstall = $_.uninstall } })
+    $safeCandidates = @($operation.candidates | ForEach-Object { @{ id = [string]$_.id; displayName = [string]$_.displayName; productName = $_.productName; publisher = $_.publisher; version = $_.version; uninstall = (Get-SafeUninstallProjection $_.uninstall) } })
     return @{ operationId = $operationId; state = 'completed'; exitCode = $exitCode; candidates = $safeCandidates }
 }
 
@@ -494,9 +524,19 @@ function Publish-DiscoveredCandidate($request) {
     if (@($manifest.applications | Where-Object { $_.id -eq [string]$request.applicationId }).Count -ne 0) { throw 'application identity is already published' }
     $app = @{ id = [string]$request.applicationId; name = $name; path = $path; arguments = '' }
     Set-RemoteAppRegistry $app
+    $uninstallStoreBefore = Get-UninstallRecordStore
+    $uninstallStoreChanged = $false
+    if ($null -ne $candidate.uninstall) {
+        $productCode = [string]$candidate.uninstall.productCode
+        if (-not (Test-OpaqueId ([string]$candidate.uninstall.id)) -or $productCode -notmatch '^\{[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}\}$') { throw 'discovered uninstaller record is invalid' }
+        $record = @{ applicationId = [string]$request.applicationId; id = [string]$candidate.uninstall.id; displayName = [string]$candidate.uninstall.displayName; displayVersion = $candidate.uninstall.displayVersion; publisher = $candidate.uninstall.publisher; productCode = $productCode.ToUpperInvariant(); consumed = $false }
+        Write-AdminJson $uninstallRecordsPath @{ schemaVersion = 1; records = @($uninstallStoreBefore.records | Where-Object { $_.applicationId -ne [string]$request.applicationId }) + @($record) }
+        $uninstallStoreChanged = $true
+    }
     try {
         Write-AdminJson $appsPath @{ generation = ([UInt64]$manifest.generation + 1); applications = @($manifest.applications) + @($app) }
     } catch {
+        if ($uninstallStoreChanged) { Write-AdminJson $uninstallRecordsPath $uninstallStoreBefore }
         Remove-Item -LiteralPath ("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList\Applications\$($request.applicationId)") -Recurse -Force -ErrorAction SilentlyContinue
         throw
     }
@@ -513,6 +553,100 @@ function Remove-Publication($request) {
     Write-AdminJson $appsPath @{ generation = $next; applications = $remaining }
     Remove-Item -LiteralPath ("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList\Applications\$($request.applicationId)") -Recurse -Force -ErrorAction SilentlyContinue
     return @{ applicationId = [string]$request.applicationId; catalogGeneration = $next }
+}
+
+function Start-UninstallOperation($request) {
+    Invoke-InstallerCleanup
+    foreach ($id in @($request.applicationId, $request.operationId)) { if (-not (Test-OpaqueId ([string]$id) 16)) { throw 'invalid uninstall operation identity' } }
+    $operationPath = Join-Path $operationStateRoot "$($request.operationId).json"
+    if (Test-Path -LiteralPath $operationPath) { throw 'uninstall operation identity was already used' }
+    $store = Get-UninstallRecordStore
+    $record = @($store.records | Where-Object { $_.applicationId -eq [string]$request.applicationId }) | Select-Object -First 1
+    if ($null -eq $record -or [bool]$record.consumed -or [string]$record.productCode -notmatch '^\{[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}\}$') { throw 'safe discovered uninstaller is unavailable' }
+    $user = Get-ManagedInteractiveUser
+    if ($null -eq $user) { throw 'no managed interactive session exists for uninstallation' }
+    $account = New-Object Security.Principal.NTAccount($user)
+    foreach ($traversePath in @($installerRoot, (Join-Path $installerRoot 'operations'))) {
+        $traverseAcl = Get-Acl -LiteralPath $traversePath
+        $traverseRule = New-Object Security.AccessControl.FileSystemAccessRule($account, 'Traverse', 'None', 'None', 'Allow')
+        [void]$traverseAcl.AddAccessRule($traverseRule); Set-Acl -LiteralPath $traversePath -AclObject $traverseAcl
+    }
+    $operationDirectory = Join-Path (Join-Path $installerRoot 'operations') ([string]$request.operationId)
+    New-Item -ItemType Directory -Path $operationDirectory | Out-Null
+    $operationAcl = New-Object Security.AccessControl.DirectorySecurity
+    $operationAcl.SetAccessRuleProtection($true, $false)
+    foreach ($principalName in @('SYSTEM', 'BUILTIN\Administrators')) {
+        $fullRule = New-Object Security.AccessControl.FileSystemAccessRule($principalName, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+        [void]$operationAcl.AddAccessRule($fullRule)
+    }
+    $readRule = New-Object Security.AccessControl.FileSystemAccessRule($account, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+    [void]$operationAcl.AddAccessRule($readRule); Set-Acl -LiteralPath $operationDirectory -AclObject $operationAcl
+    $jobPath = Join-Path $operationDirectory 'job.json'
+    Write-AdminJson $jobPath @{ operationId = [string]$request.operationId; productCode = [string]$record.productCode }
+    $helper = Join-Path $operationDirectory 'Start-qOSUninstaller.ps1'
+    Copy-Item -LiteralPath (Join-Path $installerRoot 'Start-qOSUninstaller.ps1') -Destination $helper
+    $taskName = "qOS-Uninstall-$(([string]$request.operationId).Substring(0, 16))"
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $operation = @{ operationKind = 'uninstallation'; operationId = [string]$request.operationId; applicationId = [string]$request.applicationId; uninstallerId = [string]$record.id; taskName = $taskName; startedAtUnix = $now; state = 'starting'; exitCode = $null; catalogGeneration = $null }
+    Write-AdminJson $operationPath $operation
+    $record.consumed = $true
+    Write-AdminJson $uninstallRecordsPath @{ schemaVersion = 1; records = @($store.records | Where-Object { $_.applicationId -ne [string]$request.applicationId }) + @($record) }
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File `"$helper`" -JobPath `"$jobPath`""
+    $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType InteractiveToken -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 12) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    try {
+        Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+        Start-ScheduledTask -TaskName $taskName
+    } catch {
+        Write-AdminJson $uninstallRecordsPath $store
+        $operation.state = 'failed'; Write-AdminJson $operationPath $operation; Remove-OperationResources $operation
+        throw
+    }
+    return @{ applicationId = [string]$request.applicationId; operationId = [string]$request.operationId; endpoint = "$guestIp`:3389"; remoteAppAlias = [string]$request.operationId; launchNonce = [Guid]::NewGuid().ToString('N'); certificateSha256 = $certificateSha256; presentationBackend = 'app_focused_spice' }
+}
+
+function Complete-UninstallPublication($operation) {
+    $manifest = Get-PublishedManifest
+    $remaining = @($manifest.applications | Where-Object { $_.id -ne [string]$operation.applicationId })
+    $generation = [UInt64]$manifest.generation
+    if ($remaining.Count -ne @($manifest.applications).Count) {
+        if ($generation -eq [UInt64]::MaxValue) { throw 'publication generation is exhausted' }
+        $generation++
+        Write-AdminJson $appsPath @{ generation = $generation; applications = $remaining }
+    }
+    Remove-Item -LiteralPath ("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList\Applications\$($operation.applicationId)") -Recurse -Force -ErrorAction SilentlyContinue
+    $store = Get-UninstallRecordStore
+    Write-AdminJson $uninstallRecordsPath @{ schemaVersion = 1; records = @($store.records | Where-Object { $_.applicationId -ne [string]$operation.applicationId }) }
+    return $generation
+}
+
+function Get-UninstallationStatus([string]$operationId) {
+    Invoke-InstallerCleanup
+    if (-not (Test-OpaqueId $operationId 16)) { throw 'invalid uninstall operation identity' }
+    $path = Join-Path $operationStateRoot "$operationId.json"
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'uninstall operation is unknown' }
+    $operation = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+    if ([string]$operation.operationKind -ne 'uninstallation') { throw 'operation is not an uninstallation' }
+    if ([string]$operation.state -in @('completed', 'failed')) {
+        return @{ operationId = $operationId; state = [string]$operation.state; exitCode = $operation.exitCode; catalogGeneration = $operation.catalogGeneration }
+    }
+    $task = Get-ScheduledTask -TaskName ([string]$operation.taskName) -ErrorAction SilentlyContinue
+    if ($null -eq $task) {
+        $operation.state = 'failed'; $operation.exitCode = $null; Write-AdminJson $path $operation; Reset-UninstallRecord $operation; Remove-OperationResources $operation
+        return @{ operationId = $operationId; state = 'failed'; exitCode = $null; catalogGeneration = $null }
+    }
+    $info = Get-ScheduledTaskInfo -TaskName ([string]$operation.taskName)
+    if ([string]$task.State -eq 'Running') { return @{ operationId = $operationId; state = 'running'; exitCode = $null; catalogGeneration = $null } }
+    if ($info.LastRunTime.Year -lt 2000) { return @{ operationId = $operationId; state = 'starting'; exitCode = $null; catalogGeneration = $null } }
+    $exitCode = [UInt32]$info.LastTaskResult
+    if ($exitCode -notin @([UInt32]0, [UInt32]3010)) {
+        $operation.state = 'failed'; $operation.exitCode = $exitCode; Write-AdminJson $path $operation; Reset-UninstallRecord $operation; Remove-OperationResources $operation
+        return @{ operationId = $operationId; state = 'failed'; exitCode = $exitCode; catalogGeneration = $null }
+    }
+    $operation.catalogGeneration = (Complete-UninstallPublication $operation)
+    $operation.state = 'completed'; $operation.exitCode = $exitCode
+    Write-AdminJson $path $operation; Remove-OperationResources $operation
+    return @{ operationId = $operationId; state = 'completed'; exitCode = $exitCode; catalogGeneration = [UInt64]$operation.catalogGeneration }
 }
 
 # Generate a VM-local TLS identity once. The certificate has no host trust
@@ -546,6 +680,10 @@ while ($listener.IsListening) {
             Write-Json $context (Get-InstallationStatus $Matches[1])
             continue
         }
+        if ($context.Request.HttpMethod -eq 'GET' -and $requestPath -match '^/v1/uninstallations/([A-Za-z0-9._-]{16,128})$') {
+            Write-Json $context (Get-UninstallationStatus $Matches[1])
+            continue
+        }
         switch ("$($context.Request.HttpMethod) $($context.Request.Url.AbsolutePath)") {
             'GET /v1/health' {
                 $windows = Get-CimInstance -ClassName SoftwareLicensingProduct | Where-Object { $_.ApplicationID -eq '55c92734-d682-4d71-983e-d6ec3f16059f' -and $_.PartialProductKey } | Select-Object -First 1
@@ -569,6 +707,10 @@ while ($listener.IsListening) {
             }
             'POST /v1/publications/remove' {
                 Write-Json $context (Remove-Publication ($body | ConvertFrom-Json))
+                break
+            }
+            'POST /v1/uninstallations' {
+                Write-Json $context (Start-UninstallOperation ($body | ConvertFrom-Json))
                 break
             }
             'POST /v1/launch' {
