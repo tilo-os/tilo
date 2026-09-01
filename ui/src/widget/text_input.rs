@@ -32,6 +32,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::BlendMode;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
+use zeroize::Zeroize;
 
 /// `MenuItem` callbacks are `Arc<dyn Fn>` and can't mutate the widget, so
 /// clicks dispatch through this parallel list by `item_at` index instead.
@@ -752,6 +753,9 @@ impl TextInput {
     pub fn set_text(&mut self, s: &str) {
         if self.text == s {
             return;
+        }
+        if self.secret {
+            self.text.zeroize();
         }
         self.text = s.to_string();
         self.selection_anchor = None;
@@ -3202,13 +3206,22 @@ impl TextInput {
     }
 }
 
+impl Drop for TextInput {
+    fn drop(&mut self) {
+        if self.secret {
+            self.text.zeroize();
+            self.preedit.zeroize();
+        }
+    }
+}
+
 impl Widget for TextInput {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if self.dirty
             && let Some(buffer) = &self.external_buffer
             && let Ok(mut value) = buffer.lock()
         {
-            value.clear();
+            value.zeroize();
             value.push_str(&self.text);
         }
         // Directly-bound Text wins over the string-path mode entirely.

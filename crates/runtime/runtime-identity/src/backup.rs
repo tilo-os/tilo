@@ -30,9 +30,11 @@ const AEAD_TAG_LEN: usize = 16;
 const HEADER_LEN: usize = MAGIC.len() + 1 + 4 + 4 + 4 + SALT_LEN + NONCE_LEN;
 const MAX_BACKUP_BYTES: u64 = MAX_RECORD_BYTES + HEADER_LEN as u64 + AEAD_TAG_LEN as u64;
 
-// Argon2id's parameters are deliberately encoded in every envelope, then
-// range-checked on read.  They are modest enough for first-login hardware yet
-// materially resist an offline attack on a lost removable drive.
+// Immutable format-v1 Argon2id profile. These constants must never be raised
+// in place: a stronger future profile gets a new format version so every v1
+// backup remains readable. Parameters are encoded and authenticated too, but
+// exact matching prevents hostile envelopes from selecting a denial-of-service
+// workload.
 const ARGON_MEMORY_KIB: u32 = 19 * 1024;
 const ARGON_ITERATIONS: u32 = 2;
 const ARGON_LANES: u32 = 1;
@@ -134,6 +136,27 @@ pub fn import_portable_backup(
         identity_dir.as_ref(),
         id,
         None,
+        None,
+    )
+}
+
+/// Restore only when the authenticated envelope contains `expected_key`.
+/// Trusted registry code uses this after deriving a stable local id from a
+/// prior verification, closing the replace-between-verify-and-import race.
+pub fn import_portable_backup_matching(
+    backup_path: impl AsRef<Path>,
+    passphrase: &[u8],
+    identity_dir: impl AsRef<Path>,
+    id: &str,
+    expected_key: [u8; 32],
+) -> io::Result<PathBuf> {
+    import_portable_backup_inner(
+        backup_path.as_ref(),
+        passphrase,
+        identity_dir.as_ref(),
+        id,
+        Some(expected_key),
+        None,
     )
 }
 
@@ -161,6 +184,7 @@ pub fn import_portable_backup_with_provider(
         passphrase,
         identity_dir.as_ref(),
         id,
+        None,
         Some(provider),
     )
 }
@@ -170,6 +194,7 @@ fn import_portable_backup_inner(
     passphrase: &[u8],
     identity_dir: &Path,
     id: &str,
+    expected_key: Option<[u8; 32]>,
     provider: Option<&dyn super::SecretProvider>,
 ) -> io::Result<PathBuf> {
     let bytes = read_backup_bytes(backup_path)?;
@@ -179,6 +204,12 @@ fn import_portable_backup_inner(
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "threshold identities need the multi-device recovery ceremony",
+        ));
+    }
+    if expected_key.is_some_and(|expected| identity.group_public_key() != expected) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "portable backup identity changed after verification",
         ));
     }
     match provider {
@@ -228,9 +259,12 @@ fn portable_record(path: &Path) -> io::Result<(Zeroizing<Vec<u8>>, [u8; 32])> {
             let bytes = super::read_record_bytes(path)?;
             let identity = super::load_from_bytes(&bytes).map_err(not_available_as_io)?;
             if !identity.is_single_device() {
+                record.threshold_identity.secret_bytes.zeroize();
                 return Err(threshold_backup_error());
             }
-            return Ok((Zeroizing::new(bytes), identity.group_public_key()));
+            let group_public_key = identity.group_public_key();
+            record.threshold_identity.secret_bytes.zeroize();
+            return Ok((Zeroizing::new(bytes), group_public_key));
         }
         2 => {
             let reference = record.secret_ref.as_ref().ok_or_else(|| {
@@ -737,6 +771,33 @@ mod tests {
         assert!(
             import_portable_backup(&backup, b"wrong passphrase", source.path(), "wrong").is_err()
         );
+    }
+
+    #[test]
+    fn matching_import_rejects_a_backup_replaced_after_verification() {
+        let source = tempfile::tempdir().expect("source");
+        let first = secured_identity(source.path(), "first", 75);
+        let second = secured_identity(source.path(), "second", 76);
+        let backup_dir = tempfile::tempdir().expect("backups");
+        let first_backup = backup_dir.path().join("first.backup");
+        let second_backup = backup_dir.path().join("second.backup");
+        let passphrase = b"correct horse battery staple";
+        let expected = export_portable_backup(&first, &first_backup, passphrase)
+            .expect("first export")
+            .group_public_key;
+        export_portable_backup(&second, &second_backup, passphrase).expect("second export");
+
+        let restored = tempfile::tempdir().expect("restore");
+        let error = import_portable_backup_matching(
+            &second_backup,
+            passphrase,
+            restored.path(),
+            "restored",
+            expected,
+        )
+        .expect_err("a different authenticated identity must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!restored.path().join("restored.json").exists());
     }
 
     #[test]

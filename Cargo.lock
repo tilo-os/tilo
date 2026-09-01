@@ -13148,6 +13148,7 @@ dependencies = [
  "winit",
  "word-processor",
  "zbus 4.4.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -15448,6 +15449,7 @@ dependencies = [
  "wgpu",
  "winit",
  "zbus 4.4.0",
+ "zeroize",
 ]
 
 [[package]]
