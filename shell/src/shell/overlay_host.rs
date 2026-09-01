@@ -107,6 +107,9 @@ fn workspace_settings_composer_hit(outcome: &WorkspaceSettingsOutcome) -> Option
 /// Side-effect dispatcher for a peer-sync request (`/invite`, `/connect`),
 /// bridging the transport-agnostic widget layer to `ShellNetwork`.
 type PeerSyncBridge = std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>>;
+/// Session-local Follow dispatcher into the collaboration broker. The room
+/// scopes the command; the optional participant id means follow/stop.
+type FollowBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<String>)>;
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -320,6 +323,9 @@ pub struct ShellOverlayHost {
     /// Peer whose live tab focus this session mirrors. Local-only and
     /// ephemeral: follow is a viewing mode, never shared workspace state.
     followed_peer: Option<String>,
+    /// Carries Follow into each local app so its existing view-presence
+    /// binding moves scroll and view mode, not only the shell's active tab.
+    follow_bridge: Option<FollowBridge>,
     /// Persistent follow-mode banner painted while following.
     follow_chip_rect: Rect,
     /// Explicit stop target within [`Self::follow_chip_rect`]. The rest of
@@ -930,6 +936,7 @@ impl ShellOverlayHost {
             collaborators_overlay: CollaboratorsOverlay::default(),
             projection_overlay: ProjectionOverlay::default(),
             followed_peer: None,
+            follow_bridge: None,
             follow_chip_rect: Rect::ZERO,
             follow_stop_rect: Rect::ZERO,
         }
@@ -1193,6 +1200,12 @@ impl ShellOverlayHost {
     /// `FrameBuilder` before it has a network handle to bridge to.
     pub fn set_peer_sync_bridge(&mut self, bridge: PeerSyncBridge) {
         self.peer_sync_bridge = Some(bridge);
+    }
+
+    /// Install the session-local bridge that binds application viewports to
+    /// the participant selected in the People popover.
+    pub fn set_follow_bridge(&mut self, bridge: FollowBridge) {
+        self.follow_bridge = Some(bridge);
     }
 
     /// Run one peer-sync request through the installed bridge.
@@ -2794,6 +2807,46 @@ impl ShellOverlayHost {
             return false;
         };
         self.focus_window_on_strip(strip, group, tab)
+    }
+
+    /// Change Follow once, then notify every local app in the room using the
+    /// participant id its presence stream actually carries (`peer@<handle>`).
+    /// Shell focus keeps using the durable roster id, so names and capability
+    /// rows remain stable while sessions reconnect.
+    fn set_followed_peer(&mut self, peer_id: Option<String>) {
+        if self.followed_peer == peer_id {
+            return;
+        }
+        self.followed_peer = peer_id;
+        let command = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            let (room, target) = {
+                let tree = state.tree();
+                let workspace = tree.active_workspace()?;
+                let target = self.followed_peer.as_deref().map(|id| {
+                    workspace
+                        .collaborators
+                        .iter()
+                        .find(|participant| participant.id == id)
+                        .and_then(|participant| participant.session)
+                        .map_or_else(|| id.to_string(), |session| format!("peer@{session}"))
+                });
+                let room = workspace.room;
+                drop(tree);
+                (room, target)
+            };
+            drop(state);
+            Some((room, target))
+        });
+        if let (Some(bridge), Some((room, target))) = (self.follow_bridge.as_ref(), command) {
+            bridge(room, target);
+        }
+        if self.followed_peer.is_some() {
+            self.reconcile_followed_peer();
+        } else {
+            self.follow_chip_rect = Rect::ZERO;
+            self.follow_stop_rect = Rect::ZERO;
+        }
     }
 
     fn followed_roster_row(&self) -> Option<RosterRow> {
@@ -5657,9 +5710,7 @@ impl ShellOverlayHost {
 
     fn handle_workspace_navigation_click(&mut self, p: Point) -> bool {
         if !self.cursor_over_open_overlay(p) && self.follow_stop_rect.contains(p) {
-            self.followed_peer = None;
-            self.follow_chip_rect = Rect::ZERO;
-            self.follow_stop_rect = Rect::ZERO;
+            self.set_followed_peer(None);
             return true;
         }
         // Following is a viewing mode, not a lock. The first deliberate
@@ -5669,9 +5720,7 @@ impl ShellOverlayHost {
             && !self.cursor_over_open_overlay(p)
             && !self.follow_chip_rect.contains(p)
         {
-            self.followed_peer = None;
-            self.follow_chip_rect = Rect::ZERO;
-            self.follow_stop_rect = Rect::ZERO;
+            self.set_followed_peer(None);
         }
         // Gated on no overlay owning the pointer, so a click
         // under an open panel goes to the panel.
@@ -5748,10 +5797,9 @@ impl ShellOverlayHost {
             });
             if let Some(target) = target {
                 if self.followed_peer.as_deref() == Some(target.id.as_str()) {
-                    self.followed_peer = None;
+                    self.set_followed_peer(None);
                 } else {
-                    self.followed_peer = Some(target.id);
-                    self.reconcile_followed_peer();
+                    self.set_followed_peer(Some(target.id));
                 }
             }
             *handled = true;
@@ -6201,23 +6249,18 @@ impl ShellOverlayHost {
     }
 
     fn copy_workspace_invite(&mut self) {
-        let link = self
-            .chrome
-            .as_ref()
-            .and_then(|chrome| {
-                chrome
-                    .borrow()
-                    .tree()
-                    .active_workspace()
-                    .map(crate::shell::workspace_settings::invite_link)
-            })
-            .unwrap_or_default();
-        if link.is_empty() {
+        if !self.may_invite_here() {
             return;
         }
-        ui::text_selection::clipboard_copy(&link);
-        self.workspace_settings_overlay
-            .mark_invite_copied(Instant::now());
+        let request = PeerSyncRequest::IssueInvite;
+        let result = self.peer_sync_call(request.clone());
+        let copied = result.is_ok();
+        self.peer_sync_overlay
+            .finish_request(&request, result, true);
+        if copied {
+            self.workspace_settings_overlay
+                .mark_invite_copied(Instant::now());
+        }
         if let Some(chrome) = self.chrome.clone() {
             chrome.borrow_mut().bump();
         }
@@ -7191,6 +7234,23 @@ impl Widget for ShellOverlayHost {
             taffy,
         ) {
             return;
+        }
+        if self.followed_peer.is_some()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                } | WindowEvent::MouseWheel { .. }
+            )
+        {
+            // The event still reaches the app below. Releasing first means
+            // the keystroke/scroll affects the local view immediately rather
+            // than being overwritten by the followed peer's next frame.
+            self.set_followed_peer(None);
         }
         self.dispatch_pointer_and_content_event(
             event,
@@ -9089,13 +9149,11 @@ impl ShellOverlayHost {
         theme: &Theme,
     ) {
         let Some(row) = self.followed_roster_row() else {
-            self.followed_peer = None;
-            self.follow_chip_rect = Rect::ZERO;
-            self.follow_stop_rect = Rect::ZERO;
+            self.set_followed_peer(None);
             return;
         };
         let label = format!("Following {}", row.label);
-        let detail = "Your view moves with theirs";
+        let detail = "Interact or press Stop to take control";
         let width = 344.0_f64.min((self.rect.width() - 24.0).max(220.0));
         let center_x = self.rect.center().x;
         let y0 = self.rect.y0 + 54.0;
