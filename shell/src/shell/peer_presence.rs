@@ -1456,6 +1456,7 @@ mod two_sessions {
                     since: serde_json::to_vec(&Vec::<automerge::ChangeHash>::new())
                         .expect("empty heads serialise"),
                     room: room.to_string(),
+                    invite_id: None,
                 },
             );
         }
