@@ -20,10 +20,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = 'C:\ProgramData\qOS\RemoteApp'
+$focusRoot = 'C:\ProgramData\qOS\FocusedApp'
 $bridgeScript = Join-Path $BootstrapRoot 'Start-qOSGuestBridge.ps1'
+$focusedScript = Join-Path $BootstrapRoot 'Start-qOSFocusedApp.ps1'
 $secretPath = Join-Path $BootstrapRoot 'qos-bridge.secret'
 $configPath = Join-Path $BootstrapRoot 'qos-bridge.json'
-foreach ($path in @($bridgeScript, $secretPath, $configPath, $ApplicationsPath)) {
+foreach ($path in @($bridgeScript, $focusedScript, $secretPath, $configPath, $ApplicationsPath)) {
     if (-not (Test-Path $path -PathType Leaf)) { throw "Missing required qOS guest payload: $path" }
 }
 
@@ -53,6 +55,14 @@ foreach ($app in $apps.applications) {
 # RemoteApp account, never receive read access to this long-lived bootstrap
 # key. The host copy is root-only in /var/lib/qos/windows/bridge.
 New-Item -ItemType Directory -Force -Path $root | Out-Null
+$focusAcl = New-Object Security.AccessControl.DirectorySecurity
+$focusAcl.SetAccessRuleProtection($true, $false)
+foreach ($principal in @('SYSTEM', 'BUILTIN\Administrators')) {
+    $rule = New-Object Security.AccessControl.FileSystemAccessRule($principal, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+    [void]$focusAcl.AddAccessRule($rule)
+}
+New-Item -ItemType Directory -Force -Path $focusRoot | Out-Null
+Set-Acl -LiteralPath $focusRoot -AclObject $focusAcl
 $acl = New-Object Security.AccessControl.DirectorySecurity
 $acl.SetAccessRuleProtection($true, $false)
 foreach ($principal in @('SYSTEM', 'BUILTIN\Administrators')) {
@@ -61,6 +71,7 @@ foreach ($principal in @('SYSTEM', 'BUILTIN\Administrators')) {
 }
 Set-Acl -LiteralPath $root -AclObject $acl
 Copy-Item -LiteralPath $bridgeScript -Destination (Join-Path $root 'Start-qOSGuestBridge.ps1') -Force
+Copy-Item -LiteralPath $focusedScript -Destination (Join-Path $focusRoot 'Start-qOSFocusedApp.ps1') -Force
 Copy-Item -LiteralPath $secretPath -Destination (Join-Path $root 'bridge.secret') -Force
 Copy-Item -LiteralPath $configPath -Destination (Join-Path $root 'bridge.json') -Force
 Copy-Item -LiteralPath $ApplicationsPath -Destination (Join-Path $root 'published-applications.json') -Force

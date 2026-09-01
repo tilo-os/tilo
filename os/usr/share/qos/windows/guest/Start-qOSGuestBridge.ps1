@@ -11,6 +11,7 @@ the bootstrap HMAC is an enrollment channel, not a replacement for TLS.
 param()
 $ErrorActionPreference = 'Stop'
 $root = 'C:\ProgramData\qOS\RemoteApp'
+$focusRoot = 'C:\ProgramData\qOS\FocusedApp'
 $config = Get-Content -Raw -LiteralPath (Join-Path $root 'bridge.json') | ConvertFrom-Json
 $secret = [IO.File]::ReadAllBytes((Join-Path $root 'bridge.secret'))
 $appsPath = Join-Path $root 'published-applications.json'
@@ -48,6 +49,64 @@ function Require-RequestAuth($context, [string]$body) {
     }
 }
 
+function Get-ManagedInteractiveUser() {
+    # Win32_ComputerSystem.UserName is populated only for the active console
+    # session. RDP-only/service sessions do not satisfy the SPICE contract;
+    # qOS must report that honestly instead of attaching an empty desktop.
+    $user = [string](Get-CimInstance -ClassName Win32_ComputerSystem).UserName
+    if ([string]::IsNullOrWhiteSpace($user) -or $user -match '[\x00-\x1f\x7f]') { return $null }
+    if ($user -in @('SYSTEM', 'NT AUTHORITY\SYSTEM', 'LOCAL SERVICE', 'NETWORK SERVICE')) { return $null }
+    return $user
+}
+
+function Resolve-ManagedExecutable($app) {
+    $path = [IO.Path]::GetFullPath([string]$app.path)
+    if ($path -notmatch '^(C:\\Program Files( \(x86\))?\\|C:\\Windows\\)') {
+        throw 'application is outside a managed Windows location'
+    }
+    if (-not (Test-Path $path -PathType Leaf)) { throw 'published application executable is missing' }
+    return $path
+}
+
+function Start-FocusedApplication($app) {
+    $user = Get-ManagedInteractiveUser
+    if ($null -eq $user) { throw 'no managed interactive session exists for the SPICE fallback' }
+    $path = Resolve-ManagedExecutable $app
+    $jobs = Join-Path $focusRoot 'jobs'
+    New-Item -ItemType Directory -Force -Path $jobs | Out-Null
+    # The install payload is SYSTEM/admin-only. Grant only this active user
+    # read/execute access to the separate focused-app directory and its job;
+    # the bridge secret and application manifest remain unreadable.
+    $focusAcl = Get-Acl -LiteralPath $focusRoot
+    $account = New-Object System.Security.Principal.NTAccount($user)
+    $focusRule = New-Object System.Security.AccessControl.FileSystemAccessRule($account, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+    [void]$focusAcl.AddAccessRule($focusRule)
+    Set-Acl -LiteralPath $focusRoot -AclObject $focusAcl
+    $id = [Guid]::NewGuid().ToString('N')
+    $taskName = "qOS-Focus-$($id.Substring(0, 16))"
+    $jobPath = Join-Path $jobs "$id.json"
+    $job = @{ executable = $path; arguments = [string]$app.arguments; taskName = $taskName }
+    $job | ConvertTo-Json -Compress | Set-Content -LiteralPath $jobPath -Encoding UTF8
+    $acl = Get-Acl -LiteralPath $jobPath
+    $account = New-Object System.Security.Principal.NTAccount($user)
+    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($account, 'Read', 'None', 'Allow')
+    [void]$acl.AddAccessRule($rule)
+    Set-Acl -LiteralPath $jobPath -AclObject $acl
+    $helper = Join-Path $focusRoot 'Start-qOSFocusedApp.ps1'
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File `"$helper`" -JobPath `"$jobPath`""
+    $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType InteractiveToken -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 12)
+    try {
+        Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+        Start-ScheduledTask -TaskName $taskName
+    } catch {
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $jobPath -Force -ErrorAction SilentlyContinue
+        throw
+    }
+    return @{ user = $user; taskName = $taskName; applicationId = $app.id }
+}
+
 # Generate a VM-local TLS identity once. The certificate has no host trust
 # anchor; qOS learns and pins its SHA-256 thumbprint through authenticated
 # enrollment, then refuses certificate changes until explicit repair.
@@ -74,7 +133,8 @@ while ($listener.IsListening) {
                 $license = if ($null -ne $windows -and $windows.LicenseStatus -eq 1) { 'licensed' } else { 'unlicensed' }
                 $os = Get-CimInstance -ClassName Win32_OperatingSystem
                 $presentation = if ($os.ProductType -eq 3) { 'native_rail_rds' } else { 'native_rail_client_best_effort' }
-                Write-Json $context @{ protocolMajor = 1; certificateSha256 = $certificateSha256; license = $license; catalogGeneration = 1; presentationBackend = $presentation }; break
+                $interactiveUser = Get-ManagedInteractiveUser
+                Write-Json $context @{ protocolMajor = 1; certificateSha256 = $certificateSha256; license = $license; catalogGeneration = 1; presentationBackend = $presentation; appFocusedSpiceAvailable = ($null -ne $interactiveUser); appFocusedSpiceUnavailableReason = if ($null -eq $interactiveUser) { 'no managed interactive session' } else { $null } }; break
             }
             'GET /v1/catalog' { Write-Json $context (Get-Content -Raw -LiteralPath $appsPath | ConvertFrom-Json); break }
             'POST /v1/launch' {
@@ -82,6 +142,9 @@ while ($listener.IsListening) {
                 if ($request.applicationId -notmatch '^[A-Za-z0-9._-]{1,128}$' -or $request.launchNonce -notmatch '^[A-Za-z0-9-]{16,128}$') { throw 'invalid launch request' }
                 $app = (Get-Content -Raw -LiteralPath $appsPath | ConvertFrom-Json).applications | Where-Object { $_.id -eq $request.applicationId } | Select-Object -First 1
                 if ($null -eq $app) { throw 'application is not published' }
+                $requestedPresentation = [string]$request.presentationBackend
+                if ([string]::IsNullOrWhiteSpace($requestedPresentation)) { $requestedPresentation = 'native_rail' }
+                if ($requestedPresentation -notin @('native_rail', 'native_rail_rds', 'native_rail_client_best_effort', 'app_focused_spice')) { throw 'unsupported presentation backend' }
                 # A unique short-lived account prevents password reuse between
                 # launches. RDS RemoteApp, not a hidden desktop, authorises the
                 # application surface. A scheduled deletion bounds a failed
@@ -111,7 +174,9 @@ while ($listener.IsListening) {
                 Register-ScheduledTask -TaskName $taskName -Action $cleanupAction -Trigger $cleanupTrigger -Principal $cleanupPrincipal -Force | Out-Null
                 $os = Get-CimInstance -ClassName Win32_OperatingSystem
                 $presentation = if ($os.ProductType -eq 3) { 'native_rail_rds' } else { 'native_rail_client_best_effort' }
-                Write-Json $context @{ endpoint = "$guestIp`:3389"; bridgePort = $port; username = $name; password = $password; remoteAppAlias = $app.id; launchNonce = $request.launchNonce; certificateSha256 = $certificateSha256; presentationBackend = $presentation }
+                $focus = $null
+                if ($requestedPresentation -eq 'app_focused_spice') { $focus = Start-FocusedApplication $app }
+                Write-Json $context @{ endpoint = "$guestIp`:3389"; bridgePort = $port; username = $name; password = $password; remoteAppAlias = $app.id; launchNonce = $request.launchNonce; certificateSha256 = $certificateSha256; presentationBackend = if ($requestedPresentation -eq 'app_focused_spice') { 'app_focused_spice' } else { $presentation }; focus = $focus }
                 break
             }
             default { Write-Json $context @{ error = 'not found' } 404; break }

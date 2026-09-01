@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::{Catalog, CatalogError, LicenseState};
+use crate::{ApplicationPresentation, Catalog, CatalogError, LicenseState};
 
 /// A secret whose formatter never exposes its contents and whose allocation is
 /// cleared before release. It is deliberately not `Clone`.
@@ -64,6 +64,10 @@ pub struct GuestLaunch {
     pub password: Secret,
     pub remote_app_alias: String,
     pub launch_nonce: String,
+    /// Presentation selected by the authenticated guest capability probe.
+    /// Native RAIL and the whole-surface SPICE fallback are deliberately
+    /// explicit so a failed RAIL connection cannot become a desktop silently.
+    pub presentation: ApplicationPresentation,
 }
 
 /// Authenticated bridge to the qOS guest service. Implementations are expected

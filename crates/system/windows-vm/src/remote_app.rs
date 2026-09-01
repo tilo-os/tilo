@@ -3,7 +3,10 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use crate::{BrokeredLaunch, CommandError, CommandRequest, CommandRunner, GuestLaunch};
+use crate::{
+    ApplicationPresentation, BrokeredLaunch, CommandError, CommandRequest, CommandRunner,
+    GuestLaunch,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RemoteAppProcess {
@@ -49,6 +52,9 @@ impl<R> FreeRdpLauncher<R> {
         guest: &GuestLaunch,
         brokered: &BrokeredLaunch,
     ) -> Result<CommandRequest, RemoteAppError> {
+        if guest.presentation != ApplicationPresentation::NativeRail {
+            return Err(RemoteAppError::PresentationMismatch);
+        }
         validate_alias(&guest.remote_app_alias)?;
         validate_username(&guest.endpoint.username)?;
         validate_fingerprint(&guest.endpoint.certificate_sha256)?;
@@ -150,6 +156,9 @@ impl<R> AppFocusedSpiceLauncher<R> {
         guest: &GuestLaunch,
         brokered: &BrokeredLaunch,
     ) -> Result<CommandRequest, RemoteAppError> {
+        if guest.presentation != ApplicationPresentation::AppFocusedSpice {
+            return Err(RemoteAppError::PresentationMismatch);
+        }
         validate_alias(&guest.remote_app_alias)?;
         brokered.validate()?;
         // SPICE is deliberately attached through libvirt rather than a guest
@@ -238,6 +247,8 @@ pub enum RemoteAppError {
     Spice { code: Option<i32>, stderr: String },
     #[error("SPICE fallback cannot carry qOS capability redirects; use a RAIL surface")]
     SpiceCapabilityRequiresRail,
+    #[error("guest selected a different presentation backend than this launcher")]
+    PresentationMismatch,
     #[error("guest returned an invalid RemoteApp alias")]
     InvalidAlias,
     #[error("guest returned an invalid RDP username")]
@@ -289,6 +300,7 @@ mod tests {
             password: Secret::new(b"one-time-password".to_vec()),
             remote_app_alias: "qos-word".to_string(),
             launch_nonce: "nonce".to_string(),
+            presentation: ApplicationPresentation::NativeRail,
         }
     }
 
@@ -354,8 +366,10 @@ mod tests {
     #[test]
     fn spice_fallback_attaches_only_to_the_singleton_domain() {
         let launcher = AppFocusedSpiceLauncher::new(Runner::default());
+        let mut guest = guest();
+        guest.presentation = ApplicationPresentation::AppFocusedSpice;
         let request = launcher
-            .command(&guest(), &BrokeredLaunch::deny_all("lease"))
+            .command(&guest, &BrokeredLaunch::deny_all("lease"))
             .unwrap();
         assert_eq!(request.program, OsString::from("virt-viewer"));
         let args = request
@@ -371,6 +385,8 @@ mod tests {
     #[test]
     fn spice_fallback_does_not_silently_redirect_files_or_devices() {
         let launcher = AppFocusedSpiceLauncher::new(Runner::default());
+        let mut guest = guest();
+        guest.presentation = ApplicationPresentation::AppFocusedSpice;
         let brokered = BrokeredLaunch {
             lease_id: "lease".to_string(),
             network: false,
@@ -384,7 +400,7 @@ mod tests {
             }],
         };
         assert!(matches!(
-            launcher.command(&guest(), &brokered),
+            launcher.command(&guest, &brokered),
             Err(RemoteAppError::SpiceCapabilityRequiresRail)
         ));
     }
