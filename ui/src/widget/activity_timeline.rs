@@ -2907,6 +2907,7 @@ mod tests {
             text_delta: Some((1, 0)),
             diff_payload: None,
             redaction: None,
+            context: None,
         }
     }
 
@@ -3455,6 +3456,7 @@ mod group_tests {
             text_delta: Some((usize::from(id).saturating_add(1), 0)),
             diff_payload: None,
             redaction: None,
+            context: None,
         }
     }
 

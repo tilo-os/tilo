@@ -21,6 +21,9 @@ pub struct VersionMeta {
     /// [`commit_stamped`] for a real one; consumers must render an unstamped peer's change as "time unknown" rather than as 1970.
     pub time_ms: i64,
     pub change_hash: String,
+    /// Optional Automerge commit message. qOS action dispatch uses this for
+    /// durable semantic provenance; ordinary app commits may use it freely.
+    pub message: Option<String>,
 }
 
 /// Commit the open transaction with a wall-clock timestamp attached. `AutoCommit::commit()`
@@ -52,6 +55,7 @@ pub fn versions(doc: &mut AutoCommit) -> Vec<VersionMeta> {
             actor_hex: ch.actor_id().to_hex_string(),
             time_ms: ch.timestamp().saturating_mul(1000),
             change_hash: ch.hash().to_string(),
+            message: ch.message().cloned(),
         })
         .collect()
 }
