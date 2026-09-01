@@ -6,7 +6,14 @@ expect_devel=0
 for package in "$@"; do
     [[ $(basename "$package") != qos-session-devel-* ]] || expect_devel=1
 done
-pacman -Syu --noconfirm file
+# The ARM CI userspace carries host-seeded sync databases because pacman 7's
+# atomic database refresh disappears under qemu/PRoot. They are still current
+# from the build-dependency phase, so upgrade/install without replacing them.
+if [[ $(uname -m) == aarch64 ]]; then
+    pacman -Su --noconfirm file
+else
+    pacman -Syu --noconfirm file
+fi
 pacman -U --noconfirm "$@"
 "$repo_root/dist/verify-payload.sh" /
 pacman -Q qos-session >/dev/null
