@@ -1,3 +1,4 @@
+use ui::tokens::TextRole;
 use ui::widget::{Column, Text, TextInput, Widget};
 
 /// A durable document with two synchronized views and built-in undo/redo.
@@ -19,17 +20,23 @@ pub fn app_root() -> Box<dyn Widget> {
 
     Box::new(
         Column::new()
-            .push(Box::new(Text::new("document-heading").with_size(28.0)))
-            .push(Box::new(Text::new("document-title-label")))
+            .push(Box::new(
+                Text::new("document-heading").with_role(TextRole::Title),
+            ))
+            .push(Box::new(
+                Text::new("document-title-label").with_role(TextRole::Label),
+            ))
             .push(Box::new(title))
-            .push(Box::new(Text::new("document-body-label")))
+            .push(Box::new(
+                Text::new("document-body-label").with_role(TextRole::Label),
+            ))
             .push(Box::new(body))
             .push(Box::new(
-                Text::new("document-preview-heading").with_size(20.0),
+                Text::new("document-preview-heading").with_role(TextRole::Heading),
             ))
             .push(Box::new(
                 Text::from_document_string("document-title")
-                    .with_size(18.0)
+                    .with_role(TextRole::Heading)
                     .with_id("document-title-preview"),
             ))
             .push(Box::new(

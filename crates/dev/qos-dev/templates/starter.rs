@@ -1,4 +1,5 @@
 use ui::LocalState;
+use ui::tokens::TextRole;
 use ui::widget::{Column, Text, TextInput, Widget};
 
 /// A complete local input → typed state → retained output loop.
@@ -18,8 +19,12 @@ pub fn app_root() -> Box<dyn Widget> {
 
     Box::new(
         Column::new()
-            .push(Box::new(Text::new("starter-title").with_size(28.0)))
-            .push(Box::new(Text::new("starter-name-label")))
+            .push(Box::new(
+                Text::new("starter-title").with_role(TextRole::Title),
+            ))
+            .push(Box::new(
+                Text::new("starter-name-label").with_role(TextRole::Label),
+            ))
             .push(Box::new(input))
             .push(Box::new(greeting)),
     )
