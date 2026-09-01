@@ -6,6 +6,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -24,6 +26,8 @@ use crate::{
 const MANAGER_APP_ID: &str = "dev.qos.windows";
 const MAX_HANDOFF_BYTES: usize = 4 * 1024;
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
+const MAX_CLIENT_WORKERS: usize = 8;
+const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(2);
 const VM_DISABLED_REASON: &str =
     "The privileged authenticated Windows guest adapter is not installed in this session.";
 const AUDIO_DISABLED_REASON: &str =
@@ -275,6 +279,7 @@ pub struct CompatSessionHandle {
     path: PathBuf,
     stop: Arc<AtomicBool>,
     listener: Option<JoinHandle<()>>,
+    workers: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
 impl Drop for CompatSessionHandle {
@@ -284,6 +289,7 @@ impl Drop for CompatSessionHandle {
         if let Some(listener) = self.listener.take() {
             let _ = listener.join();
         }
+        join_workers(&self.workers);
         let _ = fs::remove_file(&self.path);
     }
 }
@@ -316,18 +322,37 @@ where
     listener.set_nonblocking(true)?;
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
+    let workers = Arc::new(Mutex::new(Vec::new()));
+    let thread_workers = Arc::clone(&workers);
+    let active_workers = Arc::new(AtomicUsize::new(0));
+    let thread_active_workers = Arc::clone(&active_workers);
     let listener_thread = std::thread::Builder::new()
         .name("qos-windows-compat".to_string())
         .spawn(move || {
             while !thread_stop.load(Ordering::Acquire) {
+                reap_finished_workers(&thread_workers);
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        let Some(permit) = WorkerPermit::try_acquire(&thread_active_workers) else {
+                            // The only accepted peers are launcher children, but a
+                            // compromised manager must still not turn retained
+                            // descriptors into unbounded compositor threads.
+                            drop(stream);
+                            continue;
+                        };
+                        if stream.set_read_timeout(Some(CLIENT_IO_TIMEOUT)).is_err()
+                            || stream.set_write_timeout(Some(CLIENT_IO_TIMEOUT)).is_err()
+                        {
+                            drop(permit);
+                            continue;
+                        }
                         let managed = Arc::clone(&managed);
                         let authority = Arc::clone(&authority);
                         let authenticator = authenticator.clone();
-                        let _ = std::thread::Builder::new()
+                        let worker = std::thread::Builder::new()
                             .name("qos-windows-compat-client".to_string())
                             .spawn(move || {
+                                let _permit = permit;
                                 if authenticator.authenticate(&stream).is_ok() {
                                     let _ = serve_client(
                                         stream,
@@ -337,6 +362,11 @@ where
                                     );
                                 }
                             });
+                        if let Ok(worker) = worker
+                            && let Ok(mut workers) = thread_workers.lock()
+                        {
+                            workers.push(worker);
+                        }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(20));
@@ -349,7 +379,65 @@ where
         path,
         stop,
         listener: Some(listener_thread),
+        workers,
     })
+}
+
+struct WorkerPermit {
+    active: Arc<AtomicUsize>,
+}
+
+impl WorkerPermit {
+    fn try_acquire(active: &Arc<AtomicUsize>) -> Option<Self> {
+        let mut current = active.load(Ordering::Acquire);
+        loop {
+            if current >= MAX_CLIENT_WORKERS {
+                return None;
+            }
+            let next = current.checked_add(1)?;
+            match active.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => {
+                    return Some(Self {
+                        active: Arc::clone(active),
+                    });
+                }
+                Err(observed) => current = observed,
+            }
+        }
+    }
+}
+
+impl Drop for WorkerPermit {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn reap_finished_workers(workers: &Mutex<Vec<JoinHandle<()>>>) {
+    let finished = workers
+        .lock()
+        .map(|mut workers| {
+            let (finished, pending): (Vec<_>, Vec<_>) = std::mem::take(&mut *workers)
+                .into_iter()
+                .partition(JoinHandle::is_finished);
+            *workers = pending;
+            finished
+        })
+        .unwrap_or_default();
+    for worker in finished {
+        let _ = worker.join();
+    }
+}
+
+fn join_workers(workers: &Mutex<Vec<JoinHandle<()>>>) {
+    reap_finished_workers(workers);
+    let pending = workers
+        .lock()
+        .map(|mut workers| std::mem::take(&mut *workers))
+        .unwrap_or_default();
+    for worker in pending {
+        let _ = worker.join();
+    }
 }
 
 fn serve_client<R, B, E, V>(
@@ -653,6 +741,30 @@ mod tests {
             read_frame::<ProtocolRequest>(&mut reader, MAX_FRAME_BYTES),
             Err(SessionError::FrameTooLarge)
         ));
+    }
+
+    #[test]
+    fn client_reads_time_out_when_a_peer_holds_the_connection_open() {
+        let (_writer, mut reader) = UnixStream::pair().unwrap();
+        reader
+            .set_read_timeout(Some(Duration::from_millis(10)))
+            .unwrap();
+        assert!(matches!(
+            read_frame::<ProtocolRequest>(&mut reader, MAX_FRAME_BYTES),
+            Err(SessionError::Io(error))
+                if matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)
+        ));
+    }
+
+    #[test]
+    fn client_worker_capacity_is_bounded_and_released() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let permits = (0..MAX_CLIENT_WORKERS)
+            .map(|_| WorkerPermit::try_acquire(&active).unwrap())
+            .collect::<Vec<_>>();
+        assert!(WorkerPermit::try_acquire(&active).is_none());
+        drop(permits);
+        assert!(WorkerPermit::try_acquire(&active).is_some());
     }
 
     #[test]
