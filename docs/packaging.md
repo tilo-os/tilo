@@ -134,6 +134,9 @@ manifest rather than a mutable distribution tag.
 The package matrix runs at most two targets concurrently; native Cargo builds
 use at most four compiler jobs, while emulated Cargo and Nix builds use two.
 This leaves capacity for main-branch checks on the shared runner pool.
+The Debian-family, Fedora, and Arch jobs reuse the runners' optional remote
+compiler cache in isolated distro/architecture namespaces and fail open to an
+ordinary build if that service is unavailable. Nix builds remain pure.
 
 The build is not a generic cross-compile: Cargo and the target package manager
 both execute inside the selected Ubuntu, Debian, Fedora, Arch, or Nix userspace,
