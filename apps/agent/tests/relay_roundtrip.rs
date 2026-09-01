@@ -22,11 +22,11 @@ use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 use qos_agent::{Config, Session};
-use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
+use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload};
 use uuid::Uuid;
 
 mod typed_peer;
-use typed_peer::{TypedPeer as UnixStream, recv, send};
+use typed_peer::{TypedPeer as UnixStream, document_mutation, recv, send};
 
 const APP: &str = "dev.qos.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
@@ -218,7 +218,7 @@ fn drive_peer_to_table(mut peer: UnixStream, mut replica: AutoCommit) -> (AutoCo
                     "the relay names presence by the announced handle"
                 );
                 saw_scribe_presence = true;
-                let snap = CollabRequest::SyncCRDT {
+                let snap = CollabRequest::DocumentSnapshot {
                     data: replica.save(),
                 };
                 send(&mut peer, &snap).unwrap();
@@ -230,10 +230,11 @@ fn drive_peer_to_table(mut peer: UnixStream, mut replica: AutoCommit) -> (AutoCo
             } => {
                 assert_eq!(user_id, "Scribe");
             }
-            CollabEvent::CRDTIncremental { data } => {
-                replica
-                    .load_incremental(&data)
-                    .expect("apply the agent's change");
+            event @ CollabEvent::Document { .. } => {
+                let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
+                    continue;
+                };
+                replica.load_incremental(&data).unwrap();
                 let b = blocks(&replica);
                 let has_cells = b.iter().any(|x| x.kind == "cell");
                 let has_bullets = b.iter().any(|x| x.kind == "list_item");
@@ -307,7 +308,7 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    let room = Uuid::new_v4();
+    let room = typed_peer::room();
 
     // The peer: what the word processor is on the wire.
     let mut peer = UnixStream::connect(&sock);
@@ -326,6 +327,7 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
     // The agent, on its own thread, once.
     let cfg = Config {
         endpoint: Some(sock),
+        endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
         app_id: APP.into(),
         cluster: room,
         record: Some(RECORD.into()),
@@ -457,7 +459,7 @@ fn drive_files_peer(mut files_peer: UnixStream, mut files_doc: AutoCommit) {
             ..
         } = event
         {
-            let snap = CollabRequest::SyncCRDT {
+            let snap = CollabRequest::DocumentSnapshot {
                 data: files_doc.save(),
             };
             send(&mut files_peer, &snap).unwrap();
@@ -490,14 +492,20 @@ fn drive_word_processor_to_table(
                 // Shortly after the file manager, so the agent has already
                 // taken the wrong document by the time this arrives.
                 std::thread::sleep(Duration::from_millis(400));
-                let snap = CollabRequest::SyncCRDT {
+                let snap = CollabRequest::DocumentSnapshot {
                     data: replica.save(),
                 };
                 send(&mut wp_peer, &snap).unwrap();
             }
             // The agent's edits. A delta from the file manager's document
             // would not apply here, so ignore what does not.
-            CollabEvent::CRDTIncremental { data } if replica.load_incremental(&data).is_ok() => {
+            event @ CollabEvent::Document { .. } => {
+                let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
+                    continue;
+                };
+                if replica.load_incremental(&data).is_err() {
+                    continue;
+                }
                 let b = blocks(&replica);
                 if b.iter().any(|x| x.kind == "cell")
                     && !b.iter().any(|x| x.text.starts_with("Scribe:"))
@@ -526,7 +534,7 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    let room = Uuid::new_v4();
+    let room = typed_peer::room();
 
     let (files_peer, files_doc, wp_peer, replica) = connect_files_and_word_processor(&sock, room);
     std::thread::sleep(Duration::from_millis(100));
@@ -534,6 +542,7 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
     // A room, and no record to tell the room's documents apart.
     let cfg = Config {
         endpoint: Some(sock),
+        endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
         app_id: APP.into(),
         cluster: room,
         record: None,
@@ -617,8 +626,9 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
 
     let cfg = Config {
         endpoint: Some(sock),
+        endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
         app_id: APP.into(),
-        cluster: Uuid::new_v4(),
+        cluster: typed_peer::room(),
         // The shape of the mistake: a room that exists, on a record
         // nobody in it is looking at.
         record: Some("file:/var/workspace/Demo/nobody-has-this.docx".into()),
@@ -671,9 +681,7 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-
-    let room = Uuid::new_v4();
-
+    let room = typed_peer::room();
     let mut peer = UnixStream::connect(&sock);
     let hello = CollabRequest::Hello {
         app_id: APP.into(),
@@ -687,14 +695,14 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
 
     let cfg = Config {
         endpoint: Some(sock),
+        endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
         app_id: APP.into(),
         cluster: room,
         record: Some(RECORD.into()),
         name: "Scribe".into(),
         pace: Duration::from_millis(10),
         once: true,
-        // Two clauses joined by "then" — the deterministic floor's job to
-        // split, never the model's; see `Session::decide`.
+        // The deterministic floor splits the two clauses; see `Session::decide`.
         model: false,
         model_timeout: Duration::from_secs(1),
         await_document: Duration::ZERO,
@@ -720,15 +728,16 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
                 payload: PresencePayload::Arrived,
                 ..
             } => {
-                let snap = CollabRequest::SyncCRDT {
+                let snap = CollabRequest::DocumentSnapshot {
                     data: replica.save(),
                 };
                 send(&mut peer, &snap).unwrap();
             }
-            CollabEvent::CRDTIncremental { data } => {
-                replica
-                    .load_incremental(&data)
-                    .expect("apply the agent's change");
+            event @ CollabEvent::Document { .. } => {
+                let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
+                    continue;
+                };
+                replica.load_incremental(&data).unwrap();
                 let b = blocks(&replica);
                 let has_heading = b
                     .iter()
@@ -752,8 +761,7 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
     );
     assert!(agent.join().unwrap(), "the agent reports having acted");
 
-    // Both steps really ran, in the order asked, and only one of the two
-    // ever removes the instruction.
+    // Both steps ran in order; only one removes the instruction.
     let b = blocks(&replica);
     assert_eq!(b[0].kind, "heading", "the title step ran");
     assert_eq!(b[0].text, "Launch plan");
@@ -785,7 +793,7 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    let room = Uuid::new_v4();
+    let room = typed_peer::room();
 
     let mut peer = UnixStream::connect(&sock);
     let hello = CollabRequest::Hello {
@@ -800,6 +808,7 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
 
     let cfg = Config {
         endpoint: Some(sock),
+        endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
         app_id: APP.into(),
         cluster: room,
         record: Some(RECORD.into()),
@@ -831,12 +840,15 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
                 payload: PresencePayload::Arrived,
                 ..
             } => {
-                let snap = CollabRequest::SyncCRDT {
+                let snap = CollabRequest::DocumentSnapshot {
                     data: replica.save(),
                 };
                 send(&mut peer, &snap).unwrap();
             }
-            CollabEvent::CRDTIncremental { data } => {
+            event @ CollabEvent::Document { .. } => {
+                let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
+                    continue;
+                };
                 replica
                     .load_incremental(&data)
                     .expect("apply the agent's change");

@@ -11,7 +11,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, RouteSpec};
+use ui::collaboration::{
+    CertifiedEndpointIdentity, CollabEvent, CollabRequest, CollaborationManager, RouteSpec,
+};
 
 /// One connection to the broker.
 pub struct Link {
@@ -64,16 +66,17 @@ impl Link {
         cluster_id: uuid::Uuid,
         record: Option<String>,
         handle: Option<String>,
+        identity: Option<CertifiedEndpointIdentity>,
     ) -> Result<Self> {
         let stream = UnixStream::connect(path)
             .with_context(|| format!("connect to typed endpoint at {}", path.display()))?;
-        let manager = CollaborationManager::for_route_fd(
-            stream.into_raw_fd(),
-            app_id,
-            cluster_id,
-            record,
-            handle,
-        )
+        let fd = stream.into_raw_fd();
+        let manager = match identity {
+            Some(identity) => CollaborationManager::for_route_fd_with_identity(
+                fd, app_id, cluster_id, record, handle, identity,
+            ),
+            None => CollaborationManager::for_route_fd(fd, app_id, cluster_id, record, handle),
+        }
         .context("start typed collaboration client")?;
         Ok(Self {
             manager,
@@ -142,23 +145,35 @@ mod tests {
         let first = take_next_polled(
             &mut pending,
             vec![
-                CollabEvent::CRDTIncremental { data: vec![1] },
-                CollabEvent::CRDTUpdate { data: vec![2] },
-                CollabEvent::CRDTIncremental { data: vec![3] },
+                CollabEvent::RemoteCursorMoved {
+                    user_id: "one".into(),
+                    x: 1.0,
+                    y: 0.0,
+                },
+                CollabEvent::RemoteCursorMoved {
+                    user_id: "two".into(),
+                    x: 2.0,
+                    y: 0.0,
+                },
+                CollabEvent::RemoteCursorMoved {
+                    user_id: "three".into(),
+                    x: 3.0,
+                    y: 0.0,
+                },
             ],
         );
 
         assert!(matches!(
             first,
-            Some(CollabEvent::CRDTIncremental { data }) if data == [1]
+            Some(CollabEvent::RemoteCursorMoved { x: 1.0, .. })
         ));
         assert!(matches!(
             take_next_polled(&mut pending, Vec::new()),
-            Some(CollabEvent::CRDTUpdate { data }) if data == [2]
+            Some(CollabEvent::RemoteCursorMoved { x: 2.0, .. })
         ));
         assert!(matches!(
             take_next_polled(&mut pending, Vec::new()),
-            Some(CollabEvent::CRDTIncremental { data }) if data == [3]
+            Some(CollabEvent::RemoteCursorMoved { x: 3.0, .. })
         ));
         assert!(take_next_polled(&mut pending, Vec::new()).is_none());
     }

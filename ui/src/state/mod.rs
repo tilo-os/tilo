@@ -573,7 +573,7 @@ impl State {
     /// `AutoCommit::save_incremental` on another peer) into this document.
     /// Returns the number of ops applied on success.
     ///
-    /// This is how `CollabEvent::CRDTIncremental` is actually merged on the
+    /// This is how an incremental `CollabEvent::Document` is merged on the
     /// receiver side — without it, incremental deltas broadcast by one peer
     /// would never reach another peer's CRDT.
     ///

@@ -26,6 +26,7 @@ runtime-portal = { path = "../runtime-portal" }
 serde.workspace = true
 serde_bytes.workspace = true
 serde_json.workspace = true
+postcard = { workspace = true, features = ["alloc"] }
 ed25519-dalek = { workspace = true, features = ["serde"] }
 hex.workspace = true
 libc.workspace = true
