@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use compat_catalogue::{Architecture, LaunchPlan, Layer, Runner};
 use launcher::capabilities::CapabilityPlan;
@@ -8,7 +8,9 @@ use launcher::sandbox::NetGateBind;
 use launcher::seccomp::SeccompProfile;
 use thiserror::Error;
 
-use crate::store::{CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore, validate_id};
+use crate::store::{
+    CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore, LaunchPaths, validate_id,
+};
 
 const PREFIX_MOUNT: &str = "/run/qos/capsule/prefix";
 const HOME_MOUNT: &str = "/run/qos/capsule/home";
@@ -259,7 +261,7 @@ pub trait LaunchResourceBroker: Send + Sync {
     fn revoke(&self, lease_id: &str);
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct CapsuleCommandPlan {
     /// Bubblewrap flags and the fixed in-sandbox command. Host paths here are
     /// derived only from daemon configuration, capsule state, or resolved grants.
@@ -276,6 +278,9 @@ pub struct CapsuleCommandPlan {
     pub microphone: bool,
     pub audio_output: bool,
     pub lease_id: String,
+    // Open directory descriptors backing the prefix/home bind sources. Kept
+    // private so a plan cannot be copied after its authority-bearing handles.
+    _launch_paths: LaunchPaths,
 }
 
 pub struct SandboxPlanner<'a, R> {
@@ -329,10 +334,9 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         let network = NetworkShape::from_capabilities(capabilities);
         lease.validate(capabilities, network)?;
 
-        let prefix_host = self.store.prefix_path(&capsule.id);
-        let home_host = self.store.home_path(&capsule.id);
-        ensure_under(self.store.root(), &prefix_host)?;
-        ensure_under(self.store.root(), &home_host)?;
+        let launch_paths = self.store.open_launch_paths(&capsule.id)?;
+        let prefix_host = launch_paths.prefix_source();
+        let home_host = launch_paths.home_source();
 
         let wayland =
             launcher::sandbox::wayland_bind_for(&self.session.wayland_socket, self.session.uid);
@@ -457,6 +461,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
                 .any(|device| device == "microphone"),
             audio_output: !lease.audio.is_empty(),
             lease_id: lease.id.clone(),
+            _launch_paths: launch_paths,
         })
     }
 }
@@ -618,17 +623,6 @@ fn validate_runner_token(value: &str) -> Result<(), PlanError> {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
     {
         return Err(PlanError::InvalidRunner);
-    }
-    Ok(())
-}
-
-fn ensure_under(root: &Path, path: &Path) -> Result<(), PlanError> {
-    if !path.starts_with(root)
-        || path
-            .components()
-            .any(|component| matches!(component, Component::ParentDir))
-    {
-        return Err(PlanError::UnsafeDerivedPath);
     }
     Ok(())
 }
@@ -866,6 +860,44 @@ mod tests {
                 .bwrap_argv
                 .iter()
                 .any(|arg| arg.contains("/home/user"))
+        );
+        assert!(
+            command
+                .bwrap_argv
+                .iter()
+                .any(|arg| arg.starts_with(&format!("/proc/{}/fd/", std::process::id())))
+        );
+    }
+
+    #[test]
+    fn planner_rejects_a_symlinked_capsule_data_component() {
+        use std::os::unix::fs::symlink;
+
+        let route = route(Layer::Wine);
+        let (_directory, store, state, program) = setup(&route);
+        let outside = TempDir::new().unwrap();
+        let data = store.root().join("capsules").join(&state.id).join("data");
+        std::fs::remove_dir_all(&data).unwrap();
+        symlink(outside.path(), &data).unwrap();
+        let registry = SystemRuntimeRegistry::new();
+        let host = session();
+        let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+
+        assert!(
+            planner
+                .plan(
+                    &route,
+                    &state,
+                    &program,
+                    &CapabilityPlan::empty(),
+                    "workspace",
+                    &LaunchLease::deny_all("lease"),
+                )
+                .is_err()
+        );
+        assert!(
+            !outside.path().join("prefix").exists(),
+            "planner must not bind a path through an attacker symlink"
         );
     }
 

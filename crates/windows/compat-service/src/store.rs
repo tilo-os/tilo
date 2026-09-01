@@ -1,8 +1,12 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, symlink};
+use std::fs::File;
+use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use compat_catalogue::{
     ApplicationQuery, LaunchPlan, Layer, Runner, RunnerSettings, SecurityProfileRef,
@@ -13,6 +17,7 @@ use thiserror::Error;
 
 pub const CAPSULE_SCHEMA_VERSION: u16 = 1;
 const SANDBOX_FILES_ROOT: &str = "/run/qos/files";
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CapsuleProgram {
@@ -75,7 +80,14 @@ impl CapsuleState {
 
 #[derive(Clone, Debug)]
 pub struct CapsuleStore {
+    /// Canonical, daemon-configured storage root. It is an informational
+    /// path; security-sensitive traversal is always rooted at `root_fd`.
     root: PathBuf,
+    /// Keeps the originally opened root directory alive. All managed paths
+    /// below are opened relative to this descriptor with `O_NOFOLLOW`, so a
+    /// same-UID attacker cannot redirect a later operation by renaming or
+    /// symlinking a component below the store root.
+    root_fd: Arc<File>,
 }
 
 impl CapsuleStore {
@@ -85,7 +97,13 @@ impl CapsuleStore {
         if !root.is_absolute() || root == Path::new("/") {
             return Err(CapsuleError::UnsafeRoot);
         }
-        Ok(Self { root })
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        let root_fd = open_directory_nofollow(&root)?;
+        Ok(Self {
+            root,
+            root_fd: Arc::new(root_fd),
+        })
     }
 
     #[must_use]
@@ -95,12 +113,20 @@ impl CapsuleStore {
 
     pub fn load(&self, id: &str) -> Result<Option<CapsuleState>, CapsuleError> {
         validate_id("capsule id", id)?;
-        let path = self.state_path(id);
-        let bytes = match fs::read(path) {
-            Ok(bytes) => bytes,
+        let directory = match self.capsule_directory(id, false) {
+            Ok(directory) => directory,
+            Err(CapsuleError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        let mut state = match open_regular_nofollow(&directory, "state.json") {
+            Ok(state) => state,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
+        let mut bytes = Vec::new();
+        state.read_to_end(&mut bytes)?;
         let state: CapsuleState = serde_json::from_slice(&bytes)?;
         state.validate()?;
         if state.id != id {
@@ -113,12 +139,12 @@ impl CapsuleStore {
     /// names and state identities are revalidated; malformed state fails the
     /// whole snapshot instead of disappearing from management UI.
     pub fn registered_programs(&self) -> Result<Vec<RegisteredProgram>, CapsuleError> {
-        let capsules = self.root.join("capsules");
-        let entries = match fs::read_dir(capsules) {
-            Ok(entries) => entries,
+        let capsules = match Self::open_child_dir(self.root_fd.as_ref(), "capsules", false) {
+            Ok(capsules) => capsules,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.into()),
         };
+        let entries = fs::read_dir(fd_path(&capsules))?;
         let mut ids = entries
             .filter_map(Result::ok)
             .filter_map(|entry| entry.file_name().into_string().ok())
@@ -199,16 +225,21 @@ impl CapsuleStore {
 
     pub fn save(&self, state: &CapsuleState) -> Result<(), CapsuleError> {
         state.validate()?;
-        let directory = self.capsule_dir(&state.id);
-        fs::create_dir_all(&directory)?;
-        let path = directory.join("state.json");
-        let temp = directory.join(format!(".state.{}.tmp", std::process::id()));
+        let directory = self.capsule_directory(&state.id, true)?;
+        let base = fd_path(&directory);
+        let temp = base.join(format!(
+            ".state.{}.{}.tmp",
+            std::process::id(),
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let path = base.join("state.json");
         let bytes = serde_json::to_vec_pretty(state)?;
         {
             let mut file = fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW)
                 .open(&temp)?;
             file.write_all(&bytes)?;
             file.sync_all()?;
@@ -217,9 +248,7 @@ impl CapsuleStore {
             let _ = fs::remove_file(&temp);
             return Err(error.into());
         }
-        if let Ok(dir) = fs::File::open(&directory) {
-            let _ = dir.sync_all();
-        }
+        let _ = directory.sync_all();
         Ok(())
     }
 
@@ -237,8 +266,37 @@ impl CapsuleStore {
         self.root.join("capsules").join(id)
     }
 
-    fn state_path(&self, id: &str) -> PathBuf {
-        self.capsule_dir(id).join("state.json")
+    /// Open the prefix and home directories through anchored, no-follow
+    /// descriptors. The returned descriptors are held by the command plan;
+    /// its bind sources address these open handles through `/proc/<pid>/fd`,
+    /// not attacker-replaceable pathnames.
+    pub(crate) fn open_launch_paths(&self, id: &str) -> Result<LaunchPaths, CapsuleError> {
+        let capsule = self.capsule_directory(id, false)?;
+        let data = Self::open_child_dir(&capsule, "data", false)?;
+        let prefix = Self::open_child_dir(&data, "prefix", false)?;
+        let home = Self::open_child_dir(&data, "home", false)?;
+        Ok(LaunchPaths { prefix, home })
+    }
+
+    fn capsule_directory(&self, id: &str, create: bool) -> Result<File, CapsuleError> {
+        validate_id("capsule id", id)?;
+        let capsules = Self::open_child_dir(self.root_fd.as_ref(), "capsules", create)?;
+        Ok(Self::open_child_dir(&capsules, id, create)?)
+    }
+
+    fn open_child_dir(
+        parent: &File,
+        component: &str,
+        create: bool,
+    ) -> Result<File, std::io::Error> {
+        match open_directory_at(parent, component) {
+            Ok(directory) => Ok(directory),
+            Err(error) if create && error.kind() == std::io::ErrorKind::NotFound => {
+                mkdir_at(parent, component, 0o700)?;
+                open_directory_at(parent, component)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Reasserts the managed Windows drive shape on every launch. Wine's
@@ -246,15 +304,17 @@ impl CapsuleStore {
     /// that managed symlink and exposing only `Q:` makes granted files legible
     /// and keeps system paths out of normal Windows file pickers.
     fn prepare_managed_paths(&self, id: &str) -> Result<(), CapsuleError> {
-        let prefix = self.prefix_path(id);
-        let home = self.home_path(id);
-        fs::create_dir_all(prefix.join("dosdevices"))?;
-        fs::create_dir_all(home.join(".cache"))?;
-        fs::create_dir_all(home.join(".config"))?;
-        fs::create_dir_all(home.join(".local/share"))?;
+        let capsule = self.capsule_directory(id, true)?;
+        let data = Self::open_child_dir(&capsule, "data", true)?;
+        let prefix = Self::open_child_dir(&data, "prefix", true)?;
+        let home = Self::open_child_dir(&data, "home", true)?;
+        let dosdevices = Self::open_child_dir(&prefix, "dosdevices", true)?;
+        let local = Self::open_child_dir(&home, ".local", true)?;
+        let _cache = Self::open_child_dir(&home, ".cache", true)?;
+        let _config = Self::open_child_dir(&home, ".config", true)?;
+        let _share = Self::open_child_dir(&local, "share", true)?;
 
-        let dosdevices = prefix.join("dosdevices");
-        let z = dosdevices.join("z:");
+        let z = fd_path(&dosdevices).join("z:");
         match fs::symlink_metadata(&z) {
             Ok(metadata) if metadata.file_type().is_symlink() => fs::remove_file(&z)?,
             Ok(_) => return Err(CapsuleError::ManagedDriveCollision("Z:")),
@@ -262,16 +322,122 @@ impl CapsuleStore {
             Err(error) => return Err(error.into()),
         }
 
-        let q = dosdevices.join("q:");
+        let q = fd_path(&dosdevices).join("q:");
         match fs::read_link(&q) {
             Ok(target) if target == Path::new(SANDBOX_FILES_ROOT) => {}
             Ok(_) => return Err(CapsuleError::ManagedDriveCollision("Q:")),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                symlink(SANDBOX_FILES_ROOT, q)?;
+                std::os::unix::fs::symlink(SANDBOX_FILES_ROOT, q)?;
             }
             Err(error) => return Err(error.into()),
         }
         Ok(())
+    }
+}
+
+/// Anchored capsule mount sources. Keep the descriptors alive until Bubblewrap
+/// has opened the `/proc/<service-pid>/fd/<n>` source paths.
+#[derive(Debug)]
+pub(crate) struct LaunchPaths {
+    prefix: File,
+    home: File,
+}
+
+impl LaunchPaths {
+    pub(crate) fn prefix_source(&self) -> PathBuf {
+        fd_path(&self.prefix)
+    }
+
+    pub(crate) fn home_source(&self) -> PathBuf {
+        fd_path(&self.home)
+    }
+}
+
+fn fd_path(file: &File) -> PathBuf {
+    PathBuf::from(format!(
+        "/proc/{}/fd/{}",
+        std::process::id(),
+        file.as_raw_fd()
+    ))
+}
+
+fn open_directory_nofollow(path: &Path) -> Result<File, CapsuleError> {
+    let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(|_| CapsuleError::UnsafeRoot)?;
+    // SAFETY: `c_path` is NUL-terminated and valid for the duration of open(2).
+    let fd = unsafe {
+        libc::open(
+            c_path.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    file_from_fd(fd)
+}
+
+fn open_directory_at(parent: &File, component: &str) -> Result<File, std::io::Error> {
+    let component = std::ffi::CString::new(component).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid path component")
+    })?;
+    // SAFETY: `parent` is an open directory and `component` is a valid
+    // NUL-terminated single path component validated by the caller.
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            component.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    file_from_fd_io(fd)
+}
+
+fn mkdir_at(parent: &File, component: &str, mode: u32) -> Result<(), std::io::Error> {
+    let component = std::ffi::CString::new(component).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid path component")
+    })?;
+    // SAFETY: `parent` is an open directory and `component` is a valid
+    // NUL-terminated single path component.
+    let result = unsafe { libc::mkdirat(parent.as_raw_fd(), component.as_ptr(), mode) };
+    if result == 0 {
+        Ok(())
+    } else {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    }
+}
+
+fn open_regular_nofollow(parent: &File, component: &str) -> Result<File, std::io::Error> {
+    let component = std::ffi::CString::new(component)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid file name"))?;
+    // SAFETY: `parent` is an open directory and `component` is a valid
+    // NUL-terminated single filename.
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            component.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    let file = file_from_fd_io(fd)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("capsule state is not a regular file"));
+    }
+    Ok(file)
+}
+
+fn file_from_fd(fd: i32) -> Result<File, CapsuleError> {
+    file_from_fd_io(fd).map_err(Into::into)
+}
+
+fn file_from_fd_io(fd: i32) -> Result<File, std::io::Error> {
+    if fd < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        // SAFETY: `fd` is a newly returned, uniquely owned descriptor.
+        Ok(unsafe { File::from_raw_fd(fd) })
     }
 }
 
@@ -399,6 +565,7 @@ pub enum CapsuleError {
 #[cfg(test)]
 mod tests {
     use compat_catalogue::{Architecture, MatchKind, Runtime, SecurityProfileRef};
+    use std::os::unix::fs::symlink;
     use tempfile::TempDir;
 
     use super::*;
@@ -460,5 +627,46 @@ mod tests {
             store.ensure_for_plan(&changed),
             Err(CapsuleError::RecipeChanged(_))
         ));
+    }
+
+    #[test]
+    fn symlinked_capsule_directory_is_rejected_before_state_or_prefix_access() {
+        let root = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let store = CapsuleStore::new(root.path()).unwrap();
+        fs::create_dir(root.path().join("capsules")).unwrap();
+        symlink(outside.path(), root.path().join("capsules/example")).unwrap();
+
+        assert!(store.load("example").is_err());
+        assert!(store.ensure_for_plan(&plan()).is_err());
+        assert!(
+            !outside.path().join("data/prefix").exists(),
+            "managed path preparation must not follow the attacker symlink"
+        );
+    }
+
+    #[test]
+    fn saving_replaces_a_state_symlink_without_touching_its_target() {
+        let root = TempDir::new().unwrap();
+        let outside = root.path().join("outside.json");
+        let store = CapsuleStore::new(root.path()).unwrap();
+        let state = store.ensure_for_plan(&plan()).unwrap();
+        fs::write(&outside, "outside stays intact").unwrap();
+        let state_path = store.capsule_dir(&state.id).join("state.json");
+        fs::remove_file(&state_path).unwrap();
+        symlink(&outside, &state_path).unwrap();
+
+        store.save(&state).unwrap();
+        assert_eq!(
+            fs::read_to_string(&outside).unwrap(),
+            "outside stays intact"
+        );
+        assert!(
+            fs::symlink_metadata(&state_path)
+                .unwrap()
+                .file_type()
+                .is_file()
+        );
+        assert!(store.load(&state.id).unwrap().is_some());
     }
 }
