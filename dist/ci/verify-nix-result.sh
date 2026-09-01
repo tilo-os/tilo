@@ -6,6 +6,11 @@ set -euo pipefail
 result=$(realpath "$1")
 arch=$2
 case "$arch" in amd64|arm64) ;; *) exit 2 ;; esac
+case "$(uname -m)" in
+x86_64) execution_arch=amd64 ;;
+aarch64) execution_arch=arm64 ;;
+*) echo "unsupported execution architecture: $(uname -m)" >&2; exit 1 ;;
+esac
 
 for file in bin/qos-shell bin/qos-launcher libexec/qos-unlock-helper libexec/qos-session; do
     [[ -x $result/$file ]] || { echo "missing executable: $file" >&2; exit 1; }
@@ -39,8 +44,18 @@ for elf in bin/qos-shell bin/qos-launcher libexec/qos-unlock-helper; do
     else
         [[ $machine == 183 ]]
     fi
-    if ldd "$result/$elf" | tee /dev/stderr | grep -q 'not found'; then
-        echo "unresolved shared library in $elf" >&2
-        exit 1
+    if [[ $execution_arch == "$arch" ]]; then
+        if ldd "$result/$elf" | tee /dev/stderr | grep -q 'not found'; then
+            echo "unresolved shared library in $elf" >&2
+            exit 1
+        fi
     fi
 done
+
+# Cross-built binaries cannot be executed by host `ldd`. Verify the output's
+# content hash and require Nix to resolve its complete registered closure; the
+# native architecture job retains the executable ldd check above.
+if command -v nix-store >/dev/null 2>&1; then
+    nix-store --verify-path "$result"
+    nix-store --query --requisites "$result" >/dev/null
+fi

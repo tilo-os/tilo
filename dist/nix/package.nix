@@ -4,7 +4,7 @@
 , cmake
 , clang
 , capnproto
-, libclang
+, buildPackages
 , libxkbcommon
 , wayland
 , seatd
@@ -48,7 +48,9 @@ rustPlatform.buildRustPackage rec {
     openssl fontconfig freetype harfbuzz fuse3
     gst_all_1.gstreamer gst_all_1.gst-plugins-base
   ];
-  LIBCLANG_PATH = "${lib.getLib libclang}/lib";
+  # Bindgen executes on the build machine even when the package's host
+  # platform is ARM, so it must load the build-platform libclang.
+  LIBCLANG_PATH = "${lib.getLib buildPackages.libclang}/lib";
   # The FHS packages use /usr/libexec. Nix must seal the immutable store path
   # into the compositor or locking the session could never invoke PAM.
   preBuild = ''

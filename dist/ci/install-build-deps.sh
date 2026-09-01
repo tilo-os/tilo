@@ -29,7 +29,11 @@ fedora)
     dnf clean all
     ;;
 arch)
-    pacman -Syu --noconfirm \
+    # A freshly redirected DBPath has no readable sync databases when pacman
+    # first resolves explicit targets under PRoot. Complete the full-system
+    # refresh first, then resolve build dependencies in a second transaction.
+    pacman -Syyu --noconfirm
+    pacman -S --needed --noconfirm \
         curl git base-devel rustup clang cmake pkgconf capnproto file namcap \
         libxkbcommon wayland seatd libinput systemd-libs libdrm mesa \
         pipewire dbus openssl fontconfig freetype2 harfbuzz fuse3 \
