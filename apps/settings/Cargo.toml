@@ -15,7 +15,11 @@ path = "src/lib.rs"
 name = "settings"
 path = "src/main.rs"
 
+[features]
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # One owner for ~/.config/qos/settings.json.
 settings-store = { path = "../../crates/system/settings-store" }
 desktop-policy = { path = "../../crates/system/desktop-policy" }

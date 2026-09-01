@@ -35,6 +35,9 @@
     )
 )]
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 use store::app::RemoteIntent;
 use store::worker::{Request, StoreWorker};
 use store::{FlatpakRef, StoreApp};

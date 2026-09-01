@@ -23,6 +23,7 @@
 #   PKG_BIN / INSTALL_BIN / BUNDLE_BIN / SHIM_BIN
 #                  tool paths                        [default: $BIN_DIR/<name>]
 #   REQUIRE_MIN    fail unless at least this many packages install [default: 1]
+#   MAX_QPKG_BYTES refuse a larger archive; decimal 10 MB by default
 #
 # STORE is written at its *final* path on purpose: `qos-install` records
 # absolute payload paths in registry.toml, so staging it elsewhere and moving
@@ -47,6 +48,7 @@ INSTALL_BIN="${INSTALL_BIN:-$BIN_DIR/qos-install}"
 BUNDLE_BIN="${BUNDLE_BIN:-$BIN_DIR/qos-runtime-bundle}"
 SHIM_BIN="${SHIM_BIN:-$BIN_DIR/qos-cli-shim}"
 REQUIRE_MIN="${REQUIRE_MIN:-1}"
+MAX_QPKG_BYTES="${MAX_QPKG_BYTES:-10000000}"
 
 msg() { printf '[pack-apps] %s\n' "$*" >&2; }
 die() { printf '[pack-apps] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -130,6 +132,12 @@ for manifest in "$REPO"/apps/*/qos-app.toml; do
         continue
     fi
 
+    qpkg_bytes="$(stat -c %s "$qpkg")"
+    if [ "$qpkg_bytes" -ge "$MAX_QPKG_BYTES" ]; then
+        failed+=("$app ($id): package is $qpkg_bytes bytes; limit is strictly below $MAX_QPKG_BYTES")
+        continue
+    fi
+
     # Verify against the key we just signed with, so a mis-signed package
     # fails here rather than silently at first launch.
     if ! "$PKG_BIN" verify --trusted-key "$PUBKEY" "$qpkg" >"$STAGE/$id.verify.log" 2>&1; then
@@ -146,11 +154,11 @@ for manifest in "$REPO"/apps/*/qos-app.toml; do
         continue
     fi
 
-    shipped+=("$id")
+    shipped+=("$id ($qpkg_bytes bytes)")
 done
 
 # --- report ----------------------------------------------------------------
-msg "shipped ${#shipped[@]} package(s) into $STORE"
+msg "shipped ${#shipped[@]} package(s) below $MAX_QPKG_BYTES bytes into $STORE"
 for m in ${missing[@]+"${missing[@]}"}; do msg "  skipped: $m"; done
 for f in ${failed[@]+"${failed[@]}"};  do msg "  FAILED:  $f"; done
 
