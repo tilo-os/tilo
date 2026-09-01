@@ -348,7 +348,7 @@ impl windows_vm::CapabilityBroker for CanonicalRailCapabilityBroker {
         &self,
         request: &windows_vm::LaunchRequest,
     ) -> Result<windows_vm::BrokeredLaunch, windows_vm::LaunchError> {
-        if request.grants.network != !request.grants.network_hosts.is_empty()
+        if request.grants.network == request.grants.network_hosts.is_empty()
             || !request.grants.portal_documents.is_empty()
         {
             return Err(windows_vm::LaunchError::CapabilityBroker(
@@ -375,7 +375,11 @@ impl windows_vm::CapabilityBroker for CanonicalRailCapabilityBroker {
                     })?,
                     leases: BTreeMap::new(),
                 });
-                slot.as_mut().expect("network proxy was just installed")
+                slot.as_mut().ok_or_else(|| {
+                    windows_vm::LaunchError::CapabilityBroker(
+                        "Windows network proxy could not be installed".to_string(),
+                    )
+                })?
             };
             session
                 .leases
@@ -1214,7 +1218,7 @@ fn validate_portal_projection(
     grants: &windows_vm::VmLaunchGrants,
     capabilities: &CapabilityPlan,
 ) -> Result<(), windows_vm::LaunchError> {
-    if grants.network != !grants.network_hosts.is_empty()
+    if grants.network == grants.network_hosts.is_empty()
         || (grants.network && !capabilities.allow_network)
         || grants
             .network_hosts

@@ -71,6 +71,8 @@ prepare() {
     trap 'rm -rf -- "${stage:-}"' EXIT
     cp -- "$GUEST_SOURCE/Install-qOSRemoteApp.ps1" "$stage/"
     cp -- "$GUEST_SOURCE/Start-qOSGuestBridge.ps1" "$stage/"
+    cp -- "$GUEST_SOURCE/Start-qOSNetworkProxy.ps1" "$stage/"
+    cp -- "$GUEST_SOURCE/Start-qOSRemoteApp.ps1" "$stage/"
     cp -- "$GUEST_SOURCE/Start-qOSFocusedApp.ps1" "$stage/"
     cp -- "$GUEST_SOURCE/Start-qOSInstaller.ps1" "$stage/"
     cp -- "$GUEST_SOURCE/Start-qOSUninstaller.ps1" "$stage/"

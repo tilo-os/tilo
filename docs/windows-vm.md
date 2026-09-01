@@ -155,12 +155,38 @@ one launch when qOS has selected a native RAIL surface. The account is removed
 after ten minutes even if the client crashes. This limits credential reuse; it
 does not make two Windows programs inside the singleton VM mutually isolated.
 
-The current live presentation is app-focused SPICE. It is playback-only: files,
-clipboard, microphone, and egress do not reach the guest. qOS may offer those
-resources only after it has probed a local RAIL surface and installed a
-canonical workspace-capability broker that can materialise and revoke each
-redirect. A workspace grant by itself never makes a host resource visible to
-the shared VM.
+The app-focused SPICE fallback is playback-only: files, clipboard, microphone,
+and egress do not reach the guest. On a probed native RAIL surface, qOS
+materialises the canonical workspace capability lease before preparing the
+guest launch. A workspace grant by itself never makes a host resource visible
+to the shared VM.
+
+Filtered network access is a real `NetHost` lease, not a temporary NAT NIC.
+The persistent VM NIC remains on the `forward mode="none"` host-only network.
+For an allowed launch qOS starts a token-authenticated CONNECT relay bound only
+to `192.168.251.1`; the guest's fixed RemoteApp wrapper receives only its
+authenticated operation ID and reads the one-use bridge job. The authenticated
+SYSTEM bridge owns one shared loopback proxy; each wrapper joins its
+mutex-protected WinINet lease counter and gives `HTTP_PROXY`/`HTTPS_PROXY` only
+to that target process tree.
+The relay uses the same qOS name matcher and post-DNS device-local rejection as
+the normal launcher gate. It resolves only after checking the requested name,
+so a name grant cannot become an IP-literal bypass or a route to host-local
+services. It supports TCP CONNECT only; no SOCKS, UDP, bridge, or guest NAT is
+introduced. Ending a RAIL process deletes its guest job; the final active
+wrapper restores the prior WinINet state, while one app exiting cannot cut off
+another. Ending the host lease drops its policy contribution even if the guest
+crashes. The first/last wrapper transition snapshots, applies, refreshes, and
+restores the managed user's WinINet loopback proxy setting, improving ordinary
+desktop-app coverage without changing machine-wide WinHTTP state. Applications which
+deliberately bypass both standard proxy settings remain offline rather than
+acquiring an unrestricted route.
+
+Windows remains one shared security domain. While a lease is active, other
+processes in the managed Windows session might observe its loopback proxy/job
+and should be treated as able to use the effective union. qOS derives and shows
+that union and its contributing published applications from materialized leases;
+it does not claim per-application VM isolation.
 
 The full desktop is available only through the owner-authorised recovery action
 for installation or repair. qOS's privileged owner-authorisation backend may

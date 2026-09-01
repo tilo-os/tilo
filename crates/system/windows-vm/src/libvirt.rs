@@ -714,8 +714,14 @@ mod tests {
                 },
             )
             .unwrap();
-        let requests = backend.runner.requests.lock().unwrap();
-        let attach = requests.last().unwrap();
+        let attach = backend
+            .runner
+            .requests
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .clone();
         assert!(attach.args.iter().any(|arg| arg == "attach-device"));
         assert!(attach.args.iter().any(|arg| arg == "--config"));
         assert!(!attach.args.iter().any(|arg| arg == "--live"));
