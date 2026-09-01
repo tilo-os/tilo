@@ -6,7 +6,7 @@ use crate::{
     VmInstallConfirmation, VmInstallation, VmUninstallation,
 };
 
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 
 /// The inherited session service accepts only opaque server-owned entry IDs
 /// for launch. A query is preview-only and cannot select a launch plan.
@@ -27,6 +27,13 @@ pub enum ProtocolRequest {
     LaunchVmFallback {
         version: u16,
         entry_id: String,
+    },
+    /// Opens exactly one portal-selected document in a published Windows app.
+    /// The descriptor accompanies this frame via SCM_RIGHTS; no path crosses.
+    LaunchVmWithPortalFile {
+        version: u16,
+        entry_id: String,
+        writable: bool,
     },
     /// The portal-selected descriptor accompanies this frame via `SCM_RIGHTS`.
     Install {

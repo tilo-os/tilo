@@ -197,6 +197,68 @@ pub trait VmPortalAuthority: Send + Sync {
         workspace_id: &str,
         capabilities: &CapabilityPlan,
     ) -> Result<windows_vm::VmLaunchGrants, windows_vm::LaunchError>;
+
+    fn register_portal_file(
+        &self,
+        _app_id: &str,
+        _workspace_id: &str,
+        _source: std::fs::File,
+        _access: windows_vm::PortalDocumentAccess,
+    ) -> Result<windows_vm::PortalDocumentGrant, windows_vm::LaunchError> {
+        Err(windows_vm::LaunchError::CapabilityBroker(
+            "this Windows presentation has no portal file bridge".to_string(),
+        ))
+    }
+}
+
+/// Native-RAIL authority backed by the same opaque descriptor registry as the
+/// drive broker. The only input is the already-open portal descriptor.
+pub struct PortalRailPortalAuthority {
+    native_rail: bool,
+    documents: std::sync::Arc<windows_vm::PortalDocumentStore>,
+}
+
+impl PortalRailPortalAuthority {
+    #[must_use]
+    pub fn new(
+        presentation: windows_vm::ApplicationPresentation,
+        documents: std::sync::Arc<windows_vm::PortalDocumentStore>,
+    ) -> Self {
+        Self {
+            native_rail: presentation == windows_vm::ApplicationPresentation::NativeRail,
+            documents,
+        }
+    }
+}
+
+impl VmPortalAuthority for PortalRailPortalAuthority {
+    fn grants_for(
+        &self,
+        app_id: &str,
+        workspace_id: &str,
+        capabilities: &CapabilityPlan,
+    ) -> Result<windows_vm::VmLaunchGrants, windows_vm::LaunchError> {
+        CanonicalRailPortalAuthority {
+            native_rail: self.native_rail,
+        }
+        .grants_for(app_id, workspace_id, capabilities)
+    }
+
+    fn register_portal_file(
+        &self,
+        app_id: &str,
+        workspace_id: &str,
+        source: std::fs::File,
+        access: windows_vm::PortalDocumentAccess,
+    ) -> Result<windows_vm::PortalDocumentGrant, windows_vm::LaunchError> {
+        if !self.native_rail {
+            return Err(windows_vm::LaunchError::CapabilityBroker(
+                "portal file drives require native RAIL".to_string(),
+            ));
+        }
+        self.documents
+            .register(workspace_id, app_id, source, access)
+    }
 }
 
 /// Live projection of canonical qOS grants which have an exact RAIL
@@ -252,16 +314,31 @@ impl VmPortalAuthority for CanonicalRailPortalAuthority {
 /// only the materialised result.
 pub struct CanonicalRailCapabilityBroker {
     next: AtomicU64,
-    /// Keeping a proxy here is the lease: removing it closes the host-only
-    /// listener and drops all authenticated guest egress immediately.
-    network_leases: Mutex<BTreeMap<String, windows_vm::GuestNetworkProxy>>,
+    network_leases: Mutex<Option<SharedNetworkProxy>>,
+}
+
+struct SharedNetworkProxy {
+    proxy: windows_vm::GuestNetworkProxy,
+    leases: BTreeMap<String, Vec<String>>,
+}
+
+impl SharedNetworkProxy {
+    fn union(&self) -> Vec<String> {
+        self.leases
+            .values()
+            .flatten()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
 }
 
 impl Default for CanonicalRailCapabilityBroker {
     fn default() -> Self {
         Self {
             next: AtomicU64::new(0),
-            network_leases: Mutex::new(BTreeMap::new()),
+            network_leases: Mutex::new(None),
         }
     }
 }
@@ -281,25 +358,33 @@ impl windows_vm::CapabilityBroker for CanonicalRailCapabilityBroker {
         let sequence = self.next.fetch_add(1, Ordering::Relaxed);
         let lease_id = format!("rail-{}-{sequence}", std::process::id());
         let (network_proxy, network_binding) = if request.grants.network {
-            // The guest's one managed Windows user has one loopback proxy
-            // endpoint. Until the guest proxy grows a union-aware multiplexed
-            // control plane, serialize network-bearing RAIL leases rather
-            // than allow a second launch to replace another app's proxy.
-            let mut leases = self.network_leases.lock().map_err(|_| {
+            let mut slot = self.network_leases.lock().map_err(|_| {
                 windows_vm::LaunchError::CapabilityBroker(
                     "Windows network lease state is unavailable".to_string(),
                 )
             })?;
-            if !leases.is_empty() {
-                return Err(windows_vm::LaunchError::CapabilityBroker(
-                    "another shared Windows application already holds the session network lease"
-                        .to_string(),
-                ));
-            }
-            let proxy = windows_vm::GuestNetworkProxy::start(request.grants.network_hosts.clone())
+            let session = if let Some(session) = slot.as_mut() {
+                session
+            } else {
+                *slot = Some(SharedNetworkProxy {
+                    proxy: windows_vm::GuestNetworkProxy::start(
+                        request.grants.network_hosts.clone(),
+                    )
+                    .map_err(|error| {
+                        windows_vm::LaunchError::CapabilityBroker(error.to_string())
+                    })?,
+                    leases: BTreeMap::new(),
+                });
+                slot.as_mut().expect("network proxy was just installed")
+            };
+            session
+                .leases
+                .insert(lease_id.clone(), request.grants.network_hosts.clone());
+            session
+                .proxy
+                .replace_hosts(session.union())
                 .map_err(|error| windows_vm::LaunchError::CapabilityBroker(error.to_string()))?;
-            let binding = proxy.binding().clone();
-            leases.insert(lease_id.clone(), proxy);
+            let binding = session.proxy.binding().clone();
             (true, Some(binding))
         } else {
             (false, None)
@@ -315,10 +400,17 @@ impl windows_vm::CapabilityBroker for CanonicalRailCapabilityBroker {
     }
 
     fn revoke(&self, lease_id: &str) {
-        if let Ok(mut leases) = self.network_leases.lock() {
-            // Drop before returning: listener and token cease to exist before
-            // the shared-session UI says the lease is gone.
-            leases.remove(lease_id);
+        if let Ok(mut slot) = self.network_leases.lock()
+            && let Some(session) = slot.as_mut()
+        {
+            session.leases.remove(lease_id);
+            if session.leases.is_empty() {
+                // Drop before returning: listener and token cease to exist
+                // before shared-session UI removes the last lease.
+                *slot = None;
+            } else {
+                let _ = session.proxy.replace_hosts(session.union());
+            }
         }
     }
 }
@@ -962,6 +1054,40 @@ where
             // `published_application_id` is a server-owned registered
             // program id. `WindowsAppliance` additionally requires it to be
             // present in the authenticated guest catalogue before launch.
+            application_id: request.published_application_id.to_string(),
+            grants,
+        })
+    }
+
+    fn launch_with_portal_file(
+        &self,
+        request: VmRouteRequest<'_>,
+        source: File,
+        access: windows_vm::PortalDocumentAccess,
+    ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
+        let _launch_guard = self.launch_gate.lock().map_err(|_| {
+            windows_vm::LaunchError::CapabilityBroker(
+                "singleton Windows launch gate is unavailable".to_string(),
+            )
+        })?;
+        if request.route != crate::RouteKind::Vm {
+            return Err(windows_vm::LaunchError::InvalidRequest("VM route"));
+        }
+        let mut grants = self.portal.grants_for(
+            request.app_id,
+            request.workspace_id,
+            request.resolved_capabilities,
+        )?;
+        let document = self.portal.register_portal_file(
+            request.app_id,
+            request.workspace_id,
+            source,
+            access,
+        )?;
+        grants.portal_documents.push(document);
+        validate_portal_projection(&grants, request.resolved_capabilities)?;
+        self.appliance.launch(&windows_vm::LaunchRequest {
+            workspace_id: request.workspace_id.to_string(),
             application_id: request.published_application_id.to_string(),
             grants,
         })

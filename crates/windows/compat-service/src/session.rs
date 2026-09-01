@@ -679,6 +679,7 @@ where
         ProtocolRequest::List { version }
         | ProtocolRequest::Launch { version, .. }
         | ProtocolRequest::LaunchVmFallback { version, .. }
+        | ProtocolRequest::LaunchVmWithPortalFile { version, .. }
         | ProtocolRequest::Install { version, .. }
         | ProtocolRequest::InstallInVm { version, .. }
         | ProtocolRequest::InstallInCapsule { version, .. }
@@ -704,6 +705,7 @@ where
         ProtocolRequest::Install { .. }
             | ProtocolRequest::InstallInVm { .. }
             | ProtocolRequest::InstallInCapsule { .. }
+            | ProtocolRequest::LaunchVmWithPortalFile { .. }
     );
     if has_descriptor != expects_descriptor {
         return ProtocolResponse::Error {
@@ -768,6 +770,34 @@ where
             } else {
                 Err(SessionError::UnknownEntry)
             }
+        }
+        ProtocolRequest::LaunchVmWithPortalFile {
+            entry_id, writable, ..
+        } => {
+            let application = managed
+                .vm_inventory()
+                .applications
+                .into_iter()
+                .find(|app| app.entry_id == entry_id)
+                .ok_or(SessionError::UnknownEntry)?;
+            let capabilities = authority
+                .capabilities_for(&handoff.workspace_id, &application.app_id)
+                .map_err(SessionError::Authority)?;
+            let source = File::from(descriptor.ok_or(SessionError::DescriptorMissing)?);
+            managed
+                .launch_published_vm_with_portal_file(
+                    &application,
+                    &handoff.workspace_id,
+                    &capabilities,
+                    now_unix(),
+                    source,
+                    if writable {
+                        windows_vm::PortalDocumentAccess::ReadWrite
+                    } else {
+                        windows_vm::PortalDocumentAccess::ReadOnly
+                    },
+                )
+                .map(|receipt| ProtocolResponse::Launched { receipt })
         }
         ProtocolRequest::Install { source_name, .. } => {
             let capabilities = authority
