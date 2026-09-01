@@ -583,8 +583,10 @@ impl InstallProfile {
     /// the interactive flow uses, serialised so a machine can replay them
     /// with no operator present.
     ///
-    /// The format is a small, self-describing TOML-ish document; the real
-    /// installer ([`crate::write`]) consumes exactly these keys.
+    /// The format is a small, self-describing TOML-ish document. It is an
+    /// auditable export contract; transport into and consumption by the live
+    /// installer remain a release gate, so the imager must not claim that
+    /// writing a medium applied this file.
     pub fn to_headless_config(
         &self,
         source: Option<&Source>,
