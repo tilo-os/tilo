@@ -144,9 +144,14 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
             chmod 1777 "$rootfs/tmp" "$rootfs/var/tmp"
             if [[ $distro == arch ]]; then
                 # The Arch OCI layers omit package-manager state directories
-                # when they are empty. pacman requires both before its first
-                # database synchronization in an exported userspace.
-                mkdir -p "$rootfs/var/lib/pacman/sync" \
+                # when they are empty. Initialize the complete local and sync
+                # database hierarchy with explicit searchable permissions;
+                # libalpm validates DBPath before it can create either child.
+                install -d -m 0755 \
+                    "$rootfs/var/lib/pacman" \
+                    "$rootfs/var/lib/pacman/local" \
+                    "$rootfs/var/lib/pacman/sync" \
+                    "$rootfs/var/cache/pacman" \
                     "$rootfs/var/cache/pacman/pkg"
             fi
             if [[ $distro == ubuntu-24.04 || $distro == debian-13 ]]; then
@@ -302,7 +307,12 @@ arch)
     sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
     # Empty directories are not represented in an OCI layer and can disappear
     # when the ARM image is exported rather than started by Docker.
-    mkdir -p /var/lib/pacman/sync /var/cache/pacman/pkg
+    install -d -m 0755 \
+        /var/lib/pacman \
+        /var/lib/pacman/local \
+        /var/lib/pacman/sync \
+        /var/cache/pacman \
+        /var/cache/pacman/pkg
     stage=install-dependencies
     dist/ci/install-build-deps.sh arch
     stage=install-compiler-cache
@@ -328,7 +338,16 @@ arch)
     cp dist/arch/build/*.pkg.tar.zst /artifacts/
     ;;
 nix)
-    export NIX_CONFIG=$'experimental-features = nix-command flakes\nsandbox = false\ncores = 2'
+    nix_config=$'experimental-features = nix-command flakes\nsandbox = false\ncores = 2'
+    if [[ $arch == arm64 ]]; then
+        # Nix's Linux seccomp filter is installed by the emulated guest. Under
+        # qemu-user/PRoot it filters the emulator's host syscalls instead and
+        # deterministically SIGKILLs Nix while realizing the first store paths.
+        # Keep filtering enabled for native builds and disable it only in this
+        # architecture-emulated CI userspace.
+        nix_config+=$'\nfilter-syscalls = false'
+    fi
+    export NIX_CONFIG=$nix_config
     stage=install-nix-tools
     nix-env -iA nixpkgs.gzip nixpkgs.file
     stage=build-nix
