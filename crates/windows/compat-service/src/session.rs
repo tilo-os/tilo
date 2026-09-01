@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -51,7 +52,13 @@ pub trait CapabilityAuthority: Send + Sync + 'static {
 /// are only corroboration; this record is the authority that a launch was
 /// actually initiated by qOS for this app/workspace.
 pub trait TrustedLauncherRegistry: Send + Sync + 'static {
-    fn consume(&self, pid: u32, process_start_time: u64, app_id: &str, workspace_id: &str) -> bool;
+    fn consume(
+        &self,
+        pid: u32,
+        process_start_time: u64,
+        app_id: &str,
+        workspace_id: &str,
+    ) -> Option<BTreeSet<String>>;
 }
 
 pub struct ManagedCompatibility<R, B, E, V> {
@@ -191,7 +198,7 @@ impl LauncherAuthenticator {
         &self,
         stream: &UnixStream,
         handoff: &SessionHandoff,
-    ) -> Result<(), SessionError> {
+    ) -> Result<BTreeSet<String>, SessionError> {
         let credentials = peer_credentials(stream)?;
         let pid = u32::try_from(credentials.pid).map_err(|_| SessionError::UnauthenticatedPeer)?;
         let start_time = process_start_time(pid)?;
@@ -199,11 +206,11 @@ impl LauncherAuthenticator {
         // may reach connect first on another CPU. Wait briefly for that one
         // parent-side insertion, never for an unregistered identity change.
         for _ in 0..20 {
-            if self
-                .registry
-                .consume(pid, start_time, &handoff.app_id, &handoff.workspace_id)
+            if let Some(entry_ids) =
+                self.registry
+                    .consume(pid, start_time, &handoff.app_id, &handoff.workspace_id)
             {
-                return Ok(());
+                return Ok(entry_ids);
             }
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -359,7 +366,7 @@ where
 {
     let handoff: SessionHandoff = read_frame(&mut stream, MAX_HANDOFF_BYTES)?;
     validate_handoff(&handoff)?;
-    authenticator.consume_handoff(&stream, &handoff)?;
+    let allowed_entry_ids = authenticator.consume_handoff(&stream, &handoff)?;
     loop {
         let request = match read_frame::<ProtocolRequest>(&mut stream, MAX_FRAME_BYTES) {
             Ok(request) => request,
@@ -368,7 +375,7 @@ where
             }
             Err(error) => return Err(error),
         };
-        let response = handle_request(managed, authority, &handoff, request);
+        let response = handle_request(managed, authority, &handoff, &allowed_entry_ids, request);
         write_frame(&mut stream, &response, MAX_FRAME_BYTES)?;
     }
 }
@@ -387,6 +394,7 @@ fn handle_request<R, B, E, V>(
     managed: &ManagedCompatibility<R, B, E, V>,
     authority: &dyn CapabilityAuthority,
     handoff: &SessionHandoff,
+    allowed_entry_ids: &BTreeSet<String>,
     request: ProtocolRequest,
 ) -> ProtocolResponse
 where
@@ -405,7 +413,9 @@ where
         };
     }
     let result: Result<ProtocolResponse, SessionError> = (|| match request {
-        ProtocolRequest::List { .. } => list_applications(managed, authority, handoff),
+        ProtocolRequest::List { .. } => {
+            list_applications(managed, authority, handoff, allowed_entry_ids)
+        }
         ProtocolRequest::Resolve(request) => {
             managed
                 .preview(&request.query)
@@ -415,7 +425,7 @@ where
                 })
         }
         ProtocolRequest::Launch { entry_id, .. } => {
-            if valid_id(&entry_id) {
+            if valid_id(&entry_id) && allowed_entry_ids.contains(&entry_id) {
                 let entry = managed
                     .entries()?
                     .into_iter()
@@ -441,6 +451,7 @@ fn list_applications<R, B, E, V>(
     managed: &ManagedCompatibility<R, B, E, V>,
     authority: &dyn CapabilityAuthority,
     handoff: &SessionHandoff,
+    allowed_entry_ids: &BTreeSet<String>,
 ) -> Result<ProtocolResponse, SessionError>
 where
     R: RuntimeRegistry,
@@ -449,7 +460,11 @@ where
     V: VmDelegate,
 {
     let mut applications = Vec::new();
-    for entry in managed.entries()? {
+    for entry in managed
+        .entries()?
+        .into_iter()
+        .filter(|entry| allowed_entry_ids.contains(&entry.entry_id))
+    {
         let capabilities = authority
             .capabilities_for(&handoff.workspace_id, &entry.app_id)
             .map_err(SessionError::Authority)?;
@@ -655,8 +670,8 @@ mod tests {
     struct DenyRegistry;
 
     impl TrustedLauncherRegistry for DenyRegistry {
-        fn consume(&self, _: u32, _: u64, _: &str, _: &str) -> bool {
-            false
+        fn consume(&self, _: u32, _: u64, _: &str, _: &str) -> Option<BTreeSet<String>> {
+            None
         }
     }
 }
