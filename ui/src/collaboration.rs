@@ -1644,6 +1644,10 @@ async fn send_document_mutation(
     clippy::future_not_send,
     reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the request variants share one ordered dispatch boundary onto the SDK route"
+)]
 async fn dispatch_sdk_request(
     route: &SdkRoute,
     request: CollabRequest,

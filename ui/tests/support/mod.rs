@@ -185,11 +185,10 @@ pub fn pump(relay: &mut MemoryRelay) {
                     });
                 }
             }
-            CollabRequest::Hello { .. } => {
-                // no fan-out in tests
-            }
-            CollabRequest::PublishActions { .. } | CollabRequest::CompleteInvocation { .. } => {
-                // The memory relay has no shell-owned action directory.
+            CollabRequest::Hello { .. }
+            | CollabRequest::PublishActions { .. }
+            | CollabRequest::CompleteInvocation { .. } => {
+                // The memory relay has no fan-out or shell-owned action directory.
             }
         }
     }
