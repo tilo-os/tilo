@@ -117,6 +117,9 @@ pub struct WindowsApp {
     pub can_remove_launcher: bool,
     pub can_vendor_uninstall: bool,
     pub can_delete_data: bool,
+    /// This row is a discovered, not-yet-published application from the
+    /// managed installer operation. Its `id` remains server-owned.
+    pub can_publish_vm_candidate: bool,
     pub installation_detail: Option<String>,
     pub vm_fallback_available: bool,
     pub vm_fallback_unavailable_reason: Option<String>,
@@ -152,6 +155,14 @@ pub struct ApplianceState {
 pub struct Catalogue {
     pub apps: Vec<WindowsApp>,
     pub vm: ApplianceState,
+    pub vm_install_confirmation: Option<VmInstallConfirmation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VmInstallConfirmation {
+    pub display_name: String,
+    pub detail: String,
+    pub recommended_route: Route,
 }
 
 impl Catalogue {

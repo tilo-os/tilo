@@ -7,10 +7,13 @@ use std::time::{Duration, Instant};
 
 use compat_service::{
     InstallationStatus, ManagedApplication, ManagedInstallation, MatchReason, PROTOCOL_VERSION,
-    ProtocolRequest, ProtocolResponse, RouteKind, SessionClient, VmAvailability,
+    ProtocolRequest, ProtocolResponse, RouteKind, SessionClient, VmAvailability, VmInstallation,
 };
 
-use crate::model::{AppStatus, ApplianceState, Catalogue, Confidence, Grant, Route, WindowsApp};
+use crate::model::{
+    AppStatus, ApplianceState, Catalogue, Confidence, Grant, Route, VmInstallConfirmation,
+    WindowsApp,
+};
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -35,6 +38,10 @@ pub trait CompatibilityProvider: Send {
     ///
     /// Returns an error when the worker cannot accept the descriptor.
     fn install(&mut self, source: File, source_name: &str) -> Result<(), String>;
+    fn confirm_capsule_install(&mut self) -> Result<(), String>;
+    fn confirm_vm_install(&mut self) -> Result<(), String>;
+    fn publish_vm_candidate(&mut self, entry_id: &str) -> Result<(), String>;
+    fn vendor_uninstall_vm(&mut self, entry_id: &str) -> Result<(), String>;
     /// Retry setup from the retained digest-pinned installer.
     ///
     /// # Errors
@@ -106,6 +113,7 @@ impl CompatibilityProvider for EmptyProvider {
                 detail: self.detail.clone(),
                 running_apps: 0,
             },
+            vm_install_confirmation: None,
         }
     }
 
@@ -118,6 +126,22 @@ impl CompatibilityProvider for EmptyProvider {
     }
 
     fn install(&mut self, _source: File, _source_name: &str) -> Result<(), String> {
+        Err(self.detail.clone())
+    }
+
+    fn confirm_capsule_install(&mut self) -> Result<(), String> {
+        Err(self.detail.clone())
+    }
+
+    fn confirm_vm_install(&mut self) -> Result<(), String> {
+        Err(self.detail.clone())
+    }
+
+    fn publish_vm_candidate(&mut self, _entry_id: &str) -> Result<(), String> {
+        Err(self.detail.clone())
+    }
+
+    fn vendor_uninstall_vm(&mut self, _entry_id: &str) -> Result<(), String> {
         Err(self.detail.clone())
     }
 
@@ -165,10 +189,10 @@ impl SampleProvider {
         };
         Self { catalogue: Catalogue {
             apps: vec![
-                WindowsApp { id: "adobe-reader".into(), name: "Adobe Acrobat Reader".into(), publisher: "Adobe".into(), route: Route::Wine, recommended_route: Route::Wine, runner: "Wine 11.0 (qOS pinned)".into(), capsule: "Adobe Reader".into(), prefix: "capsules/adobe-reader".into(), catalogue_source: "qOS compatibility catalogue".into(), confidence: Confidence::Verified, reason: "Verified desktop-app recipe; isolated Wine capsule is the smallest compatible layer.".into(), status: AppStatus::Ready, grants: grants(&[("Downloads", "Read and write", true), ("Clipboard", "On demand", true), ("Camera", "Not granted", false)]), fallback_detail: "If it stops working, repair this capsule or open it in the managed Windows VM.".into(), launch_available: true, launch_unavailable_reason: None, route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, installation_detail: Some("Installed in a private capsule.".into()), vm_fallback_available: true, vm_fallback_unavailable_reason: None },
-                WindowsApp { id: "cyberpunk-2077".into(), name: "Cyberpunk 2077".into(), publisher: "CD PROJEKT RED".into(), route: Route::Proton, recommended_route: Route::Proton, runner: "UMU-Proton 10.0-3".into(), capsule: "Steam · Cyberpunk 2077".into(), prefix: "games/cyberpunk-2077".into(), catalogue_source: "Steam + ProtonDB recipe".into(), confidence: Confidence::Community, reason: "Game route uses Steam Runtime and UMU-Proton, including the game's known compatibility fixups.".into(), status: AppStatus::Running, grants: grants(&[("Games library", "Read and write", true), ("Controller", "Connected devices", true), ("Microphone", "Not granted", false)]), fallback_detail: "The Windows VM is offered only after Proton repair options are exhausted.".into(), launch_available: true, launch_unavailable_reason: None, route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, installation_detail: Some("Installed in a private capsule.".into()), vm_fallback_available: true, vm_fallback_unavailable_reason: None },
-                WindowsApp { id: "visual-studio".into(), name: "Visual Studio".into(), publisher: "Microsoft".into(), route: Route::Vm, recommended_route: Route::Vm, runner: "Windows 11 managed VM".into(), capsule: "Windows workspace".into(), prefix: "vm/windows-workspace".into(), catalogue_source: "qOS fallback policy".into(), confidence: Confidence::Fallback, reason: "Requires Windows services not safely reproduced in a Wine capsule; it opens as an integrated guest app.".into(), status: AppStatus::Ready, grants: grants(&[("Workspace exchange", "Selected files only", true), ("Clipboard", "On demand", true), ("USB devices", "Not granted", false)]), fallback_detail: "One shared VM is suspended when idle. Its desktop is used only for setup or recovery.".into(), launch_available: true, launch_unavailable_reason: None, route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, installation_detail: Some("Managed by the fallback appliance.".into()), vm_fallback_available: true, vm_fallback_unavailable_reason: None },
-            ], vm: ApplianceState { ready: true, detail: "Managed Windows workspace · suspended when idle · 2 guest apps available".into(), running_apps: 0 } } }
+                WindowsApp { id: "adobe-reader".into(), name: "Adobe Acrobat Reader".into(), publisher: "Adobe".into(), route: Route::Wine, recommended_route: Route::Wine, runner: "Wine 11.0 (qOS pinned)".into(), capsule: "Adobe Reader".into(), prefix: "capsules/adobe-reader".into(), catalogue_source: "qOS compatibility catalogue".into(), confidence: Confidence::Verified, reason: "Verified desktop-app recipe; isolated Wine capsule is the smallest compatible layer.".into(), status: AppStatus::Ready, grants: grants(&[("Downloads", "Read and write", true), ("Clipboard", "On demand", true), ("Camera", "Not granted", false)]), fallback_detail: "If it stops working, repair this capsule or open it in the managed Windows VM.".into(), launch_available: true, launch_unavailable_reason: None, route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed in a private capsule.".into()), vm_fallback_available: true, vm_fallback_unavailable_reason: None },
+                WindowsApp { id: "cyberpunk-2077".into(), name: "Cyberpunk 2077".into(), publisher: "CD PROJEKT RED".into(), route: Route::Proton, recommended_route: Route::Proton, runner: "UMU-Proton 10.0-3".into(), capsule: "Steam · Cyberpunk 2077".into(), prefix: "games/cyberpunk-2077".into(), catalogue_source: "Steam + ProtonDB recipe".into(), confidence: Confidence::Community, reason: "Game route uses Steam Runtime and UMU-Proton, including the game's known compatibility fixups.".into(), status: AppStatus::Running, grants: grants(&[("Games library", "Read and write", true), ("Controller", "Connected devices", true), ("Microphone", "Not granted", false)]), fallback_detail: "The Windows VM is offered only after Proton repair options are exhausted.".into(), launch_available: true, launch_unavailable_reason: None, route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed in a private capsule.".into()), vm_fallback_available: true, vm_fallback_unavailable_reason: None },
+                WindowsApp { id: "visual-studio".into(), name: "Visual Studio".into(), publisher: "Microsoft".into(), route: Route::Vm, recommended_route: Route::Vm, runner: "Windows 11 managed VM".into(), capsule: "Windows workspace".into(), prefix: "vm/windows-workspace".into(), catalogue_source: "qOS fallback policy".into(), confidence: Confidence::Fallback, reason: "Requires Windows services not safely reproduced in a Wine capsule; it opens as an integrated guest app.".into(), status: AppStatus::Ready, grants: grants(&[("Workspace exchange", "Selected files only", true), ("Clipboard", "On demand", true), ("USB devices", "Not granted", false)]), fallback_detail: "One shared VM is suspended when idle. Its desktop is used only for setup or recovery.".into(), launch_available: true, launch_unavailable_reason: None, route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Managed by the fallback appliance.".into()), vm_fallback_available: true, vm_fallback_unavailable_reason: None },
+            ], vm: ApplianceState { ready: true, detail: "Managed Windows workspace · suspended when idle · 2 guest apps available".into(), running_apps: 0 }, vm_install_confirmation: None } }
     }
 }
 impl Default for SampleProvider {
@@ -219,10 +243,24 @@ impl CompatibilityProvider for SampleProvider {
             can_remove_launcher: false,
             can_vendor_uninstall: false,
             can_delete_data: false,
+            can_publish_vm_candidate: false,
             installation_detail: Some("Installing…".into()),
             vm_fallback_available: false,
             vm_fallback_unavailable_reason: Some("Setup is still running.".into()),
         });
+        Ok(())
+    }
+    fn confirm_capsule_install(&mut self) -> Result<(), String> {
+        Err("Choose an installer first.".into())
+    }
+    fn confirm_vm_install(&mut self) -> Result<(), String> {
+        Err("Choose an installer first.".into())
+    }
+    fn publish_vm_candidate(&mut self, _entry_id: &str) -> Result<(), String> {
+        Err("No managed Windows installation is awaiting publication.".into())
+    }
+    fn vendor_uninstall_vm(&mut self, app_id: &str) -> Result<(), String> {
+        self.catalogue.apps.retain(|app| app.id != app_id);
         Ok(())
     }
     fn retry_install(&mut self, capsule_id: &str) -> Result<(), String> {
@@ -283,9 +321,13 @@ enum WorkerCommand {
     Launch(String),
     LaunchVmFallback(String),
     Install { source: File, source_name: String },
+    InstallInCapsule { source: File, source_name: String },
+    InstallInVm { source: File, source_name: String },
+    PublishVmCandidate(String),
     RetryInstall(String),
     RemoveLauncher(String),
     VendorUninstall(String),
+    VendorUninstallVm(String),
     DeleteData(String),
 }
 
@@ -294,6 +336,12 @@ enum WorkerEvent {
         applications: Vec<ManagedApplication>,
         installations: Vec<ManagedInstallation>,
         vm_availability: VmAvailability,
+        vm_installation: Option<VmInstallation>,
+    },
+    VmInstallConfirmation {
+        source: File,
+        source_name: String,
+        confirmation: compat_service::VmInstallConfirmation,
     },
     Unavailable(String),
     Notice(String),
@@ -306,6 +354,7 @@ pub struct LiveProvider {
     refresh_pending: bool,
     next_refresh: Instant,
     notice: Option<String>,
+    pending_vm_install: Option<(File, String)>,
 }
 
 impl LiveProvider {
@@ -340,6 +389,7 @@ impl LiveProvider {
             refresh_pending: true,
             next_refresh: Instant::now() + REFRESH_INTERVAL,
             notice: None,
+            pending_vm_install: None,
         })
     }
 
@@ -350,9 +400,14 @@ impl LiveProvider {
                     applications,
                     installations,
                     vm_availability,
+                    vm_installation,
                 } => {
-                    self.cached =
-                        catalogue_from_managed(applications, &installations, vm_availability);
+                    self.cached = catalogue_from_managed(
+                        applications,
+                        &installations,
+                        vm_availability,
+                        vm_installation,
+                    );
                     self.refresh_pending = false;
                     self.next_refresh = Instant::now() + REFRESH_INTERVAL;
                 }
@@ -365,6 +420,19 @@ impl LiveProvider {
                     self.notice = Some(detail);
                 }
                 WorkerEvent::Notice(detail) => self.notice = Some(detail),
+                WorkerEvent::VmInstallConfirmation {
+                    source,
+                    source_name,
+                    confirmation,
+                } => {
+                    self.pending_vm_install = Some((source, source_name));
+                    self.notice = Some(confirmation.detail.clone());
+                    self.cached.vm_install_confirmation = Some(VmInstallConfirmation {
+                        display_name: confirmation.display_name,
+                        detail: confirmation.detail,
+                        recommended_route: route_from_kind(confirmation.recommended_route),
+                    });
+                }
             }
         }
     }
@@ -444,6 +512,7 @@ impl CompatibilityProvider for LiveProvider {
             can_remove_launcher: false,
             can_vendor_uninstall: false,
             can_delete_data: false,
+            can_publish_vm_candidate: false,
             installation_detail: Some("Validating and installing…".into()),
             vm_fallback_available: false,
             vm_fallback_unavailable_reason: Some("Setup is still running.".into()),
@@ -453,6 +522,46 @@ impl CompatibilityProvider for LiveProvider {
                 source,
                 source_name: source_name.to_string(),
             })
+            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+    }
+
+    fn confirm_capsule_install(&mut self) -> Result<(), String> {
+        let (source, source_name) = self
+            .pending_vm_install
+            .take()
+            .ok_or_else(|| "Choose an installer before confirming a destination.".to_string())?;
+        self.cached.vm_install_confirmation = None;
+        self.commands
+            .send(WorkerCommand::InstallInCapsule {
+                source,
+                source_name,
+            })
+            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+    }
+
+    fn confirm_vm_install(&mut self) -> Result<(), String> {
+        let (source, source_name) = self
+            .pending_vm_install
+            .take()
+            .ok_or_else(|| "Choose an installer before confirming a destination.".to_string())?;
+        self.cached.vm_install_confirmation = None;
+        self.commands
+            .send(WorkerCommand::InstallInVm {
+                source,
+                source_name,
+            })
+            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+    }
+
+    fn publish_vm_candidate(&mut self, entry_id: &str) -> Result<(), String> {
+        self.commands
+            .send(WorkerCommand::PublishVmCandidate(entry_id.to_string()))
+            .map_err(|_| "The compatibility service worker has stopped.".to_string())
+    }
+
+    fn vendor_uninstall_vm(&mut self, entry_id: &str) -> Result<(), String> {
+        self.commands
+            .send(WorkerCommand::VendorUninstallVm(entry_id.to_string()))
             .map_err(|_| "The compatibility service worker has stopped.".to_string())
     }
 
@@ -512,6 +621,27 @@ fn worker(
     while let Ok(command) = commands.recv() {
         match command {
             WorkerCommand::Refresh => {
+                // A setup surface can be closed while Windows keeps working.
+                // Refreshing the server-owned singleton status before listing
+                // prevents discovery rows from being permanently stale; the
+                // client never supplies an operation ID.
+                match client.request(&ProtocolRequest::RefreshVmInstallation {
+                    version: PROTOCOL_VERSION,
+                }) {
+                    Ok(ProtocolResponse::VmInstallationRefreshed { .. }) => {}
+                    Ok(ProtocolResponse::Error { error }) => {
+                        let _ = events.send(WorkerEvent::Notice(error.message));
+                    }
+                    Ok(_) => {
+                        let _ = events.send(WorkerEvent::Notice(
+                            "The compatibility service returned an invalid Windows setup refresh."
+                                .into(),
+                        ));
+                    }
+                    Err(error) => {
+                        let _ = events.send(WorkerEvent::Notice(error.to_string()));
+                    }
+                }
                 let event = match client.request(&ProtocolRequest::List {
                     version: PROTOCOL_VERSION,
                 }) {
@@ -519,10 +649,12 @@ fn worker(
                         applications,
                         installations,
                         vm_availability,
+                        vm_installation,
                     }) => WorkerEvent::Listed {
                         applications,
                         installations,
                         vm_availability,
+                        vm_installation,
                     },
                     Ok(ProtocolResponse::Error { error }) => {
                         WorkerEvent::Unavailable(error.message)
@@ -593,10 +725,17 @@ fn worker(
                 let event = match client.request_with_file(
                     &ProtocolRequest::Install {
                         version: PROTOCOL_VERSION,
-                        source_name,
+                        source_name: source_name.clone(),
                     },
                     &source,
                 ) {
+                    Ok(ProtocolResponse::VmInstallConfirmation { confirmation }) => {
+                        WorkerEvent::VmInstallConfirmation {
+                            source,
+                            source_name,
+                            confirmation,
+                        }
+                    }
                     Ok(ProtocolResponse::Installed { receipt }) => {
                         WorkerEvent::Notice(receipt.detail)
                     }
@@ -606,8 +745,12 @@ fn worker(
                     ),
                     Err(error) => WorkerEvent::Unavailable(error.to_string()),
                 };
+                let needs_confirmation = matches!(event, WorkerEvent::VmInstallConfirmation { .. });
                 if events.send(event).is_err() {
                     return;
+                }
+                if needs_confirmation {
+                    continue;
                 }
                 let refresh = match client.request(&ProtocolRequest::List {
                     version: PROTOCOL_VERSION,
@@ -616,10 +759,12 @@ fn worker(
                         applications,
                         installations,
                         vm_availability,
+                        vm_installation,
                     }) => WorkerEvent::Listed {
                         applications,
                         installations,
                         vm_availability,
+                        vm_installation,
                     },
                     Ok(ProtocolResponse::Error { error }) => {
                         WorkerEvent::Unavailable(error.message)
@@ -632,6 +777,47 @@ fn worker(
                 if events.send(refresh).is_err() {
                     return;
                 }
+            }
+            WorkerCommand::InstallInCapsule {
+                source,
+                source_name,
+            } => {
+                install_destination_request(
+                    &mut client,
+                    events,
+                    ProtocolRequest::InstallInCapsule {
+                        version: PROTOCOL_VERSION,
+                        source_name,
+                    },
+                    source,
+                    "Private capsule setup started.",
+                );
+            }
+            WorkerCommand::InstallInVm {
+                source,
+                source_name,
+            } => {
+                install_destination_request(
+                    &mut client,
+                    events,
+                    ProtocolRequest::InstallInVm {
+                        version: PROTOCOL_VERSION,
+                        source_name,
+                    },
+                    source,
+                    "Windows setup finished or is still running in its integrated app surface.",
+                );
+            }
+            WorkerCommand::PublishVmCandidate(entry_id) => {
+                lifecycle_request(
+                    &mut client,
+                    events,
+                    &ProtocolRequest::PublishVmCandidate {
+                        version: PROTOCOL_VERSION,
+                        entry_id,
+                    },
+                    "Application added to Windows Apps.",
+                );
             }
             WorkerCommand::RetryInstall(capsule_id) => {
                 lifecycle_request(
@@ -666,6 +852,17 @@ fn worker(
                     "Vendor uninstall finished; private leftover data was kept.",
                 );
             }
+            WorkerCommand::VendorUninstallVm(entry_id) => {
+                lifecycle_request(
+                    &mut client,
+                    events,
+                    &ProtocolRequest::VendorUninstallVm {
+                        version: PROTOCOL_VERSION,
+                        entry_id,
+                    },
+                    "Windows uninstall finished; the published application was removed.",
+                );
+            }
             WorkerCommand::DeleteData(capsule_id) => {
                 lifecycle_request(
                     &mut client,
@@ -681,6 +878,37 @@ fn worker(
     }
 }
 
+fn install_destination_request(
+    client: &mut SessionClient,
+    events: &Sender<WorkerEvent>,
+    request: ProtocolRequest,
+    source: File,
+    success: &str,
+) {
+    let event = match client.request_with_file(&request, &source) {
+        Ok(ProtocolResponse::Installed { receipt }) => WorkerEvent::Notice(receipt.detail),
+        Ok(ProtocolResponse::VmInstallStarted { installation }) => {
+            WorkerEvent::Notice(installation.detail)
+        }
+        Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
+        Ok(_) => WorkerEvent::Unavailable(
+            "The compatibility service returned an invalid installer response.".into(),
+        ),
+        Err(error) => WorkerEvent::Unavailable(error.to_string()),
+    };
+    if events.send(event).is_err() {
+        return;
+    }
+    lifecycle_request(
+        client,
+        events,
+        &ProtocolRequest::List {
+            version: PROTOCOL_VERSION,
+        },
+        success,
+    );
+}
+
 fn lifecycle_request(
     client: &mut SessionClient,
     events: &Sender<WorkerEvent>,
@@ -688,12 +916,25 @@ fn lifecycle_request(
     success: &str,
 ) {
     let event = match client.request(request) {
+        Ok(ProtocolResponse::Listed {
+            applications,
+            installations,
+            vm_availability,
+            vm_installation,
+        }) => WorkerEvent::Listed {
+            applications,
+            installations,
+            vm_availability,
+            vm_installation,
+        },
         Ok(
             ProtocolResponse::Retried { receipt } | ProtocolResponse::VendorUninstalled { receipt },
         ) => WorkerEvent::Notice(receipt.detail),
-        Ok(ProtocolResponse::LauncherRemoved { .. } | ProtocolResponse::DataDeleted { .. }) => {
-            WorkerEvent::Notice(success.to_string())
-        }
+        Ok(
+            ProtocolResponse::LauncherRemoved { .. }
+            | ProtocolResponse::DataDeleted { .. }
+            | ProtocolResponse::VmVendorUninstalled { .. },
+        ) => WorkerEvent::Notice(success.to_string()),
         Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
         Ok(_) => WorkerEvent::Unavailable(
             "The compatibility service returned an invalid management response.".into(),
@@ -710,10 +951,12 @@ fn lifecycle_request(
             applications,
             installations,
             vm_availability,
+            vm_installation,
         }) => WorkerEvent::Listed {
             applications,
             installations,
             vm_availability,
+            vm_installation,
         },
         Ok(ProtocolResponse::Error { error }) => WorkerEvent::Unavailable(error.message),
         Ok(_) => WorkerEvent::Unavailable(
@@ -732,6 +975,7 @@ fn unavailable_catalogue(detail: &str) -> Catalogue {
             detail: detail.to_string(),
             running_apps: 0,
         },
+        vm_install_confirmation: None,
     }
 }
 
@@ -739,6 +983,7 @@ fn catalogue_from_managed(
     applications: Vec<ManagedApplication>,
     installations: &[ManagedInstallation],
     vm_availability: VmAvailability,
+    vm_installation: Option<VmInstallation>,
 ) -> Catalogue {
     let mut apps = applications
         .into_iter()
@@ -757,6 +1002,9 @@ fn catalogue_from_managed(
             apps.push(app_from_installation(installation));
         }
     }
+    if let Some(installation) = vm_installation {
+        apps.extend(installation.candidates.iter().map(app_from_vm_candidate));
+    }
     Catalogue {
         apps,
         vm: ApplianceState {
@@ -764,6 +1012,47 @@ fn catalogue_from_managed(
             detail: vm_availability.detail,
             running_apps: 0,
         },
+        vm_install_confirmation: None,
+    }
+}
+
+/// A discovery row is deliberately not a launcher. It exists only while the
+/// privileged delegate retains the matching installer operation, and the UI
+/// can submit its opaque ID to publish the guest-selected application.
+fn app_from_vm_candidate(candidate: &compat_service::VmInstallCandidate) -> WindowsApp {
+    WindowsApp {
+        id: candidate.entry_id.clone(),
+        name: candidate.display_name.clone(),
+        publisher: candidate
+            .publisher
+            .clone()
+            .unwrap_or_else(|| "Windows installer discovery".into()),
+        route: Route::Vm,
+        recommended_route: Route::Vm,
+        runner: "Windows managed installer".into(),
+        capsule: "Shared Windows appliance".into(),
+        prefix: "Not published yet · no host capsule".into(),
+        catalogue_source: "Authenticated Windows setup discovery".into(),
+        confidence: Confidence::Verified,
+        reason: candidate.version.as_ref().map_or_else(
+            || "Windows setup discovered this application. Add it to Windows Apps to create a managed guest launcher.".into(),
+            |version| format!("Windows setup discovered version {version}. Add it to Windows Apps to create a managed guest launcher."),
+        ),
+        status: AppStatus::Ready,
+        grants: Vec::new(),
+        fallback_detail: "This is an installer discovery, not an executable host entry.".into(),
+        launch_available: false,
+        launch_unavailable_reason: Some("Add this discovered application to Windows Apps first.".into()),
+        route_override_available: false,
+        route_override_unavailable_reason: None,
+        can_retry_install: false,
+        can_remove_launcher: false,
+        can_vendor_uninstall: false,
+        can_delete_data: false,
+        can_publish_vm_candidate: true,
+        installation_detail: Some("Discovered by the active Windows setup transaction.".into()),
+        vm_fallback_available: false,
+        vm_fallback_unavailable_reason: Some("This discovered application has not been published yet.".into()),
     }
 }
 
@@ -889,8 +1178,10 @@ fn app_from_managed(
         ),
         can_retry_install: installation.is_some_and(|item| item.can_retry),
         can_remove_launcher: application.remove_launcher_available,
-        can_vendor_uninstall: installation.is_some_and(|item| item.can_vendor_uninstall),
+        can_vendor_uninstall: application.vendor_uninstall_available
+            || installation.is_some_and(|item| item.can_vendor_uninstall),
         can_delete_data: installation.is_some_and(|item| item.can_delete_data),
+        can_publish_vm_candidate: false,
         installation_detail: installation.map(|item| item.detail.clone()),
         vm_fallback_available: application.vm_launch_available,
         vm_fallback_unavailable_reason: application.vm_unavailable_reason,
@@ -925,6 +1216,7 @@ fn app_from_installation(installation: &ManagedInstallation) -> WindowsApp {
         can_remove_launcher: false,
         can_vendor_uninstall: installation.can_vendor_uninstall,
         can_delete_data: installation.can_delete_data,
+        can_publish_vm_candidate: false,
         installation_detail: Some(installation.detail.clone()),
         vm_fallback_available: false,
         vm_fallback_unavailable_reason: Some(
@@ -987,6 +1279,7 @@ mod tests {
             audio_unavailable_reason: Some("Playback-only proxy unavailable".into()),
             installation_status: None,
             remove_launcher_available: false,
+            vendor_uninstall_available: false,
         }
     }
 
@@ -1022,6 +1315,7 @@ mod tests {
             Vec::new(),
             &[],
             VmAvailability::ready("The managed Windows appliance is ready."),
+            None,
         );
         assert!(catalogue.apps.is_empty());
         assert!(catalogue.vm.ready);
@@ -1029,6 +1323,30 @@ mod tests {
             catalogue.vm.detail,
             "The managed Windows appliance is ready."
         );
+    }
+
+    #[test]
+    fn active_vm_discoveries_are_publish_only_rows() {
+        let catalogue = catalogue_from_managed(
+            Vec::new(),
+            &[],
+            VmAvailability::ready("Ready"),
+            Some(VmInstallation {
+                detail: "Discovered application".into(),
+                phase: compat_service::VmInstallationPhase::Completed,
+                exit_code: Some(0),
+                candidates: vec![compat_service::VmInstallCandidate {
+                    entry_id: "windows-vm-candidate-server-owned".into(),
+                    display_name: "Example Editor".into(),
+                    publisher: Some("Example Corp".into()),
+                    version: Some("1.0".into()),
+                }],
+            }),
+        );
+        let app = catalogue.app("windows-vm-candidate-server-owned").unwrap();
+        assert!(app.can_publish_vm_candidate);
+        assert!(!app.launch_available);
+        assert_eq!(app.capsule, "Shared Windows appliance");
     }
 
     #[test]
@@ -1043,6 +1361,7 @@ mod tests {
             refresh_pending: true,
             next_refresh: Instant::now() + REFRESH_INTERVAL,
             notice: None,
+            pending_vm_install: None,
         };
         event_tx
             .send(WorkerEvent::Unavailable("invalid response".into()))

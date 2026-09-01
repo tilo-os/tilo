@@ -3,9 +3,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ExplainStatus, InstallReceipt, InstallationStatus, LaunchReceipt, RouteKind, VmAvailability,
+    VmInstallConfirmation, VmInstallation,
 };
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// The inherited session service accepts only opaque server-owned entry IDs
 /// for launch. A query is preview-only and cannot select a launch plan.
@@ -32,6 +33,30 @@ pub enum ProtocolRequest {
         version: u16,
         source_name: String,
     },
+    /// A second explicit confirmation streams the same portal-selected file
+    /// to the catalogued singleton Windows appliance. No path, command, or
+    /// guest operation ID crosses the protocol.
+    InstallInVm {
+        version: u16,
+        source_name: String,
+    },
+    /// Runs the separately confirmed Wine/Proton installation using the same
+    /// portal descriptor and server-side digest binding.
+    InstallInCapsule {
+        version: u16,
+        source_name: String,
+    },
+    /// Publish one candidate returned by the active managed installer. The
+    /// client submits only the server-owned candidate entry ID.
+    PublishVmCandidate {
+        version: u16,
+        entry_id: String,
+    },
+    /// Explicitly polls the singleton installer owned by this authenticated
+    /// session. There is no client-provided guest operation handle.
+    RefreshVmInstallation {
+        version: u16,
+    },
     RetryInstall {
         version: u16,
         capsule_id: String,
@@ -43,6 +68,12 @@ pub enum ProtocolRequest {
     VendorUninstall {
         version: u16,
         capsule_id: String,
+    },
+    /// Guest publication ID only; the persistent guest catalogue selects the
+    /// typed MSI removal record and never accepts an uninstaller command.
+    VendorUninstallVm {
+        version: u16,
+        entry_id: String,
     },
     DeleteData {
         version: u16,
@@ -58,6 +89,10 @@ pub struct ResolveRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the wire DTO keeps independent availability facts explicit rather than encoding policy in a state enum"
+)]
 pub struct ManagedApplication {
     pub id: String,
     pub app_id: String,
@@ -74,6 +109,7 @@ pub struct ManagedApplication {
     pub audio_unavailable_reason: Option<String>,
     pub installation_status: Option<InstallationStatus>,
     pub remove_launcher_available: bool,
+    pub vendor_uninstall_available: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -99,6 +135,9 @@ pub enum ProtocolResponse {
         /// Appliance readiness is global session state, not a property inferred
         /// from whichever application rows happen to be published.
         vm_availability: VmAvailability,
+        /// The singleton installer operation, when one was started through
+        /// the qOS portal. Candidate IDs remain opaque.
+        vm_installation: Option<VmInstallation>,
     },
     Resolved {
         explanation: ExplainStatus,
@@ -111,6 +150,18 @@ pub enum ProtocolResponse {
     Installed {
         receipt: InstallReceipt,
     },
+    VmInstallConfirmation {
+        confirmation: VmInstallConfirmation,
+    },
+    VmInstallStarted {
+        installation: VmInstallation,
+    },
+    VmCandidatePublished {
+        installation: VmInstallation,
+    },
+    VmInstallationRefreshed {
+        installation: Option<VmInstallation>,
+    },
     Retried {
         receipt: InstallReceipt,
     },
@@ -119,6 +170,9 @@ pub enum ProtocolResponse {
     },
     VendorUninstalled {
         receipt: InstallReceipt,
+    },
+    VmVendorUninstalled {
+        entry_id: String,
     },
     DataDeleted {
         capsule_id: String,

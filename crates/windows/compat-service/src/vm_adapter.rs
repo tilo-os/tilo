@@ -8,13 +8,16 @@
 
 use launcher::capabilities::CapabilityPlan;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{
-    AudioProxyLease, VmAvailability, VmDelegate, VmInventory, VmPublishedApplication,
+    AudioProxyLease, VmAvailability, VmDelegate, VmInstallCandidate, VmInstallation,
+    VmInstallationPhase, VmInstallerInput, VmInstallerKind, VmInventory, VmPublishedApplication,
     VmRouteRequest,
 };
 
@@ -161,6 +164,14 @@ pub struct LiveVmDelegate<B, A, C, L, P> {
     /// verifies the guest's actual response before a viewer is started.
     presentation: windows_vm::ApplicationPresentation,
     launch_gate: Mutex<()>,
+    installer: Mutex<Option<ActiveVmInstallation>>,
+}
+
+struct ActiveVmInstallation {
+    operation: windows_vm::InstallationOperationId,
+    generation: u64,
+    candidates: BTreeMap<String, windows_vm::DiscoveredApplication>,
+    status: VmInstallation,
 }
 
 impl<B, A, C, L, P> LiveVmDelegate<B, A, C, L, P> {
@@ -175,6 +186,7 @@ impl<B, A, C, L, P> LiveVmDelegate<B, A, C, L, P> {
             portal,
             presentation,
             launch_gate: Mutex::new(()),
+            installer: Mutex::new(None),
         }
     }
 
@@ -225,6 +237,7 @@ where
                     published_application_id: application.id.clone(),
                     display_name: application.display_name.clone(),
                     presentation: self.presentation.to_string(),
+                    uninstall_available: application.uninstall_available,
                 })
                 .collect(),
             // A missing or malformed persisted catalogue fails closed: it is
@@ -236,6 +249,176 @@ where
             availability,
             applications,
         }
+    }
+
+    fn install_from_portal(
+        &self,
+        input: VmInstallerInput,
+        source: File,
+    ) -> Result<VmInstallation, windows_vm::LaunchError> {
+        let _launch_guard = self.launch_gate.lock().map_err(|_| {
+            windows_vm::LaunchError::CapabilityBroker(
+                "singleton Windows launch gate is unavailable".to_string(),
+            )
+        })?;
+        let package = windows_vm::InstallerPackage::new(
+            match input.kind {
+                VmInstallerKind::Exe => windows_vm::InstallerKind::Exe,
+                VmInstallerKind::Msi => windows_vm::InstallerKind::Msi,
+            },
+            input.byte_len,
+            &input.sha256,
+        )?;
+        let staged = self.appliance.stage_installer(&package, source)?;
+        let prepared = self.appliance.begin_installation(&staged)?;
+        let operation = prepared.operation_id.clone();
+        // This is intentionally blocking: setup is visible only through the
+        // typed app-focused SPICE surface, never an invisible process or a
+        // general Windows desktop.
+        self.appliance.present_installation(&prepared)?;
+        let guest_status = self.appliance.installation_status(&operation)?;
+        let catalog = self.appliance.catalog()?;
+        let status = vm_installation_from_guest(&operation, &guest_status);
+        let active = ActiveVmInstallation {
+            operation,
+            generation: catalog.generation,
+            candidates: candidate_map(&guest_status),
+            status: status.clone(),
+        };
+        *self.installer.lock().map_err(|_| {
+            windows_vm::LaunchError::CapabilityBroker(
+                "Windows installer state is unavailable".to_string(),
+            )
+        })? = Some(active);
+        Ok(status)
+    }
+
+    fn installation_status(&self) -> Option<VmInstallation> {
+        self.installer
+            .lock()
+            .ok()
+            .and_then(|active| active.as_ref().map(|active| active.status.clone()))
+    }
+
+    fn refresh_installation_status(
+        &self,
+    ) -> Result<Option<VmInstallation>, windows_vm::LaunchError> {
+        let operation = self
+            .installer
+            .lock()
+            .map_err(|_| {
+                windows_vm::LaunchError::CapabilityBroker(
+                    "Windows installer state is unavailable".to_string(),
+                )
+            })?
+            .as_ref()
+            .map(|active| active.operation.clone());
+        let Some(operation) = operation else {
+            return Ok(None);
+        };
+        let guest_status = self.appliance.installation_status(&operation)?;
+        let mut installer = self.installer.lock().map_err(|_| {
+            windows_vm::LaunchError::CapabilityBroker(
+                "Windows installer state is unavailable".to_string(),
+            )
+        })?;
+        let active = installer
+            .as_mut()
+            .filter(|active| active.operation == operation)
+            .ok_or(windows_vm::AgentError::InvalidInstaller)?;
+        active.candidates = candidate_map(&guest_status);
+        active.status = vm_installation_from_guest(&operation, &guest_status);
+        let status = active.status.clone();
+        drop(installer);
+        Ok(Some(status))
+    }
+
+    fn publish_install_candidate(
+        &self,
+        entry_id: &str,
+    ) -> Result<VmInstallation, windows_vm::LaunchError> {
+        let (operation, generation, candidate) = self
+            .installer
+            .lock()
+            .map_err(|_| {
+                windows_vm::LaunchError::CapabilityBroker(
+                    "Windows installer state is unavailable".to_string(),
+                )
+            })?
+            .as_ref()
+            .and_then(|active| {
+                active
+                    .candidates
+                    .get(entry_id)
+                    .cloned()
+                    .map(|candidate| (active.operation.clone(), active.generation, candidate))
+            })
+            .ok_or(windows_vm::AgentError::InvalidInstaller)?;
+        let result = self.appliance.publish_candidate(
+            &operation,
+            &candidate.id,
+            &vm_published_application_id(&candidate.id),
+            &candidate.display_name,
+            generation,
+        )?;
+        let mut installer = self.installer.lock().map_err(|_| {
+            windows_vm::LaunchError::CapabilityBroker(
+                "Windows installer state is unavailable".to_string(),
+            )
+        })?;
+        let active = installer
+            .as_mut()
+            .filter(|active| active.operation == operation && active.generation == generation)
+            .ok_or(windows_vm::AgentError::InvalidInstaller)?;
+        active.generation = result.catalog_generation;
+        active.candidates.remove(entry_id);
+        active
+            .status
+            .candidates
+            .retain(|candidate| candidate.entry_id != entry_id);
+        let status = active.status.clone();
+        drop(installer);
+        Ok(status)
+    }
+
+    fn remove_published_application(&self, entry_id: &str) -> Result<(), windows_vm::LaunchError> {
+        let catalog = self
+            .appliance
+            .cached_catalog()?
+            .ok_or(windows_vm::LaunchError::PublicationChanged)?;
+        let application = catalog
+            .applications
+            .iter()
+            .find(|application| vm_entry_id(&application.id) == entry_id)
+            .ok_or(windows_vm::LaunchError::PublicationChanged)?;
+        self.appliance
+            .remove_publication(&application.id, catalog.generation)?;
+        Ok(())
+    }
+
+    fn uninstall_published_application(
+        &self,
+        entry_id: &str,
+    ) -> Result<(), windows_vm::LaunchError> {
+        let catalog = self
+            .appliance
+            .cached_catalog()?
+            .ok_or(windows_vm::LaunchError::PublicationChanged)?;
+        let application = catalog
+            .applications
+            .iter()
+            .find(|application| {
+                vm_entry_id(&application.id) == entry_id && application.uninstall_available
+            })
+            .ok_or(windows_vm::LaunchError::PublicationChanged)?;
+        let prepared = self.appliance.begin_uninstallation(&application.id)?;
+        // The uninstaller, like setup, is exposed only as a guest-authenticated
+        // app-focused SPICE surface with deny-all brokered capabilities.
+        self.appliance.present_uninstallation(&prepared)?;
+        let _status = self
+            .appliance
+            .uninstallation_status(&prepared.operation_id)?;
+        Ok(())
     }
 
     fn launch(
@@ -286,6 +469,78 @@ fn vm_identity_digest(published_id: &str) -> String {
         let _ = write!(encoded, "{byte:02x}");
     }
     encoded
+}
+
+fn vm_candidate_entry_id(
+    operation: &windows_vm::InstallationOperationId,
+    candidate_id: &str,
+) -> String {
+    format!(
+        "windows-vm-candidate-{}",
+        vm_identity_digest(&format!("{}\0{candidate_id}", operation.as_str()))
+    )
+}
+
+fn vm_published_application_id(candidate_id: &str) -> String {
+    format!("qos-app-{}", vm_identity_digest(candidate_id))
+}
+
+fn candidate_map(
+    status: &windows_vm::InstallationStatus,
+) -> BTreeMap<String, windows_vm::DiscoveredApplication> {
+    status
+        .candidates
+        .iter()
+        .cloned()
+        .map(|candidate| {
+            (
+                vm_candidate_entry_id(&status.operation_id, &candidate.id),
+                candidate,
+            )
+        })
+        .collect()
+}
+
+fn vm_installation_from_guest(
+    operation: &windows_vm::InstallationOperationId,
+    status: &windows_vm::InstallationStatus,
+) -> VmInstallation {
+    let phase = match status.state {
+        windows_vm::InstallationState::Starting => VmInstallationPhase::Starting,
+        windows_vm::InstallationState::Running => VmInstallationPhase::Running,
+        windows_vm::InstallationState::Completed => VmInstallationPhase::Completed,
+        windows_vm::InstallationState::Failed => VmInstallationPhase::Failed,
+    };
+    let candidates: Vec<_> = status
+        .candidates
+        .iter()
+        .map(|candidate| VmInstallCandidate {
+            entry_id: vm_candidate_entry_id(operation, &candidate.id),
+            display_name: candidate.display_name.clone(),
+            publisher: candidate.publisher.clone(),
+            version: candidate.version.clone(),
+        })
+        .collect();
+    VmInstallation {
+        detail: match phase {
+            VmInstallationPhase::Starting => {
+                "Windows setup is starting in the integrated app surface.".to_string()
+            }
+            VmInstallationPhase::Running => {
+                "Windows setup is still running in the integrated app surface.".to_string()
+            }
+            VmInstallationPhase::Completed if candidates.is_empty() => {
+                "Setup completed; no publishable application was discovered.".to_string()
+            }
+            VmInstallationPhase::Completed => {
+                "Setup completed. Choose applications to add to Windows Apps.".to_string()
+            }
+            VmInstallationPhase::Failed => "Windows setup did not complete.".to_string(),
+        },
+        phase,
+        exit_code: status.exit_code,
+        candidates,
+    }
 }
 
 fn validate_portal_projection(
