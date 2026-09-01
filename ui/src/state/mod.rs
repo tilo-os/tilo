@@ -5,6 +5,8 @@ use std::collections::HashMap;
 
 pub mod collab;
 pub use collab::{CollaborationState, RemoteCursor};
+pub mod revision;
+pub use revision::{Revision, RevisionHistory, RevisionId, UnknownRevision};
 
 /// One reversible action on the undo/redo stacks.
 ///
@@ -478,6 +480,33 @@ impl State {
     /// [`UndoLog::revision`].
     pub fn history_revision(&self) -> u64 {
         self.undo.revision()
+    }
+
+    /// Reconstruct the document's persistent causal history, including
+    /// branches and merges. No app-defined history schema is required.
+    pub fn revision_history(&mut self) -> RevisionHistory {
+        RevisionHistory::from_document(&mut self.doc)
+    }
+
+    /// Restore the content at one persistent revision as a new forward,
+    /// undoable change. The old branch remains in [`Self::revision_history`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UnknownRevision`] when `revision` belongs to another
+    /// document or is otherwise absent from this document's change graph.
+    pub fn restore_revision(
+        &mut self,
+        revision: RevisionId,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+    ) -> Result<bool, UnknownRevision> {
+        let hash = revision.as_hash();
+        if self.doc.get_change_by_hash(&hash).is_none() {
+            return Err(UnknownRevision(revision));
+        }
+        Ok(self.restore_to_heads(&[hash], focused_node_idx, metadata, author))
     }
 
     /// Commit the current transaction and push a change-based undo entry

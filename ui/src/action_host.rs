@@ -19,7 +19,9 @@
 //! ```
 
 use automerge::{AutoCommit, ChangeHash};
-use qos_actions::{Action, ActionContext, EncodedAction};
+use qos_actions::{
+    Action, ActionContext, ActionEnvelope, EncodedAction, OptimisticError, OptimisticQueue,
+};
 
 /// Framework-owned action dispatch an app embeds as a single field, in
 /// place of hand-rolled `perform_action`/`DiscardTransport`/
@@ -131,6 +133,44 @@ impl ActionHost {
         }
     }
 
+    /// Apply an action immediately through an [`OptimisticQueue`] and return
+    /// the envelope an app should send to its model host.
+    ///
+    /// This is the remote counterpart to [`Self::dispatch`]: it preserves the
+    /// same undo bracket and inspection metadata, while acknowledgement,
+    /// rejection, reconnect, and authoritative updates remain transport
+    /// neutral in the queue. The widget API is unchanged because rendering
+    /// continues to read the local `doc` replica.
+    ///
+    /// # Errors
+    ///
+    /// Returns an encoding or action-application error, or
+    /// [`OptimisticError::LiveDiverged`] when `doc` was changed outside the
+    /// active optimistic session.
+    #[allow(
+        clippy::result_large_err,
+        reason = "callers need the structured optimistic/action error to distinguish rebase and transport recovery paths"
+    )]
+    pub fn dispatch_optimistic<A>(
+        &mut self,
+        doc: &mut AutoCommit,
+        queue: &mut OptimisticQueue,
+        type_id: &str,
+        action: &A,
+    ) -> Result<ActionEnvelope, OptimisticError>
+    where
+        A: Action + serde::Serialize,
+    {
+        let encoded = EncodedAction::encode(type_id, action)?;
+        let before = doc.get_heads();
+        let envelope = queue.submit(doc, action, encoded.clone())?;
+        if self.commit_before.is_none() {
+            self.commit_before = Some(before);
+        }
+        self.last_dispatched = Some(encoded);
+        Ok(envelope)
+    }
+
     /// Rising-edge: reading clears it, so it returns `Some` once per
     /// dispatched batch, then `None`. Wire this straight to
     /// [`Widget::take_committed_action`](crate::widget::Widget::take_committed_action).
@@ -148,7 +188,7 @@ mod tests {
     use super::*;
     use automerge::transaction::Transactable;
     use automerge::{ROOT, ReadDoc, ScalarValue};
-    use qos_actions::{ActionError, Doc, ExecutionLocus};
+    use qos_actions::{ActionError, ActionRegistry, Doc, ExecutionLocus};
     use serde::{Deserialize, Serialize};
 
     /// Deterministic, no wall-clock / RNG — the executor's contract.
@@ -331,5 +371,39 @@ mod tests {
                 .map(|resource| resource.id.as_str()),
             Some("counter")
         );
+    }
+
+    #[test]
+    fn optimistic_dispatch_is_visible_and_keeps_the_action_host_contract() {
+        let mut doc = AutoCommit::new();
+        doc.put(&ROOT, "seed", true).unwrap();
+        let before = doc.get_heads();
+        let mut queue = OptimisticQueue::new(&mut doc);
+        let mut host = ActionHost::new();
+        let action = Put {
+            key: "score".into(),
+            value: 42,
+        };
+
+        let envelope = host
+            .dispatch_optimistic(&mut doc, &mut queue, PUT_TYPE, &action)
+            .unwrap();
+
+        assert_eq!(
+            doc.get(&ROOT, "score").unwrap().unwrap().0.to_i64(),
+            Some(42),
+            "the UI reads the optimistic value before a reply"
+        );
+        assert_eq!(host.take_committed(), Some(before));
+        assert_eq!(host.last_dispatched(), Some(&envelope.action));
+        assert_eq!(queue.reconnect_batch(), std::slice::from_ref(&envelope));
+
+        let mut registry = ActionRegistry::new();
+        registry.register::<Put>(PUT_TYPE);
+        assert_eq!(
+            queue.acknowledge(envelope.id, &registry).unwrap(),
+            qos_actions::Acknowledgement::Accepted
+        );
+        assert!(queue.is_settled());
     }
 }
