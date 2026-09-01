@@ -1,0 +1,138 @@
+name: Collaborative filesystem kernel contract
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".cargo/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "fs/**"
+      - "apps/file-explorer/**"
+      - "crates/collab/**"
+      - "crates/identity/qos-user-identity/**"
+      - "crates/packaging/launcher/**"
+      - "crates/thumbnail/**"
+      - "shell/**"
+      - "ui/**"
+      - "scripts/ci-run.sh"
+      - "os/usr/libexec/qos-session"
+      - "os/usr/lib/systemd/user/qos-graphical-session.target"
+      - "os/usr/lib/systemd/user/qos-identity.service"
+      - "os/usr/lib/systemd/user/qos-fs-recipient.service"
+      - "os/usr/share/wayland-sessions/shell*.desktop"
+      - "os/tests/qos-session-lifecycle.sh"
+      - ".forgejo/workflows/build-image.yml"
+      - ".forgejo/workflows/fs-fuse.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".cargo/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "fs/**"
+      - "apps/file-explorer/**"
+      - "crates/collab/**"
+      - "crates/identity/qos-user-identity/**"
+      - "crates/packaging/launcher/**"
+      - "crates/thumbnail/**"
+      - "shell/**"
+      - "ui/**"
+      - "scripts/ci-run.sh"
+      - "os/usr/libexec/qos-session"
+      - "os/usr/lib/systemd/user/qos-graphical-session.target"
+      - "os/usr/lib/systemd/user/qos-identity.service"
+      - "os/usr/lib/systemd/user/qos-fs-recipient.service"
+      - "os/usr/share/wayland-sessions/shell*.desktop"
+      - "os/tests/qos-session-lifecycle.sh"
+      - ".forgejo/workflows/build-image.yml"
+      - ".forgejo/workflows/fs-fuse.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: fs-fuse-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_HOME: /cargo-home
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_TERM_COLOR: never
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  real-fuse:
+    runs-on: runner
+    timeout-minutes: 60
+    container:
+      image: code.sandbox.example/qos/qos-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+      options: --device /dev/fuse --cap-add SYS_ADMIN
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Require a real kernel FUSE environment
+        run: |
+          test -c /dev/fuse
+          command -v fusermount3
+
+      - name: Enforce graphical-session and verified-identity lifecycle
+        run: bash os/tests/qos-session-lifecycle.sh
+
+      - name: Run the complete kernel-path filesystem contract
+        run: >-
+          bash scripts/ci-run.sh "real FUSE integration" --
+          cargo test --locked -p fs --test integration_test -- --nocapture --test-threads=1
+
+      - name: Run the separate-process exact-share and injected-clock lifecycle
+        run: >-
+          bash scripts/ci-run.sh "real FUSE exact-share lifecycle" --
+          cargo test --locked -p fs --test exact_share_process_fuse -- --nocapture --test-threads=1
+
+      - name: Enforce deterministic partition and multi-writer convergence
+        run: >-
+          bash scripts/ci-run.sh "collaborative-files partition matrix" --
+          cargo test --locked -p fs --test collab_release_matrix -- --nocapture --test-threads=1
+
+      - name: Exercise Files against a live collaborative mount
+        run: >-
+          bash scripts/ci-run.sh "Files live collaborative mount" --
+          cargo test --locked -p file-explorer --test live_collaborative_mount -- --nocapture --test-threads=1
+
+      - name: Enforce named delivery, governed identity and Files collaboration UX
+        run: |
+          bash scripts/ci-run.sh "authenticated named-share delivery" -- cargo test --locked -p fs named_share_delivery --lib -- --nocapture
+          bash scripts/ci-run.sh "named-share control wire" -- cargo test --locked -p collab-types share_control --lib -- --nocapture
+          bash scripts/ci-run.sh "governed identity projection schema" -- cargo test --locked -p qos-user-identity projection --lib -- --nocapture
+          bash scripts/ci-run.sh "governed room identity projection" -- cargo test --locked -p shell governed_name_and_root_signed_endpoint_project_human_and_device --lib -- --nocapture
+          bash scripts/ci-run.sh "Files collaboration UX" -- cargo test --locked -p file-explorer --lib -- --nocapture --test-threads=1
+
+      - name: Enforce skew, read-only and atomic-recovery boundaries
+        run: |
+          bash scripts/ci-run.sh "replica receipt clock skew" -- cargo test --locked -p fs replica_ack::tests::exact_nonce_version_peer_and_freshness_are_bound --lib -- --nocapture
+          bash scripts/ci-run.sh "authenticated read-only writer denial" -- cargo test --locked -p fs sync::tests::a_read_only_peer_pulls_updates_but_cannot_author --lib -- --nocapture
+          bash scripts/ci-run.sh "Keep Both all-phase restart recovery" -- cargo test --locked -p fs fs::record_publisher_integration_tests::keep_current_and_use_other_append_signed_convergent_resolutions --lib -- --nocapture
+
+      - name: Reject corrupted collaborative state and prove legacy name migration
+        run: |
+          bash scripts/ci-run.sh "collaborative-files corruption matrix" -- cargo test --locked -p fs --test corruption_matrix -- --nocapture --test-threads=1
+          bash scripts/ci-run.sh "bounded durable backup policy" -- cargo test --locked -p fs durable_backup::tests --lib -- --nocapture
+          bash scripts/ci-run.sh "signed repository known-good recovery" -- cargo test --locked -p fs record_repository::tests::tampered_primary_recovers_latest_valid_signed_generation_with_evidence --lib -- --nocapture
+          bash scripts/ci-run.sh "legacy byte-name migration" -- cargo test --locked -p fs namespace::tests::legacy_string_name_loads_exactly_and_next_rename_persists_bytes --lib -- --nocapture
+          bash scripts/ci-run.sh "signed repository tamper refusal" -- cargo test --locked -p fs record_repository::tests::tampered_signed_state_is_rejected_on_restart --lib -- --nocapture
+          bash scripts/ci-run.sh "history ancestry corruption refusal" -- cargo test --locked -p fs history::tests::corrupt_heads_are_rejected_on_open --lib -- --nocapture
+          bash scripts/ci-run.sh "transaction journal partial-batch refusal" -- cargo test --locked -p fs record_transaction::tests::journal_rejects_partial_or_mutated_participant_batches --lib -- --nocapture
+          bash scripts/ci-run.sh "transaction coordinator recovery" -- cargo test --locked -p fs transaction_coordinator::tests::broadcast_failure_recovers_exact_committed_namespace_without_duplicate_history --lib -- --nocapture
+          bash scripts/ci-run.sh "availability receipt tamper refusal" -- cargo test --locked -p fs availability::tests::tampered_persisted_receipt_fails_registry_open --lib -- --nocapture
+
+      - name: Enforce deterministic collaborative-files performance SLOs
+        env:
+          QOS_FS_PERF_GATE: "1"
+        run: >-
+          bash scripts/ci-run.sh "collaborative-files performance gate" --
+          cargo test --locked -p fs --test performance_gate -- --nocapture --test-threads=1
