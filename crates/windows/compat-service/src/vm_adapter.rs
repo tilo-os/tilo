@@ -280,30 +280,33 @@ impl windows_vm::CapabilityBroker for CanonicalRailCapabilityBroker {
         }
         let sequence = self.next.fetch_add(1, Ordering::Relaxed);
         let lease_id = format!("rail-{}-{sequence}", std::process::id());
-        let network_proxy = if request.grants.network {
-            Some(
-                windows_vm::GuestNetworkProxy::start(request.grants.network_hosts.clone())
-                    .map_err(|error| {
-                        windows_vm::LaunchError::CapabilityBroker(error.to_string())
-                    })?,
-            )
+        let (network_proxy, network_binding) = if request.grants.network {
+            // The guest's one managed Windows user has one loopback proxy
+            // endpoint. Until the guest proxy grows a union-aware multiplexed
+            // control plane, serialize network-bearing RAIL leases rather
+            // than allow a second launch to replace another app's proxy.
+            let mut leases = self.network_leases.lock().map_err(|_| {
+                windows_vm::LaunchError::CapabilityBroker(
+                    "Windows network lease state is unavailable".to_string(),
+                )
+            })?;
+            if !leases.is_empty() {
+                return Err(windows_vm::LaunchError::CapabilityBroker(
+                    "another shared Windows application already holds the session network lease"
+                        .to_string(),
+                ));
+            }
+            let proxy = windows_vm::GuestNetworkProxy::start(request.grants.network_hosts.clone())
+                .map_err(|error| windows_vm::LaunchError::CapabilityBroker(error.to_string()))?;
+            let binding = proxy.binding().clone();
+            leases.insert(lease_id.clone(), proxy);
+            (true, Some(binding))
         } else {
-            None
+            (false, None)
         };
-        let network_binding = network_proxy.as_ref().map(|proxy| proxy.binding().clone());
-        if let Some(proxy) = network_proxy {
-            self.network_leases
-                .lock()
-                .map_err(|_| {
-                    windows_vm::LaunchError::CapabilityBroker(
-                        "Windows network lease state is unavailable".to_string(),
-                    )
-                })?
-                .insert(lease_id.clone(), proxy);
-        }
         Ok(windows_vm::BrokeredLaunch {
             lease_id,
-            network: network_binding.is_some(),
+            network: network_proxy,
             network_binding,
             clipboard: request.grants.clipboard,
             microphone: request.grants.microphone,
