@@ -668,6 +668,9 @@ let query = LocalState::new(String::from("status:open"));
 let live_updates = LocalState::new(true);
 let opacity = LocalState::new(0.8);
 let region = LocalState::new(String::from("Europe/Berlin"));
+let due_date = LocalState::new(chrono::NaiveDate::from_ymd_opt(2026, 9, 1).unwrap());
+let reminder = LocalState::new(TimeValue::new(9, 30));
+let accent = LocalState::new(ui::peniko::Color::from_rgba8(54, 162, 235, 255));
 let summary = Text::from_state(&query, |value| format!("Filter: {value}"));
 let input = TextInput::from_state(&query)
     .with_id("filter-input")
@@ -684,10 +687,15 @@ let region_field = Dropdown::from_state(
     vec![String::from("Europe/Berlin"), String::from("Asia/Tokyo")],
     &region,
 );
+let due_date_field = DatePicker::from_state(&due_date);
+let reminder_field = TimePicker::from_state(&reminder);
+let accent_field = ColorPicker::from_state(&accent);
 ```
 
-`TextInput`, `Checkbox`, `Toggle`, `NumberInput`, `Slider`, and `Dropdown` all
-offer `from_state` with the same explicit typed contract. `set` replaces a
+`TextInput`, `Checkbox`, `Toggle`, `NumberInput`, `Slider`, `Dropdown`,
+`DatePicker`, `TimePicker`, and `ColorPicker` all offer `from_state` with the
+same explicit typed contract. Time fields use `TimeValue`, including an
+optional seconds component, rather than an unlabelled tuple. `set` replaces a
 local value and `update` mutates it in place. A bound text change invalidates
 rendering, multiline intrinsic measurement, and accessibility in the same
 synchronization pass without being misreported as a user edit. Bind several
@@ -695,8 +703,10 @@ controls to the same handle for synchronized master/detail or inspector views;
 the `opacity_field` and `opacity_slider` above stay synchronized without
 app-owned fan-out. An optional `on_change` callback observes committed user
 edits without owning synchronization; programmatic setters and model
-synchronization do not invoke it. Use `Text::dynamic` when the value comes from
-an existing local owner instead of `LocalState`.
+synchronization do not invoke it. Semantic automation can set dates as
+`YYYY-MM-DD`, times as `HH:MM` or `HH:MM:SS`, and colours as `#RRGGBB`, through
+the same user-change path as pointer and keyboard input. Use `Text::dynamic`
+when the value comes from an existing local owner instead of `LocalState`.
 
 `LocalState` is also the typed boundary for background work. Create a writer
 before spawning the worker; every completed mutation wakes the standard app

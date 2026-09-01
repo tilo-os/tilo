@@ -5,10 +5,10 @@
 //! with wrap-around (hours 0..=23, minutes/seconds 0..=59); scrolling the
 //! wheel over a value cell does the same.
 //!
-//! The seconds spinner is hidden unless constructed via `with_seconds`;
-//! its `second_rect` then stays `Rect::ZERO`. State lives entirely on the
-//! widget — there is no Automerge path bound to the value yet, so
-//! `on_change` is the escape hatch for plumbing changes into a document.
+//! The seconds spinner is hidden unless the value contains seconds. The
+//! selected time can stay widget-local, bind to typed process-local state with
+//! [`TimePicker::from_state`], or be observed with `on_change` for an
+//! app-owned durable mutation.
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -55,6 +55,39 @@ pub enum TimeCell {
     Seconds,
 }
 
+/// Typed value shared by a [`TimePicker`] and application state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimeValue {
+    pub hours: u8,
+    pub minutes: u8,
+    pub seconds: Option<u8>,
+}
+
+impl TimeValue {
+    #[must_use]
+    pub const fn new(hours: u8, minutes: u8) -> Self {
+        Self {
+            hours,
+            minutes,
+            seconds: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_seconds(mut self, seconds: u8) -> Self {
+        self.seconds = Some(seconds);
+        self
+    }
+
+    fn normalized(self) -> Self {
+        Self {
+            hours: self.hours.min(HOUR_MAX),
+            minutes: self.minutes.min(MINSEC_MAX),
+            seconds: self.seconds.map(|seconds| seconds.min(MINSEC_MAX)),
+        }
+    }
+}
+
 /// `(hours, minutes, seconds)`.
 type TimeChange = Box<dyn FnMut(u8, u8, Option<u8>)>;
 
@@ -66,6 +99,7 @@ pub struct TimePicker {
     minutes: u8,         // 0..=59
     seconds: Option<u8>, // Some(0..=59) only when explicitly enabled
     on_change: Option<TimeChange>,
+    local_state: Option<crate::local_state::LocalBinding<TimeValue>>,
     rect: Rect,
     hour_rect: Rect, // populated in apply_layout
     minute_rect: Rect,
@@ -95,6 +129,7 @@ impl TimePicker {
             minutes: minutes.min(MINSEC_MAX),
             seconds: None,
             on_change: None,
+            local_state: None,
             rect: Rect::ZERO,
             hour_rect: Rect::ZERO,
             minute_rect: Rect::ZERO,
@@ -104,6 +139,21 @@ impl TimePicker {
             focused_cell: None,
             digit_buffer: String::new(),
         }
+    }
+
+    /// Create a time picker bound to typed process-local state.
+    ///
+    /// Pointer, keyboard, wheel, and semantic changes update `state`;
+    /// mutations through any clone update this picker on the next
+    /// synchronization pass.
+    pub fn from_state(state: &crate::LocalState<TimeValue>) -> Self {
+        let (value, binding) = crate::local_state::LocalBinding::new(state);
+        let value = value.normalized();
+        let mut picker = Self::new(value.hours, value.minutes);
+        picker.seconds = value.seconds;
+        picker.local_state = Some(binding);
+        picker.publish_local_state();
+        picker
     }
 
     /// Which cell currently consumes digit keys, if any. Mostly for
@@ -219,6 +269,7 @@ impl TimePicker {
     #[must_use]
     pub fn with_seconds(mut self, seconds: u8) -> Self {
         self.seconds = Some(seconds.min(MINSEC_MAX));
+        self.publish_local_state();
         self
     }
 
@@ -232,6 +283,14 @@ impl TimePicker {
         self.seconds
     }
 
+    pub fn value(&self) -> TimeValue {
+        TimeValue {
+            hours: self.hours,
+            minutes: self.minutes,
+            seconds: self.seconds,
+        }
+    }
+
     /// Install a callback invoked with `(hours, minutes, seconds)` every
     /// time a user-driven change commits a new value.
     #[must_use]
@@ -242,10 +301,22 @@ impl TimePicker {
 
     pub fn set_hours(&mut self, h: u8) {
         self.hours = h.min(HOUR_MAX);
+        self.publish_local_state();
     }
 
     pub fn set_minutes(&mut self, m: u8) {
         self.minutes = m.min(MINSEC_MAX);
+        self.publish_local_state();
+    }
+
+    pub fn set_seconds(&mut self, seconds: Option<u8>) {
+        self.seconds = seconds.map(|seconds| seconds.min(MINSEC_MAX));
+        self.publish_local_state();
+    }
+
+    pub fn set_value(&mut self, value: TimeValue) {
+        self.apply_value(value.normalized());
+        self.publish_local_state();
     }
 
     /// Place the picker at an explicit rect without going through taffy — the
@@ -298,8 +369,22 @@ impl TimePicker {
     }
 
     fn fire_on_change(&mut self) {
+        self.publish_local_state();
         if let Some(cb) = self.on_change.as_mut() {
             cb(self.hours, self.minutes, self.seconds);
+        }
+    }
+
+    fn apply_value(&mut self, value: TimeValue) {
+        self.hours = value.hours;
+        self.minutes = value.minutes;
+        self.seconds = value.seconds;
+    }
+
+    fn publish_local_state(&mut self) {
+        let value = self.value();
+        if let Some(binding) = &mut self.local_state {
+            binding.publish(&value);
         }
     }
 
@@ -362,7 +447,15 @@ impl TimePicker {
 }
 
 impl Widget for TimePicker {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+        if let Some(value) = self
+            .local_state
+            .as_mut()
+            .and_then(crate::local_state::LocalBinding::poll)
+        {
+            self.apply_value(value.normalized());
+        }
+    }
 
     fn build_layout(
         &mut self,
@@ -562,6 +655,48 @@ impl Widget for TimePicker {
                     ..Default::default()
                 }),
         )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _root: &ObjId,
+    ) -> bool {
+        let crate::a11y::Action::SetValue(value) = action else {
+            return false;
+        };
+        let mut fields = value.trim().split(':');
+        let (Some(hours), Some(minutes)) = (fields.next(), fields.next()) else {
+            return false;
+        };
+        let Ok(hours) = hours.parse::<u8>() else {
+            return false;
+        };
+        let Ok(minutes) = minutes.parse::<u8>() else {
+            return false;
+        };
+        let seconds = match fields.next() {
+            Some(seconds) => match seconds.parse::<u8>() {
+                Ok(seconds) => Some(seconds),
+                Err(_) => return false,
+            },
+            None => None,
+        };
+        if fields.next().is_some()
+            || hours > HOUR_MAX
+            || minutes > MINSEC_MAX
+            || seconds.is_some_and(|seconds| seconds > MINSEC_MAX)
+        {
+            return false;
+        }
+        self.apply_value(TimeValue {
+            hours,
+            minutes,
+            seconds,
+        });
+        self.fire_on_change();
+        true
     }
 }
 
@@ -956,5 +1091,55 @@ mod tests {
         assert_eq!(tp.focused_cell(), Some(TimeCell::Minutes));
         tp.retreat_focus();
         assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
+    }
+
+    #[test]
+    fn local_state_keeps_time_pickers_in_sync() {
+        let state = crate::LocalState::new(TimeValue::new(8, 30));
+        let mut left = TimePicker::from_state(&state);
+        let mut right = TimePicker::from_state(&state);
+        let expected = TimeValue::new(16, 45).with_seconds(12);
+        let mut doc = AutoCommit::new();
+
+        left.set_value(expected);
+        assert_eq!(state.with(|value| *value), expected);
+        Widget::sync(&mut right, &mut doc, &automerge::ROOT);
+        assert_eq!(right.value(), expected);
+    }
+
+    #[test]
+    fn semantic_time_change_updates_state_and_callback() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let state = crate::LocalState::new(TimeValue::new(8, 30));
+        let captured = Rc::new(RefCell::new(None));
+        let callback = Rc::clone(&captured);
+        let mut picker = TimePicker::from_state(&state).on_change(move |h, m, s| {
+            *callback.borrow_mut() = Some(TimeValue {
+                hours: h,
+                minutes: m,
+                seconds: s,
+            });
+        });
+        let mut doc = AutoCommit::new();
+        let expected = TimeValue::new(21, 7).with_seconds(9);
+
+        assert!(Widget::perform_action(
+            &mut picker,
+            &crate::a11y::Action::SetValue("21:07:09".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(state.with(|value| *value), expected);
+        assert_eq!(*captured.borrow(), Some(expected));
+
+        assert!(!Widget::perform_action(
+            &mut picker,
+            &crate::a11y::Action::SetValue("24:00".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(state.with(|value| *value), expected);
     }
 }
