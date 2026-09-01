@@ -720,6 +720,7 @@ impl GuestAgent for HttpsGuestBridge {
         &self,
         session: &GuestSession,
         application_id: &str,
+        network: Option<&crate::GuestNetworkBinding>,
     ) -> Result<GuestLaunch, AgentError> {
         if session.id.len() < 16 || !valid_identifier(application_id) {
             return Err(AgentError::NotPublished(application_id.to_string()));
@@ -727,6 +728,7 @@ impl GuestAgent for HttpsGuestBridge {
         let request = WireLaunchRequest {
             application_id,
             launch_nonce: nonce(),
+            network_proxy: network.map(WireNetworkProxy::from),
             presentation_backend: match self.config.presentation {
                 ApplicationPresentation::NativeRail => "native_rail",
                 ApplicationPresentation::AppFocusedSpice => "app_focused_spice",
@@ -1163,7 +1165,25 @@ impl WireHealth {
 struct WireLaunchRequest<'a> {
     application_id: &'a str,
     launch_nonce: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    network_proxy: Option<WireNetworkProxy>,
     presentation_backend: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireNetworkProxy {
+    endpoint: String,
+    token: String,
+}
+
+impl From<&crate::GuestNetworkBinding> for WireNetworkProxy {
+    fn from(binding: &crate::GuestNetworkBinding) -> Self {
+        Self {
+            endpoint: binding.endpoint.to_string(),
+            token: binding.token.clone(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
