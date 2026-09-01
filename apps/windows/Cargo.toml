@@ -18,7 +18,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { path = "../../ui" }
+ui = { path = "../../ui", features = ["portal"] }
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
