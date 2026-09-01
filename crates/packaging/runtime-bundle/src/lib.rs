@@ -91,6 +91,12 @@ pub enum BundleError {
     FileMissing { path: String },
     #[error("file present in payload but not listed in bundle.toml: {path}")]
     FileUnlisted { path: String },
+    #[error("file size mismatch for {path}: expected {expected}, got {actual}")]
+    SizeMismatch {
+        path: String,
+        expected: u64,
+        actual: u64,
+    },
     #[error("home / data-dir not resolvable — set XDG_DATA_HOME or HOME")]
     NoDataDir,
     #[error("bundle is not signed — signature required (pass --allow-unsigned-runtime to opt out)")]
@@ -582,6 +588,32 @@ pub fn verify_bundle_with(
     root: &Path,
     opts: &VerifyOptions,
 ) -> Result<BundleManifest, BundleError> {
+    verify_bundle_impl(root, opts, true)
+}
+
+/// Verify a bundle's signed manifest, file set and sizes without reading every
+/// payload byte. This is appropriate only when the caller independently proves
+/// the payload is immutable (the launcher uses it for root-owned system
+/// bundles). User-controlled bundles must use [`verify_bundle_with`].
+///
+/// # Errors
+///
+/// Returns the same manifest, file-shape, architecture, and signature errors
+/// as [`verify_bundle_with`], plus [`BundleError::SizeMismatch`] when a listed
+/// file's length differs. It deliberately does not detect equal-sized content
+/// changes; the caller's immutability proof is the protection against those.
+pub fn verify_bundle_metadata_with(
+    root: &Path,
+    opts: &VerifyOptions,
+) -> Result<BundleManifest, BundleError> {
+    verify_bundle_impl(root, opts, false)
+}
+
+fn verify_bundle_impl(
+    root: &Path,
+    opts: &VerifyOptions,
+    hash_payload: bool,
+) -> Result<BundleManifest, BundleError> {
     let manifest_path = root.join(BUNDLE_MANIFEST_FILENAME);
     if !manifest_path.exists() {
         return Err(BundleError::ManifestMissing {
@@ -617,12 +649,23 @@ pub fn verify_bundle_with(
                 path: expected.path.clone(),
             });
         }
-        let (hash, _size) = hash_file(&abs)?;
-        if hash != expected.hash {
-            return Err(BundleError::HashMismatch {
-                expected: expected.hash.clone(),
-                computed: hash,
-            });
+        if hash_payload {
+            let (hash, _size) = hash_file(&abs)?;
+            if hash != expected.hash {
+                return Err(BundleError::HashMismatch {
+                    expected: expected.hash.clone(),
+                    computed: hash,
+                });
+            }
+        } else {
+            let actual = abs.metadata()?.len();
+            if actual != expected.size {
+                return Err(BundleError::SizeMismatch {
+                    path: expected.path.clone(),
+                    expected: expected.size,
+                    actual,
+                });
+            }
         }
         on_disk.remove(&expected.path);
     }
@@ -1119,6 +1162,48 @@ mod tests {
 
         let err = verify_bundle(out.path()).unwrap_err();
         matches!(err, BundleError::BadSignature);
+    }
+
+    #[test]
+    fn metadata_verify_checks_shape_but_deliberately_not_content() {
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let identity_path = host.path().join("identity.json");
+        fs::write(&identity_path, Identity::generate().to_json_bytes()).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let manifest = build_bundle_with(
+            out.path(),
+            "system-fast-path",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: Some(&identity_path),
+                extra_libs: &[],
+            },
+        )
+        .unwrap();
+        let opts = VerifyOptions {
+            require_signature: true,
+            ..VerifyOptions::default()
+        };
+        verify_bundle_metadata_with(out.path(), &opts).expect("untouched metadata verifies");
+
+        let payload = out.path().join(&manifest.files[0].path);
+        let mut same_size = fs::read(&payload).unwrap();
+        same_size[0] ^= 1;
+        fs::write(&payload, &same_size).unwrap();
+        verify_bundle_metadata_with(out.path(), &opts)
+            .expect("caller-owned immutability is what protects equal-sized content");
+        assert!(matches!(
+            verify_bundle_with(out.path(), &opts),
+            Err(BundleError::HashMismatch { .. })
+        ));
+
+        fs::write(&payload, [same_size, vec![0]].concat()).unwrap();
+        assert!(matches!(
+            verify_bundle_metadata_with(out.path(), &opts),
+            Err(BundleError::SizeMismatch { .. })
+        ));
     }
 
     #[test]
