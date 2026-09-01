@@ -4993,7 +4993,7 @@ fn document_fields_are_synchronized_and_undoable() {{
     .expect("input semantics match the document");
     app.expect(
         &SemanticExpectation::named("document-title-preview")
-            .role(Role::StaticText)
+            .role(Role::Heading {{ level: 2 }})
             .name("Project Atlas"),
     )
     .expect("preview semantics match the same document field");
@@ -5166,7 +5166,7 @@ fn headless_actions(spec: &AppSpec) -> String {
             "[\n  {\"perform\": {\"target\": \"run-task\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"task-result\", \"role\": \"static_text\", \"name_contains\": \"Found\", \"timeout_ms\": 1000}}\n]\n",
         ),
         Template::Document => String::from(
-            "[\n  {\"perform\": {\"target\": \"document-title-input\", \"action\": \"set_value\", \"value\": \"Project Atlas\"}},\n  {\"perform\": {\"target\": \"document-body-input\", \"action\": \"set_value\", \"value\": \"A durable first draft.\"}},\n  {\"expect\": {\"target\": \"document-title-preview\", \"role\": \"static_text\", \"name\": \"Project Atlas\"}},\n  {\"expect\": {\"target\": \"document-body-preview\", \"name\": \"A durable first draft.\"}}\n]\n",
+            "[\n  {\"perform\": {\"target\": \"document-title-input\", \"action\": \"set_value\", \"value\": \"Project Atlas\"}},\n  {\"perform\": {\"target\": \"document-body-input\", \"action\": \"set_value\", \"value\": \"A durable first draft.\"}},\n  {\"expect\": {\"target\": \"document-title-preview\", \"role\": \"heading\", \"name\": \"Project Atlas\"}},\n  {\"expect\": {\"target\": \"document-body-preview\", \"name\": \"A durable first draft.\"}}\n]\n",
         ),
         Template::Qr => String::from(
             "[\n  {\"perform\": {\"target\": \"qr-input\", \"action\": \"set_value\", \"value\": \"你好 Rust GUI\"}},\n  {\"expect\": {\"target\": \"qr-input\", \"role\": \"text_input\", \"value\": \"你好 Rust GUI\"}},\n  {\"expect\": {\"target\": \"qr-output\", \"role\": \"image\", \"name_contains\": \"你好 Rust GUI\"}}\n]\n",

@@ -925,8 +925,10 @@ let field_label = Text::new("project-name-label").with_role(TextRole::Label);
 
 Use raw sizes only for content with an actual custom typographic contract.
 Semantic roles keep generated and hand-written app chrome consistent without
-passing a `Theme` through every app builder. See [Typography](typography.md)
-for the role set and advanced text layout controls.
+passing a `Theme` through every app builder. `Title`/`Display` also create a
+level-1 accessibility heading and `Heading` creates level 2; use
+`with_heading_level(3)` for nested sections. See [Typography](typography.md)
+for the full role set and advanced text layout controls.
 
 `TextStyle` is shared by measurement and painting. Kerning, tracking,
 OpenType features, variable-font axes, wrapping, alignment, line height, and
