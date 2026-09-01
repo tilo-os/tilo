@@ -30,6 +30,33 @@ pub struct ActionContext {
 }
 
 impl ActionContext {
+    /// Fill missing provenance from a task/session context while preserving
+    /// every value supplied by the concrete action/resource.
+    #[must_use]
+    pub fn enriched_by(mut self, ambient: &Self) -> Self {
+        if self.action_label.trim().is_empty() {
+            self.action_label.clone_from(&ambient.action_label);
+        }
+        if self.app.is_none() {
+            self.app.clone_from(&ambient.app);
+        }
+        if self.resource.is_none() {
+            self.resource.clone_from(&ambient.resource);
+        }
+        if self.purpose.is_none() {
+            self.purpose.clone_from(&ambient.purpose);
+        }
+        if self.group.is_none() {
+            self.group.clone_from(&ambient.group);
+        }
+        for facet in &ambient.facets {
+            if !self.facets.contains(facet) {
+                self.facets.push(facet.clone());
+            }
+        }
+        self
+    }
+
     /// Build truthful baseline context from a serializable action enum.
     ///
     /// Serde's externally tagged representation exposes the stable variant
@@ -329,6 +356,26 @@ mod tests {
                 id: "org.qos.WordProcessor".into(),
                 label: "Word Processor".into(),
             })
+        );
+    }
+
+    #[test]
+    fn ambient_context_fills_intent_without_overwriting_the_action() {
+        let action = ActionContext::for_resource("Rename", "file:1", "file", "brief.md")
+            .with_app("org.qos.Code", "Code");
+        let ambient = ActionContext::default()
+            .with_purpose("Prepare launch")
+            .with_group("issue:42", "Launch", "issue")
+            .with_app("wrong", "Wrong");
+        let merged = action.enriched_by(&ambient);
+        assert_eq!(
+            merged.app.as_ref().map(|app| app.id.as_str()),
+            Some("org.qos.Code")
+        );
+        assert_eq!(merged.purpose.as_deref(), Some("Prepare launch"));
+        assert_eq!(
+            merged.group.as_ref().map(|group| group.id.as_str()),
+            Some("issue:42")
         );
     }
 }
