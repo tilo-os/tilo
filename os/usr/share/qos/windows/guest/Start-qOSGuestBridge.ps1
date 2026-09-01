@@ -15,6 +15,12 @@ $focusRoot = 'C:\ProgramData\qOS\FocusedApp'
 $config = Get-Content -Raw -LiteralPath (Join-Path $root 'bridge.json') | ConvertFrom-Json
 $secret = [IO.File]::ReadAllBytes((Join-Path $root 'bridge.secret'))
 $appsPath = Join-Path $root 'published-applications.json'
+$installerRoot = 'C:\ProgramData\qOS\InstallerSession'
+$installerStateRoot = Join-Path $root 'installer-state'
+$packageStateRoot = Join-Path $installerStateRoot 'packages'
+$operationStateRoot = Join-Path $installerStateRoot 'operations'
+$maximumInstallerBytes = [UInt64]17179869184
+$maximumStagedBytes = [UInt64]34359738368
 $port = [int]$config.bridgePort
 $guestIp = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -like '192.168.251.*' } | Select-Object -First 1 -ExpandProperty IPAddress)
 if ([string]::IsNullOrWhiteSpace($guestIp)) { throw 'qOS host-only network address is unavailable.' }
@@ -141,6 +147,365 @@ function Get-PublishedCatalog() {
     return @{ generation = $source.generation; applications = $published }
 }
 
+function Test-OpaqueId([string]$value, [int]$minimum = 1) {
+    return $value.Length -ge $minimum -and $value -match '^[A-Za-z0-9._-]{1,128}$'
+}
+
+function Write-AdminJson([string]$path, $value) {
+    $parent = Split-Path -Parent $path
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    $temporary = Join-Path $parent (".$([Guid]::NewGuid().ToString('N')).partial")
+    $json = $value | ConvertTo-Json -Depth 10 -Compress
+    [IO.File]::WriteAllText($temporary, $json, [Text.UTF8Encoding]::new($false))
+    try {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            [IO.File]::Replace($temporary, $path, $null, $true)
+        } else {
+            [IO.File]::Move($temporary, $path)
+        }
+    } finally {
+        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-TextDigest([string]$value) {
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes($value.ToLowerInvariant())
+        return ([BitConverter]::ToString($algorithm.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    } finally { $algorithm.Dispose() }
+}
+
+function Require-UploadAuth($context, [string]$packageId, [string]$kind, [UInt64]$length, [string]$digest) {
+    $timestamp = [string]$context.Request.Headers['X-qOS-Timestamp']
+    $nonce = [string]$context.Request.Headers['X-qOS-Nonce']
+    $provided = [string]$context.Request.Headers['X-qOS-Auth']
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); $then = 0L
+    if (-not [Int64]::TryParse($timestamp, [ref]$then) -or [Math]::Abs($now - $then) -gt 60) { throw 'stale installer upload' }
+    if (-not (Test-OpaqueId $nonce 16) -or -not (Test-OpaqueId $packageId 16)) { throw 'invalid installer upload identity' }
+    if ($kind -notin @('exe', 'msi') -or $digest -notmatch '^[A-Fa-f0-9]{64}$') { throw 'invalid installer upload metadata' }
+    $canonical = "$timestamp`n$nonce`nUPLOAD`n$packageId`n$kind`n$length`n$($digest.ToLowerInvariant())`n"
+    if (-not (Test-FixedTime (Get-Hmac $canonical) $provided)) { throw 'invalid installer upload authentication' }
+    if (-not $seenNonces.TryAdd($nonce, $now)) { throw 'replayed bridge nonce' }
+    foreach ($old in $seenNonces.GetEnumerator()) {
+        if ($old.Value -lt ($now - 61)) { $discard = 0L; [void]$seenNonces.TryRemove($old.Key, [ref]$discard) }
+    }
+}
+
+function Remove-OperationResources($operation) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$operation.taskName)) {
+        Unregister-ScheduledTask -TaskName ([string]$operation.taskName) -Confirm:$false -ErrorAction SilentlyContinue
+    }
+    if (Test-OpaqueId ([string]$operation.operationId) 16) {
+        Remove-Item -LiteralPath (Join-Path (Join-Path $installerRoot 'operations') ([string]$operation.operationId)) -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-OpaqueId ([string]$operation.packageId) 16) {
+        $metadataPath = Join-Path $packageStateRoot "$($operation.packageId).json"
+        if (Test-Path -LiteralPath $metadataPath -PathType Leaf) {
+            try {
+                $package = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
+                $payload = [IO.Path]::GetFullPath([string]$package.payloadPath)
+                if ($payload.StartsWith($installerRoot, [StringComparison]::OrdinalIgnoreCase)) {
+                    Remove-Item -LiteralPath $payload -Force -ErrorAction SilentlyContinue
+                }
+            } catch { }
+            Remove-Item -LiteralPath $metadataPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Invoke-InstallerCleanup() {
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); $visited = 0
+    foreach ($metadataPath in @(Get-ChildItem -LiteralPath $packageStateRoot -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+        if (++$visited -gt 256) { break }
+        try {
+            $package = Get-Content -Raw -LiteralPath $metadataPath.FullName | ConvertFrom-Json
+            if ((-not [bool]$package.consumed -and [Int64]$package.expiresAtUnix -le $now) -or ([bool]$package.consumed -and [Int64]$package.expiresAtUnix -lt ($now - 86400))) {
+                $payload = [IO.Path]::GetFullPath([string]$package.payloadPath)
+                if ($payload.StartsWith($installerRoot, [StringComparison]::OrdinalIgnoreCase)) { Remove-Item -LiteralPath $payload -Force -ErrorAction SilentlyContinue }
+                Remove-Item -LiteralPath $metadataPath.FullName -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+    }
+    $visited = 0
+    foreach ($operationPath in @(Get-ChildItem -LiteralPath $operationStateRoot -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+        if (++$visited -gt 256) { break }
+        try {
+            $operation = Get-Content -Raw -LiteralPath $operationPath.FullName | ConvertFrom-Json
+            if ([string]$operation.state -in @('completed', 'failed') -and [Int64]$operation.startedAtUnix -lt ($now - 604800)) {
+                Remove-Item -LiteralPath $operationPath.FullName -Force -ErrorAction SilentlyContinue
+            } elseif ([Int64]$operation.startedAtUnix -lt ($now - 86400)) {
+                $operation.state = 'failed'; $operation.exitCode = $null; $operation.candidates = @()
+                Write-AdminJson $operationPath.FullName $operation
+                Remove-OperationResources $operation
+            }
+        } catch { }
+    }
+}
+
+function Assert-StagingCapacity([UInt64]$incoming) {
+    $total = [UInt64]0; $count = 0
+    foreach ($metadataPath in @(Get-ChildItem -LiteralPath $packageStateRoot -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+        $count++
+        if ($count -gt 64) { throw 'too many staged installer packages' }
+        try {
+            $package = Get-Content -Raw -LiteralPath $metadataPath.FullName | ConvertFrom-Json
+            if (-not [bool]$package.consumed) { $total += [UInt64]$package.byteLen }
+        } catch { throw 'installer staging metadata is invalid' }
+    }
+    if ($total -ge $maximumStagedBytes -or $incoming -gt ($maximumStagedBytes - $total)) { throw 'installer staging capacity is exhausted' }
+}
+
+function Receive-Installer($context, [string]$packageId) {
+    Invoke-InstallerCleanup
+    $lengthSigned = [Int64]$context.Request.ContentLength64
+    if ($lengthSigned -le 0) { throw 'installer upload needs an exact content length' }
+    $length = [UInt64]$lengthSigned
+    if ($length -gt $maximumInstallerBytes) { throw 'installer upload exceeds the appliance bound' }
+    Assert-StagingCapacity $length
+    $kind = [string]$context.Request.Headers['X-qOS-Installer-Kind']
+    $expectedDigest = ([string]$context.Request.Headers['X-qOS-Payload-SHA256']).ToLowerInvariant()
+    Require-UploadAuth $context $packageId $kind $length $expectedDigest
+    $staging = Join-Path $installerRoot 'staging'
+    $payloads = Join-Path $installerRoot 'payloads'
+    $partial = Join-Path $staging "$packageId.partial"
+    $final = Join-Path $payloads "$packageId.$kind"
+    $metadataPath = Join-Path $packageStateRoot "$packageId.json"
+    if ((Test-Path -LiteralPath $partial) -or (Test-Path -LiteralPath $final) -or (Test-Path -LiteralPath $metadataPath)) {
+        throw 'installer package identity was already used'
+    }
+    $target = [IO.FileStream]::new($partial, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 1048576, [IO.FileOptions]::WriteThrough)
+    $hash = [Security.Cryptography.SHA256]::Create()
+    $written = [UInt64]0
+    try {
+        $buffer = [byte[]]::new(1048576)
+        while ($written -lt $length) {
+            $remaining = $length - $written
+            $wanted = [int][Math]::Min([UInt64]$buffer.Length, $remaining)
+            $read = $context.Request.InputStream.Read($buffer, 0, $wanted)
+            if ($read -le 0) { throw 'installer upload ended before its declared length' }
+            $target.Write($buffer, 0, $read)
+            [void]$hash.TransformBlock($buffer, 0, $read, $buffer, 0)
+            $written += [UInt64]$read
+        }
+        if ($context.Request.InputStream.ReadByte() -ne -1) { throw 'installer upload exceeded its declared length' }
+        [void]$hash.TransformFinalBlock([byte[]]::new(0), 0, 0)
+        $actualDigest = ([BitConverter]::ToString($hash.Hash)).Replace('-', '').ToLowerInvariant()
+        if ($written -ne $length -or -not (Test-FixedTime $actualDigest $expectedDigest)) { throw 'installer upload digest mismatch' }
+        $target.Flush($true)
+    } catch {
+        $target.Dispose(); $hash.Dispose()
+        Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+        throw
+    }
+    $target.Dispose(); $hash.Dispose()
+    [IO.File]::Move($partial, $final)
+    $expires = [DateTimeOffset]::UtcNow.AddMinutes(30).ToUnixTimeSeconds()
+    Write-AdminJson $metadataPath @{ packageId = $packageId; kind = $kind; byteLen = $length; sha256 = $expectedDigest; expiresAtUnix = $expires; consumed = $false; payloadPath = $final }
+    Write-Json $context @{ packageId = $packageId; byteLen = $length; sha256 = $expectedDigest; expiresAtUnix = $expires }
+}
+
+function Get-ProgramExecutables() {
+    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+    $result = @(); $seen = 0
+    foreach ($programRoot in $roots) {
+        foreach ($item in @(Get-ChildItem -LiteralPath $programRoot -Filter '*.exe' -File -Recurse -ErrorAction SilentlyContinue)) {
+            $seen++
+            if ($seen -gt 50000) { throw 'managed Program Files executable inventory exceeded its bound' }
+            $result += $item
+        }
+    }
+    return @($result)
+}
+
+function Get-UninstallMetadata([string]$candidatePath, [string]$operationId) {
+    $locations = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    foreach ($entry in @(Get-ItemProperty -Path $locations -ErrorAction SilentlyContinue)) {
+        $location = [string]$entry.InstallLocation
+        $name = [string]$entry.DisplayName
+        if ([string]::IsNullOrWhiteSpace($location) -or [string]::IsNullOrWhiteSpace($name)) { continue }
+        try { $resolved = [IO.Path]::GetFullPath($location).TrimEnd('\') + '\' } catch { continue }
+        if (-not $candidatePath.StartsWith($resolved, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        return @{ id = "uninstall-$((Get-TextDigest "$operationId|$($entry.PSPath)").Substring(0, 32))"; displayName = $name.Substring(0, [Math]::Min(256, $name.Length)); displayVersion = if ($null -eq $entry.DisplayVersion) { $null } else { ([string]$entry.DisplayVersion).Substring(0, [Math]::Min(256, ([string]$entry.DisplayVersion).Length)) }; publisher = if ($null -eq $entry.Publisher) { $null } else { ([string]$entry.Publisher).Substring(0, [Math]::Min(256, ([string]$entry.Publisher).Length)) } }
+    }
+    return $null
+}
+
+function Get-DiscoveredCandidates($operation) {
+    $before = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($digest in @($operation.beforeExecutableHashes)) { [void]$before.Add([string]$digest) }
+    $candidates = @()
+    foreach ($item in @(Get-ProgramExecutables)) {
+        $path = [IO.Path]::GetFullPath($item.FullName)
+        $pathDigest = Get-TextDigest $path
+        if ($before.Contains($pathDigest) -and $item.LastWriteTimeUtc -lt ([DateTimeOffset]::FromUnixTimeSeconds([Int64]$operation.startedAtUnix).UtcDateTime.AddMinutes(-1))) { continue }
+        $version = $item.VersionInfo
+        $name = [string]$version.FileDescription
+        if ([string]::IsNullOrWhiteSpace($name)) { $name = [IO.Path]::GetFileNameWithoutExtension($path) }
+        $name = $name.Substring(0, [Math]::Min(256, $name.Length))
+        $candidateId = "candidate-$((Get-TextDigest "$($operation.operationId)|$path").Substring(0, 32))"
+        $candidates += @{ id = $candidateId; path = $path; displayName = $name; productName = if ([string]::IsNullOrWhiteSpace($version.ProductName)) { $null } else { ([string]$version.ProductName).Substring(0, [Math]::Min(256, ([string]$version.ProductName).Length)) }; publisher = if ([string]::IsNullOrWhiteSpace($version.CompanyName)) { $null } else { ([string]$version.CompanyName).Substring(0, [Math]::Min(256, ([string]$version.CompanyName).Length)) }; version = if ([string]::IsNullOrWhiteSpace($version.ProductVersion)) { $null } else { ([string]$version.ProductVersion).Substring(0, [Math]::Min(256, ([string]$version.ProductVersion).Length)) }; uninstall = Get-UninstallMetadata $path $operation.operationId }
+        if ($candidates.Count -ge 512) { break }
+    }
+    return @($candidates | Sort-Object displayName, id)
+}
+
+function Start-InstallerOperation($request) {
+    Invoke-InstallerCleanup
+    if (-not (Test-OpaqueId ([string]$request.packageId) 16) -or -not (Test-OpaqueId ([string]$request.operationId) 16)) { throw 'invalid installation operation identity' }
+    $metadataPath = Join-Path $packageStateRoot "$($request.packageId).json"
+    $operationPath = Join-Path $operationStateRoot "$($request.operationId).json"
+    if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf) -or (Test-Path -LiteralPath $operationPath)) { throw 'installer package is unavailable' }
+    $package = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    if ([bool]$package.consumed -or [Int64]$package.expiresAtUnix -le $now) { throw 'installer package is consumed or expired' }
+    $payload = [IO.Path]::GetFullPath([string]$package.payloadPath)
+    if ($payload -notmatch '^C:\\ProgramData\\qOS\\InstallerSession\\payloads\\[A-Za-z0-9._-]{1,128}\.(exe|msi)$' -or -not (Test-Path -LiteralPath $payload -PathType Leaf)) { throw 'installer payload is invalid' }
+    $item = Get-Item -LiteralPath $payload
+    $actualDigest = (Get-FileHash -LiteralPath $payload -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ([UInt64]$item.Length -ne [UInt64]$package.byteLen -or -not (Test-FixedTime $actualDigest ([string]$package.sha256))) { throw 'staged installer changed before use' }
+    $user = Get-ManagedInteractiveUser
+    if ($null -eq $user) { throw 'no managed interactive session exists for installation' }
+    $before = @((Get-ProgramExecutables) | ForEach-Object { Get-TextDigest ([IO.Path]::GetFullPath($_.FullName)) })
+    $account = New-Object Security.Principal.NTAccount($user)
+    # Grant only directory traversal on the two parents. The selected payload,
+    # helper and job live in an operation-specific directory with read/execute;
+    # other staged or future packages remain SYSTEM/admin-only.
+    foreach ($traversePath in @($installerRoot, (Join-Path $installerRoot 'operations'))) {
+        $traverseAcl = Get-Acl -LiteralPath $traversePath
+        $traverseRule = New-Object Security.AccessControl.FileSystemAccessRule($account, 'Traverse', 'None', 'None', 'Allow')
+        [void]$traverseAcl.AddAccessRule($traverseRule)
+        Set-Acl -LiteralPath $traversePath -AclObject $traverseAcl
+    }
+    $operationDirectory = Join-Path (Join-Path $installerRoot 'operations') ([string]$request.operationId)
+    New-Item -ItemType Directory -Path $operationDirectory | Out-Null
+    $operationAcl = New-Object Security.AccessControl.DirectorySecurity
+    $operationAcl.SetAccessRuleProtection($true, $false)
+    foreach ($principalName in @('SYSTEM', 'BUILTIN\Administrators')) {
+        $fullRule = New-Object Security.AccessControl.FileSystemAccessRule($principalName, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+        [void]$operationAcl.AddAccessRule($fullRule)
+    }
+    $readRule = New-Object Security.AccessControl.FileSystemAccessRule($account, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+    [void]$operationAcl.AddAccessRule($readRule)
+    Set-Acl -LiteralPath $operationDirectory -AclObject $operationAcl
+    $operationPayload = Join-Path $operationDirectory "package.$($package.kind)"
+    [IO.File]::Move($payload, $operationPayload)
+    $package.payloadPath = $operationPayload
+    $package.consumed = $true
+    Write-AdminJson $metadataPath $package
+    $taskName = "qOS-Install-$(([string]$request.operationId).Substring(0, 16))"
+    $jobPath = Join-Path $operationDirectory 'job.json'
+    Write-AdminJson $jobPath @{ operationId = [string]$request.operationId; packagePath = $operationPayload; kind = [string]$package.kind; byteLen = [UInt64]$package.byteLen; sha256 = [string]$package.sha256 }
+    $helper = Join-Path $operationDirectory 'Start-qOSInstaller.ps1'
+    Copy-Item -LiteralPath (Join-Path $installerRoot 'Start-qOSInstaller.ps1') -Destination $helper
+    $operation = @{ operationId = [string]$request.operationId; packageId = [string]$request.packageId; taskName = $taskName; startedAtUnix = $now; state = 'starting'; exitCode = $null; beforeExecutableHashes = $before; candidates = $null }
+    Write-AdminJson $operationPath $operation
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File `"$helper`" -JobPath `"$jobPath`""
+    $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType InteractiveToken -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 12) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    try {
+        Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+        Start-ScheduledTask -TaskName $taskName
+    } catch {
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        $operation.state = 'failed'; $operation.exitCode = $null; $operation.candidates = @()
+        Write-AdminJson $operationPath $operation
+        Remove-OperationResources $operation
+        throw
+    }
+    return @{
+        packageId = [string]$request.packageId
+        operationId = [string]$request.operationId
+        endpoint = "$guestIp`:3389"
+        remoteAppAlias = [string]$request.operationId
+        launchNonce = [Guid]::NewGuid().ToString('N')
+        certificateSha256 = $certificateSha256
+        presentationBackend = 'app_focused_spice'
+    }
+}
+
+function Get-InstallationStatus([string]$operationId) {
+    Invoke-InstallerCleanup
+    if (-not (Test-OpaqueId $operationId 16)) { throw 'invalid installation operation identity' }
+    $path = Join-Path $operationStateRoot "$operationId.json"
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'installation operation is unknown' }
+    $operation = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json
+    if ([string]$operation.state -in @('completed', 'failed')) {
+        $terminalCandidates = if ([string]$operation.state -eq 'completed') { @($operation.candidates) } else { @() }
+        $safeTerminal = @($terminalCandidates | ForEach-Object { @{ id = [string]$_.id; displayName = [string]$_.displayName; productName = $_.productName; publisher = $_.publisher; version = $_.version; uninstall = $_.uninstall } })
+        return @{ operationId = $operationId; state = [string]$operation.state; exitCode = $operation.exitCode; candidates = $safeTerminal }
+    }
+    $task = Get-ScheduledTask -TaskName ([string]$operation.taskName) -ErrorAction SilentlyContinue
+    if ($null -eq $task) {
+        $operation.state = 'failed'; $operation.exitCode = $null; $operation.candidates = @(); Write-AdminJson $path $operation; Remove-OperationResources $operation
+        return @{ operationId = $operationId; state = 'failed'; exitCode = $null; candidates = @() }
+    }
+    $info = Get-ScheduledTaskInfo -TaskName ([string]$operation.taskName)
+    if ([string]$task.State -eq 'Running') { return @{ operationId = $operationId; state = 'running'; exitCode = $null; candidates = @() } }
+    if ($info.LastRunTime.Year -lt 2000) { return @{ operationId = $operationId; state = 'starting'; exitCode = $null; candidates = @() } }
+    $exitCode = [UInt32]$info.LastTaskResult
+    if ($exitCode -notin @([UInt32]0, [UInt32]3010)) {
+        $operation.state = 'failed'; $operation.exitCode = $exitCode; $operation.candidates = @(); Write-AdminJson $path $operation; Remove-OperationResources $operation
+        return @{ operationId = $operationId; state = 'failed'; exitCode = $exitCode; candidates = @() }
+    }
+    $operation.state = 'completed'; $operation.exitCode = $exitCode
+    $operation.candidates = @(Get-DiscoveredCandidates $operation)
+    Write-AdminJson $path $operation
+    Remove-OperationResources $operation
+    $safeCandidates = @($operation.candidates | ForEach-Object { @{ id = [string]$_.id; displayName = [string]$_.displayName; productName = $_.productName; publisher = $_.publisher; version = $_.version; uninstall = $_.uninstall } })
+    return @{ operationId = $operationId; state = 'completed'; exitCode = $exitCode; candidates = $safeCandidates }
+}
+
+function Set-RemoteAppRegistry($app) {
+    $base = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList\Applications'
+    $key = Join-Path $base ([string]$app.id)
+    New-Item -Path $key -Force | Out-Null
+    New-ItemProperty -Path $key -Name Name -PropertyType String -Value ([string]$app.name) -Force | Out-Null
+    New-ItemProperty -Path $key -Name Path -PropertyType String -Value ([string]$app.path) -Force | Out-Null
+    New-ItemProperty -Path $key -Name CommandLine -PropertyType String -Value '' -Force | Out-Null
+    New-ItemProperty -Path $key -Name ShowInTSWA -PropertyType DWord -Value 0 -Force | Out-Null
+}
+
+function Publish-DiscoveredCandidate($request) {
+    foreach ($id in @($request.operationId, $request.candidateId, $request.applicationId)) { if (-not (Test-OpaqueId ([string]$id)) { throw 'invalid publication identity' } }
+    $name = ([string]$request.displayName).Trim()
+    if ([string]::IsNullOrWhiteSpace($name) -or $name.Length -gt 256 -or $name -match '[\x00-\x1f\x7f]') { throw 'invalid publication display name' }
+    $status = Get-InstallationStatus ([string]$request.operationId)
+    if ($status.state -ne 'completed') { throw 'installation has not completed' }
+    $operation = Get-Content -Raw -LiteralPath (Join-Path $operationStateRoot "$($request.operationId).json") | ConvertFrom-Json
+    $candidate = @($operation.candidates | Where-Object { $_.id -eq [string]$request.candidateId }) | Select-Object -First 1
+    if ($null -eq $candidate) { throw 'candidate was not discovered for this operation' }
+    $path = [IO.Path]::GetFullPath([string]$candidate.path)
+    if ($path -notmatch '^(C:\\Program Files( \(x86\))?\\)' -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'candidate executable is no longer managed' }
+    $manifest = Get-PublishedManifest
+    if ([UInt64]$manifest.generation -ne [UInt64]$request.expectedGeneration -or [UInt64]$manifest.generation -eq [UInt64]::MaxValue) { throw 'publication generation changed' }
+    if (@($manifest.applications | Where-Object { $_.id -eq [string]$request.applicationId }).Count -ne 0) { throw 'application identity is already published' }
+    $app = @{ id = [string]$request.applicationId; name = $name; path = $path; arguments = '' }
+    Set-RemoteAppRegistry $app
+    try {
+        Write-AdminJson $appsPath @{ generation = ([UInt64]$manifest.generation + 1); applications = @($manifest.applications) + @($app) }
+    } catch {
+        Remove-Item -LiteralPath ("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList\Applications\$($request.applicationId)") -Recurse -Force -ErrorAction SilentlyContinue
+        throw
+    }
+    return @{ applicationId = [string]$request.applicationId; catalogGeneration = ([UInt64]$manifest.generation + 1) }
+}
+
+function Remove-Publication($request) {
+    if (-not (Test-OpaqueId ([string]$request.applicationId))) { throw 'invalid publication identity' }
+    $manifest = Get-PublishedManifest
+    if ([UInt64]$manifest.generation -ne [UInt64]$request.expectedGeneration -or [UInt64]$manifest.generation -eq [UInt64]::MaxValue) { throw 'publication generation changed' }
+    $remaining = @($manifest.applications | Where-Object { $_.id -ne [string]$request.applicationId })
+    if ($remaining.Count -eq @($manifest.applications).Count) { throw 'application is not published' }
+    $next = [UInt64]$manifest.generation + 1
+    Write-AdminJson $appsPath @{ generation = $next; applications = $remaining }
+    Remove-Item -LiteralPath ("HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList\Applications\$($request.applicationId)") -Recurse -Force -ErrorAction SilentlyContinue
+    return @{ applicationId = [string]$request.applicationId; catalogGeneration = $next }
+}
+
 # Generate a VM-local TLS identity once. The certificate has no host trust
 # anchor; qOS learns and pins its SHA-256 thumbprint through authenticated
 # enrollment, then refuses certificate changes until explicit repair.
@@ -154,13 +519,24 @@ $certificateSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::Hash
 
 $listener = [Net.HttpListener]::new()
 $listener.Prefixes.Add("https://$guestIp`:$port/")
+$null = New-Item -ItemType Directory -Force -Path $packageStateRoot
+$null = New-Item -ItemType Directory -Force -Path $operationStateRoot
 $listener.Start()
 while ($listener.IsListening) {
     $context = $listener.GetContext()
     try {
+        $requestPath = [string]$context.Request.Url.AbsolutePath
+        if ($context.Request.HttpMethod -eq 'POST' -and $requestPath -match '^/v1/installers/([A-Za-z0-9._-]{16,128})$') {
+            Receive-Installer $context $Matches[1]
+            continue
+        }
         $reader = [IO.StreamReader]::new($context.Request.InputStream, $context.Request.ContentEncoding)
         $body = $reader.ReadToEnd(); $reader.Dispose()
         Require-RequestAuth $context $body
+        if ($context.Request.HttpMethod -eq 'GET' -and $requestPath -match '^/v1/installations/([A-Za-z0-9._-]{16,128})$') {
+            Write-Json $context (Get-InstallationStatus $Matches[1])
+            continue
+        }
         switch ("$($context.Request.HttpMethod) $($context.Request.Url.AbsolutePath)") {
             'GET /v1/health' {
                 $windows = Get-CimInstance -ClassName SoftwareLicensingProduct | Where-Object { $_.ApplicationID -eq '55c92734-d682-4d71-983e-d6ec3f16059f' -and $_.PartialProductKey } | Select-Object -First 1
@@ -174,6 +550,18 @@ while ($listener.IsListening) {
                 Write-Json $context @{ protocolMajor = 1; certificateSha256 = $certificateSha256; certificateDerBase64 = $certificateDerBase64; license = $license; catalogGeneration = $catalog.generation; guestBootId = $bootId; presentationBackend = $presentation; appFocusedSpiceAvailable = ($null -ne $interactiveUser); appFocusedSpiceUnavailableReason = if ($null -eq $interactiveUser) { 'no managed interactive session' } else { $null } }; break
             }
             'GET /v1/catalog' { Write-Json $context (Get-PublishedCatalog); break }
+            'POST /v1/installations' {
+                Write-Json $context (Start-InstallerOperation ($body | ConvertFrom-Json))
+                break
+            }
+            'POST /v1/publications' {
+                Write-Json $context (Publish-DiscoveredCandidate ($body | ConvertFrom-Json))
+                break
+            }
+            'POST /v1/publications/remove' {
+                Write-Json $context (Remove-Publication ($body | ConvertFrom-Json))
+                break
+            }
             'POST /v1/launch' {
                 $request = $body | ConvertFrom-Json
                 if ($request.applicationId -notmatch '^[A-Za-z0-9._-]{1,128}$' -or $request.launchNonce -notmatch '^[A-Za-z0-9-]{16,128}$') { throw 'invalid launch request' }
