@@ -32,6 +32,7 @@ use crate::widget::history::{HistoryEntry, HistoryEntryId};
 
 pub mod authors;
 pub mod compare;
+pub mod detail;
 pub mod digest;
 pub mod facets;
 pub mod groups;
@@ -43,6 +44,7 @@ pub use authors::{
     AuthorDirectory, UNKNOWN_AUTHOR_NAME, actor_handle, local_identity_author, short_id, stable_hue,
 };
 pub use compare::{CompareError, HistoryComparison, compare_entries};
+pub use detail::{HistoryResourceTarget, HistorySelectionDetail};
 pub use digest::{ActivityBrief, ActivityDigest};
 pub use facets::HistoryFacetIndex;
 pub use groups::{
