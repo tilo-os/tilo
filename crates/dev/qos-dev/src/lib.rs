@@ -7071,6 +7071,18 @@ fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
         (1000, 640),
     );
 
+    let targets = app.targets();
+    for target in [
+        "workspace-selected-item",
+        "workspace-title-input",
+        "workspace-notes-input",
+        "workspace-share",
+    ] {{
+        let rect = targets.get(target).unwrap_or_else(|| panic!("missing {{target}}"));
+        assert!(rect.width() > 0.0 && rect.height() > 0.0, "{{target}}: {{rect:?}}");
+        assert!(rect.y0 >= 0.0 && rect.y1 <= 640.0, "{{target}}: {{rect:?}}");
+    }}
+
     app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
         .expect("select the design-system project");
     app.expect(
