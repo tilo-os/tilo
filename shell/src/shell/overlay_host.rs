@@ -940,7 +940,7 @@ impl ShellOverlayHost {
             qs_vpn_pane: QuickSettingsVpnPane::default(),
             status_bridge: None,
             session_audio_policy: None,
-            room_activity: crate::shell::room_activity::RoomActivityPane::new(),
+            room_activity: crate::shell::room_activity::RoomActivityPane::new_persistent(),
             room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
             collaborators_overlay: CollaboratorsOverlay::default(),
@@ -3910,6 +3910,25 @@ impl ShellOverlayHost {
             let mut tree = st.tree_mut();
             self.room_activity.refresh(&mut tree);
         }
+    }
+
+    /// Keep passive chrome truthful while the sheet is closed. The source's
+    /// heads check makes the resting path constant-time; publishing is also a
+    /// no-op unless headline, unread count, or latest content id changed.
+    fn refresh_room_activity_awareness(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let workspace = {
+            let st = chrome.borrow();
+            let mut tree = st.tree_mut();
+            self.room_activity.refresh(&mut tree);
+            tree.active.raw()
+        };
+        let (headline, unread, pulse) = self.room_activity.glance_signal(workspace);
+        chrome
+            .borrow_mut()
+            .publish_activity_glance(headline, unread, pulse);
     }
 
     /// The room-activity sheet, for tests and for the shots driver.
@@ -7859,9 +7878,20 @@ impl ShellOverlayHost {
         }
 
         // Above the dropdowns, below the palette (which must stay reachable).
+        self.refresh_room_activity_awareness();
         if flags.room_activity && !self.room_activity_was_open {
             // Room may have changed while closed — drop stale derived rows.
             self.room_activity.invalidate();
+            if let Some(chrome) = self.chrome.as_ref() {
+                let workspace = chrome.borrow().tree().active.raw();
+                self.room_activity.begin_view(workspace);
+            }
+        } else if !flags.room_activity
+            && self.room_activity_was_open
+            && let Some(chrome) = self.chrome.as_ref()
+        {
+            let workspace = chrome.borrow().tree().active.raw();
+            self.room_activity.finish_view(workspace);
         }
         self.room_activity_was_open = flags.room_activity;
         self.room_activity_transition.set_open(
