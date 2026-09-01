@@ -50,6 +50,7 @@ use crate::review_overlay::{
 use crate::ruler::RulerMarker;
 use crate::ruler::{Ruler, RulerColors, RulerEffect, RulerModel};
 use crate::style_color_picker::StyleColorPicker;
+use crate::style_menu::{StyleMenu, StyleMenuAction};
 use crate::template_picker::TemplatePicker;
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 #[cfg(test)]
@@ -506,16 +507,6 @@ enum PanelHit {
     ImageFlipH,
     /// Mirror the selected image vertically (top↔bottom).
     ImageFlipV,
-}
-
-/// A row in the paragraph-style context menu (right-click a style chip). Custom
-/// styles offer Delete + Duplicate; built-in styles offer Duplicate only.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum StyleMenuAction {
-    /// Delete this custom style (built-ins are never offered this row).
-    Delete(String),
-    /// Duplicate this style under a fresh id.
-    Duplicate(String),
 }
 
 /// An in-progress drag-to-scrub on a numeric field.
@@ -1700,11 +1691,8 @@ pub struct WordProcessorWidget {
     /// save the current one, or insert an image). Set alongside `portal_rx`.
     portal_purpose: Option<PortalPurpose>,
     // ---- paragraph-style context menu -------------------------------------
-    /// Right-click-a-style menu (Delete / Duplicate). Reuses the shared
-    /// [`ContextMenu`] primitive; painted in the overlay pass.
-    style_menu: ContextMenu,
-    /// Per-row action parallel to `style_menu`'s items (selection dispatch).
-    style_menu_actions: Vec<StyleMenuAction>,
+    /// Right-click style-menu lifecycle, drawing, hit-testing, and typed outcome.
+    style_menu: StyleMenu,
     // ---- transient status toast -------------------------------------------
     /// A transient confirmation message (e.g. "Table of contents updated"),
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
@@ -1797,8 +1785,7 @@ impl WordProcessorWidget {
             template_picker: TemplatePicker::default(),
             portal_rx: None,
             portal_purpose: None,
-            style_menu: ContextMenu::new(),
-            style_menu_actions: Vec::new(),
+            style_menu: StyleMenu::default(),
             toast: None,
             color_picker: StyleColorPicker::default(),
         }
@@ -6607,11 +6594,8 @@ impl WordProcessorWidget {
         // "panel is chrome, ignore" rule kicks in.
         if self.styles_panel_open && self.panel_rect.contains(self.pointer) {
             if let Some(id) = self.style_chip_at(self.pointer) {
-                let pos = [
-                    num::f32_of_f64(self.pointer.x),
-                    num::f32_of_f64(self.pointer.y),
-                ];
-                self.open_style_menu(&id, pos);
+                self.style_menu.open(&id, self.pointer);
+                self.dirty = true;
                 *handled = true;
             }
             return;
@@ -6699,11 +6683,8 @@ impl WordProcessorWidget {
         // The paragraph-style menu (Delete / Duplicate) captures the press
         // the same way: a row runs its action, an outside click dismisses.
         if self.style_menu.is_open() {
-            let point = [self.pointer.x, self.pointer.y];
-            if let Some(idx) = self.style_menu.item_at(point) {
-                self.dispatch_style_menu(idx, state);
-            } else {
-                self.style_menu.close();
+            if let Some(action) = self.style_menu.click(self.pointer) {
+                self.dispatch_style_menu(action, state);
             }
             self.dirty = true;
             *handled = true;
@@ -7789,16 +7770,8 @@ impl Widget for WordProcessorWidget {
         }
         self.template_picker
             .draw(scene, transform, text_renderer, theme, presence);
-        if self.style_menu.is_open() {
-            Widget::draw(
-                &mut self.style_menu,
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
-        }
+        self.style_menu
+            .draw(scene, transform, text_renderer, theme, presence);
         if self.find.is_open() {
             self.find
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
@@ -8934,53 +8907,31 @@ impl WordProcessorWidget {
         })
     }
 
-    /// Open the style-management context menu for `style_id`. Custom styles get
-    /// **Delete** + **Duplicate**; built-in styles get **Duplicate** only (they
-    /// are the document's permanent baseline component set and can't be removed).
-    fn open_style_menu(&mut self, style_id: &str, pos: [f32; 2]) {
-        let mut menu = ContextMenu::new();
-        let mut actions: Vec<StyleMenuAction> = Vec::new();
-        if !crate::styles::StyleSheet::is_builtin(style_id) {
-            menu.push(MenuItem::action(t("style-menu-delete"), || {}));
-            actions.push(StyleMenuAction::Delete(style_id.to_string()));
-        }
-        menu.push(MenuItem::action(t("style-menu-duplicate"), || {}));
-        actions.push(StyleMenuAction::Duplicate(style_id.to_string()));
-        menu.open_at(pos);
-        self.style_menu = menu;
-        self.style_menu_actions = actions;
-        self.dirty = true;
-    }
-
-    /// Dispatch the style-menu row at `idx`: delete a custom style (reassigning
-    /// its blocks to the default) or duplicate any style under a fresh id. Then
-    /// close the menu.
-    fn dispatch_style_menu(&mut self, idx: usize, state: &mut AutoCommit) {
-        if let Some(action) = self.style_menu_actions.get(idx).cloned() {
-            match action {
-                StyleMenuAction::Delete(id) => {
-                    if self.inner.delete_style(state, &id) {
-                        self.sheet = self.inner.stylesheet(state);
-                        self.refresh_blocks(state);
-                        self.needs_commit = true;
-                        self.modified = true;
-                        self.toast = Some(t("toast-style-deleted"));
-                    }
+    /// Apply a typed style-menu outcome. The component owns presentation and
+    /// hit-testing; document mutation remains editor policy.
+    fn dispatch_style_menu(&mut self, action: StyleMenuAction, state: &mut AutoCommit) {
+        match action {
+            StyleMenuAction::Delete(id) => {
+                if self.inner.delete_style(state, &id) {
+                    self.sheet = self.inner.stylesheet(state);
+                    self.refresh_blocks(state);
+                    self.needs_commit = true;
+                    self.modified = true;
+                    self.toast = Some(t("toast-style-deleted"));
                 }
-                StyleMenuAction::Duplicate(id) => {
-                    if let Some(new_id) = self.inner.duplicate_style(state, &id) {
-                        // Apply the copy to the caret block so the panel focuses it.
-                        self.inner.set_block_style(state, &new_id);
-                        self.sheet = self.inner.stylesheet(state);
-                        self.refresh_blocks(state);
-                        self.needs_commit = true;
-                        self.modified = true;
-                        self.toast = Some(t("toast-style-duplicated"));
-                    }
+            }
+            StyleMenuAction::Duplicate(id) => {
+                if let Some(new_id) = self.inner.duplicate_style(state, &id) {
+                    // Apply the copy to the caret block so the panel focuses it.
+                    self.inner.set_block_style(state, &new_id);
+                    self.sheet = self.inner.stylesheet(state);
+                    self.refresh_blocks(state);
+                    self.needs_commit = true;
+                    self.modified = true;
+                    self.toast = Some(t("toast-style-duplicated"));
                 }
             }
         }
-        self.style_menu.close();
         self.dirty = true;
     }
 
@@ -14663,41 +14614,6 @@ mod tests {
         (wp, state, new_id)
     }
 
-    /// The style menu offers Delete + Duplicate for a custom style, but Duplicate
-    /// only for a built-in.
-    #[test]
-    fn style_menu_offers_delete_only_for_custom_styles() {
-        let (mut wp, _state, custom_id) = doc_with_custom_style();
-
-        wp.open_style_menu(&custom_id, [10.0, 10.0]);
-        assert!(
-            wp.style_menu_actions
-                .iter()
-                .any(|a| matches!(a, StyleMenuAction::Delete(_))),
-            "a custom style offers Delete"
-        );
-        assert!(
-            wp.style_menu_actions
-                .iter()
-                .any(|a| matches!(a, StyleMenuAction::Duplicate(_))),
-            "a custom style offers Duplicate"
-        );
-
-        wp.open_style_menu("body", [10.0, 10.0]);
-        assert!(
-            !wp.style_menu_actions
-                .iter()
-                .any(|a| matches!(a, StyleMenuAction::Delete(_))),
-            "a built-in style offers NO Delete"
-        );
-        assert!(
-            wp.style_menu_actions
-                .iter()
-                .any(|a| matches!(a, StyleMenuAction::Duplicate(_))),
-            "a built-in style still offers Duplicate"
-        );
-    }
-
     /// Deleting a custom style removes it from the document's sheet and reassigns
     /// the block that used it (so no dangling style ref remains).
     #[test]
@@ -14708,14 +14624,8 @@ mod tests {
             "custom style present before delete"
         );
 
-        // Open the style menu on the custom chip and click its Delete row.
-        wp.open_style_menu(&custom_id, [10.0, 10.0]);
-        let del_idx = wp
-            .style_menu_actions
-            .iter()
-            .position(|a| matches!(a, StyleMenuAction::Delete(_)))
-            .expect("Delete row present for a custom style");
-        wp.dispatch_style_menu(del_idx, &mut state.doc);
+        // Apply the typed outcome produced by the extracted menu component.
+        wp.dispatch_style_menu(StyleMenuAction::Delete(custom_id.clone()), &mut state.doc);
         wp.sync(&mut state.doc, &state.root);
 
         assert!(
@@ -15008,10 +14918,10 @@ mod tests {
                 .panel_hits
                 .iter()
                 .find(|(_, hh)| matches!(hh, PanelHit::Pick(id) if id == &custom_id))
-                .map_or([950.0, 240.0], |(r, _)| {
-                    [num::f32_of_f64(r.x0) + 10.0, num::f32_of_f64(r.y1) + 2.0]
+                .map_or(Point::new(950.0, 240.0), |(r, _)| {
+                    Point::new(r.x0 + 10.0, r.y1 + 2.0)
                 });
-            wp.open_style_menu(&custom_id, anchor);
+            wp.style_menu.open(&custom_id, anchor);
             render_review_png(&mut wp, &mut state, w, h, &dir, "style-menu-custom");
         }
 
@@ -15022,10 +14932,10 @@ mod tests {
                 .panel_hits
                 .iter()
                 .find(|(_, hh)| matches!(hh, PanelHit::Pick(id) if id == "body"))
-                .map_or([950.0, 240.0], |(r, _)| {
-                    [num::f32_of_f64(r.x0) + 10.0, num::f32_of_f64(r.y1) + 2.0]
+                .map_or(Point::new(950.0, 240.0), |(r, _)| {
+                    Point::new(r.x0 + 10.0, r.y1 + 2.0)
                 });
-            wp.open_style_menu("body", anchor);
+            wp.style_menu.open("body", anchor);
             render_review_png(&mut wp, &mut state, w, h, &dir, "style-menu-builtin");
         }
 
