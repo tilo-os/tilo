@@ -318,13 +318,13 @@ impl OnboardingView {
                 Row::new()
                     .push(Box::new(
                         Text::new("qOS  •  PRIVATE BY DESIGN")
-                            .with_role(ui::tokens::typography::TextRole::Label, theme)
+                            .with_role(ui::tokens::typography::TextRole::Label)
                             .with_color(theme.text_dim),
                     ))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(
                         Text::new(&format!("{stage}  ·  {step} of 3"))
-                            .with_role(ui::tokens::typography::TextRole::Label, theme)
+                            .with_role(ui::tokens::typography::TextRole::Label)
                             .with_color(theme.text_dim),
                     )),
             ))
@@ -474,7 +474,7 @@ impl OnboardingView {
                         ))
                         .push(Box::new(
                             Text::new(ACKNOWLEDGEMENT)
-                                .with_role(ui::tokens::typography::TextRole::Body, theme),
+                                .with_role(ui::tokens::typography::TextRole::Body),
                         )),
                 ))
                 .push(actions(vec![back_button(), Box::new(create)])),
@@ -512,13 +512,11 @@ impl OnboardingView {
             .with_intrinsic_height()
             .with_gap(theme.tokens.spacing.s2)
             .push(Box::new(
-                Text::new(&fingerprint)
-                    .with_role(ui::tokens::typography::TextRole::Code, theme)
-                    .with_font_family(ui::text_render::FontChoice::Monospace),
+                Text::new(&fingerprint).with_role(ui::tokens::typography::TextRole::Code),
             ))
             .push(Box::new(
                 Text::new("Others may use this fingerprint to verify that this identity is yours.")
-                    .with_role(ui::tokens::typography::TextRole::Caption, theme)
+                    .with_role(ui::tokens::typography::TextRole::Caption)
                     .with_color(theme.text_dim),
             ));
         let backup_fields = Column::new()
@@ -630,8 +628,8 @@ impl OnboardingView {
     }
 }
 
-fn heading(text: &str, theme: &Theme) -> Box<dyn Widget> {
-    Box::new(Text::new(text).with_role(ui::tokens::typography::TextRole::Display, theme))
+fn heading(text: &str, _theme: &Theme) -> Box<dyn Widget> {
+    Box::new(Text::new(text).with_role(ui::tokens::typography::TextRole::Display))
 }
 
 /// Secondary body copy. Takes the live theme rather than a hard-coded
@@ -639,7 +637,7 @@ fn heading(text: &str, theme: &Theme) -> Box<dyn Widget> {
 fn paragraph(text: &str, theme: &Theme) -> Box<dyn Widget> {
     Box::new(
         Text::new(text)
-            .with_role(ui::tokens::typography::TextRole::Body, theme)
+            .with_role(ui::tokens::typography::TextRole::Body)
             .with_color(theme.text_dim),
     )
 }
@@ -648,10 +646,8 @@ fn paragraph(text: &str, theme: &Theme) -> Box<dyn Widget> {
 ///
 /// The marker is part of the same `Text` rather than a sibling in a
 /// `Row`: these lines wrap, and a marker in its own column detaches from its sentence.
-fn bullet(text: &str, theme: &Theme) -> Box<dyn Widget> {
-    Box::new(
-        Text::new(&format!("•   {text}")).with_role(ui::tokens::typography::TextRole::Body, theme),
-    )
+fn bullet(text: &str, _theme: &Theme) -> Box<dyn Widget> {
+    Box::new(Text::new(&format!("•   {text}")).with_role(ui::tokens::typography::TextRole::Body))
 }
 
 fn back_button() -> Box<dyn Widget> {
