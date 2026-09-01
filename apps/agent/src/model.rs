@@ -1070,6 +1070,7 @@ mod tests {
                     ("count".into(), serde_json::json!(12)),
                     ("normalise".into(), serde_json::json!(true)),
                 ]),
+                confirmation: crate::plan::ConfirmationEvidence::None,
             }
         );
     }
