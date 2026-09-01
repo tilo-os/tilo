@@ -32,17 +32,19 @@ mod appliance;
 mod command;
 mod config;
 mod guest;
+mod guest_network;
 mod https_guest;
 mod libvirt;
 mod lifecycle;
+mod portal_files;
 mod presentation;
 mod publication;
 mod remote_app;
 mod state;
 
 pub use appliance::{
-    BrokeredLaunch, CapabilityBroker, LaunchError, LaunchRequest, RunningRemoteApp, ShareBinding,
-    VmLaunchGrants, WindowsAppliance,
+    BrokeredLaunch, CapabilityBroker, LaunchError, LaunchRequest, PortalDocumentAccess,
+    PortalDocumentGrant, RunningRemoteApp, ShareBinding, VmLaunchGrants, WindowsAppliance,
 };
 pub use command::{CommandError, CommandOutput, CommandRequest, CommandRunner, StdCommandRunner};
 pub use config::{
@@ -50,6 +52,9 @@ pub use config::{
 };
 pub use guest::{
     AgentError, AgentHealth, GuestAgent, GuestLaunch, GuestSession, RdpEndpoint, Secret,
+};
+pub use guest_network::{
+    GuestNetworkBinding, GuestNetworkError, GuestNetworkProxy, HOST_ONLY_GATEWAY,
 };
 pub use https_guest::{
     DiscoveredApplication, DiscoveredUninstaller, GuestBridgeConfig, HttpsGuestBridge,
