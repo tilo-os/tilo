@@ -1694,9 +1694,9 @@ pub struct WordProcessorWidget {
     /// Right-click style-menu lifecycle, drawing, hit-testing, and typed outcome.
     style_menu: StyleMenu,
     // ---- transient status toast -------------------------------------------
-    /// A transient confirmation message (e.g. "Table of contents updated"),
+    /// A transient operation result (e.g. save confirmation or failure),
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
-    toast: Option<String>,
+    toast: Option<(String, ToastKind)>,
     /// The style inspector's shared color-picker popover. It owns its lifecycle,
     /// layout, drawing, and modal input routing; this editor applies its result.
     color_picker: StyleColorPicker,
@@ -2256,6 +2256,7 @@ impl WordProcessorWidget {
                     }
                 } else if let portal::PortalOutcome::Failed(reason) = outcome {
                     eprintln!("word-processor: portal error: {reason}");
+                    self.toast = Some((t("toast-file-dialog-failed"), ToastKind::Error));
                 }
             }
             // Still open (Empty) — leave the channel in place; a hangup
@@ -2322,12 +2323,17 @@ impl WordProcessorWidget {
                 Ok(bytes) => {
                     if let Err(e) = std::fs::write(path, bytes) {
                         eprintln!("word-processor: could not write {}: {e}", path.display());
+                        self.toast = Some((t("toast-save-failed"), ToastKind::Error));
                     } else {
                         self.modified = false;
                         saved = true;
+                        self.toast = Some((t("toast-saved"), ToastKind::Success));
                     }
                 }
-                Err(e) => eprintln!("word-processor: export failed: {e}"),
+                Err(e) => {
+                    eprintln!("word-processor: export failed: {e}");
+                    self.toast = Some((t("toast-save-failed"), ToastKind::Error));
+                }
             }
         }
         // A successful real save supersedes any recovery copy — drop it so a later
@@ -4103,7 +4109,7 @@ impl WordProcessorWidget {
             .collect();
         if entries.is_empty() {
             // Nothing to build a TOC from — tell the user *why* nothing happened.
-            self.toast = Some(t("toast-toc-empty"));
+            self.toast = Some((t("toast-toc-empty"), ToastKind::Info));
             self.dirty = true;
             return;
         }
@@ -4115,9 +4121,9 @@ impl WordProcessorWidget {
         // Scroll the freshly-inserted TOC (always at the document top) into view
         // and surface a confirmation toast, so the action has a visible result.
         self.scroll_y = 0.0;
-        self.toast = Some(t_args(
-            "toast-toc-updated",
-            &[arg("n", num::i64_of_usize(n))],
+        self.toast = Some((
+            t_args("toast-toc-updated", &[arg("n", num::i64_of_usize(n))]),
+            ToastKind::Success,
         ));
     }
 
@@ -4131,7 +4137,7 @@ impl WordProcessorWidget {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(msg) = self.toast.as_deref() else {
+        let Some((msg, kind)) = self.toast.as_ref() else {
             return;
         };
         let area = Rect::new(
@@ -4147,7 +4153,7 @@ impl WordProcessorWidget {
             theme,
             area,
             ToastAnchor::BottomCenter,
-            &ToastCard::new(msg, ToastKind::Success),
+            &ToastCard::new(msg, *kind),
         );
     }
 }
@@ -8917,7 +8923,7 @@ impl WordProcessorWidget {
                     self.refresh_blocks(state);
                     self.needs_commit = true;
                     self.modified = true;
-                    self.toast = Some(t("toast-style-deleted"));
+                    self.toast = Some((t("toast-style-deleted"), ToastKind::Success));
                 }
             }
             StyleMenuAction::Duplicate(id) => {
@@ -8928,7 +8934,7 @@ impl WordProcessorWidget {
                     self.refresh_blocks(state);
                     self.needs_commit = true;
                     self.modified = true;
-                    self.toast = Some(t("toast-style-duplicated"));
+                    self.toast = Some((t("toast-style-duplicated"), ToastKind::Success));
                 }
             }
         }
@@ -14335,6 +14341,10 @@ mod tests {
             Some(WpFormat::Docx),
             "format follows the chosen extension"
         );
+        assert!(
+            matches!(wp.toast.as_ref(), Some((_, ToastKind::Success))),
+            "a completed save is visibly confirmed"
+        );
 
         // The written file is a real docx (ZIP signature) — not markdown ...
         let written = std::fs::read(&dest).expect("Save As wrote the destination");
@@ -14359,6 +14369,23 @@ mod tests {
 
         let _ = std::fs::remove_file(&src);
         let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn failed_save_is_visible_and_keeps_the_document_modified() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "unsaved work");
+        wp.modified = true;
+        // Writing bytes to a directory reliably fails without relying on file
+        // permissions (the test suite may run as a privileged user).
+        wp.set_file(std::env::temp_dir(), WpFormat::Markdown);
+        wp.write_to_current_path(&state.doc);
+
+        assert!(wp.modified, "a failed save never clears the dirty state");
+        assert!(
+            matches!(wp.toast.as_ref(), Some((_, ToastKind::Error))),
+            "the user sees an error toast instead of an stderr-only failure"
+        );
     }
 
     /// A resolved **Open** pick replaces the running document in place: a blank

@@ -106,7 +106,6 @@ apps/notes/src/shortcuts_overlay.rs theme_blind_white 1
 apps/notes/src/shots.rs literal_color 1
 apps/notes/src/sidebar.rs theme_blind_white 1
 apps/pdf_viewer/src/app_draw.rs literal_color 2
-apps/pdf_viewer/src/app_draw.rs theme_blind_white 9
 apps/pdf_viewer/src/app_draw.rs white_or_black 10
 apps/pdf_viewer/src/render.rs literal_color 11
 apps/pdf_viewer/src/render.rs white_or_black 3
@@ -143,9 +142,7 @@ apps/tube/src/widgets/seek_bar.rs literal_color 1
 apps/tube/src/widgets/seek_bar.rs white_or_black 1
 apps/tube/src/widgets/thumbnail.rs literal_color 9
 apps/tube/src/widgets/thumbnail.rs white_or_black 4
-apps/typst_editor/src/app.rs theme_blind_white 3
 apps/typst_editor/src/app.rs white_or_black 3
-apps/typst_editor/src/diagnostics.rs theme_blind_white 1
 apps/typst_editor/src/preview.rs literal_color 1
 apps/video-player/src/app.rs literal_color 2
 apps/video_editor/src/app.rs theme_blind_white 16
@@ -154,7 +151,6 @@ apps/vpn/src/app.rs theme_blind_white 10
 apps/vpn/src/throughput.rs theme_blind_white 2
 apps/weather/src/core.rs literal_color 2
 apps/weather/src/core.rs white_or_black 3
-apps/word-processor/src/history_panel.rs theme_blind_white 2
 apps/word-processor/src/review_overlay.rs literal_color 13
 apps/word-processor/src/style_color_picker.rs white_or_black 1
 apps/word-processor/src/widget.rs literal_color 18

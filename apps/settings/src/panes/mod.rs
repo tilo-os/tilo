@@ -22,6 +22,7 @@ pub mod accounts;
 pub mod appearance;
 pub mod audio;
 pub mod bluetooth;
+pub mod device_mesh;
 pub mod display;
 pub mod keyboard_shortcuts;
 pub mod mouse_keyboard;
