@@ -54,6 +54,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Window
 use winit::keyboard::{Key, NamedKey};
 
 use ui::color_compat::ColorCompat;
+use ui::format::bytes as format_bytes;
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -70,7 +71,7 @@ use crate::doc::ApiDoc;
 use crate::http::{self, Outgoing};
 use crate::model::{
     Auth, BodyMode, Collection, Environment, HistoryEntry, HttpMethod, KeyValue, Request,
-    RequestTab, ResponseData, ResponseView, human_duration, human_size,
+    RequestTab, ResponseData, ResponseView, human_duration,
 };
 use crate::navrow::{NavKind, NavRow, ROW_H};
 use crate::palette::{short_path, status_color, token_color};
@@ -1639,7 +1640,7 @@ impl ApiTesterApp {
             let meta = format!(
                 "{}   {}",
                 human_duration(resp.duration_ms),
-                human_size(resp.size_bytes)
+                format_bytes(u64::try_from(resp.size_bytes).unwrap_or(u64::MAX))
             );
             tr.draw_text(
                 scene,
