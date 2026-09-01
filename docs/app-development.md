@@ -313,7 +313,7 @@ writing one allocation step per child:
 
 ```rust
 use ui::tokens::TextRole;
-use ui::widget::{Button, Text, TextInput, Widget, labeled_field};
+use ui::widget::{Button, Checkbox, Text, TextInput, Widget, labeled_check, labeled_field};
 
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(ui::column![
@@ -321,6 +321,10 @@ pub fn app_root() -> Box<dyn Widget> {
         labeled_field(
             "project-name-label",
             TextInput::local().with_id("project-name"),
+        ),
+        labeled_check(
+            "project-pinned-label",
+            Checkbox::new("project-pinned", "project-pinned"),
         ),
         ui::row![
             Button::new("cancel", "cancel-label", None),
@@ -337,12 +341,14 @@ retained lifecycle, focus, accessibility, and inspection behavior. Use the
 ordinary `push` builder when adding an already type-erased
 `Box<dyn Widget>` conditionally.
 
-`labeled_field(label, control)` is the corresponding form primitive for
-`TextInput`, `Checkbox`, `Toggle`, and `Slider`. The label is rendered once as
-semantic `Label` text and the same Fluent key becomes the control's accessible
-name, so translation changes and refactors cannot leave visible and spoken
-labels out of sync. It returns an ordinary no-padding `Column`, which can be
-nested in `column!` or further styled like any other layout:
+`labeled_field(label, control)` is the corresponding vertical form primitive
+for text, number, choice, date, time, colour, checkbox, toggle, and slider
+controls. `labeled_check(label, control)` provides the conventional inline
+checkbox/toggle layout. In both cases the label is rendered once as semantic
+`Label` text and the same Fluent key becomes the control's accessible name, so
+translation changes and refactors cannot leave visible and spoken labels out
+of sync. They return ordinary `Column` and `Row` widgets, which can be nested
+or further styled like any other layout:
 
 ```rust
 let email = labeled_field(
@@ -505,11 +511,12 @@ Rust construction; it does not introduce a second renderer or event model.
 }
 ```
 
-For form inputs, `label` renders semantic label text and names the control in
-the accessibility tree. It is deliberately one property: changing locale or
-editing a screen cannot make the visible and spoken labels disagree. Use
-`accessible_name` only for an intentionally unlabeled control; validation
-rejects specifying both.
+For text inputs, checkboxes, and toggles, `label` renders semantic label text
+and names the control in the accessibility tree. Text fields use a vertical
+form layout; boolean controls use the conventional inline layout. It is
+deliberately one property: changing locale or editing a screen cannot make the
+visible and spoken labels disagree. Use `accessible_name` only for an
+intentionally unlabeled control; validation rejects specifying both.
 
 Start an app on this format directly, or add a graph to an existing app:
 
