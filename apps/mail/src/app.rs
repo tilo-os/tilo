@@ -42,7 +42,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{NavPane, NavShell, TextInput, Widget};
+use ui::widget::{NavPane, NavShell, TextInput, Toggle, ToggleFace, Widget};
 
 use crate::account::{Account, AccountStore};
 use crate::compose::{ComposeAction, ComposeWindow};
@@ -1903,6 +1903,7 @@ impl MailApp {
         theme: &Theme,
     ) {
         let c = &theme.tokens.colors;
+        let last_mouse = self.shared.borrow().last_mouse;
         for (rect, hit) in &self.overlay_hits {
             let (on, label) = match hit {
                 OverlayHit::ToggleImapTls => (self.setup_imap_tls, "TLS"),
@@ -1910,20 +1911,11 @@ impl MailApp {
                 _ => continue,
             };
             let pill = Rect::new(rect.x0, rect.y0 + 6.0, rect.x0 + 40.0, rect.y0 + 28.0);
-            fill_round(
+            Toggle::paint(
                 scene,
                 t,
-                pill,
-                11.0,
-                if on { c.accent[5] } else { c.neutral[3] },
-            );
-            let knob_x = if on { pill.x1 - 18.0 } else { pill.x0 + 4.0 };
-            scene.fill(
-                Fill::NonZero,
-                t,
-                Color::WHITE,
-                None,
-                &Circle::new(Point::new(knob_x + 7.0, pill.y0 + 11.0), 8.0),
+                theme,
+                &ToggleFace::new(pill, on).hovered(rect.contains(last_mouse)),
             );
             tr.draw_text(
                 scene,
