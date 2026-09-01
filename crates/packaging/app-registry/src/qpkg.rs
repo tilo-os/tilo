@@ -138,6 +138,12 @@ pub fn write_bytes(id: PackageId, store: &MemoryBlobStore) -> Result<Vec<u8>> {
         append(&mut tar, "collection.qcl", &collection)?;
 
         for (h, b) in store.iter() {
+            if *h == BlobHash(*id.as_bytes())
+                || *h == signed.manifest_hash
+                || *h == signed.payload_root_hash
+            {
+                continue;
+            }
             append(&mut tar, &format!("blobs/{h}"), b)?;
         }
         tar.finish().context("finalise qpkg tar")?;
@@ -255,6 +261,41 @@ mod tests {
         assert_eq!(meta.package_id, id);
         assert_eq!(meta.manifest.package.id, "dev.qos.editor");
         assert_eq!(meta.manifest.package.version, "1.0.0");
+    }
+
+    #[test]
+    fn writer_does_not_duplicate_named_metadata_under_blobs() {
+        let identity = SigningIdentity::generate();
+        let (bytes, id) = signed_qpkg(&identity);
+        let meta = load(&bytes).unwrap();
+        let signed_bytes = meta.store.get(&BlobHash(*id.as_bytes())).unwrap().unwrap();
+        let signed = SignedRoot::decode(&signed_bytes).unwrap();
+        let forbidden = [
+            format!("blobs/{}", BlobHash(*id.as_bytes())),
+            format!("blobs/{}", signed.manifest_hash),
+            format!("blobs/{}", signed.payload_root_hash),
+        ];
+        let names: Vec<String> = tar::Archive::new(bytes.as_slice())
+            .entries()
+            .unwrap()
+            .map(|entry| {
+                entry
+                    .unwrap()
+                    .path()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        for duplicate in forbidden {
+            assert!(
+                !names.contains(&duplicate),
+                "duplicated {duplicate}: {names:?}"
+            );
+        }
+        for named in ["signed-root", "manifest.toml", "collection.qcl"] {
+            assert!(names.iter().any(|name| name == named), "missing {named}");
+        }
     }
 
     #[test]
