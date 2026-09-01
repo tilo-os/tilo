@@ -634,6 +634,17 @@ impl Theme {
         c.border_standard = Color::WHITE;
         c.border_focus = Color::from_rgb8(255, 255, 0); // high-visibility yellow
 
+        // State veneers, re-solved for this preset. The dark tiers this theme
+        // starts from assume a ground around #16171B; against pure black they
+        // collapse to a 1.08:1 step, which is exactly the feedback a low-vision
+        // user cannot see. These alphas trade the "barely there" intent for a
+        // visible one — a 1.7:1 / 2.5:1 / 4.1:1 step off black — while staying
+        // under the point where the theme's white text would drop below AA on
+        // top of them (the strongest tier still measures 5.1:1 for white).
+        // The two hairline tiers go brighter still: nothing hosts text on them.
+        let w = |a: u8| Color::from_rgba8(255, 255, 255, a);
+        c.set_overlays((w(51), w(77), w(110), w(153), w(217)));
+
         // Distinct from the yellow focus ring, and keeps the white
         // checkmark/knob it backs readable on top.
         c.accent.stops[ACCENT_PRIMARY_IDX] = Color::from_rgb8(0, 153, 255);
@@ -648,11 +659,36 @@ impl Theme {
         Self::from_tokens("High Contrast", t)
     }
 
+    /// Every theme qOS ships, by the name [`Theme::named`] resolves.
+    ///
+    /// Exists so a check can be run against *all* of them rather than against
+    /// whichever two someone remembered. A colour defect that only shows up in
+    /// one polarity — a veneer that lightens when it needed to darken, a label
+    /// pinned to white against an accent that turned out pale — survives any
+    /// test that only looks at the default dark theme. Adding a preset without
+    /// adding it here will fail [`Theme::named`]'s round-trip test.
+    pub const ALL: [&'static str; 14] = [
+        "Dark",
+        "Light",
+        "qOS Blue",
+        "Catppuccin Mocha",
+        "Catppuccin Latte",
+        "Dracula",
+        "Nord",
+        "Gruvbox",
+        "Gruvbox Light",
+        "Solarized",
+        "OLED",
+        "Beige",
+        "Rosé Pine",
+        "High Contrast",
+    ];
+
     /// Accepts the exact display name as well as loose forms —
     /// case-insensitive, spaces / hyphens / underscores ignored
     /// (`"gruvbox-light"`, `"catppuccinmocha"`) — so the same lookup serves
     /// the settings picker, the persisted preference, and the `--shots`
-    /// theme override.
+    /// theme override. Returns `None` for an unknown name.
     pub fn named(name: &str) -> Option<Self> {
         let key: String = name
             .chars()

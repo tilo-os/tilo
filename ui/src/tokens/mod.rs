@@ -7,8 +7,8 @@ pub mod terminal_palette;
 pub mod typography;
 
 pub use colors::{
-    AccentChip, ColorRamp, Colors, NON_TEXT_MIN_CONTRAST, OnCard, PaletteSpec, SemanticColors,
-    Surfaces,
+    AccentChip, ColorRamp, Colors, NON_TEXT_MIN_CONTRAST, OnCard, OverlayTiers, PaletteSpec,
+    SemanticColors, Surfaces, dark_overlays, light_overlays,
 };
 pub use elevation::{Elevation, Shadow};
 pub use motion::{Durations, Gesture, Motion, SpringParams, SpringPresets, rubber_band};
@@ -61,7 +61,7 @@ impl Tokens {
             typography,
             spacing: Spacing::default(),
             radii: Radii::default(),
-            elevation: Elevation::default(),
+            elevation: Elevation::light(),
             motion: Motion::default(),
             font_mono,
             font_size_base,

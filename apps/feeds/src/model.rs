@@ -538,6 +538,7 @@ pub fn relative_time(published: i64, now: i64) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
 

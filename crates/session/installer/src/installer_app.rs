@@ -36,6 +36,7 @@
 //! no event loop) it falls back to a synchronous run.
 
 use std::collections::HashMap;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use automerge::{
@@ -61,7 +62,7 @@ use ui::widget::{Dropdown, Row, Spinner, Text, TextInput, Widget};
 
 use crate::action_button::ActionButton;
 use crate::disk_row::DiskRow;
-use crate::disks::{Disk, read_disks};
+use crate::disks::{Disk, DiskPartition, EFI_SYSTEM_GUID, LINUX_FILESYSTEM_GUID, read_disks};
 use crate::install::{InstallOptions, PowerAction};
 use crate::installer_network::{InstallerNetwork, NETWORK_WAKE_EVENT, NetworkPhase};
 use crate::keyboard_view::KeyboardView;
@@ -89,14 +90,12 @@ fn network_path(i: usize) -> String {
 fn disk_path(i: usize) -> String {
     format!("installer.disk.{i}")
 }
+fn install_method_path(i: usize) -> String {
+    format!("installer.install_method.{i}")
+}
 /// Per-filesystem selection flag path: `installer.fs.<index>`.
 fn fs_path(i: usize) -> String {
     format!("installer.fs.{i}")
-}
-/// Per-encryption-choice selection flag path: `installer.encrypt.<index>`
-/// (index 0 = off, 1 = on). Mirrors the filesystem segmented selector.
-fn encrypt_path(i: usize) -> String {
-    format!("installer.encrypt.{i}")
 }
 /// Per-FIDO2-choice selection flag path: `installer.fido2.<index>`
 /// (index 0 = off, 1 = on). Mirrors the encryption segmented selector.
@@ -105,10 +104,6 @@ fn fido2_path(i: usize) -> String {
 }
 /// Rising-edge flag toggling the "I've saved my recovery key" acknowledgement.
 const RECOVERY_ACK_PATH: &str = "installer.recovery_ack";
-
-/// Labels for the encryption segmented selector, in display order. Index 0
-/// (off) is the default; index 1 enables multi-factor LUKS.
-pub const ENCRYPT_LABELS: [&str; 2] = ["No encryption", "Encrypt disk (LUKS)"];
 
 /// Labels for the FIDO2 segmented selector, in display order. Index 0 (off)
 /// is the default; index 1 enrolls a hardware security key as an extra
@@ -124,6 +119,13 @@ const DEFAULT_KEYMAP_NAME: &str = layouts::DEFAULT_DISPLAY_NAME;
 
 /// Filesystem choices, in display order. Index 0 is the default.
 pub const FILESYSTEMS: [&str; 3] = ["btrfs", "ext4", "xfs"];
+pub const INSTALL_METHOD_LABELS: [&str; 2] = ["Erase disk", "Install alongside"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallMethod {
+    Erase,
+    Alongside,
+}
 
 /// One-line explanation for each filesystem, shown under the chooser.
 fn fs_description(i: usize) -> &'static str {
@@ -144,17 +146,59 @@ fn has_tpm2() -> bool {
     std::path::Path::new("/dev/tpmrm0").exists() || std::path::Path::new("/dev/tpm0").exists()
 }
 
+fn secure_boot_enabled() -> bool {
+    std::fs::read_dir("/sys/firmware/efi/efivars")
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("SecureBoot-")
+        })
+        .and_then(|entry| std::fs::read(entry.path()).ok())
+        .and_then(|bytes| bytes.get(4).copied())
+        == Some(1)
+}
+
+fn kernel_lockdown_active() -> bool {
+    std::fs::read_to_string("/sys/kernel/security/lockdown")
+        .map(|state| state.contains("[integrity]") || state.contains("[confidentiality]"))
+        .unwrap_or(false)
+}
+
+/// Does this installer image prove that the target it writes will retain the
+/// verified-boot boundary after reboot? The current split install flow cannot
+/// make that promise merely because the live medium itself booted securely.
+/// A future UKI/signing integration owns this executable and must fail closed
+/// unless the target UKI, initramfs, command line and firmware trust chain are
+/// all covered.
+fn target_verified_boot_ready() -> bool {
+    Command::new("/usr/libexec/qos-verified-boot-install-preflight")
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// Explanation shown under the encryption chooser, reflecting the choice and
 /// what this machine's hardware can actually do.
-fn encrypt_description(encrypt: bool, tpm2: bool) -> &'static str {
-    match (encrypt, tpm2) {
-        (false, _) => "The disk is not encrypted. Anyone with physical access can read your data.",
-        (true, true) => {
-            "Encrypts the whole disk with LUKS. This computer's TPM2 chip unlocks it at boot, and a recovery key (shown once during install) is always generated as a backup in case the TPM is reset or fails."
-        }
-        (true, false) => {
-            "Encrypts the whole disk with LUKS. This computer has no TPM2 chip, so it cannot unlock itself — you will type a passphrase every time it boots. A recovery key is also generated and shown once, as the backup if you forget the passphrase."
-        }
+fn encrypt_description(
+    tpm2: bool,
+    secure_boot: bool,
+    kernel_lockdown: bool,
+    target_verified_boot: bool,
+) -> &'static str {
+    if tpm2 && secure_boot && kernel_lockdown && target_verified_boot {
+        "qOS always encrypts the disk with LUKS2. At startup, one PIN unlocks a key sealed to this computer's TPM2 chip. A recovery key is shown once during install in case the TPM is reset or fails."
+    } else if tpm2 && secure_boot && kernel_lockdown {
+        "qOS always encrypts the disk with LUKS2. This installer cannot yet prove that the installed target preserves verified boot, so it uses one strong startup passphrase instead of an unsafe short PIN."
+    } else if tpm2 && secure_boot {
+        "qOS always encrypts the disk with LUKS2. Secure Boot is active but kernel lockdown is not, so qOS cannot treat this boot as verified and uses a strong disk passphrase instead."
+    } else if tpm2 {
+        "qOS always encrypts the disk with LUKS2. TPM2 short-PIN protection requires verified boot, but Secure Boot is not active, so this installation uses a strong disk passphrase instead."
+    } else {
+        "qOS always encrypts the disk with LUKS2. This computer has no TPM2 chip, so you will enter a disk passphrase at startup. A recovery key is shown once during install as a backup."
     }
 }
 
@@ -258,7 +302,9 @@ pub fn valid_username(username: &str) -> bool {
     let bytes = username.as_bytes();
     !bytes.is_empty()
         && bytes.len() <= 32
-        && matches!(bytes[0], b'a'..=b'z' | b'_')
+        && bytes
+            .first()
+            .is_some_and(|c| matches!(c, b'a'..=b'z' | b'_'))
         && bytes
             .iter()
             .skip(1)
@@ -339,6 +385,11 @@ pub fn validate_step(
 /// Validate the two account password fields. Keeping this separate from
 /// [`validate_step`] avoids ever passing either secret through generic wizard
 /// summaries or status formatting.
+///
+/// # Errors
+///
+/// Returns a user-facing message when the password is blank or the confirmation
+/// does not match it.
 pub fn validate_passwords(password: &str, confirmation: &str) -> Result<(), String> {
     if password.trim().is_empty() {
         Err("Enter an account password".to_string())
@@ -346,6 +397,24 @@ pub fn validate_passwords(password: &str, confirmation: &str) -> Result<(), Stri
         Err("The passwords do not match".to_string())
     } else {
         Ok(())
+    }
+}
+
+/// Validate the mandatory disk-unlock secret according to the hardware path.
+/// TPM2 rate limiting makes a memorable numeric PIN appropriate; without a
+/// TPM, the secret directly protects a LUKS keyslot and must be a normal,
+/// substantially longer passphrase.
+fn validate_startup_secret(secret: &str, tpm2: bool) -> Result<(), &'static str> {
+    if tpm2 {
+        if (6..=12).contains(&secret.len()) && secret.bytes().all(|byte| byte.is_ascii_digit()) {
+            Ok(())
+        } else {
+            Err("Use a 6–12 digit startup PIN")
+        }
+    } else if secret.trim().chars().count() >= 12 {
+        Ok(())
+    } else {
+        Err("Use at least 12 characters for the disk passphrase")
     }
 }
 
@@ -582,16 +651,12 @@ pub struct InstallerApp {
     network: InstallerNetwork,
     disks: Vec<Disk>,
     selected_disk: Option<usize>,
+    install_method: InstallMethod,
     /// Index into [`FILESYSTEMS`].
     selected_fs: usize,
-    /// Full-disk encryption (multi-factor LUKS) opt-in. Default `false`.
-    encrypt: bool,
     /// Enroll a FIDO2 security key as an extra unlock factor (only with
     /// encryption). Default `false`.
     fido2: bool,
-    /// Cached TPM2 unlock PIN held outside Automerge. Empty ⇒ no PIN slot is
-    /// enrolled. Only used with encryption.
-    pin: Arc<Mutex<String>>,
     /// User has acknowledged they will save the install-time recovery key.
     /// Required before Begin Install when encryption is on. Default `false`.
     recovery_ack: bool,
@@ -599,6 +664,14 @@ pub struct InstallerApp {
     /// Encryption works either way; without one the unlock secret stops being
     /// optional, because the alternative is typing the recovery key at boot.
     tpm2: bool,
+    /// Short-PIN mode is safe only when firmware verifies early boot.
+    secure_boot: bool,
+    /// Secure Boot must have propagated into the kernel's runtime restrictions;
+    /// the EFI variable alone is not sufficient evidence for short-PIN mode.
+    kernel_lockdown: bool,
+    /// A dedicated preflight must also prove the installed target, not merely
+    /// the running live medium, retains the complete verified-boot boundary.
+    target_verified_boot: bool,
     step: Step,
     install_state: InstallState,
     /// Streamed install output (also the success/failure summary).
@@ -663,12 +736,14 @@ impl InstallerApp {
             network: InstallerNetwork::default(),
             disks,
             selected_disk: None,
+            install_method: InstallMethod::Erase,
             selected_fs: 0,
-            encrypt: false,
             fido2: false,
-            pin: Arc::new(Mutex::new(String::new())),
             recovery_ack: false,
             tpm2: has_tpm2(),
+            secure_boot: secure_boot_enabled(),
+            kernel_lockdown: kernel_lockdown_active(),
+            target_verified_boot: target_verified_boot_ready(),
             step: Step::Keyboard,
             install_state: InstallState::Idle,
             status_lines: Vec::new(),
@@ -710,8 +785,9 @@ impl InstallerApp {
         let mut app = Self::with_disks(sample_disks());
         app.step = step;
         app.username = "quinten".to_string();
-        *app.password.lock().unwrap() = "correct horse battery staple".to_string();
-        *app.password_confirmation.lock().unwrap() = "correct horse battery staple".to_string();
+        app.password = Arc::new(Mutex::new("correct horse battery staple".to_string()));
+        app.password_confirmation =
+            Arc::new(Mutex::new("correct horse battery staple".to_string()));
         app.hostname = DEFAULT_HOSTNAME.to_string();
         app.timezone = DEFAULT_TIMEZONE.to_string();
         app.keymap = DEFAULT_KEYMAP_NAME.to_string();
@@ -732,6 +808,20 @@ impl InstallerApp {
     pub fn shot_open_timezone(&mut self) {
         self.step = Step::Options;
         self.tz_open_for_shot = true;
+    }
+
+    /// Pose the Disk screen with the preserving dual-boot choice selected.
+    pub fn shot_alongside(&mut self) {
+        self.step = Step::Disk;
+        self.install_method = InstallMethod::Alongside;
+        self.selected_disk = Some(0);
+    }
+
+    /// Pose the final review for the preserving dual-boot path.
+    pub fn shot_alongside_review(&mut self) {
+        self.install_method = InstallMethod::Alongside;
+        self.selected_disk = Some(0);
+        self.step = Step::Review;
     }
 
     /// Seed a non-default keyboard layout (by display name) for a
@@ -787,29 +877,28 @@ impl InstallerApp {
         layouts::by_display_name(self.keymap.trim()).unwrap_or_else(layouts::default_layout)
     }
 
-    /// May the install start, as far as encryption is concerned? The Begin
-    /// button, the Enter key and the start path all ask this, so they cannot
-    /// drift apart. Without a TPM the unlock secret is required: leaving it
-    /// empty is legal for the backend but means the 48-character recovery key
-    /// is what gets typed at every boot, which is not a choice anyone makes on
-    /// purpose.
+    fn verified_tpm(&self) -> bool {
+        self.tpm2 && self.secure_boot && self.kernel_lockdown && self.target_verified_boot
+    }
+
+    /// May the install start, as far as encryption is concerned? Native qOS
+    /// always requires both a reproducible recovery factor and a startup
+    /// secret: a TPM2-bound PIN where supported, otherwise a disk passphrase.
     fn encryption_ready(&self) -> bool {
-        if !self.encrypt {
-            return true;
-        }
-        self.recovery_ack && (self.tpm2 || !secret_copy(&self.pin).trim().is_empty())
+        self.recovery_ack
+            && validate_startup_secret(&secret_copy(&self.password), self.verified_tpm()).is_ok()
     }
 
     /// Human-readable summary of the encryption factors for the Review step.
     fn encryption_summary(&self) -> String {
-        if !self.encrypt {
-            return "Off".to_string();
-        }
         // Recovery key is always present; TPM is PIN-protected iff a PIN was
         // entered; FIDO2 is listed only when enrolling.
         let mut factors = vec!["recovery key".to_string()];
-        match (self.tpm2, secret_copy(&self.pin).trim().is_empty()) {
-            (true, true) => factors.push("TPM2".to_string()),
+        match (
+            self.verified_tpm(),
+            secret_copy(&self.password).trim().is_empty(),
+        ) {
+            (true, true) => factors.push("TPM2 + startup PIN required".to_string()),
             (true, false) => factors.push("TPM2 + PIN".to_string()),
             // No TPM: the same secret is enrolled as an ordinary passphrase
             // slot, and it is what gets typed at boot.
@@ -824,22 +913,33 @@ impl InstallerApp {
 
     fn install_options(&self) -> InstallOptions {
         let layout = self.layout();
-        // PIN / FIDO2 are only meaningful alongside encryption; drop them
-        // when it's off so a stale value can't reach the backend.
-        let (pin, fido2) = if self.encrypt {
-            (secret_copy(&self.pin), self.fido2)
+        let (alongside_root, alongside_efi) = if self.install_method == InstallMethod::Alongside {
+            self.selected_disk_ref().map_or_else(
+                || (String::new(), String::new()),
+                |disk| {
+                    (
+                        disk.alongside_root()
+                            .map(|p| p.name.clone())
+                            .unwrap_or_default(),
+                        disk.efi_partition()
+                            .map(|p| p.name.clone())
+                            .unwrap_or_default(),
+                    )
+                },
+            )
         } else {
-            (Zeroizing::new(String::new()), false)
+            (String::new(), String::new())
         };
         InstallOptions {
+            alongside_root,
+            alongside_efi,
             filesystem: self.filesystem().to_string(),
             hostname: self.hostname.trim().to_string(),
             timezone: self.timezone.trim().to_string(),
             keymap: layout.xkb_layout.to_string(),
             keyvariant: layout.variant_or_empty().to_string(),
-            encrypt: self.encrypt,
-            pin,
-            fido2,
+            pin: secret_copy(&self.password),
+            fido2: self.fido2,
         }
     }
 
@@ -895,6 +995,13 @@ impl InstallerApp {
                 let _ = state.put(root, p.as_str(), false);
             }
         }
+
+        for i in 0..INSTALL_METHOD_LABELS.len() {
+            let p = install_method_path(i);
+            if state.get(root, p.as_str()).ok().flatten().is_none() {
+                let _ = state.put(root, p.as_str(), false);
+            }
+        }
         for i in 0..self.network.snapshot.networks.len() {
             let p = network_path(i);
             if state.get(root, p.as_str()).ok().flatten().is_none() {
@@ -903,12 +1010,6 @@ impl InstallerApp {
         }
         for i in 0..FILESYSTEMS.len() {
             let p = fs_path(i);
-            if state.get(root, p.as_str()).ok().flatten().is_none() {
-                let _ = state.put(root, p.as_str(), false);
-            }
-        }
-        for i in 0..ENCRYPT_LABELS.len() {
-            let p = encrypt_path(i);
             if state.get(root, p.as_str()).ok().flatten().is_none() {
                 let _ = state.put(root, p.as_str(), false);
             }
@@ -938,6 +1039,19 @@ impl InstallerApp {
 
     /// Advance to the next step if the current one validates.
     fn go_next(&mut self) {
+        if self.step == Step::Disk && self.selected_disk_ref().is_some_and(|disk| disk.read_only) {
+            self.set_status("This disk is read-only and cannot be used for installation");
+            return;
+        }
+        if self.step == Step::Disk
+            && self.install_method == InstallMethod::Alongside
+            && !self
+                .selected_disk_ref()
+                .is_some_and(Disk::can_install_alongside)
+        {
+            self.set_status("Alongside needs an empty, unmounted Linux partition of at least 32 GiB and an existing EFI System Partition");
+            return;
+        }
         match validate_step(
             self.step,
             self.selected_disk,
@@ -952,6 +1066,13 @@ impl InstallerApp {
                     )
                 {
                     self.set_status(&message);
+                    return;
+                }
+                if self.step == Step::Account
+                    && let Err(message) =
+                        validate_startup_secret(&secret_copy(&self.password), self.verified_tpm())
+                {
+                    self.set_status(message);
                     return;
                 }
                 if let Some(n) = next_step(self.step) {
@@ -995,7 +1116,7 @@ impl InstallerApp {
     /// Enter the Install step and kick off the backend. Prefers a worker
     /// thread (live streaming via the event-loop proxy); falls back to a
     /// blocking run when no proxy is wired (tests / no event loop).
-    fn begin_install(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn begin_install(&mut self, state: &AutoCommit, root: &ObjId) {
         if self.install_launched {
             return;
         }
@@ -1005,12 +1126,14 @@ impl InstallerApp {
         };
         // Encryption requires the recovery-key acknowledgement (defense in
         // depth — the Begin button and Enter both gate on this too).
-        if self.encrypt && !self.recovery_ack {
+        if !self.recovery_ack {
             self.set_status("Confirm you'll save your recovery key first");
             return;
         }
-        if self.encrypt && !self.tpm2 && secret_copy(&self.pin).trim().is_empty() {
-            self.set_status("No TPM2 chip — set a boot passphrase, or the recovery key becomes it");
+        if let Err(message) =
+            validate_startup_secret(&secret_copy(&self.password), self.verified_tpm())
+        {
+            self.set_status(message);
             return;
         }
         let user = Self::read_text(state, root, USERNAME_PATH).unwrap_or_default();
@@ -1027,7 +1150,6 @@ impl InstallerApp {
         // secrets sitting in the live session's editable document.
         clear_secret_buffer(&self.password);
         clear_secret_buffer(&self.password_confirmation);
-        clear_secret_buffer(&self.pin);
 
         self.step = Step::Install;
         self.install_state = InstallState::Running;
@@ -1169,35 +1291,7 @@ impl InstallerApp {
             )));
         }
 
-        if let Some(error) = self.network.snapshot.wifi_error.as_deref() {
-            children.push(Box::new(
-                Text::new(&format!("Wi-Fi controls unavailable: {error}"))
-                    .with_size(sm)
-                    .with_color(dim),
-            ));
-        } else {
-            for (i, network) in self.network.snapshot.networks.iter().take(5).enumerate() {
-                let marker = if network.connected {
-                    "Connected"
-                } else if network.secure {
-                    "Secured"
-                } else {
-                    "Open"
-                };
-                let selected = self.network.selected_ssid.as_deref() == Some(network.ssid.as_str());
-                let label = format!(
-                    "{}{} · {marker} · signal {}/4",
-                    if selected { "✓ " } else { "" },
-                    network.ssid,
-                    network.signal
-                );
-                children.push(Box::new(
-                    ActionButton::new(&label, &network_path(i))
-                        .with_test_id(&format!("wifi_network_{i}"))
-                        .disabled(self.network.is_busy()),
-                ));
-            }
-        }
+        self.compose_network_choices(theme, children);
 
         if let Some(selected) = self.network.selected_network()
             && !selected.connected
@@ -1257,6 +1351,42 @@ impl InstallerApp {
         children.push(nav_row(Step::Network, NEXT_PATH, continue_label, false));
     }
 
+    /// Add the Wi-Fi error or the currently visible network choices.
+    fn compose_network_choices(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+        let dim = theme.text_dim;
+        let sm = theme.tokens.typography.scale.sm;
+
+        if let Some(error) = self.network.snapshot.wifi_error.as_deref() {
+            children.push(Box::new(
+                Text::new(&format!("Wi-Fi controls unavailable: {error}"))
+                    .with_size(sm)
+                    .with_color(dim),
+            ));
+        } else {
+            for (i, network) in self.network.snapshot.networks.iter().take(5).enumerate() {
+                let marker = if network.connected {
+                    "Connected"
+                } else if network.secure {
+                    "Secured"
+                } else {
+                    "Open"
+                };
+                let selected = self.network.selected_ssid.as_deref() == Some(network.ssid.as_str());
+                let label = format!(
+                    "{}{} · {marker} · signal {}/4",
+                    if selected { "✓ " } else { "" },
+                    network.ssid,
+                    network.signal
+                );
+                children.push(Box::new(
+                    ActionButton::new(&label, &network_path(i))
+                        .with_test_id(&format!("wifi_network_{i}"))
+                        .disabled(self.network.is_busy()),
+                ));
+            }
+        }
+    }
+
     fn compose_disk_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
         let danger = theme.tokens.colors.semantic.danger;
@@ -1266,10 +1396,30 @@ impl InstallerApp {
 
         children.push(Box::new(Text::new("Install qOS").with_size(xl)));
         children.push(Box::new(
-            Text::new("Choose where to install. The selected disk will be completely erased.")
-                .with_size(sm)
-                .with_color(dim),
+            SegChoice::new(
+                INSTALL_METHOD_LABELS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
+                (0..INSTALL_METHOD_LABELS.len())
+                    .map(install_method_path)
+                    .collect(),
+                usize::from(self.install_method == InstallMethod::Alongside),
+            )
+            .with_test_id("install_method"),
         ));
+        let guidance = if self.install_method == InstallMethod::Erase {
+            "Erase disk deletes every partition and operating system on the selected disk."
+        } else {
+            "Alongside preserves existing partitions. For safety, qOS only uses an empty Linux partition (32 GiB+) you prepared beforehand; it never shrinks Windows or guesses that unknown data is disposable."
+        };
+        children.push(Box::new(Text::new(guidance).with_size(sm).with_color(
+            if self.install_method == InstallMethod::Erase {
+                danger
+            } else {
+                dim
+            },
+        )));
         if self.disks.is_empty() {
             children.push(Box::new(
                 Text::new("No disks found — is this running on real hardware?")
@@ -1285,11 +1435,31 @@ impl InstallerApp {
                 )));
             }
         }
+        let read_only = self.selected_disk_ref().is_some_and(|disk| disk.read_only);
+        let unavailable = read_only
+            || (self.install_method == InstallMethod::Alongside
+                && !self
+                    .selected_disk_ref()
+                    .is_some_and(Disk::can_install_alongside));
+        if read_only {
+            children.push(Box::new(
+                Text::new("This disk is hardware or policy write-protected.")
+                    .with_size(sm)
+                    .with_color(danger),
+            ));
+        }
+        if unavailable
+            && self.selected_disk.is_some()
+            && !read_only
+            && self.install_method == InstallMethod::Alongside
+        {
+            children.push(Box::new(Text::new("No eligible prepared partition on this disk. Shrink the existing OS from its own disk manager, create an unformatted Linux partition, then refresh/restart the installer.").with_size(sm).with_color(danger)));
+        }
         children.push(nav_row(
             Step::Disk,
             NEXT_PATH,
             "Next",
-            self.selected_disk.is_none(),
+            self.selected_disk.is_none() || unavailable,
         ));
     }
 
@@ -1311,19 +1481,32 @@ impl InstallerApp {
                 .with_size(sm)
                 .with_color(dim),
         ));
-        children.push(Box::new(Text::new("Password").with_size(base)));
+        let credential_label = if self.verified_tpm() {
+            "Startup and unlock PIN"
+        } else {
+            "Startup and unlock passphrase"
+        };
+        children.push(Box::new(Text::new(credential_label).with_size(base)));
         children.push(Box::new(
             TextInput::new(Vec::new())
                 .with_id("installer.password")
                 .with_external_buffer(Arc::clone(&self.password))
                 .with_secret(true),
         ));
+        let credential_help = if self.verified_tpm() {
+            "Choose 6–12 digits. Enter this once at startup; it also unlocks your session later."
+        } else {
+            "Choose at least 12 characters. It decrypts the disk at startup and unlocks your session later."
+        };
         children.push(Box::new(
-            Text::new("Choose a strong password; you'll use it to log in.")
-                .with_size(sm)
-                .with_color(dim),
+            Text::new(credential_help).with_size(sm).with_color(dim),
         ));
-        children.push(Box::new(Text::new("Confirm password").with_size(base)));
+        let confirmation_label = if self.verified_tpm() {
+            "Confirm startup and unlock PIN"
+        } else {
+            "Confirm startup and unlock passphrase"
+        };
+        children.push(Box::new(Text::new(confirmation_label).with_size(base)));
         children.push(Box::new(
             TextInput::new(Vec::new())
                 .with_id("installer.password_confirm")
@@ -1378,61 +1561,38 @@ impl InstallerApp {
 
         children.push(Box::new(Text::new("Disk encryption").with_size(base)));
         children.push(Box::new(
+            Text::new("Always on · LUKS2")
+                .with_size(base)
+                .with_color(theme.status_success),
+        ));
+        children.push(Box::new(
+            Text::new(encrypt_description(
+                self.tpm2,
+                self.secure_boot,
+                self.kernel_lockdown,
+                self.target_verified_boot,
+            ))
+            .with_size(sm)
+            .with_color(dim),
+        ));
+
+        children.push(Box::new(Text::new("Security key").with_size(base)));
+        children.push(Box::new(
             SegChoice::new(
-                ENCRYPT_LABELS
+                FIDO2_LABELS
                     .iter()
                     .map(std::string::ToString::to_string)
                     .collect(),
-                (0..ENCRYPT_LABELS.len()).map(encrypt_path).collect(),
-                usize::from(self.encrypt),
+                (0..FIDO2_LABELS.len()).map(fido2_path).collect(),
+                usize::from(self.fido2),
             )
-            .with_test_id("encryption_choice"),
+            .with_test_id("fido2_choice"),
         ));
         children.push(Box::new(
-            Text::new(encrypt_description(self.encrypt, self.tpm2))
+            Text::new("Optionally enroll a FIDO2 security key (e.g. a YubiKey) as another way to unlock. Plug it in before installing.")
                 .with_size(sm)
                 .with_color(dim),
         ));
-
-        // The extra unlock factors only make sense with encryption on,
-        // so they appear only then.
-        if self.encrypt {
-            let pin_label = if self.tpm2 {
-                "Unlock PIN (optional)"
-            } else {
-                "Boot passphrase (required — no TPM2 chip)"
-            };
-            children.push(Box::new(Text::new(pin_label).with_size(base)));
-            children.push(Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("installer.pin")
-                    .with_external_buffer(Arc::clone(&self.pin))
-                    .with_secret(true),
-            ));
-            children.push(Box::new(
-                Text::new("Add a PIN you'll type at boot alongside the TPM. Leave blank to unlock with the TPM alone.")
-                    .with_size(sm)
-                    .with_color(dim),
-            ));
-
-            children.push(Box::new(Text::new("Security key").with_size(base)));
-            children.push(Box::new(
-                SegChoice::new(
-                    FIDO2_LABELS
-                        .iter()
-                        .map(std::string::ToString::to_string)
-                        .collect(),
-                    (0..FIDO2_LABELS.len()).map(fido2_path).collect(),
-                    usize::from(self.fido2),
-                )
-                .with_test_id("fido2_choice"),
-            ));
-            children.push(Box::new(
-                Text::new("Optionally enroll a FIDO2 security key (e.g. a YubiKey) as another way to unlock. Plug it in before installing.")
-                    .with_size(sm)
-                    .with_color(dim),
-            ));
-        }
 
         children.push(Box::new(Text::new("Hostname").with_size(base)));
         children.push(Box::new(
@@ -1480,6 +1640,31 @@ impl InstallerApp {
             None => "<no disk>".to_string(),
         };
         children.push(summary_row(theme, "Disk", &disk_value));
+        children.push(summary_row(
+            theme,
+            "Install method",
+            if self.install_method == InstallMethod::Alongside {
+                "Alongside — preserve existing partitions"
+            } else {
+                "Erase the entire disk"
+            },
+        ));
+        if self.install_method == InstallMethod::Alongside
+            && let Some(disk) = self.selected_disk_ref()
+        {
+            children.push(summary_row(
+                theme,
+                "qOS root",
+                disk.alongside_root()
+                    .map_or("<missing>", |p| p.name.as_str()),
+            ));
+            children.push(summary_row(
+                theme,
+                "Shared EFI partition",
+                disk.efi_partition()
+                    .map_or("<missing>", |p| p.name.as_str()),
+            ));
+        }
         children.push(summary_row(theme, "Filesystem", self.filesystem()));
         children.push(summary_row(theme, "Encryption", &self.encryption_summary()));
         children.push(summary_row(theme, "Hostname", self.hostname.trim()));
@@ -1497,31 +1682,34 @@ impl InstallerApp {
                 .with_color(dim),
         ));
 
+        let impact = if self.install_method == InstallMethod::Alongside {
+            format!(
+                "Only the prepared qOS root partition on {dev} is formatted. Existing OS partitions are preserved. Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
+            )
+        } else {
+            format!("This will ERASE {dev} and all data on it.")
+        };
         children.push(Box::new(
-            Text::new(&format!("This will ERASE {dev} and all data on it."))
-                .with_size(base)
-                .with_color(danger),
+            Text::new(&impact).with_size(base).with_color(danger),
         ));
 
         // Encryption generates a recovery key shown ONCE during the
         // install. Make the user explicitly acknowledge they'll save
         // it before they can proceed — otherwise a lost TPM = lost
         // data with no warning.
-        if self.encrypt {
-            children.push(Box::new(
-                Text::new("A recovery key will be shown during install — it is your only backup if the TPM is reset or fails. Save it somewhere safe.")
-                    .with_size(sm)
-                    .with_color(dim),
-            ));
-            let ack_label = if self.recovery_ack {
-                "[x] I will save my recovery key"
-            } else {
-                "[ ] I will save my recovery key"
-            };
-            children.push(Box::new(
-                ActionButton::new(ack_label, RECOVERY_ACK_PATH).with_test_id("recovery_ack"),
-            ));
-        }
+        children.push(Box::new(
+            Text::new("A recovery key will be shown during install — it is your only backup if the TPM is reset or fails. Save it somewhere safe.")
+                .with_size(sm)
+                .with_color(dim),
+        ));
+        let ack_label = if self.recovery_ack {
+            "[x] I will save my recovery key"
+        } else {
+            "[ ] I will save my recovery key"
+        };
+        children.push(Box::new(
+            ActionButton::new(ack_label, RECOVERY_ACK_PATH).with_test_id("recovery_ack"),
+        ));
 
         // Begin is gated on the recovery-key acknowledgement when
         // encrypting (otherwise always enabled).
@@ -1699,11 +1887,46 @@ fn sample_disks() -> Vec<Disk> {
             name: "/dev/sda".to_string(),
             size: "238.5G".to_string(),
             model: "Samsung SSD 860 EVO".to_string(),
+            size_bytes: 256_000_000_000,
+            removable: false,
+            read_only: false,
+            is_system: false,
+            partitions: vec![
+                DiskPartition {
+                    name: "/dev/sda1".to_string(),
+                    size_bytes: 536_870_912,
+                    filesystem: "vfat".to_string(),
+                    label: "EFI".to_string(),
+                    mountpoint: String::new(),
+                    part_type: EFI_SYSTEM_GUID.to_string(),
+                },
+                DiskPartition {
+                    name: "/dev/sda2".to_string(),
+                    size_bytes: 160_000_000_000,
+                    filesystem: "ntfs".to_string(),
+                    label: "Windows".to_string(),
+                    mountpoint: String::new(),
+                    part_type: "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7".to_string(),
+                },
+                DiskPartition {
+                    name: "/dev/sda3".to_string(),
+                    size_bytes: 64_000_000_000,
+                    filesystem: String::new(),
+                    label: String::new(),
+                    mountpoint: String::new(),
+                    part_type: LINUX_FILESYSTEM_GUID.to_string(),
+                },
+            ],
         },
         Disk {
             name: "/dev/nvme0n1".to_string(),
             size: "1T".to_string(),
             model: "WD Black SN770".to_string(),
+            size_bytes: 1_000_000_000_000,
+            removable: false,
+            read_only: false,
+            is_system: false,
+            partitions: Vec::new(),
         },
     ]
 }
@@ -1765,7 +1988,15 @@ impl InstallerApp {
             let path = network_path(i);
             if Self::read_flag(state, root, path.as_str()) {
                 let _ = state.put(root, path.as_str(), false);
-                let ssid = self.network.snapshot.networks[i].ssid.clone();
+                let Some(ssid) = self
+                    .network
+                    .snapshot
+                    .networks
+                    .get(i)
+                    .map(|network| network.ssid.clone())
+                else {
+                    continue;
+                };
                 if self.network.selected_ssid.as_deref() != Some(ssid.as_str()) {
                     self.network.selected_ssid = Some(ssid);
                     clear_secret_buffer(&self.wifi_password);
@@ -1799,7 +2030,7 @@ impl InstallerApp {
         }
     }
 
-    /// Disk / filesystem / encryption / FIDO2 segmented-selector rising
+    /// Disk / filesystem / FIDO2 segmented-selector rising
     /// edges — each selector raises a per-option boolean flag on pick,
     /// which this drains and resolves into the corresponding index/state.
     fn sync_selection_rising_edges(&mut self, state: &mut AutoCommit, root: &ObjId) {
@@ -1809,6 +2040,20 @@ impl InstallerApp {
             if Self::read_flag(state, root, p.as_str()) {
                 let _ = state.put(root, p.as_str(), false);
                 self.selected_disk = Some(i);
+                self.status.clear();
+                self.dirty_structure = true;
+            }
+        }
+
+        for i in 0..INSTALL_METHOD_LABELS.len() {
+            let p = install_method_path(i);
+            if Self::read_flag(state, root, p.as_str()) {
+                let _ = state.put(root, p.as_str(), false);
+                self.install_method = if i == 1 {
+                    InstallMethod::Alongside
+                } else {
+                    InstallMethod::Erase
+                };
                 self.status.clear();
                 self.dirty_structure = true;
             }
@@ -1824,28 +2069,7 @@ impl InstallerApp {
             }
         }
 
-        // Encryption-choice rising edges (Options step): index 0 = off,
-        // 1 = on. Same segmented-selector pattern as the filesystem choice.
-        for i in 0..ENCRYPT_LABELS.len() {
-            let p = encrypt_path(i);
-            if Self::read_flag(state, root, p.as_str()) {
-                let _ = state.put(root, p.as_str(), false);
-                let now_on = i == 1;
-                if now_on != self.encrypt {
-                    self.encrypt = now_on;
-                    // Turning encryption off clears the dependent factors so
-                    // a stale PIN / FIDO2 / ack can't survive a toggle.
-                    if !now_on {
-                        self.fido2 = false;
-                        self.recovery_ack = false;
-                        clear_secret_buffer(&self.pin);
-                    }
-                    self.dirty_structure = true;
-                }
-            }
-        }
-
-        // FIDO2-choice rising edges (Options step, only when encrypting).
+        // FIDO2-choice rising edges (Options step).
         for i in 0..FIDO2_LABELS.len() {
             let p = fido2_path(i);
             if Self::read_flag(state, root, p.as_str()) {
@@ -2259,7 +2483,6 @@ mod tests {
             "installer.password",
             "installer.password_confirm",
             "installer.wifi_password",
-            "installer.pin",
         ] {
             assert!(doc.get(&automerge::ROOT, path).unwrap().is_none(), "{path}");
         }
@@ -2339,8 +2562,24 @@ mod tests {
     }
 
     #[test]
+    fn read_only_disk_cannot_advance() {
+        let mut disks = sample();
+        disks[0].read_only = true;
+        let mut app = InstallerApp::with_disks(disks);
+        app.step = Step::Disk;
+        app.selected_disk = Some(0);
+        app.go_next();
+        assert_eq!(app.step, Step::Disk);
+        assert_eq!(
+            app.status,
+            "This disk is read-only and cannot be used for installation"
+        );
+    }
+
+    #[test]
     fn account_step_requires_username_before_advancing() {
         let mut app = InstallerApp::with_disks(sample());
+        app.tpm2 = false;
         app.selected_disk = Some(0);
         app.step = Step::Account;
         let mut doc = AutoCommit::new();
@@ -2410,116 +2649,31 @@ mod tests {
     }
 
     #[test]
-    fn encrypt_flag_threads_into_install_options() {
-        let mut app = InstallerApp::with_disks(sample());
-        app.step = Step::Options;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
-        // Default: encryption off; install options omit it.
-        assert!(!app.encrypt);
-        assert!(!app.install_options().encrypt);
-
-        // Raise the "on" segment (index 1) → encryption enabled.
-        let _ = doc.put(&root, encrypt_path(1).as_str(), true);
-        app.sync(&mut doc, &root);
-        assert!(app.encrypt, "selecting the LUKS segment enables encryption");
-        assert!(app.install_options().encrypt);
-        assert!(!InstallerApp::read_flag(
-            &doc,
-            &root,
-            encrypt_path(1).as_str()
-        ));
-
-        // Raise the "off" segment (index 0) → back to unencrypted.
-        let _ = doc.put(&root, encrypt_path(0).as_str(), true);
-        app.sync(&mut doc, &root);
-        assert!(
-            !app.encrypt,
-            "selecting the off segment disables encryption"
-        );
-        assert!(!app.install_options().encrypt);
-    }
-
-    #[test]
-    fn fido2_flag_only_threads_into_options_when_encrypting() {
+    fn fido2_flag_threads_into_mandatory_encryption_options() {
         let mut app = InstallerApp::with_disks(sample());
         app.step = Step::Options;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
 
-        // Raise FIDO2 "on" while encryption is OFF: the field tracks the
-        // toggle, but install_options drops it (only meaningful with LUKS).
         let _ = doc.put(&root, fido2_path(1).as_str(), true);
         app.sync(&mut doc, &root);
-        assert!(app.fido2, "the toggle state is tracked");
-        assert!(
-            !app.install_options().fido2,
-            "FIDO2 must not reach the backend without encryption"
-        );
-
-        // Turn encryption on → FIDO2 now flows through.
-        let _ = doc.put(&root, encrypt_path(1).as_str(), true);
-        app.sync(&mut doc, &root);
-        assert!(app.install_options().encrypt);
-        assert!(
-            app.install_options().fido2,
-            "FIDO2 threads through with LUKS"
-        );
+        assert!(app.fido2);
+        assert!(app.install_options().fido2);
     }
 
     #[test]
-    fn pin_text_threads_into_options_only_when_encrypting() {
+    fn startup_secret_threads_into_install_options() {
         let mut app = InstallerApp::with_disks(sample());
         app.step = Step::Options;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
 
-        // Type a PIN into the local secret buffer while encryption is OFF.
-        *app.pin.lock().unwrap() = "2468".to_string();
+        *app.password.lock().unwrap() = "246810".to_string();
         app.sync(&mut doc, &root);
-        assert_eq!(&*secret_copy(&app.pin), "2468");
-        assert!(
-            app.install_options().pin.is_empty(),
-            "PIN must not reach the backend without encryption"
-        );
-
-        // Enable encryption → the PIN now flows through.
-        let _ = doc.put(&root, encrypt_path(1).as_str(), true);
-        app.sync(&mut doc, &root);
-        assert_eq!(app.install_options().pin.as_str(), "2468");
-    }
-
-    #[test]
-    fn turning_encryption_off_clears_pin_fido2_and_ack() {
-        let mut app = InstallerApp::with_disks(sample());
-        app.step = Step::Options;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
-
-        // Encrypt on, with a PIN, FIDO2, and acknowledgement.
-        let _ = doc.put(&root, encrypt_path(1).as_str(), true);
-        let _ = doc.put(&root, fido2_path(1).as_str(), true);
-        *app.pin.lock().unwrap() = "1357".to_string();
-        let _ = doc.put(&root, RECOVERY_ACK_PATH, true);
-        app.sync(&mut doc, &root);
-        assert!(app.encrypt && app.fido2 && app.recovery_ack && &*secret_copy(&app.pin) == "1357");
-
-        // Encrypt off → every dependent factor is reset.
-        let _ = doc.put(&root, encrypt_path(0).as_str(), true);
-        app.sync(&mut doc, &root);
-        assert!(!app.encrypt);
-        assert!(!app.fido2, "FIDO2 cleared when encryption turned off");
-        assert!(!app.recovery_ack, "ack cleared when encryption turned off");
-        assert!(
-            secret_copy(&app.pin).is_empty(),
-            "PIN cleared when encryption turned off"
-        );
-        let opts = app.install_options();
-        assert!(!opts.encrypt && !opts.fido2 && opts.pin.is_empty());
+        assert_eq!(&*secret_copy(&app.password), "246810");
+        assert_eq!(app.install_options().pin.as_str(), "246810");
     }
 
     #[test]
@@ -2527,13 +2681,12 @@ mod tests {
         let mut app = InstallerApp::with_disks(sample());
         app.selected_disk = Some(0);
         app.step = Step::Review;
-        app.encrypt = true;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
         assert!(!app.recovery_ack);
 
-        // Begin while encrypting + un-acknowledged: install must NOT start.
+        // An unacknowledged recovery key must block every native install.
         let _ = doc.put(&root, BEGIN_PATH, true);
         app.sync(&mut doc, &root);
         assert_eq!(app.install_state, InstallState::Idle);
@@ -2561,12 +2714,15 @@ mod tests {
         // Pin the hardware: sampled from the host, this would assert something
         // different on a machine with no TPM.
         app.tpm2 = true;
-        assert_eq!(app.encryption_summary(), "Off");
+        app.secure_boot = true;
+        app.kernel_lockdown = true;
+        app.target_verified_boot = true;
+        assert_eq!(
+            app.encryption_summary(),
+            "On (LUKS — recovery key, TPM2 + startup PIN required)"
+        );
 
-        app.encrypt = true;
-        assert_eq!(app.encryption_summary(), "On (LUKS — recovery key, TPM2)");
-
-        *app.pin.lock().unwrap() = "1234".to_string();
+        *app.password.lock().unwrap() = "123456".to_string();
         assert_eq!(
             app.encryption_summary(),
             "On (LUKS — recovery key, TPM2 + PIN)"
@@ -2588,7 +2744,6 @@ mod tests {
         // usable instead of merely correct.
         let mut app = InstallerApp::with_disks(sample());
         app.selected_disk = Some(0);
-        app.encrypt = true;
         app.tpm2 = false;
         app.recovery_ack = true;
         assert!(
@@ -2596,11 +2751,11 @@ mod tests {
             "no TPM and no passphrase must not be installable"
         );
 
-        *app.pin.lock().unwrap() = "hunter2".to_string();
+        *app.password.lock().unwrap() = "correct horse".to_string();
         assert!(app.encryption_ready(), "a passphrase unblocks it");
 
         // Whitespace is not a passphrase.
-        *app.pin.lock().unwrap() = "   ".to_string();
+        *app.password.lock().unwrap() = "   ".to_string();
         assert!(
             !app.encryption_ready(),
             "blank passphrase is still no passphrase"
@@ -2608,47 +2763,109 @@ mod tests {
     }
 
     #[test]
-    fn with_a_tpm_the_unlock_secret_stays_optional() {
+    fn with_a_tpm_the_startup_pin_is_required() {
         let mut app = InstallerApp::with_disks(sample());
         app.selected_disk = Some(0);
-        app.encrypt = true;
         app.tpm2 = true;
+        app.secure_boot = true;
+        app.kernel_lockdown = true;
+        app.target_verified_boot = true;
         app.recovery_ack = true;
         assert!(
-            app.encryption_ready(),
-            "the TPM unlocks it, so the PIN is a choice"
+            !app.encryption_ready(),
+            "silent TPM-only unlock is not a hardened startup boundary"
+        );
+        *app.password.lock().unwrap() = "246810".to_string();
+        assert!(app.encryption_ready());
+    }
+
+    #[test]
+    fn startup_secret_policy_matches_the_hardware_boundary() {
+        assert!(validate_startup_secret("246810", true).is_ok());
+        assert!(validate_startup_secret("1234", true).is_err());
+        assert!(validate_startup_secret("secret", true).is_err());
+
+        assert!(validate_startup_secret("correct horse", false).is_ok());
+        assert!(validate_startup_secret("hunter2", false).is_err());
+    }
+
+    #[test]
+    fn tpm_without_verified_boot_uses_the_passphrase_policy() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.tpm2 = true;
+        app.secure_boot = false;
+        app.kernel_lockdown = false;
+        app.recovery_ack = true;
+
+        *app.password.lock().unwrap() = "246810".to_string();
+        assert!(
+            !app.encryption_ready(),
+            "an unverified TPM must not enable short-PIN mode"
+        );
+        *app.password.lock().unwrap() = "correct horse".to_string();
+        assert!(app.encryption_ready());
+        assert!(
+            encrypt_description(true, false, false, false).contains("Secure Boot is not active")
         );
     }
 
     #[test]
-    fn encryption_ready_is_vacuous_without_encryption() {
+    fn secure_boot_without_kernel_lockdown_uses_the_passphrase_policy() {
         let mut app = InstallerApp::with_disks(sample());
-        app.selected_disk = Some(0);
-        app.tpm2 = false;
-        assert!(app.encryption_ready(), "no encryption, nothing to gate on");
+        app.tpm2 = true;
+        app.secure_boot = true;
+        app.kernel_lockdown = false;
+        app.recovery_ack = true;
+
+        *app.password.lock().unwrap() = "246810".to_string();
+        assert!(!app.encryption_ready());
+        *app.password.lock().unwrap() = "correct horse".to_string();
+        assert!(app.encryption_ready());
+        assert!(encrypt_description(true, true, false, false).contains("kernel lockdown is not"));
+    }
+
+    #[test]
+    fn live_verified_boot_without_target_preflight_uses_a_passphrase() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.tpm2 = true;
+        app.secure_boot = true;
+        app.kernel_lockdown = true;
+        app.target_verified_boot = false;
+        app.recovery_ack = true;
+
+        *app.password.lock().unwrap() = "246810".to_string();
+        assert!(
+            !app.encryption_ready(),
+            "the live medium's boundary cannot vouch for the installed target"
+        );
+        *app.password.lock().unwrap() = "correct horse".to_string();
+        assert!(app.encryption_ready());
+        assert!(
+            encrypt_description(true, true, true, false)
+                .contains("cannot yet prove that the installed target")
+        );
     }
 
     #[test]
     fn summary_and_description_name_the_passphrase_when_there_is_no_tpm() {
         let mut app = InstallerApp::with_disks(sample());
-        app.encrypt = true;
         app.tpm2 = false;
-        *app.pin.lock().unwrap() = "hunter2".to_string();
+        *app.password.lock().unwrap() = "correct horse".to_string();
         assert_eq!(
             app.encryption_summary(),
             "On (LUKS — recovery key, boot passphrase)",
             "the review step must not claim a TPM factor this machine cannot provide"
         );
 
-        clear_secret_buffer(&app.pin);
+        clear_secret_buffer(&app.password);
         assert_eq!(app.encryption_summary(), "On (LUKS — recovery key)");
 
         assert!(
-            encrypt_description(true, false).contains("no TPM2 chip"),
+            encrypt_description(false, false, false, false).contains("no TPM2 chip"),
             "the chooser has to say the machine cannot unlock itself"
         );
         assert!(
-            !encrypt_description(true, true).contains("Requires a TPM2 device"),
+            !encrypt_description(true, true, true, true).contains("Requires a TPM2 device"),
             "encryption no longer requires a TPM, and the copy must not claim it does"
         );
     }
@@ -2660,8 +2877,10 @@ mod tests {
         let mut app = InstallerApp::with_disks(sample());
         app.selected_disk = Some(0);
         app.step = Step::Review;
-        app.encrypt = true;
         app.tpm2 = true;
+        app.secure_boot = true;
+        app.kernel_lockdown = true;
+        app.target_verified_boot = true;
         let _ = build(&mut app);
         let card = app.children()[0];
         let begin_disabled = card
@@ -2670,13 +2889,16 @@ mod tests {
             .and_then(|nav| nav.children().last().map(|b| !b.is_focusable()));
         assert_eq!(begin_disabled, Some(true), "Begin disabled until ack");
 
-        // Acknowledge → Begin enables.
+        // Acknowledgement alone is insufficient because the PIN is mandatory.
         let mut app2 = InstallerApp::with_disks(sample());
         app2.selected_disk = Some(0);
         app2.step = Step::Review;
-        app2.encrypt = true;
         app2.tpm2 = true;
+        app2.secure_boot = true;
+        app2.kernel_lockdown = true;
+        app2.target_verified_boot = true;
         app2.recovery_ack = true;
+        *app2.password.lock().unwrap() = "246810".to_string();
         let _ = build(&mut app2);
         let card2 = app2.children()[0];
         let begin_enabled = card2
@@ -2687,46 +2909,19 @@ mod tests {
     }
 
     #[test]
-    fn unencrypted_review_begin_always_enabled() {
-        // No encryption ⇒ no acknowledgement needed; Begin is enabled.
+    fn options_step_always_shows_encryption_factors() {
         let mut app = InstallerApp::with_disks(sample());
-        app.selected_disk = Some(0);
-        app.step = Step::Review;
-        app.encrypt = false;
+        app.step = Step::Options;
         let _ = build(&mut app);
         let card = app.children()[0];
-        let begin_enabled = card
-            .children()
-            .last()
-            .and_then(|nav| nav.children().last().map(|b| b.is_focusable()));
-        assert_eq!(begin_enabled, Some(true));
-    }
-
-    #[test]
-    fn options_step_shows_pin_and_fido2_only_when_encrypting() {
-        // Encryption off: no PIN input, no FIDO2 SegChoice.
-        let mut off = InstallerApp::with_disks(sample());
-        off.step = Step::Options;
-        off.encrypt = false;
-        let _ = build(&mut off);
-        let card = off.children()[0];
         let has_fido2 = card
             .children()
             .iter()
             .any(|c| c.test_id() == Some("fido2_choice"));
-        assert!(!has_fido2, "no FIDO2 control when encryption is off");
-
-        // Encryption on: the FIDO2 SegChoice appears.
-        let mut on = InstallerApp::with_disks(sample());
-        on.step = Step::Options;
-        on.encrypt = true;
-        let _ = build(&mut on);
-        let card = on.children()[0];
-        let has_fido2 = card
-            .children()
-            .iter()
-            .any(|c| c.test_id() == Some("fido2_choice"));
-        assert!(has_fido2, "FIDO2 control shows when encrypting");
+        assert!(
+            has_fido2,
+            "mandatory encryption exposes its optional extra factor"
+        );
     }
 
     #[test]

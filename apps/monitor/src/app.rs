@@ -26,19 +26,22 @@ use winit::keyboard::{Key, NamedKey};
 
 use std::cell::Cell;
 use std::rc::Rc;
+use ui::format::bytes as format_bytes;
 use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
+use ui::qos_actions::{ActionSpec, OperationKind, Resource};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::popover::Popover;
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Button, ButtonFace, ButtonStyle, ModalDialog, Text, TextInput, Toggle, ToggleFace, Widget,
 };
 
 use crate::charts::{self, Series, with_alpha};
 use crate::layout;
-use crate::model::{MonitorModel, ProcessInfo, Ring, fmt_bytes, fmt_rate, fmt_uptime};
+use crate::model::{MonitorModel, ProcessInfo, Ring, fmt_rate, fmt_uptime};
 use crate::prefs::Prefs;
 use crate::responsive::{ProcPane, ProcPush};
 use crate::sampler::{Sampler, StopKind};
@@ -62,15 +65,6 @@ enum ProcAction {
 pub enum Tab {
     Processes,
     Resources,
-}
-
-impl Tab {
-    fn other(self) -> Tab {
-        match self {
-            Tab::Processes => Tab::Resources,
-            Tab::Resources => Tab::Processes,
-        }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1392,7 +1386,7 @@ impl MonitorApp {
                 },
                 Cell {
                     label: "Memory",
-                    value: fmt_bytes(m.mem_used),
+                    value: format_bytes(m.mem_used),
                     vcolor: c.text_primary,
                     data: m.mem_hist.as_slice().to_vec(),
                     max: 1.0,
@@ -1609,7 +1603,11 @@ impl MonitorApp {
             None,
             TextWeight::Semibold,
         );
-        let ram_label = format!("{} / {}", fmt_bytes(m.mem_used), fmt_bytes(m.mem_total));
+        let ram_label = format!(
+            "{} / {}",
+            format_bytes(m.mem_used),
+            format_bytes(m.mem_total)
+        );
         charts::bar_gauge(
             scene,
             t,
@@ -1621,7 +1619,11 @@ impl MonitorApp {
             "RAM",
             &ram_label,
         );
-        let swap_label = format!("{} / {}", fmt_bytes(m.swap_used), fmt_bytes(m.swap_total));
+        let swap_label = format!(
+            "{} / {}",
+            format_bytes(m.swap_used),
+            format_bytes(m.swap_total)
+        );
         charts::bar_gauge(
             scene,
             t,
@@ -2077,7 +2079,7 @@ impl MonitorApp {
             ),
             (
                 SortKey::Mem,
-                fmt_bytes(p.mem_bytes),
+                format_bytes(p.mem_bytes),
                 txt,
                 TextWeight::Regular,
             ),
@@ -2344,10 +2346,59 @@ impl MonitorApp {
         avail_w - self.pills_cluster_width(tr, theme) - GAP < SEARCH_MIN_W
     }
 
+    /// Width of the two process-view controls that stay together in the
+    /// compact toolbar row. The kernel-thread preference gets its own row
+    /// below this pair, which prevents the long labelled controls from being
+    /// squeezed or painted past the left edge on phone-sized windows.
+    fn primary_filter_row_width(&self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        let fs = theme.tokens.typography.scale.sm;
+        let tree_text = if self.tree_mode {
+            "⊟ Tree"
+        } else {
+            "≣ Flat"
+        };
+        let tree_w = f64::from(tr.measure(tree_text, fs, None).0) + 24.0;
+        if self.tree_mode {
+            let sum_text = format!("Σ {}", self.sum_mode.label());
+            tree_w + TOOLBAR_PILL_GAP + f64::from(tr.measure(&sum_text, fs, None).0) + 24.0
+        } else {
+            tree_w
+        }
+    }
+
+    fn kernel_filter_width(tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        f64::from(
+            tr.measure("kernel threads", theme.tokens.typography.scale.sm, None)
+                .0,
+        ) + 44.0
+    }
+
+    fn confirm_filter_width(tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        f64::from(
+            tr.measure("Confirm kills", theme.tokens.typography.scale.sm, None)
+                .0,
+        ) + 24.0
+    }
+
+    /// On very narrow windows a search row plus a single filters row is not
+    /// enough: the labelled tree, aggregation and preferences would run out
+    /// of the toolbar. Give the two preferences a third row instead of
+    /// clipping controls or making their hit targets overlap.
+    fn toolbar_compact_filters(&self, tr: &mut TextRenderer, theme: &Theme, avail_w: f64) -> bool {
+        self.toolbar_stacked(tr, theme, avail_w)
+            && avail_w
+                < self.primary_filter_row_width(tr, theme)
+                    + Self::kernel_filter_width(tr, theme)
+                    + Self::confirm_filter_width(tr, theme)
+                    + 2.0 * TOOLBAR_PILL_GAP
+    }
+
     /// Height the toolbar occupies at `avail_w`: one row when the search box
     /// and pills fit side by side, two rows (search above pills) when narrow.
     fn toolbar_height(&self, tr: &mut TextRenderer, theme: &Theme, avail_w: f64) -> f64 {
-        if self.toolbar_stacked(tr, theme, avail_w) {
+        if self.toolbar_compact_filters(tr, theme, avail_w) {
+            3.0 * TOOLBAR_ROW_H + 2.0 * TOOLBAR_ROW_GAP
+        } else if self.toolbar_stacked(tr, theme, avail_w) {
             2.0 * TOOLBAR_ROW_H + TOOLBAR_ROW_GAP
         } else {
             TOOLBAR_ROW_H
@@ -2685,11 +2736,37 @@ impl MonitorApp {
         theme: &Theme,
         r: Rect,
     ) {
-        // One row (search beside pills) or two (search above pills). Deriving
-        // this from `r.width()` — the width the host allocated this frame —
-        // keeps the toolbar reflowing on every resize rather than freezing to
-        // whatever the first frame chose.
+        // One row (search beside pills), two (search above filters), or three
+        // (search, view controls, preferences). Deriving this from
+        // `r.width()` — the width the host allocated this frame — keeps the
+        // toolbar reflowing on every resize rather than freezing to whatever
+        // the first frame chose.
         let stacked = self.toolbar_stacked(tr, theme, r.width());
+        let compact_filters = self.toolbar_compact_filters(tr, theme, r.width());
+        if compact_filters {
+            let search_row = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_ROW_H);
+            let view_row = Rect::new(
+                r.x0,
+                search_row.y1 + TOOLBAR_ROW_GAP,
+                r.x1,
+                search_row.y1 + TOOLBAR_ROW_GAP + TOOLBAR_ROW_H,
+            );
+            let kernel_row = Rect::new(
+                r.x0,
+                view_row.y1 + TOOLBAR_ROW_GAP,
+                r.x1,
+                view_row.y1 + TOOLBAR_ROW_GAP + TOOLBAR_ROW_H,
+            );
+
+            // The per-process view controls retain their relationship, while
+            // both persisted preferences remain directly reachable below.
+            let next_x1 = self.draw_sum_mode_pill(scene, t, tr, theme, view_row, view_row.x1);
+            self.draw_tree_flat_pill(scene, t, tr, theme, view_row, next_x1);
+            let kernel = self.draw_kernel_toggle_pill(scene, t, tr, theme, kernel_row);
+            self.draw_confirm_kills_pill(scene, t, tr, theme, kernel_row, kernel);
+            self.draw_toolbar_search_box(scene, t, tr, theme, search_row, true, search_row.x1);
+            return;
+        }
         let pills_row = if stacked {
             Rect::new(r.x0, r.y1 - TOOLBAR_ROW_H, r.x1, r.y1)
         } else {
@@ -2942,8 +3019,8 @@ impl MonitorApp {
         let xs = theme.tokens.typography.scale.xs;
         let base = theme.tokens.typography.scale.base;
         let stats: [(&str, String, Color); DETAIL_STAT_COUNT] = [
-            ("MEMORY (RSS)", fmt_bytes(p.mem_bytes), c.text_primary),
-            ("VIRTUAL", fmt_bytes(p.virt_bytes), c.text_primary),
+            ("MEMORY (RSS)", format_bytes(p.mem_bytes), c.text_primary),
+            ("VIRTUAL", format_bytes(p.virt_bytes), c.text_primary),
             ("THREADS", p.threads.to_string(), c.text_primary),
             (
                 "OPEN FILES",
@@ -3061,8 +3138,8 @@ impl MonitorApp {
         };
         let chips = [
             ("CPU", format!("{:.1}%", p.cpu), cpu_col),
-            ("RSS", fmt_bytes(p.mem_bytes), c.text_primary),
-            ("VIRT", fmt_bytes(p.virt_bytes), c.text_primary),
+            ("RSS", format_bytes(p.mem_bytes), c.text_primary),
+            ("VIRT", format_bytes(p.virt_bytes), c.text_primary),
             ("THREADS", p.threads.to_string(), c.text_primary),
             (
                 "FILES",
@@ -3291,7 +3368,7 @@ impl MonitorApp {
             &[Series {
                 data: metrics.mem_hist.as_slice(),
                 color: c.semantic.success,
-                legend: fmt_bytes(metrics.mem_used),
+                legend: format_bytes(metrics.mem_used),
             }],
             1.0,
             "100%",
@@ -3494,36 +3571,15 @@ impl MonitorApp {
             return;
         }
         let Some(pid) = self.copied_pid else { return };
-        let c = &theme.tokens.colors;
         let label = format!("PID {pid} copied to clipboard");
-        let fs = theme.tokens.typography.scale.sm;
-        let (lw, lh) = tr.measure_weighted(&label, fs, None, TextWeight::Medium);
-        let pad = 16.0;
-        let icon_w = 22.0;
-        let w = f64::from(lw) + pad * 2.0 + icon_w;
-        let h = 34.0;
-        let cx = self.rect.center().x;
-        let x0 = cx - w / 2.0;
-        let y1 = self.rect.y1 - OUTER_PAD - 6.0;
-        let y0 = y1 - h;
-        let toast = Rect::new(x0, y0, x0 + w, y1);
-        charts::fill_rrect(scene, t, toast, h / 2.0, c.surfaces.raised);
-        charts::stroke_rrect(scene, t, toast, h / 2.0, c.border_standard, 1.0);
-        let icon_r = Rect::new(
-            toast.x0 + pad,
-            toast.center().y - 8.0,
-            toast.x0 + pad + 16.0,
-            toast.center().y + 8.0,
-        );
-        icons::draw_icon(scene, t, icon_r, Icon::Check, c.semantic.success, 1.8);
-        tr.draw_text_weighted(
+        paint_transient(
             scene,
-            &label,
-            fs,
-            c.text_primary,
-            t * Affine::translate((icon_r.x1 + 8.0, toast.center().y - f64::from(lh) / 2.0)),
-            None,
-            TextWeight::Medium,
+            t,
+            tr,
+            theme,
+            self.rect,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new(&label, ToastKind::Success),
         );
     }
 }
@@ -3951,7 +4007,7 @@ impl MonitorApp {
         true
     }
 
-    /// Global keys: Esc/Tab, selection nav, tree expand/collapse, Kill, and
+    /// Global keys: Esc, selection nav, tree expand/collapse, Kill, and
     /// single-character shortcuts.
     fn key_global(&mut self, key: &Key, doc: &mut AutoCommit, path: &ObjId, handled: &mut bool) {
         match key {
@@ -3961,10 +4017,6 @@ impl MonitorApp {
                     self.proc_push.show_table();
                     *handled = true;
                 }
-            }
-            Key::Named(NamedKey::Tab) => {
-                self.tab = self.tab.other();
-                *handled = true;
             }
             Key::Named(NamedKey::ArrowUp) if self.tab == Tab::Processes => {
                 self.move_selection(-1);
@@ -4044,9 +4096,140 @@ impl MonitorApp {
         }
         true
     }
+
+    fn accessibility_targets(&self) -> Vec<(Rect, ui::a11y::AccessNode)> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let button = |rect: Rect, label: &str| {
+            (
+                rect,
+                AccessNode::new(Role::Button)
+                    .with_name(label)
+                    .with_state(AccessState::new().focusable(true))
+                    .with_bounds(rect),
+            )
+        };
+        let mut targets = vec![
+            button(self.hit.tab_proc, "Processes"),
+            button(self.hit.tab_res, "Resources"),
+            button(self.hit.interval, "Refresh interval"),
+            button(self.hit.kernel_toggle, "Show kernel processes"),
+            button(self.hit.tree_toggle, "Tree or flat process view"),
+            button(self.hit.sum_toggle, "Subtree or per-process totals"),
+        ];
+        if self.hit.search.area() > 0.0 {
+            let search = self
+                .search_input
+                .accessibility()
+                .unwrap_or_else(|| AccessNode::new(Role::TextInput).with_name("Search processes"))
+                .with_bounds(self.hit.search);
+            targets.push((self.hit.search, search));
+        }
+        for (sort, rect) in &self.hit.sort_headers {
+            let label = match sort {
+                SortKey::Pid => "PID",
+                SortKey::Name => "name",
+                SortKey::User => "user",
+                SortKey::Cpu => "CPU",
+                SortKey::Mem => "memory",
+                SortKey::Threads => "threads",
+            };
+            targets.push(button(*rect, &format!("Sort by {label}")));
+        }
+        for (pid, rect) in &self.hit.rows {
+            let name = self
+                .model
+                .processes
+                .iter()
+                .find(|process| process.pid == *pid)
+                .map_or_else(
+                    || format!("Process {pid}"),
+                    |process| format!("{} — PID {pid}", process.name),
+                );
+            targets.push((
+                *rect,
+                AccessNode::new(Role::ListItem)
+                    .with_name(name)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(self.selected_pid == Some(*pid)),
+                    )
+                    .with_bounds(*rect),
+            ));
+        }
+        if self.hit.stop_btn.area() > 0.0 {
+            targets.push(button(self.hit.stop_btn, "Stop selected process"));
+        }
+        if self.hit.kill_btn.area() > 0.0 {
+            targets.push(button(self.hit.kill_btn, "Kill selected process"));
+        }
+        targets
+            .into_iter()
+            .filter(|(rect, _)| rect.area() > 0.0)
+            .collect()
+    }
 }
 
 impl Widget for MonitorApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let mut root = Resource::new("processes", "monitor.processes", "Processes");
+        for process in &self.model.processes {
+            let mut resource = Resource::new(
+                format!("process:{}", process.pid),
+                "monitor.process",
+                format!("{} ({})", process.name, process.pid),
+            );
+            for (verb, label) in [("stop", "Stop process"), ("kill", "Force kill")] {
+                let payload = vec![verb.to_string(), process.pid.to_string()];
+                if let Ok(spec) = ActionSpec::operation(
+                    verb,
+                    label,
+                    OperationKind::Effect,
+                    "monitor.signal",
+                    &payload,
+                ) {
+                    resource.actions.push(spec);
+                }
+            }
+            root.children.push(resource);
+        }
+        vec![root]
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != OperationKind::Effect || type_id != "monitor.signal" {
+            return Ok(false);
+        }
+        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        let pid = args
+            .get(1)
+            .ok_or_else(|| "missing pid".to_string())?
+            .parse::<u32>()
+            .map_err(|e| e.to_string())?;
+        let signal = match args.first().map(String::as_str) {
+            Some("stop") => StopKind::Term,
+            Some("kill") => StopKind::Kill,
+            _ => return Ok(false),
+        };
+        if !self.model.processes.iter().any(|p| p.pid == pid) {
+            return Err("process is no longer running".into());
+        }
+        let _ = self.sampler.signal(pid, signal);
+        self.model.processes.retain(|p| p.pid != pid);
+        if self.selected_pid == Some(pid) {
+            self.selected_pid = None;
+        }
+        Ok(true)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         // Pull durable preferences out of the CRDT each sync.
         self.prefs = Prefs::load(state, path);
@@ -4196,10 +4379,32 @@ impl Widget for MonitorApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.search_input
-            .is_focused()
-            .then(|| self.search_input.accessibility())
-            .flatten()
+        if let Some(confirm) = self.confirm_dialog.as_ref() {
+            return confirm.dialog.accessibility();
+        }
+        let children = self
+            .accessibility_targets()
+            .into_iter()
+            .enumerate()
+            .map(|(index, (_, node))| {
+                node.with_key(index as u64)
+                    .with_action_target(format!("monitor-target:{index}"))
+            })
+            .collect();
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+                .with_name("System Monitor")
+                .with_children(children),
+        )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [index] = path else {
+            return None;
+        };
+        self.accessibility_targets()
+            .get(*index)
+            .map(|(rect, _)| *rect)
     }
 
     fn needs_commit(&self) -> bool {
@@ -4835,22 +5040,21 @@ mod tests {
         );
     }
 
-    /// Issue 2: a narrow table viewport makes the columns overflow, so the
-    /// horizontal scroll has a non-zero range and the THR column lives in
-    /// scrollable space rather than overlapping the border.
+    /// Narrow process windows switch to a compact table rather than asking the
+    /// user to scroll sideways to identify the busy process.
     #[test]
-    fn narrow_table_has_horizontal_scroll_range() {
-        // The content area inside the card, minus padding, is what the
-        // renderer hands to `process_columns`. A ~360px content width can't
-        // seat even the five essential columns (USER is already dropped), so
-        // the table still overflows and scrolls.
-        let avail = 360.0 - 2.0 * layout::TABLE_PAD;
-        let cols = layout::process_columns(avail);
-        let total = layout::process_columns_total_w(&cols);
+    fn narrow_table_keeps_primary_columns_in_view() {
+        let mut a = app();
+        draw_at(&mut a, 360.0, 700.0);
         assert!(
-            total > avail,
-            "narrow table columns ({total}) must overflow the viewport ({avail}) \
-             so a horizontal scrollbar appears"
+            a.table_content_w <= a.table_cols_w + 0.5,
+            "compact table must fit its visible band ({} vs {})",
+            a.table_content_w,
+            a.table_cols_w
+        );
+        assert!(
+            a.hit.h_scrollbar.is_none(),
+            "primary data needs no h-scroll"
         );
     }
 
@@ -4914,118 +5118,7 @@ mod tests {
         );
     }
 
-    // ---- new features: h-scroll, tree, sum, context menu ----------------
-
-    /// Bug fix: the horizontal scroll must reach the FULL table width so the
-    /// final column (plus its right padding) scrolls into view. The wheel
-    /// handler clamps against `table_content_w − table_cols_w` (the padded
-    /// columns viewport), so at max scroll the last column's right edge lands
-    /// exactly at the right of the visible band — not `2·TABLE_PAD` short, the
-    /// bug. This asserts on the exact clamp the production wheel path uses.
-    #[test]
-    fn h_scroll_reaches_the_last_column() {
-        let mut a = app();
-        // Simulate a narrow table the renderer would record: content wider
-        // than the padded columns viewport. Derive the content width from the
-        // real column solver at this band width (300px is below the essential
-        // minimum, so the columns overflow) rather than hard-coding a total.
-        a.table_cols_w = 300.0; // padded band (narrow window)
-        a.table_content_w =
-            layout::process_columns_total_w(&layout::process_columns(a.table_cols_w));
-        assert!(
-            a.table_content_w > a.table_cols_w,
-            "columns must overflow at 300px so there is a scroll range"
-        );
-        let max_x = (a.table_content_w - a.table_cols_w).max(0.0) as f32;
-        // The OLD (buggy) clamp used the un-padded viewport width, which is
-        // 2·TABLE_PAD wider, leaving the last 24px unreachable. Prove the new
-        // max exceeds that buggy bound by exactly 2·TABLE_PAD.
-        let buggy_max =
-            (a.table_content_w - (a.table_cols_w + 2.0 * layout::TABLE_PAD)).max(0.0) as f32;
-        assert!(
-            max_x > buggy_max,
-            "fixed clamp {max_x} must exceed buggy {buggy_max}"
-        );
-        assert!((max_x - buggy_max - (2.0 * layout::TABLE_PAD) as f32).abs() < 0.01);
-        // Over-scroll clamps to exactly max_x — the last column reachable.
-        a.table_scroll_x = (a.table_scroll_x + 9999.0).clamp(0.0, max_x);
-        assert_eq!(a.table_scroll_x, max_x);
-        // At max scroll, the last column's content-space right edge maps to
-        // the right of the columns band (within rounding): full width shown.
-        let cols = layout::process_columns(a.table_cols_w);
-        let content_w = layout::process_columns_total_w(&cols);
-        let last_right_in_view = content_w - f64::from(a.table_scroll_x); // relative to band left
-        assert!(
-            (last_right_in_view - a.table_cols_w).abs() < 1.0,
-            "last column right edge {last_right_in_view} must align to band width {}",
-            a.table_cols_w
-        );
-    }
-
-    /// End-to-end h-scroll: lay the app out narrow (so the six columns
-    /// overflow), draw a real frame, then drive the production wheel handler
-    /// with a big shift-scroll. The table must scroll until the final column's
-    /// right edge reaches the visible band's right edge — the whole table
-    /// width, including the last column, becomes reachable.
-    #[test]
-    fn h_scroll_drive_reaches_last_column_end_to_end() {
-        let mut a = app();
-        // Narrow enough that even the five essential columns overflow the table
-        // card (below the essential minimum, once USER is already dropped) — so
-        // the h-scroll path is genuinely exercised. Wider windows now fit the
-        // essentials (THR reads without scrolling), which is the whole point of
-        // the column-priority fix; this test targets the still-overflowing tail.
-        draw_at(&mut a, 430.0, 700.0);
-        assert!(
-            a.table_content_w > a.table_cols_w + 1.0,
-            "columns must overflow at this width ({} vs {})",
-            a.table_content_w,
-            a.table_cols_w
-        );
-        // Park the cursor over the table so the wheel routes to h-scroll.
-        a.last_cursor = a.table_viewport.center();
-        let modifiers = winit::event::Modifiers::default();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy::NodeId::new(0);
-        // A horizontal wheel (x delta dominant) drives the column scroll
-        // through the real `handle_event` path. Drive it hard enough to pin
-        // the clamp ceiling.
-        for _ in 0..40 {
-            let ev = WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(-50.0, 0.0),
-                phase: winit::event::TouchPhase::Moved,
-            };
-            let mut handled = false;
-            let mut focus = None;
-            a.handle_event(
-                &ev,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
-            );
-        }
-        // The real clamp ceiling from this frame's metrics:
-        let max_x = (a.table_content_w - a.table_cols_w).max(0.0) as f32;
-        assert_eq!(a.table_scroll_x, max_x, "wheel drove scroll to its ceiling");
-        // At the ceiling, the last column's content-space right edge maps to
-        // the right of the columns band (within 1px rounding).
-        let cols = layout::process_columns(a.table_cols_w);
-        let content_w = layout::process_columns_total_w(&cols);
-        let last_right_in_band = content_w - f64::from(a.table_scroll_x);
-        assert!(
-            (last_right_in_band - a.table_cols_w).abs() < 1.0,
-            "last column right edge {last_right_in_band} reaches band width {}",
-            a.table_cols_w
-        );
-    }
+    // ---- tree, sum, context menu -----------------------------------------
 
     /// The tree defaults on, Sum subtree by default, and collapsed — so the
     /// first frame shows parents carrying their full subtree totals.
@@ -5362,6 +5455,53 @@ mod tests {
             TOOLBAR_ROW_H,
             "wide toolbar is a single row"
         );
+    }
+
+    /// Below the width where all labelled filters fit on one line, controls
+    /// get their own structural rows. Their real hit rectangles must remain
+    /// visible and disjoint; a clipped or overlapping filter is functionally
+    /// unavailable even if its pixels happen to be painted.
+    #[test]
+    fn compact_toolbar_keeps_every_visible_control_on_screen() {
+        for w in [320.0, 360.0, 400.0] {
+            let mut a = app();
+            draw_at(&mut a, w, 720.0);
+            let content = Rect::new(OUTER_PAD, 0.0, w - OUTER_PAD, 720.0);
+            assert!(
+                a.hit.confirm_toggle != Rect::ZERO,
+                "w={w}: the persisted Confirm kills preference must stay reachable"
+            );
+            let controls = [
+                ("search", a.hit.search),
+                ("tree", a.hit.tree_toggle),
+                ("sum", a.hit.sum_toggle),
+                ("kernel", a.hit.kernel_toggle),
+                ("confirm", a.hit.confirm_toggle),
+            ];
+            for (name, r) in controls {
+                if r == Rect::ZERO {
+                    continue;
+                }
+                assert!(
+                    r.x0 >= content.x0 - 0.5 && r.x1 <= content.x1 + 0.5,
+                    "w={w}: {name} is outside the content band: {r:?}"
+                );
+            }
+            for (i, (left_name, left)) in controls.iter().enumerate() {
+                if *left == Rect::ZERO {
+                    continue;
+                }
+                for (right_name, right) in controls.iter().skip(i + 1) {
+                    if *right == Rect::ZERO {
+                        continue;
+                    }
+                    assert!(
+                        !overlaps(*left, *right),
+                        "w={w}: {left_name} overlaps {right_name}"
+                    );
+                }
+            }
+        }
     }
 
     /// The summary strip's cards grow with the window width but stay on a
@@ -6197,36 +6337,16 @@ mod tests {
         assert!(a.scroll_drag.is_none(), "release ends the drag");
     }
 
-    /// Dragging the horizontal column scrollbar thumb scrolls the columns.
+    /// A narrow table remains a directly scannable process list instead of
+    /// exposing a horizontal scrollbar for its primary columns.
     #[test]
-    fn dragging_column_scrollbar_thumb_scrolls_columns() {
+    fn narrow_table_does_not_expose_column_scrollbar() {
         let mut a = app();
-        // Below the essential-column minimum (USER already dropped) so the five
-        // essentials still overflow and the horizontal scrollbar appears. Wider
-        // windows now fit the essentials — THR reads without scrolling — which
-        // is the column-priority fix; this test targets the overflowing tail.
         draw_at(&mut a, 430.0, 700.0);
-        let sb = a
-            .hit
-            .h_scrollbar
-            .expect("horizontal scrollbar present when columns overflow");
-        dispatch_ev(
-            &mut a,
-            &synth_cursor(sb.thumb.center().x, sb.thumb.center().y),
-        );
-        dispatch_ev(&mut a, &synth_press());
-        assert!(matches!(a.scroll_drag, Some(ScrollDrag::Cols { .. })));
-        let before = a.table_scroll_x;
-        dispatch_ev(
-            &mut a,
-            &synth_cursor(sb.track.x1 - 2.0, sb.thumb.center().y),
-        );
         assert!(
-            a.table_scroll_x > before,
-            "dragging the thumb right scrolls columns"
+            a.hit.h_scrollbar.is_none(),
+            "compact process columns must fit without horizontal scrolling"
         );
-        dispatch_ev(&mut a, &synth_release());
-        assert!(a.scroll_drag.is_none());
     }
 
     /// Dragging the whole-view page scrollbar thumb scrolls the Resources page.
@@ -6326,5 +6446,38 @@ mod tests {
             !overlaps(a.hit.confirm_toggle, a.hit.tree_toggle),
             "confirm pill clears the tree pill"
         );
+    }
+
+    #[test]
+    fn tab_key_is_left_for_toolkit_focus_navigation() {
+        let mut a = app();
+        let original = a.tab;
+        let mut handled = false;
+        a.on_key(
+            &Key::Named(NamedKey::Tab),
+            None,
+            false,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        );
+        assert_eq!(a.tab, original, "Tab must not silently switch dashboards");
+        assert!(!handled, "the toolkit owns Tab focus traversal");
+    }
+
+    #[test]
+    fn monitor_semantic_controls_are_operable_at_their_drawn_rects() {
+        let mut a = app();
+        draw_at(&mut a, 1_280.0, 720.0);
+        let node = Widget::accessibility(&a).expect("monitor is semantic");
+        assert!(!node.children.is_empty());
+        for (index, child) in node.children.iter().enumerate() {
+            assert!(child.action_target.is_some(), "control {index} is operable");
+            assert_eq!(
+                Widget::synthetic_accessibility_rect(&a, &[index]),
+                child.bounds.map(ui::a11y::AccessBounds::to_rect),
+                "semantic control {index} must activate at its drawn rect"
+            );
+        }
     }
 }

@@ -7,22 +7,75 @@
 //! exercised in the live binary; `--shots` never calls it, so the
 //! screenshot stays deterministic offline.
 
+#[cfg(target_os = "macos")]
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
+#[cfg(target_os = "macos")]
+use std::process::Stdio;
 
 use serde_json::Value;
 
 use crate::model::{Source, SourceKind, TargetDrive, TargetKind, TargetPartition};
 
+#[cfg(not(target_os = "linux"))]
+pub fn pick_image_native() -> ui::PortalChannel {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = std::thread::Builder::new()
+        .name("imager-native-picker".into())
+        .spawn(move || {
+            let outcome = native_image_path().map_or_else(
+                |error| ui::PortalOutcome::Failed(error.to_string()),
+                |path| path.map_or(ui::PortalOutcome::Cancelled, ui::PortalOutcome::Opened),
+            );
+            let _ = tx.send(outcome);
+        });
+    rx
+}
+
+#[cfg(target_os = "macos")]
+fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
+    let script = r#"try
+set picked to choose file with prompt "Choose a qOS or disk image"
+POSIX path of picked
+on error number -128
+return ""
+end try"#;
+    let out = Command::new("osascript").args(["-e", script]).output()?;
+    if !out.status.success() {
+        return Err(std::io::Error::other("macOS file dialog failed"));
+    }
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok((!path.is_empty()).then(|| std::path::PathBuf::from(path)))
+}
+
+#[cfg(target_os = "windows")]
+fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
+    let script = r#"Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Title='Choose a qOS or disk image'; $d.Filter='Disk images (*.iso;*.img;*.raw)|*.iso;*.img;*.raw|All files (*.*)|*.*'; if($d.ShowDialog() -eq 'OK'){[Console]::Out.Write($d.FileName)}"#;
+    let out = Command::new("powershell.exe")
+        .args(["-NoProfile", "-STA", "-Command", script])
+        .output()?;
+    if !out.status.success() {
+        return Err(std::io::Error::other("Windows file dialog failed"));
+    }
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok((!path.is_empty()).then(|| std::path::PathBuf::from(path)))
+}
+
 /// Enumerate candidate write targets. Returns `None` when `lsblk` is
 /// unavailable or produced no usable disks.
 pub fn probe() -> Option<Vec<TargetDrive>> {
+    probe_platform()
+}
+
+#[cfg(target_os = "linux")]
+fn probe_platform() -> Option<Vec<TargetDrive>> {
     let out = Command::new("lsblk")
         .args([
             "-J",
             "-b",
             "-o",
-            "NAME,MODEL,SIZE,TYPE,ROTA,TRAN,RM,FSTYPE,LABEL,MOUNTPOINT",
+            "NAME,MODEL,SERIAL,WWN,SIZE,TYPE,ROTA,TRAN,RM,FSTYPE,LABEL,MOUNTPOINT",
         ])
         .output()
         .ok()?;
@@ -31,6 +84,146 @@ pub fn probe() -> Option<Vec<TargetDrive>> {
     }
     let json: Value = serde_json::from_slice(&out.stdout).ok()?;
     parse_lsblk(&json)
+}
+
+/// macOS: enumerate external physical media only. Internal disks are omitted
+/// because raw imaging the running APFS container is never a valid media-
+/// creation operation; the live qOS installer handles internal installation.
+#[cfg(target_os = "macos")]
+fn probe_platform() -> Option<Vec<TargetDrive>> {
+    let plist = Command::new("diskutil")
+        .args(["list", "-plist", "external", "physical"])
+        .output()
+        .ok()?;
+    if !plist.status.success() {
+        return None;
+    }
+    let json = plist_to_json(&plist.stdout)?;
+    parse_diskutil(&json)
+}
+
+#[cfg(target_os = "macos")]
+fn plist_to_json(plist: &[u8]) -> Option<Value> {
+    let mut child = Command::new("plutil")
+        .args(["-convert", "json", "-o", "-", "--", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .ok()?;
+    child.stdin.take()?.write_all(plist).ok()?;
+    let out = child.wait_with_output().ok()?;
+    out.status
+        .success()
+        .then(|| serde_json::from_slice(&out.stdout).ok())
+        .flatten()
+}
+
+/// Parse the JSON form of `diskutil list -plist external physical`.
+pub fn parse_diskutil(json: &Value) -> Option<Vec<TargetDrive>> {
+    let disks = json.get("AllDisksAndPartitions")?.as_array()?;
+    let drives = disks
+        .iter()
+        .filter_map(|disk| {
+            let name = str_field(disk, "DeviceIdentifier")?;
+            let size = disk.get("Size").and_then(as_u64).unwrap_or(0);
+            if size == 0 {
+                return None;
+            }
+            let partitions = disk
+                .get("Partitions")
+                .and_then(Value::as_array)
+                .map(|parts| {
+                    parts
+                        .iter()
+                        .filter_map(|p| {
+                            Some(TargetPartition {
+                                name: str_field(p, "DeviceIdentifier")?,
+                                size: p.get("Size").and_then(as_u64).unwrap_or(0),
+                                fstype: str_field(p, "Content"),
+                                label: str_field(p, "VolumeName"),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(TargetDrive {
+                name,
+                model: str_field(disk, "MediaName").unwrap_or_else(|| "External drive".into()),
+                stable_id: str_field(disk, "DeviceTreePath")
+                    .or_else(|| str_field(disk, "MediaUUID")),
+                size,
+                kind: TargetKind::Usb,
+                tran: Some("usb".into()),
+                removable: true,
+                is_system: false,
+                partitions,
+            })
+        })
+        .collect::<Vec<_>>();
+    (!drives.is_empty()).then_some(drives)
+}
+
+#[cfg(target_os = "windows")]
+fn probe_platform() -> Option<Vec<TargetDrive>> {
+    let script = "Get-Disk | Select-Object Number,FriendlyName,UniqueId,Size,BusType,IsBoot,IsSystem,IsReadOnly | ConvertTo-Json -Compress";
+    let out = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let json: Value = serde_json::from_slice(&out.stdout).ok()?;
+    parse_windows_disks(&json)
+}
+
+/// Parse PowerShell `Get-Disk` JSON. Kept platform-neutral for fixture tests.
+pub fn parse_windows_disks(json: &Value) -> Option<Vec<TargetDrive>> {
+    let one;
+    let disks = if let Some(items) = json.as_array() {
+        items
+    } else {
+        one = vec![json.clone()];
+        &one
+    };
+    let drives = disks
+        .iter()
+        .filter_map(|disk| {
+            let number = disk.get("Number")?.as_u64()?;
+            let size = disk.get("Size").and_then(as_u64).unwrap_or(0);
+            let read_only = disk
+                .get("IsReadOnly")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if size == 0 || read_only {
+                return None;
+            }
+            let bus = str_field(disk, "BusType").unwrap_or_default();
+            let is_system = disk.get("IsBoot").and_then(Value::as_bool).unwrap_or(false)
+                || disk
+                    .get("IsSystem")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+            let removable = matches!(bus.to_ascii_lowercase().as_str(), "usb" | "sd" | "mmc");
+            Some(TargetDrive {
+                name: format!("PhysicalDrive{number}"),
+                model: str_field(disk, "FriendlyName").unwrap_or_else(|| format!("Disk {number}")),
+                stable_id: str_field(disk, "UniqueId"),
+                size,
+                kind: TargetKind::from_lsblk(false, Some(&bus.to_ascii_lowercase()), removable),
+                tran: Some(bus.to_ascii_lowercase()),
+                removable,
+                is_system,
+                partitions: Vec::new(),
+            })
+        })
+        .collect::<Vec<_>>();
+    (!drives.is_empty()).then_some(drives)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn probe_platform() -> Option<Vec<TargetDrive>> {
+    None
 }
 
 /// Parse the `lsblk -J` JSON document into target drives. Split out from
@@ -65,6 +258,7 @@ pub fn parse_lsblk(json: &Value) -> Option<Vec<TargetDrive>> {
         drives.push(TargetDrive {
             name: name.clone(),
             model: str_field(dev, "model").unwrap_or_else(|| name.clone()),
+            stable_id: str_field(dev, "wwn").or_else(|| str_field(dev, "serial")),
             size,
             kind,
             tran,
@@ -348,5 +542,35 @@ mod tests {
         assert_eq!(drives.len(), 1);
         assert_eq!(drives[0].size, 8_000_000_000);
         assert!(drives[0].removable);
+    }
+
+    #[test]
+    fn parses_macos_external_diskutil_inventory() {
+        let json: Value = serde_json::from_str(
+            r#"{
+          "AllDisksAndPartitions":[{"DeviceIdentifier":"disk4","Size":64000000000,
+            "MediaName":"SanDisk USB","Partitions":[{"DeviceIdentifier":"disk4s1",
+            "Size":63900000000,"Content":"ExFAT","VolumeName":"TRANSFER"}]}]}
+        "#,
+        )
+        .unwrap();
+        let drives = parse_diskutil(&json).unwrap();
+        assert_eq!(drives[0].name, "disk4");
+        assert!(drives[0].removable);
+        assert_eq!(drives[0].partitions[0].label.as_deref(), Some("TRANSFER"));
+    }
+
+    #[test]
+    fn parses_windows_get_disk_and_flags_system_disk() {
+        let json: Value = serde_json::from_str(r#"[
+          {"Number":0,"FriendlyName":"Internal NVMe","Size":1000000000000,"BusType":"NVMe","IsBoot":true,"IsSystem":true,"IsReadOnly":false},
+          {"Number":2,"FriendlyName":"USB Stick","Size":32000000000,"BusType":"USB","IsBoot":false,"IsSystem":false,"IsReadOnly":false},
+          {"Number":3,"FriendlyName":"Locked card","Size":16000000000,"BusType":"SD","IsBoot":false,"IsSystem":false,"IsReadOnly":true}
+        ]"#).unwrap();
+        let drives = parse_windows_disks(&json).unwrap();
+        assert_eq!(drives.len(), 2, "read-only disks are not write targets");
+        assert!(drives[0].is_system);
+        assert_eq!(drives[1].name, "PhysicalDrive2");
+        assert!(drives[1].removable);
     }
 }

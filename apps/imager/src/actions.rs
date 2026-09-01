@@ -54,8 +54,8 @@
 use automerge::AutoCommit;
 
 use qos_actions::{
-    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, Resource, ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+    ResourceProvider,
 };
 
 use crate::doc::ImagerDoc;
@@ -169,13 +169,13 @@ pub fn toggled_install_mode(current: InstallMode) -> InstallMode {
 /// `# Panics` note. `ImagerAction`'s fields are plain strings/bools, so this
 /// fallback path is never actually exercised.
 fn immediate_spec(id: &str, label: &str, action: &ImagerAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, IMAGER_ACTION_TYPE, action).unwrap_or_else(|_| ActionSpec {
-        id: id.to_string(),
-        label: label.to_string(),
-        description: None,
-        locus: action.locus(),
-        input: ActionInput::Immediate(encode(action)),
-    })
+    ActionSpec::immediate(id, label, IMAGER_ACTION_TYPE, action)
+        // `ActionSpec`'s fields are private now that it carries typed
+        // parameters; build the fallback through the constructor that
+        // takes an already-encoded action.
+        .unwrap_or_else(|_| {
+            ActionSpec::immediate_encoded(id, label.to_string(), action.locus(), encode(action))
+        })
 }
 
 /// Add the identity/region prompted fields — hostname, full name, username,

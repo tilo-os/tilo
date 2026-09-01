@@ -36,7 +36,24 @@ use vello::kurbo::Rect;
 
 use crate::a11y::{AccessNode, AccessState, Action, Role};
 use crate::widget::Widget;
-use qos_actions::{ActionInput, ActionSpec, Collects, EncodedAction, Resource};
+
+type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
+type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
+use qos_actions::{ActionInput, ActionSpec, Collects, EncodedAction, OperationKind, Resource};
+use serde::{Deserialize, Serialize};
+
+/// Operation type used when the retained semantic tree projects an ordinary
+/// UI affordance into the resource/action catalogue. This makes the same
+/// control addressable from Ctrl+K, the automation socket, and agents without
+/// inventing an app-specific command bus.
+pub(crate) const SEMANTIC_OPERATION_TYPE: &str = "qos.ui.semantic-action";
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct SemanticOperation {
+    pub node: String,
+    pub action: String,
+    pub value: Option<String>,
+}
 
 /// Stable identity of a semantic node, preserved across [`refresh`](SemanticTree::refresh)
 /// as long as the backing widget or resource recurs.
@@ -129,15 +146,17 @@ pub struct SemanticNode {
     /// A field's contents, a slider's readout, etc.
     pub value: Option<String>,
     pub state: AccessState,
-    /// `None` for the root, synthetic a11y children, and resource nodes
-    /// (none of which are laid out).
+    /// `None` for the root and resource nodes. Virtual rows and cells publish
+    /// their viewport geometry even though they have no retained widget.
     pub bounds: Option<Rect>,
     pub actions: Vec<SemanticAction>,
     /// In reading order.
     pub children: Vec<SemanticId>,
     /// So the host can route a [`Verb`](SemanticActionKind::Verb) back to
-    /// the widget. `None` for root / synthetic / resource nodes.
+    /// the retained widget that owns this node.
     pub widget_taffy_id: Option<u64>,
+    /// Opaque widget-local target for a synthetic child action.
+    pub semantic_target: Option<String>,
 }
 
 impl SemanticNode {
@@ -206,6 +225,7 @@ impl SemanticTree {
                 actions: Vec::new(),
                 children: Vec::new(),
                 widget_taffy_id: None,
+                semantic_target: None,
             },
         );
         Self {
@@ -277,6 +297,7 @@ impl SemanticTree {
                 actions: Vec::new(),
                 children: root_children,
                 widget_taffy_id: None,
+                semantic_target: None,
             },
         );
 
@@ -343,6 +364,73 @@ impl SemanticTree {
         self.nodes.get(id).and_then(|n| n.action(name))
     }
 
+    /// Project every currently operable accessibility node into the canonical
+    /// qOS resource/action surface. Bespoke app actions remain preferable for
+    /// domain operations; this projection closes the driveability gap for
+    /// ordinary controls such as buttons, fields, tabs, toggles, and sliders.
+    pub(crate) fn action_resources(&self) -> Vec<Resource> {
+        self.iter()
+            .filter(|node| node.id != self.root && !node.id.0.starts_with("r:"))
+            .filter_map(|node| {
+                let verbs = node
+                    .actions
+                    .iter()
+                    .filter_map(|action| match &action.kind {
+                        SemanticActionKind::Verb(verb) => Some((action, verb)),
+                        SemanticActionKind::App(_) | SemanticActionKind::AppPrompted { .. } => None,
+                    })
+                    .collect::<Vec<_>>();
+                if verbs.is_empty() {
+                    return None;
+                }
+
+                let label = node
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("{:?}", node.role));
+                let mut resource =
+                    Resource::new(format!("ui:{}", node.id.as_str()), "qos.ui.control", label);
+                for (action, verb) in verbs {
+                    let operation = SemanticOperation {
+                        node: node.id.0.clone(),
+                        action: action.name.clone(),
+                        value: None,
+                    };
+                    let spec = match verb {
+                        Action::SetValue(_) => ActionSpec::prompted_operation(
+                            action.name.clone(),
+                            action.label.clone(),
+                            "Value",
+                            node.value.as_deref().unwrap_or(""),
+                            OperationKind::Effect,
+                            move |value| {
+                                let operation = SemanticOperation {
+                                    node: operation.node.clone(),
+                                    action: operation.action.clone(),
+                                    value: Some(value.to_string()),
+                                };
+                                EncodedAction::encode_operation(SEMANTIC_OPERATION_TYPE, &operation)
+                                    .expect("semantic operation is serializable")
+                            },
+                        ),
+                        _ => match ActionSpec::operation(
+                            action.name.clone(),
+                            action.label.clone(),
+                            OperationKind::Effect,
+                            SEMANTIC_OPERATION_TYPE,
+                            &operation,
+                        ) {
+                            Ok(spec) => spec,
+                            Err(_) => continue,
+                        },
+                    };
+                    resource.actions.push(spec);
+                }
+                Some(resource)
+            })
+            .collect()
+    }
+
     /// `None` if `(id, name)` is not a prompted action.
     pub fn build_prompted(&self, id: &SemanticId, name: &str, arg: &str) -> Option<EncodedAction> {
         self.prompted
@@ -364,7 +452,21 @@ fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
             kind: SemanticActionKind::Verb(Action::Focus),
         });
     }
-    if !s.disabled {
+    if !s.disabled
+        && matches!(
+            access.role,
+            Role::Button
+                | Role::ToggleButton
+                | Role::Checkbox
+                | Role::RadioButton
+                | Role::Switch
+                | Role::Tab
+                | Role::MenuItem
+                | Role::ListItem
+                | Role::TreeItem
+                | Role::Link
+        )
+    {
         out.push(SemanticAction {
             name: "activate".into(),
             label: "Activate".into(),
@@ -444,11 +546,25 @@ impl Build<'_> {
                 };
 
                 let mut children: Vec<SemanticId> = Vec::new();
-                for child in w.children() {
-                    self.visit_widget(child, &mut children);
+                let mut hosted = HostedByIndex::new();
+                for (child_index, child) in w.children().into_iter().enumerate() {
+                    if let Some(mut path) = w.accessibility_child_path(child_index)
+                        && !path.is_empty()
+                    {
+                        let parent_index = path.remove(0);
+                        hosted.entry(parent_index).or_default().push((path, child));
+                    } else {
+                        self.visit_widget(child, &mut children);
+                    }
                 }
                 for (i, synth) in access.children.iter().enumerate() {
-                    let child = self.visit_synthetic(&id, i, synth);
+                    let child = self.visit_synthetic(
+                        &id,
+                        i,
+                        synth,
+                        taffy_id,
+                        hosted.remove(&i).unwrap_or_default(),
+                    );
                     children.push(child);
                 }
 
@@ -480,6 +596,7 @@ impl Build<'_> {
                     actions,
                     children,
                     widget_taffy_id: taffy_id.map(u64::from),
+                    semantic_target: None,
                 };
                 self.order.push(id.clone());
                 self.nodes.insert(id.clone(), node);
@@ -493,18 +610,43 @@ impl Build<'_> {
         }
     }
 
-    /// A table row/cell — has no backing widget.
+    /// A virtual row/cell — has no backing widget, but may carry geometry.
     fn visit_synthetic(
         &mut self,
         parent: &SemanticId,
         index: usize,
         access: &AccessNode,
+        owner: Option<TaffyNodeId>,
+        hosted: Vec<HostedWidget<'_>>,
     ) -> SemanticId {
         let id = SemanticId::synthetic(parent, index);
+        let semantic_target = access.action_target.as_deref();
         let mut children: Vec<SemanticId> = Vec::new();
-        for (i, child) in access.children.iter().enumerate() {
-            let c = self.visit_synthetic(&id, i, child);
-            children.push(c);
+        let direct = hosted
+            .iter()
+            .filter(|(path, _)| path.is_empty())
+            .map(|(_, child)| *child)
+            .collect::<Vec<_>>();
+        if direct.is_empty() {
+            let mut nested = HostedByIndex::new();
+            for (mut path, child) in hosted {
+                let child_index = path.remove(0);
+                nested.entry(child_index).or_default().push((path, child));
+            }
+            for (i, child) in access.children.iter().enumerate() {
+                let c = self.visit_synthetic(
+                    &id,
+                    i,
+                    child,
+                    owner,
+                    nested.remove(&i).unwrap_or_default(),
+                );
+                children.push(c);
+            }
+        } else {
+            for child in direct {
+                self.visit_widget(child, &mut children);
+            }
         }
         let node = SemanticNode {
             id: id.clone(),
@@ -516,10 +658,15 @@ impl Build<'_> {
                 access.value.clone()
             },
             state: access.state,
-            bounds: None,
-            actions: verbs_for(access),
+            bounds: access.bounds.map(crate::a11y::AccessBounds::to_rect),
+            actions: if semantic_target.is_some() {
+                verbs_for(access)
+            } else {
+                Vec::new()
+            },
             children,
-            widget_taffy_id: None,
+            widget_taffy_id: semantic_target.and(owner).map(u64::from),
+            semantic_target: semantic_target.map(str::to_owned),
         };
         self.order.push(id.clone());
         self.nodes.insert(id.clone(), node);
@@ -549,6 +696,7 @@ impl Build<'_> {
             actions,
             children,
             widget_taffy_id: None,
+            semantic_target: None,
         };
         self.order.push(id.clone());
         self.nodes.insert(id.clone(), node);
@@ -585,7 +733,8 @@ impl Build<'_> {
 mod tests {
     use super::*;
     use crate::theme::Theme;
-    use crate::widget::{Button, Column, Widget};
+    use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+    use crate::widget::{Button, Column, TextInput, Widget};
     use std::collections::HashMap;
     use taffy::TaffyTree;
 
@@ -737,5 +886,99 @@ mod tests {
             node.action("activate").unwrap().kind,
             SemanticActionKind::Verb(Action::Activate)
         ));
+    }
+
+    #[test]
+    fn plain_text_is_not_falsely_advertised_as_activatable() {
+        let label = crate::a11y::AccessNode::new(Role::Label);
+        assert!(
+            verbs_for(&label)
+                .iter()
+                .all(|action| action.name != "activate"),
+            "the retained semantic tree must agree with AccessKit"
+        );
+    }
+
+    #[test]
+    fn operable_controls_project_into_resource_actions() {
+        let mut button = Button::new("go", "Go", None);
+        let node_map = layout(&mut button);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&button, &node_map, None, &[]);
+        let resources = tree.action_resources();
+        let go = resources
+            .iter()
+            .find(|resource| resource.label == "Go")
+            .expect("button is externally driveable");
+        assert_eq!(go.kind, "qos.ui.control");
+        assert!(go.actions.iter().any(|action| action.id == "activate"));
+    }
+
+    #[test]
+    fn projected_text_value_reaches_the_semantic_operation() {
+        let mut field = TextInput::new(Vec::new()).with_accessible_name("Destination");
+        let node_map = layout(&mut field);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&field, &node_map, None, &[]);
+        let resources = tree.action_resources();
+        let spec = resources
+            .iter()
+            .find(|resource| resource.label == "Destination")
+            .and_then(|resource| {
+                resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "set-value")
+            })
+            .expect("editable field publishes set-value");
+        let encoded = match &spec.input {
+            ActionInput::Prompted { build, .. } => build("/tmp/report.pdf"),
+            ActionInput::Immediate(_) => panic!("set-value must collect a value"),
+        };
+        let operation: SemanticOperation = serde_json::from_slice(&encoded.payload).unwrap();
+        assert_eq!(operation.value.as_deref(), Some("/tmp/report.pdf"));
+    }
+
+    #[test]
+    fn retained_table_control_is_nested_under_its_synthetic_cell() {
+        struct RowData {
+            id: u64,
+        }
+        let columns = vec![
+            ColumnDef::new("actions", "Actions", ColumnWidth::Fixed(120.0)).with_widget(
+                |row: &RowData, _| {
+                    let id = format!("edit-{}", row.id);
+                    Box::new(Button::new(&id, "Edit", None))
+                },
+            ),
+        ];
+        let mut table = DataTable::new(columns).with_row_key(|row: &RowData| row.id);
+        table.set_rows(vec![RowData { id: 7 }]);
+        let node_map = layout(&mut table);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&table, &node_map, None, &[]);
+
+        let table = tree
+            .iter()
+            .find(|node| node.role == Role::Table)
+            .expect("table node");
+        let row = tree
+            .node(table.children.first().expect("table row id"))
+            .expect("synthetic row");
+        assert_eq!(row.role, Role::Row);
+        let cell = tree
+            .node(row.children.first().expect("row cell id"))
+            .expect("synthetic cell");
+        assert_eq!(cell.role, Role::Cell);
+        let button = tree
+            .node(cell.children.first().expect("cell control id"))
+            .expect("retained button");
+        assert_eq!(button.role, Role::Button);
+        assert_eq!(button.name.as_deref(), Some("Edit"));
+        assert_eq!(
+            tree.iter().filter(|node| node.role == Role::Button).count(),
+            1,
+            "the retained control replaces, rather than duplicates, cell semantics"
+        );
     }
 }

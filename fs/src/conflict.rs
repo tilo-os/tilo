@@ -7,6 +7,7 @@
 //!
 //! Copy names derive purely from name + losing hash, so peers converge on them.
 
+use collab_types::{FileNameV1, FileRecordId, FileVersionId, MAX_FILE_NAME_BYTES};
 use iroh_blobs::Hash;
 
 use crate::namespace::{Namespace, ROOT_ID};
@@ -15,18 +16,29 @@ use crate::namespace::{Namespace, ROOT_ID};
 #[derive(Debug, Clone)]
 pub struct ContentConflict {
     pub parent_id: String,
-    pub name: String,
+    pub name: FileNameV1,
     pub loser: Hash,
+    /// Present for revision-aware conflicts. Legacy hash-only conflicts keep
+    /// these empty and cannot be projected as first-class signed conflicts.
+    pub record_id: Option<FileRecordId>,
+    pub winner_version: Option<FileVersionId>,
+    pub loser_version: Option<FileVersionId>,
 }
 
-const MARKER: &str = ".sync-conflict-";
+const MARKER: &[u8] = b".sync-conflict-";
 
 /// Deterministic conflict-copy file name for a losing version of `name`, using a 128-bit (32 hex) prefix of the losing hash.
-pub fn conflict_name(name: &str, loser: &Hash) -> String {
+pub fn conflict_name(name: impl AsRef<[u8]>, loser: &Hash) -> FileNameV1 {
     let hex = hex::encode(loser.as_bytes());
-    // `hex::encode` only ever emits ASCII hex digits, so a char-count prefix is a byte prefix.
-    let prefix: String = hex.chars().take(32).collect();
-    format!("{name}{MARKER}{prefix}")
+    let hash_prefix = hex.as_bytes().get(..32).unwrap_or(hex.as_bytes());
+    let suffix = [MARKER, hash_prefix].concat();
+    let name = name.as_ref();
+    let prefix_len = name
+        .len()
+        .min(MAX_FILE_NAME_BYTES.saturating_sub(suffix.len()));
+    let mut out = name.get(..prefix_len).unwrap_or(name).to_vec();
+    out.extend_from_slice(&suffix);
+    out.into()
 }
 
 fn hash_from_hex(s: &str) -> Option<Hash> {
@@ -44,8 +56,41 @@ pub fn detect(ns: &Namespace) -> Vec<ContentConflict> {
         let Some((parent, name)) = ns.node_parent_name(&id) else {
             continue;
         };
-        if name.contains(MARKER) {
+        if name
+            .as_bytes()
+            .windows(MARKER.len())
+            .any(|window| window == MARKER)
+        {
             continue;
+        }
+        let revisions = ns.content_revision_conflicts(&id);
+        if revisions.len() >= 2 {
+            let Some(winner) = ns.content_revision_for_id(&id) else {
+                continue;
+            };
+            let mut distinct = std::collections::BTreeMap::new();
+            for (_, revision) in revisions {
+                distinct.entry(revision.version_id).or_insert(revision);
+            }
+            if distinct.len() >= 2 {
+                for revision in distinct.values() {
+                    if revision.version_id == winner.version_id {
+                        continue;
+                    }
+                    let Some(hash) = revision.content_hash else {
+                        continue;
+                    };
+                    push_copy(
+                        ns,
+                        &mut out,
+                        &parent,
+                        &name,
+                        &hex::encode(hash.0),
+                        Some((revision.record_id, winner.version_id, revision.version_id)),
+                    );
+                }
+                continue;
+            }
         }
         let distinct: std::collections::BTreeSet<String> = ns
             .content_conflicts(&id)
@@ -60,7 +105,7 @@ pub fn detect(ns: &Namespace) -> Vec<ContentConflict> {
             if Some(&hex) == winner.as_ref() {
                 continue;
             }
-            push_copy(ns, &mut out, &parent, &name, &hex);
+            push_copy(ns, &mut out, &parent, &name, &hex, None);
         }
     }
 
@@ -69,7 +114,11 @@ pub fn detect(ns: &Namespace) -> Vec<ContentConflict> {
         let Some((_, name)) = ns.node_parent_name(&id) else {
             continue;
         };
-        if name.contains(MARKER) {
+        if name
+            .as_bytes()
+            .windows(MARKER.len())
+            .any(|window| window == MARKER)
+        {
             continue;
         }
         let dh = ns.deleted_hash(&id).map(|h| hex::encode(h.as_bytes()));
@@ -90,7 +139,7 @@ pub fn detect(ns: &Namespace) -> Vec<ContentConflict> {
             if !ns.is_visible(&parent) {
                 parent = ROOT_ID.to_string();
             }
-            push_copy(ns, &mut out, &parent, &name, &hex);
+            push_copy(ns, &mut out, &parent, &name, &hex, None);
         }
     }
 
@@ -101,8 +150,9 @@ fn push_copy(
     ns: &Namespace,
     out: &mut Vec<ContentConflict>,
     parent: &str,
-    name: &str,
+    name: &FileNameV1,
     loser_hex: &str,
+    revision_binding: Option<(FileRecordId, FileVersionId, FileVersionId)>,
 ) {
     let Some(loser) = hash_from_hex(loser_hex) else {
         return;
@@ -118,6 +168,9 @@ fn push_copy(
         parent_id: parent.to_string(),
         name: cname,
         loser,
+        record_id: revision_binding.map(|binding| binding.0),
+        winner_version: revision_binding.map(|binding| binding.1),
+        loser_version: revision_binding.map(|binding| binding.2),
     });
 }
 
@@ -137,6 +190,18 @@ mod tests {
 
     fn h(b: u8) -> Hash {
         Hash::from([b; 32])
+    }
+
+    #[test]
+    fn conflict_suffix_preserves_invalid_utf8_name_bytes() {
+        let original = [b'f', 0xff, b'o'];
+        let name = conflict_name(original, &h(7));
+        assert!(name.as_bytes().starts_with(&original));
+        assert!(
+            name.as_bytes()
+                .ends_with(b".sync-conflict-07070707070707070707070707070707")
+        );
+        assert!(name.as_bytes().len() <= MAX_FILE_NAME_BYTES);
     }
 
     #[test]
@@ -161,11 +226,56 @@ mod tests {
 
         let winner = a.entry_at("doc").unwrap().hash.unwrap();
         assert_ne!(winner, loser);
-        let copy = a
-            .entry_at(&conflict_name("doc", &loser))
-            .expect("conflict copy");
+        let copy_name =
+            String::from_utf8(conflict_name("doc", &loser).as_bytes().to_vec()).unwrap();
+        let copy = a.entry_at(&copy_name).expect("conflict copy");
         assert_eq!(copy.hash, Some(loser));
         assert!(detect(&a).is_empty(), "idempotent");
+    }
+
+    #[test]
+    fn concurrent_atomic_revisions_preserve_record_and_version_binding() {
+        let mut a = Namespace::new("A").unwrap();
+        let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
+        let record_id = a.record_id_for(ino).unwrap();
+        let snap = a.save();
+        let mut b = Namespace::from_bytes("B", &snap).unwrap();
+        let bino = b.lookup(ROOT_INO, "doc").unwrap().ino.0;
+        let revision_a = collab_types::ContentRevisionV1 {
+            schema_version: collab_types::CONTENT_REVISION_VERSION,
+            record_id,
+            version_id: collab_types::FileVersionId::new(),
+            content_hash: Some(collab_types::ContentHash([10; 32])),
+            byte_len: 10,
+            metadata_hash: collab_types::ContentHash([11; 32]),
+        };
+        let revision_b = collab_types::ContentRevisionV1 {
+            schema_version: collab_types::CONTENT_REVISION_VERSION,
+            record_id,
+            version_id: collab_types::FileVersionId::new(),
+            content_hash: Some(collab_types::ContentHash([20; 32])),
+            byte_len: 20,
+            metadata_hash: collab_types::ContentHash([21; 32]),
+        };
+        assert!(a.set_content_revision(ino, &revision_a, 5));
+        assert!(b.set_content_revision(bino, &revision_b, 5));
+        a.merge_doc(&mut b).unwrap();
+
+        let winner = a.content_revision_for(ino).unwrap();
+        let loser = if winner == revision_a {
+            revision_b
+        } else {
+            revision_a
+        };
+        let conflicts = detect(&a);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].record_id, Some(record_id));
+        assert_eq!(conflicts[0].winner_version, Some(winner.version_id));
+        assert_eq!(conflicts[0].loser_version, Some(loser.version_id));
+        assert_eq!(
+            conflicts[0].loser,
+            Hash::from(loser.content_hash.unwrap().0)
+        );
     }
 
     #[test]
@@ -210,9 +320,8 @@ mod tests {
         materialize(&mut a, c, 9, 6);
 
         // The edited content is now visible again as a conflict copy at root.
-        let copy = a
-            .entry_at(&conflict_name("doc", &h(9)))
-            .expect("resurrected conflict copy");
+        let copy_name = String::from_utf8(conflict_name("doc", &h(9)).as_bytes().to_vec()).unwrap();
+        let copy = a.entry_at(&copy_name).expect("resurrected conflict copy");
         assert_eq!(copy.hash, Some(h(9)));
         assert!(detect(&a).is_empty(), "idempotent");
     }

@@ -1162,6 +1162,10 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "exact frame geometry is the behavior under test"
+)]
 mod tests {
     use super::*;
 

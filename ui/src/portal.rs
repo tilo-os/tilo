@@ -140,6 +140,15 @@ impl FileFilter {
     }
 
     /// Match files by shell glob, e.g. `*.png`.
+    /// The globs this filter offers, so an app can assert that its chooser
+    /// advertises everything it can actually open — a filter narrower than
+    /// the reader behind it hides a user's file with no way to discover the
+    /// app would have taken it.
+    #[must_use]
+    pub fn globs(&self) -> &[String] {
+        &self.globs
+    }
+
     #[must_use]
     pub fn glob(mut self, g: &str) -> Self {
         self.globs.push(g.to_string());
@@ -270,6 +279,9 @@ impl PickRequest {
     /// through [`send_multiple`](Self::send_multiple) instead, so every pick
     /// is delivered.
     pub fn send(self) -> PortalChannel {
+        if suppressed() {
+            return inject_for_test(PortalOutcome::Cancelled);
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         let name = self.thread_name.clone();
         spawn_worker(&name, move || {
@@ -295,6 +307,9 @@ impl PickRequest {
 
     /// Multi-select counterpart of [`send`](Self::send).
     pub fn send_multiple(self) -> MultiChannel {
+        if suppressed() {
+            return inject_multi_for_test(MultiOutcome::Cancelled);
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         let name = self.thread_name.clone();
         spawn_worker(&name, move || {
@@ -302,6 +317,38 @@ impl PickRequest {
         });
         rx
     }
+}
+
+/// Set once a test suite has declared that no real chooser may open.
+static SUPPRESSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Stop this process ever opening a real file chooser; every request answers
+/// `Cancelled` immediately instead.
+///
+/// A test that exercises "the app asked for a chooser" must not actually put a
+/// dialog on the user's screen. Running one app's suite opened four real
+/// pickers — an import, an open-project, a save-as and an export destination —
+/// because the tests pressed the real shortcuts and the request reached D-Bus.
+/// That is worse than noisy: a suite that grabs the desktop is one people stop
+/// running, and on a machine with no portal it would block a worker thread on
+/// a round-trip nobody is there to answer.
+///
+/// Idempotent and process-wide. [`set_suppressed`] can lift it, which exists so
+/// this module's own tests can cover both sides of the switch without one
+/// leaking into the other; an app suite calls only this.
+pub fn suppress_for_tests() {
+    set_suppressed(true);
+}
+
+/// Set the switch directly, returning what it was. Only a test that must
+/// exercise the un-suppressed path should lift it, and it should put it back.
+pub fn set_suppressed(on: bool) -> bool {
+    SUPPRESSED.swap(on, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether [`suppress_for_tests`] is in force.
+pub fn suppressed() -> bool {
+    SUPPRESSED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Spawn the portal worker. The UI may have moved on (window closed) by the
@@ -875,6 +922,39 @@ mod tests {
         );
     }
 
+    /// A suite must never put a real chooser on the person's screen.
+    ///
+    /// This is not hypothetical: running one app's tests opened **four** real
+    /// dialogs — import, open-project, save-as and export destination —
+    /// because the tests pressed the real shortcuts and the request went all
+    /// the way to D-Bus. Assert on the seam that stops it, and assert it
+    /// answers rather than hangs: a request that never resolves would leave
+    /// the app waiting on a dialog nobody can see.
+    #[test]
+    #[serial_test::serial(portal_suppression)]
+    fn suppression_answers_without_ever_opening_a_chooser() {
+        let was = set_suppressed(true);
+        assert!(suppressed(), "the switch is in force");
+
+        let single = PickRequest::open("Open", "Open").send();
+        assert_eq!(
+            single.try_recv(),
+            Ok(PortalOutcome::Cancelled),
+            "a suppressed request answers immediately instead of spawning a worker",
+        );
+
+        let save = PickRequest::save("Save", "Save", "x.qvp").send();
+        assert_eq!(save.try_recv(), Ok(PortalOutcome::Cancelled));
+
+        let many = PickRequest::open_multiple("Import", "Import").send_multiple();
+        assert_eq!(many.try_recv(), Ok(MultiOutcome::Cancelled));
+
+        // The switch is process-wide, so leaving it set would change what a
+        // sibling test observes — exactly the kind of cross-test leakage that
+        // makes a suite lie about which behaviour it checked.
+        set_suppressed(was);
+    }
+
     #[test]
     fn inject_delivers_the_outcome_immediately() {
         let rx = inject_for_test(PortalOutcome::Cancelled);
@@ -983,6 +1063,7 @@ mod tests {
 
     #[cfg(not(feature = "portal"))]
     #[test]
+    #[serial_test::serial(portal_suppression)]
     fn without_the_feature_a_request_fails_rather_than_hanging() {
         let rx = PickRequest::open("Open", "Open").send();
         assert!(matches!(rx.recv(), Ok(PortalOutcome::Failed(_))));

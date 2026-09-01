@@ -48,7 +48,7 @@ pub struct HostIdentity {
 }
 
 impl HostIdentity {
-    fn material_for(
+    pub(crate) fn material_for(
         &self,
         ws: WorkspaceId,
     ) -> (DeviceCert, Vec<qos_user_identity::RevocationEntry>) {
@@ -999,7 +999,6 @@ mod tests {
     async fn two_actors_exchange_over_iroh() {
         let (a, lookup_a) = endpoint().await;
         let (b, lookup_b) = endpoint().await;
-        let a_addr = a.addr();
         let b_addr = b.addr();
         let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
         let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
@@ -1020,7 +1019,6 @@ mod tests {
             .await
             .unwrap();
         cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
-        cmd_b.send(NetCmd::Connect { addr: a_addr }).await.unwrap();
         loop {
             let event = timeout(Duration::from_secs(10), rx_a.recv())
                 .await
@@ -1036,6 +1034,7 @@ mod tests {
                 msg: NeighbourMsg::SyncReq {
                     since: vec![],
                     room: String::new(),
+                    invite_id: None,
                 },
             })
             .await
@@ -1276,6 +1275,7 @@ mod tests {
                 msg: NeighbourMsg::SyncReq {
                     since: vec![],
                     room: "hosted".into(),
+                    invite_id: None,
                 },
             })
             .await
