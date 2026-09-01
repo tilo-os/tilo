@@ -16,6 +16,7 @@ INSTALL="$OS_ROOT/usr/share/qos/windows/guest/Install-qOSRemoteApp.ps1"
 BRIDGE="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSGuestBridge.ps1"
 FOCUSED="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSFocusedApp.ps1"
 INSTALLER="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSInstaller.ps1"
+UNINSTALLER="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSUninstaller.ps1"
 CONTAINERFILE="$OS_ROOT/Containerfile"
 
 fails=0
@@ -25,7 +26,7 @@ need() { [ -r "$1" ] && ok "$(basename "$1") exists" || fail "missing $1"; }
 has() { grep -Fq -- "$2" "$1" && ok "$3" || fail "$3"; }
 lacks() { grep -Fq -- "$2" "$1" && fail "$3" || ok "$3"; }
 
-for file in "$NET" "$UNIT" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER"; do need "$file"; done
+for file in "$NET" "$UNIT" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER" "$UNINSTALLER"; do need "$file"; done
 
 has "$NET" '<forward mode="none"/>' 'libvirt bridge has no forwarding'
 has "$NET" '<qos:windows-hostonly ' 'network has qOS ownership marker'
@@ -83,6 +84,7 @@ has "$CONTAINERFILE" '/out/qos-windows-vm-control /usr/libexec/qos-windows-vm-co
 has "$CONTAINERFILE" 'virt-viewer' 'image wires explicit recovery viewer'
 has "$PROVISION" 'Start-qOSFocusedApp.ps1' 'guest tools carry the focused-app helper'
 has "$PROVISION" 'Start-qOSInstaller.ps1' 'guest tools carry the managed installer helper'
+has "$PROVISION" 'Start-qOSUninstaller.ps1' 'guest tools carry the typed uninstaller helper'
 has "$FOCUSED" 'Stop-Process -Id' 'focused fallback suppresses Explorer while running'
 has "$FOCUSED" 'Start-Process -FilePath "$env:WINDIR\explorer.exe"' 'focused fallback restores Explorer'
 has "$BRIDGE" 'Require-UploadAuth' 'installer upload has a metadata-bound HMAC contract'
@@ -103,6 +105,14 @@ has "$INSTALLER" "-ArgumentList @('/i', \$package)" 'MSI helper has one typed fi
 has "$INSTALLER" 'Start-Process -FilePath $package -Wait -PassThru' 'EXE helper invokes only the accepted file without arguments'
 has "$INSTALLER" 'Where-Object { $_.SessionId -eq $sessionId }' 'installer hides Explorer only in its managed session'
 lacks "$INSTALLER" 'Invoke-Expression' 'installer helper has no free-form command evaluator'
+has "$BRIDGE" 'uninstallAvailable = $canUninstall' 'authenticated catalogue persists uninstall availability'
+has "$BRIDGE" "operationKind = 'uninstallation'" 'uninstall has a distinct typed operation'
+has "$BRIDGE" 'Reset-UninstallRecord' 'failed uninstall operations become safely retryable'
+has "$BRIDGE" 'Complete-UninstallPublication' 'successful uninstall retracts its publication'
+has "$UNINSTALLER" "-ArgumentList @('/x', [string]\$job.productCode)" 'uninstaller accepts only a parsed MSI product code'
+has "$UNINSTALLER" 'Where-Object { $_.SessionId -eq $sessionId }' 'uninstaller hides Explorer only in its managed session'
+lacks "$UNINSTALLER" 'UninstallString' 'registry uninstall command strings are never executed'
+lacks "$UNINSTALLER" 'Invoke-Expression' 'uninstaller has no free-form command evaluator'
 
 VM_ROOT="$(cd "$OS_ROOT/../crates/system/windows-vm" 2>/dev/null && pwd)"
 REMOTE_APP="$VM_ROOT/src/remote_app.rs"

@@ -24,9 +24,10 @@ $focusRoot = 'C:\ProgramData\qOS\FocusedApp'
 $bridgeScript = Join-Path $BootstrapRoot 'Start-qOSGuestBridge.ps1'
 $focusedScript = Join-Path $BootstrapRoot 'Start-qOSFocusedApp.ps1'
 $installerScript = Join-Path $BootstrapRoot 'Start-qOSInstaller.ps1'
+$uninstallerScript = Join-Path $BootstrapRoot 'Start-qOSUninstaller.ps1'
 $secretPath = Join-Path $BootstrapRoot 'qos-bridge.secret'
 $configPath = Join-Path $BootstrapRoot 'qos-bridge.json'
-foreach ($path in @($bridgeScript, $focusedScript, $installerScript, $secretPath, $configPath, $ApplicationsPath)) {
+foreach ($path in @($bridgeScript, $focusedScript, $installerScript, $uninstallerScript, $secretPath, $configPath, $ApplicationsPath)) {
     if (-not (Test-Path $path -PathType Leaf)) { throw "Missing required qOS guest payload: $path" }
 }
 
@@ -92,6 +93,11 @@ foreach ($child in @('staging', 'payloads', 'operations')) {
     New-Item -ItemType Directory -Force -Path (Join-Path $installerRoot $child) | Out-Null
 }
 Copy-Item -LiteralPath $installerScript -Destination (Join-Path $installerRoot 'Start-qOSInstaller.ps1') -Force
+Copy-Item -LiteralPath $uninstallerScript -Destination (Join-Path $installerRoot 'Start-qOSUninstaller.ps1') -Force
+$uninstallRecordsPath = Join-Path $root 'uninstall-records.json'
+if (-not (Test-Path -LiteralPath $uninstallRecordsPath -PathType Leaf)) {
+    [IO.File]::WriteAllText($uninstallRecordsPath, '{"schemaVersion":1,"records":[]}', [Text.UTF8Encoding]::new($false))
+}
 
 $allowList = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Terminal Server\TSAppAllowList'
 $base = Join-Path $allowList 'Applications'
