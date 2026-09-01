@@ -16,7 +16,7 @@ use word_processor::actions::{self as wp, RegionKind, WordProcessorAction};
 
 use crate::apply::Editor;
 use crate::model::{Chooser, Route};
-use crate::plan::{self, Block, Instruction, Plan};
+use crate::plan::{self, Block, ConfirmationEvidence, Instruction, Plan};
 use crate::surface::{self, AppContract, View};
 use crate::wire::Link;
 
@@ -471,6 +471,7 @@ impl Session {
         &mut self,
         id: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmation: &ConfirmationEvidence,
     ) -> Result<Result<(), String>> {
         let Some(address) = surface::decode_address(id) else {
             return Ok(Err("that no longer names anything I can find".to_string()));
@@ -491,7 +492,26 @@ impl Session {
             return Ok(Err("that isn't open here, so I can't act on it".to_string()));
         };
         let target_app_id = ed.contract().app_id;
-        match ed.invoke_json(&view, &address, arguments, &registry) {
+        // Re-read the descriptor immediately before dispatch. Confirmation
+        // evidence was checked when the plan was formed, but contracts are
+        // live state: a changed phrase or newly consequential action must not
+        // inherit yesterday's consent.
+        let live = ed.resources(&view);
+        let Some(descriptor) = qos_actions::door::survey(&live)
+            .into_iter()
+            .find(|descriptor| descriptor.address == address)
+        else {
+            return Ok(Err("that no longer names anything I can find".to_string()));
+        };
+        if !confirmation.satisfies(&descriptor.contract.confirmation) {
+            return Ok(Err("that action requires explicit confirmation".to_string()));
+        }
+        let invoked = if confirmation.is_confirmed() {
+            ed.invoke_json_confirmed(&view, &address, arguments, &registry)
+        } else {
+            ed.invoke_json(&view, &address, arguments, &registry)
+        };
+        match invoked {
             Ok(Some(delta)) => {
                 let req = CollabRequest::DocumentIncremental { data: delta };
                 if is_primary {
@@ -677,12 +697,16 @@ impl Session {
                 // come back naming a step this turn already performed, and
                 // without the guard "put it in the open document" placed
                 // the same image twice.
-                Instruction::Perform { id, arguments } => {
+                Instruction::Perform {
+                    id,
+                    arguments,
+                    confirmation,
+                } => {
                     if self.dispatched_this_turn.contains(id) {
                         true
                     } else {
                         let id = id.clone();
-                        match self.perform(&id, arguments)? {
+                        match self.perform(&id, arguments, confirmation)? {
                             Ok(()) => {
                                 self.dispatched_this_turn.insert(id);
                                 true
