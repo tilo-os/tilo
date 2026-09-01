@@ -70,9 +70,6 @@ if [[ $distro != arch ]]; then
     # checksum-pinned binary under /usr/local and execute it directly; PRoot's
     # configured QEMU handler supplies ARM emulation transparently.
     "$rustup_init" -y --no-modify-path --profile minimal
-    if [[ -n ${GITHUB_PATH:-} ]]; then
-        echo /usr/local/cargo/bin >> "$GITHUB_PATH"
-    fi
 fi
 
 rustup show active-toolchain
