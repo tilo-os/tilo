@@ -227,8 +227,6 @@ jobs:
        github.ref == 'refs/heads/codex/package-desktop-release')
     needs: [select, affected]
     runs-on: runner
-    permissions:
-      contents: write
     env:
       SELECT_RESULT: ${{ needs.select.result }}
       AFFECTED_RESULT: ${{ needs.affected.result }}
