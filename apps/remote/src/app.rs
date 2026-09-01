@@ -2034,7 +2034,7 @@ impl RemoteApp {
         let bg = if active {
             tokens.colors.accent[5].at_alpha(0.20)
         } else if hovered {
-            tokens.colors.surface_white_10
+            tokens.colors.lift(0.72)
         } else {
             Color::TRANSPARENT
         };
@@ -2817,7 +2817,7 @@ impl RemoteApp {
                 let bg = if picked {
                     tokens.colors.accent[5].at_alpha(0.16)
                 } else if hovered {
-                    tokens.colors.surface_white_10
+                    tokens.colors.lift(0.72)
                 } else {
                     tokens.colors.neutral[0]
                 };
@@ -3224,7 +3224,7 @@ impl RemoteApp {
         let bg = if active {
             tokens.colors.accent[5]
         } else if hovered {
-            tokens.colors.surface_white_10
+            tokens.colors.lift(0.72)
         } else {
             tokens.colors.neutral[0]
         };
@@ -3461,7 +3461,7 @@ impl RemoteApp {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_white_20,
+            ui::tokens::colors::Colors::hairline_on(tokens.colors.surfaces.raised, 51),
             None,
             &rr,
         );
@@ -3878,7 +3878,7 @@ impl RemoteApp {
         let hovered = rect.contains(self.pointer);
         let rr = RoundedRect::from_rect(rect, 8.0);
         let bg = if hovered {
-            tokens.colors.surface_white_10
+            tokens.colors.lift(0.72)
         } else {
             tokens.colors.neutral[0]
         };

@@ -332,7 +332,7 @@ fn draw_groups(
             scene.fill(
                 Fill::NonZero,
                 transform,
-                tokens.colors.surface_white_10,
+                tokens.colors.lift(0.72),
                 None,
                 &chip,
             );
