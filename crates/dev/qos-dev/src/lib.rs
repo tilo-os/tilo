@@ -6574,7 +6574,9 @@ mod tests {
         assert!(!library.contains("with_accessible_name(\"starter-name-label\")"));
         assert!(!library.contains("Column::new()"));
         assert!(library.contains("with_id(\"name-input\")"));
-        assert!(library.contains("on_change(name.text_sink())"));
+        assert!(library.contains("TextInput::from_state(&name)"));
+        assert!(!library.contains("on_change(name.text_sink())"));
+        assert!(!library.contains("with_initial_value(&name.get())"));
         assert!(library.contains("pub mod locales;"));
         assert!(library.contains("locales::install()"));
         let locale_registry =
@@ -7038,7 +7040,8 @@ mod tests {
         };
         let source = app_lib(&spec);
         assert!(source.contains("LocalState::new"));
-        assert!(source.contains("TextInput::local()"));
+        assert!(source.contains("TextInput::from_state(&payload)"));
+        assert!(!source.contains("payload.text_sink()"));
         assert!(source.contains("ModelView::from_state"));
         assert!(source.contains("QrWidget::new"));
         assert!(source.contains("with_id(\"qr-output\")"));
