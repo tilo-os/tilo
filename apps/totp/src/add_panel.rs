@@ -1527,6 +1527,7 @@ fn draw_glyph(scene: &mut Scene, transform: Affine, tile: Rect, glyph: Glyph, co
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
 

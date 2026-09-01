@@ -1,0 +1,30 @@
+[Unit]
+Description=qOS received collaborative files service
+Documentation=https://github.com/nirios/quickdesktop
+After=qos-identity.service
+Requires=qos-identity.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# The launcher connects to this per-user socket and passes only the connected
+# descriptor into sandboxed Files. Bearer URIs never enter process arguments.
+ExecStart=/usr/bin/fs recipient-service --socket %t/qos/services/qos-fs.sock --mounts-root %h/Shared --cache-root %h/.cache/qos/received-files
+Restart=on-failure
+RestartSec=1s
+TimeoutStopSec=15s
+
+# Recipient mounts require `fusermount3`'s privilege transition in supervised
+# children, so NoNewPrivileges must remain off. Other kernel-facing surfaces
+# stay restricted.
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+
+[Install]
+# A received-share service belongs to a logged-in collaborative session. This
+# also prevents its Requires= edge from launching identity UI at user-manager
+# startup before greetd has authenticated and provided the temporary cage.
+WantedBy=graphical-session.target

@@ -386,14 +386,12 @@ fn seal_record(record: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>
     Ok(out)
 }
 
-#[allow(
-    clippy::indexing_slicing,
-    reason = "parse_header first proves blob contains the complete fixed-size header"
-)]
 fn open_record(blob: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>>> {
     validate_passphrase(passphrase)?;
     let header = parse_header(blob)?;
-    let ciphertext = blob.get(HEADER_LEN..).ok_or_else(invalid_backup)?;
+    let (authenticated_header, ciphertext) = blob
+        .split_at_checked(HEADER_LEN)
+        .ok_or_else(invalid_backup)?;
     if ciphertext.len() < AEAD_TAG_LEN {
         return Err(invalid_backup());
     }
@@ -410,7 +408,7 @@ fn open_record(blob: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>>>
             XNonce::from_slice(&header.nonce),
             Payload {
                 msg: ciphertext,
-                aad: blob.get(..HEADER_LEN).ok_or_else(invalid_backup)?,
+                aad: authenticated_header,
             },
         )
         .map(Zeroizing::new)
@@ -461,11 +459,6 @@ struct Header {
     nonce: [u8; NONCE_LEN],
 }
 
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::indexing_slicing,
-    reason = "every offset is bounded by fixed HEADER_LEN components"
-)]
 fn encode_header(
     salt: &[u8; SALT_LEN],
     nonce: &[u8; NONCE_LEN],
@@ -493,38 +486,20 @@ fn write_header_part(out: &mut [u8], offset: &mut usize, value: &[u8]) -> io::Re
     Ok(())
 }
 
-fn read_header_part<'a>(blob: &'a [u8], offset: &mut usize, len: usize) -> io::Result<&'a [u8]> {
-    let end = offset.checked_add(len).ok_or_else(invalid_backup)?;
-    let value = blob.get(*offset..end).ok_or_else(invalid_backup)?;
-    *offset = end;
-    Ok(value)
-}
-
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::indexing_slicing,
-    reason = "the initial HEADER_LEN check bounds every fixed-format offset"
-)]
 fn parse_header(blob: &[u8]) -> io::Result<Header> {
-    if blob.len() < HEADER_LEN || blob.get(..MAGIC.len()) != Some(MAGIC) {
+    if blob.get(..MAGIC.len()) != Some(MAGIC.as_slice()) {
         return Err(invalid_backup());
     }
     let mut at = MAGIC.len();
-    if read_header_part(blob, &mut at, 1)?.first().copied() != Some(FORMAT_VERSION) {
+    let [version] = take_array(blob, &mut at)?;
+    if version != FORMAT_VERSION {
         return Err(invalid_backup());
     }
-    let read_u32 = |offset: &mut usize| -> io::Result<u32> {
-        let mut raw = [0_u8; 4];
-        raw.copy_from_slice(read_header_part(blob, offset, 4)?);
-        Ok(u32::from_le_bytes(raw))
-    };
-    let memory_kib = read_u32(&mut at)?;
-    let iterations = read_u32(&mut at)?;
-    let lanes = read_u32(&mut at)?;
-    let mut salt = [0_u8; SALT_LEN];
-    salt.copy_from_slice(read_header_part(blob, &mut at, SALT_LEN)?);
-    let mut nonce = [0_u8; NONCE_LEN];
-    nonce.copy_from_slice(read_header_part(blob, &mut at, NONCE_LEN)?);
+    let memory_kib = u32::from_le_bytes(take_array(blob, &mut at)?);
+    let iterations = u32::from_le_bytes(take_array(blob, &mut at)?);
+    let lanes = u32::from_le_bytes(take_array(blob, &mut at)?);
+    let salt = take_array(blob, &mut at)?;
+    let nonce = take_array(blob, &mut at)?;
     Ok(Header {
         memory_kib,
         iterations,
@@ -532,6 +507,17 @@ fn parse_header(blob: &[u8]) -> io::Result<Header> {
         salt,
         nonce,
     })
+}
+
+fn take_array<const N: usize>(bytes: &[u8], offset: &mut usize) -> io::Result<[u8; N]> {
+    let end = offset.checked_add(N).ok_or_else(invalid_backup)?;
+    let value = bytes
+        .get(*offset..end)
+        .ok_or_else(invalid_backup)?
+        .try_into()
+        .map_err(|_| invalid_backup())?;
+    *offset = end;
+    Ok(value)
 }
 
 fn write_new_backup(destination: &Path, bytes: &[u8]) -> io::Result<()> {

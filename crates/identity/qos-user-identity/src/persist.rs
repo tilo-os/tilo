@@ -695,8 +695,8 @@ mod tests {
         let first = first.join().expect("first device-key thread").unwrap();
         let second = second.join().expect("second device-key thread").unwrap();
         assert_eq!(
-            (first.1 == DeviceKeyOutcome::Created) as usize
-                + (second.1 == DeviceKeyOutcome::Created) as usize,
+            usize::from(first.1 == DeviceKeyOutcome::Created)
+                + usize::from(second.1 == DeviceKeyOutcome::Created),
             1,
             "one claimant creates the shared device key and the other loads it"
         );

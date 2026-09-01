@@ -66,17 +66,18 @@ const WIDE_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// Below the breakpoint → narrow single-pane.
 const NARROW_SHOTS_VIEWPORT: (u32, u32) = (720, 900);
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 /// Entry point: dispatches to the offscreen `--shots`/`--shots-narrow`
 /// renderer, the headless `--headless-drive` driver, or the live windowed
 /// event loop.
 ///
 /// # Errors
+///
 /// Returns an error when a `--shots`/`--shots-narrow` pass fails to lay out
 /// or render the offscreen frame (a taffy layout error, or an I/O failure
 /// writing the PNG).
-#[cfg(feature = "thin")]
-extern crate runtime_dylib;
-
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 

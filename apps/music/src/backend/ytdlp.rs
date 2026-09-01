@@ -12,6 +12,14 @@
 //! that client itself (its player-client order is fixed to `[Ios, Tv]`), so
 //! when `yt-dlp` is present we shell out to it for the full-stream URL.
 //!
+//! Whether the gating applies is `YouTube`'s decision on the day, and an
+//! `android_vr` URL has been observed refusing every range past the first
+//! ~1 MB too. So this is the *best available* source, not a guarantee: what
+//! actually landed is reported by
+//! [`AudioEngine::staging_complete`](crate::audio::AudioEngine::staging_complete),
+//! and the transport ends a track whose staged bytes run out rather than
+//! freezing on it.
+//!
 //! Runtime-optional, not a build dependency: invoked as a subprocess, so if
 //! `yt-dlp` is missing or disabled, resolution falls back to the proxy and
 //! then the direct (truncating) URL. Set `QOS_MUSIC_YTDLP` to the binary path

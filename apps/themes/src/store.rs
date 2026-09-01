@@ -165,6 +165,7 @@ pub fn load_active_id() -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use crate::model::{presets, seed_custom};

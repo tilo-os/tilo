@@ -71,6 +71,59 @@ enum PickerPurpose {
     BackupIdentity,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Invalidation {
+    #[default]
+    Clean,
+    Structure,
+    Focus,
+    StructureAndFocus,
+}
+
+impl Invalidation {
+    fn structure(&mut self) {
+        *self = match *self {
+            Self::Clean | Self::Structure => Self::Structure,
+            Self::Focus | Self::StructureAndFocus => Self::StructureAndFocus,
+        };
+    }
+
+    fn focus(&mut self) {
+        *self = match *self {
+            Self::Clean | Self::Focus => Self::Focus,
+            Self::Structure | Self::StructureAndFocus => Self::StructureAndFocus,
+        };
+    }
+
+    fn both(&mut self) {
+        *self = Self::StructureAndFocus;
+    }
+
+    fn take_structure(&mut self) -> bool {
+        let present = matches!(self, Self::Structure | Self::StructureAndFocus);
+        if present {
+            *self = match *self {
+                Self::Structure => Self::Clean,
+                Self::StructureAndFocus => Self::Focus,
+                state => state,
+            };
+        }
+        present
+    }
+
+    fn take_focus(&mut self) -> bool {
+        let present = matches!(self, Self::Focus | Self::StructureAndFocus);
+        if present {
+            *self = match *self {
+                Self::Focus => Self::Clean,
+                Self::StructureAndFocus => Self::Structure,
+                state => state,
+            };
+        }
+        present
+    }
+}
+
 pub struct OnboardingView {
     flow: Onboarding,
     context: OnboardingContext,
@@ -84,8 +137,7 @@ pub struct OnboardingView {
     backup_saved: Option<PathBuf>,
     /// Raised when the user has finished and the desktop may start.
     finished: bool,
-    structure_dirty: bool,
-    focus_reset: bool,
+    invalidation: Invalidation,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
     transition_started: Instant,
@@ -204,8 +256,7 @@ impl OnboardingView {
             backup_error: None,
             backup_saved: None,
             finished: false,
-            structure_dirty: false,
-            focus_reset: true,
+            invalidation: Invalidation::Focus,
             composed: None,
             rect: Rect::ZERO,
             transition_started: Instant::now(),
@@ -654,6 +705,148 @@ fn clear_secret(buffer: &Arc<Mutex<String>>) {
     }
 }
 
+impl OnboardingView {
+    fn draw_backdrop(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let colors = &theme.tokens.colors;
+        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
+        if theme.name.eq_ignore_ascii_case("high contrast") {
+            return;
+        }
+
+        // Quiet, theme-derived depth: two broad accent blooms make the
+        // trusted setup surface distinct without becoming illustration.
+        let bloom = colors.accent[5].with_alpha_factor(0.10);
+        let radius = self.rect.width().max(self.rect.height()) * 0.34;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            bloom,
+            None,
+            &Circle::new(Point::new(self.rect.x0, self.rect.y0), radius),
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.accent[3].with_alpha_factor(0.07),
+            None,
+            &Circle::new(Point::new(self.rect.x1, self.rect.y1), radius * 0.82),
+        );
+    }
+
+    fn transition_reveal(&mut self, theme: &Theme) -> f32 {
+        self.reduce_motion = theme.reduce_motion;
+        self.transition_duration = theme.tokens.motion.durations.slow();
+        let duration = self.transition_duration;
+        let elapsed = self.transition_started.elapsed();
+        let raw = if duration.is_zero() {
+            1.0
+        } else {
+            (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0)
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the eased value is clamped to 0..=1 before conversion for vello opacity"
+        )]
+        if theme.reduce_motion {
+            1.0
+        } else {
+            ui::ease_out(f64::from(raw)) as f32
+        }
+    }
+
+    fn draw_composed(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        if self.composed.is_none() {
+            return;
+        }
+        let reveal = self.transition_reveal(theme);
+        let Some(composed) = self.composed.as_mut() else {
+            return;
+        };
+        let colors = &theme.tokens.colors;
+        let panel = composed.get_rect();
+        if panel.area() > 0.0 {
+            if !theme.name.eq_ignore_ascii_case("high contrast") {
+                ui::surface::soft_shadow(
+                    scene,
+                    transform,
+                    panel,
+                    colors.neutral[0],
+                    42.0,
+                    18.0,
+                    0.42,
+                );
+            }
+            let shape = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.xl));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.surfaces.raised,
+                None,
+                &shape,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                colors.border_standard,
+                None,
+                &shape,
+            );
+        }
+
+        let mut local = Scene::new();
+        composed.draw(&mut local, Affine::IDENTITY, text_renderer, theme, presence);
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            reveal,
+            transform,
+            &self.rect,
+        );
+        scene.append(
+            &local,
+            Some(
+                transform.pre_translate(
+                    (
+                        self.transition_direction * f64::from(1.0 - reveal) * 22.0,
+                        f64::from(1.0 - reveal) * 8.0,
+                    )
+                        .into(),
+                ),
+            ),
+        );
+        scene.pop_layer();
+    }
+
+    fn draw_picker(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        let Some((_, picker)) = self.picker.as_mut() else {
+            return;
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.scrim.with_alpha_factor(0.56),
+            None,
+            &self.rect,
+        );
+        picker.set_rect(onboarding_picker_rect(self.rect));
+        picker.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
 impl Drop for OnboardingView {
     fn drop(&mut self) {
         clear_secret(&self.connect_passphrase);
@@ -719,8 +912,7 @@ impl Widget for OnboardingView {
                 }
             }
             self.picker = None;
-            self.structure_dirty = true;
-            self.focus_reset = true;
+            self.invalidation.both();
         }
 
         if read_bool(state, root, KEY_BEGIN) {
@@ -747,7 +939,7 @@ impl Widget for OnboardingView {
                         ui::widget::file_picker::FileFilter::all(),
                     ]),
                 ));
-                self.focus_reset = true;
+                self.invalidation.focus();
             }
         }
 
@@ -780,9 +972,9 @@ impl Widget for OnboardingView {
                             )])
                             .with_filename("qos-identity-backup.qos-identity"),
                     ));
-                    self.focus_reset = true;
+                    self.invalidation.focus();
                 } else {
-                    self.structure_dirty = true;
+                    self.invalidation.structure();
                 }
             }
         }
@@ -814,7 +1006,7 @@ impl Widget for OnboardingView {
                     Err(error) => {
                         tracing::error!(target: "qos::onboarding", %error, "identity import failed");
                         self.error = Some(error);
-                        self.structure_dirty = true;
+                        self.invalidation.structure();
                     }
                 }
             }
@@ -824,7 +1016,7 @@ impl Widget for OnboardingView {
         let understood = read_bool(state, root, KEY_UNDERSTOOD);
         if understood != self.flow.acknowledged() {
             self.flow.set_acknowledged(understood);
-            self.structure_dirty = true;
+            self.invalidation.structure();
         }
 
         if read_bool(state, root, KEY_CREATE) {
@@ -841,7 +1033,7 @@ impl Widget for OnboardingView {
                         self.error = Some(e);
                         // Stay on the protected step. A failed write is not a
                         // completed identity and must never release the desktop.
-                        self.structure_dirty = true;
+                        self.invalidation.structure();
                     }
                 }
             }
@@ -863,8 +1055,7 @@ impl Widget for OnboardingView {
             } else {
                 1.0
             };
-            self.structure_dirty = true;
-            self.focus_reset = true;
+            self.invalidation.both();
             self.transition_started = Instant::now();
         }
     }
@@ -940,115 +1131,9 @@ impl Widget for OnboardingView {
         theme: &Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        let colors = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
-
-        let high_contrast = theme.name.eq_ignore_ascii_case("high contrast");
-        if !high_contrast {
-            // Quiet, theme-derived depth: two broad accent blooms make the
-            // trusted setup surface distinct without becoming illustration.
-            let bloom = colors.accent[5].with_alpha_factor(0.10);
-            let radius = self.rect.width().max(self.rect.height()) * 0.34;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                bloom,
-                None,
-                &Circle::new(Point::new(self.rect.x0, self.rect.y0), radius),
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.accent[3].with_alpha_factor(0.07),
-                None,
-                &Circle::new(Point::new(self.rect.x1, self.rect.y1), radius * 0.82),
-            );
-        }
-
-        if let Some(c) = &mut self.composed {
-            let panel = c.get_rect();
-            if panel.area() > 0.0 {
-                if !high_contrast {
-                    ui::surface::soft_shadow(
-                        scene,
-                        transform,
-                        panel,
-                        colors.neutral[0],
-                        42.0,
-                        18.0,
-                        0.42,
-                    );
-                }
-                let shape = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.xl));
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.surfaces.raised,
-                    None,
-                    &shape,
-                );
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    colors.border_standard,
-                    None,
-                    &shape,
-                );
-            }
-
-            self.reduce_motion = theme.reduce_motion;
-            self.transition_duration = theme.tokens.motion.durations.slow();
-            let duration = self.transition_duration;
-            let elapsed = self.transition_started.elapsed();
-            let raw = if duration.is_zero() {
-                1.0
-            } else {
-                (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0)
-            };
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "the eased value is clamped to 0..=1 before conversion for vello opacity"
-            )]
-            let reveal = if theme.reduce_motion {
-                1.0
-            } else {
-                ui::ease_out(f64::from(raw)) as f32
-            };
-            let mut local = Scene::new();
-            c.draw(&mut local, Affine::IDENTITY, text_renderer, theme, presence);
-            scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                reveal,
-                transform,
-                &self.rect,
-            );
-            scene.append(
-                &local,
-                Some(
-                    transform.pre_translate(
-                        (
-                            self.transition_direction * f64::from(1.0 - reveal) * 22.0,
-                            f64::from(1.0 - reveal) * 8.0,
-                        )
-                            .into(),
-                    ),
-                ),
-            );
-            scene.pop_layer();
-        }
-
-        if let Some((_, picker)) = self.picker.as_mut() {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.scrim.with_alpha_factor(0.56),
-                None,
-                &self.rect,
-            );
-            picker.set_rect(onboarding_picker_rect(self.rect));
-            picker.draw(scene, transform, text_renderer, theme, presence);
-        }
+        self.draw_backdrop(scene, transform, theme);
+        self.draw_composed(scene, transform, text_renderer, theme, presence);
+        self.draw_picker(scene, transform, text_renderer, theme, presence);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1136,11 +1221,11 @@ impl Widget for OnboardingView {
     }
 
     fn take_focus_reset(&mut self) -> bool {
-        std::mem::take(&mut self.focus_reset)
+        self.invalidation.take_focus()
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
+        let own = self.invalidation.take_structure();
         let child = self
             .composed
             .as_mut()
@@ -1250,6 +1335,21 @@ mod tests {
 
     fn press(doc: &mut AutoCommit, key: &str) {
         let _ = doc.put(&automerge::ROOT, key, ScalarValue::Boolean(true));
+    }
+
+    #[test]
+    fn structure_and_focus_invalidations_are_consumed_independently() {
+        let mut invalidation = Invalidation::default();
+        invalidation.both();
+
+        assert!(invalidation.take_structure());
+        assert!(!invalidation.take_structure());
+        assert!(invalidation.take_focus());
+        assert!(!invalidation.take_focus());
+
+        invalidation.both();
+        assert!(invalidation.take_focus());
+        assert!(invalidation.take_structure());
     }
 
     /// The whole point: clicking through without ticking the box must not produce a key.

@@ -28,6 +28,7 @@ use ui::tokens::colors::ACCENT_PRIMARY_IDX;
 use ui::widget::Widget;
 
 use crate::command::{CommandSink, FileCommand, push};
+use crate::i18n::{arg, t, t_args};
 
 /// Bar height in logical pixels — one line of `sm`-ish text plus padding.
 pub const BAR_HEIGHT: f32 = 32.0;
@@ -83,6 +84,10 @@ pub struct BreadcrumbBar {
     /// reads it via [`take_edit_requested`](Self::take_edit_requested) to switch
     /// the path bar into its editable-text mode.
     edit_requested: bool,
+    /// Keyboard cursor over path components. The current component is a valid
+    /// target: activating it switches to editable-path mode.
+    keyboard_index: Option<usize>,
+    focused: bool,
 }
 
 impl BreadcrumbBar {
@@ -96,6 +101,8 @@ impl BreadcrumbBar {
             hover: None,
             last_cursor: Point::ZERO,
             edit_requested: false,
+            keyboard_index: None,
+            focused: false,
         }
     }
 
@@ -103,6 +110,11 @@ impl BreadcrumbBar {
     /// current directory's components so a persistent bar tracks navigation).
     pub fn set_segments(&mut self, segments: Vec<(String, PathBuf)>) {
         self.segments = segments;
+        self.keyboard_index = match (self.keyboard_index, self.segments.len()) {
+            (_, 0) => None,
+            (Some(index), len) => Some(index.min(len - 1)),
+            (None, len) => Some(len - 1),
+        };
     }
 
     /// Tell the bar which mounts are workspaces, so a trail rooted at one
@@ -121,6 +133,21 @@ impl BreadcrumbBar {
     /// click on the current location or the empty trail area).
     pub fn take_edit_requested(&mut self) -> bool {
         std::mem::take(&mut self.edit_requested)
+    }
+
+    pub fn activate_keyboard_segment(&mut self) -> bool {
+        let Some(index) = self.keyboard_index else {
+            return false;
+        };
+        let Some((_, target)) = self.segments.get(index) else {
+            return false;
+        };
+        if index + 1 == self.segments.len() {
+            self.edit_requested = true;
+        } else {
+            push(&self.sink, FileCommand::Navigate(target.clone()));
+        }
+        true
     }
 
     /// Root glyph: the cloud for a workspace, a house for `$HOME`, a
@@ -407,6 +434,36 @@ impl Widget for BreadcrumbBar {
         _taffy: &TaffyTree<()>,
     ) {
         match event {
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed && self.focused =>
+            {
+                use winit::keyboard::{Key, NamedKey};
+                let len = self.segments.len();
+                let current = self.keyboard_index.unwrap_or_else(|| len.saturating_sub(1));
+                match event.logical_key {
+                    Key::Named(NamedKey::ArrowLeft) => {
+                        self.keyboard_index = (len > 0).then_some(current.saturating_sub(1));
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::ArrowRight) => {
+                        self.keyboard_index =
+                            (len > 0).then_some((current + 1).min(len.saturating_sub(1)));
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::Home) => {
+                        self.keyboard_index = (len > 0).then_some(0);
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::End) => {
+                        self.keyboard_index = (len > 0).then_some(len - 1);
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::Enter) => {
+                        *handled = self.activate_keyboard_segment();
+                    }
+                    _ => {}
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
                 // Latch hover on clickable (non-current) slots so the accent
@@ -479,6 +536,81 @@ impl Widget for BreadcrumbBar {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+        if focused && self.keyboard_index.is_none() && !self.segments.is_empty() {
+            self.keyboard_index = Some(self.segments.len() - 1);
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let count = self.segments.len();
+        let children = self
+            .segments
+            .iter()
+            .enumerate()
+            .map(|(index, (label, path))| {
+                let current = index + 1 == count;
+                AccessNode::new(if current {
+                    Role::StaticText
+                } else {
+                    Role::Link
+                })
+                .with_name(label.clone())
+                .with_description(if current {
+                    t_args(
+                        "files-a11y-current-breadcrumb",
+                        &[arg("path", path.display().to_string())],
+                    )
+                } else {
+                    t_args(
+                        "files-a11y-open-folder",
+                        &[arg("path", path.display().to_string())],
+                    )
+                })
+                .with_position(index + 1, count)
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.focused && self.keyboard_index == Some(index),
+                    selected: current,
+                    ..Default::default()
+                })
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(t("files-a11y-breadcrumbs"))
+                .with_optional_value(
+                    self.keyboard_index
+                        .and_then(|index| self.segments.get(index).map(|(label, _)| label.clone())),
+                )
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.focused,
+                    ..Default::default()
+                })
+                .with_children(children),
+        )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        _state: &mut automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) -> bool {
+        matches!(action, ui::a11y::Action::Activate) && self.activate_keyboard_segment()
     }
 }
 
@@ -580,6 +712,45 @@ mod tests {
         assert!(
             bar.laid[1].is_current,
             "root label is the current dir when alone"
+        );
+    }
+
+    #[test]
+    fn accessibility_exposes_trail_and_activation_uses_keyboard_cursor() {
+        use ui::a11y::{Action, Role};
+
+        let sink = new_sink();
+        let mut bar = BreadcrumbBar::new(
+            vec![
+                ("Home".into(), PathBuf::from("/home/u")),
+                ("Documents".into(), PathBuf::from("/home/u/Documents")),
+                ("Reports".into(), PathBuf::from("/home/u/Documents/Reports")),
+            ],
+            sink.clone(),
+        );
+        bar.set_focus(true);
+        bar.keyboard_index = Some(1);
+        let node = bar.accessibility().expect("breadcrumbs have semantics");
+        assert_eq!(node.role, Role::Group);
+        assert_eq!(node.name.as_deref(), Some("Breadcrumbs"));
+        assert_eq!(node.children.len(), 3);
+        assert_eq!(node.children[0].role, Role::Link);
+        assert_eq!(node.children[2].role, Role::StaticText);
+        assert!(node.children[1].state.focused);
+        assert!(node.children[2].state.selected);
+
+        let mut doc = automerge::AutoCommit::new();
+        assert!(bar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+        assert!(matches!(
+            sink.borrow().last(),
+            Some(FileCommand::Navigate(path)) if path == Path::new("/home/u/Documents")
+        ));
+
+        bar.keyboard_index = Some(2);
+        assert!(bar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+        assert!(
+            bar.take_edit_requested(),
+            "current crumb enters path editing"
         );
     }
 }

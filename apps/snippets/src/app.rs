@@ -30,6 +30,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Button, ButtonFace, ButtonStyle, FlapState, PushPane, SplitLayout, TextInput, Widget,
 };
@@ -824,7 +825,15 @@ impl ui::widget::Widget for SnippetsApp {
         }
 
         if let Some(toast) = &self.toast {
-            draw_toast(scene, t, tr, theme, self.rect, &toast.message);
+            paint_transient(
+                scene,
+                t,
+                tr,
+                theme,
+                self.rect,
+                ToastAnchor::BottomRight,
+                &ToastCard::new(&toast.message, ToastKind::Info),
+            );
         }
 
         // The expand modal renders above everything. While it's open the
@@ -2512,35 +2521,6 @@ fn section_header(
     );
 }
 
-fn draw_toast(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    area: Rect,
-    message: &str,
-) {
-    let c = &theme.tokens.colors;
-    let toast_w = f64::from(tr.measure(message, 14.0, None).0) + 40.0;
-    let toast_h = 40.0;
-    let x = area.x1 - toast_w - 24.0;
-    let y = area.y1 - toast_h - 24.0;
-    let rect = Rect::new(x, y, x + toast_w, y + toast_h);
-    draw::fill_round(scene, t, rect, theme.radii_md(), c.surfaces.raised);
-    draw::stroke_round(scene, t, rect, theme.radii_md(), 1.0, c.accent[5]);
-    draw::text(
-        scene,
-        tr,
-        t,
-        message,
-        x + 20.0,
-        y + (toast_h - 15.0) / 2.0,
-        14.0,
-        c.text_primary,
-        TextWeight::Medium,
-    );
-}
-
 /// Greedy word-wrap `s` into lines no wider than `max_w` at font `size`,
 /// for centred multi-line zero-state copy. Falls back to the whole string
 /// when a single word already exceeds the width (it will clip rather than
@@ -2944,20 +2924,38 @@ mod tests {
         app.toggle_favorite_for_test(id, &mut state.doc);
         assert!(SnippetsDoc::get(&state.doc, id).unwrap().favorite);
 
-        // The host drains the captured heads and records ONE undo boundary.
-        let before = Widget::take_committed_action(&mut app).expect("heads were captured");
+        // The host's own recorder drains the captured heads and records ONE undo
+        // boundary. Going through it rather than pushing an entry by hand is the
+        // point: attribution happens in there, and undo is author-scoped. The
+        // node map is empty because the app widget is the root here.
+        let local_author = ui::collaboration::local_user_id();
+        let root: *mut dyn Widget = &mut app;
+        assert!(
+            ui::undo::record_dispatched_action(
+                &mut state,
+                root,
+                &std::collections::HashMap::new(),
+                &local_author,
+            ),
+            "the host recorded an undo boundary for the dispatched star"
+        );
         assert!(
             Widget::take_committed_action(&mut app).is_none(),
             "rising-edge: the captured heads are cleared on read",
         );
-        state.record_committed_action(before, None, None);
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
+        let entry = state
+            .peek_last_undo()
+            .expect("exactly one undo boundary recorded");
+        assert_eq!(
+            entry.author.as_ref(),
+            Some(&local_author),
+            "attributed to the local user, so their Ctrl+Z can reach it"
         );
 
         // Ctrl+Z reverts the star. Re-project so the library reflects the undo.
-        state.undo(None, None).expect("an undo entry to pop");
+        state
+            .undo_as(Some(&local_author), None, None)
+            .expect("an undo entry to pop");
         app.sync(&mut state.doc, &state.root);
         assert!(
             !SnippetsDoc::get(&state.doc, id).unwrap().favorite,

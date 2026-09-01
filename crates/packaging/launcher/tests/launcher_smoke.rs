@@ -119,6 +119,7 @@ fn manifest_malformed_fails_before_exec() {
 }
 
 #[test]
+#[serial_test::serial(process_env)]
 fn required_service_missing_fails() {
     // Manifest says `collab = "required@1"` but no socket exists.
     let dir = tempfile::tempdir().unwrap();
@@ -206,6 +207,7 @@ fn no_services_flag_skips_required() {
 }
 
 #[test]
+#[serial_test::serial(process_env)]
 #[ignore = "requires bwrap; run with --ignored"]
 fn optional_service_missing_warns_and_runs() {
     let Some(bwrap) = bwrap_path() else {
@@ -240,6 +242,7 @@ fn optional_service_missing_warns_and_runs() {
 // risk.
 
 #[test]
+#[serial_test::serial(process_env)]
 fn manifest_declared_runtime_missing_bundle_fails() {
     let _guard = RUNTIME_ENV_MUTEX
         .lock()
@@ -335,6 +338,7 @@ fn install_signed_bundle(
 /// `LD_LIBRARY_PATH` to <mount>/lib, and NOT include the --minimal-libs
 /// loader binds even if the flag is on.
 #[test]
+#[serial_test::serial(process_env)]
 fn runtime_bundle_wins_over_minimal_libs_in_argv() {
     use launcher::manifest::{Entrypoint, Fs, Net, Sandbox};
     use launcher::sandbox::build_bwrap_argv;
@@ -431,6 +435,7 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
 /// and the launcher sets `LD_LIBRARY_PATH=<mount>/lib`, so the loader
 /// finds them by soname. Signature integrity is enforced along the way.
 #[test]
+#[serial_test::serial(process_env)]
 fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
     use launcher::manifest::{Entrypoint, Fs, Net, Sandbox};
     use launcher::sandbox::build_bwrap_argv;
@@ -556,6 +561,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
 /// from `run_with` directly, so this drives `resolve_dbus_bind` via the
 /// same entry path and asserts on the resulting plan + guard.
 #[test]
+#[serial_test::serial(process_env)]
 fn dbus_proxy_wires_up_when_manifest_declares_via_host_portal() {
     use launcher::dbus_proxy::PROXY_BIN_ENV;
     use launcher::sandbox::{DBusBindKind, build_bwrap_argv};
@@ -725,6 +731,7 @@ fs = "optional@2"
 /// A runtime bundle that exists but is unsigned is refused by default;
 /// --allow-unsigned-runtime makes the resolve succeed.
 #[test]
+#[serial_test::serial(process_env)]
 fn unsigned_bundle_is_refused_unless_opted_in() {
     let _guard = RUNTIME_ENV_MUTEX
         .lock()
@@ -768,6 +775,7 @@ fn unsigned_bundle_is_refused_unless_opted_in() {
 /// for runtime bundles at mount time: missing means any signed
 /// publisher works; a matching key accepts; a mismatched key refuses.
 #[test]
+#[serial_test::serial(process_env)]
 fn trusted_publisher_file_gates_mount() {
     let _guard = RUNTIME_ENV_MUTEX
         .lock()
@@ -838,6 +846,7 @@ fn trusted_publisher_file_gates_mount() {
 /// A signed bundle is accepted by default. Pinning the publisher to
 /// its actual key still accepts; pinning to a different key refuses.
 #[test]
+#[serial_test::serial(process_env)]
 fn signed_bundle_publisher_pin_enforced() {
     let _guard = RUNTIME_ENV_MUTEX
         .lock()

@@ -2381,6 +2381,7 @@ fn intersect(a: Rect, b: Rect) -> Option<Rect> {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use crate::model::CellValue;

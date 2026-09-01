@@ -35,6 +35,17 @@ use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, Windo
 const W: f32 = 1280.0;
 const H: f32 = 800.0;
 
+macro_rules! assert_approx_eq {
+    ($left:expr, $right:expr $(,)?) => {{
+        let (left, right) = ($left, $right);
+        assert!((left - right).abs() <= 1.0e-5, "left={left:?}, right={right:?}");
+    }};
+    ($left:expr, $right:expr, $($arg:tt)+) => {{
+        let (left, right) = ($left, $right);
+        assert!((left - right).abs() <= 1.0e-5, $($arg)+);
+    }};
+}
+
 /// One workspace, one strip, one tab per group. Group ids are the
 /// caller's so failure messages stay legible; the first is the strip's
 /// active group.
@@ -268,8 +279,8 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
         let st = chrome.borrow();
         let tree = st.tree();
         let g = &tree.workspaces[0].strips[0].window_groups;
-        assert_eq!(g[0].width.resolve(usable), start_px);
-        assert_eq!(g[1].width.resolve(usable), start_px);
+        assert_approx_eq!(g[0].width.resolve(usable), start_px);
+        assert_approx_eq!(g[1].width.resolve(usable), start_px);
     }
 
     let handle_rect = host
@@ -295,12 +306,12 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
     let groups = &tree.workspaces[0].strips[0].window_groups;
     let left = groups.iter().find(|g| g.id == ids[0]).unwrap();
     let right = groups.iter().find(|g| g.id == ids[1]).unwrap();
-    assert_eq!(
+    assert_approx_eq!(
         left.width.resolve(usable),
         start_px + 40.0,
         "left group must have grown by the +40 px drag delta in the persisted tree",
     );
-    assert_eq!(
+    assert_approx_eq!(
         right.width.resolve(usable),
         start_px - 40.0,
         "right group must have shrunk by the same 40 px (no overlap, widths reflow)",
@@ -360,17 +371,17 @@ fn resize_handle_drag_clamps_at_min_width_and_persists() {
     let groups = &tree.workspaces[0].strips[0].window_groups;
     let left = groups.iter().find(|g| g.id == ids[0]).unwrap();
     let right = groups.iter().find(|g| g.id == ids[1]).unwrap();
-    assert_eq!(
+    assert_approx_eq!(
         right.width.resolve(usable),
         min,
         "the shrinking (right) group clamps at the display's minimum width, not below",
     );
-    assert_eq!(
+    assert_approx_eq!(
         left.width.resolve(usable),
         pair_sum - min,
         "the growing (left) group absorbs only the neighbour's actual slack",
     );
-    assert_eq!(
+    assert_approx_eq!(
         left.width.resolve(usable) + right.width.resolve(usable),
         pair_sum,
         "pair sum is preserved under clamp — no overlap, no runaway width",
@@ -532,7 +543,7 @@ fn expand_takes_the_group_genuinely_fullscreen() {
     let sidebar = host
         .sidebar_rect_for_tests()
         .expect("sidebar node exists even when suppressed");
-    assert_eq!(
+    assert_approx_eq!(
         sidebar.area(),
         0.0,
         "the radial workspace switcher must be collapsed to zero area while a \
@@ -559,7 +570,7 @@ fn group_right_edge_drag_resizes_on_screen_and_persists() {
             .resolve(usable)
     };
     let boot_px = WindowWidth::Normal.resolve(usable);
-    assert_eq!(
+    assert_approx_eq!(
         width_in_tree(&chrome),
         boot_px,
         "Normal is two thirds of the usable strip at boot",
@@ -589,14 +600,14 @@ fn group_right_edge_drag_resizes_on_screen_and_persists() {
         on_screen_after > on_screen_before,
         "the group must actually get wider on screen: {on_screen_before} -> {on_screen_after}",
     );
-    assert_eq!(
+    assert_approx_eq!(
         on_screen_after,
         on_screen_before + 120.0,
         "and by exactly the dragged distance",
     );
 
     host.tick_pending_width_harvest_for_tests();
-    assert_eq!(
+    assert_approx_eq!(
         width_in_tree(&chrome),
         boot_px + 120.0,
         "the new width must persist into the tree so it survives a restart",
@@ -904,8 +915,9 @@ fn wheel_over_strip_does_not_move_it() {
         .tick_snap_at(std::time::Instant::now() + std::time::Duration::from_millis(400));
 
     let after = host.group_row_mut_for_tests(strip_id).unwrap().scroll_x();
-    assert_eq!(
-        after, before,
+    assert_approx_eq!(
+        after,
+        before,
         "a bare wheel over the strip must not move it",
     );
 }
@@ -922,7 +934,7 @@ fn focusing_offscreen_group_scrolls_it_into_view() {
     let row_rect = host.group_row_rect_for_tests(strip_id).unwrap();
 
     let before = host.group_row_mut_for_tests(strip_id).unwrap().scroll_x();
-    assert_eq!(before, 0.0, "strip starts scrolled home");
+    assert_approx_eq!(before, 0.0, "strip starts scrolled home");
     let last_rect_before = host.group_at_for_tests(strip_id, 3).unwrap().get_rect();
     assert!(
         last_rect_before.x1 > row_rect.x1,
