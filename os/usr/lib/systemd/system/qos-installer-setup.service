@@ -11,6 +11,9 @@ Before=greetd.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# Extract a qOS Imager profile before the unprivileged installer starts. No
+# profile is a normal manual-install case; corruption is recorded for the UI.
+ExecStart=/usr/libexec/qos-installer-profile-extract
 # Drop in the live-medium-only sudoers rule that lets the greetd session user
 # run /usr/libexec/qos-install via `sudo -n`. install(1) copies + chmods 0440
 # (sudo refuses world/group-writable drop-ins) in one shot.
