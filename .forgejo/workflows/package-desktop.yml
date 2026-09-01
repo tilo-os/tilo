@@ -23,7 +23,12 @@ on:
       - "crates/session/qos-unlock-helper/**"
       - ".forgejo/workflows/package-desktop.yml"
   push:
-    branches: ["main", "codex/package-desktop-release"]
+    branches:
+      - "main"
+      - "codex/package-desktop-release"
+      # Temporary recovery-proof branch; delete after the runner incident is
+      # classified without changing the packaging branch under development.
+      - "codex/runner-packaging-proof"
     tags: ["v*"]
   workflow_dispatch:
 
