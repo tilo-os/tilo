@@ -701,7 +701,14 @@ fn verify_bundle_impl(
         });
     }
 
-    // Signature policy.
+    verify_manifest_signature(&manifest, opts)?;
+    Ok(manifest)
+}
+
+fn verify_manifest_signature(
+    manifest: &BundleManifest,
+    opts: &VerifyOptions,
+) -> Result<(), BundleError> {
     let need_sig = opts.require_signature || opts.require_publisher.is_some();
     match (
         manifest.publisher_hex.as_deref(),
@@ -737,8 +744,7 @@ fn verify_bundle_impl(
         _ if need_sig => return Err(BundleError::NotSigned),
         _ => {}
     }
-
-    Ok(manifest)
+    Ok(())
 }
 
 fn valid_payload_path(path: &str) -> bool {

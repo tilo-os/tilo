@@ -114,6 +114,10 @@ fn log_gpu_pin(gpu_pin: Option<&compositor::render_node::ProcessPin>) {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "startup ordering is security-sensitive and kept visible in one linear entry point"
+)]
 fn main() -> std::process::ExitCode {
     // `init()` is a no-op unless the env var is set, so production boots pay
     // zero cost; the scope guard dumps recorded events to disk when `main` returns.
@@ -187,7 +191,7 @@ fn main() -> std::process::ExitCode {
             tracing::error!("firstboot-only: setup failed: {e}");
             std::process::exit(1);
         }
-        return;
+        return std::process::ExitCode::SUCCESS;
     }
 
     if firstboot_requested && let Err(e) = firstboot::run() {
@@ -209,7 +213,7 @@ fn main() -> std::process::ExitCode {
                     path = %store.path().display(),
                     "identity repair found no existing identity; interactive native setup will handle creation"
                 );
-                return;
+                return std::process::ExitCode::SUCCESS;
             }
             if compositor::parse_mode_from_args() == Mode::Hosted {
                 tracing::error!(
@@ -236,7 +240,7 @@ fn main() -> std::process::ExitCode {
                 std::process::exit(1);
             }
             tracing::info!("qOS collaboration identity is provisioned");
-            return;
+            return std::process::ExitCode::SUCCESS;
         }
         Ok(store) => {
             let Some(identity_dir) = store.path().parent() else {

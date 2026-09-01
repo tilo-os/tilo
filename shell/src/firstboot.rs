@@ -352,7 +352,7 @@ fn create_owner_claim_temp(parent: &Path, root_public: &[u8; 32]) -> io::Result<
                 }
                 return Ok(temp);
             }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
         }
     }

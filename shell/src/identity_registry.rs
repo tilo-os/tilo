@@ -372,7 +372,7 @@ impl IdentityRegistryStore {
 
         // Runtime ids are capped at 64 characters and must start with a
         // letter. The full fingerprint remains the registry's stable id.
-        let runtime_id = format!("identity-{}", &id[..55]);
+        let runtime_id = format!("identity-{}", id.get(..55).unwrap_or(&id));
         let destination = runtime_identity::import_portable_backup_matching(
             source,
             passphrase,
