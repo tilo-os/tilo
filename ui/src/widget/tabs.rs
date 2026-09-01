@@ -575,6 +575,10 @@ impl TabBar {
 
     /// Presence-in-navigation mist. A peer on another tab should read as a
     /// destination, not as an unexplained notification count.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "Affine multiplication is the geometry library's point-transform operation"
+    )]
     fn draw_pill_presence(
         scene: &mut Scene,
         transform: Affine,
@@ -604,7 +608,7 @@ impl TabBar {
         for (index, peer) in peers.iter().take(capped).enumerate() {
             let index = u8::try_from(index).unwrap_or(3);
             let x0 = r.x0 + f64::from(index) * segment_w;
-            let x1 = if index + 1 == count {
+            let x1 = if index.saturating_add(1) == count {
                 r.x1
             } else {
                 x0 + segment_w

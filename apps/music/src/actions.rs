@@ -126,7 +126,7 @@ pub fn history_context(action: &MusicAction) -> qos_actions::ActionContext {
     context.resource = Some(qos_actions::ActionResource {
         id: format!("{kind}:{id}"),
         kind: kind.to_string(),
-        label: resource_label.to_string(),
+        label: resource_label.clone(),
     });
     context
 }
