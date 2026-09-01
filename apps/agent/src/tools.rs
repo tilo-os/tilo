@@ -93,9 +93,6 @@ pub struct Revealed(BTreeSet<String>);
 impl Revealed {
     pub fn new() -> Self {
         let mut set = BTreeSet::new();
-        for c in plan::CATALOGUE {
-            set.insert(c.id.to_string());
-        }
         set.insert(plan::NOTHING_FITS.to_string());
         Revealed(set)
     }
