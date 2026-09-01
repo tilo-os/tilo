@@ -526,7 +526,7 @@ impl FrameHarness {
     pub fn a11y_node_named(&self, name: &str) -> Option<accesskit::NodeId> {
         self.a11y_nodes()
             .into_iter()
-            .find(|(_, n)| n.label().as_deref() == Some(name))
+            .find(|(_, n)| n.label() == Some(name))
             .map(|(id, _)| id)
     }
 
@@ -552,8 +552,11 @@ impl FrameHarness {
     /// test but not driven by one, which caps how well it can be verified at
     /// all.
     ///
-    /// `Err` when the id names nothing in the current frame — a stale reference
-    /// is reported, never quietly retargeted at whatever now occupies the slot.
+    /// # Errors
+    ///
+    /// Returns an error when the id names nothing in the current frame — a
+    /// stale reference is reported, never quietly retargeted at whatever now
+    /// occupies the slot — or when it addresses the inoperable window root.
     pub fn perform_a11y_action(
         &mut self,
         target: accesskit::NodeId,
@@ -1306,7 +1309,7 @@ mod a11y_driver_tests {
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let n = taffy.new_leaf(taffy::Style::default()).unwrap();
-            node_map.insert(n, self as *mut dyn Widget);
+            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
             n
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: vello::kurbo::Point) {}
@@ -1333,7 +1336,7 @@ mod a11y_driver_tests {
             _t: &TaffyTree<()>,
         ) {
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "Strip"
         }
         fn get_rect(&self) -> Rect {
@@ -1601,16 +1604,20 @@ mod undo_driver_tests {
                     ..Default::default()
                 })
                 .unwrap();
-            node_map.insert(node, self as *mut dyn crate::widget::Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn crate::widget::Widget>(self));
             node
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let l = taffy.layout(node).unwrap();
-            let x = origin.x + l.location.x as f64;
-            let y = origin.y + l.location.y as f64;
-            self.rect =
-                vello::kurbo::Rect::new(x, y, x + l.size.width as f64, y + l.size.height as f64);
+            let x = origin.x + f64::from(l.location.x);
+            let y = origin.y + f64::from(l.location.y);
+            self.rect = vello::kurbo::Rect::new(
+                x,
+                y,
+                x + f64::from(l.size.width),
+                y + f64::from(l.size.height),
+            );
         }
 
         fn draw(
@@ -1658,7 +1665,7 @@ mod undo_driver_tests {
             *handled = true;
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "Typer"
         }
 
@@ -1878,16 +1885,20 @@ mod dispatched_action_driver_tests {
                     ..Default::default()
                 })
                 .unwrap();
-            node_map.insert(node, self as *mut dyn crate::widget::Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn crate::widget::Widget>(self));
             node
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let l = taffy.layout(node).unwrap();
-            let x = origin.x + l.location.x as f64;
-            let y = origin.y + l.location.y as f64;
-            self.rect =
-                vello::kurbo::Rect::new(x, y, x + l.size.width as f64, y + l.size.height as f64);
+            let x = origin.x + f64::from(l.location.x);
+            let y = origin.y + f64::from(l.location.y);
+            self.rect = vello::kurbo::Rect::new(
+                x,
+                y,
+                x + f64::from(l.size.width),
+                y + f64::from(l.size.height),
+            );
         }
 
         fn draw(
@@ -1970,7 +1981,7 @@ mod dispatched_action_driver_tests {
             self.actions.take_committed()
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "ActionEditor"
         }
 

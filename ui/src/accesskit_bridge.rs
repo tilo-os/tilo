@@ -52,10 +52,12 @@
 //!   id from a previous frame resolves to `None` instead of to the wrong clip.
 
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 
 use accesskit::{
     Action as AkAction, Node as AkNode, NodeId as AkNodeId, Rect as AkRect, Role as AkRole,
-    TextPosition as AkTextPosition, TextSelection as AkTextSelection, Toggled, Tree, TreeUpdate,
+    TextPosition as AkTextPosition, TextSelection as AkTextSelection, Toggled, TreeInfo,
+    TreeUpdate,
 };
 use taffy::NodeId as TaffyNodeId;
 use unicode_segmentation::UnicodeSegmentation;
@@ -99,10 +101,9 @@ pub fn map_role(role: Role) -> AkRole {
         Role::Menu => AkRole::Menu,
         Role::MenuItem => AkRole::MenuItem,
 
-        Role::Button => AkRole::Button,
         // No dedicated "toggle button" role; a Button with `toggled` state
         // (applied in `apply_state`) is the AccessKit idiom.
-        Role::ToggleButton => AkRole::Button,
+        Role::Button | Role::ToggleButton => AkRole::Button,
         Role::Checkbox => AkRole::CheckBox,
         Role::RadioButton => AkRole::RadioButton,
         Role::Switch => AkRole::Switch,
@@ -112,14 +113,12 @@ pub fn map_role(role: Role) -> AkRole {
         Role::TextInput => AkRole::TextInput,
         Role::MultilineTextInput => AkRole::MultilineTextInput,
         Role::Link => AkRole::Link,
-        Role::ProgressBar => AkRole::ProgressIndicator,
         // Indeterminate progress indicator; busy flag applied in `apply_state`.
-        Role::Spinner => AkRole::ProgressIndicator,
+        Role::ProgressBar | Role::Spinner => AkRole::ProgressIndicator,
         Role::Tooltip => AkRole::Tooltip,
 
         Role::Image => AkRole::Image,
-        Role::Label => AkRole::Label,
-        Role::StaticText => AkRole::Label,
+        Role::Label | Role::StaticText => AkRole::Label,
         Role::Heading { .. } => AkRole::Heading,
         Role::Paragraph => AkRole::Paragraph,
         Role::Document => AkRole::Document,
@@ -133,9 +132,8 @@ pub fn map_role(role: Role) -> AkRole {
 /// on the round trip ([`accesskit_action_to_ours`]).
 pub fn map_action(action: &Action) -> AkAction {
     match action {
-        Action::Activate => AkAction::Click,
+        Action::Activate | Action::ToggleCheck => AkAction::Click,
         Action::Focus => AkAction::Focus,
-        Action::ToggleCheck => AkAction::Click,
         Action::Increment => AkAction::Increment,
         Action::Decrement => AkAction::Decrement,
         Action::Expand => AkAction::Expand,
@@ -183,9 +181,9 @@ pub fn accesskit_action_to_ours(
 /// with no `node_map` entry.
 fn widget_node_id(taffy_id: Option<TaffyNodeId>, walk_index: u64) -> AkNodeId {
     match taffy_id {
-        Some(id) => AkNodeId(u64::from(id) + 1),
+        Some(id) => AkNodeId(u64::from(id).saturating_add(1)),
         // 1<<48 keeps fallback ids well clear of any realistic taffy id range.
-        None => AkNodeId(WALK_ID_BASE + walk_index),
+        None => AkNodeId(WALK_ID_BASE.saturating_add(walk_index)),
     }
 }
 
@@ -224,8 +222,8 @@ pub fn is_synthetic_id(id: AkNodeId) -> bool {
 /// AccessKit id, so anything crossing between the two — moving focus to a node,
 /// asserting on one in a test — has to translate. Exposed rather than
 /// open-coded so a caller cannot drift from [`widget_node_id`].
-pub fn widget_ak_id(
-    node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
+pub fn widget_ak_id<S: BuildHasher>(
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     taffy_id: TaffyNodeId,
 ) -> Option<AkNodeId> {
     node_map
@@ -302,9 +300,9 @@ pub enum A11yTarget {
 ///
 /// A text run resolves to the field that owns it — the run *is* the widget's
 /// text, so a verb aimed at it means the widget.
-pub fn resolve_node_id(
+pub fn resolve_node_id<S: BuildHasher>(
     root: &dyn Widget,
-    node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     id: AkNodeId,
 ) -> Option<A11yTarget> {
     if id == ROOT_ID {
@@ -394,8 +392,8 @@ fn find_synthetic_path(
 
 /// Reverse of the App's `taffy::NodeId -> *mut dyn Widget` map, so the walk can
 /// look up a stable id for any `&dyn Widget` it meets.
-fn reverse_node_map(
-    node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
+fn reverse_node_map<S: BuildHasher>(
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
 ) -> HashMap<*const (), TaffyNodeId> {
     let mut ptr_to_taffy: HashMap<*const (), TaffyNodeId> = HashMap::new();
     for (&taffy_id, &w_ptr) in node_map {
@@ -418,8 +416,8 @@ fn accessible_character_lengths(text: &str) -> Vec<u8> {
         let mut remaining = grapheme.len();
         while remaining > 0 {
             let chunk = remaining.min(u8::MAX as usize);
-            lengths.push(chunk as u8);
-            remaining -= chunk;
+            lengths.push(u8::try_from(chunk).unwrap_or(u8::MAX));
+            remaining = remaining.saturating_sub(chunk);
         }
     }
     lengths
@@ -502,16 +500,16 @@ pub fn resolve_synthetic_target<'a>(
     visit_synthetic_widget(root, target.0, &mut 0)
 }
 
-pub fn build_tree_update(
+pub fn build_tree_update<S: BuildHasher>(
     root: &dyn Widget,
-    node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     focused: Option<TaffyNodeId>,
     scale: f64,
 ) -> TreeUpdate {
     // Reverse map so we can look up a stable id for any &dyn Widget during the walk.
     let ptr_to_taffy = reverse_node_map(node_map);
 
-    let focused_ak = focused.map(|t| AkNodeId(u64::from(t) + 1));
+    let focused_ak = focused.map(|t| AkNodeId(u64::from(t).saturating_add(1)));
 
     let mut nodes: Vec<(AkNodeId, AkNode)> = Vec::new();
     let mut walk_counter: u64 = 0;
@@ -554,7 +552,7 @@ pub fn build_tree_update(
 
     TreeUpdate {
         nodes,
-        tree: Some(Tree::new(ROOT_ID)),
+        tree: Some(TreeInfo::new(ROOT_ID)),
         tree_id: accesskit::TreeId::ROOT,
         focus,
     }
@@ -582,7 +580,7 @@ fn visit(
 
     if let Some(access_node) = access {
         let id = widget_node_id(taffy_id, *walk_counter);
-        *walk_counter += 1;
+        *walk_counter = walk_counter.saturating_add(1);
 
         let mut ak = AkNode::new(map_role(access_node.role));
         apply_semantics(&mut ak, &access_node, w, scale);
@@ -650,7 +648,7 @@ fn visit(
         parent_children.push(id);
     } else {
         // Presentational: collapse out, reparent children onto the parent.
-        *walk_counter += 1;
+        *walk_counter = walk_counter.saturating_add(1);
         for child in w.children() {
             visit(
                 child,
@@ -916,7 +914,7 @@ mod tests {
             let node = taffy
                 .new_with_children(taffy::Style::default(), &child_nodes)
                 .unwrap();
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn apply_layout(
@@ -949,7 +947,7 @@ mod tests {
         ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
-            self.kids.iter().map(|c| c.as_ref()).collect()
+            self.kids.iter().map(std::convert::AsRef::as_ref).collect()
         }
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             self.kids
@@ -1166,9 +1164,7 @@ mod tests {
             .iter()
             .find(|(_, ptr)| {
                 let w = unsafe { &***ptr };
-                w.accessibility()
-                    .map(|n| n.role == Role::Button)
-                    .unwrap_or(false)
+                w.accessibility().is_some_and(|n| n.role == Role::Button)
             })
             .map(|(&id, _)| id);
         assert!(focused_taffy.is_some());
@@ -1354,7 +1350,7 @@ mod tests {
         assert_eq!(run.value(), Some(value.as_str()));
         assert_eq!(
             run.character_lengths(),
-            [1, family.len() as u8, 1].as_slice(),
+            [1, u8::try_from(family.len()).unwrap_or(u8::MAX), 1].as_slice(),
             "AccessKit characters match the editor's extended graphemes"
         );
         assert_eq!(field_node.children(), &[*run_id]);
@@ -1419,7 +1415,7 @@ mod tests {
             .iter()
             .find(|(_, ptr)| {
                 let w = unsafe { &***ptr };
-                w.accessibility().map(|n| n.role == role).unwrap_or(false)
+                w.accessibility().is_some_and(|n| n.role == role)
             })
             .map(|(&id, _)| id)
             .expect("a widget with that role was laid out")
@@ -1430,8 +1426,10 @@ mod tests {
             .nodes
             .iter()
             .find(|(_, n)| n.label() == Some(label))
-            .map(|(id, _)| *id)
-            .unwrap_or_else(|| panic!("no node labelled {label} in the update"))
+            .map_or_else(
+                || panic!("no node labelled {label} in the update"),
+                |(id, _)| *id,
+            )
     }
 
     #[test]
@@ -1556,7 +1554,7 @@ mod tests {
         // FIRST must not renumber the second's rows: an AT holding a reference
         // to "Beta / two" would otherwise silently start pointing elsewhere.
         let mut first = Box::new(TestWidget::new(Some(canvas(vec![clip("a", false)]))));
-        let first_ptr: *mut TestWidget = &mut *first;
+        let first_ptr: *mut TestWidget = &raw mut *first;
         let second = Box::new(TestWidget::new(Some(
             AccessNode::new(Role::Table)
                 .with_name("Beta")

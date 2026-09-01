@@ -25,8 +25,8 @@ use qdoc::{Containers, DocMut};
 use crate::num;
 
 use qos_actions::{
-    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, Resource, ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+    ResourceProvider,
 };
 
 /// Registry `type_id` for every word-processor action.
@@ -907,6 +907,7 @@ impl ResourceProvider for crate::widget::WordProcessorWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qos_actions::ActionInput;
     use qos_actions::LocalTransport;
 
     fn registry() -> ActionRegistry {
