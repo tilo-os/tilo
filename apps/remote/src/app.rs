@@ -479,33 +479,10 @@ impl RemoteApp {
                 self.selected = Some(id);
             }
             Action::ToggleFavorite(id) => {
-                // Compute the absolute target *before* the in-memory flip so the
-                // action carries a value, not a read-then-flip — deterministic
-                // replay. The on-screen star and the Ctrl+K row build the same
-                // SetFavorite action.
-                if let Some(target) = self.workspace.get(id).map(|c| !c.favorite) {
-                    self.workspace.toggle_favorite(id);
-                    let action = crate::actions::set_favorite_action(id, target);
-                    self.actions.dispatch_with_context(
-                        state,
-                        crate::actions::REMOTE_ACTION_TYPE,
-                        &action,
-                        qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
-                    );
-                }
+                self.toggle_favorite(id, state);
             }
             Action::Delete(id) => {
-                self.workspace.remove(id);
-                let action = crate::actions::delete_action(id);
-                self.actions.dispatch_with_context(
-                    state,
-                    crate::actions::REMOTE_ACTION_TYPE,
-                    &action,
-                    qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
-                );
-                if self.selected == Some(id) {
-                    self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
-                }
+                self.delete_connection(id, state);
             }
             Action::FocusField(f) => {
                 self.focus_field(f);
@@ -562,6 +539,40 @@ impl RemoteApp {
             Action::ToggleRail => {
                 self.rail.toggle(self.rail_layout);
             }
+        }
+    }
+
+    fn toggle_favorite(&mut self, id: ConnectionId, state: &mut AutoCommit) {
+        // Compute the absolute target before the in-memory flip so replay does
+        // not depend on the connection's current state.
+        let Some(target) = self
+            .workspace
+            .get(id)
+            .map(|connection| !connection.favorite)
+        else {
+            return;
+        };
+        self.workspace.toggle_favorite(id);
+        let action = crate::actions::set_favorite_action(id, target);
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::REMOTE_ACTION_TYPE,
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+        );
+    }
+
+    fn delete_connection(&mut self, id: ConnectionId, state: &mut AutoCommit) {
+        self.workspace.remove(id);
+        let action = crate::actions::delete_action(id);
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::REMOTE_ACTION_TYPE,
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+        );
+        if self.selected == Some(id) {
+            self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
         }
     }
 
