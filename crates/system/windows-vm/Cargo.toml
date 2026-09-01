@@ -7,8 +7,13 @@ license.workspace = true
 description = "Default-deny single Windows appliance and RemoteApp integration for qOS"
 
 [dependencies]
+base64.workspace = true
+hex.workspace = true
+rand.workspace = true
+reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
