@@ -152,11 +152,19 @@ fn secure_boot_enabled() -> bool {
         == Some(1)
 }
 
+fn kernel_lockdown_active() -> bool {
+    std::fs::read_to_string("/sys/kernel/security/lockdown")
+        .map(|state| state.contains("[integrity]") || state.contains("[confidentiality]"))
+        .unwrap_or(false)
+}
+
 /// Explanation shown under the encryption chooser, reflecting the choice and
 /// what this machine's hardware can actually do.
-fn encrypt_description(tpm2: bool, secure_boot: bool) -> &'static str {
-    if tpm2 && secure_boot {
+fn encrypt_description(tpm2: bool, secure_boot: bool, kernel_lockdown: bool) -> &'static str {
+    if tpm2 && secure_boot && kernel_lockdown {
         "qOS always encrypts the disk with LUKS2. At startup, one PIN unlocks a key sealed to this computer's TPM2 chip. A recovery key is shown once during install in case the TPM is reset or fails."
+    } else if tpm2 && secure_boot {
+        "qOS always encrypts the disk with LUKS2. Secure Boot is active but kernel lockdown is not, so qOS cannot treat this boot as verified and uses a strong disk passphrase instead."
     } else if tpm2 {
         "qOS always encrypts the disk with LUKS2. TPM2 short-PIN protection requires verified boot, but Secure Boot is not active, so this installation uses a strong disk passphrase instead."
     } else {
@@ -620,6 +628,9 @@ pub struct InstallerApp {
     tpm2: bool,
     /// Short-PIN mode is safe only when firmware verifies early boot.
     secure_boot: bool,
+    /// Secure Boot must have propagated into the kernel's runtime restrictions;
+    /// the EFI variable alone is not sufficient evidence for short-PIN mode.
+    kernel_lockdown: bool,
     step: Step,
     install_state: InstallState,
     /// Streamed install output (also the success/failure summary).
@@ -689,6 +700,7 @@ impl InstallerApp {
             recovery_ack: false,
             tpm2: has_tpm2(),
             secure_boot: secure_boot_enabled(),
+            kernel_lockdown: kernel_lockdown_active(),
             step: Step::Keyboard,
             install_state: InstallState::Idle,
             status_lines: Vec::new(),
@@ -808,7 +820,7 @@ impl InstallerApp {
     }
 
     fn verified_tpm(&self) -> bool {
-        self.tpm2 && self.secure_boot
+        self.tpm2 && self.secure_boot && self.kernel_lockdown
     }
 
     /// May the install start, as far as encryption is concerned? Native qOS
@@ -1409,9 +1421,13 @@ impl InstallerApp {
                 .with_color(theme.status_success),
         ));
         children.push(Box::new(
-            Text::new(encrypt_description(self.tpm2, self.secure_boot))
-                .with_size(sm)
-                .with_color(dim),
+            Text::new(encrypt_description(
+                self.tpm2,
+                self.secure_boot,
+                self.kernel_lockdown,
+            ))
+            .with_size(sm)
+            .with_color(dim),
         ));
 
         children.push(Box::new(Text::new("Security key").with_size(base)));
@@ -2451,6 +2467,7 @@ mod tests {
         // different on a machine with no TPM.
         app.tpm2 = true;
         app.secure_boot = true;
+        app.kernel_lockdown = true;
         assert_eq!(
             app.encryption_summary(),
             "On (LUKS — recovery key, TPM2 + startup PIN required)"
@@ -2502,6 +2519,7 @@ mod tests {
         app.selected_disk = Some(0);
         app.tpm2 = true;
         app.secure_boot = true;
+        app.kernel_lockdown = true;
         app.recovery_ack = true;
         assert!(
             !app.encryption_ready(),
@@ -2526,6 +2544,7 @@ mod tests {
         let mut app = InstallerApp::with_disks(sample());
         app.tpm2 = true;
         app.secure_boot = false;
+        app.kernel_lockdown = false;
         app.recovery_ack = true;
 
         *app.password.lock().unwrap() = "246810".to_string();
@@ -2535,7 +2554,22 @@ mod tests {
         );
         *app.password.lock().unwrap() = "correct horse".to_string();
         assert!(app.encryption_ready());
-        assert!(encrypt_description(true, false).contains("Secure Boot is not active"));
+        assert!(encrypt_description(true, false, false).contains("Secure Boot is not active"));
+    }
+
+    #[test]
+    fn secure_boot_without_kernel_lockdown_uses_the_passphrase_policy() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.tpm2 = true;
+        app.secure_boot = true;
+        app.kernel_lockdown = false;
+        app.recovery_ack = true;
+
+        *app.password.lock().unwrap() = "246810".to_string();
+        assert!(!app.encryption_ready());
+        *app.password.lock().unwrap() = "correct horse".to_string();
+        assert!(app.encryption_ready());
+        assert!(encrypt_description(true, true, false).contains("kernel lockdown is not"));
     }
 
     #[test]
@@ -2553,11 +2587,11 @@ mod tests {
         assert_eq!(app.encryption_summary(), "On (LUKS — recovery key)");
 
         assert!(
-            encrypt_description(false, false).contains("no TPM2 chip"),
+            encrypt_description(false, false, false).contains("no TPM2 chip"),
             "the chooser has to say the machine cannot unlock itself"
         );
         assert!(
-            !encrypt_description(true, true).contains("Requires a TPM2 device"),
+            !encrypt_description(true, true, true).contains("Requires a TPM2 device"),
             "encryption no longer requires a TPM, and the copy must not claim it does"
         );
     }
@@ -2571,6 +2605,7 @@ mod tests {
         app.step = Step::Review;
         app.tpm2 = true;
         app.secure_boot = true;
+        app.kernel_lockdown = true;
         let _ = build(&mut app);
         let card = app.children()[0];
         let begin_disabled = card
@@ -2585,6 +2620,7 @@ mod tests {
         app2.step = Step::Review;
         app2.tpm2 = true;
         app2.secure_boot = true;
+        app2.kernel_lockdown = true;
         app2.recovery_ack = true;
         *app2.password.lock().unwrap() = "246810".to_string();
         let _ = build(&mut app2);
