@@ -33,6 +33,9 @@
     )
 )]
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 use std::collections::HashMap;
 use std::time::Instant;
 

@@ -54,6 +54,9 @@ fn build_widget(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     Ok(root)
 }
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 fn live(args: &LaunchArgs) -> Result<(), LaunchError> {
     // The package document is the record index; each PDF's markup lives in a
     // separate record so annotations from two files cannot collide.
