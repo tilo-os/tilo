@@ -11,7 +11,13 @@
 //! failures here — a half-closed stream, a reply that never comes, a decision
 //! for the wrong envelope — do not exist in a buffer.
 
-use std::io::BufReader;
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "integration-test setup and assertions"
+)]
+
+use std::io::{BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::thread;
 
@@ -148,7 +154,6 @@ fn a_host_across_the_socket_accepts_and_executes_authoritatively() {
         // Authoritative execution is the ordinary replay path — a host is not a
         // second implementation of apply.
         replay(&mut host_doc, &env, &registry()).unwrap();
-        use std::io::Write;
         writer
             .write_all(
                 WireMessage::Decision {
@@ -204,7 +209,6 @@ fn a_declining_host_falls_back_to_a_local_apply() {
         let WireMessage::Submit(env) = msg else {
             panic!("expected a submit");
         };
-        use std::io::Write;
         writer
             .write_all(
                 WireMessage::Decision {
@@ -247,7 +251,6 @@ fn a_decision_for_another_envelope_is_not_an_acceptance() {
         let mut reader = BufReader::new(far.try_clone().unwrap());
         let mut writer = far;
         let _ = read_message(&mut reader).unwrap().unwrap();
-        use std::io::Write;
         writer
             .write_all(
                 WireMessage::Decision {

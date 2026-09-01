@@ -37,8 +37,8 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, Resource, ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+    ResourceProvider,
 };
 
 use crate::doc::ContactsDoc;
@@ -383,7 +383,7 @@ mod tests {
     use crate::app::ContactsApp;
     use crate::search_provider::ContactSearchProvider;
     use automerge::ROOT;
-    use qos_actions::LocalTransport;
+    use qos_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {

@@ -24,6 +24,10 @@ const KNOB_RADIUS: f64 = 10.0;
 const KNOB_RADIUS_HOVER_SCALE: f64 = 1.08;
 const KNOB_RADIUS_PRESS_SCALE: f64 = 1.15;
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent pointer, focus, drag, and enabled presentation states"
+)]
 pub struct Slider {
     _id: String,
     rect: Rect,
@@ -77,6 +81,7 @@ impl Slider {
     }
 
     /// Opt this widget into presence tracking by binding it to a CRDT-style path.
+    #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
@@ -86,12 +91,14 @@ impl Slider {
     /// custom id the slider reports `"slider"` (the role-style default);
     /// callers with more than one slider in the same frame can disambiguate
     /// them with `with_id("volume")` etc.
+    #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
         self.id_override = Some(id.to_string());
         self
     }
 
     /// Gate this widget behind a permission scope.
+    #[must_use]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -99,6 +106,7 @@ impl Slider {
 
     /// Set the enabled state at build time. A disabled slider is skipped
     /// by focus, rejects input and renders dimmed. Default `true`.
+    #[must_use]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
@@ -106,6 +114,7 @@ impl Slider {
 
     /// Give a label-less slider a spoken name so a screen reader announces
     /// what it adjusts alongside the value.
+    #[must_use]
     pub fn with_accessible_name(mut self, name: &str) -> Self {
         self.accessible_name = Some(name.to_string());
         self
@@ -172,6 +181,10 @@ impl Slider {
 /// [`Button::paint`](crate::widget::Button::paint) and
 /// [`ToggleGroup::paint`](crate::widget::ToggleGroup::paint).
 #[derive(Clone, Copy, Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "immediate-mode face records independent visual states"
+)]
 pub struct SliderFace {
     rect: Rect,
     value: f64,
@@ -193,18 +206,22 @@ impl SliderFace {
             disabled: false,
         }
     }
+    #[must_use]
     pub fn hovered(mut self, v: bool) -> Self {
         self.hovered = v;
         self
     }
+    #[must_use]
     pub fn dragging(mut self, v: bool) -> Self {
         self.dragging = v;
         self
     }
+    #[must_use]
     pub fn focused(mut self, v: bool) -> Self {
         self.focused = v;
         self
     }
+    #[must_use]
     pub fn disabled(mut self, v: bool) -> Self {
         self.disabled = v;
         self
@@ -338,6 +355,10 @@ impl Slider {
 }
 
 impl Widget for Slider {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "Automerge integer values are normalized into this f64 slider model"
+    )]
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str())
             && let Value::Scalar(s) = val
@@ -489,6 +510,10 @@ impl Widget for Slider {
         self.enabled
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the rounded percentage is bounded to the inclusive range 0..=100"
+    )]
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // The slider models a normalized 0..1 value; expose it as a percentage
@@ -529,10 +554,10 @@ impl Widget for Slider {
         path: &ObjId,
     ) -> bool {
         use crate::a11y::Action;
+        const STEP: f64 = 0.05;
         if !self.enabled {
             return false;
         }
-        const STEP: f64 = 0.05;
         match action {
             Action::Increment => {
                 self.commit_value((self.value + STEP).clamp(0.0, 1.0), state, path)
@@ -680,12 +705,10 @@ mod tests {
         s.set_dragging_for_test(true);
         let r2 = s.knob_radius_for_state();
 
-        assert!(r0 < r1, "hover must grow knob: idle={}, hover={}", r0, r1);
+        assert!(r0 < r1, "hover must grow knob: idle={r0}, hover={r1}");
         assert!(
             r1 < r2,
-            "press must grow knob further: hover={}, press={}",
-            r1,
-            r2
+            "press must grow knob further: hover={r1}, press={r2}",
         );
     }
 

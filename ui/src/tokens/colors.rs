@@ -455,7 +455,13 @@ impl Colors {
 
         // A state veneer must move the ground it lands on, so its polarity
         // follows the theme rather than being fixed white.
-        let (o_subtle, o_medium, o_strong, ob_subtle, ob_strong) = if p.dark {
+        let (
+            overlay_subtle,
+            overlay_medium,
+            overlay_strong,
+            border_overlay_subtle,
+            border_overlay_strong,
+        ) = if p.dark {
             dark_overlays()
         } else {
             light_overlays()
@@ -488,19 +494,19 @@ impl Colors {
             text_tertiary: p.text_tertiary,
             border_standard: p.border,
             border_focus: p.focus,
-            overlay_subtle: o_subtle,
-            overlay_medium: o_medium,
-            overlay_strong: o_strong,
-            overlay_border_subtle: ob_subtle,
-            overlay_border_strong: ob_strong,
+            overlay_subtle,
+            overlay_medium,
+            overlay_strong,
+            overlay_border_subtle: border_overlay_subtle,
+            overlay_border_strong: border_overlay_strong,
             // White at every strength failed on light themes (white over
             // `raised` measured 1.01:1 — why filter chips lost their pill),
             // so the aliases carry the same directional tiers.
-            surface_white_5: o_subtle,
-            surface_white_10: o_medium,
-            surface_white_20: o_strong,
-            border_white_10: ob_subtle,
-            border_white_20: ob_strong,
+            surface_white_5: overlay_subtle,
+            surface_white_10: overlay_medium,
+            surface_white_20: overlay_strong,
+            border_white_10: border_overlay_subtle,
+            border_white_20: border_overlay_strong,
         }
     }
 
@@ -857,13 +863,17 @@ impl Colors {
         let black = Color::BLACK;
         // Walk in 1 % steps: the smallest deepening that clears the bar keeps
         // the chip as close to the theme's own accent as legibility allows.
-        let mut step = 1u32;
-        while (step as f32) / 100.0 <= MAX_CHIP_DEEPEN {
-            let deepened = mix8(fill, black, (step as f32) / 100.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "MAX_CHIP_DEEPEN is a non-negative 0.0..=1.0 design token, so its percentage fits exactly in u8"
+        )]
+        let max_step = (MAX_CHIP_DEEPEN * 100.0).floor() as u8;
+        for step in 1..=max_step {
+            let deepened = mix8(fill, black, f32::from(step) / 100.0);
             if crate::a11y::contrast_ratio(preferred_label, deepened) >= AA_BODY {
                 return (deepened, preferred_label);
             }
-            step += 1;
         }
         (fill, self.readable_on(fill, preferred_label))
     }
@@ -1285,8 +1295,13 @@ mod tests {
     /// Straight-alpha composite of `fg` over an opaque `bg` — what the eye
     /// actually receives when a translucent veneer is painted on a surface.
     fn composite(fg: Color, bg: Color) -> Color {
-        let a = fg.a() as f32 / 255.0;
-        let ch = |f: u8, b: u8| ((f as f32) * a + (b as f32) * (1.0 - a)).round() as u8;
+        let a = f32::from(fg.a()) / 255.0;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a weighted average of two u8 channels remains within 0..=255 before rounding"
+        )]
+        let ch = |f: u8, b: u8| (f32::from(f) * a + f32::from(b) * (1.0 - a)).round() as u8;
         Color::from_rgb8(ch(fg.r(), bg.r()), ch(fg.g(), bg.g()), ch(fg.b(), bg.b()))
     }
 
@@ -1294,7 +1309,7 @@ mod tests {
     /// compared across grounds of very different luminance.
     fn lstar(c: Color) -> f64 {
         let y = crate::a11y::relative_luminance(c);
-        if y > 0.008856 {
+        if y > 0.008_856 {
             116.0 * y.cbrt() - 16.0
         } else {
             903.3 * y

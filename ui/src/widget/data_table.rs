@@ -1090,7 +1090,9 @@ impl<Row: 'static> Widget for DataTable<Row> {
         if !self.selectable {
             return false;
         }
-        let row = row_key as usize;
+        let Ok(row) = usize::try_from(row_key) else {
+            return false;
+        };
         // An id an AT held across a change can name a row that no longer
         // exists. Drop it — acting on whatever now sits at that index would
         // operate on the wrong record.
