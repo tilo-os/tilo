@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ExplainStatus, InstallReceipt, InstallationStatus, LaunchReceipt, RouteKind, VmAvailability,
-    VmInstallConfirmation, VmInstallation,
+    VmInstallConfirmation, VmInstallation, VmUninstallation,
 };
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// The inherited session service accepts only opaque server-owned entry IDs
 /// for launch. A query is preview-only and cannot select a launch plan.
@@ -55,6 +55,9 @@ pub enum ProtocolRequest {
     /// Explicitly polls the singleton installer owned by this authenticated
     /// session. There is no client-provided guest operation handle.
     RefreshVmInstallation {
+        version: u16,
+    },
+    RefreshVmUninstallation {
         version: u16,
     },
     RetryInstall {
@@ -138,6 +141,7 @@ pub enum ProtocolResponse {
         /// The singleton installer operation, when one was started through
         /// the qOS portal. Candidate IDs remain opaque.
         vm_installation: Option<VmInstallation>,
+        vm_uninstallation: Option<VmUninstallation>,
     },
     Resolved {
         explanation: ExplainStatus,
@@ -162,6 +166,9 @@ pub enum ProtocolResponse {
     VmInstallationRefreshed {
         installation: Option<VmInstallation>,
     },
+    VmUninstallationRefreshed {
+        uninstallation: Option<VmUninstallation>,
+    },
     Retried {
         receipt: InstallReceipt,
     },
@@ -171,8 +178,8 @@ pub enum ProtocolResponse {
     VendorUninstalled {
         receipt: InstallReceipt,
     },
-    VmVendorUninstalled {
-        entry_id: String,
+    VmVendorUninstallation {
+        uninstallation: VmUninstallation,
     },
     DataDeleted {
         capsule_id: String,

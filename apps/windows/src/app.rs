@@ -11,7 +11,7 @@ use std::fs::File;
 use std::path::Path;
 use std::rc::Rc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, PickRequest};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonStyle, Widget};
@@ -91,8 +91,8 @@ pub struct WindowsApp {
     delete_data_signal: Rc<Cell<bool>>,
     choose_windows_iso_signal: Rc<Cell<bool>>,
     recovery_desktop_signal: Rc<Cell<bool>>,
-    portal_rx: Option<PortalChannel>,
-    iso_portal_rx: Option<PortalChannel>,
+    portal_rx: Option<OpenFileChannel>,
+    iso_portal_rx: Option<OpenFileChannel>,
     appliance_owner: ApplianceOwnerClient,
     confirm_vendor_uninstall: Option<String>,
     confirm_delete_data: Option<String>,
@@ -334,19 +334,34 @@ impl WindowsApp {
         }
         self.refresh();
     }
+    /// Queue an installer from the descriptor the portal worker opened. The
+    /// portal path is intentionally not available here, so this UI cannot
+    /// reopen a name after the user has approved it.
+    fn queue_import_file(&mut self, source: File, source_name: &str) {
+        if source_name.is_empty() {
+            self.notice = Some(strings::t("windows-invalid-installer-name"));
+            return;
+        }
+        match self.provider.install(source, source_name) {
+            Ok(()) => self.notice = Some(strings::t("windows-installing")),
+            Err(error) => self.notice = Some(error),
+        }
+        self.refresh();
+    }
     fn drain_portal(&mut self) {
         let Some(receiver) = self.portal_rx.as_ref() else {
             return;
         };
         match receiver.try_recv() {
-            Ok(PortalOutcome::Opened(path)) => {
+            Ok(OpenFileOutcome::Opened(source)) => {
                 self.portal_rx = None;
-                self.queue_import_path(&path);
+                let source_name = source.display_name().to_string();
+                self.queue_import_file(source.into_file(), &source_name);
             }
-            Ok(PortalOutcome::Cancelled) => {
+            Ok(OpenFileOutcome::Cancelled) => {
                 self.portal_rx = None;
             }
-            Ok(PortalOutcome::Failed(error)) => {
+            Ok(OpenFileOutcome::Failed(error)) => {
                 self.portal_rx = None;
                 self.notice = Some(format!("Could not open the file picker: {error}"));
             }
@@ -362,23 +377,17 @@ impl WindowsApp {
             return;
         };
         match receiver.try_recv() {
-            Ok(PortalOutcome::Opened(path)) => {
+            Ok(OpenFileOutcome::Opened(source)) => {
                 self.iso_portal_rx = None;
-                match File::open(&path) {
-                    Ok(source) => match self.appliance_owner.import_iso(source) {
-                        Ok(()) => {
-                            self.notice = Some(strings::t("windows-iso-importing"));
-                        }
-                        Err(error) => self.notice = Some(error),
-                    },
-                    Err(error) => {
-                        self.notice =
-                            Some(format!("Could not open the selected Windows ISO: {error}"));
+                match self.appliance_owner.import_iso(source.into_file()) {
+                    Ok(()) => {
+                        self.notice = Some(strings::t("windows-iso-importing"));
                     }
+                    Err(error) => self.notice = Some(error),
                 }
             }
-            Ok(PortalOutcome::Cancelled) => self.iso_portal_rx = None,
-            Ok(PortalOutcome::Failed(error)) => {
+            Ok(OpenFileOutcome::Cancelled) => self.iso_portal_rx = None,
+            Ok(OpenFileOutcome::Failed(error)) => {
                 self.iso_portal_rx = None;
                 self.notice = Some(format!("Could not open the Windows ISO picker: {error}"));
             }
@@ -422,7 +431,7 @@ impl WindowsApp {
             && self.iso_portal_rx.is_none()
             && !self.appliance_owner.busy()
         {
-            self.iso_portal_rx = Some(windows_iso_pick_request().send());
+            self.iso_portal_rx = Some(windows_iso_pick_request().send_open_file());
             self.notice = Some(strings::t("windows-choose-iso"));
         }
         if self.recovery_desktop_signal.replace(false) && !self.appliance_owner.busy() {
@@ -450,7 +459,7 @@ impl WindowsApp {
             self.refresh();
         }
         if self.install_signal.replace(false) && self.portal_rx.is_none() {
-            self.portal_rx = Some(installer_pick_request().send());
+            self.portal_rx = Some(installer_pick_request().send_open_file());
             self.notice = Some(strings::t("windows-choose-installer"));
         }
         if let Some(route) = self.route_signal.take()
@@ -1444,6 +1453,109 @@ impl Widget for WindowsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
+    use std::sync::{Arc, Mutex};
+
+    struct RecordingProvider {
+        inner: SampleProvider,
+        installed: Arc<Mutex<Option<(Vec<u8>, String)>>>,
+    }
+
+    impl CompatibilityProvider for RecordingProvider {
+        fn catalogue(&mut self) -> Catalogue {
+            self.inner.catalogue()
+        }
+
+        fn launch(&mut self, app_id: &str) -> Result<(), String> {
+            self.inner.launch(app_id)
+        }
+
+        fn launch_vm_fallback(&mut self, app_id: &str) -> Result<(), String> {
+            self.inner.launch_vm_fallback(app_id)
+        }
+
+        fn install(&mut self, mut source: File, source_name: &str) -> Result<(), String> {
+            let mut bytes = Vec::new();
+            source
+                .read_to_end(&mut bytes)
+                .map_err(|error| error.to_string())?;
+            *self.installed.lock().unwrap() = Some((bytes, source_name.to_string()));
+            Ok(())
+        }
+
+        fn confirm_capsule_install(&mut self) -> Result<(), String> {
+            self.inner.confirm_capsule_install()
+        }
+
+        fn confirm_vm_install(&mut self) -> Result<(), String> {
+            self.inner.confirm_vm_install()
+        }
+
+        fn publish_vm_candidate(&mut self, entry_id: &str) -> Result<(), String> {
+            self.inner.publish_vm_candidate(entry_id)
+        }
+
+        fn vendor_uninstall_vm(&mut self, entry_id: &str) -> Result<(), String> {
+            self.inner.vendor_uninstall_vm(entry_id)
+        }
+
+        fn retry_install(&mut self, capsule_id: &str) -> Result<(), String> {
+            self.inner.retry_install(capsule_id)
+        }
+
+        fn remove_launcher(&mut self, app_id: &str) -> Result<(), String> {
+            self.inner.remove_launcher(app_id)
+        }
+
+        fn vendor_uninstall(&mut self, capsule_id: &str) -> Result<(), String> {
+            self.inner.vendor_uninstall(capsule_id)
+        }
+
+        fn delete_data(&mut self, capsule_id: &str) -> Result<(), String> {
+            self.inner.delete_data(capsule_id)
+        }
+
+        fn set_route_override(&mut self, app_id: &str, route: Route) -> Result<(), String> {
+            self.inner.set_route_override(app_id, route)
+        }
+
+        fn reset_route_override(&mut self, app_id: &str) -> Result<(), String> {
+            self.inner.reset_route_override(app_id)
+        }
+    }
+
+    #[test]
+    fn installer_portal_handoff_uses_its_open_descriptor_and_display_name() {
+        let installed = Arc::new(Mutex::new(None));
+        let provider = RecordingProvider {
+            inner: SampleProvider::new(),
+            installed: Arc::clone(&installed),
+        };
+        let mut app = WindowsApp::with_provider(Box::new(provider));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("selected-installer.msi");
+        std::fs::write(&path, b"accepted descriptor bytes").unwrap();
+        let source = File::open(&path).unwrap();
+        app.portal_rx = Some(ui::portal::inject_open_file_for_test(
+            source,
+            "display-name.msi",
+        ));
+        // Replacing the old pathname before the UI drains it must not affect
+        // the exact descriptor which the provider receives.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"replacement path bytes").unwrap();
+
+        app.drain_portal();
+
+        assert_eq!(
+            *installed.lock().unwrap(),
+            Some((
+                b"accepted descriptor bytes".to_vec(),
+                "display-name.msi".into()
+            ))
+        );
+    }
+
     #[test]
     fn override_updates_runner_without_changing_capsule_identity() {
         let mut app = WindowsApp::new_offline();

@@ -154,17 +154,12 @@ impl ApplianceOwnerClient {
         self.action_pending = true;
         let sender = self.sender.clone();
         std::thread::spawn(move || {
-            let result = Command::new("pkexec")
-                .arg(OWNER)
-                .arg("import-iso")
-                // The open XDG portal descriptor is intentionally the only
-                // installation-media input handed to the privileged helper.
-                .stdin(Stdio::from(source))
-                .output()
-                .map_err(|error| {
-                    format!("Could not start the standard authorisation prompt: {error}")
-                })
-                .and_then(|output| success_output(&output));
+            let mut command = Command::new("pkexec");
+            command.arg(OWNER).arg("import-iso");
+            // The open XDG portal descriptor is intentionally the only
+            // installation-media input handed to the privileged helper.
+            let result =
+                command_with_stdin(command, source).and_then(|output| success_output(&output));
             let _ = sender.send(OwnerEvent::Imported(result));
         });
         Ok(())
@@ -271,6 +266,13 @@ impl ApplianceOwnerClient {
     }
 }
 
+fn command_with_stdin(mut command: Command, source: File) -> Result<std::process::Output, String> {
+    command
+        .stdin(Stdio::from(source))
+        .output()
+        .map_err(|error| format!("Could not start the standard authorisation prompt: {error}"))
+}
+
 fn read_status() -> Result<ApplianceStatus, String> {
     let output = Command::new(OWNER)
         .arg("status")
@@ -309,6 +311,7 @@ fn output_error(stderr: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
 
     #[test]
     fn parses_only_the_typed_owner_status_shape() {
@@ -326,5 +329,31 @@ mod tests {
             r#"{"schema_version":1,"configured":false,"phase":"not_provisioned","license":"unknown","catalog_generation":0,"published_applications":0,"recovery_available":false,"command":"cmd.exe"}"#,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn iso_handoff_streams_the_open_descriptor_not_a_later_path_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("selected.iso");
+        let captured_path = dir.path().join("captured.iso");
+        std::fs::write(&source_path, b"accepted ISO descriptor").unwrap();
+        let source = File::open(&source_path).unwrap();
+        std::fs::remove_file(&source_path).unwrap();
+        std::fs::write(&source_path, b"replacement ISO pathname").unwrap();
+
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("cat > \"$1\"")
+            .arg("qos-test-capture")
+            .arg(&captured_path);
+        let output = command_with_stdin(command, source).unwrap();
+        assert!(output.status.success());
+        let mut captured = String::new();
+        File::open(captured_path)
+            .unwrap()
+            .read_to_string(&mut captured)
+            .unwrap();
+        assert_eq!(captured, "accepted ISO descriptor");
     }
 }
