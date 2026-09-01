@@ -22,6 +22,13 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     else
         cargo_jobs=4
     fi
+    export SCCACHE_S3_KEY_PREFIX="quickdesktop/package/v1/$distro/$arch"
+    export SCCACHE_IGNORE_SERVER_IO_ERROR=1
+
+    cache_env=()
+    while IFS= read -r name; do
+        cache_env+=(--env "$name")
+    done < <(compgen -e | grep -E '^(AWS_|SCCACHE_)' || true)
 
     repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
     output=$repo_root/dist/ci-output/$distro-$arch
@@ -62,6 +69,7 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
             --env CARGO_INCREMENTAL=0 \
             --env CARGO_BUILD_JOBS="$cargo_jobs" \
             --env CARGO_TERM_COLOR=never \
+            "${cache_env[@]}" \
             "$image" -c "$inner_command" 2> >(tee "$create_log" >&2))
     else
         container=$(docker create --platform linux/arm64 "$image" \
@@ -215,6 +223,9 @@ ubuntu-24.04|debian-13)
     export QOS_DEB_REVISION=${QOS_DEB_REVISION:?missing QOS_DEB_REVISION}
     stage=install-dependencies
     dist/ci/install-build-deps.sh debian
+    stage=install-compiler-cache
+    dist/ci/install-sccache.sh "$arch"
+    [[ ! -x /usr/local/bin/sccache ]] || export RUSTC_WRAPPER=/usr/local/bin/sccache
     stage=build-deb
     dist/debian/build-deb.sh
     stage=inspect-deb
@@ -234,6 +245,9 @@ fedora-44)
     export PATH=$CARGO_HOME/bin:$PATH
     stage=install-dependencies
     dist/ci/install-build-deps.sh fedora
+    stage=install-compiler-cache
+    dist/ci/install-sccache.sh "$arch"
+    [[ ! -x /usr/local/bin/sccache ]] || export RUSTC_WRAPPER=/usr/local/bin/sccache
     stage=build-rpm
     dist/rpm/build-rpm.sh
     stage=inspect-rpm
@@ -254,6 +268,9 @@ arch)
     mkdir -p /var/lib/pacman
     stage=install-dependencies
     dist/ci/install-build-deps.sh arch
+    stage=install-compiler-cache
+    dist/ci/install-sccache.sh "$arch"
+    [[ ! -x /usr/local/bin/sccache ]] || export RUSTC_WRAPPER=/usr/local/bin/sccache
     stage=prepare-arch-builder
     useradd --create-home builder
     chown -R builder:builder /workspace
@@ -296,4 +313,7 @@ esac
 stage=verify-artifacts
 find /artifacts -mindepth 1 -maxdepth 1 -type f -print
 test -n "$(find /artifacts -mindepth 1 -maxdepth 1 -type f -print -quit)"
+if command -v sccache >/dev/null 2>&1; then
+    sccache --show-stats || true
+fi
 chmod -R a+rX /artifacts
