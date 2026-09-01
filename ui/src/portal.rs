@@ -37,6 +37,9 @@
 //! rule stays under test in every configuration and `--open PATH` style flags
 //! work without a portal.
 
+use std::fs::File;
+#[cfg(any(feature = "portal", test))]
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
@@ -69,6 +72,48 @@ pub enum MultiOutcome {
 /// A pending single-file request: the receiver the UI thread drains each
 /// frame. `Some(rx)` means a picker is in flight; `None` means idle.
 pub type PortalChannel = Receiver<PortalOutcome>;
+
+/// A file selected by the portal and opened by its worker before the result is
+/// handed to the UI. The descriptor, rather than the path used to obtain it,
+/// is the authority to read the selected file.
+#[derive(Debug)]
+pub struct OpenedFile {
+    file: File,
+    display_name: String,
+}
+
+impl OpenedFile {
+    /// The name shown to the user. This is deliberately separate from the
+    /// descriptor: consumers must not recover a path and reopen it.
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+
+    /// Consume this portal result and transfer its already-open descriptor.
+    #[must_use]
+    pub fn into_file(self) -> File {
+        self.file
+    }
+}
+
+/// The result of a single-file portal open which retains the selected
+/// descriptor. Unlike [`PortalOutcome`], this is specifically for consumers
+/// that must hand an exact, already-open file to another security boundary.
+#[derive(Debug)]
+pub enum OpenFileOutcome {
+    /// The portal worker opened a regular local file without following the
+    /// final path component, and retained its display name separately.
+    Opened(OpenedFile),
+    /// The user dismissed the picker without choosing anything.
+    Cancelled,
+    /// The portal was unavailable, returned an invalid URI, or the selected
+    /// path could not safely be opened.
+    Failed(String),
+}
+
+/// A pending descriptor-retaining portal open, drained by the UI thread.
+pub type OpenFileChannel = Receiver<OpenFileOutcome>;
 
 /// A pending multi-select request: the receiver the UI thread drains each
 /// frame.
@@ -233,6 +278,21 @@ impl PickRequest {
         rx
     }
 
+    /// Open one selected regular file on the portal worker and deliver its
+    /// descriptor to the UI. This is intentionally a separate outcome path so
+    /// normal path-based open/save callers retain their existing API.
+    ///
+    /// This is valid only for a single-file Open request. Calling it for Save
+    /// or multi-select requests reports a normal failed outcome.
+    pub fn send_open_file(self) -> OpenFileChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let name = self.thread_name.clone();
+        spawn_worker(&name, move || {
+            let _ = tx.send(single_open_file(self));
+        });
+        rx
+    }
+
     /// Multi-select counterpart of [`send`](Self::send).
     pub fn send_multiple(self) -> MultiChannel {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -341,6 +401,67 @@ pub fn map_uris(uris: &[url::Url]) -> MultiOutcome {
     MultiOutcome::Selected(paths)
 }
 
+/// Turn an already validated portal URI into a descriptor-retaining outcome.
+/// This runs on the portal worker, immediately after the picker returns, so
+/// no UI-frame delay can turn an accepted path into a later reopen.
+#[cfg(any(feature = "portal", test))]
+fn open_uri(uri: &url::Url) -> OpenFileOutcome {
+    let Some(path) = to_local_path(uri) else {
+        return OpenFileOutcome::Failed(format!("not a local file: {uri}"));
+    };
+    match open_regular_file(&path) {
+        Ok(file) => OpenFileOutcome::Opened(OpenedFile {
+            file,
+            display_name: display_name(&path),
+        }),
+        Err(error) => OpenFileOutcome::Failed(format!("could not open selected file: {error}")),
+    }
+}
+
+#[cfg(any(feature = "portal", test))]
+fn display_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "selected file".to_string())
+}
+
+/// Open a chosen local path without following its final component and verify
+/// the resulting descriptor is a regular file. Checking metadata on the open
+/// descriptor, rather than the path, keeps the type check bound to exactly
+/// what is handed to the caller.
+#[cfg(all(any(feature = "portal", test), unix))]
+fn open_regular_file(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    if !file.metadata()?.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "selected path is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+/// qOS targets Unix, where `O_NOFOLLOW` is available. Keep non-Unix builds
+/// compiling with the same descriptor type check; platform-specific safe-open
+/// flags belong in their platform implementation when one is supported.
+#[cfg(all(any(feature = "portal", test), not(unix)))]
+fn open_regular_file(path: &Path) -> std::io::Result<File> {
+    let file = File::open(path)?;
+    if !file.metadata()?.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "selected path is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
 /// Build a channel and immediately deliver `outcome` on it, so a headless test
 /// (and the `--shots` scenarios) can exercise the exact per-frame drain path
 /// the real portal worker feeds — without opening a host dialog. Returns the
@@ -352,6 +473,18 @@ pub fn inject_for_test(outcome: PortalOutcome) -> PortalChannel {
     // matters (it always succeeds) and degrades gracefully if it ever
     // doesn't.
     let _ = tx.send(outcome);
+    rx
+}
+
+/// Build a descriptor-retaining channel from a file a test has already opened.
+/// Production callers should use [`PickRequest::send_open_file`], which applies
+/// the portal worker's no-follow and regular-file checks.
+pub fn inject_open_file_for_test(file: File, display_name: impl Into<String>) -> OpenFileChannel {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = tx.send(OpenFileOutcome::Opened(OpenedFile {
+        file,
+        display_name: display_name.into(),
+    }));
     rx
 }
 
@@ -391,6 +524,28 @@ fn single(req: PickRequest) -> PortalOutcome {
 }
 
 #[cfg(feature = "portal")]
+fn single_open_file(req: PickRequest) -> OpenFileOutcome {
+    if !matches!(req.kind, PickKind::Open { multiple: false }) {
+        return OpenFileOutcome::Failed(
+            "an already-open file request must be a single-file Open chooser".to_string(),
+        );
+    }
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => return OpenFileOutcome::Failed(format!("portal runtime: {e}")),
+    };
+    rt.block_on(async move {
+        match run(req).await {
+            Ok(uris) => match uris.first() {
+                Some(uri) => open_uri(uri),
+                None => OpenFileOutcome::Cancelled,
+            },
+            Err(e) => e.into_open_file(),
+        }
+    })
+}
+
+#[cfg(feature = "portal")]
 fn multiple(req: PickRequest) -> MultiOutcome {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
@@ -425,6 +580,12 @@ impl PortalFailure {
         match self {
             PortalFailure::Cancelled => MultiOutcome::Cancelled,
             PortalFailure::Failed(e) => MultiOutcome::Failed(e),
+        }
+    }
+    fn into_open_file(self) -> OpenFileOutcome {
+        match self {
+            PortalFailure::Cancelled => OpenFileOutcome::Cancelled,
+            PortalFailure::Failed(e) => OpenFileOutcome::Failed(e),
         }
     }
 }
@@ -482,6 +643,11 @@ async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
 #[cfg(not(feature = "portal"))]
 fn single(_req: PickRequest) -> PortalOutcome {
     PortalOutcome::Failed(NO_PORTAL.to_string())
+}
+
+#[cfg(not(feature = "portal"))]
+fn single_open_file(_req: PickRequest) -> OpenFileOutcome {
+    OpenFileOutcome::Failed(NO_PORTAL.to_string())
 }
 
 #[cfg(not(feature = "portal"))]
@@ -728,6 +894,57 @@ mod tests {
         assert_eq!(PortalOutcome::Failed("x".into()).path(), None);
     }
 
+    #[test]
+    fn descriptor_open_retains_the_opened_file_and_a_separate_display_name() {
+        use std::io::{Read, Write};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("original-installer.msi");
+        let mut source = File::create(&path).unwrap();
+        source.write_all(b"installer bytes").unwrap();
+        source.flush().unwrap();
+        let uri = url::Url::from_file_path(&path).unwrap();
+
+        let opened = match open_uri(&uri) {
+            OpenFileOutcome::Opened(opened) => opened,
+            OpenFileOutcome::Cancelled | OpenFileOutcome::Failed(_) => {
+                panic!("regular temporary file must open")
+            }
+        };
+        assert_eq!(opened.display_name(), "original-installer.msi");
+        // A later path-based reopen would observe these replacement bytes;
+        // the portal outcome instead keeps the descriptor it already opened.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"replacement bytes").unwrap();
+        let mut contents = String::new();
+        let mut file = opened.into_file();
+        file.read_to_string(&mut contents).unwrap();
+        assert_eq!(contents, "installer bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn descriptor_open_refuses_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("installer.exe");
+        std::fs::write(&target, b"installer bytes").unwrap();
+        let link = dir.path().join("selected.exe");
+        symlink(&target, &link).unwrap();
+        let uri = url::Url::from_file_path(&link).unwrap();
+
+        assert!(matches!(open_uri(&uri), OpenFileOutcome::Failed(_)));
+    }
+
+    #[test]
+    fn descriptor_open_refuses_a_non_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let uri = url::Url::from_file_path(dir.path()).unwrap();
+
+        assert!(matches!(open_uri(&uri), OpenFileOutcome::Failed(_)));
+    }
+
     // ---- the request builder ------------------------------------------
 
     #[test]
@@ -771,5 +988,7 @@ mod tests {
         assert!(matches!(rx.recv(), Ok(PortalOutcome::Failed(_))));
         let rx = PickRequest::open_multiple("Open", "Open").send_multiple();
         assert!(matches!(rx.recv(), Ok(MultiOutcome::Failed(_))));
+        let rx = PickRequest::open("Open", "Open").send_open_file();
+        assert!(matches!(rx.recv(), Ok(OpenFileOutcome::Failed(_))));
     }
 }

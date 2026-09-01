@@ -80,10 +80,12 @@ and microphone state through the standard qOS grants list.
 ### Installing and opening user software
 
 Windows Apps uses the shared qOS/XDG file chooser for **Add Windows app…** and
-registers `.exe` and `.msi` open associations. A selected path is opened only
-inside the portal-granted manager sandbox. The already-open descriptor then
-crosses the authenticated compatibility socket with `SCM_RIGHTS`; no host path,
-runner, prefix, command string, or capability record enters the request.
+registers `.exe` and `.msi` open associations. The portal worker immediately
+opens the selected regular file without following its final path component,
+then carries that descriptor and a separate display name to the UI. The
+already-open descriptor crosses the authenticated compatibility socket with
+`SCM_RIGHTS`; no host path, runner, prefix, command string, or capability
+record enters the request.
 
 The service bounds the file at 16 GiB, verifies the PE or MSI signature, and
 hashes the exact descriptor bytes. It then presents the catalogue's recommended

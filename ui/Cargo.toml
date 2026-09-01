@@ -98,6 +98,7 @@ ash = { version = "0.38", optional = true }
 taffy = { workspace = true, features = ["content_size"] }
 tokio = { workspace = true, features = ["full"] }
 vello.workspace = true
+libc.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 # Resolves the user's real, *localized* XDG user directories
@@ -250,7 +251,6 @@ pkg-config = "0.3"
 regex.workspace = true
 # The `diag!` tests reproduce the crash they prevent: they need `dup2` to point
 # the process's stderr at a pipe, and the child's exit signal to assert SIGABRT.
-libc.workspace = true
 # Inspect Vello scene encodings (draw tags) in widget tests so we can pin
 # end-to-end paint contracts (e.g. `tabs::active_pill_emits_more_color_\
 # fills_than_inactive_siblings`) without rendering pixels.

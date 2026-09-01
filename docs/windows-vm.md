@@ -13,8 +13,10 @@ a less confined desktop.
 ## Provisioning
 
 Windows Apps asks the owner to select a Windows installation ISO through the
-normal qOS file portal. The owner-authorised system helper receives only that
-already-open descriptor on stdin — never a host pathname — bounds it to 20 GiB,
+normal qOS file portal. Its portal worker immediately opens the selected
+regular file without following its final path component. The owner-authorised
+system helper receives only that already-open descriptor on stdin — never a
+host pathname — bounds it to 20 GiB,
 parses it as ISO9660 or UDF, hashes and atomically stages it privately, then
 calls the singleton provisioner. It creates one qcow2 disk, makes a small
 guest-tools ISO, and starts the headless singleton. It deliberately does not
