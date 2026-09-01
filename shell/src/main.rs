@@ -8,7 +8,7 @@
 //! Two side-channel modes short-circuit dispatch before `parse_mode`
 //! runs, mutually exclusive: `--portal-server-only` runs only the
 //! `xdg-desktop-portal` D-Bus backend (so it doesn't race the compositor
-//! for `wayland-N`); `--firstboot` runs first-boot setup, then continues into the normal compositor boot.
+//! for `wayland-N`); `--firstboot` runs machine setup and exits.
 
 #![cfg_attr(
     test,
@@ -171,6 +171,42 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
     None
 }
 
+fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::process::ExitCode {
+    if provision_requested {
+        eprintln!(
+            "error: --provision-identity and --verify-collaboration-identity are mutually exclusive"
+        );
+        return std::process::ExitCode::from(2);
+    }
+    let store = match identity_provisioning::DiskIdentityStore::from_env() {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("identity verification failed: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let Some(identity_dir) = store.path().parent() else {
+        eprintln!("identity verification failed: primary identity has no parent directory");
+        return std::process::ExitCode::FAILURE;
+    };
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .try_into()
+        .unwrap_or(u64::MAX);
+    if let Err(error) = firstboot::verify_collaboration_identity(
+        identity_dir,
+        &firstboot::collaboration_identity_paths(),
+        now_ns,
+    ) {
+        eprintln!("identity verification failed: {error}");
+        return std::process::ExitCode::FAILURE;
+    }
+    println!("qOS collaboration identity verified");
+    std::process::ExitCode::SUCCESS
+}
+
 fn main() -> std::process::ExitCode {
     // `init()` is a no-op unless the env var is set, so production boots pay
     // zero cost; the scope guard dumps recorded events to disk when `main` returns.
@@ -238,6 +274,7 @@ fn main() -> std::process::ExitCode {
     let firstboot_requested = compositor::parse_firstboot_from_args();
     let firstboot_only_requested = compositor::parse_firstboot_only_from_args();
     let provision_identity_requested = compositor::parse_provision_identity_from_args();
+    let verify_identity_requested = compositor::parse_verify_collaboration_identity_from_args();
 
     if portal_only && (firstboot_requested || firstboot_only_requested) {
         eprintln!(
@@ -265,6 +302,10 @@ fn main() -> std::process::ExitCode {
             std::process::exit(1);
         }
         return std::process::ExitCode::SUCCESS;
+    }
+
+    if verify_identity_requested {
+        return verify_collaboration_identity_entrypoint(provision_identity_requested);
     }
 
     if firstboot_requested && let Err(e) = firstboot::run() {

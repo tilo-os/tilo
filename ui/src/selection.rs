@@ -91,6 +91,22 @@ impl SelectionModel {
         self.primary = None;
     }
 
+    /// Replace the selection after a model refresh while preserving the
+    /// logical primary item. Callers map stable item identities to their new
+    /// indices first; indices absent from `selected` cannot become primary.
+    pub fn replace_indices(
+        &mut self,
+        selected: impl IntoIterator<Item = usize>,
+        primary: Option<usize>,
+    ) {
+        self.selected = selected.into_iter().collect();
+        self.primary = primary.filter(|index| self.selected.contains(index));
+        if self.primary.is_none() {
+            self.primary = self.selected.iter().next().copied();
+        }
+        self.anchor = self.primary;
+    }
+
     /// Replace the selection with the single index `i`. Resets the
     /// anchor and cursor to `i`. This is the plain-click / plain-arrow
     /// behaviour and the public primitive other code can call directly.
@@ -318,5 +334,18 @@ mod tests {
         assert_eq!(m.primary(), None);
         // A clamp that changes nothing returns false.
         assert!(!m.clamp_to(6));
+    }
+
+    #[test]
+    fn model_refresh_can_replace_indices_and_keep_the_primary() {
+        let mut m = SelectionModel::new();
+        m.replace_indices([2, 7, 4], Some(4));
+        assert_eq!(m.selected(), vec![2, 4, 7]);
+        assert_eq!(m.primary(), Some(4));
+        assert_eq!(m.anchor(), Some(4));
+
+        m.replace_indices([3, 8], Some(99));
+        assert_eq!(m.selected(), vec![3, 8]);
+        assert_eq!(m.primary(), Some(3));
     }
 }

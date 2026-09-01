@@ -7,6 +7,7 @@ exclude = [
     "crates/doc/qdoc-codec-markdown-wasm",
     "vendor/vello",
     "vendor/vello_encoding",
+    "vendor/genawaiter-proc-macro",
     "vendor/winit",
 ]
 # `runtime-dylib` is a workspace member (so it shares the lockfile,
@@ -530,6 +531,7 @@ debug-assertions = true
 # begin/update/end into the same `PinchGesture` event shape the Apple
 # backends emit, giving every `ui` app touchpad pinch-to-zoom for free.
 [patch.crates-io]
+genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 winit = { path = "vendor/winit" }
 # vello reserves its scratch buffers for a 30,000-path stress scene, per
 # renderer and so per process -- about 165 MB a desktop never touches. Its

@@ -36,6 +36,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
+use ui::format::bytes as format_bytes;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -365,7 +366,13 @@ impl HexView {
             Ok(()) => {
                 self.model.clear_dirty();
                 self.path = Some(path.to_path_buf());
-                self.flash(format!("Saved {}", human_size(self.model.len())), false);
+                self.flash(
+                    format!(
+                        "Saved {}",
+                        format_bytes(u64::try_from(self.model.len()).unwrap_or(u64::MAX))
+                    ),
+                    false,
+                );
             }
             Err(e) => self.flash(format!("Save failed: {e}"), true),
         }
@@ -390,7 +397,13 @@ impl HexView {
                 self.matches.clear();
                 self.match_idx = None;
                 self.flush(doc);
-                self.flash(format!("Opened {}", human_size(n)), false);
+                self.flash(
+                    format!(
+                        "Opened {}",
+                        format_bytes(u64::try_from(n).unwrap_or(u64::MAX))
+                    ),
+                    false,
+                );
             }
             Err(e) => self.flash(format!("Open failed: {e}"), true),
         }
@@ -2183,24 +2196,6 @@ impl GridMetrics {
 }
 
 // --- small drawing utilities ------------------------------------------
-
-/// A compact human byte count for the save/open flash (`512 B`, `4.2 kB`).
-fn human_size(n: usize) -> String {
-    const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
-    let mut v = n as f64;
-    let mut u = 0;
-    while v >= 1024.0 && u < UNITS.len() - 1 {
-        v /= 1024.0;
-        u += 1;
-    }
-    if u == 0 {
-        format!("{n} B")
-    } else {
-        // `u` is bounded above by `UNITS.len() - 1` by the loop condition;
-        // `unwrap_or` just documents that instead of asserting it.
-        format!("{v:.1} {}", UNITS.get(u).copied().unwrap_or("TB"))
-    }
-}
 
 fn with_alpha(c: Color, a: u8) -> Color {
     let rgba = c.to_rgba8();
