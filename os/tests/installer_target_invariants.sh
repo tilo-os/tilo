@@ -32,4 +32,11 @@ else
   bad "target does not remove the live-installer sudo privilege"
 fi
 
+if grep -Fq 'find "$LIVE_CONNECTIONS" -mindepth 1 -maxdepth 1 -type f -print0' "$backend" \
+   && grep -Fq 'install -m 0600 "$PROFILE"' "$backend"; then
+  ok "live Wi-Fi profiles are copied without following links and remain private"
+else
+  bad "installer Wi-Fi profiles are not safely preserved for first boot"
+fi
+
 exit "$fail"
