@@ -177,6 +177,20 @@ done
 [ -n "$DISK" ] || die "missing --disk <device>"
 [ -n "$USERNAME" ] || die "missing --user <name>"
 
+# Use the portable Linux login-name subset accepted consistently by useradd
+# across the distributions qOS targets. It also keeps the colon-delimited
+# first-boot seed file unambiguous.
+if [ "${#USERNAME}" -gt 32 ]; then
+  die "invalid --user '$USERNAME' (use at most 32 characters)"
+fi
+case "${USERNAME:0:1}" in
+  [a-z_]) : ;;
+  *) die "invalid --user '$USERNAME' (start with a lowercase letter or _)" ;;
+esac
+case "$USERNAME" in
+  *[!a-z0-9_-]*) die "invalid --user '$USERNAME' (use lowercase letters, digits, _ or -)" ;;
+esac
+
 # Validate the filesystem against the set bootc accepts for to-disk.
 case "$FILESYSTEM" in
   btrfs|ext4|xfs) : ;;
@@ -204,6 +218,8 @@ if [ -n "$TIMEZONE_VAL" ]; then
     */../*|/*|*..) die "invalid --timezone '$TIMEZONE_VAL'" ;;
     *[!A-Za-z0-9_/+-]*) die "invalid --timezone '$TIMEZONE_VAL'" ;;
   esac
+  [ -f "/usr/share/zoneinfo/$TIMEZONE_VAL" ] \
+    || die "unknown --timezone '$TIMEZONE_VAL'"
 fi
 
 # Keyboard layout: default to us, validate it's a plain xkb token (these
@@ -328,6 +344,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
     "$LOCAL_IMG" \
     bootc install to-filesystem \
       --root-mount-spec "UUID=$ENC_ROOT_UUID" \
+      --karg-delete qos.installer=1 \
       "${KARG_ARGS[@]}" \
       --target-imgref "$QOS_TARGET_IMGREF" \
       --skip-finalize \
@@ -341,6 +358,7 @@ else
     "$LOCAL_IMG" \
     bootc install to-disk \
       --wipe \
+      --karg-delete qos.installer=1 \
       --filesystem "$FILESYSTEM" \
       --block-setup direct \
       --target-imgref "$QOS_TARGET_IMGREF" \
@@ -427,6 +445,14 @@ else
 fi
 
 [ -n "$DEPLOY_ETC" ] || die "could not locate the installed deployment's writable /etc on $DISK"
+
+# The payload is the offline installer image, so undo its two live-medium-only
+# /etc changes in the installed deployment. The kernel argument is removed by
+# bootc above; restoring greetd and removing the transient privilege drop-in
+# completes the boundary between installer and target.
+install -D -m 0644 /usr/share/qos/greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"
+rm -f "$DEPLOY_ETC/sudoers.d/qos-installer"
+log "  restored the normal greeter configuration"
 
 install -d -m 0755 "$DEPLOY_ETC/qos"
 CONF="$DEPLOY_ETC/qos/install-user.conf"
