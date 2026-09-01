@@ -24,6 +24,8 @@ INSTALLER="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSInstaller.ps1"
 UNINSTALLER="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSUninstaller.ps1"
 PROCESS_JOB="$OS_ROOT/usr/share/qos/windows/guest/qOS-ProcessJob.ps1"
 PROCESS_JOB_BROKER="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSProcessJobBroker.ps1"
+NETWORK_PROXY="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSNetworkProxy.ps1"
+REMOTE_APP_WRAPPER="$OS_ROOT/usr/share/qos/windows/guest/Start-qOSRemoteApp.ps1"
 COMPAT_DOC="$OS_ROOT/../docs/windows-compatibility.md"
 CONTAINERFILE="$OS_ROOT/Containerfile"
 
@@ -34,7 +36,7 @@ need() { [ -r "$1" ] && ok "$(basename "$1") exists" || fail "missing $1"; }
 has() { grep -Fq -- "$2" "$1" && ok "$3" || fail "$3"; }
 lacks() { grep -Fq -- "$2" "$1" && fail "$3" || ok "$3"; }
 
-for file in "$NET" "$EGRESS_NET" "$UNIT" "$REAPER" "$REAPER_TIMER" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$OWNER" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER" "$UNINSTALLER" "$PROCESS_JOB" "$PROCESS_JOB_BROKER" "$COMPAT_DOC"; do need "$file"; done
+for file in "$NET" "$EGRESS_NET" "$UNIT" "$REAPER" "$REAPER_TIMER" "$NETWORK_TOOL" "$PROVISION" "$RECOVERY" "$OWNER" "$VM_CONTROL_SOURCE" "$INSTALL" "$BRIDGE" "$FOCUSED" "$INSTALLER" "$UNINSTALLER" "$PROCESS_JOB" "$PROCESS_JOB_BROKER" "$NETWORK_PROXY" "$REMOTE_APP_WRAPPER" "$COMPAT_DOC"; do need "$file"; done
 
 has "$NET" '<forward mode="none"/>' 'libvirt bridge has no forwarding'
 has "$NET" '<qos:windows-hostonly ' 'network has qOS ownership marker'
@@ -105,10 +107,26 @@ lacks "$INSTALL" 'ManagedSessionCredential.UserName' 'provisioning has no manage
 lacks "$INSTALL" 'AutoAdminLogon' 'managed session does not use plaintext Winlogon autologon'
 has "$INSTALL" 'New-LocalUser -Name $managedUser' 'persistent managed identity is created only during provisioning'
 has "$INSTALL" 'fSingleSessionPerUser' 'Windows is constrained to one session for the managed identity'
+has "$INSTALL" 'Start-qOSRemoteApp.ps1' 'published aliases use the fixed qOS wrapper'
+has "$INSTALL" 'Start-qOSNetworkProxy.ps1' 'wrapper receives the guest local proxy helper'
+has "$REMOTE_APP_WRAPPER" 'HTTP_PROXY' 'wrapper routes target process trees through loopback proxy'
+has "$REMOTE_APP_WRAPPER" 'Remove-Item -LiteralPath $jobPath' 'wrapper revokes the guest job deterministically'
+has "$REMOTE_APP_WRAPPER" 'expiresAtUnix' 'wrapper rejects expired RAIL jobs'
+has "$REMOTE_APP_WRAPPER" 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' 'wrapper applies the lease proxy only to the managed user'
+lacks "$REMOTE_APP_WRAPPER" 'netsh winhttp' 'wrapper never sets machine-wide WinHTTP proxy state'
+has "$REMOTE_APP_WRAPPER" 'Restore-qOSWinInetProxy' 'wrapper restores prior managed-user proxy state after the lease'
+has "$REMOTE_APP_WRAPPER" 'InternetSetOption' 'wrapper refreshes WinINet settings after lease changes'
+has "$NETWORK_PROXY" '192.168.251.1' 'guest proxy can connect only to the host-only gateway'
+has "$NETWORK_PROXY" 'Proxy-Authorization: Bearer' 'guest proxy authenticates the short-lived host lease'
+has "$NETWORK_PROXY" 'Add-Type -TypeDefinition' 'guest proxy uses a real CLR concurrent relay, not PowerShell threadpool scriptblocks'
+lacks "$NETWORK_PROXY" 'QueueUserWorkItem({' 'guest proxy does not use a PowerShell scriptblock without a Runspace'
 lacks "$BRIDGE" 'New-LocalUser' 'native RAIL launches never create extra Windows accounts'
 has "$BRIDGE" 'Get-ManagedSession' 'native RAIL reuses the provisioned managed identity'
 has "$BRIDGE" 'requestedPresentation -ne' 'focused SPICE does not mint RDP credentials'
 has "$BRIDGE" 'Start-FocusedApplication' 'SPICE launch invokes the managed guest focus helper'
+has "$BRIDGE" 'Start-RailApplication' 'RAIL launch writes an authenticated wrapper operation'
+has "$BRIDGE" 'Get-NetworkProxyLease' 'bridge validates host-only network lease details'
+has "$BRIDGE" 'Remove-ExpiredRailJobs' 'bridge reaps stale RAIL jobs after failed clients'
 has "$BRIDGE" 'no managed interactive session exists' 'SPICE fails honestly without a visible session'
 has "$BRIDGE" 'app_focused_spice' 'bridge has an explicit SPICE launch request'
 lacks "$BRIDGE" 'qOS-Remove-' 'bridge has no temporary-account cleanup path'
