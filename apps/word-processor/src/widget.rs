@@ -30,7 +30,7 @@ use ui::icons::Icon;
 use ui::permissions::UserId;
 use ui::widget::Widget;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::{PathSegment, PresenceCtx, PresenceKey};
+use ui::{PathSegment, PresenceCtx, PresenceKey, clipboard_copy, clipboard_paste};
 
 use crate::WpFormat;
 use crate::document_status::{DocumentStatus, DocumentStatusView};
@@ -8641,19 +8641,14 @@ impl WordProcessorWidget {
             return;
         }
         let (plain, blocks) = self.inner.copy_fragment(state);
-        if let Ok(mut cb) = arboard::Clipboard::new() {
-            let _ = cb.set_text(plain.clone());
-        }
+        clipboard_copy(&plain);
         self.rich_clip = Some((plain, blocks));
     }
 
     /// Paste with formatting when the system clipboard still holds our last rich
     /// copy; otherwise paste the clipboard's plain text (e.g. from another app).
     fn clipboard_paste(&mut self, state: &mut AutoCommit) {
-        let Some(sys) = arboard::Clipboard::new()
-            .ok()
-            .and_then(|mut cb| cb.get_text().ok())
-        else {
+        let Some(sys) = clipboard_paste() else {
             return;
         };
         let rich = self
@@ -8669,10 +8664,7 @@ impl WordProcessorWidget {
 
     /// Paste plain text only (Ctrl+Shift+V), stripping all formatting.
     fn clipboard_paste_plain(&mut self, state: &mut AutoCommit) {
-        if let Some(t) = arboard::Clipboard::new()
-            .ok()
-            .and_then(|mut cb| cb.get_text().ok())
-        {
+        if let Some(t) = clipboard_paste() {
             self.inner.insert_multiline(state, &t);
         }
     }
@@ -8875,10 +8867,7 @@ impl WordProcessorWidget {
     /// (when the clipboard holds text) and always Select All.
     fn push_clipboard_rows(&self, menu: &mut ContextMenu, actions: &mut Vec<Option<CtxAction>>) {
         let has_sel = self.inner.has_selection();
-        let can_paste = arboard::Clipboard::new()
-            .ok()
-            .and_then(|mut cb| cb.get_text().ok())
-            .is_some_and(|s| !s.is_empty());
+        let can_paste = clipboard_paste().is_some_and(|s| !s.is_empty());
         if has_sel {
             menu.push(MenuItem::action(t("menu-cut"), || {}));
             actions.push(Some(CtxAction::Cut));
@@ -11950,6 +11939,80 @@ mod tests {
 
         assert!(wp.undo_document_autocorrection(&mut state.doc));
         assert_eq!(wp.inner.current_text(&state.doc), "teh");
+    }
+
+    #[test]
+    fn shared_clipboard_preserves_rich_paste_and_plain_paste_semantics() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+
+        // Copy without a selection remains a no-op.
+        clipboard_copy("sentinel");
+        wp.clipboard_copy(&state.doc);
+        assert_eq!(clipboard_paste().as_deref(), Some("sentinel"));
+
+        wp.inner.insert_str(&mut state.doc, "hello");
+
+        // Copy a bold selection. The system-facing clipboard carries plain text;
+        // the widget's matching sidecar carries the qdoc marks.
+        wp.inner.caret.offset = 0;
+        wp.inner.set_anchor();
+        wp.inner.caret.offset = 5;
+        wp.inner.toggle_mark(&mut state.doc, "strong");
+        wp.inner.caret.offset = 0;
+        wp.inner.clear_anchor();
+        wp.inner.set_anchor();
+        wp.inner.caret.offset = 5;
+        wp.clipboard_copy(&state.doc);
+        assert_eq!(clipboard_paste().as_deref(), Some("hello"));
+
+        // A normal paste of the unchanged clipboard finds the sidecar and keeps
+        // the mark.
+        wp.inner.clear_anchor();
+        wp.inner.move_end(&state.doc);
+        wp.clipboard_paste(&mut state.doc);
+        let containers = wp.inner.containers.clone().expect("bound document");
+        let block = wp.inner.caret.block.clone();
+        assert_eq!(wp.inner.current_text(&state.doc), "hellohello");
+        assert!(qdoc::model::has_mark_over(
+            &state.doc,
+            &containers,
+            &block,
+            5,
+            10,
+            "strong"
+        ));
+
+        // Paste-as-plain reads through the same shared backend but deliberately
+        // ignores that matching rich sidecar. Use a fresh paragraph so the
+        // destination's own active character style cannot affect the assertion.
+        wp.inner.enter(&mut state.doc);
+        wp.clipboard_paste_plain(&mut state.doc);
+        let block = wp.inner.caret.block.clone();
+        assert_eq!(wp.inner.current_text(&state.doc), "hello");
+        assert!(!qdoc::model::has_mark_over(
+            &state.doc,
+            &containers,
+            &block,
+            0,
+            5,
+            "strong"
+        ));
+
+        // Replacing the clipboard from another app invalidates the sidecar key,
+        // so an ordinary paste also falls back to plain text.
+        clipboard_copy("external");
+        wp.clipboard_paste(&mut state.doc);
+        assert_eq!(wp.inner.current_text(&state.doc), "helloexternal");
+        assert!(!qdoc::model::has_mark_over(
+            &state.doc,
+            &containers,
+            &block,
+            5,
+            13,
+            "strong"
+        ));
     }
 
     // ---- right-click context menu -----------------------------------------
