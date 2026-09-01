@@ -6,13 +6,17 @@
 //! [`windows_vm::VmLaunchGrants`] projection; `windows-vm` then materialises
 //! and revokes the corresponding lease around the `RemoteApp` process.
 
-use compat_catalogue::Layer;
 use launcher::capabilities::CapabilityPlan;
+use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{AudioProxyLease, VmAvailability, VmDelegate, VmRouteRequest};
+use crate::{
+    AudioProxyLease, VmAvailability, VmDelegate, VmInventory, VmPublishedApplication,
+    VmRouteRequest,
+};
 
 /// Privileged qOS authority for the capability projection used by the Windows
 /// appliance.  It is intentionally an injected adapter rather than a second
@@ -209,6 +213,31 @@ where
         }
     }
 
+    fn inventory(&self) -> VmInventory {
+        let availability = self.availability();
+        let applications = match self.appliance.cached_catalog() {
+            Ok(Some(catalog)) => catalog
+                .applications
+                .iter()
+                .map(|application| VmPublishedApplication {
+                    entry_id: vm_entry_id(&application.id),
+                    app_id: vm_app_id(&application.id),
+                    published_application_id: application.id.clone(),
+                    display_name: application.display_name.clone(),
+                    presentation: self.presentation.to_string(),
+                })
+                .collect(),
+            // A missing or malformed persisted catalogue fails closed: it is
+            // never replaced with a host executable scan and never wakes the
+            // guest merely to populate the manager.
+            Ok(None) | Err(_) => Vec::new(),
+        };
+        VmInventory {
+            availability,
+            applications,
+        }
+    }
+
     fn launch(
         &self,
         request: VmRouteRequest<'_>,
@@ -221,7 +250,7 @@ where
         // The catalogue itself is the only source allowed to select the VM.
         // This prevents a manager-side route override from using the VM as an
         // arbitrary executable runner.
-        if request.route.runtime.layer != Layer::Vm {
+        if request.route != crate::RouteKind::Vm {
             return Err(windows_vm::LaunchError::InvalidRequest("VM route"));
         }
         let grants = self.portal.grants_for(
@@ -239,6 +268,24 @@ where
             grants,
         })
     }
+}
+
+fn vm_entry_id(published_id: &str) -> String {
+    format!("windows-vm-{}", vm_identity_digest(published_id))
+}
+
+fn vm_app_id(published_id: &str) -> String {
+    format!("dev.qos.windows.vm.{}", vm_identity_digest(published_id))
+}
+
+fn vm_identity_digest(published_id: &str) -> String {
+    let digest = Sha256::digest(published_id.as_bytes());
+    let mut encoded = String::with_capacity(32);
+    for byte in digest.iter().take(16) {
+        // Writing into a String cannot fail.
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
 }
 
 fn validate_portal_projection(
@@ -319,5 +366,17 @@ mod tests {
             result,
             Err(windows_vm::LaunchError::BrokerEscalated("microphone"))
         ));
+    }
+
+    #[test]
+    fn published_guest_identity_is_mapped_to_host_owned_opaque_ids() {
+        let entry = vm_entry_id("guest-word");
+        let app = vm_app_id("guest-word");
+        assert!(entry.starts_with("windows-vm-"));
+        assert!(app.starts_with("dev.qos.windows.vm."));
+        assert_ne!(entry, "guest-word");
+        assert_ne!(app, "guest-word");
+        assert_eq!(entry, vm_entry_id("guest-word"));
+        assert_ne!(entry, vm_entry_id("guest-excel"));
     }
 }

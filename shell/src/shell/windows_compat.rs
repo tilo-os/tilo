@@ -15,7 +15,7 @@ use compat_service::{
     CompatSessionHandle, DenyAllVmCapabilityBroker, DenyAllVmPortalAuthority, HostSession,
     LauncherAuthenticator, LiveVmDelegate, ManagedCompatibility, ShippedCataloguePaths,
     SystemResourceBroker, SystemRuntimeRegistry, TrustedLauncherRegistry, VmAvailability,
-    VmDelegate, VmRouteRequest, load_shipped_catalogue, spawn_session_service,
+    VmDelegate, VmInventory, VmRouteRequest, load_shipped_catalogue, spawn_session_service,
 };
 use windows_vm::{
     ApplianceConfig, ApplicationPresentation, GuestBridgeConfig, HttpsGuestBridge, LibvirtBackend,
@@ -162,6 +162,16 @@ impl VmDelegate for SessionVmDelegate {
         }
     }
 
+    fn inventory(&self) -> VmInventory {
+        match self.get() {
+            Ok(delegate) => delegate.inventory(),
+            Err(error) => VmInventory {
+                availability: VmAvailability::unavailable(error),
+                applications: Vec::new(),
+            },
+        }
+    }
+
     fn launch(
         &self,
         request: VmRouteRequest<'_>,
@@ -172,11 +182,10 @@ impl VmDelegate for SessionVmDelegate {
     }
 }
 
-fn vm_delegate() -> Box<dyn VmDelegate> {
-    Box::new(SessionVmDelegate::default())
-}
-
-fn spawn_entry_registry_refresh(store: CapsuleStore) -> Result<EntryRegistryRefresh, String> {
+fn spawn_entry_registry_refresh(
+    store: CapsuleStore,
+    vm: Arc<dyn VmDelegate>,
+) -> Result<EntryRegistryRefresh, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let worker = std::thread::Builder::new()
@@ -194,9 +203,18 @@ fn spawn_entry_registry_refresh(store: CapsuleStore) -> Result<EntryRegistryRefr
                         continue;
                     }
                 };
+                let vm_entries = vm
+                    .inventory()
+                    .applications
+                    .into_iter()
+                    .map(|application| application.entry_id);
                 let before = super::launcher::windows_compat_entry_generation();
                 let generation = super::launcher::set_windows_compat_entry_ids(
-                    entries.into_iter().map(|entry| entry.entry_id).collect(),
+                    entries
+                        .into_iter()
+                        .map(|entry| entry.entry_id)
+                        .chain(vm_entries)
+                        .collect(),
                 );
                 if generation != before {
                     // Existing connected managers retain the one-shot entry
@@ -235,14 +253,21 @@ pub fn spawn(tree: WorkspaceTreeHandle) -> Result<WindowsCompatHandle, String> {
 
     let store = CapsuleStore::new(cli::data_home().join("qos/windows-compat"))
         .map_err(|error| error.to_string())?;
+    let vm: Arc<dyn VmDelegate> = Arc::new(SessionVmDelegate::default());
     let allowed_entries = store
         .registered_programs()
         .map_err(|error| error.to_string())?
         .into_iter()
         .map(|entry| entry.entry_id)
+        .chain(
+            vm.inventory()
+                .applications
+                .into_iter()
+                .map(|application| application.entry_id),
+        )
         .collect();
     let _generation = super::launcher::set_windows_compat_entry_ids(allowed_entries);
-    let registry_refresh = spawn_entry_registry_refresh(store.clone())?;
+    let registry_refresh = spawn_entry_registry_refresh(store.clone(), Arc::clone(&vm))?;
 
     let wayland_socket = super::launcher::wayland_socket()
         .ok_or_else(|| "the compositor Wayland socket is not ready".to_string())?;
@@ -262,7 +287,7 @@ pub fn spawn(tree: WorkspaceTreeHandle) -> Result<WindowsCompatHandle, String> {
         SystemRuntimeRegistry::new(),
         SystemResourceBroker::new(),
         BwrapExecutor,
-        vm_delegate(),
+        vm,
         session,
     )
     .map_err(|error| error.to_string())?;
