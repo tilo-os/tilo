@@ -1456,9 +1456,11 @@ mod tests {
     use std::io::Read;
     use std::sync::{Arc, Mutex};
 
+    type RecordedInstall = Arc<Mutex<Option<(Vec<u8>, String)>>>;
+
     struct RecordingProvider {
         inner: SampleProvider,
-        installed: Arc<Mutex<Option<(Vec<u8>, String)>>>,
+        installed: RecordedInstall,
     }
 
     impl CompatibilityProvider for RecordingProvider {
