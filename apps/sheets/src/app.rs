@@ -3165,6 +3165,10 @@ fn file_label(path: &std::path::Path) -> String {
 }
 
 impl Widget for SheetsApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[actions::SHEETS_OPERATION_TYPE]
+    }
+
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,
