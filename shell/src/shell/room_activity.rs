@@ -23,10 +23,14 @@ use collab_types::OpClass;
 use collab_types::caps::{CapOverride, Effect, Principal, Scope, Subject, Verb};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
-use ui::widget::{ArtifactKind, HistoryEntry, HistoryEntryId, HistoryFilter};
+use ui::widget::{
+    ArtifactKind, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
+};
 use ui::{
-    ActivityDigest, ActivityTimeline, AuthorDirectory, GroupNameRequest, HistoryFacetIndex,
-    HistorySeenFrontier, HistorySource, NamedRange, RecordStore, Theme, Widget,
+    ActivityDigest, ActivityTimeline, AuthorDirectory, BandUndoRequest, ChangeRun,
+    GroupNameRequest, HistoryComparison, HistoryFacetIndex, HistorySeenFrontier,
+    HistorySelectionDetail, HistorySource, NamedRange, NarrativeRequest, RecordStore, Theme,
+    Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -80,6 +84,10 @@ enum LensSelection {
     All,
     App(String),
     ResourceKind(String),
+    Resource(String),
+    WorkGroup(String),
+    Facet(String, String),
+    Unclassified,
 }
 
 /// Stable logical focus, independent of the rectangles produced by a frame.
@@ -93,6 +101,24 @@ enum ActivityFocus {
     Author(Option<String>),
     Brief(usize),
     Lens(LensSelection),
+    Detail(DetailAction),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DetailAction {
+    Open,
+    Compare,
+    Undo,
+}
+
+impl DetailAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Open => "Open",
+            Self::Compare => "Compare",
+            Self::Undo => "Undo",
+        }
+    }
 }
 
 /// Compose `transform` with a translation to `(dx, dy)`. `Affine`'s `Mul`
@@ -174,12 +200,14 @@ impl RoomScope {
 }
 
 /// What a dispatched event did.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RoomActivityOutcome {
     pub handled: bool,
     pub reverted: bool,
     /// A band was named/renamed/un-named — a document write too.
     pub named: bool,
+    pub open_target: Option<ui::HistoryResourceTarget>,
+    pub compared: bool,
 }
 
 /// The room-activity sheet.
@@ -191,6 +219,7 @@ pub struct RoomActivityPane {
     revert_intent: Rc<Cell<Option<HistoryEntryId>>>,
     /// Same handshake as `revert_intent`; `RefCell` since the payload isn't `Copy`.
     name_intent: Rc<RefCell<Option<GroupNameRequest>>>,
+    undo_intent: Rc<RefCell<Option<BandUndoRequest>>>,
     named: Vec<NamedRange>,
     /// Heads at the last rebuild, so a no-op frame skips re-deriving.
     last_heads: Vec<ChangeHash>,
@@ -238,6 +267,9 @@ pub struct RoomActivityPane {
     lens: LensSelection,
     lens_rects: Vec<(LensSelection, Rect)>,
     keyboard_focus: Option<ActivityFocus>,
+    detail_action_rects: Vec<(DetailAction, Rect)>,
+    comparison: Option<HistoryComparison>,
+    narrative: Option<ui::GroundedNarrative>,
 }
 
 impl Default for RoomActivityPane {
@@ -250,12 +282,15 @@ impl RoomActivityPane {
     pub fn new() -> Self {
         let revert_intent = Rc::new(Cell::new(None));
         let name_intent: Rc<RefCell<Option<GroupNameRequest>>> = Rc::new(RefCell::new(None));
+        let undo_intent: Rc<RefCell<Option<BandUndoRequest>>> = Rc::new(RefCell::new(None));
         let ri = Rc::clone(&revert_intent);
         let ni = Rc::clone(&name_intent);
+        let ui = Rc::clone(&undo_intent);
         Self {
             timeline: {
                 let mut t = ActivityTimeline::new()
                     .on_revert(move |id| ri.set(Some(*id)))
+                    .on_undo_band(move |req| *ui.borrow_mut() = Some(req.clone()))
                     .on_name_group(move |req| *ni.borrow_mut() = Some(req.clone()));
                 t.set_draws_own_surface(false);
                 t
@@ -264,6 +299,7 @@ impl RoomActivityPane {
             source: HistorySource::new().with_artifact_kind(ArtifactKind::Cluster),
             revert_intent,
             name_intent,
+            undo_intent,
             named: Vec::new(),
             last_heads: Vec::new(),
             period: Period::default(),
@@ -295,6 +331,9 @@ impl RoomActivityPane {
             lens: LensSelection::default(),
             lens_rects: Vec::new(),
             keyboard_focus: None,
+            detail_action_rects: Vec::new(),
+            comparison: None,
+            narrative: None,
         }
     }
 
@@ -398,6 +437,7 @@ impl RoomActivityPane {
     fn rebuild_digest_since_frontier(&mut self) {
         self.digest =
             ActivityDigest::from_unseen(self.timeline.entries(), &self.catchup_frontier, 5);
+        self.reset_narrative();
     }
 
     fn persist_frontiers(&self) {
@@ -458,6 +498,54 @@ impl RoomActivityPane {
         &mut self.timeline
     }
 
+    pub fn selection_detail(&self) -> Option<HistorySelectionDetail> {
+        let range = self
+            .timeline
+            .selection()
+            .or_else(|| (!self.timeline.entries().is_empty()).then_some((0, 0)))?;
+        HistorySelectionDetail::from_range(self.timeline.entries(), range)
+    }
+
+    /// Materialize the exact before/after document for the current selection.
+    /// Mixed-document selections deliberately have no synthetic diff: callers
+    /// can split them by provenance and compare each resource honestly.
+    pub fn compare_selection(
+        &self,
+        tree: &mut WorkspaceTree,
+        records: Option<&RecordStore>,
+    ) -> Option<HistoryComparison> {
+        let (start, end) = self.timeline.selection()?;
+        let selected = self.timeline.entries().get(start..=end)?;
+        let addresses: Vec<WorkspaceHistoryId> = selected
+            .iter()
+            .map(|entry| {
+                self.projected_origins
+                    .get(&entry.id)
+                    .cloned()
+                    .unwrap_or(WorkspaceHistoryId {
+                        origin: crate::shell::workspace_history::HistoryOrigin::WorkspaceTree,
+                        change: entry.id,
+                    })
+            })
+            .collect();
+        let first = addresses.first()?;
+        if addresses
+            .iter()
+            .any(|address| address.origin != first.origin)
+        {
+            return None;
+        }
+        let ids: Vec<HistoryEntryId> = addresses.iter().map(|address| address.change).collect();
+        match &first.origin {
+            crate::shell::workspace_history::HistoryOrigin::WorkspaceTree => {
+                ui::compare_entries(&mut tree.doc, &ids).ok()
+            }
+            crate::shell::workspace_history::HistoryOrigin::Record { id, .. } => records?
+                .with(id, |doc| ui::compare_entries(doc, &ids).ok())
+                .flatten(),
+        }
+    }
+
     pub fn set_period(&mut self, period: Period) {
         if self.period != period {
             self.period = period;
@@ -470,6 +558,29 @@ impl RoomActivityPane {
             self.author = author;
             self.reinstall_filter();
         }
+    }
+
+    pub fn apply_deep_link(&mut self, focus: crate::shell::chrome_state::ActivityFocus) {
+        if let Some(author) = focus.author {
+            self.author = Some(author);
+        }
+        if let Some(group) = focus.group_id {
+            self.lens = LensSelection::WorkGroup(group);
+            self.view = ActivityView::Explore;
+        }
+        if let Some(raw) = focus.entry_id {
+            let id = HistoryEntryId::from_bytes(raw);
+            if let Some(index) = self
+                .timeline
+                .entries()
+                .iter()
+                .position(|entry| entry.id == id)
+            {
+                self.timeline.set_selection(Some((index, index)));
+                self.view = ActivityView::Explore;
+            }
+        }
+        self.reinstall_filter();
     }
 
     /// Op-class chips and author typeahead are the widget's own, left alone.
@@ -485,6 +596,14 @@ impl RoomActivityPane {
             LensSelection::All => {}
             LensSelection::App(app) => filter.apps.push(app.clone()),
             LensSelection::ResourceKind(kind) => filter.resource_kinds.push(kind.clone()),
+            LensSelection::Resource(resource) => filter.resources.push(resource.clone()),
+            LensSelection::WorkGroup(group) => filter.work_groups.push(group.clone()),
+            LensSelection::Facet(key, value) => filter
+                .facets
+                .push(ui::qos_actions::ActionFacet::new(key, value)),
+            LensSelection::Unclassified => {
+                filter.classification = HistoryClassification::Unclassified;
+            }
         }
         self.timeline.set_filter(filter);
         self.timeline.set_time_range_label(match self.period {
@@ -620,6 +739,7 @@ impl RoomActivityPane {
         self.total_entries = rows.len();
         self.facet_index = HistoryFacetIndex::from_entries(&rows);
         self.digest = ActivityDigest::from_unseen(&rows, &self.catchup_frontier, 5);
+        self.reset_narrative();
 
         let mut seen: HashSet<String> = HashSet::new();
         self.contributors = rows
@@ -638,6 +758,25 @@ impl RoomActivityPane {
         self.timeline.set_entries(rows);
         self.timeline.set_named_ranges(self.named.clone());
         self.reinstall_filter();
+    }
+
+    fn reset_narrative(&mut self) {
+        self.narrative = NarrativeRequest::from_digest(&self.digest)
+            .map(|request| ui::deterministic_narrative(&request));
+    }
+
+    /// Install optional model prose only when every cited action belongs to
+    /// the current digest. Invalid or stale output leaves the deterministic
+    /// summary in place.
+    pub fn apply_generated_narrative(&mut self, narrative: ui::GroundedNarrative) -> bool {
+        let Some(request) = NarrativeRequest::from_digest(&self.digest) else {
+            return false;
+        };
+        let Some(valid) = ui::validate_narrative(&request, narrative) else {
+            return false;
+        };
+        self.narrative = Some(valid);
+        true
     }
 
     pub fn set_scope(&mut self, scope: RoomScope, tree: &WorkspaceTree) {
@@ -770,6 +909,7 @@ impl RoomActivityPane {
         theme: &Theme,
     ) {
         self.lens_rects.clear();
+        self.detail_action_rects.clear();
         if self.sheet.width() < 900.0 {
             return;
         }
@@ -855,6 +995,79 @@ impl RoomActivityPane {
                 left,
             );
         }
+        let resources: Vec<(String, usize)> = self
+            .facet_index
+            .resources
+            .iter()
+            .map(|(label, count)| (label.clone(), *count))
+            .collect();
+        for (label, count) in resources.into_iter().take(3) {
+            let lens = LensSelection::Resource(label.clone());
+            self.draw_lens_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                &lens,
+                &format!("{label}  {count}"),
+                &mut y,
+                left,
+            );
+        }
+        let groups: Vec<(String, usize)> = self
+            .facet_index
+            .work_groups
+            .iter()
+            .map(|(label, count)| (label.clone(), *count))
+            .collect();
+        for (label, count) in groups.into_iter().take(2) {
+            let lens = LensSelection::WorkGroup(label.clone());
+            self.draw_lens_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                &lens,
+                &format!("{label}  {count}"),
+                &mut y,
+                left,
+            );
+        }
+        let facets: Vec<(String, String, usize)> = self
+            .facet_index
+            .facets
+            .iter()
+            .flat_map(|(key, values)| {
+                values
+                    .iter()
+                    .map(|(value, count)| (key.clone(), value.clone(), *count))
+            })
+            .collect();
+        for (key, value, count) in facets.into_iter().take(3) {
+            let lens = LensSelection::Facet(key.clone(), value.clone());
+            self.draw_lens_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                &lens,
+                &format!("{key}: {value}  {count}"),
+                &mut y,
+                left,
+            );
+        }
+        if self.facet_index.unclassified > 0 {
+            self.draw_lens_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                &LensSelection::Unclassified,
+                &format!("Unclassified  {}", self.facet_index.unclassified),
+                &mut y,
+                left,
+            );
+        }
 
         tr.draw_text_weighted(
             scene,
@@ -865,32 +1078,96 @@ impl RoomActivityPane {
             None,
             ui::text_render::TextWeight::Medium,
         );
-        if let Some(entry) = self.timeline.visible_entry(0) {
+        if let Some(detail) = self.selection_detail() {
             let width = (right.width() - 24.0).max(0.0) as f32;
             tr.draw_text(
                 scene,
-                &entry.summary,
+                &detail.title,
                 theme.tokens.typography.scale.base,
                 theme.tokens.colors.text_primary,
                 at(transform, right.x0 + 12.0, right.y0 + 40.0),
                 Some(width),
             );
-            let context = entry.context.as_ref();
-            let app = context
-                .and_then(|value| value.app.as_ref())
-                .map_or("Legacy / direct edit", |app| app.label.as_str());
-            let resource = context
-                .and_then(|value| value.resource.as_ref())
-                .map_or("No resource declared", |resource| resource.label.as_str());
-            let detail = format!("{}\n{}\n{}", entry.author.name, app, resource);
+            let people = detail.authors.join(", ");
+            let resources = detail
+                .resources
+                .iter()
+                .map(|resource| resource.label.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let facets = detail
+                .facets
+                .iter()
+                .map(|facet| format!("{}: {}", facet.key, facet.value))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let provenance = format!(
+                "{} action{}\n{}\n{}{}",
+                detail.entry_ids.len(),
+                if detail.entry_ids.len() == 1 { "" } else { "s" },
+                people,
+                if resources.is_empty() {
+                    "No resource declared"
+                } else {
+                    &resources
+                },
+                if facets.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{facets}")
+                },
+            );
             tr.draw_text(
                 scene,
-                &detail,
+                &provenance,
                 size,
                 theme.tokens.colors.text_dim,
                 at(transform, right.x0 + 12.0, right.y0 + 88.0),
                 Some(width),
             );
+            let mut x = right.x0 + 12.0;
+            for action in [
+                DetailAction::Open,
+                DetailAction::Compare,
+                DetailAction::Undo,
+            ] {
+                let enabled = match action {
+                    DetailAction::Open => !detail.resources.is_empty(),
+                    DetailAction::Compare => detail.can_compare,
+                    DetailAction::Undo => detail.can_undo,
+                };
+                if !enabled {
+                    continue;
+                }
+                let rect = Rect::new(x, right.y0 + 170.0, x + 60.0, right.y0 + 198.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.surface_white_5,
+                    None,
+                    &RoundedRect::from_rect(rect, 6.0),
+                );
+                tr.draw_text(
+                    scene,
+                    action.label(),
+                    size,
+                    theme.tokens.colors.text_primary,
+                    at(transform, rect.x0 + 8.0, rect.y0 + 7.0),
+                    None,
+                );
+                self.detail_action_rects.push((action, rect));
+                x += 66.0;
+            }
+            if let Some(comparison) = &self.comparison {
+                tr.draw_text(
+                    scene,
+                    &format!("Exact comparison · {} changes", comparison.patches.len()),
+                    size,
+                    theme.tokens.colors.text_dim,
+                    at(transform, right.x0 + 12.0, right.y0 + 214.0),
+                    Some(width),
+                );
+            }
         }
     }
 
@@ -1068,7 +1345,7 @@ impl RoomActivityPane {
         } else {
             format!("{} people", self.digest.people)
         };
-        let subtitle = match self.scope {
+        let mut subtitle = match self.scope {
             RoomScope::ThisRoom => {
                 let room = if self.room_name.is_empty() {
                     "This room"
@@ -1082,6 +1359,13 @@ impl RoomActivityPane {
                 self.total_entries,
             ),
         };
+        if !self.feed_coverage.is_complete() {
+            let missing = self.feed_coverage.unavailable_records.len();
+            subtitle.push_str(&format!(
+                " · {missing} record{} unavailable",
+                if missing == 1 { "" } else { "s" }
+            ));
+        }
         #[allow(
             clippy::cast_possible_truncation,
             reason = "sheet width is a UI pixel measurement, always far under f32's range"
@@ -1095,7 +1379,12 @@ impl RoomActivityPane {
             at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 32.0),
             Some(wrap_width),
         );
-        if let Some(headline) = self.digest.headline() {
+        if let Some(headline) = self
+            .narrative
+            .as_ref()
+            .map(|narrative| narrative.text.clone())
+            .or_else(|| self.digest.headline())
+        {
             let latest = format!("Latest \u{00b7} {headline}");
             tr.draw_text(
                 scene,
@@ -1233,6 +1522,18 @@ impl RoomActivityPane {
         cursor: Option<Point>,
         tree: &mut WorkspaceTree,
     ) -> RoomActivityOutcome {
+        self.handle_event_with_records(event, scale_factor, modifiers, cursor, tree, None)
+    }
+
+    pub fn handle_event_with_records(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        cursor: Option<Point>,
+        tree: &mut WorkspaceTree,
+        records: Option<&RecordStore>,
+    ) -> RoomActivityOutcome {
         let mut out = RoomActivityOutcome::default();
 
         if self.timeline.wants_keyboard() {
@@ -1251,12 +1552,15 @@ impl RoomActivityPane {
             && !modifiers.state().control_key()
             && !modifiers.state().super_key()
             && !modifiers.state().alt_key()
-            && self.handle_navigation_key(logical_key, modifiers.state().shift_key(), tree)
         {
-            return RoomActivityOutcome {
-                handled: true,
-                ..RoomActivityOutcome::default()
-            };
+            if let Some(outcome) = self.handle_navigation_key(
+                logical_key,
+                modifiers.state().shift_key(),
+                tree,
+                records,
+            ) {
+                return outcome;
+            }
         }
 
         // The shell's own chip rows first — they sit above the timeline and
@@ -1272,8 +1576,7 @@ impl RoomActivityPane {
                     self.set_scope(scope, tree);
                     return RoomActivityOutcome {
                         handled: true,
-                        reverted: false,
-                        named: false,
+                        ..RoomActivityOutcome::default()
                     };
                 }
             }
@@ -1283,8 +1586,7 @@ impl RoomActivityPane {
                     self.set_view(view);
                     return RoomActivityOutcome {
                         handled: true,
-                        reverted: false,
-                        named: false,
+                        ..RoomActivityOutcome::default()
                     };
                 }
             }
@@ -1295,13 +1597,47 @@ impl RoomActivityPane {
                         self.expanded_brief = (self.expanded_brief != Some(index)).then_some(index);
                         return RoomActivityOutcome {
                             handled: true,
-                            reverted: false,
-                            named: false,
+                            ..RoomActivityOutcome::default()
                         };
                     }
                 }
             }
             if self.view == ActivityView::Explore {
+                for (action, rect) in self.detail_action_rects.clone() {
+                    if !rect.contains(p) {
+                        continue;
+                    }
+                    self.keyboard_focus = Some(ActivityFocus::Detail(action));
+                    out.handled = true;
+                    match action {
+                        DetailAction::Open => {
+                            out.open_target = self
+                                .selection_detail()
+                                .and_then(|detail| detail.resources.into_iter().next());
+                        }
+                        DetailAction::Compare => {
+                            self.comparison = self.compare_selection(tree, records);
+                            out.compared = self.comparison.is_some();
+                        }
+                        DetailAction::Undo => {
+                            if let Some((start, end)) = self.timeline.selection()
+                                && let (Some(first), Some(last)) = (
+                                    self.timeline.entries().get(start),
+                                    self.timeline.entries().get(end),
+                                )
+                            {
+                                let request = BandUndoRequest {
+                                    start: first.id,
+                                    end: last.id,
+                                    label: self.selection_detail().map(|detail| detail.title),
+                                    authors: Vec::new(),
+                                };
+                                out.reverted = self.undo_band(tree, records, &request);
+                            }
+                        }
+                    }
+                    return out;
+                }
                 for (lens, rect) in self.lens_rects.clone() {
                     if rect.contains(p) {
                         self.keyboard_focus = Some(ActivityFocus::Lens(lens.clone()));
@@ -1309,8 +1645,7 @@ impl RoomActivityPane {
                         self.reinstall_filter();
                         return RoomActivityOutcome {
                             handled: true,
-                            reverted: false,
-                            named: false,
+                            ..RoomActivityOutcome::default()
                         };
                     }
                 }
@@ -1321,8 +1656,7 @@ impl RoomActivityPane {
                     self.set_period(period);
                     return RoomActivityOutcome {
                         handled: true,
-                        reverted: false,
-                        named: false,
+                        ..RoomActivityOutcome::default()
                     };
                 }
             }
@@ -1332,8 +1666,7 @@ impl RoomActivityPane {
                     self.set_author_filter(author);
                     return RoomActivityOutcome {
                         handled: true,
-                        reverted: false,
-                        named: false,
+                        ..RoomActivityOutcome::default()
                     };
                 }
             }
@@ -1365,7 +1698,14 @@ impl RoomActivityPane {
 
         if let Some(id) = self.revert_intent.take() {
             out.handled = true;
-            if self.revert_to(tree, &id) {
+            if self.revert_to_with_records(tree, records, &id) {
+                out.reverted = true;
+            }
+        }
+        let undo_req = self.undo_intent.borrow_mut().take();
+        if let Some(req) = undo_req {
+            out.handled = true;
+            if self.undo_band(tree, records, &req) {
                 out.reverted = true;
             }
         }
@@ -1413,6 +1753,11 @@ impl RoomActivityPane {
                         .iter()
                         .map(|(lens, _)| ActivityFocus::Lens(lens.clone())),
                 );
+                order.extend(
+                    self.detail_action_rects
+                        .iter()
+                        .map(|(action, _)| ActivityFocus::Detail(*action)),
+                );
             }
         }
         order
@@ -1442,6 +1787,10 @@ impl RoomActivityPane {
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
             ActivityFocus::Lens(value) => self
                 .lens_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::Detail(value) => self
+                .detail_action_rects
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
         }
@@ -1477,9 +1826,17 @@ impl RoomActivityPane {
         self.keyboard_focus = order.get(next).cloned();
     }
 
-    fn activate_focus(&mut self, tree: &WorkspaceTree) -> bool {
+    fn activate_focus(
+        &mut self,
+        tree: &mut WorkspaceTree,
+        records: Option<&RecordStore>,
+    ) -> RoomActivityOutcome {
         let Some(focus) = self.keyboard_focus.clone() else {
-            return false;
+            return RoomActivityOutcome::default();
+        };
+        let mut outcome = RoomActivityOutcome {
+            handled: true,
+            ..RoomActivityOutcome::default()
         };
         match focus {
             ActivityFocus::Scope(value) => self.set_scope(value, tree),
@@ -1493,11 +1850,42 @@ impl RoomActivityPane {
                 self.lens = value;
                 self.reinstall_filter();
             }
+            ActivityFocus::Detail(DetailAction::Open) => {
+                outcome.open_target = self
+                    .selection_detail()
+                    .and_then(|detail| detail.resources.into_iter().next());
+            }
+            ActivityFocus::Detail(DetailAction::Compare) => {
+                self.comparison = self.compare_selection(tree, records);
+                outcome.compared = self.comparison.is_some();
+            }
+            ActivityFocus::Detail(DetailAction::Undo) => {
+                if let Some((start, end)) = self.timeline.selection()
+                    && let (Some(first), Some(last)) = (
+                        self.timeline.entries().get(start),
+                        self.timeline.entries().get(end),
+                    )
+                {
+                    let request = BandUndoRequest {
+                        start: first.id,
+                        end: last.id,
+                        label: self.selection_detail().map(|detail| detail.title),
+                        authors: Vec::new(),
+                    };
+                    outcome.reverted = self.undo_band(tree, records, &request);
+                }
+            }
         }
-        true
+        outcome
     }
 
-    fn handle_navigation_key(&mut self, key: &Key, shift: bool, tree: &WorkspaceTree) -> bool {
+    fn handle_navigation_key(
+        &mut self,
+        key: &Key,
+        shift: bool,
+        tree: &mut WorkspaceTree,
+        records: Option<&RecordStore>,
+    ) -> Option<RoomActivityOutcome> {
         match key {
             Key::Named(NamedKey::Tab) => self.move_focus(shift, None),
             Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) => {
@@ -1508,10 +1896,15 @@ impl RoomActivityPane {
             }
             Key::Named(NamedKey::Home) => self.move_focus(false, Some(false)),
             Key::Named(NamedKey::End) => self.move_focus(false, Some(true)),
-            Key::Named(NamedKey::Enter | NamedKey::Space) => return self.activate_focus(tree),
-            _ => return false,
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                return Some(self.activate_focus(tree, records));
+            }
+            _ => return None,
         }
-        true
+        Some(RoomActivityOutcome {
+            handled: true,
+            ..RoomActivityOutcome::default()
+        })
     }
 
     /// The label currently carrying keyboard focus. Besides making focus
@@ -1533,7 +1926,14 @@ impl RoomActivityPane {
             }
             ActivityFocus::Lens(LensSelection::All) => Some("Everything".to_string()),
             ActivityFocus::Lens(LensSelection::App(value))
-            | ActivityFocus::Lens(LensSelection::ResourceKind(value)) => Some(value.clone()),
+            | ActivityFocus::Lens(LensSelection::ResourceKind(value))
+            | ActivityFocus::Lens(LensSelection::Resource(value))
+            | ActivityFocus::Lens(LensSelection::WorkGroup(value)) => Some(value.clone()),
+            ActivityFocus::Lens(LensSelection::Facet(key, value)) => {
+                Some(format!("{key}: {value}"))
+            }
+            ActivityFocus::Lens(LensSelection::Unclassified) => Some("Unclassified".to_string()),
+            ActivityFocus::Detail(action) => Some(action.label().to_string()),
         }
     }
 
@@ -1613,6 +2013,12 @@ impl RoomActivityPane {
                         None,
                         Some("History lens".to_string()),
                     ),
+                    ActivityFocus::Detail(_) => (
+                        Role::Button,
+                        false,
+                        None,
+                        Some("Selected history action".to_string()),
+                    ),
                 };
                 let mut state = AccessState::new()
                     .focusable(true)
@@ -1667,7 +2073,39 @@ impl RoomActivityPane {
     /// Rewrite the document to the state at `id`, as a **new forward
     /// change** — the versions rolled past stay in the graph.
     pub fn revert_to(&mut self, tree: &mut WorkspaceTree, id: &HistoryEntryId) -> bool {
-        let Some(target) = ui::heads_for_entry(&mut tree.doc, id) else {
+        self.revert_to_with_records(tree, None, id)
+    }
+
+    fn revert_to_with_records(
+        &mut self,
+        tree: &mut WorkspaceTree,
+        records: Option<&RecordStore>,
+        id: &HistoryEntryId,
+    ) -> bool {
+        let origin = self.projected_origins.get(id).cloned();
+        if let Some(WorkspaceHistoryId {
+            origin: crate::shell::workspace_history::HistoryOrigin::Record { id: record, .. },
+            change,
+        }) = origin
+        {
+            return records.is_some_and(|records| {
+                records
+                    .with(&record, |doc| {
+                        let Some(target) = ui::heads_for_entry(doc, &change) else {
+                            return false;
+                        };
+                        let current = doc.get_heads();
+                        if current == target {
+                            return false;
+                        }
+                        ui::state::write_revert_patches(doc, &current, &target);
+                        qdoc::history::commit_stamped(doc).is_some()
+                    })
+                    .unwrap_or(false)
+            });
+        }
+        let native = origin.map_or(*id, |address| address.change);
+        let Some(target) = ui::heads_for_entry(&mut tree.doc, &native) else {
             return false;
         };
         let current = tree.doc.get_heads();
@@ -1685,6 +2123,68 @@ impl RoomActivityPane {
         self.last_heads.clear();
         self.refresh(tree);
         true
+    }
+
+    fn undo_band(
+        &mut self,
+        tree: &mut WorkspaceTree,
+        records: Option<&RecordStore>,
+        request: &BandUndoRequest,
+    ) -> bool {
+        let start = self.projected_origins.get(&request.start).cloned();
+        let end = self.projected_origins.get(&request.end).cloned();
+        match (start, end) {
+            (Some(first), Some(last)) if first.origin == last.origin => {
+                let run = ChangeRun::new(first.change, last.change);
+                match first.origin {
+                    crate::shell::workspace_history::HistoryOrigin::WorkspaceTree => {
+                        let Ok(outcome) =
+                            ui::revert_run(&mut tree.doc, &run, None, self.source.authors())
+                        else {
+                            return false;
+                        };
+                        if !outcome.wrote {
+                            return false;
+                        }
+                        tree.commit_room_change();
+                        tree.resync_cache_from_doc();
+                        self.last_heads.clear();
+                        self.refresh(tree);
+                        true
+                    }
+                    crate::shell::workspace_history::HistoryOrigin::Record { id, .. } => records
+                        .is_some_and(|records| {
+                            records
+                                .with(&id, |doc| {
+                                    let Ok(outcome) =
+                                        ui::revert_run(doc, &run, None, self.source.authors())
+                                    else {
+                                        return false;
+                                    };
+                                    outcome.wrote && qdoc::history::commit_stamped(doc).is_some()
+                                })
+                                .unwrap_or(false)
+                        }),
+                }
+            }
+            // Tree-only callers and pre-index tests retain native addressing.
+            (None, None) => {
+                let run = ChangeRun::new(request.start, request.end);
+                let Ok(outcome) = ui::revert_run(&mut tree.doc, &run, None, self.source.authors())
+                else {
+                    return false;
+                };
+                if !outcome.wrote {
+                    return false;
+                }
+                tree.commit_room_change();
+                tree.resync_cache_from_doc();
+                self.last_heads.clear();
+                self.refresh(tree);
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn invalidate(&mut self) {
@@ -1812,7 +2312,9 @@ fn describe_room_changes(
         if let Some((summary, op_class)) = describe_patches(&patches)
             && let Some(entry) = entries.get_mut(i)
         {
-            entry.summary = summary;
+            if entry.context.is_none() {
+                entry.summary = summary;
+            }
             entry.op_class = op_class;
         }
     }
@@ -3458,7 +3960,7 @@ mod tests {
     }
 
     #[test]
-    fn explorer_lenses_are_in_the_keyboard_focus_order() {
+    fn explorer_lenses_and_detail_actions_are_in_the_keyboard_focus_order() {
         let (mut tree, _, _) = busy_room();
         let mut pane = pane_over(&mut tree);
         pane.set_view(ActivityView::Explore);
@@ -3473,13 +3975,23 @@ mod tests {
             None,
             &mut tree,
         );
-        let label = pane.focused_control_label().expect("last lens focused");
+        let label = pane
+            .focused_control_label()
+            .expect("last explorer control focused");
         assert!(
             pane.lens_rects.iter().any(|(lens, _)| match lens {
                 LensSelection::All => label == "Everything",
-                LensSelection::App(value) | LensSelection::ResourceKind(value) => value == &label,
-            }),
-            "focused control is a rendered lens: {label}"
+                LensSelection::App(value)
+                | LensSelection::ResourceKind(value)
+                | LensSelection::Resource(value)
+                | LensSelection::WorkGroup(value) => value == &label,
+                LensSelection::Facet(key, value) => format!("{key}: {value}") == label,
+                LensSelection::Unclassified => label == "Unclassified",
+            }) || pane
+                .detail_action_rects
+                .iter()
+                .any(|(action, _)| action.label() == label),
+            "focused control is a rendered explorer control: {label}"
         );
         assert!(
             pane.handle_event(

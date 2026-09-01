@@ -4599,9 +4599,16 @@ impl ShellOverlayHost {
             let cursor = self.last_cursor;
             let outcome = {
                 let st = chrome.borrow();
+                let records = st.records().clone();
                 let mut tree = st.tree_mut();
-                self.room_activity
-                    .handle_event(event, scale_factor, &modifiers, cursor, &mut tree)
+                self.room_activity.handle_event_with_records(
+                    event,
+                    scale_factor,
+                    &modifiers,
+                    cursor,
+                    &mut tree,
+                    Some(&records),
+                )
             };
             if outcome.reverted {
                 let mut st = chrome.borrow_mut();
@@ -4609,6 +4616,29 @@ impl ShellOverlayHost {
                 st.push_notification(
                     "Reverted a room change",
                     "Written forward: the version you reverted from is still in the history.",
+                );
+            }
+            if let Some(target) = outcome.open_target {
+                let app_id = target.app_id.as_deref();
+                let workspace = chrome.borrow().tree().active_workspace().cloned();
+                let path = ui::RecordId::parse(&target.id).and_then(|id| id.file_path());
+                if let (Some(app_id), Some(workspace)) = (app_id, workspace) {
+                    if let Err(error) = crate::shell::launcher::launch_document_in_workspace(
+                        app_id,
+                        &workspace,
+                        path.as_deref(),
+                    ) {
+                        chrome.borrow_mut().push_notification(
+                            format!("Couldn't open {}", target.label),
+                            error.to_string(),
+                        );
+                    }
+                }
+            }
+            if outcome.compared {
+                chrome.borrow_mut().push_notification(
+                    "Comparison ready",
+                    "The exact causal before/after state is shown in History.",
                 );
             }
             if outcome.named {
@@ -7905,8 +7935,15 @@ impl ShellOverlayHost {
             // Room may have changed while closed — drop stale derived rows.
             self.room_activity.invalidate();
             if let Some(chrome) = self.chrome.as_ref() {
-                let workspace = chrome.borrow().tree().active.raw();
+                let (workspace, focus) = {
+                    let mut state = chrome.borrow_mut();
+                    let workspace = state.tree().active.raw();
+                    (workspace, state.take_activity_focus_request())
+                };
                 self.room_activity.begin_view(workspace);
+                if let Some(focus) = focus {
+                    self.room_activity.apply_deep_link(focus);
+                }
             }
         } else if !flags.room_activity
             && self.room_activity_was_open
