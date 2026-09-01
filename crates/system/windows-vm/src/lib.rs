@@ -33,6 +33,7 @@ mod command;
 mod config;
 mod guest;
 mod libvirt;
+mod presentation;
 mod publication;
 mod remote_app;
 mod state;
@@ -49,8 +50,11 @@ pub use guest::{
     AgentError, AgentHealth, GuestAgent, GuestLaunch, GuestSession, RdpEndpoint, Secret,
 };
 pub use libvirt::{DomainState, LibvirtBackend, VmBackend, VmBackendError, render_domain_xml};
+pub use presentation::{ApplicationPresentation, RecoveryPresentation};
 pub use publication::{Association, AssociationKind, Catalog, CatalogError, PublishedApplication};
-pub use remote_app::{FreeRdpLauncher, RemoteAppError, RemoteAppLauncher, RemoteAppProcess};
+pub use remote_app::{
+    AppFocusedSpiceLauncher, FreeRdpLauncher, RemoteAppError, RemoteAppLauncher, RemoteAppProcess,
+};
 pub use state::{
     AppliancePhase, ApplianceState, LicenseState, ProvisioningError, ProvisioningStore,
 };

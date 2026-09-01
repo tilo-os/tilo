@@ -72,7 +72,9 @@ while ($listener.IsListening) {
             'GET /v1/health' {
                 $windows = Get-CimInstance -ClassName SoftwareLicensingProduct | Where-Object { $_.ApplicationID -eq '55c92734-d682-4d71-983e-d6ec3f16059f' -and $_.PartialProductKey } | Select-Object -First 1
                 $license = if ($null -ne $windows -and $windows.LicenseStatus -eq 1) { 'licensed' } else { 'unlicensed' }
-                Write-Json $context @{ protocolMajor = 1; certificateSha256 = $certificateSha256; license = $license; catalogGeneration = 1 }; break
+                $os = Get-CimInstance -ClassName Win32_OperatingSystem
+                $presentation = if ($os.ProductType -eq 3) { 'native_rail_rds' } else { 'native_rail_client_best_effort' }
+                Write-Json $context @{ protocolMajor = 1; certificateSha256 = $certificateSha256; license = $license; catalogGeneration = 1; presentationBackend = $presentation }; break
             }
             'GET /v1/catalog' { Write-Json $context (Get-Content -Raw -LiteralPath $appsPath | ConvertFrom-Json); break }
             'POST /v1/launch' {
@@ -107,7 +109,9 @@ while ($listener.IsListening) {
                 $cleanupTrigger = New-ScheduledTaskTrigger -Once -At $when
                 $cleanupPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
                 Register-ScheduledTask -TaskName $taskName -Action $cleanupAction -Trigger $cleanupTrigger -Principal $cleanupPrincipal -Force | Out-Null
-                Write-Json $context @{ endpoint = "$guestIp`:3389"; bridgePort = $port; username = $name; password = $password; remoteAppAlias = $app.id; launchNonce = $request.launchNonce; certificateSha256 = $certificateSha256 }
+                $os = Get-CimInstance -ClassName Win32_OperatingSystem
+                $presentation = if ($os.ProductType -eq 3) { 'native_rail_rds' } else { 'native_rail_client_best_effort' }
+                Write-Json $context @{ endpoint = "$guestIp`:3389"; bridgePort = $port; username = $name; password = $password; remoteAppAlias = $app.id; launchNonce = $request.launchNonce; certificateSha256 = $certificateSha256; presentationBackend = $presentation }
                 break
             }
             default { Write-Json $context @{ error = 'not found' } 404; break }

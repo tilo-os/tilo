@@ -44,14 +44,15 @@ has "$RECOVERY" '--owner-authorized' 'desktop console has an explicit recovery g
 has "$RECOVERY" 'refuses to run a Wayland GUI as root' 'desktop viewer refuses root execution'
 has "$RECOVERY" 'remote-viewer --connect qemu:///system --attach qos-windows-appliance' 'recovery is an explicit libvirt attachment'
 
-has "$INSTALL" 'ProductType -ne 3' 'unsupported client Windows RemoteApp host fails closed'
+lacks "$INSTALL" 'ProductType -ne 3' 'client Windows is not rejected outright'
 has "$INSTALL" 'RDS-RD-Server' 'official RDS RemoteApp role is required'
 has "$INSTALL" 'TSAppAllowList' 'publication uses Windows RemoteApp allow list'
+has "$INSTALL" 'native client RAIL (best effort)' 'client Windows uses native best-effort RAIL'
+has "$INSTALL" 'never patches' 'client path does not patch the RDP service'
 has "$INSTALL" 'fDisableCdm' 'guest defaults to no drive redirection'
 has "$INSTALL" 'fDisableClip' 'guest defaults to no clipboard redirection'
 has "$INSTALL" "-RemoteAddress '192.168.251.1'" 'RDP is restricted to host-only endpoint'
 has "$INSTALL" "qOS guest bridge (host-only)" 'bridge firewall rule is host-only'
-has "$INSTALL" 'will not patch' 'guest explicitly refuses unsupported RDP patching'
 lacks "$INSTALL" 'Invoke-WebRequest.*RDP' 'guest does not download an RDP patcher'
 has "$BRIDGE" 'https://' 'bridge requires TLS'
 has "$BRIDGE" 'HMACSHA256' 'bridge authenticates requests'
@@ -66,5 +67,17 @@ has "$BRIDGE" "LicenseStatus -eq 1" 'guest health reports real Windows activatio
 has "$CONTAINERFILE" 'qos-windows-vm-network.service' 'image wires network service'
 has "$CONTAINERFILE" 'qos-windows-provision' 'image wires provision tool'
 has "$CONTAINERFILE" 'virt-viewer' 'image wires explicit recovery viewer'
+
+VM_ROOT="$(cd "$OS_ROOT/../crates/system/windows-vm" 2>/dev/null && pwd)"
+REMOTE_APP="$VM_ROOT/src/remote_app.rs"
+PRESENTATION="$VM_ROOT/src/presentation.rs"
+need "$REMOTE_APP"
+need "$PRESENTATION"
+has "$REMOTE_APP" 'OsString::from("xfreerdp")' 'RAIL uses the upstream FreeRDP client'
+lacks "$REMOTE_APP" 'binary: OsString::from("wlfreerdp")' 'RAIL does not assume a nonexistent Wayland wrapper'
+has "$REMOTE_APP" 'AppFocusedSpiceLauncher' 'SPICE is an explicit app-focused fallback'
+has "$REMOTE_APP" 'qemu:///system' 'SPICE attaches through local libvirt only'
+has "$PRESENTATION" 'ApplicationPresentation::AppFocusedSpice' 'presentation fallback is typed'
+lacks "$PRESENTATION" 'ApplicationPresentation::Recovery' 'recovery is not an application route'
 
 exit "$fails"
