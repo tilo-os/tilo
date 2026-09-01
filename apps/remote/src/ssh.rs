@@ -103,7 +103,7 @@ pub struct SshSession {
     grid: VtGrid,
     status: Arc<Mutex<SessionStatus>>,
     output_rx: Receiver<Vec<u8>>,
-    input_tx: UnboundedSender<Vec<u8>>,
+    input_tx: UnboundedSender<InputMessage>,
     // Kept so the worker thread isn't detached-orphaned; on drop the input
     // channel closes, which tells the worker to disconnect.
     _worker: std::thread::JoinHandle<()>,
@@ -121,7 +121,7 @@ impl SshSession {
     pub fn connect(cfg: SshConfig) -> anyhow::Result<SshSession> {
         let status = Arc::new(Mutex::new(SessionStatus::Connecting));
         let (output_tx, output_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-        let (input_tx, input_rx) = unbounded_channel::<Vec<u8>>();
+        let (input_tx, input_rx) = unbounded_channel::<InputMessage>();
         let grid = VtGrid::new(cfg.cols as usize, cfg.rows as usize);
 
         let status_worker = status.clone();
@@ -181,8 +181,30 @@ impl SshSession {
 
     /// Send keystrokes to the remote PTY.
     pub fn send_input(&self, bytes: Vec<u8>) {
-        let _ = self.input_tx.send(bytes);
+        let _ = self.input_tx.send(InputMessage { bytes, ack: None });
     }
+
+    /// Queue bytes and receive an acknowledgement only after russh has
+    /// accepted them on the live channel. Resource actions use this instead
+    /// of mistaking insertion into the UI→worker queue for delivery.
+    pub fn send_input_ack(
+        &self,
+        bytes: Vec<u8>,
+    ) -> Result<std::sync::mpsc::Receiver<Result<(), String>>, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.input_tx
+            .send(InputMessage {
+                bytes,
+                ack: Some(tx),
+            })
+            .map_err(|_| "SSH session input channel is closed".to_string())?;
+        Ok(rx)
+    }
+}
+
+struct InputMessage {
+    bytes: Vec<u8>,
+    ack: Option<std::sync::mpsc::Sender<Result<(), String>>>,
 }
 
 /// Locks `m`, recovering a poisoned mutex instead of panicking: one
@@ -214,7 +236,7 @@ async fn run_session(
     cfg: SshConfig,
     status: Arc<Mutex<SessionStatus>>,
     output_tx: std::sync::mpsc::Sender<Vec<u8>>,
-    mut input_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    mut input_rx: tokio::sync::mpsc::UnboundedReceiver<InputMessage>,
 ) -> anyhow::Result<()> {
     let config = Arc::new(client::Config {
         inactivity_timeout: Some(Duration::from_secs(3600)),
@@ -273,8 +295,20 @@ async fn run_session(
                 Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
                 _ => {}
             },
-            input = input_rx.recv() => if let Some(bytes) = input {
-                channel.data(&bytes[..]).await?;
+            input = input_rx.recv() => if let Some(input) = input {
+                match channel.data(&input.bytes[..]).await {
+                    Ok(()) => {
+                        if let Some(ack) = input.ack {
+                            let _ = ack.send(Ok(()));
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(ack) = input.ack {
+                            let _ = ack.send(Err(error.to_string()));
+                        }
+                        return Err(error.into());
+                    }
+                }
             } else {
                 // UI dropped the sender → tear the session down cleanly.
                 let _ = channel.eof().await;
@@ -488,7 +522,12 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         assert!(saw_banner, "banner never arrived in the grid");
 
         // Prove the upstream pipe: send a byte, expect the echo back.
-        ssh.send_input(b"Z".to_vec());
+        let acknowledgement = ssh.send_input_ack(b"Z".to_vec()).unwrap();
+        assert_eq!(
+            acknowledgement.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Ok(()),
+            "resource input is acknowledged only after the SSH channel write"
+        );
         let mut saw_echo = false;
         for _ in 0..200 {
             ssh.pump();
