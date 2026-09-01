@@ -72,7 +72,12 @@ jobs:
         shell: bash
         run: |
           base='${{ github.event.pull_request.base.sha }}'
-          if [ -z "$base" ] || [ "$base" = "null" ]; then
+          if [ '${{ github.ref }}' = 'refs/heads/codex/package-desktop-release' ]; then
+            # Every iteration must cover the complete release diff. Comparing
+            # only with github.event.before would forget changes from earlier
+            # branch pushes and could produce a misleading exact-SHA receipt.
+            base=origin/main
+          elif [ -z "$base" ] || [ "$base" = "null" ]; then
             base='${{ github.event.before }}'
           fi
           if [ "$base" = "0000000000000000000000000000000000000000" ]; then
