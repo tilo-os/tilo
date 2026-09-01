@@ -3,8 +3,8 @@
 //! A signing identity appears on a qOS machine the first time someone
 //! logs in; this module is the ceremony that puts a name and a
 //! consequence on it, rather than letting it appear silently. Three
-//! short screens, one real decision: what the identity is and signs
-//! for; **that there is no recovery**, acknowledged explicitly; and
+//! short screens, one real decision: what the identity enables;
+//! **that there is no recovery**, acknowledged explicitly; and
 //! where the key ended up, with its fingerprint.
 //!
 //! qOS mints a personal Ed25519 root plus a distinct device key certified
@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 /// Where the ceremony currently is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
-    /// What an identity is and what it signs for.
+    /// What an identity is and what it enables.
     Intro,
     /// Import an existing identity record instead of minting a new one.
     Connect,
@@ -36,15 +36,16 @@ pub enum Screen {
 }
 
 /// Title and body for the first screen.
-pub const INTRO_TITLE: &str = "This device is about to create your identity";
-pub const INTRO_BODY: &str = "qOS signs your work with a key that belongs to you. \
-     Collaborators use it to tell that an edit in a shared document really came from you, \
-     and peers use it to recognise this device when you share a workspace with them.";
+pub const INTRO_TITLE: &str = "Create your local qOS identity";
+pub const INTRO_BODY: &str = "qOS will create a cryptographic identity that belongs to you, \
+     then certify a separate key for this device. qOS uses that chain for collaboration and \
+     peer invitations. Individual app edits are not all cryptographically signed yet.";
 
-/// The specific things the identity does, so "what it signs for" is concrete rather than a vague reassurance.
+/// The specific things the identity does today, without promising that every
+/// application operation already carries a signature.
 pub const INTRO_POINTS: &[&str] = &[
-    "It signs the changes you make in shared documents, so your edits are attributable to you.",
-    "It identifies this device to people you share a workspace with.",
+    "It gives qOS collaboration features a stable identity for you.",
+    "It certifies this device so peers can recognise it during sharing.",
     "It is created here, on this machine. Nothing is uploaded and no server holds a copy.",
     "It is not an account and has no password — there is nothing to log in to.",
 ];
@@ -65,8 +66,8 @@ pub const NO_RECOVERY_POINTS: &[&str] = &[
     "If this device is lost or wiped and you kept no encrypted portable backup, the \
      identity cannot be rebuilt. Not by you, and not by anyone else.",
     "With no backup you would start again with a new identity and rejoin shared workspaces \
-     as a new participant. Work you already signed stays signed and stays yours; you just \
-     cannot sign anything new with the old key.",
+     as a new participant. Existing workspace data remains, but the old identity cannot be \
+     used or proved by you again.",
     "Setup can save an encrypted portable backup after creating the key. Keep that file and \
      its passphrase separately; together they can sign as you and certify devices, so treat \
      them like a key to your house.",
@@ -77,8 +78,8 @@ pub const ACKNOWLEDGEMENT: &str =
     "I understand that losing this device without a backup means losing this identity.";
 
 pub const DONE_TITLE: &str = "Your identity is ready";
-pub const DONE_BODY: &str = "This is the fingerprint others will see. You never have to type it — \
-     it is here so you can recognise it later.";
+pub const DONE_BODY: &str = "This fingerprint identifies your local cryptographic root. qOS can \
+     present it in collaboration flows that support verification; you do not need to type it.";
 
 /// The ceremony's state. Pure: no widgets, no I/O, no clock.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -416,6 +417,14 @@ mod tests {
             joined.contains("not an account"),
             "the intro must rule out the account mental model: {joined}"
         );
+    }
+
+    #[test]
+    fn identity_copy_does_not_overstate_per_edit_signing() {
+        let copy = format!("{} {}", INTRO_BODY, INTRO_POINTS.join(" ")).to_lowercase();
+        assert!(copy.contains("not all cryptographically signed"));
+        assert!(!copy.contains("signs the changes you make"));
+        assert!(!copy.contains("edit in a shared document really came from you"));
     }
 
     #[test]

@@ -56,6 +56,10 @@ Recommends:     mesa-vulkan-drivers
 # The frontend our backend registers against. Recommends, not Requires: the
 # session runs without it, sandboxed apps just lose their file chooser.
 Recommends:     xdg-desktop-portal
+# qOS network controls use NetworkManager's nmcli API. The session remains
+# usable without it and reports unavailable controls, so keep this soft for
+# hosts that deliberately use another network stack.
+Recommends:     NetworkManager
 # The session is only reachable through a login manager that scans
 # /usr/share/wayland-sessions. Not a hard Requires — greetd, SDDM and GDM all
 # qualify and the package should not pick one for the host.
@@ -142,6 +146,10 @@ grep -q '^QOS_SHELL=/usr/bin/qos-shell$' %{buildroot}%{_libexecdir}/qos-session
 for wrapper in qos-session qos-session-dev; do
     grep -q -- '--firstboot' "%{buildroot}%{_libexecdir}/$wrapper" || {
         echo "$wrapper does not pass --firstboot; the identity would never be provisioned" >&2
+        exit 1
+    }
+    grep -q -- '--host-desktop-session' "%{buildroot}%{_libexecdir}/$wrapper" || {
+        echo "$wrapper does not identify itself as a host desktop session" >&2
         exit 1
     }
 done

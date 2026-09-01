@@ -46,6 +46,41 @@ pub enum Mode {
     Native,
 }
 
+/// Whether this session is part of a complete qOS installation or was added
+/// to an existing Linux host.
+///
+/// This is deliberately an explicit launch contract.  A DRM backend can be
+/// used in both cases, while desktop-name and distribution environment
+/// variables are display-manager implementation details rather than install
+/// identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallMode {
+    /// The qOS image: machine identity material lives in the system identity
+    /// tree and the complete first-login experience is available.
+    FullSystem,
+    /// A qOS session installed alongside another desktop: identity material
+    /// must remain in this login's XDG-owned storage and setup is limited to
+    /// the qOS identity ceremony.
+    HostDesktop,
+}
+
+/// Process-global wrapper around [`parse_install_mode`].
+pub fn parse_install_mode_from_args() -> InstallMode {
+    let owned: Vec<String> = std::env::args().skip(1).collect();
+    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
+    parse_install_mode(&borrowed)
+}
+
+/// Resolve the installation context from the package-owned session wrapper.
+/// Absence means full qOS, preserving the existing image boot path exactly.
+pub fn parse_install_mode(args: &[&str]) -> InstallMode {
+    if args.contains(&"--host-desktop-session") {
+        InstallMode::HostDesktop
+    } else {
+        InstallMode::FullSystem
+    }
+}
+
 /// Which backend `Mode::Native` should drive: `--backend <winit|drm>` (or `--backend=<...>`), unknown/absent falling back to [`BackendKind::Winit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
@@ -274,6 +309,27 @@ mod tests {
     fn no_flag_defaults_native() {
         // `cargo run -p quick-desktop` (no flags) boots the real smithay server.
         assert!(matches!(parse_mode(&[]), Mode::Native));
+    }
+
+    #[test]
+    fn install_mode_defaults_to_the_full_qos_system() {
+        assert_eq!(parse_install_mode(&[]), InstallMode::FullSystem);
+        assert_eq!(
+            parse_install_mode(&["--backend", "drm"]),
+            InstallMode::FullSystem
+        );
+    }
+
+    #[test]
+    fn package_wrapper_explicitly_selects_a_host_desktop_session() {
+        assert_eq!(
+            parse_install_mode(&["--firstboot", "--host-desktop-session", "--backend", "drm"]),
+            InstallMode::HostDesktop
+        );
+        assert_eq!(
+            parse_install_mode(&["--host-desktop-session", "--mode", "native"]),
+            InstallMode::HostDesktop
+        );
     }
 
     #[test]
