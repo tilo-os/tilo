@@ -63,7 +63,9 @@ pub struct ManagedApplication {
     pub app_id: String,
     pub display_name: String,
     pub publisher: String,
-    pub capsule_id: String,
+    /// Present only for Wine/Proton private capsules. A published guest app
+    /// belongs to the shared Windows appliance and therefore has no capsule.
+    pub capsule_id: Option<String>,
     pub program_id: String,
     pub explanation: ExplainStatus,
     pub vm_launch_available: bool,

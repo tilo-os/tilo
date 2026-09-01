@@ -36,6 +36,12 @@ pub struct ApplianceState {
     pub license: LicenseState,
     /// Monotonic catalogue generation last accepted from the authenticated guest bridge.
     pub catalog_generation: u64,
+    /// Last complete, authenticated guest publication. This is a passive cache:
+    /// reading it never wakes the singleton appliance. A missing or mismatched
+    /// cache is deliberately treated as no published applications rather than
+    /// as an invitation to run arbitrary Windows input.
+    #[serde(default)]
+    pub cached_catalog: Option<crate::Catalog>,
 }
 
 impl Default for ApplianceState {
@@ -45,6 +51,7 @@ impl Default for ApplianceState {
             phase: AppliancePhase::NotProvisioned,
             license: LicenseState::Unknown,
             catalog_generation: 0,
+            cached_catalog: None,
         }
     }
 }
@@ -159,6 +166,7 @@ mod tests {
             phase: AppliancePhase::Ready,
             license: LicenseState::DigitallyActivated,
             catalog_generation: 19,
+            cached_catalog: None,
         };
         store.save(&state).unwrap();
         assert_eq!(store.load().unwrap(), state);

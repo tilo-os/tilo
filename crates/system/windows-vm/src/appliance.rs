@@ -179,6 +179,25 @@ where
         self.ready_state()
     }
 
+    /// Returns the last complete catalogue accepted from the authenticated
+    /// guest bridge. This deliberately performs no VM, guest-agent, or viewer
+    /// operation, so manager refreshes do not wake the fallback appliance.
+    ///
+    /// A missing, invalid, or generation-mismatched cache is not usable. It
+    /// therefore produces no application rows until a later explicit launch
+    /// refreshes the authenticated publication.
+    pub fn cached_catalog(&self) -> Result<Option<Catalog>, LaunchError> {
+        let state = self.ready_state()?;
+        let Some(catalog) = state.cached_catalog else {
+            return Ok(None);
+        };
+        catalog.validate()?;
+        if catalog.generation != state.catalog_generation {
+            return Ok(None);
+        }
+        Ok(Some(catalog))
+    }
+
     /// Refreshes the app catalogue only through the authenticated guest
     /// bridge. An RDP server alone is never enough to publish applications.
     pub fn catalog(&self) -> Result<Catalog, LaunchError> {
@@ -186,13 +205,7 @@ where
         let session = self.agent.wait_ready(self.agent_timeout)?;
         validate_health(&state, &session.health)?;
         let catalog = self.agent.catalog(&session)?;
-        catalog.validate()?;
-        if catalog.generation < state.catalog_generation {
-            return Err(LaunchError::CatalogRollback {
-                stored: state.catalog_generation,
-                received: catalog.generation,
-            });
-        }
+        self.accept_catalog(state, &catalog)?;
         Ok(catalog)
     }
 
@@ -205,13 +218,7 @@ where
         validate_health(&state, &session.health)?;
 
         let catalog = self.agent.catalog(&session)?;
-        catalog.validate()?;
-        if catalog.generation < state.catalog_generation {
-            return Err(LaunchError::CatalogRollback {
-                stored: state.catalog_generation,
-                received: catalog.generation,
-            });
-        }
+        self.accept_catalog(state, &catalog)?;
         let application = catalog
             .application(&request.application_id)
             .ok_or_else(|| LaunchError::ApplicationNotPublished(request.application_id.clone()))?;
@@ -260,6 +267,21 @@ where
         result
     }
 
+    fn accept_catalog(&self, state: ApplianceState, catalog: &Catalog) -> Result<(), LaunchError> {
+        catalog.validate()?;
+        if catalog.generation < state.catalog_generation {
+            return Err(LaunchError::CatalogRollback {
+                stored: state.catalog_generation,
+                received: catalog.generation,
+            });
+        }
+        let mut accepted = state;
+        accepted.catalog_generation = catalog.generation;
+        accepted.cached_catalog = Some(catalog.clone());
+        self.state.save(&accepted)?;
+        Ok(())
+    }
+
     fn ready_state(&self) -> Result<ApplianceState, LaunchError> {
         let state = self.state.load()?;
         if !state.can_launch() {
@@ -292,6 +314,7 @@ where
             phase: crate::AppliancePhase::Ready,
             license: session.health.license.clone(),
             catalog_generation: session.health.catalog_generation,
+            cached_catalog: None,
         };
         // The tools ISO contains the one-time enrollment key. Do not mark the
         // appliance launchable until both setup images have been removed from
@@ -514,6 +537,7 @@ mod tests {
                 phase: crate::AppliancePhase::Ready,
                 license: LicenseState::DigitallyActivated,
                 catalog_generation: 1,
+                cached_catalog: None,
             })
             .unwrap();
         WindowsAppliance::new(
@@ -623,5 +647,59 @@ mod tests {
             appliance.capabilities.revoked.lock().unwrap().as_slice(),
             ["lease"]
         );
+    }
+
+    #[test]
+    fn authenticated_catalogue_is_cached_for_passive_manager_enumeration() {
+        let directory = TempDir::new().unwrap();
+        let appliance = fixture(
+            &directory,
+            Agent {
+                available: true,
+                alias_on_launch: "qos-word".to_string(),
+            },
+            BrokeredLaunch::deny_all("lease"),
+        );
+        let fresh = appliance.catalog().unwrap();
+        assert_eq!(fresh.generation, 2);
+
+        let cached = appliance.cached_catalog().unwrap().unwrap();
+        assert_eq!(cached, fresh);
+        assert_eq!(appliance.state.load().unwrap().catalog_generation, 2);
+    }
+
+    #[test]
+    fn passive_catalogue_cache_never_contacts_an_unavailable_guest() {
+        let directory = TempDir::new().unwrap();
+        let appliance = fixture(
+            &directory,
+            Agent {
+                available: false,
+                alias_on_launch: "qos-word".to_string(),
+            },
+            BrokeredLaunch::deny_all("lease"),
+        );
+        let cached = Catalog {
+            generation: 1,
+            applications: vec![PublishedApplication {
+                id: "word".to_string(),
+                display_name: "Word".to_string(),
+                remote_app_alias: "qos-word".to_string(),
+                icon_sha256: None,
+                associations: Vec::new(),
+            }],
+        };
+        appliance
+            .state
+            .save(&ApplianceState {
+                schema_version: 1,
+                phase: crate::AppliancePhase::Ready,
+                license: LicenseState::DigitallyActivated,
+                catalog_generation: 1,
+                cached_catalog: Some(cached.clone()),
+            })
+            .unwrap();
+
+        assert_eq!(appliance.cached_catalog().unwrap(), Some(cached));
     }
 }

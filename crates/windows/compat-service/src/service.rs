@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use collab_types::caps::CapOverride;
 use compat_catalogue::{
@@ -18,6 +18,27 @@ use crate::{
     PlanError, ProgramKind, ResourceError, ResourceRequest, RuntimeRegistry, SandboxExecutor,
     SandboxPlanner, inspect_installer,
 };
+
+/// One application published by the authenticated singleton Windows guest.
+/// All identifiers are minted by qOS from the guest's opaque publication ID;
+/// they are never executable paths or client-selected launch arguments.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VmPublishedApplication {
+    pub entry_id: String,
+    pub app_id: String,
+    pub published_application_id: String,
+    pub display_name: String,
+    pub presentation: String,
+}
+
+/// Read-only manager snapshot of the singleton appliance. Implementations
+/// must obtain this from cached authenticated state and must not start a guest
+/// merely to enumerate applications.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VmInventory {
+    pub availability: VmAvailability,
+    pub applications: Vec<VmPublishedApplication>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -119,7 +140,7 @@ pub struct InstallReceipt {
 }
 
 pub struct VmRouteRequest<'a> {
-    pub route: &'a LaunchPlan,
+    pub route: RouteKind,
     pub app_id: &'a str,
     pub workspace_id: &'a str,
     pub published_application_id: &'a str,
@@ -166,6 +187,16 @@ pub trait VmDelegate: Send + Sync {
         )
     }
 
+    /// Enumerate only the persisted authenticated guest catalogue. The
+    /// default is deliberately empty: an adapter cannot make an arbitrary
+    /// Windows application appear merely because it claims the VM is ready.
+    fn inventory(&self) -> VmInventory {
+        VmInventory {
+            availability: self.availability(),
+            applications: Vec::new(),
+        }
+    }
+
     fn launch(
         &self,
         request: VmRouteRequest<'_>,
@@ -175,6 +206,27 @@ pub trait VmDelegate: Send + Sync {
 impl<T: VmDelegate + ?Sized> VmDelegate for Box<T> {
     fn availability(&self) -> VmAvailability {
         (**self).availability()
+    }
+
+    fn inventory(&self) -> VmInventory {
+        (**self).inventory()
+    }
+
+    fn launch(
+        &self,
+        request: VmRouteRequest<'_>,
+    ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
+        (**self).launch(request)
+    }
+}
+
+impl<T: VmDelegate + ?Sized> VmDelegate for Arc<T> {
+    fn availability(&self) -> VmAvailability {
+        (**self).availability()
+    }
+
+    fn inventory(&self) -> VmInventory {
+        (**self).inventory()
     }
 
     fn launch(
@@ -276,6 +328,14 @@ where
         self.vm.availability()
     }
 
+    /// Cached, authenticated inventory for the shared Windows appliance. It
+    /// is safe to use for a list refresh because the delegate must not start
+    /// the appliance here.
+    #[must_use]
+    pub fn vm_inventory(&self) -> VmInventory {
+        self.vm.inventory()
+    }
+
     pub fn register_program(
         &self,
         capsule_id: &str,
@@ -301,7 +361,7 @@ where
                 return Err(ServiceError::VmWasNotExplicit);
             }
             let running = self.vm.launch(VmRouteRequest {
-                route: &route,
+                route: RouteKind::Vm,
                 app_id: &input.app_id,
                 workspace_id: &input.workspace_id,
                 published_application_id: &input.program_id,
@@ -358,6 +418,38 @@ where
             ),
             success: outcome.success,
             exit_code: outcome.exit_code,
+        })
+    }
+
+    /// Launch a row from the authenticated guest publication. This bypasses
+    /// compatibility recipe resolution because a published VM app is not a
+    /// Wine/Proton capsule and has no host-controlled executable query.
+    pub fn launch_published_vm(
+        &self,
+        application: &VmPublishedApplication,
+        workspace_id: &str,
+        capabilities: &[CapOverride],
+        now_unix: Option<u64>,
+    ) -> Result<LaunchReceipt, ServiceError> {
+        validate_launch_id("app id", &application.app_id)?;
+        validate_launch_id("workspace id", workspace_id)?;
+        validate_launch_id(
+            "published application id",
+            &application.published_application_id,
+        )?;
+        let resolved = CapabilityPlan::for_app(&application.app_id, capabilities, now_unix);
+        let running = self.vm.launch(VmRouteRequest {
+            route: RouteKind::Vm,
+            app_id: &application.app_id,
+            workspace_id,
+            published_application_id: &application.published_application_id,
+            capabilities,
+            resolved_capabilities: &resolved,
+        })?;
+        Ok(LaunchReceipt {
+            explanation: published_vm_explanation(&application.presentation),
+            success: running.process.exit_code == Some(0),
+            exit_code: running.process.exit_code,
         })
     }
 
@@ -936,6 +1028,33 @@ fn explanation(
     }
 }
 
+pub(crate) fn published_vm_explanation(presentation: &str) -> ExplainStatus {
+    ExplainStatus {
+        route: RouteKind::Vm,
+        catalogue_record: None,
+        match_reason: MatchReason::AppId,
+        capsule_id: None,
+        runner: format!("managed Windows appliance · {presentation}"),
+        security_profile: "windows-app".to_string(),
+        vm_fallback_was_explicit: true,
+        // The current integrated SPICE presentation is intentionally
+        // playback-only and carries no generic host redirectors. qOS's normal
+        // portal broker may later project a narrower per-launch grant, but a
+        // catalogue row never claims that a file, network, or microphone is
+        // already visible to the shared guest.
+        access: AccessSummary {
+            files_read_only: 0,
+            files_read_write: 0,
+            network: "none".to_string(),
+            microphone: false,
+            audio_output: true,
+        },
+        summary: format!(
+            "Runs as a published application in the one shared Windows appliance via {presentation}."
+        ),
+    }
+}
+
 fn validate_launch_id(label: &'static str, value: &str) -> Result<(), ServiceError> {
     if value.is_empty()
         || value.len() > 128
@@ -987,6 +1106,7 @@ pub enum ServiceError {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use tempfile::TempDir;
@@ -1018,7 +1138,7 @@ mod tests {
 
     #[derive(Default)]
     struct Vm {
-        calls: AtomicUsize,
+        calls: Arc<AtomicUsize>,
     }
 
     impl VmDelegate for Vm {
@@ -1127,5 +1247,42 @@ mod tests {
             "capabilities": [{"effect": "grant"}]
         });
         assert!(serde_json::from_value::<crate::ProtocolRequest>(request).is_err());
+    }
+
+    #[test]
+    fn published_vm_launch_uses_only_the_authenticated_publication_id() {
+        let directory = TempDir::new().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let service = CompatibilityService::new(
+            catalogue(),
+            CapsuleStore::new(directory.path()).unwrap(),
+            SystemRuntimeRegistry::new(),
+            Resources,
+            Executor,
+            Vm {
+                calls: Arc::clone(&calls),
+            },
+            HostSession {
+                uid: 1000,
+                wayland_socket: PathBuf::from("/run/user/1000/nirios-ws-test"),
+                render_node: PathBuf::from("/dev/dri/renderD128"),
+            },
+        )
+        .unwrap();
+        let application = VmPublishedApplication {
+            entry_id: "windows-vm-opaque".to_string(),
+            app_id: "dev.qos.windows.vm.opaque".to_string(),
+            published_application_id: "published-word".to_string(),
+            display_name: "Word".to_string(),
+            presentation: "native RAIL".to_string(),
+        };
+
+        assert!(matches!(
+            service.launch_published_vm(&application, "workspace", &[], Some(1)),
+            Err(ServiceError::Vm(windows_vm::LaunchError::Agent(
+                windows_vm::AgentError::Unavailable
+            )))
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
