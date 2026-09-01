@@ -422,7 +422,7 @@ impl LiveProvider {
                         &installations,
                         vm_availability,
                         vm_installation,
-                        vm_uninstallation,
+                        vm_uninstallation.as_ref(),
                     );
                     self.refresh_pending = false;
                     self.next_refresh = Instant::now() + REFRESH_INTERVAL;
@@ -1026,7 +1026,7 @@ fn catalogue_from_managed(
     installations: &[ManagedInstallation],
     vm_availability: VmAvailability,
     vm_installation: Option<VmInstallation>,
-    vm_uninstallation: Option<VmUninstallation>,
+    vm_uninstallation: Option<&VmUninstallation>,
 ) -> Catalogue {
     let mut apps = applications
         .into_iter()
@@ -1034,7 +1034,7 @@ fn catalogue_from_managed(
             let installation = installations
                 .iter()
                 .find(|item| application.capsule_id.as_deref() == Some(item.capsule_id.as_str()));
-            app_from_managed(application, installation, vm_uninstallation.as_ref())
+            app_from_managed(application, installation, vm_uninstallation)
         })
         .collect::<Vec<_>>();
     for installation in installations {
