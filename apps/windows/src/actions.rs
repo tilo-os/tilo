@@ -8,7 +8,9 @@
 use crate::model::{Catalogue, Route};
 use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Availability,
+    ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind,
+    PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
 use serde::{Deserialize, Serialize};
 
@@ -55,9 +57,31 @@ fn immediate(id: &str, label: &str, action: &WindowsAction) -> ActionSpec {
     })
 }
 
-/// The resource tree intentionally exposes policy only. Operations that can
-/// run guest code are not exported remotely; they go through the local service
-/// with a portal-mediated user confirmation.
+fn availability(available: bool, reason: Option<&str>) -> Availability {
+    if available {
+        Availability::Available
+    } else {
+        Availability::Unavailable {
+            code: "unavailable".into(),
+            reason: reason
+                .unwrap_or("This operation is not available right now")
+                .into(),
+        }
+    }
+}
+
+fn effect(
+    id: &str,
+    label: &str,
+    type_id: &str,
+    payload: &str,
+    contract: ActionContract,
+) -> ActionSpec {
+    ActionSpec::operation(id, label, OperationKind::Effect, type_id, &payload)
+        .expect("Windows string payload is serializable")
+        .with_contract(contract)
+}
+
 pub fn provide_resources(catalogue: &Catalogue) -> Vec<Resource> {
     catalogue
         .apps
@@ -84,6 +108,68 @@ pub fn provide_resources(catalogue: &Catalogue) -> Vec<Resource> {
                     "Use catalogue recommendation",
                     &WindowsAction::ResetRoute {
                         app_id: app.id.clone(),
+                    },
+                ));
+            }
+            resource = resource.with_action(effect(
+                "launch",
+                "Launch",
+                "windows.launch",
+                &app.id,
+                ActionContract {
+                    availability: availability(
+                        app.launch_available,
+                        app.launch_unavailable_reason.as_deref(),
+                    ),
+                    retry: RetryPolicy::AtMostOnce,
+                    result: ResultSpec::Resource {
+                        resource_kind: "windows.session".into(),
+                    },
+                    ..ActionContract::default()
+                },
+            ));
+            resource = resource.with_action(effect(
+                "launch-vm-fallback",
+                "Open in Windows appliance",
+                "windows.launch-vm-fallback",
+                &app.id,
+                ActionContract {
+                    availability: availability(
+                        app.vm_fallback_available,
+                        app.vm_fallback_unavailable_reason.as_deref(),
+                    ),
+                    risk: RiskLevel::Privileged,
+                    permission: PermissionRequirement::Admin,
+                    retry: RetryPolicy::AtMostOnce,
+                    ..ActionContract::default()
+                },
+            ));
+            for (id, label, type_id, enabled, payload, confirmation, risk) in [
+                ("publish", "Publish launcher", "windows.publish", app.can_publish_vm_candidate, app.id.as_str(), ConfirmationPolicy::None, RiskLevel::Low),
+                ("retry-install", "Retry installation", "windows.retry-install", app.can_retry_install, app.capsule.as_str(), ConfirmationPolicy::None, RiskLevel::Privileged),
+                ("escalate-install", "Install in Windows appliance", "windows.escalate-install", app.can_escalate_install_to_vm, app.capsule.as_str(), ConfirmationPolicy::Confirm, RiskLevel::Privileged),
+                ("remove-launcher", "Remove launcher", "windows.remove-launcher", app.can_remove_launcher, app.id.as_str(), ConfirmationPolicy::Confirm, RiskLevel::Destructive),
+                ("uninstall", "Uninstall", "windows.uninstall", app.can_vendor_uninstall, app.id.as_str(), ConfirmationPolicy::Confirm, RiskLevel::Destructive),
+                ("delete-data", "Delete application data", "windows.delete-data", app.can_delete_data, app.capsule.as_str(), ConfirmationPolicy::Phrase { phrase: app.name.clone() }, RiskLevel::Destructive),
+            ] {
+                resource = resource.with_action(effect(
+                    id,
+                    label,
+                    type_id,
+                    payload,
+                    ActionContract {
+                        availability: availability(enabled, Some("The service did not offer this operation for the current installation state")),
+                        permission: PermissionRequirement::Admin,
+                        risk,
+                        confirmation,
+                        retry: RetryPolicy::AtMostOnce,
+                        execution: if matches!(type_id, "windows.retry-install" | "windows.escalate-install") {
+                            ExecutionMode::Background { cancellable: false }
+                        } else {
+                            ExecutionMode::Immediate
+                        },
+                        result: if matches!(type_id, "windows.retry-install" | "windows.escalate-install") { ResultSpec::Job } else { ResultSpec::None },
+                        ..ActionContract::default()
                     },
                 ));
             }
@@ -121,5 +207,16 @@ mod tests {
     fn every_catalogue_app_has_explicit_routes() {
         let res = provide_resources(&crate::provider::SampleProvider::new().catalogue());
         assert!(res.iter().all(|r| r.actions.len() >= 3));
+        assert!(
+            res.iter()
+                .all(|resource| resource.actions.iter().any(|action| action.id == "launch"))
+        );
+        assert!(
+            res.iter()
+                .flat_map(|resource| &resource.actions)
+                .any(|action| {
+                    action.id == "delete-data" && action.contract.risk == RiskLevel::Destructive
+                })
+        );
     }
 }

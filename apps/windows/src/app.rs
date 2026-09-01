@@ -1714,6 +1714,79 @@ impl Widget for WindowsApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         actions::provide_resources(&self.catalogue)
     }
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != qos_actions::OperationKind::Effect {
+            return Ok(false);
+        }
+        let id: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let app = self
+            .catalogue
+            .app(&id)
+            .cloned()
+            .or_else(|| {
+                self.catalogue
+                    .apps
+                    .iter()
+                    .find(|app| app.capsule == id)
+                    .cloned()
+            })
+            .ok_or_else(|| "Windows application is no longer available".to_string())?;
+        match type_id {
+            "windows.launch" if app.launch_available => {
+                if app.route == Route::Vm {
+                    self.provider.launch_vm_fallback(&app.id)?
+                } else {
+                    self.provider.launch(&app.id)?
+                }
+            }
+            "windows.launch-vm-fallback" if app.vm_fallback_available => {
+                self.provider.launch_vm_fallback(&app.id)?
+            }
+            "windows.publish" if app.can_publish_vm_candidate => {
+                self.provider.publish_vm_candidate(&app.id)?
+            }
+            "windows.retry-install" if app.can_retry_install => {
+                self.provider.retry_install(&app.capsule)?
+            }
+            "windows.escalate-install" if app.can_escalate_install_to_vm => {
+                self.provider.escalate_install_to_vm(&app.capsule)?
+            }
+            "windows.remove-launcher" if app.can_remove_launcher => {
+                self.provider.remove_launcher(&app.id)?
+            }
+            "windows.uninstall" if app.can_vendor_uninstall => {
+                if app.route == Route::Vm {
+                    self.provider.vendor_uninstall_vm(&app.id)?
+                } else {
+                    self.provider.vendor_uninstall(&app.capsule)?
+                }
+            }
+            "windows.delete-data" if app.can_delete_data => {
+                self.provider.delete_data(&app.capsule)?
+            }
+            "windows.launch"
+            | "windows.launch-vm-fallback"
+            | "windows.publish"
+            | "windows.retry-install"
+            | "windows.escalate-install"
+            | "windows.remove-launcher"
+            | "windows.uninstall"
+            | "windows.delete-data" => {
+                return Err("Windows operation is no longer available".into());
+            }
+            _ => return Ok(false),
+        }
+        self.notice = Some("Operation requested".into());
+        self.refresh();
+        Ok(true)
+    }
     fn test_id(&self) -> Option<&str> {
         Some("windows-app")
     }
