@@ -557,7 +557,7 @@ function Remove-Publication($request) {
 
 function Start-UninstallOperation($request) {
     Invoke-InstallerCleanup
-    foreach ($id in @($request.applicationId, $request.operationId)) { if (-not (Test-OpaqueId ([string]$id) 16)) { throw 'invalid uninstall operation identity' } }
+    if (-not (Test-OpaqueId ([string]$request.applicationId)) -or -not (Test-OpaqueId ([string]$request.operationId) 16)) { throw 'invalid uninstall operation identity' }
     $operationPath = Join-Path $operationStateRoot "$($request.operationId).json"
     if (Test-Path -LiteralPath $operationPath) { throw 'uninstall operation identity was already used' }
     $store = Get-UninstallRecordStore
