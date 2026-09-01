@@ -17,7 +17,9 @@ param(
     [ValidateScript({ Test-Path $_ -PathType Leaf })]
     [string]$ApplicationsPath,
     [Parameter(Mandatory = $false)]
-    [switch]$RotateManagedSessionCredential
+    [switch]$RotateManagedSessionCredential,
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipSpiceGuestTools
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,6 +46,55 @@ if ($isServer) {
     $rds = Get-WindowsFeature -Name RDS-RD-Server
     if (-not $rds.Installed) {
         throw 'Install and license the Windows Remote Desktop Services RemoteApp role before enabling qOS publication.'
+    }
+}
+
+# The host attaches Fedora's versioned virtio-win ISO during setup.  Its open
+# guest-tools bundle contains the Windows virtio drivers and upstream SPICE
+# vdagent; qOS does not download a mutable "latest" executable into Windows.
+# Keep the explicit skip for repair cases, but install the reviewed media by
+# default so the spicevmc channel can really drive resize and cursor updates.
+if (-not $SkipSpiceGuestTools) {
+    $vdService = Get-Service -Name 'vdservice' -ErrorAction SilentlyContinue
+    if ($null -eq $vdService) {
+        $guestTools = $null
+        foreach ($volume in (Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType = 5')) {
+            $candidate = Join-Path ([string]$volume.DeviceID + '\') 'virtio-win-guest-tools.exe'
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                $guestTools = $candidate
+                break
+            }
+        }
+        if ($null -eq $guestTools) {
+            throw 'Fedora virtio-win guest tools are not attached. Keep the qOS virtio-win setup CD mounted and retry, or use -SkipSpiceGuestTools for recovery-only setup.'
+        }
+        $expectedGuestToolsDigest = (Get-Content -Raw -LiteralPath $virtioGuestToolsDigestPath).Trim().ToLowerInvariant()
+        if ($expectedGuestToolsDigest -notmatch '^[0-9a-f]{64}$') {
+            throw 'The qOS virtio-win guest-tools digest is invalid.'
+        }
+        $actualGuestToolsDigest = (Get-FileHash -LiteralPath $guestTools -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualGuestToolsDigest -cne $expectedGuestToolsDigest) {
+            throw 'The attached virtio-win guest-tools installer does not match the digest-pinned Fedora package.'
+        }
+        $guestToolsSignature = Get-AuthenticodeSignature -LiteralPath $guestTools
+        if ($guestToolsSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or $null -eq $guestToolsSignature.SignerCertificate) {
+            throw "The attached virtio-win guest-tools installer has no valid Windows publisher signature (status: $($guestToolsSignature.Status)). Check the Windows clock and trusted roots, reattach the qOS/Fedora virtio-win media, and retry; use -SkipSpiceGuestTools only for recovery."
+        }
+        # The WiX bundle supports standard install/passive/norestart switches.
+        # Passive mode remains visible and lets Windows surface any driver
+        # publisher decision instead of suppressing it behind SYSTEM context.
+        $guestToolsProcess = Start-Process -FilePath $guestTools -ArgumentList @('/install', '/passive', '/norestart') -Wait -PassThru
+        if ($guestToolsProcess.ExitCode -notin @(0, 1641, 3010)) {
+            throw "Fedora virtio-win guest tools failed with exit code $($guestToolsProcess.ExitCode)."
+        }
+        $vdService = Get-Service -Name 'vdservice' -ErrorAction SilentlyContinue
+    }
+    if ($null -eq $vdService) {
+        throw 'The virtio-win installation completed without the SPICE VDAgent service; automatic SPICE resize is unavailable.'
+    }
+    Set-Service -Name 'vdservice' -StartupType Automatic
+    if ($vdService.Status -ne 'Running') {
+        Start-Service -Name 'vdservice'
     }
 }
 
