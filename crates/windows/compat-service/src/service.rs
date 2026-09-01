@@ -901,6 +901,56 @@ where
         )
     }
 
+    /// Move a failed or unsatisfactory Wine/Proton setup into the singleton
+    /// Windows appliance without asking the user to find the installer again.
+    /// The retained file is reopened through the capsule's no-follow directory
+    /// chain and fully re-inspected before the authenticated guest upload.
+    pub fn escalate_install_to_vm(
+        &self,
+        capsule_id: &str,
+        workspace_id: &str,
+    ) -> Result<VmInstallation, ServiceError> {
+        validate_launch_id("capsule id", capsule_id)?;
+        validate_launch_id("workspace id", workspace_id)?;
+        let _mutation = self
+            .installation_gate
+            .lock()
+            .map_err(|_| ServiceError::StateLock)?;
+        let state = self
+            .store
+            .load(capsule_id)?
+            .ok_or_else(|| CapsuleError::NotFound(capsule_id.to_string()))?;
+        let installation = state
+            .installation
+            .as_ref()
+            .ok_or(ServiceError::NotManagedInstallation)?;
+        if matches!(
+            installation.status,
+            InstallationStatus::Installing
+                | InstallationStatus::Uninstalling
+                | InstallationStatus::Uninstalled
+        ) {
+            return Err(ServiceError::VmEscalationUnavailable);
+        }
+        let mut source = self
+            .store
+            .open_retained_installer(capsule_id, installation)?;
+        let inspection = inspect_installer(&mut source, &installation.source_name)?;
+        if inspection.sha256 != installation.sha256
+            || inspection.kind != installation.kind
+            || inspection.display_name != installation.display_name
+        {
+            return Err(ServiceError::CapsuleInstallerMismatch);
+        }
+        let input = vm_installer_input(&inspection);
+        source
+            .seek(SeekFrom::Start(0))
+            .map_err(InstallerError::from)?;
+        self.vm
+            .install_from_portal(workspace_id, input, source)
+            .map_err(Into::into)
+    }
+
     /// Remove an installed application by retiring its entire isolated
     /// capsule. Running a vendor uninstaller would add code execution without
     /// improving host cleanup: all private registry/files already live below
@@ -1499,17 +1549,20 @@ pub enum ServiceError {
     CapsuleInstallerMismatch,
     #[error("this installation did not publish a vendor uninstaller")]
     VendorUninstallerUnavailable,
+    #[error("this installation cannot be escalated while its current lifecycle action is active")]
+    VmEscalationUnavailable,
     #[error("capsule service state lock is poisoned")]
     StateLock,
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use tempfile::TempDir;
+    use tempfile::{NamedTempFile, TempDir};
 
     use crate::{ExecutionOutcome, LaunchLease, ResourceError, SystemRuntimeRegistry};
 
@@ -1539,6 +1592,7 @@ mod tests {
     #[derive(Default)]
     struct Vm {
         calls: Arc<AtomicUsize>,
+        install_calls: Arc<AtomicUsize>,
     }
 
     impl VmDelegate for Vm {
@@ -1551,6 +1605,38 @@ mod tests {
                 windows_vm::AgentError::Unavailable,
             ))
         }
+
+        fn install_from_portal(
+            &self,
+            workspace_id: &str,
+            input: VmInstallerInput,
+            mut source: File,
+        ) -> Result<VmInstallation, windows_vm::LaunchError> {
+            assert_eq!(workspace_id, "workspace");
+            assert_eq!(input.source_name, "Favorite_App.exe");
+            let mut bytes = Vec::new();
+            source.read_to_end(&mut bytes).unwrap();
+            assert_eq!(hex_lower(Sha256::digest(&bytes)), input.sha256);
+            self.install_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(VmInstallation {
+                detail: "Windows setup is starting.".to_string(),
+                phase: VmInstallationPhase::Starting,
+                exit_code: None,
+                candidates: Vec::new(),
+            })
+        }
+    }
+
+    fn pe_installer() -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        let mut bytes = vec![0_u8; 0x200];
+        bytes[..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&0x80_u32.to_le_bytes());
+        bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
+        bytes[0x84..0x86].copy_from_slice(&0x8664_u16.to_le_bytes());
+        file.write_all(&bytes).unwrap();
+        file.flush().unwrap();
+        file
     }
 
     fn catalogue() -> Catalogue {
@@ -1615,6 +1701,40 @@ mod tests {
         });
         assert!(matches!(result, Err(ServiceError::ProgramNotRegistered(_))));
         assert_eq!(service.vm.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn explicit_vm_escalation_reuses_the_digest_pinned_capsule_installer() {
+        let directory = TempDir::new().unwrap();
+        let service = service(&directory);
+        let installer = pe_installer();
+        let outcome = service
+            .install(
+                &mut installer.reopen().unwrap(),
+                "Favorite_App.exe",
+                "workspace",
+                &[],
+                Some(1),
+            )
+            .unwrap();
+        let InstallOutcome::Confirmation { input, .. } = outcome;
+        let receipt = service
+            .install_in_capsule(
+                installer.reopen().unwrap(),
+                "Favorite_App.exe",
+                "workspace",
+                &[],
+                Some(1),
+                &input,
+            )
+            .unwrap();
+
+        let status = service
+            .escalate_install_to_vm(&receipt.capsule_id, "workspace")
+            .unwrap();
+
+        assert_eq!(status.phase, VmInstallationPhase::Starting);
+        assert_eq!(service.vm.install_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
