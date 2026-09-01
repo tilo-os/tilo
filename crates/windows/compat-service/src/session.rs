@@ -29,6 +29,8 @@ const MAX_HANDOFF_BYTES: usize = 4 * 1024;
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_CLIENT_WORKERS: usize = 8;
 const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(2);
+// An `i32` is exactly four bytes by definition; `SCM_RIGHTS` carries one raw fd.
+const SCM_RIGHTS_FD_BYTES: u32 = 4;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -562,6 +564,10 @@ fn validate_handoff(handoff: &SessionHandoff) -> Result<(), SessionError> {
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the exhaustive protocol dispatch keeps descriptor and authority checks in one boundary"
+)]
 fn handle_request<R, B, E, V>(
     managed: &ManagedCompatibility<R, B, E, V>,
     authority: &dyn CapabilityAuthority,
@@ -717,6 +723,10 @@ where
     })
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one projection builds the complete manager DTO from server-owned state"
+)]
 fn list_applications<R, B, E, V>(
     managed: &ManagedCompatibility<R, B, E, V>,
     authority: &dyn CapabilityAuthority,
@@ -1027,7 +1037,7 @@ fn recv_length_with_fd(stream: &UnixStream) -> Result<([u8; 4], Option<OwnedFd>)
     unsafe {
         let mut header = libc::CMSG_FIRSTHDR(std::ptr::addr_of!(message));
         while !header.is_null() {
-            let expected = libc::CMSG_LEN(std::mem::size_of::<i32>() as u32) as usize;
+            let expected = libc::CMSG_LEN(SCM_RIGHTS_FD_BYTES) as usize;
             if (*header).cmsg_level != libc::SOL_SOCKET
                 || (*header).cmsg_type != libc::SCM_RIGHTS
                 || (*header).cmsg_len != expected
@@ -1088,7 +1098,7 @@ fn send_length_with_fd(
         }
         (*header).cmsg_level = libc::SOL_SOCKET;
         (*header).cmsg_type = libc::SCM_RIGHTS;
-        (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<i32>() as u32) as usize;
+        (*header).cmsg_len = libc::CMSG_LEN(SCM_RIGHTS_FD_BYTES) as usize;
         std::ptr::write_unaligned(libc::CMSG_DATA(header).cast::<i32>(), descriptor);
         let sent = libc::sendmsg(
             stream.as_raw_fd(),
@@ -1107,7 +1117,7 @@ fn send_length_with_fd(
 
 fn cmsg_space_for_fd() -> usize {
     // SAFETY: CMSG_SPACE is a pure size/alignment calculation.
-    unsafe { libc::CMSG_SPACE(std::mem::size_of::<i32>() as u32) as usize }
+    unsafe { libc::CMSG_SPACE(SCM_RIGHTS_FD_BYTES) as usize }
 }
 
 fn control_words(bytes: usize) -> usize {

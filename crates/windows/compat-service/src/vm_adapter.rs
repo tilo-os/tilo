@@ -4,7 +4,7 @@
 //! path, a catalogue recipe, or a manager request into an RDP drive.  The
 //! existing privileged portal/capability service supplies an already-resolved
 //! [`windows_vm::VmLaunchGrants`] projection; `windows-vm` then materialises
-//! and revokes the corresponding lease around the RemoteApp process.
+//! and revokes the corresponding lease around the `RemoteApp` process.
 
 use compat_catalogue::Layer;
 use launcher::capabilities::CapabilityPlan;
@@ -29,7 +29,7 @@ pub trait VmPortalAuthority: Send + Sync {
 }
 
 /// Safe bootstrap authority for deployments where the privileged qOS portal
-/// bridge has not been installed yet.  RemoteApp itself still works, but it
+/// bridge has not been installed yet.  `RemoteApp` itself still works, but it
 /// receives no files, clipboard, microphone, or egress.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DenyAllVmPortalAuthority;

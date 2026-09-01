@@ -77,7 +77,7 @@ pub fn inspect_installer(
     source.seek(SeekFrom::Start(0))?;
     let mut digest = Sha256::new();
     let mut total = 0_u64;
-    let mut buffer = [0_u8; 128 * 1024];
+    let mut buffer = vec![0_u8; 128 * 1024].into_boxed_slice();
     loop {
         let read = source.read(&mut buffer)?;
         if read == 0 {
@@ -89,7 +89,10 @@ pub fn inspect_installer(
         if total > MAX_INSTALLER_BYTES {
             return Err(InstallerError::TooLarge(total));
         }
-        digest.update(&buffer[..read]);
+        let chunk = buffer
+            .get(..read)
+            .ok_or(InstallerError::InvalidReadLength)?;
+        digest.update(chunk);
     }
     if total == 0 {
         return Err(InstallerError::Empty);
@@ -188,6 +191,8 @@ pub enum InstallerError {
     UnsupportedMachine(u16),
     #[error("file extension does not match its validated Windows format")]
     ExtensionMismatch,
+    #[error("installer reader returned an invalid byte count")]
+    InvalidReadLength,
     #[error("reading selected installer failed: {0}")]
     Io(#[from] std::io::Error),
 }

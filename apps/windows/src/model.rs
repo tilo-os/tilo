@@ -90,6 +90,10 @@ pub struct Grant {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "this read-only view model mirrors independent server-authorized UI actions"
+)]
 pub struct WindowsApp {
     pub id: String,
     pub name: String,
