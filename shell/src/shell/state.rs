@@ -1304,6 +1304,13 @@ impl Workspace {
     /// list, and the capability is what replicates and what `decide` reads.
     pub fn set_owner(&mut self, user: impl Into<UserId>) {
         let user = user.into();
+        let owner_capability_id = format!("owner-{}", self.id.raw());
+        // The owner capability has a stable id because the replicated map is
+        // keyed by capability id.  Remove its previous in-memory value before
+        // changing the subject: `grant_capability` deliberately merges only
+        // identical subjects, and would otherwise leave the former owner with
+        // a second local Admin grant until the next document rebuild.
+        self.revoke_capability(&owner_capability_id);
         self.owner = Some(user.clone());
         self.grant_capability(
             CapOverride::membership(
@@ -1311,8 +1318,26 @@ impl Workspace {
                 self.room.to_string(),
                 Verb::Admin,
             )
-            .with_id(format!("owner-{}", self.id.raw())),
+            .with_id(owner_capability_id),
         );
+    }
+
+    /// Transfer the structural owner role.
+    ///
+    /// This is intentionally stricter than ordinary role administration:
+    /// delegated administrators cannot transfer ownership, and the recipient
+    /// must already be an administrator.  The latter makes transfer an
+    /// explicit two-step ceremony (promote, then transfer) and avoids handing
+    /// the workspace to a mistyped or stale identity.
+    pub fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool {
+        if current_owner == new_owner
+            || self.owner.as_ref() != Some(current_owner)
+            || self.role_of(new_owner) != Some(CapRole::Admin)
+        {
+            return false;
+        }
+        self.set_owner(new_owner.clone());
+        true
     }
 
     /// Give up administration because this workspace joined a room it
@@ -4665,6 +4690,44 @@ impl WorkspaceTree {
             return false;
         }
         self.doc_revoke_capability(workspace_id, cap_id);
+        self.flush_to_disk();
+        true
+    }
+
+    /// Transfer structural ownership and persist the owner record together
+    /// with its replacement Admin capability.
+    ///
+    /// Only the exact current owner may do this; an Admin delegation is not
+    /// equivalent to the root authority. The recipient must already be an
+    /// Admin, so callers have a reviewable promotion step before this
+    /// irreversible governance operation.
+    pub fn transfer_workspace_ownership(
+        &mut self,
+        workspace_id: WorkspaceId,
+        current_owner: &UserId,
+        new_owner: &UserId,
+    ) -> bool {
+        let Some(room) = self.room_of(workspace_id) else {
+            return false;
+        };
+        if !room.is_nil() && !self.governs_room(room) {
+            return false;
+        }
+        let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) else {
+            return false;
+        };
+        if !ws.transfer_owner_as(current_owner, new_owner) {
+            return false;
+        }
+        let owner_capability_id = format!("owner-{}", workspace_id.raw());
+        let owner_capability = ws
+            .capabilities
+            .iter()
+            .find(|cap| cap.id == owner_capability_id)
+            .cloned()
+            .expect("owner transfer always installs its root capability");
+        self.doc_set_owner(workspace_id, new_owner);
+        self.doc_insert_capability(workspace_id, &owner_capability);
         self.flush_to_disk();
         true
     }
@@ -9007,5 +9070,59 @@ mod peer_window_merge_tests {
             other => panic!("expected the new app, got {other:?}"),
         }
         assert!(changed);
+    }
+
+    #[test]
+    fn replacing_owner_removes_the_previous_root_capability() {
+        let mut ws = Workspace::empty("Security review");
+        ws.set_owner("alice");
+        ws.set_owner("bob");
+
+        assert_eq!(ws.owner.as_deref(), Some("bob"));
+        assert_eq!(ws.role_of(&"bob".to_string()), Some(CapRole::Admin));
+        assert_eq!(ws.role_of(&"alice".to_string()), None);
+        assert_eq!(
+            ws.capabilities
+                .iter()
+                .filter(|cap| cap.id == format!("owner-{}", ws.id.raw()))
+                .count(),
+            1,
+        );
+    }
+
+    #[test]
+    fn ownership_transfer_requires_exact_owner_and_preexisting_admin() {
+        let mut tree = WorkspaceTree::default();
+        let workspace_id = tree.append_empty_workspace("Security review");
+        let alice = "alice".to_string();
+        let bob = "bob".to_string();
+        let delegated_admin = "mallory".to_string();
+        tree.adopt_ownerless_workspaces(&alice);
+
+        assert!(!tree.transfer_workspace_ownership(workspace_id, &alice, &bob));
+
+        for person in [&bob, &delegated_admin] {
+            tree.grant_in_workspace(
+                workspace_id,
+                &alice,
+                CapOverride::membership(
+                    Subject::Principal(Principal::Person(person.clone())),
+                    tree.room_of(workspace_id).unwrap().to_string(),
+                    Verb::Admin,
+                ),
+            )
+            .expect("owner may promote a collaborator");
+        }
+
+        assert!(!tree.transfer_workspace_ownership(workspace_id, &delegated_admin, &bob));
+        assert!(tree.transfer_workspace_ownership(workspace_id, &alice, &bob));
+        let ws = tree
+            .workspaces
+            .iter()
+            .find(|ws| ws.id == workspace_id)
+            .unwrap();
+        assert_eq!(ws.owner.as_ref(), Some(&bob));
+        assert_eq!(ws.role_of(&alice), None);
+        assert_eq!(ws.role_of(&bob), Some(CapRole::Admin));
     }
 }
