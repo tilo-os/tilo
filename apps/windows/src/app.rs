@@ -110,6 +110,7 @@ impl WindowsApp {
                     None,
                 )
                 .with_size(108.0, 32.0)
+                .with_enabled(false)
                 .on_click(move || signal.set(Some(route)))
             })
             .collect();
@@ -137,18 +138,22 @@ impl WindowsApp {
                 None,
             )
             .with_size(195.0, 32.0)
+            .with_enabled(false)
             .on_click(move || reset.set(true)),
             launch_button: Button::new("windows-launch", "windows-launch", None)
                 .with_size(132.0, 32.0)
+                .with_enabled(false)
                 .on_click(move || launch.set(true)),
             vm_fallback_button: Button::new("windows-open-in-vm", "windows-open-in-vm", None)
                 .with_size(174.0, 32.0)
+                .with_enabled(false)
                 .on_click(move || vm_fallback.set(true)),
             install_button: Button::new("windows-install", "windows-install", None)
                 .with_size(256.0, 32.0)
                 .on_click(move || install.set(true)),
             retry_button: Button::new("windows-retry-install", "windows-retry-install", None)
                 .with_size(118.0, 32.0)
+                .with_enabled(false)
                 .on_click(move || retry.set(true)),
             remove_launcher_button: Button::new(
                 "windows-remove-launcher",
@@ -156,6 +161,7 @@ impl WindowsApp {
                 None,
             )
             .with_size(142.0, 32.0)
+            .with_enabled(false)
             .on_click(move || remove_launcher.set(true)),
             vendor_uninstall_button: Button::new(
                 "windows-vendor-uninstall",
@@ -163,9 +169,11 @@ impl WindowsApp {
                 None,
             )
             .with_size(142.0, 32.0)
+            .with_enabled(false)
             .on_click(move || vendor_uninstall.set(true)),
             delete_data_button: Button::new("windows-delete-data", "windows-delete-data", None)
                 .with_size(132.0, 32.0)
+                .with_enabled(false)
                 .on_click(move || delete_data.set(true)),
             route_signal,
             reset_signal,
@@ -183,6 +191,31 @@ impl WindowsApp {
     }
     fn selected_app(&self) -> Option<&crate::model::WindowsApp> {
         self.catalogue.apps.get(self.selected)
+    }
+    /// Conditional controls are retained widgets, while the detail pane is
+    /// immediate-mode. Clear their interactive state whenever the selected
+    /// model can change so a control which is no longer painted cannot retain
+    /// an old hit rectangle or activation callback.
+    fn deactivate_selection_controls(&mut self) {
+        for button in &mut self.route_buttons {
+            button.set_enabled(false);
+        }
+        self.reset_button.set_enabled(false);
+        self.launch_button.set_enabled(false);
+        self.vm_fallback_button.set_enabled(false);
+        self.retry_button.set_enabled(false);
+        self.remove_launcher_button.set_enabled(false);
+        self.vendor_uninstall_button.set_enabled(false);
+        self.delete_data_button.set_enabled(false);
+
+        self.route_signal.set(None);
+        self.reset_signal.set(false);
+        self.launch_signal.set(false);
+        self.vm_fallback_signal.set(false);
+        self.retry_signal.set(false);
+        self.remove_launcher_signal.set(false);
+        self.vendor_uninstall_signal.set(false);
+        self.delete_data_signal.set(false);
     }
     fn queue_import_path(&mut self, path: &Path) {
         let source_name = path
@@ -228,6 +261,7 @@ impl WindowsApp {
         }
     }
     fn refresh(&mut self) {
+        self.deactivate_selection_controls();
         self.catalogue = self.provider.catalogue();
         if let Some(notice) = self.provider.take_notice() {
             self.notice = Some(notice);
@@ -239,6 +273,7 @@ impl WindowsApp {
     fn hit(&mut self, hit: Hit) {
         match hit {
             Hit::App(index) => {
+                self.deactivate_selection_controls();
                 self.selected = index;
                 self.notice = None;
                 self.confirm_vendor_uninstall = None;
@@ -246,14 +281,21 @@ impl WindowsApp {
             }
         }
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered dispatcher drains the retained controls before mutating the selected model"
+    )]
     fn apply_control_signals(&mut self) {
         if self.install_signal.replace(false) && self.portal_rx.is_none() {
             self.portal_rx = Some(installer_pick_request().send());
             self.notice = Some(strings::t("windows-choose-installer"));
         }
         if let Some(route) = self.route_signal.take()
-            && let Some(id) = self.selected_app().map(|app| app.id.clone())
+            && let Some(app) = self.selected_app()
+            && app.route_override_available
+            && (route != Route::Vm || app.launch_available)
         {
+            let id = app.id.clone();
             self.notice = self.provider.set_route_override(&id, route).err();
             if self.notice.is_none() {
                 self.notice = Some(strings::t("windows-route-set"));
@@ -261,8 +303,11 @@ impl WindowsApp {
             self.refresh();
         }
         if self.reset_signal.replace(false)
-            && let Some(id) = self.selected_app().map(|app| app.id.clone())
+            && let Some(app) = self.selected_app()
+            && app.route_override_available
+            && app.uses_override()
         {
+            let id = app.id.clone();
             self.notice = self.provider.reset_route_override(&id).err();
             if self.notice.is_none() {
                 self.notice = Some(strings::t("windows-route-reset"));
@@ -270,11 +315,11 @@ impl WindowsApp {
             self.refresh();
         }
         if self.launch_signal.replace(false)
-            && let Some(id) = self.selected_app().map(|app| app.id.clone())
+            && let Some(app) = self.selected_app()
+            && app.launch_available
         {
-            let uses_vm = self
-                .selected_app()
-                .is_some_and(|app| app.route == Route::Vm);
+            let id = app.id.clone();
+            let uses_vm = app.route == Route::Vm;
             self.notice = if uses_vm {
                 self.provider.launch_vm_fallback(&id).err()
             } else {
@@ -285,32 +330,41 @@ impl WindowsApp {
             }
         }
         if self.vm_fallback_signal.replace(false)
-            && let Some(id) = self.selected_app().map(|app| app.id.clone())
+            && let Some(app) = self.selected_app()
+            && app.route != Route::Vm
+            && app.vm_fallback_available
         {
+            let id = app.id.clone();
             self.notice = self.provider.launch_vm_fallback(&id).err();
             if self.notice.is_none() {
                 self.notice = Some(strings::t("windows-vm-launch-queued"));
             }
         }
         if self.retry_signal.replace(false)
-            && let Some(capsule) = self.selected_app().map(|app| app.capsule.clone())
+            && let Some(app) = self.selected_app()
+            && app.can_retry_install
         {
+            let capsule = app.capsule.clone();
             self.notice = self.provider.retry_install(&capsule).err();
             if self.notice.is_none() {
                 self.notice = Some(strings::t("windows-retrying"));
             }
         }
         if self.remove_launcher_signal.replace(false)
-            && let Some(id) = self.selected_app().map(|app| app.id.clone())
+            && let Some(app) = self.selected_app()
+            && app.can_remove_launcher
         {
+            let id = app.id.clone();
             self.notice = self.provider.remove_launcher(&id).err();
             if self.notice.is_none() {
                 self.notice = Some(strings::t("windows-launcher-removed"));
             }
         }
         if self.vendor_uninstall_signal.replace(false)
-            && let Some(capsule) = self.selected_app().map(|app| app.capsule.clone())
+            && let Some(app) = self.selected_app()
+            && app.can_vendor_uninstall
         {
+            let capsule = app.capsule.clone();
             if self.confirm_vendor_uninstall.as_deref() == Some(capsule.as_str()) {
                 self.confirm_vendor_uninstall = None;
                 self.notice = self.provider.vendor_uninstall(&capsule).err();
@@ -324,8 +378,10 @@ impl WindowsApp {
             }
         }
         if self.delete_data_signal.replace(false)
-            && let Some(capsule) = self.selected_app().map(|app| app.capsule.clone())
+            && let Some(app) = self.selected_app()
+            && app.can_delete_data
         {
+            let capsule = app.capsule.clone();
             if self.confirm_delete_data.as_deref() == Some(capsule.as_str()) {
                 self.confirm_delete_data = None;
                 self.notice = self.provider.delete_data(&capsule).err();
@@ -640,6 +696,7 @@ impl Widget for WindowsApp {
             );
             self.vm_fallback_button.apply_layout_external(vm);
             self.vm_fallback_button.set_style(ButtonStyle::Neutral);
+            self.vm_fallback_button.set_enabled(true);
             self.vm_fallback_button.draw(scene, t, tr, theme, presence);
         }
         let card = Rect::new(detail.x0, detail.y0 + 118.0, detail.x1, detail.y0 + 238.0);
@@ -710,6 +767,7 @@ impl Widget for WindowsApp {
             );
             self.reset_button.apply_layout_external(reset);
             self.reset_button.set_style(ButtonStyle::Neutral);
+            self.reset_button.set_enabled(app.route_override_available);
             self.reset_button.draw(scene, t, tr, theme, presence);
         }
         let info = Rect::new(
@@ -801,6 +859,7 @@ impl Widget for WindowsApp {
             let rect = Rect::new(manage_x, manage_y, manage_x + 118.0, manage_y + 32.0);
             self.retry_button.apply_layout_external(rect);
             self.retry_button.set_style(ButtonStyle::Neutral);
+            self.retry_button.set_enabled(true);
             self.retry_button.draw(scene, t, tr, theme, presence);
             manage_x += 128.0;
         }
@@ -808,6 +867,7 @@ impl Widget for WindowsApp {
             let rect = Rect::new(manage_x, manage_y, manage_x + 142.0, manage_y + 32.0);
             self.remove_launcher_button.apply_layout_external(rect);
             self.remove_launcher_button.set_style(ButtonStyle::Neutral);
+            self.remove_launcher_button.set_enabled(true);
             self.remove_launcher_button
                 .draw(scene, t, tr, theme, presence);
             manage_x += 152.0;
@@ -816,6 +876,7 @@ impl Widget for WindowsApp {
             let rect = Rect::new(manage_x, manage_y, manage_x + 142.0, manage_y + 32.0);
             self.vendor_uninstall_button.apply_layout_external(rect);
             self.vendor_uninstall_button.set_style(ButtonStyle::Neutral);
+            self.vendor_uninstall_button.set_enabled(true);
             self.vendor_uninstall_button
                 .draw(scene, t, tr, theme, presence);
             manage_x += 152.0;
@@ -824,6 +885,7 @@ impl Widget for WindowsApp {
             let rect = Rect::new(manage_x, manage_y, manage_x + 132.0, manage_y + 32.0);
             self.delete_data_button.apply_layout_external(rect);
             self.delete_data_button.set_style(ButtonStyle::Neutral);
+            self.delete_data_button.set_enabled(true);
             self.delete_data_button.draw(scene, t, tr, theme, presence);
         }
         if let Some(notice) = &self.notice {
@@ -1053,5 +1115,57 @@ mod tests {
                 .iter()
                 .any(|item| item.capsule == capsule)
         );
+    }
+
+    #[test]
+    fn changing_selection_deactivates_controls_that_are_not_drawn_for_the_new_app() {
+        let mut app = WindowsApp::new_offline();
+        // Simulate the first row having been painted with every conditional
+        // control active. The second row deliberately exposes none of them.
+        for button in &mut app.route_buttons {
+            button.set_enabled(true);
+        }
+        app.reset_button.set_enabled(true);
+        app.launch_button.set_enabled(true);
+        app.vm_fallback_button.set_enabled(true);
+        app.retry_button.set_enabled(true);
+        app.remove_launcher_button.set_enabled(true);
+        app.vendor_uninstall_button.set_enabled(true);
+        app.delete_data_button.set_enabled(true);
+        app.route_signal.set(Some(Route::Wine));
+        app.reset_signal.set(true);
+        app.launch_signal.set(true);
+        app.vm_fallback_signal.set(true);
+        app.retry_signal.set(true);
+        app.remove_launcher_signal.set(true);
+        app.vendor_uninstall_signal.set(true);
+        app.delete_data_signal.set(true);
+
+        let next = &mut app.catalogue.apps[1];
+        next.route_override_available = false;
+        next.launch_available = false;
+        next.vm_fallback_available = false;
+        next.can_retry_install = false;
+        next.can_remove_launcher = false;
+        next.can_vendor_uninstall = false;
+        next.can_delete_data = false;
+        app.hit(Hit::App(1));
+
+        assert!(app.route_buttons.iter().all(|button| !button.is_enabled()));
+        assert!(!app.reset_button.is_enabled());
+        assert!(!app.launch_button.is_enabled());
+        assert!(!app.vm_fallback_button.is_enabled());
+        assert!(!app.retry_button.is_enabled());
+        assert!(!app.remove_launcher_button.is_enabled());
+        assert!(!app.vendor_uninstall_button.is_enabled());
+        assert!(!app.delete_data_button.is_enabled());
+        assert_eq!(app.route_signal.get(), None);
+        assert!(!app.reset_signal.get());
+        assert!(!app.launch_signal.get());
+        assert!(!app.vm_fallback_signal.get());
+        assert!(!app.retry_signal.get());
+        assert!(!app.remove_launcher_signal.get());
+        assert!(!app.vendor_uninstall_signal.get());
+        assert!(!app.delete_data_signal.get());
     }
 }

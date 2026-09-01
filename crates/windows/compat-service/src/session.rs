@@ -844,6 +844,7 @@ where
     Ok(ProtocolResponse::Listed {
         applications,
         installations,
+        vm_availability,
     })
 }
 
