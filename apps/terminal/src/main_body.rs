@@ -21,8 +21,8 @@ use ui::collaboration::PresencePayload;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::{AppKind as PermAppKind, PermissionContext};
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
+use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::{
     DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste,
     clipboard_paste_primary, extend_span_drag, line_boundaries, word_boundaries,
@@ -1213,20 +1213,44 @@ const HISTORY_TRIM_SLACK: usize = 256;
 const HISTORY_TRIM_SLACK: usize = 8;
 
 impl Widget for TerminalWidget {
+    #[allow(
+        clippy::expect_used,
+        reason = "JSON serialization of an owned String is infallible"
+    )]
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut terminal = Resource::new("terminal", "terminal.session", "Terminal session");
         terminal.actions.push(ActionSpec::prompted_operation(
-            "send", "Send text", "Text to send", "command", OperationKind::Effect,
+            "send",
+            "Send text",
+            "Text to send",
+            "command",
+            OperationKind::Effect,
             |text| EncodedAction::encode_operation("terminal.send", &text).expect("string payload"),
         ));
-        for (id, label) in [("interrupt", "Interrupt process"), ("clear", "Clear screen")] {
-            if let Ok(spec) = ActionSpec::operation(id, label, OperationKind::Effect, "terminal.control", &id) { terminal.actions.push(spec); }
+        for (id, label) in [
+            ("interrupt", "Interrupt process"),
+            ("clear", "Clear screen"),
+        ] {
+            if let Ok(spec) =
+                ActionSpec::operation(id, label, OperationKind::Effect, "terminal.control", &id)
+            {
+                terminal.actions.push(spec);
+            }
         }
         vec![terminal]
     }
 
-    fn invoke_resource_operation(&mut self, kind: OperationKind, type_id: &str, payload: &[u8], _doc: &AutoCommit, _path: &ObjId) -> Result<bool, String> {
-        if kind != OperationKind::Effect { return Ok(false); }
+    fn invoke_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != OperationKind::Effect {
+            return Ok(false);
+        }
         let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         match type_id {
             "terminal.send" => self.write_input(value.as_bytes()),

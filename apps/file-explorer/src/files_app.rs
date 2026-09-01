@@ -4833,6 +4833,10 @@ impl FileExplorerWidget {
 }
 
 impl Widget for FileExplorerWidget {
+    #[allow(
+        clippy::expect_used,
+        reason = "JSON serialization of an owned String is infallible"
+    )]
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
         let mut folder = Resource::new(
             format!("folder:{}", self.current_path.display()),
@@ -4882,7 +4886,7 @@ impl Widget for FileExplorerWidget {
     ) -> Result<bool, String> {
         match (kind, type_id) {
             (OperationKind::Effect, "files.refresh") => self.refresh(),
-            (OperationKind::View, "files.navigate") | (OperationKind::View, "files.open") => {
+            (OperationKind::View, "files.navigate" | "files.open") => {
                 let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 self.open_path(PathBuf::from(value));
             }

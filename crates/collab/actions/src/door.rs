@@ -186,11 +186,10 @@ impl std::fmt::Display for DoorError {
             DoorError::UnexpectedArgument(a) => {
                 write!(f, "action ({}, {}) takes no argument", a.resource, a.action)
             }
-            DoorError::InvalidArguments(why) => write!(f, "{why}"),
+            DoorError::InvalidArguments(why) | DoorError::Failed(why) => write!(f, "{why}"),
             DoorError::UnregisteredType(t) => {
                 write!(f, "no decoder registered for action type `{t}`")
             }
-            DoorError::Failed(why) => write!(f, "{why}"),
         }
     }
 }
@@ -270,6 +269,12 @@ pub fn encode(
 /// Build an action from the canonical typed JSON argument object advertised
 /// by [`ActionDescriptor::params`]. Binding is strict and completes before any
 /// document mutation or application effect is attempted.
+///
+/// # Errors
+///
+/// Returns [`DoorError::Unknown`] if `address` names no resource/action in
+/// `resources`, or [`DoorError::InvalidArguments`] if `arguments` do not match
+/// the action's declared schema.
 pub fn encode_json(
     resources: &[Resource],
     address: &ActionAddress,
@@ -353,6 +358,12 @@ pub fn invoke_with_context(
 }
 
 /// Typed-argument counterpart to [`invoke`].
+///
+/// # Errors
+///
+/// Returns the errors documented by [`encode_json`],
+/// [`DoorError::UnregisteredType`] if `registry` has no decoder for the encoded
+/// action's type, or [`DoorError::Failed`] if dispatch fails once decoded.
 pub fn invoke_json(
     doc: &mut crate::action::Doc,
     resources: &[Resource],

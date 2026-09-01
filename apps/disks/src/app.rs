@@ -3259,7 +3259,7 @@ impl Widget for DisksApp {
             return Ok(false);
         }
         let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let action = ActionKind::from_key(args.first().map(String::as_str).unwrap_or(""))
+        let action = ActionKind::from_key(args.first().map_or("", String::as_str))
             .ok_or_else(|| "unknown disk operation".to_string())?;
         let leaf = args
             .get(1)

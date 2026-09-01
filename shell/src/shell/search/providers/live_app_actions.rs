@@ -71,6 +71,28 @@ impl LiveAppActionsProvider {
             }
         }
     }
+
+    fn action_params(action: &PublishedAction) -> Vec<ActionParam> {
+        if !action.params.is_empty() {
+            return action.params.clone();
+        }
+        match action.input {
+            PublishedInput::None => Vec::new(),
+            PublishedInput::Text {
+                wants_content: true,
+                ..
+            } => vec![ActionParam::required(
+                "content",
+                ParamType::Text,
+                "Content supplied to the application action",
+            )],
+            PublishedInput::Text { .. } => vec![ActionParam::required(
+                "argument",
+                ParamType::Text,
+                "Text supplied to the application action",
+            )],
+        }
+    }
 }
 
 impl SearchProvider for LiveAppActionsProvider {
@@ -78,7 +100,7 @@ impl SearchProvider for LiveAppActionsProvider {
         PROVIDER_ID
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Application actions"
     }
 
@@ -123,26 +145,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 } else {
                     continue;
                 };
-                let params = if action.params.is_empty() {
-                    match action.input {
-                        PublishedInput::None => Vec::new(),
-                        PublishedInput::Text {
-                            wants_content: true,
-                            ..
-                        } => vec![ActionParam::required(
-                            "content",
-                            ParamType::Text,
-                            "Content supplied to the application action",
-                        )],
-                        PublishedInput::Text { .. } => vec![ActionParam::required(
-                            "argument",
-                            ParamType::Text,
-                            "Text supplied to the application action",
-                        )],
-                    }
-                } else {
-                    action.params.clone()
-                };
+                let params = Self::action_params(action);
                 let broker = self.broker.clone();
                 let peer_id = surface.peer_id;
                 let resource = action.resource.clone();
