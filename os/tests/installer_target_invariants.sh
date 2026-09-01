@@ -10,6 +10,7 @@ encryptor="$repo_root/os/usr/libexec/qos-disk-encrypt"
 containerfile="$repo_root/os/Containerfile.installer"
 builder="$repo_root/os/dev/build-custom-installer.sh"
 firstboot_user="$repo_root/os/usr/libexec/qos-firstboot-user"
+preflight="$repo_root/os/usr/libexec/qos-verified-boot-install-preflight"
 fail=0
 
 ok() { printf 'ok    %s\n' "$*"; }
@@ -62,15 +63,28 @@ fi
 
 if grep -Fq 'ENCRYPT=1' "$backend" \
    && grep -Fq 'native qOS requires --pin' "$backend" \
-   && grep -Fq 'verified_tpm || ENROL_ARGS+=(--passphrase)' "$backend" \
+   && grep -Fq 'if verified_tpm; then' "$backend" \
+   && grep -Fq 'ENROL_ARGS+=(--passphrase)' "$backend" \
    && grep -Fq '&& kernel_lockdown_active' "$backend" \
    && grep -Fq '&& target_verified_boot_ready' "$backend" \
    && grep -Fq 'qos-verified-boot-install-preflight' "$backend" \
+   && grep -Fq -- '--prepare-target "$target_root"' "$backend" \
    && grep -Fq 'startup PIN must be 6 to 12 digits' "$backend" \
    && grep -Fq 'disk passphrase must contain at least 12 characters' "$backend"; then
   ok "native qOS requires encryption and target-verified short-PIN startup"
 else
   bad "native qOS installer can bypass encryption or the startup secret"
+fi
+
+if [ -x "$preflight" ] \
+   && grep -Fq 'owner_db_is_enrolled' "$preflight" \
+   && grep -Fq 'qos-secureboot verify' "$preflight" \
+   && grep -Fq 'qos-secureboot sign' "$preflight" \
+   && grep -Fq 'missing sealed {required} section' "$preflight" \
+   && grep -Fq 'composefs=sha' "$preflight"; then
+  ok "TPM PIN preflight carries enrolled owner trust into sealed target UKIs"
+else
+  bad "target verified-boot preflight does not prove and sign the complete UKI chain"
 fi
 
 disk_encrypt="$repo_root/os/usr/libexec/qos-disk-encrypt"
