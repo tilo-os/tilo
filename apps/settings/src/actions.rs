@@ -37,8 +37,8 @@ use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, Resource, ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+    ResourceProvider,
 };
 
 use crate::prefs::{AppearancePrefs, SystemPrefs};

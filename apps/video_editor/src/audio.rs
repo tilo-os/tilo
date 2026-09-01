@@ -1228,7 +1228,6 @@ impl SystemSink {
 impl MonitorSink for SystemSink {
     fn push(&mut self, block: &[f32]) -> bool {
         use media::gst;
-        use media::gst::prelude::*;
 
         let mut bytes = Vec::with_capacity(block.len() * 4);
         for s in block {

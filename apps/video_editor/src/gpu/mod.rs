@@ -2055,7 +2055,7 @@ mod tests {
     /// Returns `(project, under_clip, over_clip, under_media, over_media)`.
     fn stacked() -> (Project, Uuid, Uuid, Uuid, Uuid) {
         let mut p = Project::new("stack");
-        let mut add_media = |p: &mut Project, name: &str| {
+        let add_media = |p: &mut Project, name: &str| {
             let id = Uuid::new_v4();
             p.media.push(MediaItem {
                 id,

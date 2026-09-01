@@ -45,7 +45,6 @@ chrono = { workspace = true, default-features = true }
 icu_datetime = "2.3.0"
 icu_decimal = "2.3.0"
 icu_locale = "2.3.0"
-fixed_decimal = "0.7.2"
 # Reads the qOS FUSE driver's `user.qos.sync` extended attribute so the file
 # manager can show each workspace file's sync/hydration state.
 xattr = "1.6.1"
