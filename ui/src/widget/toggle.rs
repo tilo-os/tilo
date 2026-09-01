@@ -10,11 +10,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-struct LocalBoolBinding {
-    state: crate::LocalState<bool>,
-    observed_revision: u64,
-}
-
 type BoolChangeCallback = Box<dyn FnMut(bool)>;
 
 /// `is_hovered`, `is_checked`, `is_focused` and `enabled` are four
@@ -42,7 +37,7 @@ pub struct Toggle {
     accessible_name: Option<String>,
     /// Typed process-local model mirrored in both directions during the
     /// ordinary widget sync/event lifecycle.
-    local_state: Option<LocalBoolBinding>,
+    local_state: Option<crate::local_state::LocalBinding<bool>>,
     /// Observes user intent without owning model synchronization.
     on_change: Option<BoolChangeCallback>,
     interaction: crate::interaction::InteractionEnvironment,
@@ -75,12 +70,10 @@ impl Toggle {
     /// synchronization pass. Use [`Self::on_change`] only to observe user
     /// changes, not to keep the model in sync.
     pub fn from_state(state: &crate::LocalState<bool>) -> Self {
+        let (checked, binding) = crate::local_state::LocalBinding::new(state);
         Self {
-            is_checked: state.get(),
-            local_state: Some(LocalBoolBinding {
-                state: state.clone(),
-                observed_revision: state.revision(),
-            }),
+            is_checked: checked,
+            local_state: Some(binding),
             ..Self::new("toggle", "")
         }
     }
@@ -112,11 +105,8 @@ impl Toggle {
     }
 
     fn publish_local_state(&mut self) {
-        if let Some(binding) = &mut self.local_state
-            && binding.state.get() != self.is_checked
-        {
-            binding.state.set(self.is_checked);
-            binding.observed_revision = binding.state.revision();
+        if let Some(binding) = &mut self.local_state {
+            binding.publish(&self.is_checked);
         }
     }
 
@@ -393,10 +383,8 @@ impl Widget for Toggle {
 
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Some(binding) = &mut self.local_state {
-            let revision = binding.state.revision();
-            if revision != binding.observed_revision {
-                binding.observed_revision = revision;
-                self.is_checked = binding.state.get();
+            if let Some(checked) = binding.poll() {
+                self.is_checked = checked;
             }
             return;
         }

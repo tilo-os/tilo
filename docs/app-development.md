@@ -666,6 +666,8 @@ form needs no snapshots, callbacks, or custom widget:
 ```rust
 let query = LocalState::new(String::from("status:open"));
 let live_updates = LocalState::new(true);
+let opacity = LocalState::new(0.8);
+let region = LocalState::new(String::from("Europe/Berlin"));
 let summary = Text::from_state(&query, |value| format!("Filter: {value}"));
 let input = TextInput::from_state(&query)
     .with_id("filter-input")
@@ -674,18 +676,27 @@ let updates = labeled_check(
     "live-updates-label",
     Checkbox::from_state(&live_updates).with_id("live-updates"),
 );
+let opacity_field = NumberInput::from_state(&opacity)
+    .with_range(0.0, 1.0)
+    .with_step(0.05);
+let opacity_slider = Slider::from_state(&opacity);
+let region_field = Dropdown::from_state(
+    vec![String::from("Europe/Berlin"), String::from("Asia/Tokyo")],
+    &region,
+);
 ```
 
-`TextInput::from_state`, `Checkbox::from_state`, and `Toggle::from_state` all
-use the same explicit typed contract. `set` replaces a local value and `update`
-mutates it in place. A bound text change invalidates rendering, multiline
-intrinsic measurement, and accessibility in the same synchronization pass
-without being misreported as a user edit. Bind several controls to the same
-handle for synchronized master/detail or inspector views. An optional
-`on_change` callback observes committed user edits without owning
-synchronization; `set_text`, `set_checked`, and model synchronization do not
-invoke it. Use `Text::dynamic` when the value comes from an existing local
-owner instead of `LocalState`.
+`TextInput`, `Checkbox`, `Toggle`, `NumberInput`, `Slider`, and `Dropdown` all
+offer `from_state` with the same explicit typed contract. `set` replaces a
+local value and `update` mutates it in place. A bound text change invalidates
+rendering, multiline intrinsic measurement, and accessibility in the same
+synchronization pass without being misreported as a user edit. Bind several
+controls to the same handle for synchronized master/detail or inspector views;
+the `opacity_field` and `opacity_slider` above stay synchronized without
+app-owned fan-out. An optional `on_change` callback observes committed user
+edits without owning synchronization; programmatic setters and model
+synchronization do not invoke it. Use `Text::dynamic` when the value comes from
+an existing local owner instead of `LocalState`.
 
 `LocalState` is also the typed boundary for background work. Create a writer
 before spawning the worker; every completed mutation wakes the standard app
