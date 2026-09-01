@@ -255,7 +255,13 @@ pub(crate) enum Hit {
     CallMute,
     CallDeafen,
     CallAudioOnly,
-    /// Start/stop sharing this peer's screen (portal `ScreenCast`).
+    /// Internal start/stop seam for a restored or remote-mediated screen
+    /// share. The shipped call chrome does not expose it until production has
+    /// a real PipeWire capture producer.
+    #[allow(
+        dead_code,
+        reason = "kept for defensive stop handling and the tested screen-share transport seam"
+    )]
     CallShareScreen,
     CallExpand,
     CallLeave,
@@ -1323,9 +1329,13 @@ impl ChatApp {
         true
     }
 
-    /// Whether this peer is currently sharing its screen — the shared-truth flag
-    /// the featured tile and the Share/Stop control key off. True only after the
+    /// Whether this peer is currently sharing its screen — the shared-truth
+    /// flag used by the featured tile and transport tests. True only after the
     /// portal granted a source (see [`Self::acquire_screen`]).
+    #[allow(
+        dead_code,
+        reason = "queried by transport tests while the production capture control is hidden"
+    )]
     pub(crate) fn sharing_screen(&self) -> bool {
         self.call.sharing
     }

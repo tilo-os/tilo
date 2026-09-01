@@ -2606,7 +2606,9 @@ fn start_portal_backend(
         caller_map: crate::portal::CallerMap::new(),
         file_picker: crate::portal::FilePickerSpawnerHandle::new(Arc::new(pickers.clone())),
         screencast_provisioner: crate::portal::ScreenCastStreamProvisionerHandle::new(Arc::new(
-            crate::portal::MockScreenCastProvisioner::new_with_node(1, "default"),
+            crate::portal::UnavailableScreenCastProvisioner::new(
+                "native compositor capture has not been connected to PipeWire",
+            ),
         )),
         remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
         documents: documents.clone(),
