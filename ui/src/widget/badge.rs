@@ -112,6 +112,44 @@ impl Badge {
             BadgeContent::Text(s) => Some(s.clone()),
         }
     }
+
+    /// Immediate-mode counterpart to the retained badge widget. Shell
+    /// overlays commonly own their own row geometry, so this preserves the
+    /// shared badge's tint, readable ink, and text metrics without forcing a
+    /// throwaway Taffy node for every frame.
+    pub fn paint_at(
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        label: &str,
+        tint: Color,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if rect.width() <= 0.0 || rect.height() <= 0.0 || label.is_empty() {
+            return;
+        }
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.full));
+        scene.fill(vello::peniko::Fill::NonZero, transform, tint, None, &shape);
+        let size = theme.tokens.typography.scale.xs;
+        let (tw, th) = text_renderer.measure(label, size, None);
+        text_renderer.draw_text(
+            scene,
+            label,
+            size,
+            theme.tokens.colors.ink_on_any(
+                &[tint],
+                Color::WHITE,
+                crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
+            ),
+            translated(
+                transform,
+                rect.center().x - f64::from(tw) / 2.0,
+                rect.center().y - f64::from(th) / 2.0,
+            ),
+            None,
+        );
+    }
 }
 
 /// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
@@ -330,6 +368,26 @@ mod tests {
         assert_eq!(
             fills, 0,
             "Badge::count(0) must not emit any COLOR draw tags (got {fills})",
+        );
+    }
+
+    #[test]
+    fn immediate_pill_uses_the_shared_badge_painter() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        Badge::paint_at(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 72.0, 20.0),
+            "Owner",
+            theme.tokens.colors.accent[5],
+            &mut tr,
+            &theme,
+        );
+        assert!(
+            scene.encoding().draw_tags.contains(&DrawTag::COLOR),
+            "the immediate badge bridge must paint its pill rather than becoming a no-op"
         );
     }
 
