@@ -32,6 +32,13 @@ tree, target list, document, and versioned audit report; `--no-scenarios` keeps
 the structural and Rust-test phases for apps that deliberately have no saved
 flows. Arguments after `--` are forwarded to the Cargo test harness.
 
+For serialized screens, that structural preflight crosses file boundaries: it
+checks every component node against `src/components/mod.rs`, verifies each
+registered module and graph factory still exists, and validates the generated
+display factory's required string props with the screen path and node id in the
+diagnostic. A customized router context is reported as app-owned and therefore
+not statically verifiable; generated contexts fail early on missing factories.
+
 With no name, `qos-dev new` runs as a small terminal wizard for the package
 name, window title, application ID, and starter shape. It presents eight
 numbered templates with their intended use; numbers, full names, and shortcuts

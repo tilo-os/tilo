@@ -4988,6 +4988,14 @@ fn check_source_file(
     });
 }
 
+#[derive(Clone, Debug)]
+struct GraphComponentUse {
+    screen: String,
+    node: String,
+    name: String,
+    props: serde_json::Map<String, serde_json::Value>,
+}
+
 fn check_ui_graph_artifacts(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
     let files = match files_with_extension(&app_dir.join("ui"), "json") {
         Ok(files) => files,
@@ -4997,6 +5005,7 @@ fn check_ui_graph_artifacts(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
                 label: "UI graphs",
                 detail,
             });
+            check_graph_component_contract(app_dir, &[], checks);
             return;
         }
     };
@@ -5006,15 +5015,30 @@ fn check_ui_graph_artifacts(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
             label: "UI graphs",
             detail: "no serialized screens".to_owned(),
         });
+        check_graph_component_contract(app_dir, &[], checks);
         return;
     }
+    let mut component_uses = Vec::new();
     for path in files {
         let detail = relative_artifact(app_dir, &path);
         let result = std::fs::read_to_string(&path)
             .map_err(anyhow::Error::from)
             .and_then(|source| qos_ui_graph::UiDocument::from_json(&source).map_err(Into::into));
         let (status, detail) = match result {
-            Ok(_) => (DoctorStatus::Pass, detail),
+            Ok(document) => {
+                component_uses.extend(document.nodes().into_iter().filter_map(|node| match node {
+                    qos_ui_graph::UiNode::Component {
+                        id, name, props, ..
+                    } => Some(GraphComponentUse {
+                        screen: detail.clone(),
+                        node: id.clone(),
+                        name: name.clone(),
+                        props: props.clone(),
+                    }),
+                    _ => None,
+                }));
+                (DoctorStatus::Pass, detail)
+            }
             Err(error) => (DoctorStatus::Fail, format!("{detail}: {error}")),
         };
         checks.push(DoctorCheck {
@@ -5023,6 +5047,162 @@ fn check_ui_graph_artifacts(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
             detail,
         });
     }
+    check_graph_component_contract(app_dir, &component_uses, checks);
+}
+
+fn check_graph_component_contract(
+    app_dir: &Path,
+    uses: &[GraphComponentUse],
+    checks: &mut Vec<DoctorCheck>,
+) {
+    let source = std::fs::read_to_string(app_dir.join("src/lib.rs")).unwrap_or_default();
+    let legacy_context = source.contains(&legacy_graph_app_template());
+    let generated_context = source.contains("components::ui_graph_context()");
+    let app_owned_context = !legacy_context && !generated_context;
+    let registry = match inspect_component_registry(app_dir) {
+        Ok(Some((components, graph_components))) => {
+            checks.push(DoctorCheck {
+                status: DoctorStatus::Pass,
+                label: "component registry",
+                detail: format!(
+                    "{} component module(s), {} graph factory/factories",
+                    components.len(),
+                    graph_components.len()
+                ),
+            });
+            Some((components, graph_components))
+        }
+        Ok(None) if uses.is_empty() || app_owned_context => None,
+        Ok(None) => {
+            checks.push(DoctorCheck {
+                status: DoctorStatus::Fail,
+                label: "component registry",
+                detail: "serialized component nodes require generated src/components/mod.rs"
+                    .to_owned(),
+            });
+            None
+        }
+        Err(error) => {
+            checks.push(DoctorCheck {
+                status: DoctorStatus::Fail,
+                label: "component registry",
+                detail: error.to_string(),
+            });
+            return;
+        }
+    };
+    if uses.is_empty() {
+        return;
+    }
+    if legacy_context {
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Fail,
+            label: "UI components",
+            detail: "src/lib.rs uses the legacy default router context; run `qos-dev add component <name> --mount <screen>` to migrate it"
+                .to_owned(),
+        });
+        return;
+    }
+    if app_owned_context {
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Warning,
+            label: "UI components",
+            detail: format!(
+                "{} serialized component node(s) use an app-owned build context; factory registration cannot be checked structurally",
+                uses.len()
+            ),
+        });
+        return;
+    }
+    let Some((components, graph_components)) = registry else {
+        return;
+    };
+    for usage in uses {
+        check_graph_component_use(usage, &components, &graph_components, checks);
+    }
+}
+
+fn inspect_component_registry(app_dir: &Path) -> Result<Option<(Vec<String>, BTreeSet<String>)>> {
+    let path = app_dir.join("src/components/mod.rs");
+    let source = match std::fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    syn::parse_file(&source).with_context(|| format!("parsing {}", path.display()))?;
+    let components = parse_component_registry(&source)?;
+    let graph_components = parse_graph_component_registry(&source, &components)?;
+    for name in &components {
+        let (module, _) = component_rust_names(name)?;
+        let module_path = app_dir.join("src/components").join(format!("{module}.rs"));
+        let module_source = std::fs::read_to_string(&module_path)
+            .with_context(|| format!("reading registered component {name:?}"))?;
+        syn::parse_file(&module_source)
+            .with_context(|| format!("parsing registered component {name:?}"))?;
+        if graph_components.contains(name) && !module_source.contains("pub fn register_ui_graph(") {
+            bail!("graph component {name:?} has no register_ui_graph factory");
+        }
+    }
+    Ok(Some((components, graph_components)))
+}
+
+fn check_graph_component_use(
+    usage: &GraphComponentUse,
+    components: &[String],
+    graph_components: &BTreeSet<String>,
+    checks: &mut Vec<DoctorCheck>,
+) {
+    let location = format!("{} node {:?}", usage.screen, usage.node);
+    if !graph_components.contains(&usage.name) {
+        let detail = if components.iter().any(|name| name == &usage.name) {
+            format!(
+                "{location} uses component {:?}, but that generated component has no graph factory",
+                usage.name
+            )
+        } else {
+            format!(
+                "{location} uses unregistered component {:?}; generate it with `qos-dev add component {} --mount {}`",
+                usage.name,
+                usage.name,
+                screen_name_from_detail(&usage.screen)
+            )
+        };
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Fail,
+            label: "UI component",
+            detail,
+        });
+        return;
+    }
+    for field in ["title", "detail"] {
+        if !usage
+            .props
+            .get(field)
+            .is_some_and(serde_json::Value::is_string)
+        {
+            checks.push(DoctorCheck {
+                status: DoctorStatus::Fail,
+                label: "UI component",
+                detail: format!(
+                    "{location} component {:?} requires string prop {field:?}",
+                    usage.name
+                ),
+            });
+            return;
+        }
+    }
+    checks.push(DoctorCheck {
+        status: DoctorStatus::Pass,
+        label: "UI component",
+        detail: format!("{location} → {:?}", usage.name),
+    });
+}
+
+fn screen_name_from_detail(detail: &str) -> &str {
+    detail
+        .strip_prefix("ui/")
+        .and_then(|value| value.strip_suffix(".json"))
+        .unwrap_or("main")
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -9303,6 +9483,101 @@ mod tests {
         assert!(summary.contains("unknown action"), "{summary}");
         assert!(broken.checks.iter().any(|check| {
             check.label == "headless scenario" && check.status == DoctorStatus::Warning
+        }));
+    }
+
+    #[test]
+    fn doctor_preflights_graph_component_factories_and_typed_props() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("component-app");
+        let mut new_app = request(destination.clone());
+        new_app.template = Some(Template::Graph);
+        create_app(new_app).unwrap();
+        add_app_artifact(AddRequest {
+            start: destination.clone(),
+            artifact: AddArtifact::GraphComponent {
+                name: "profile-card".into(),
+                mount: ComponentMount::display("main", "profile-card"),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        let healthy = doctor_app(&destination).unwrap();
+        assert!(healthy.is_ready(), "{}", healthy.summary());
+        assert!(healthy.checks.iter().any(|check| {
+            check.label == "UI component"
+                && check.status == DoctorStatus::Pass
+                && check.detail.contains("profile-card")
+        }));
+
+        let graph = destination.join("ui/main.json");
+        edit_ui_graph(
+            &graph,
+            UiGraphEdit::SetProperty {
+                id: "profile-card".into(),
+                property: "props.detail".into(),
+                value: serde_json::json!(42),
+            },
+        )
+        .unwrap();
+        let invalid_props = doctor_app(&destination).unwrap();
+        assert!(!invalid_props.is_ready());
+        assert!(invalid_props.checks.iter().any(|check| {
+            check.label == "UI component"
+                && check.detail.contains("requires string prop \"detail\"")
+        }));
+        edit_ui_graph(
+            &graph,
+            UiGraphEdit::SetProperty {
+                id: "profile-card".into(),
+                property: "props.detail".into(),
+                value: serde_json::json!("Owner"),
+            },
+        )
+        .unwrap();
+
+        let registry_path = destination.join("src/components/mod.rs");
+        let registry = std::fs::read_to_string(&registry_path).unwrap();
+        std::fs::write(
+            &registry_path,
+            registry.replace("// qos-dev:graph-component=profile-card\n", ""),
+        )
+        .unwrap();
+        let missing_factory = doctor_app(&destination).unwrap();
+        assert!(!missing_factory.is_ready());
+        assert!(missing_factory.checks.iter().any(|check| {
+            check.label == "UI component" && check.detail.contains("has no graph factory")
+        }));
+    }
+
+    #[test]
+    fn doctor_marks_app_owned_component_contexts_as_unverifiable() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("custom-context");
+        minimal_app(&app);
+        std::fs::create_dir(app.join("ui")).unwrap();
+        let document = qos_ui_graph::UiDocument::new(qos_ui_graph::UiNode::Component {
+            id: "custom".into(),
+            name: "custom-card".into(),
+            props: serde_json::Map::new(),
+        });
+        std::fs::write(app.join("ui/main.json"), document.to_json_pretty().unwrap()).unwrap();
+        std::fs::write(
+            app.join("src/lib.rs"),
+            "pub fn app_root() { let _context = ui::UiBuildContext::default().with_component(\"custom-card\", |_| unreachable!()); }\n",
+        )
+        .unwrap();
+
+        let report = doctor_app(&app).unwrap();
+        assert!(report.checks.iter().any(|check| {
+            check.label == "UI components"
+                && check.status == DoctorStatus::Warning
+                && check.detail.contains("app-owned build context")
+        }));
+        assert!(!report.checks.iter().any(|check| {
+            check.label == "component registry" && check.status == DoctorStatus::Fail
         }));
     }
 
