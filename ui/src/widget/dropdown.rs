@@ -86,6 +86,8 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
 )]
 pub struct Dropdown {
     id: String,
+    /// Fluent message id spoken independently from the selected value.
+    accessible_name: Option<String>,
     options: Vec<String>,
     value_path: String,
     placeholder: String,
@@ -122,6 +124,7 @@ impl Dropdown {
     pub fn new(options: Vec<String>, value_path: &str) -> Self {
         Self {
             id: String::new(),
+            accessible_name: None,
             options,
             value_path: value_path.to_string(),
             placeholder: String::new(),
@@ -145,6 +148,16 @@ impl Dropdown {
     #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
         self.id = id.to_string();
+        self
+    }
+
+    /// Name the dropdown for assistive technology.
+    ///
+    /// The selected option remains the accessible value, so changing the
+    /// selection never changes the label.
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
         self
     }
 
@@ -824,9 +837,11 @@ impl Widget for Dropdown {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // Falls back to the placeholder when nothing is chosen. `selected`/
-        // `placeholder` are runtime strings, not FTL keys, so no `i18n!` wrap.
-        let name = if !self.selected.is_empty() {
+        // Explicit names are Fluent ids. Keep the legacy value/placeholder
+        // fallback for unlabeled standalone dropdowns.
+        let name = if let Some(name) = &self.accessible_name {
+            Some(crate::i18n!(name))
+        } else if !self.selected.is_empty() {
             Some(self.selected.clone())
         } else if !self.placeholder.is_empty() {
             Some(self.placeholder.clone())

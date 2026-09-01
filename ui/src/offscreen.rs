@@ -41,6 +41,53 @@ fn shared_render_context() -> Arc<Mutex<RenderContext>> {
         .clone()
 }
 
+/// Handles to the process-wide shared wgpu device — the very same one
+/// every [`OffscreenRenderer`] draws through.
+///
+/// Apps that run their own GPU work headlessly (the video editor
+/// composites its timeline frames with a wgpu compute pipeline) must
+/// borrow these rather than stand up a second `wgpu::Instance`: parallel
+/// `vkCreateInstance` calls race and SIGSEGV on several Mesa drivers,
+/// which is the whole reason the shared context exists.
+///
+/// Both handles are `Arc`-backed inside wgpu, so cloning them out of the
+/// context is cheap and they stay valid once the lock is released.
+pub struct SharedGpu {
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+}
+
+/// Borrow the shared device/queue, initialising the process-wide context
+/// on first call. Fails with the same [`OffscreenError`]s as
+/// [`OffscreenRenderer::try_new`] — a machine with no usable adapter
+/// gets a `NoAdapter`, never a panic.
+///
+/// # Errors
+///
+/// Returns [`OffscreenError::NoAdapter`] when no usable GPU adapter exists, or
+/// [`OffscreenError::ContextPoisoned`] when another thread panicked while
+/// holding the shared render-context lock.
+pub fn shared_gpu() -> Result<SharedGpu, OffscreenError> {
+    let context = shared_render_context();
+    let (device, queue) = {
+        let mut ctx = context
+            .lock()
+            .map_err(|_| OffscreenError::ContextPoisoned)?;
+        let dev_id = ctx
+            .device(None)
+            .block_on()
+            .ok_or(OffscreenError::NoAdapter)?;
+        let handle = ctx.devices.get(dev_id).ok_or(OffscreenError::NoAdapter)?;
+        let device = handle.device.clone();
+        let queue = handle.queue.clone();
+        drop(ctx);
+        (device, queue)
+    };
+    Ok(SharedGpu { device, queue })
+}
+
+/// Why an [`OffscreenRenderer`] could not be built.
+///
 /// Every variant is an *environment* failure. Bad arguments (a zero width
 /// or height) stay an `assert!` in the constructors — that's a caller bug.
 #[derive(Debug)]

@@ -22,7 +22,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 
 use crate::acl::{Access, AclHandle, IdentityKey};
-use crate::namespace::Namespace;
+use crate::namespace::{ContentAuthority, Namespace};
 use crate::sync::SyncHandle;
 
 /// The ACL this service enforces and the identity it answers for — an [`AclHandle`], not a value, so it doesn't freeze mount-time policy.
@@ -124,6 +124,12 @@ fn apply(
     let mut ns = namespace
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if ns.content_authority() == ContentAuthority::SignedRecords {
+        return (
+            Resp::Err("signed document operation protocol required".into()),
+            Vec::new(),
+        );
+    }
     let outcome = match req {
         Req::Open { path } => {
             let resp = match ns.resolve_path_ino(&path) {
@@ -662,11 +668,11 @@ mod tests {
     /// The full story: an editor on peer A edits through the control socket; it propagates over P2P; an editor on peer B sees it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn edit_via_control_reaches_a_remote_editor() {
-        use crate::sync::{Workspace, bind_ephemeral_endpoint, fetch_remote_doc};
+        use crate::sync::{Workspace, bind_certified_test_endpoint, fetch_remote_doc};
         use crate::{ContentStore, Hydrator};
         use std::time::Duration;
 
-        let (ep_a, look_a) = bind_ephemeral_endpoint().await.unwrap();
+        let (ep_a, look_a, auth_a) = bind_certified_test_endpoint().await;
         let store_a = Arc::new(ContentStore::memory());
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
         let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
@@ -683,15 +689,18 @@ mod tests {
             store_a.clone(),
             hyd_a.clone(),
             ns_a.clone(),
+            auth_a,
             None,
         )
         .await
         .unwrap();
 
-        let (ep_b, look_b) = bind_ephemeral_endpoint().await.unwrap();
+        let (ep_b, look_b, auth_b) = bind_certified_test_endpoint().await;
         let store_b = Arc::new(ContentStore::memory());
         let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
-        let doc = fetch_remote_doc(&ep_b, ticket.node.clone()).await.unwrap();
+        let doc = fetch_remote_doc(&ep_b, ticket.node.clone(), &auth_b)
+            .await
+            .unwrap();
         let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
         let ws_b = Workspace::join(
             ep_b.clone(),
@@ -700,6 +709,7 @@ mod tests {
             hyd_b.clone(),
             ns_b.clone(),
             ticket,
+            auth_b,
             None,
         )
         .await

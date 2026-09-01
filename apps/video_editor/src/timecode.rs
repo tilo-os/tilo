@@ -81,3 +81,64 @@ mod tests {
         assert!((snapped - 1.0).abs() < 1e-9, "got {snapped}");
     }
 }
+
+/// Parse a typed timecode into seconds.
+///
+/// Accepts what a person actually types rather than one rigid shape:
+/// `90` (seconds), `1:30` (M:SS), `1:30:15` (M:SS:FF at `fps`), and
+/// `1:02:03:04` (H:MM:SS:FF). Returns `None` for anything that is not a
+/// number in every field — a jump to a garbled time would be worse than
+/// refusing, because the user would not know where they had gone.
+pub fn parse(input: &str, fps: f64) -> Option<f64> {
+    let fps = if fps <= 0.0 { 30.0 } else { fps };
+    let t = input.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = t.split(':').collect();
+    if parts.len() > 4 {
+        return None;
+    }
+    let nums: Option<Vec<f64>> = parts
+        .iter()
+        .map(|p| p.trim().parse::<f64>().ok().filter(|v| *v >= 0.0))
+        .collect();
+    let n = nums?;
+    Some(match n.as_slice() {
+        [s] => *s,
+        [m, s] => m * 60.0 + s,
+        [m, s, f] => m * 60.0 + s + f / fps,
+        [h, m, s, f] => h * 3600.0 + m * 60.0 + s + f / fps,
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::*;
+
+    #[test]
+    fn parses_the_shapes_a_person_types() {
+        assert_eq!(parse("90", 30.0), Some(90.0));
+        assert_eq!(parse("1:30", 30.0), Some(90.0));
+        assert_eq!(parse(" 1:30 ", 30.0), Some(90.0));
+        assert_eq!(parse("1:30:15", 30.0), Some(90.5));
+        assert_eq!(parse("1:02:03:00", 30.0), Some(3723.0));
+    }
+
+    #[test]
+    fn refuses_what_it_cannot_read_rather_than_guessing() {
+        // Landing somewhere arbitrary is worse than not moving: the user would
+        // not know where they had gone.
+        for bad in ["", "  ", "abc", "1:xx", "-5", "1:2:3:4:5", "1::2"] {
+            assert_eq!(parse(bad, 30.0), None, "{bad:?} must not parse");
+        }
+    }
+
+    #[test]
+    fn a_frame_field_is_read_at_the_projects_rate() {
+        // The same typed frame count is a different instant at a different fps.
+        assert_eq!(parse("0:00:12", 24.0), Some(0.5));
+        assert_eq!(parse("0:00:12", 48.0), Some(0.25));
+    }
+}

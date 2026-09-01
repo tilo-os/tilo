@@ -37,8 +37,8 @@ use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, Resource, ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+    ResourceProvider,
 };
 
 use crate::prefs::{AppearancePrefs, SystemPrefs};
@@ -217,14 +217,10 @@ fn bool_flip_spec(id: &str, key: &str, on_now: bool, noun: &str) -> ActionSpec {
     };
     let action = set_bool_action(key, !on_now);
     ActionSpec::immediate(id, label.clone(), SETTINGS_ACTION_TYPE, &action).unwrap_or_else(|_| {
-        ActionSpec {
-            id: id.to_string(),
-            label,
-            description: None,
-            locus: action.locus(),
-            kind: qos_actions::OperationKind::Document,
-            input: ActionInput::Immediate(encode(&action)),
-        }
+        // The fallible builder's fallback. `ActionSpec`'s fields are
+        // private now that it carries typed parameters, so construct it
+        // through the constructor that takes an already-encoded action.
+        ActionSpec::immediate_encoded(id, label, action.locus(), encode(&action))
     })
 }
 

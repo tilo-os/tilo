@@ -1,5 +1,6 @@
 use fluent::{FluentArgs, FluentBundle, FluentResource, FluentValue};
 use std::collections::HashMap;
+use thiserror::Error;
 use unic_langid::LanguageIdentifier;
 
 /// An owned value to interpolate into a localized message. Owned (rather than a
@@ -75,7 +76,22 @@ impl From<f64> for ArgValue {
 
 pub struct I18nManager {
     bundles: HashMap<LanguageIdentifier, FluentBundle<FluentResource>>,
+    catalog_order: Vec<LanguageIdentifier>,
+    source_locale: LanguageIdentifier,
     pub current_locale: LanguageIdentifier,
+    revision: u64,
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum I18nError {
+    #[error("invalid locale {0:?}")]
+    InvalidLocale(String),
+    #[error("locale {0:?} occurs more than once in the catalog")]
+    DuplicateLocale(String),
+    #[error("the source locale {0:?} has no catalog")]
+    MissingSource(String),
+    #[error("invalid Fluent resource for {locale:?}: {details}")]
+    InvalidResource { locale: String, details: String },
 }
 
 thread_local! {
@@ -88,32 +104,144 @@ thread_local! {
 /// so the final `unwrap_or_default` (BCP-47 "und", undefined) is a belt and
 /// braces path that's never actually reached.
 fn parse_locale_or_default(locale: &str) -> LanguageIdentifier {
-    locale
+    parse_locale(locale).unwrap_or_else(|_| "en-US".parse().unwrap_or_default())
+}
+
+fn parse_locale(locale: &str) -> Result<LanguageIdentifier, I18nError> {
+    let first = locale.split(':').next().unwrap_or(locale).trim();
+    if first.is_empty() || first.eq_ignore_ascii_case("C") || first.eq_ignore_ascii_case("POSIX") {
+        return Err(I18nError::InvalidLocale(locale.to_owned()));
+    }
+    let core = first.split(['.', '@']).next().unwrap_or(first);
+    core.replace('_', "-")
         .parse()
-        .or_else(|_| "en-US".parse())
-        .unwrap_or_default()
+        .map_err(|_| I18nError::InvalidLocale(locale.to_owned()))
+}
+
+fn preferred_locale() -> Option<LanguageIdentifier> {
+    ["LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"]
+        .into_iter()
+        .find_map(|name| {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| parse_locale(&value).ok())
+        })
+}
+
+fn make_bundle(
+    locale: &LanguageIdentifier,
+    source: &str,
+) -> Result<FluentBundle<FluentResource>, I18nError> {
+    let resource = FluentResource::try_new(source.to_owned()).map_err(|(_, errors)| {
+        I18nError::InvalidResource {
+            locale: locale.to_string(),
+            details: format!("{errors:?}"),
+        }
+    })?;
+    let mut bundle = FluentBundle::new(vec![locale.clone()]);
+    bundle.set_use_isolating(false);
+    bundle
+        .add_resource(resource)
+        .map_err(|errors| I18nError::InvalidResource {
+            locale: locale.to_string(),
+            details: format!("{errors:?}"),
+        })?;
+    Ok(bundle)
+}
+
+fn format_from_bundle(
+    bundle: &FluentBundle<FluentResource>,
+    key: &str,
+    args: Option<&FluentArgs>,
+) -> Option<String> {
+    let message = bundle.get_message(key)?;
+    let pattern = message.value()?;
+    let mut errors = Vec::new();
+    Some(
+        bundle
+            .format_pattern(pattern, args, &mut errors)
+            .to_string(),
+    )
 }
 
 impl I18nManager {
     pub fn init(locale: &str) {
         let lang_id: LanguageIdentifier = parse_locale_or_default(locale);
-        let mut manager = I18nManager {
-            bundles: HashMap::new(),
-            current_locale: lang_id.clone(),
-        };
-
+        let locale = lang_id.clone();
         let mut bundle = FluentBundle::new(vec![lang_id]);
         // Don't wrap interpolated variables in Unicode bidi isolation marks
         // (FSI/PDI) — we render to a single run, so "Count is { $n }" should
         // read "Count is 5", not "Count is \u{2068}5\u{2069}".
         bundle.set_use_isolating(false);
-        manager
-            .bundles
-            .insert(manager.current_locale.clone(), bundle);
-
         MANAGER.with(|m| {
-            *m.borrow_mut() = Some(manager);
+            let revision = m
+                .borrow()
+                .as_ref()
+                .map_or(1, |manager| manager.revision.wrapping_add(1));
+            *m.borrow_mut() = Some(I18nManager {
+                bundles: HashMap::from([(locale.clone(), bundle)]),
+                catalog_order: vec![locale.clone()],
+                source_locale: locale.clone(),
+                current_locale: locale,
+                revision,
+            });
         });
+    }
+
+    /// Atomically install every bundled Fluent catalog and select an explicit
+    /// active locale. Lookup falls back from the active language to
+    /// `source_locale`, then to the key itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns a locale/resource/duplicate error without replacing the live
+    /// catalog.
+    pub fn install(
+        source_locale: &str,
+        active_locale: &str,
+        catalogs: &[(&str, &str)],
+    ) -> Result<(), I18nError> {
+        let source_locale = parse_locale(source_locale)?;
+        let active_locale = parse_locale(active_locale)?;
+        let mut bundles = HashMap::new();
+        let mut catalog_order = Vec::new();
+        for (locale, source) in catalogs {
+            let locale = parse_locale(locale)?;
+            let bundle = make_bundle(&locale, source)?;
+            if bundles.insert(locale.clone(), bundle).is_some() {
+                return Err(I18nError::DuplicateLocale(locale.to_string()));
+            }
+            catalog_order.push(locale);
+        }
+        if !bundles.contains_key(&source_locale) {
+            return Err(I18nError::MissingSource(source_locale.to_string()));
+        }
+        MANAGER.with(|slot| {
+            let revision = slot
+                .borrow()
+                .as_ref()
+                .map_or(1, |manager| manager.revision.wrapping_add(1));
+            *slot.borrow_mut() = Some(Self {
+                bundles,
+                catalog_order,
+                source_locale,
+                current_locale: active_locale,
+                revision,
+            });
+        });
+        Ok(())
+    }
+
+    /// Install catalogs using the process/user locale (`LC_ALL`,
+    /// `LC_MESSAGES`, `LANGUAGE`, then `LANG`) with source-locale fallback.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error documented by [`Self::install`].
+    pub fn install_system(source_locale: &str, catalogs: &[(&str, &str)]) -> Result<(), I18nError> {
+        let active = preferred_locale()
+            .map_or_else(|| source_locale.to_owned(), |locale| locale.to_string());
+        Self::install(source_locale, &active, catalogs)
     }
 
     pub fn add_resource(locale: &str, ftl_source: String) {
@@ -128,41 +256,95 @@ impl I18nManager {
 
         MANAGER.with(|m| {
             if let Some(mgr) = m.borrow_mut().as_mut() {
-                let bundle = mgr.bundles.entry(lang_id.clone()).or_insert_with(|| {
-                    let mut b = FluentBundle::new(vec![lang_id]);
+                if !mgr.bundles.contains_key(&lang_id) {
+                    let mut b = FluentBundle::new(vec![lang_id.clone()]);
                     b.set_use_isolating(false);
-                    b
-                });
+                    mgr.bundles.insert(lang_id.clone(), b);
+                    mgr.catalog_order.push(lang_id.clone());
+                }
                 // Same degrade: a message-id collision leaves the existing
                 // message in place rather than crashing the caller.
-                let _ = bundle.add_resource(res);
+                if mgr
+                    .bundles
+                    .get_mut(&lang_id)
+                    .is_some_and(|bundle| bundle.add_resource(res).is_ok())
+                {
+                    mgr.revision = mgr.revision.wrapping_add(1);
+                }
             }
         });
     }
 
     pub fn set_locale(locale: &str) {
-        let lang_id: LanguageIdentifier = parse_locale_or_default(locale);
+        let lang_id = parse_locale(locale).ok();
         MANAGER.with(|m| {
-            if let Some(mgr) = m.borrow_mut().as_mut() {
+            if let (Some(mgr), Some(lang_id)) = (m.borrow_mut().as_mut(), lang_id)
+                && mgr.current_locale != lang_id
+            {
                 mgr.current_locale = lang_id;
+                mgr.revision = mgr.revision.wrapping_add(1);
             }
         });
     }
 
+    #[must_use]
+    pub fn current_locale() -> String {
+        MANAGER.with(|manager| {
+            manager.borrow().as_ref().map_or_else(
+                || "en-US".to_owned(),
+                |manager| manager.current_locale.to_string(),
+            )
+        })
+    }
+
+    /// Monotonic retained-widget invalidation token. It changes only when a
+    /// catalog or active locale changes.
+    #[must_use]
+    pub fn revision() -> u64 {
+        MANAGER.with(|manager| {
+            manager
+                .borrow()
+                .as_ref()
+                .map_or(0, |manager| manager.revision)
+        })
+    }
+
     pub fn lookup(key: &str, args: Option<&FluentArgs>) -> String {
         MANAGER.with(|m| {
-            if let Some(mgr) = m.borrow().as_ref()
-                && let Some(bundle) = mgr.bundles.get(&mgr.current_locale)
-                && let Some(msg) = bundle.get_message(key)
-                && let Some(pattern) = msg.value()
-            {
-                let mut errors = vec![];
-                return bundle
-                    .format_pattern(pattern, args, &mut errors)
-                    .to_string();
+            if let Some(manager) = m.borrow().as_ref() {
+                let active = manager.bundles.get(&manager.current_locale).or_else(|| {
+                    let same_language = |locale: &&LanguageIdentifier| {
+                        locale.language == manager.current_locale.language
+                    };
+                    manager
+                        .catalog_order
+                        .iter()
+                        .filter(same_language)
+                        .find(|locale| locale.region.is_none() && locale.script.is_none())
+                        .or_else(|| manager.catalog_order.iter().find(same_language))
+                        .and_then(|locale| manager.bundles.get(locale))
+                });
+                if let Some(value) = active.and_then(|bundle| format_from_bundle(bundle, key, args))
+                {
+                    return value;
+                }
+                if let Some(value) = manager
+                    .bundles
+                    .get(&manager.source_locale)
+                    .and_then(|bundle| format_from_bundle(bundle, key, args))
+                {
+                    return value;
+                }
             }
             key.to_string()
         })
+    }
+
+    /// Resolve a message without variables. This function-shaped form is
+    /// convenient in iterator adapters such as `Option::map`.
+    #[must_use]
+    pub fn lookup_plain(key: &str) -> String {
+        Self::lookup(key, None)
     }
 
     /// Resolve `key`, interpolating named variables into the message's
@@ -199,4 +381,62 @@ macro_rules! i18n {
             $crate::i18n::I18nManager::lookup($key, Some(&args))
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EN: &str = "greeting = Hello\nonly-source = Source fallback";
+    const DE: &str = "greeting = Guten Tag";
+
+    #[test]
+    fn installed_catalog_uses_language_match_then_source_fallback() {
+        I18nManager::install("en-US", "de-DE", &[("en-US", EN), ("de", DE)]).unwrap();
+        assert_eq!(I18nManager::current_locale(), "de-DE");
+        assert_eq!(I18nManager::lookup("greeting", None), "Guten Tag");
+        assert_eq!(I18nManager::lookup("only-source", None), "Source fallback");
+        assert_eq!(I18nManager::lookup("missing", None), "missing");
+    }
+
+    #[test]
+    fn language_fallback_prefers_generic_then_registration_order() {
+        I18nManager::install(
+            "en-US",
+            "de-AT",
+            &[("en-US", EN), ("de-CH", "greeting = Grüezi"), ("de", DE)],
+        )
+        .unwrap();
+        assert_eq!(I18nManager::lookup("greeting", None), "Guten Tag");
+
+        I18nManager::install(
+            "en-US",
+            "de-AT",
+            &[("en-US", EN), ("de-CH", "greeting = Grüezi"), ("de-DE", DE)],
+        )
+        .unwrap();
+        assert_eq!(I18nManager::lookup("greeting", None), "Grüezi");
+    }
+
+    #[test]
+    fn locale_revision_changes_only_for_effective_changes() {
+        I18nManager::install("en-US", "en-US", &[("en-US", EN), ("de", DE)]).unwrap();
+        let initial = I18nManager::revision();
+        I18nManager::set_locale("en_US.UTF-8");
+        assert_eq!(I18nManager::revision(), initial);
+        I18nManager::set_locale("de_DE.UTF-8");
+        assert_ne!(I18nManager::revision(), initial);
+        assert_eq!(I18nManager::lookup("greeting", None), "Guten Tag");
+    }
+
+    #[test]
+    fn invalid_install_does_not_replace_the_live_catalog() {
+        I18nManager::install("en-US", "en-US", &[("en-US", EN)]).unwrap();
+        let revision = I18nManager::revision();
+        let error = I18nManager::install("en-US", "de", &[("en-US", "broken = {"), ("de", DE)])
+            .unwrap_err();
+        assert!(matches!(error, I18nError::InvalidResource { .. }));
+        assert_eq!(I18nManager::revision(), revision);
+        assert_eq!(I18nManager::lookup("greeting", None), "Hello");
+    }
 }

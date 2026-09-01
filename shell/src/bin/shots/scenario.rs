@@ -1048,6 +1048,35 @@ fn app_kind_for(app: &str) -> shell::shell::state::AppKind {
 // JSON state dumping for headless mode
 // =====================================================================
 
+fn push_groups_per_strip(out: &mut String, host: &shell::shell::overlay_host::ShellOverlayHost) {
+    // Groups-per-strip snapshot (drag-out tests):
+    // `[[[group_id, [tab_id, ...]], ...], ...]`.
+    out.push_str("\"groups_per_strip\":[");
+    for (strip_index, (_strip_id, groups)) in host.groups_per_strip().iter().enumerate() {
+        if strip_index > 0 {
+            out.push(',');
+        }
+        out.push('[');
+        for (group_index, (group_id, tabs)) in groups.iter().enumerate() {
+            if group_index > 0 {
+                out.push(',');
+            }
+            out.push('[');
+            out.push_str(&group_id.to_string());
+            out.push_str(",[");
+            for (tab_index, tab_id) in tabs.iter().enumerate() {
+                if tab_index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&tab_id.to_string());
+            }
+            out.push_str("]]");
+        }
+        out.push(']');
+    }
+    out.push(']');
+}
+
 /// Serialise the chrome's externally-observable state into a compact
 /// JSON object. Hand-rolled instead of pulling `serde_derive` because
 /// `ChromeState` lives in another crate we don't want to annotate.
@@ -1143,43 +1172,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     out.push(',');
     push_kv_u64(&mut out, "revision", st.revision);
     out.push(',');
-    // Groups-per-strip snapshot (drag-out tests): "[[[g_id,[t1,t2,...]],...],...]"
-    // Outer array indexed by strip; each element is the strip's group list,
-    // each group is `[group_id, [tab_ids...]]`. Order of strips matches
-    // `host.groups_per_strip()` (HashMap iter order — not guaranteed
-    // stable across runs, but each scenario's assertions look up the
-    // count not a specific strip slot).
-    let gps = host.groups_per_strip();
-    out.push('"');
-    out.push_str("groups_per_strip");
-    out.push('"');
-    out.push(':');
-    out.push('[');
-    for (si, (_strip_id, groups)) in gps.iter().enumerate() {
-        if si > 0 {
-            out.push(',');
-        }
-        out.push('[');
-        for (gi, (gid, tabs)) in groups.iter().enumerate() {
-            if gi > 0 {
-                out.push(',');
-            }
-            out.push('[');
-            out.push_str(&gid.to_string());
-            out.push(',');
-            out.push('[');
-            for (ti, tid) in tabs.iter().enumerate() {
-                if ti > 0 {
-                    out.push(',');
-                }
-                out.push_str(&tid.to_string());
-            }
-            out.push(']');
-            out.push(']');
-        }
-        out.push(']');
-    }
-    out.push(']');
+    push_groups_per_strip(&mut out, host);
     out.push('}');
     out
 }

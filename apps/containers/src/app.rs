@@ -25,6 +25,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     FlapState, ModalDialog, PromptBody, SearchField, SplitLayout, Text, TextInput, Widget,
 };
@@ -1256,7 +1257,20 @@ impl Widget for ContainersApp {
             self.confirm_dialog = None;
         }
         if let Some(toast) = &self.toast {
-            Self::draw_toast(scene, tr, theme, r, toast);
+            let kind = if toast.error {
+                ToastKind::Error
+            } else {
+                ToastKind::Success
+            };
+            paint_transient(
+                scene,
+                transform,
+                tr,
+                theme,
+                r,
+                ToastAnchor::BottomCenter,
+                &ToastCard::new(&toast.message, kind),
+            );
         }
 
         // --- Shared command palette (topmost) ---
