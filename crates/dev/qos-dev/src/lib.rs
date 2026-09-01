@@ -96,6 +96,46 @@ pub enum ComponentTemplate {
     Text,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GraphPropsContract {
+    DisplayV1,
+    FormV1,
+}
+
+impl GraphPropsContract {
+    fn for_template(template: ComponentTemplate) -> Option<Self> {
+        match template {
+            ComponentTemplate::Display => Some(Self::DisplayV1),
+            ComponentTemplate::Form => Some(Self::FormV1),
+            ComponentTemplate::Tree
+            | ComponentTemplate::List
+            | ComponentTemplate::Table
+            | ComponentTemplate::Text => None,
+        }
+    }
+
+    fn invalid_props(self, props: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+        match self {
+            Self::DisplayV1 => ["title", "detail"].into_iter().find_map(|field| {
+                (!props.get(field).is_some_and(serde_json::Value::is_string))
+                    .then(|| format!("requires string prop {field:?}"))
+            }),
+            Self::FormV1 => {
+                if !props.get("value").is_some_and(serde_json::Value::is_string) {
+                    Some("requires string prop \"value\"".to_owned())
+                } else if !props
+                    .get("enabled")
+                    .is_some_and(serde_json::Value::is_boolean)
+                {
+                    Some("requires boolean prop \"enabled\"".to_owned())
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct NewAppRequest {
     pub name: Option<String>,
@@ -140,9 +180,10 @@ pub enum AddArtifact {
         name: String,
         template: ComponentTemplate,
     },
-    /// A graph-compatible typed display component plus its first instance.
+    /// A graph-compatible typed component plus its first instance.
     GraphComponent {
         name: String,
+        template: ComponentTemplate,
         mount: ComponentMount,
     },
 }
@@ -171,6 +212,23 @@ impl ComponentMount {
             props: serde_json::json!({
                 "title": title_from_name(component_name),
                 "detail": "Start building here.",
+            })
+            .to_string(),
+        }
+    }
+
+    /// Create an append-to-root form mount with empty initial input and the
+    /// generated boolean control enabled.
+    #[must_use]
+    pub fn form(screen: impl Into<String>) -> Self {
+        Self {
+            screen: screen.into(),
+            id: None,
+            parent: "root".into(),
+            index: None,
+            props: serde_json::json!({
+                "value": "",
+                "enabled": true,
             })
             .to_string(),
         }
@@ -587,7 +645,7 @@ fn prompt_component_artifact(
         validate_component_name,
     )?;
     let template = prompt_component_template(input, output)?;
-    let graph_screen = (template == ComponentTemplate::Display)
+    let graph_screen = graph_compatible_component_template(template)
         .then(|| default_graph_screen(app_dir))
         .flatten();
     let Some(default_screen) = graph_screen else {
@@ -602,26 +660,38 @@ fn prompt_component_artifact(
     else {
         return Ok(AddArtifact::Component { name, template });
     };
-    let title = prompt(
-        input,
-        output,
-        "Component title",
-        Some(&title_from_name(&name)),
-    )?;
-    let detail = prompt(
-        input,
-        output,
-        "Component detail",
-        Some("Start building here."),
-    )?;
+    let props = match template {
+        ComponentTemplate::Display => {
+            let title = prompt(
+                input,
+                output,
+                "Component title",
+                Some(&title_from_name(&name)),
+            )?;
+            let detail = prompt(
+                input,
+                output,
+                "Component detail",
+                Some("Start building here."),
+            )?;
+            serde_json::json!({ "title": title, "detail": detail }).to_string()
+        }
+        ComponentTemplate::Form => {
+            let value = prompt(input, output, "Initial value", Some(""))?;
+            let enabled = prompt_confirm(input, output, "Initially enabled", true)?;
+            serde_json::json!({ "value": value, "enabled": enabled }).to_string()
+        }
+        _ => bail!("this component template requires an app-supplied model and cannot be mounted"),
+    };
     Ok(AddArtifact::GraphComponent {
         name,
+        template,
         mount: ComponentMount {
             screen,
             id: None,
             parent: "root".into(),
             index: None,
-            props: serde_json::json!({ "title": title, "detail": detail }).to_string(),
+            props,
         },
     })
 }
@@ -649,8 +719,16 @@ fn artifact_summary(artifact: &AddArtifact) -> String {
             "component {name:?} ({})",
             component_template_name(*template)
         ),
-        AddArtifact::GraphComponent { name, mount } => {
-            format!("component {name:?} (display) mounted in {:?}", mount.screen)
+        AddArtifact::GraphComponent {
+            name,
+            template,
+            mount,
+        } => {
+            format!(
+                "component {name:?} ({}) mounted in {:?}",
+                component_template_name(*template),
+                mount.screen
+            )
         }
     }
 }
@@ -673,6 +751,10 @@ fn component_template_name(template: ComponentTemplate) -> &'static str {
         ComponentTemplate::Table => "table",
         ComponentTemplate::Text => "text",
     }
+}
+
+fn graph_compatible_component_template(template: ComponentTemplate) -> bool {
+    GraphPropsContract::for_template(template).is_some()
 }
 
 /// Add one conventional app artifact and any required generated wiring.
@@ -736,18 +818,24 @@ pub fn add_app_artifact(request: AddRequest) -> Result<AddOutcome> {
         AddArtifact::Component { name, template } => {
             component_artifact_writes(&app_dir, &name, template, request.force)?
         }
-        AddArtifact::GraphComponent { name, mount } => {
+        AddArtifact::GraphComponent {
+            name,
+            template,
+            mount,
+        } => {
+            if !graph_compatible_component_template(template) {
+                bail!(
+                    "--mount supports the display and form templates; generate tree, list, table, and text components without --mount and construct them from Rust"
+                );
+            }
             if !generated_graph_context_ready(&app_dir)? {
                 bail!(
                     "--mount requires an intact generated graph app root; add the component without --mount, register it in the app-owned UiBuildContext, then use `qos-dev ui component`"
                 );
             }
-            let (mut writes, _) = component_artifact_writes(
-                &app_dir,
-                &name,
-                ComponentTemplate::Display,
-                request.force,
-            )?;
+            validate_component_mount_props(&name, template, &mount.props)?;
+            let (mut writes, _) =
+                component_artifact_writes(&app_dir, &name, template, request.force)?;
             writes.push(component_mount_write(&app_dir, &name, &mount)?);
             (writes, Some("qos-dev dev".into()))
         }
@@ -1933,6 +2021,7 @@ fn component_artifact_writes(
         .join("src/components")
         .join(format!("{module_name}.rs"));
     protect_destination(&component_path, force)?;
+    validate_component_graph_references(app_dir, name, template)?;
 
     let registry_path = app_dir.join("src/components/mod.rs");
     let registry = std::fs::read_to_string(&registry_path).unwrap_or_default();
@@ -2024,6 +2113,45 @@ fn component_artifact_writes(
     Ok((writes, Some("qos-dev test".into())))
 }
 
+fn validate_component_graph_references(
+    app_dir: &Path,
+    name: &str,
+    template: ComponentTemplate,
+) -> Result<()> {
+    let contract = GraphPropsContract::for_template(template);
+    let files = files_with_extension(&app_dir.join("ui"), "json").map_err(anyhow::Error::msg)?;
+    for path in files {
+        let document = load_ui_graph(&path)?;
+        for node in document.nodes() {
+            let qos_ui_graph::UiNode::Component {
+                id,
+                name: used_name,
+                props,
+            } = node
+            else {
+                continue;
+            };
+            if used_name != name {
+                continue;
+            }
+            let location = format!("{} node {id:?}", relative_artifact(app_dir, &path));
+            let Some(contract) = contract else {
+                bail!(
+                    "{location} already uses component {name:?}; the {} template has no serialized-graph factory, so remove that node or choose display/form",
+                    component_template_name(template)
+                );
+            };
+            if let Some(invalid) = contract.invalid_props(props) {
+                bail!(
+                    "{location} is incompatible with the {} component template: {invalid}; update the node props before replacing the component",
+                    component_template_name(template)
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn default_graph_screen(app_dir: &Path) -> Option<String> {
     if !generated_graph_context_ready(app_dir).ok()? {
         return None;
@@ -2061,6 +2189,24 @@ fn component_mount_write(
         source,
         description: "component screen mount",
     })
+}
+
+fn validate_component_mount_props(
+    name: &str,
+    template: ComponentTemplate,
+    source: &str,
+) -> Result<()> {
+    let value: serde_json::Value =
+        serde_json::from_str(source).context("parsing component props as JSON")?;
+    let props = value
+        .as_object()
+        .context("component props must be a JSON object")?;
+    let contract = GraphPropsContract::for_template(template)
+        .context("mounted component template has no serialized-graph props contract")?;
+    if let Some(invalid) = contract.invalid_props(props) {
+        bail!("component {name:?} {invalid}");
+    }
+    Ok(())
 }
 
 fn component_rust_names(name: &str) -> Result<(String, String)> {
@@ -2134,7 +2280,7 @@ fn graph_component_names(
         }
     }
     graph_names.remove(replaced);
-    if template == ComponentTemplate::Display {
+    if graph_compatible_component_template(template) {
         graph_names.insert(replaced.to_owned());
     }
     Ok(graph_names)
@@ -2231,7 +2377,8 @@ fn component_source(
 )]
 fn display_component_source(name: &str, module_name: &str, type_name: &str) -> String {
     format!(
-        r##"use ui::tokens::TextRole;
+        r##"// qos-dev:graph-props=display-v1
+use ui::tokens::TextRole;
 use ui::widget::{{Element, Text}};
 use ui::{{UiBuildContext, UiComponentRequest}};
 
@@ -2349,6 +2496,10 @@ mod tests {{
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the single format template is the reviewable source of one complete generated component and its tests"
+)]
 fn form_component_source(
     name: &str,
     module_name: &str,
@@ -2358,8 +2509,9 @@ fn form_component_source(
     let value_placeholder = ScreenMessage::new(name, "value-placeholder", "Enter a value");
     let enabled_label = ScreenMessage::new(name, "enabled-label", "Enabled");
     let source = format!(
-        r#"use ui::LocalState;
-use ui::widget::{{Checkbox, TextInput, labeled_check, labeled_field}};
+        r##"// qos-dev:graph-props=form-v1
+use ui::widget::{{Checkbox, Element, TextInput, labeled_check, labeled_field}};
+use ui::{{LocalState, UiBuildContext, UiComponentRequest}};
 
 #[derive(Clone)]
 pub struct {type_name}State {{
@@ -2392,6 +2544,41 @@ pub fn {module_name}(id: &str, state: &{type_name}State) -> ui::widget::Column {
     .with_no_padding()
 }}
 
+/// Build this stateful component from a serialized UI graph node.
+///
+/// Each graph instance owns independent `LocalState` initialized by its typed
+/// `value` and `enabled` props. The retained controls keep that state alive.
+///
+/// # Errors
+///
+/// Returns a field-specific error when `value` is not a string or `enabled`
+/// is not a boolean.
+pub fn from_ui_graph(request: UiComponentRequest<'_>) -> Result<Element, String> {{
+    let value = request
+        .props
+        .get("value")
+        .and_then(|value| value.as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| "value must be a string".to_owned())?;
+    let enabled = request
+        .props
+        .get("enabled")
+        .ok_or_else(|| "enabled must be a boolean".to_owned())?
+        .as_bool()
+        .ok_or_else(|| "enabled must be a boolean".to_owned())?;
+    let state = {type_name}State {{
+        value: LocalState::new(value),
+        enabled: LocalState::new(enabled),
+    }};
+    Ok(Box::new({module_name}(request.id, &state)))
+}}
+
+/// Register this component's stable graph factory name.
+#[must_use]
+pub fn register_ui_graph(context: UiBuildContext) -> UiBuildContext {{
+    context.with_component("{name}", from_ui_graph)
+}}
+
 #[cfg(test)]
 mod tests {{
     use super::*;
@@ -2419,8 +2606,48 @@ mod tests {{
         assert_eq!(state.value.with(Clone::clone), "Ada");
         assert!(!state.enabled.with(|enabled| *enabled));
     }}
+
+    #[test]
+    fn graph_factory_builds_independent_typed_state() {{
+        let document = ui::UiDocument::from_json(
+            r#"{{"version":1,"root":{{"type":"component","id":"example","name":"{name}","props":{{"value":"Ada","enabled":false}}}}}}"#,
+        )
+        .expect("valid component graph");
+        let context = register_ui_graph(UiBuildContext::default());
+        let widget = ui::UiDocumentExt::build_with(
+            &document,
+            &ui::Theme::default(),
+            &context,
+        )
+        .expect("registered form component");
+        let mut app = ui::headless::Driver::new(ui::State::new(), widget, (480, 240));
+        app.expect(
+            &SemanticExpectation::named("example-value")
+                .role(Role::TextInput)
+                .value("Ada"),
+        )
+        .expect("serialized value initializes retained state");
+        app.expect(
+            &SemanticExpectation::named("example-enabled")
+                .role(Role::Checkbox)
+                .checked(false),
+        )
+        .expect("serialized boolean initializes retained state");
+        app.perform_named("example-value", &Action::SetValue("Grace".into()))
+            .expect("graph form remains interactive");
+
+        let invalid = ui::UiDocument::from_json(
+            r#"{{"version":1,"root":{{"type":"component","id":"invalid","name":"{name}","props":{{"value":42,"enabled":true}}}}}}"#,
+        )
+        .expect("structurally valid component graph");
+        assert!(matches!(
+            ui::UiDocumentExt::build_with(&invalid, &ui::Theme::default(), &context),
+            Err(ui::UiGraphError::ComponentBuild {{ message, .. }})
+                if message == "value must be a string"
+        ));
+    }}
 }}
-"#
+"##
     );
     (source, vec![value_label, value_placeholder, enabled_label])
 }
@@ -4996,6 +5223,14 @@ struct GraphComponentUse {
     props: serde_json::Map<String, serde_json::Value>,
 }
 
+const GRAPH_PROPS_MARKER: &str = "// qos-dev:graph-props=";
+
+#[derive(Debug)]
+struct ComponentRegistryInspection {
+    components: Vec<String>,
+    graph_contracts: BTreeMap<String, GraphPropsContract>,
+}
+
 fn check_ui_graph_artifacts(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
     let files = match files_with_extension(&app_dir.join("ui"), "json") {
         Ok(files) => files,
@@ -5060,17 +5295,17 @@ fn check_graph_component_contract(
     let generated_context = source.contains("components::ui_graph_context()");
     let app_owned_context = !legacy_context && !generated_context;
     let registry = match inspect_component_registry(app_dir) {
-        Ok(Some((components, graph_components))) => {
+        Ok(Some(inspection)) => {
             checks.push(DoctorCheck {
                 status: DoctorStatus::Pass,
                 label: "component registry",
                 detail: format!(
                     "{} component module(s), {} graph factory/factories",
-                    components.len(),
-                    graph_components.len()
+                    inspection.components.len(),
+                    inspection.graph_contracts.len()
                 ),
             });
-            Some((components, graph_components))
+            Some(inspection)
         }
         Ok(None) if uses.is_empty() || app_owned_context => None,
         Ok(None) => {
@@ -5114,15 +5349,20 @@ fn check_graph_component_contract(
         });
         return;
     }
-    let Some((components, graph_components)) = registry else {
+    let Some(inspection) = registry else {
         return;
     };
     for usage in uses {
-        check_graph_component_use(usage, &components, &graph_components, checks);
+        check_graph_component_use(
+            usage,
+            &inspection.components,
+            &inspection.graph_contracts,
+            checks,
+        );
     }
 }
 
-fn inspect_component_registry(app_dir: &Path) -> Result<Option<(Vec<String>, BTreeSet<String>)>> {
+fn inspect_component_registry(app_dir: &Path) -> Result<Option<ComponentRegistryInspection>> {
     let path = app_dir.join("src/components/mod.rs");
     let source = match std::fs::read_to_string(&path) {
         Ok(source) => source,
@@ -5132,6 +5372,7 @@ fn inspect_component_registry(app_dir: &Path) -> Result<Option<(Vec<String>, BTr
     syn::parse_file(&source).with_context(|| format!("parsing {}", path.display()))?;
     let components = parse_component_registry(&source)?;
     let graph_components = parse_graph_component_registry(&source, &components)?;
+    let mut graph_contracts = BTreeMap::new();
     for name in &components {
         let (module, _) = component_rust_names(name)?;
         let module_path = app_dir.join("src/components").join(format!("{module}.rs"));
@@ -5139,21 +5380,40 @@ fn inspect_component_registry(app_dir: &Path) -> Result<Option<(Vec<String>, BTr
             .with_context(|| format!("reading registered component {name:?}"))?;
         syn::parse_file(&module_source)
             .with_context(|| format!("parsing registered component {name:?}"))?;
-        if graph_components.contains(name) && !module_source.contains("pub fn register_ui_graph(") {
-            bail!("graph component {name:?} has no register_ui_graph factory");
+        if graph_components.contains(name) {
+            if !module_source.contains("pub fn register_ui_graph(") {
+                bail!("graph component {name:?} has no register_ui_graph factory");
+            }
+            graph_contracts.insert(name.clone(), graph_props_contract(name, &module_source)?);
         }
     }
-    Ok(Some((components, graph_components)))
+    Ok(Some(ComponentRegistryInspection {
+        components,
+        graph_contracts,
+    }))
+}
+
+fn graph_props_contract(name: &str, source: &str) -> Result<GraphPropsContract> {
+    let markers: Vec<_> = source
+        .lines()
+        .filter_map(|line| line.strip_prefix(GRAPH_PROPS_MARKER))
+        .collect();
+    match markers.as_slice() {
+        [] | ["display-v1"] => Ok(GraphPropsContract::DisplayV1),
+        ["form-v1"] => Ok(GraphPropsContract::FormV1),
+        [unknown] => bail!("graph component {name:?} has unknown props contract {unknown:?}"),
+        _ => bail!("graph component {name:?} declares more than one props contract"),
+    }
 }
 
 fn check_graph_component_use(
     usage: &GraphComponentUse,
     components: &[String],
-    graph_components: &BTreeSet<String>,
+    graph_components: &BTreeMap<String, GraphPropsContract>,
     checks: &mut Vec<DoctorCheck>,
 ) {
     let location = format!("{} node {:?}", usage.screen, usage.node);
-    if !graph_components.contains(&usage.name) {
+    let Some(contract) = graph_components.get(&usage.name) else {
         let detail = if components.iter().any(|name| name == &usage.name) {
             format!(
                 "{location} uses component {:?}, but that generated component has no graph factory",
@@ -5173,23 +5433,15 @@ fn check_graph_component_use(
             detail,
         });
         return;
-    }
-    for field in ["title", "detail"] {
-        if !usage
-            .props
-            .get(field)
-            .is_some_and(serde_json::Value::is_string)
-        {
-            checks.push(DoctorCheck {
-                status: DoctorStatus::Fail,
-                label: "UI component",
-                detail: format!(
-                    "{location} component {:?} requires string prop {field:?}",
-                    usage.name
-                ),
-            });
-            return;
-        }
+    };
+    let invalid = contract.invalid_props(&usage.props);
+    if let Some(invalid) = invalid {
+        checks.push(DoctorCheck {
+            status: DoctorStatus::Fail,
+            label: "UI component",
+            detail: format!("{location} component {:?} {invalid}", usage.name),
+        });
+        return;
     }
     checks.push(DoctorCheck {
         status: DoctorStatus::Pass,
@@ -6986,7 +7238,7 @@ fn app_readme(spec: &AppSpec) -> String {
     if spec.template == Template::Graph {
         let _ = writeln!(
             out,
-            "\nOpen the serialized screen with `qos-dev ui edit ui/main.json`. Script or review it with `qos-dev ui tree`, `qos-dev ui set`, `qos-dev ui apply`, `qos-dev ui insert`, `qos-dev ui move`, and `qos-dev ui validate`. Generate, register, and place an app-owned retained component atomically with `qos-dev add component profile-card --mount main --props '{{\"title\":\"Ada\",\"detail\":\"Owner\"}}'`. The generated component registry makes display components available to every generated screen automatically."
+            "\nOpen the serialized screen with `qos-dev ui edit ui/main.json`. Script or review it with `qos-dev ui tree`, `qos-dev ui set`, `qos-dev ui apply`, `qos-dev ui insert`, `qos-dev ui move`, and `qos-dev ui validate`. Generate, register, and place an app-owned retained component atomically with `qos-dev add component profile-card --mount main --props '{{\"title\":\"Ada\",\"detail\":\"Owner\"}}'`, or mount an interactive form with `qos-dev add component profile-form --template form --mount main --props '{{\"value\":\"Ada\",\"enabled\":true}}'`. The generated component registry makes graph-compatible components available to every generated screen automatically."
         );
     }
     if spec.template == Template::Async {
@@ -7563,6 +7815,31 @@ mod tests {
     }
 
     #[test]
+    fn add_wizard_can_mount_an_interactive_form_component() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("demo");
+        minimal_generated_graph_app(&app);
+        let mut input = std::io::Cursor::new(b"4\nprofile-form\n2\n\nAda\nn\n\n".to_vec());
+        let mut output = Vec::new();
+
+        let outcome =
+            add_app_artifact_interactive_with(&app, &mut input, &mut output, true).unwrap();
+
+        assert_eq!(outcome.next_command.as_deref(), Some("qos-dev dev"));
+        assert!(matches!(
+            load_ui_graph(&app.join("ui/main.json")).unwrap().node("profile-form"),
+            Some(qos_ui_graph::UiNode::Component { name, props, .. })
+                if name == "profile-form"
+                    && props.get("value") == Some(&serde_json::json!("Ada"))
+                    && props.get("enabled") == Some(&serde_json::json!(false))
+        ));
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("Initial value"));
+        assert!(transcript.contains("Initially enabled"));
+        assert!(transcript.contains("component \"profile-form\" (form) mounted in \"main\""));
+    }
+
+    #[test]
     fn component_wizard_exposes_the_source_agnostic_tree_template() {
         let mut input = std::io::Cursor::new(b"3\n".to_vec());
         let mut output = Vec::new();
@@ -7737,6 +8014,7 @@ mod tests {
             start: app.clone(),
             artifact: AddArtifact::GraphComponent {
                 name: "profile-card".into(),
+                template: ComponentTemplate::Display,
                 mount: ComponentMount::display("main", "profile-card"),
             },
             force: false,
@@ -7761,6 +8039,7 @@ mod tests {
             start: app.clone(),
             artifact: AddArtifact::GraphComponent {
                 name: "profile-card".into(),
+                template: ComponentTemplate::Display,
                 mount: ComponentMount::display("main", "profile-card"),
             },
             force: false,
@@ -7783,6 +8062,7 @@ mod tests {
             start: app.clone(),
             artifact: AddArtifact::GraphComponent {
                 name: "profile-card".into(),
+                template: ComponentTemplate::Display,
                 mount: ComponentMount {
                     props: "[]".into(),
                     ..ComponentMount::display("main", "profile-card")
@@ -7814,6 +8094,7 @@ mod tests {
             start: app.clone(),
             artifact: AddArtifact::GraphComponent {
                 name: "profile-card".into(),
+                template: ComponentTemplate::Display,
                 mount: ComponentMount::display("main", "profile-card"),
             },
             force: false,
@@ -7851,7 +8132,71 @@ mod tests {
         assert!(library.contains("crate::components::ui_graph_context()"));
         assert!(!library.contains("crate::screens::router(\"main\""));
         syn::parse_file(&library).expect("migrated generated root is valid Rust");
+    }
 
+    #[test]
+    fn component_template_replacement_requires_compatible_graph_props() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("graph-app");
+        minimal_generated_graph_app(&app);
+        add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::GraphComponent {
+                name: "profile-card".into(),
+                template: ComponentTemplate::Display,
+                mount: ComponentMount::display("main", "profile-card"),
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        let registry_path = app.join("src/components/mod.rs");
+        let component_path = app.join("src/components/profile_card.rs");
+        let component_before = std::fs::read(&component_path).unwrap();
+        let registry_before = std::fs::read(&registry_path).unwrap();
+        let incompatible = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::Component {
+                name: "profile-card".into(),
+                template: ComponentTemplate::Form,
+            },
+            force: true,
+            dry_run: false,
+        })
+        .unwrap_err();
+        assert!(
+            incompatible
+                .to_string()
+                .contains("incompatible with the form")
+        );
+        assert_eq!(std::fs::read(&component_path).unwrap(), component_before);
+        assert_eq!(std::fs::read(&registry_path).unwrap(), registry_before);
+
+        edit_ui_graph_batch(
+            &app.join("ui/main.json"),
+            vec![
+                UiGraphEdit::SetProperty {
+                    id: "profile-card".into(),
+                    property: "props.value".into(),
+                    value: serde_json::json!("Ada"),
+                },
+                UiGraphEdit::SetProperty {
+                    id: "profile-card".into(),
+                    property: "props.enabled".into(),
+                    value: serde_json::json!(true),
+                },
+                UiGraphEdit::UnsetProperty {
+                    id: "profile-card".into(),
+                    property: "props.title".into(),
+                },
+                UiGraphEdit::UnsetProperty {
+                    id: "profile-card".into(),
+                    property: "props.detail".into(),
+                },
+            ],
+        )
+        .unwrap();
         add_app_artifact(AddRequest {
             start: app,
             artifact: AddArtifact::Component {
@@ -7863,13 +8208,96 @@ mod tests {
         })
         .unwrap();
         let registry = std::fs::read_to_string(registry_path).unwrap();
-        assert!(
-            parse_graph_component_registry(&registry, &["profile-card".into()])
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            parse_graph_component_registry(&registry, &["profile-card".into()]).unwrap(),
+            BTreeSet::from(["profile-card".to_owned()])
         );
-        assert!(!registry.contains("profile_card::register_ui_graph(context)"));
-        assert!(registry.contains("UiBuildContext::default()"));
+        assert!(registry.contains("profile_card::register_ui_graph(context)"));
+    }
+
+    #[test]
+    fn generated_graph_apps_mount_stateful_form_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("graph-form-app");
+        let mut new_app = request(app.clone());
+        new_app.template = Some(Template::Graph);
+        create_app(new_app).unwrap();
+
+        let graph_before = std::fs::read(app.join("ui/main.json")).unwrap();
+        let invalid_mount = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::GraphComponent {
+                name: "broken-form".into(),
+                template: ComponentTemplate::Form,
+                mount: ComponentMount {
+                    props: serde_json::json!({"value": "Ada", "enabled": "yes"}).to_string(),
+                    ..ComponentMount::form("main")
+                },
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap_err();
+        assert!(
+            invalid_mount
+                .to_string()
+                .contains("requires boolean prop \"enabled\"")
+        );
+        assert!(!app.join("src/components/broken_form.rs").exists());
+        assert_eq!(
+            std::fs::read(app.join("ui/main.json")).unwrap(),
+            graph_before
+        );
+
+        let outcome = add_app_artifact(AddRequest {
+            start: app.clone(),
+            artifact: AddArtifact::GraphComponent {
+                name: "profile-form".into(),
+                template: ComponentTemplate::Form,
+                mount: ComponentMount {
+                    props: serde_json::json!({"value": "Ada", "enabled": false}).to_string(),
+                    ..ComponentMount::form("main")
+                },
+            },
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        assert_eq!(outcome.next_command.as_deref(), Some("qos-dev dev"));
+        assert!(matches!(
+            load_ui_graph(&app.join("ui/main.json")).unwrap().node("profile-form"),
+            Some(qos_ui_graph::UiNode::Component { name, props, .. })
+                if name == "profile-form"
+                    && props.get("value") == Some(&serde_json::json!("Ada"))
+                    && props.get("enabled") == Some(&serde_json::json!(false))
+        ));
+        let source = std::fs::read_to_string(app.join("src/components/profile_form.rs")).unwrap();
+        assert!(source.contains("// qos-dev:graph-props=form-v1"));
+        assert!(source.contains("pub fn register_ui_graph("));
+        let report = doctor_app(&app).unwrap();
+        assert!(report.is_ready(), "{}", report.summary());
+        assert!(report.checks.iter().any(|check| {
+            check.label == "UI component"
+                && check.status == DoctorStatus::Pass
+                && check.detail.contains("profile-form")
+        }));
+
+        edit_ui_graph(
+            &app.join("ui/main.json"),
+            UiGraphEdit::SetProperty {
+                id: "profile-form".into(),
+                property: "props.enabled".into(),
+                value: serde_json::json!("yes"),
+            },
+        )
+        .unwrap();
+        let invalid = doctor_app(&app).unwrap();
+        assert!(!invalid.is_ready());
+        assert!(invalid.checks.iter().any(|check| {
+            check.label == "UI component"
+                && check.detail.contains("requires boolean prop \"enabled\"")
+        }));
     }
 
     #[test]
@@ -9497,6 +9925,7 @@ mod tests {
             start: destination.clone(),
             artifact: AddArtifact::GraphComponent {
                 name: "profile-card".into(),
+                template: ComponentTemplate::Display,
                 mount: ComponentMount::display("main", "profile-card"),
             },
             force: false,
