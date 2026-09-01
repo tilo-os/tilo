@@ -63,6 +63,11 @@ pub fn encode_address(address: &ActionAddress) -> String {
 /// one — an address a model made up is refused rather than looked up
 /// against a half-parsed id.
 pub fn decode_address(id: &str) -> Option<ActionAddress> {
+    let id = if let Some(rest) = id.strip_prefix("broker:") {
+        rest.split_once(':')?.1
+    } else {
+        id
+    };
     let (resource, action) = id.rsplit_once(ADDRESS_SEP)?;
     if resource.is_empty() || action.is_empty() {
         return None;
@@ -103,6 +108,9 @@ pub fn open_address(namespace: &str) -> ActionAddress {
 pub fn opens(address: &ActionAddress) -> Option<&str> {
     if address.action != OPEN_ACTION {
         return None;
+    }
+    if let Some(app_id) = address.resource.strip_prefix("app.") {
+        return (!app_id.is_empty()).then_some(app_id);
     }
     let (namespace, tail) = address.resource.split_once('.')?;
     (tail == APP_RESOURCE).then_some(namespace)
@@ -444,14 +452,19 @@ pub fn registry() -> ActionRegistry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Offer {
     /// The app that published it, by namespace.
-    pub app: &'static str,
+    pub app: String,
+    /// Exact live publisher selected by the broker catalogue. `None` only
+    /// for the agent's local editorial/open helper offers.
+    pub broker_peer_id: Option<u64>,
     pub descriptor: ActionDescriptor,
 }
 
 impl Offer {
     /// The address, in the one-string form an answer names it by.
     pub fn id(&self) -> String {
-        encode_address(&self.descriptor.address)
+        let address = encode_address(&self.descriptor.address);
+        self.broker_peer_id
+            .map_or(address.clone(), |peer| format!("broker:{peer}:{address}"))
     }
 
     pub fn address(&self) -> &ActionAddress {
@@ -520,6 +533,50 @@ impl Offer {
         }
         s
     }
+}
+
+/// Convert the broker's permission-filtered, live catalogue into the same
+/// inert offers the planner already consumes. No application registry or
+/// document reconstruction is involved: arbitrary apps appear here solely
+/// because they published a descriptor to the authenticated broker.
+pub fn broker_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Offer> {
+    surfaces
+        .iter()
+        .filter(|surface| surface.live)
+        .flat_map(|surface| {
+            surface.actions.iter().map(|action| {
+                let input = if action.input.kind == "text" {
+                    qos_actions::InputSpec::Text {
+                        prompt: action.input.prompt.clone(),
+                        placeholder: action.input.placeholder.clone(),
+                        collects: if action.input.wants_content {
+                            qos_actions::Collects::Content
+                        } else {
+                            qos_actions::Collects::Words
+                        },
+                    }
+                } else {
+                    qos_actions::InputSpec::None
+                };
+                Offer {
+                    app: surface.app_id.clone(),
+                    broker_peer_id: Some(surface.peer_id),
+                    descriptor: ActionDescriptor {
+                        address: ActionAddress::new(&action.resource, &action.action),
+                        resource_kind: action.resource_kind.clone(),
+                        resource_label: action.resource_label.clone(),
+                        action_label: action.action_label.clone(),
+                        description: action.description.clone(),
+                        locus: qos_actions::ExecutionLocus::ServerPreferred,
+                        kind: action.operation_kind.clone(),
+                        contract: action.contract.clone(),
+                        params: action.params.clone(),
+                        input,
+                    },
+                }
+            })
+        })
+        .collect()
 }
 
 /// The permission question performing `address` has to pass.
@@ -602,7 +659,8 @@ pub fn offers(
                 continue;
             }
             out.push(Offer {
-                app: contract.namespace,
+                app: contract.namespace.to_string(),
+                broker_peer_id: None,
                 descriptor,
             });
         }
@@ -666,7 +724,8 @@ fn openable(
         .iter()
         .filter(|c| !surveyable(held, view, c.namespace))
         .map(|c| Offer {
-            app: c.namespace,
+            app: c.namespace.to_string(),
+            broker_peer_id: None,
             descriptor: ActionDescriptor {
                 address: open_address(c.namespace),
                 resource_kind: APPLICATION_KIND.to_string(),
@@ -805,8 +864,7 @@ pub fn catalogue(
 
 /// Find the offer an id names, in a freshly taken survey.
 pub fn find<'a>(offers: &'a [Offer], id: &str) -> Option<&'a Offer> {
-    let address = decode_address(id)?;
-    offers.iter().find(|o| *o.address() == address)
+    offers.iter().find(|offer| offer.id() == id)
 }
 
 /// The app's own words for the operation an id names.
@@ -1160,7 +1218,8 @@ mod tests {
             })
             .unwrap_or_default();
         Offer {
-            app,
+            app: app.to_string(),
+            broker_peer_id: None,
             descriptor: ActionDescriptor {
                 address: ActionAddress::new(resource, action),
                 resource_kind: format!("{app}.thing"),
@@ -1438,7 +1497,7 @@ mod tests {
         let view = View::default();
 
         let empty = openable(&[], &View::default(), &perms);
-        let missing: Vec<&str> = empty.iter().map(|o| o.app).collect();
+        let missing: Vec<&str> = empty.iter().map(|o| o.app.as_str()).collect();
         assert_eq!(
             missing,
             CONTRACTS.iter().map(|c| c.namespace).collect::<Vec<_>>(),
@@ -1547,5 +1606,67 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn duplicate_addresses_from_two_live_publishers_remain_distinct() {
+        let surface = |peer_id| ui::collaboration::BrokerActionSurface {
+            peer_id,
+            app_id: "dev.qos.calculator".into(),
+            cluster_id: "room".into(),
+            record_id: format!("window-{peer_id}"),
+            live: true,
+            actions: vec![ui::collaboration::BrokerActionDescriptor {
+                resource: "calculator.document".into(),
+                action: "clear".into(),
+                resource_kind: "calculator.document".into(),
+                resource_label: "Calculator".into(),
+                action_label: "Clear".into(),
+                description: None,
+                operation_kind: qos_actions::OperationKind::Effect,
+                params: Vec::new(),
+                contract: qos_actions::ActionContract::default(),
+                input: ui::collaboration::BrokerActionInput {
+                    kind: "none".into(),
+                    prompt: String::new(),
+                    placeholder: String::new(),
+                    wants_content: false,
+                },
+            }],
+        };
+        let offers = broker_offers(&[surface(41), surface(42)]);
+        assert_eq!(offers.len(), 2);
+        assert_ne!(offers[0].id(), offers[1].id());
+        assert_eq!(
+            find(&offers, &offers[0].id()).unwrap().broker_peer_id,
+            Some(41)
+        );
+        assert_eq!(
+            find(&offers, &offers[1].id()).unwrap().broker_peer_id,
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn broker_prefixed_shell_launch_is_still_recognised_as_an_open() {
+        let address = ActionAddress::new("app.dev.qos.diffmerge", OPEN_ACTION);
+        let offer = Offer {
+            app: "dev.qos.diffmerge".into(),
+            broker_peer_id: Some(0),
+            descriptor: ActionDescriptor {
+                address,
+                resource_kind: APPLICATION_KIND.into(),
+                resource_label: "Diffmerge".into(),
+                action_label: "Open Diffmerge".into(),
+                description: None,
+                locus: qos_actions::ExecutionLocus::ServerPreferred,
+                kind: qos_actions::OperationKind::Effect,
+                contract: ActionContract::default(),
+                params: Vec::new(),
+                input: qos_actions::InputSpec::None,
+            },
+        };
+        let decoded = decode_address(&offer.id()).expect("broker offer id remains decodable");
+        assert_eq!(opens(&decoded), Some("dev.qos.diffmerge"));
     }
 }

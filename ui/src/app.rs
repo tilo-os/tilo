@@ -1876,6 +1876,11 @@ impl App {
                 CollabEvent::InvocationCancellation { id } => {
                     self.request_invocation_cancellation(id);
                 }
+                // The generic catalogue/client responses are consumed by
+                // widgets such as Agent through their collaboration event
+                // hook; an ordinary application has no local state to apply.
+                CollabEvent::ActionCatalogue { .. }
+                | CollabEvent::PublishedInvocationResult { .. } => {}
             }
         }
         any
