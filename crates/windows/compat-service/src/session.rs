@@ -1532,15 +1532,15 @@ mod tests {
             },
             published_entry_id: "windows-vm-published".to_string(),
         };
-        let mut workspace_a_entries = BTreeSet::new();
-        let workspace_b_entries = BTreeSet::<String>::new();
+        let mut owner_entries = BTreeSet::new();
+        let other_workspace_entries = BTreeSet::<String>::new();
 
-        authorize_vm_publication(&mut workspace_a_entries, &publication);
+        authorize_vm_publication(&mut owner_entries, &publication);
 
-        assert!(workspace_a_entries.contains("windows-vm-published"));
-        assert!(workspace_a_entries.contains("windows-vm-candidate-remaining"));
-        assert!(!workspace_b_entries.contains("windows-vm-published"));
-        assert!(!workspace_b_entries.contains("windows-vm-candidate-remaining"));
+        assert!(owner_entries.contains("windows-vm-published"));
+        assert!(owner_entries.contains("windows-vm-candidate-remaining"));
+        assert!(!other_workspace_entries.contains("windows-vm-published"));
+        assert!(!other_workspace_entries.contains("windows-vm-candidate-remaining"));
     }
 
     #[test]
