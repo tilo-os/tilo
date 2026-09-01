@@ -22,10 +22,12 @@ else
 fi
 
 if grep -Fq 'COPY etc/greetd/config.toml /usr/share/qos/greetd-config.toml' "$containerfile" \
-   && grep -Fq 'greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"' "$backend"; then
-  ok "normal greetd configuration is restored in the target"
+   && grep -Fq 'greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"' "$backend" \
+   && grep -Fq '[initial_session]' "$backend" \
+   && grep -Fq 'user = "%s"' "$backend"; then
+  ok "encrypted startup hands off directly to the installed user's session"
 else
-  bad "normal greetd configuration is not bundled and restored"
+  bad "installed system would ask for a second login after disk authentication"
 fi
 
 if grep -Fq 'rm -f "$DEPLOY_ETC/sudoers.d/qos-installer"' "$backend"; then
