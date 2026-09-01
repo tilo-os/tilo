@@ -25,9 +25,11 @@ $bridgeScript = Join-Path $BootstrapRoot 'Start-qOSGuestBridge.ps1'
 $focusedScript = Join-Path $BootstrapRoot 'Start-qOSFocusedApp.ps1'
 $installerScript = Join-Path $BootstrapRoot 'Start-qOSInstaller.ps1'
 $uninstallerScript = Join-Path $BootstrapRoot 'Start-qOSUninstaller.ps1'
+$processJobScript = Join-Path $BootstrapRoot 'qOS-ProcessJob.ps1'
+$processJobBrokerScript = Join-Path $BootstrapRoot 'Start-qOSProcessJobBroker.ps1'
 $secretPath = Join-Path $BootstrapRoot 'qos-bridge.secret'
 $configPath = Join-Path $BootstrapRoot 'qos-bridge.json'
-foreach ($path in @($bridgeScript, $focusedScript, $installerScript, $uninstallerScript, $secretPath, $configPath, $ApplicationsPath)) {
+foreach ($path in @($bridgeScript, $focusedScript, $installerScript, $uninstallerScript, $processJobScript, $processJobBrokerScript, $secretPath, $configPath, $ApplicationsPath)) {
     if (-not (Test-Path $path -PathType Leaf)) { throw "Missing required qOS guest payload: $path" }
 }
 
@@ -78,6 +80,7 @@ foreach ($principal in @('SYSTEM', 'BUILTIN\Administrators')) {
 Set-Acl -LiteralPath $root -AclObject $acl
 Copy-Item -LiteralPath $bridgeScript -Destination (Join-Path $root 'Start-qOSGuestBridge.ps1') -Force
 Copy-Item -LiteralPath $focusedScript -Destination (Join-Path $focusRoot 'Start-qOSFocusedApp.ps1') -Force
+Copy-Item -LiteralPath $processJobScript -Destination (Join-Path $focusRoot 'qOS-ProcessJob.ps1') -Force
 Copy-Item -LiteralPath $secretPath -Destination (Join-Path $root 'bridge.secret') -Force
 Copy-Item -LiteralPath $configPath -Destination (Join-Path $root 'bridge.json') -Force
 Copy-Item -LiteralPath $ApplicationsPath -Destination (Join-Path $root 'published-applications.json') -Force
@@ -94,6 +97,8 @@ foreach ($child in @('staging', 'payloads', 'operations')) {
 }
 Copy-Item -LiteralPath $installerScript -Destination (Join-Path $installerRoot 'Start-qOSInstaller.ps1') -Force
 Copy-Item -LiteralPath $uninstallerScript -Destination (Join-Path $installerRoot 'Start-qOSUninstaller.ps1') -Force
+Copy-Item -LiteralPath $processJobScript -Destination (Join-Path $installerRoot 'qOS-ProcessJob.ps1') -Force
+Copy-Item -LiteralPath $processJobBrokerScript -Destination (Join-Path $installerRoot 'Start-qOSProcessJobBroker.ps1') -Force
 $uninstallRecordsPath = Join-Path $root 'uninstall-records.json'
 if (-not (Test-Path -LiteralPath $uninstallRecordsPath -PathType Leaf)) {
     [IO.File]::WriteAllText($uninstallRecordsPath, '{"schemaVersion":1,"records":[]}', [Text.UTF8Encoding]::new($false))

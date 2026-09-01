@@ -9,6 +9,12 @@ param(
     [string]$JobPath
 )
 $ErrorActionPreference = 'Stop'
+$processJobHelper = Join-Path $PSScriptRoot 'qOS-ProcessJob.ps1'
+if (-not (Test-Path -LiteralPath $processJobHelper -PathType Leaf)) {
+    throw 'qOS process containment helper is missing.'
+}
+. $processJobHelper
+
 $sessionRoot = 'C:\ProgramData\qOS\InstallerSession'
 $resolvedJob = [IO.Path]::GetFullPath($JobPath)
 if ($resolvedJob -notmatch '^C:\\ProgramData\\qOS\\InstallerSession\\operations\\[A-Za-z0-9._-]{16,128}\\job\.json$') {
@@ -34,13 +40,49 @@ try {
     # desktop. Only Explorer in this interactive session is suppressed.
     foreach ($shell in $explorer) { Stop-Process -Id $shell.Id -Force -ErrorAction SilentlyContinue }
     if ($job.kind -eq 'msi') {
-        $process = Start-Process -FilePath "$env:WINDIR\System32\msiexec.exe" -ArgumentList @('/i', $package) -Wait -PassThru
+        # The helper owns quoting; /i and the verified package are a fixed MSI
+        # contract, not a bridge-supplied command line.
+        $result = [qOS.WindowsGuest.ProcessJob]::RunMsiInstaller(
+            "$env:WINDIR\System32\msiexec.exe",
+            $package
+        )
     } else {
-        # No arguments or shell are accepted. Installer manifests can request
-        # UAC normally on the visible app-focused SPICE surface.
-        $process = Start-Process -FilePath $package -Wait -PassThru
+        # No package arguments or shell command are accepted. Try the limited
+        # token first. ERROR_ELEVATION_REQUIRED means CreateProcess created
+        # nothing, so it remains safe to ask UAC to elevate qOS's fixed broker
+        # and let that broker do suspended creation and job assignment.
+        try {
+            $result = [qOS.WindowsGuest.ProcessJob]::RunExecutableInstaller($package)
+        } catch {
+            $exception = $_.Exception
+            $elevationRequired = $false
+            while ($null -ne $exception) {
+                if ($exception.GetType().FullName -eq 'qOS.WindowsGuest.ProcessElevationRequiredException') {
+                    $elevationRequired = $true
+                    break
+                }
+                $exception = $exception.InnerException
+            }
+            if (-not $elevationRequired) { throw }
+
+            $broker = Join-Path $PSScriptRoot 'Start-qOSProcessJobBroker.ps1'
+            if (-not (Test-Path -LiteralPath $broker -PathType Leaf)) {
+                throw 'qOS elevated installer broker is missing.'
+            }
+            $windowsPowerShell = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+            $brokerArguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File `"$broker`" -JobPath `"$resolvedJob`""
+            try {
+                # The only variable broker argument is the operation job path,
+                # already constrained above to an administrator-owned path
+                # with a 16-128 character opaque directory component.
+                $brokerProcess = Start-Process -FilePath $windowsPowerShell -Verb RunAs -ArgumentList $brokerArguments -Wait -PassThru
+            } catch {
+                throw "qOS installer UAC consent was canceled or the elevated process-job broker could not start: $($_.Exception.Message)"
+            }
+            $result = [PSCustomObject]@{ ExitCode = $brokerProcess.ExitCode }
+        }
     }
-    exit $process.ExitCode
+    exit $result.ExitCode
 } finally {
     $sessionExplorer = @(Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $sessionId })
     if ($explorer.Count -gt 0 -and $sessionExplorer.Count -eq 0) {
