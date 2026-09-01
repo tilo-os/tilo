@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{OsStr, OsString};
-use std::io::{BufRead, BufReader};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -32,6 +32,45 @@ const APP_CACHE_TTL: Duration = Duration::from_secs(2);
 /// the dynamic loader's complaint, small enough a chatty app can't grow
 /// the shell's memory.
 const STDERR_TAIL_LINES: usize = 12;
+/// Maximum bytes retained for one stdout/stderr line from an untrusted app.
+/// Reading with `BufRead::lines` grows until a newline and lets a package
+/// exhaust compositor memory with one unterminated write.
+const APP_LOG_LINE_BYTES: usize = 8 * 1024;
+
+fn relay_capped_lines<R: Read>(mut reader: R, mut on_line: impl FnMut(String)) {
+    let mut chunk = [0_u8; 4096];
+    let mut line = Vec::with_capacity(APP_LOG_LINE_BYTES.min(chunk.len()));
+    let mut truncated = false;
+    let emit = |line: &mut Vec<u8>, truncated: &mut bool, on_line: &mut dyn FnMut(String)| {
+        let mut text = String::from_utf8_lossy(line).into_owned();
+        if *truncated {
+            text.push_str("… [truncated]");
+        }
+        on_line(text);
+        line.clear();
+        *truncated = false;
+    };
+    while let Ok(read) = reader.read(&mut chunk) {
+        if read == 0 {
+            break;
+        }
+        let Some(bytes) = chunk.get(..read) else {
+            break;
+        };
+        for &byte in bytes {
+            if byte == b'\n' {
+                emit(&mut line, &mut truncated, &mut on_line);
+            } else if line.len() < APP_LOG_LINE_BYTES {
+                line.push(byte);
+            } else {
+                truncated = true;
+            }
+        }
+    }
+    if !line.is_empty() || truncated {
+        emit(&mut line, &mut truncated, &mut on_line);
+    }
+}
 
 /// A launcher process is the stable host-side ancestor of its sandbox,
 /// including the per-app xdg-dbus-proxy. D-Bus sender names are resolved to
@@ -1043,9 +1082,9 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
             let _ = std::thread::Builder::new()
                 .name("qos-app-stdout".to_string())
                 .spawn(move || {
-                    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                        eprintln!("[app {tag}] {line}");
-                    }
+                    relay_capped_lines(stdout, |line| {
+                        eprintln!("[app {tag} stdout] {line}");
+                    });
                 });
         }
 
@@ -1053,13 +1092,13 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
         // notification.
         let mut tail: VecDeque<String> = VecDeque::with_capacity(STDERR_TAIL_LINES);
         if let Some(stderr) = child.stderr.take() {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                eprintln!("[app {}] {line}", app.package_id);
+            relay_capped_lines(stderr, |line| {
+                eprintln!("[app {} stderr] {line}", app.package_id);
                 if tail.len() == STDERR_TAIL_LINES {
                     tail.pop_front();
                 }
                 tail.push_back(line);
-            }
+            });
         }
 
         let launcher_pid = child.id();
@@ -1261,6 +1300,20 @@ pub fn wayland_socket_display() -> OsString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn untrusted_app_log_lines_are_memory_bounded_and_stream_label_safe() {
+        let input = vec![b'x'; APP_LOG_LINE_BYTES.saturating_mul(3)];
+        let mut lines = Vec::new();
+        relay_capped_lines(std::io::Cursor::new(input), |line| lines.push(line));
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].ends_with("… [truncated]"));
+        assert!(
+            lines[0].len() <= APP_LOG_LINE_BYTES.saturating_add(20),
+            "capped line unexpectedly retained {} bytes",
+            lines[0].len()
+        );
+    }
     use std::io::Write;
 
     #[test]
