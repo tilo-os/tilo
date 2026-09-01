@@ -53,6 +53,7 @@
             environment.systemPackages = [ cfg.package ];
             services.displayManager.sessionPackages = [ cfg.package ];
             environment.etc."pam.d/qos-unlock".source = "${cfg.package}/etc/pam.d/qos-unlock";
+            xdg.portal.enable = true;
             xdg.portal.extraPortals = [ cfg.package ];
           };
         };
