@@ -9,7 +9,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::{Frame, FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
+use super::{Frame, FrameSlot, MediaElementInfo, WebViewCommand, WebViewEngine, WebViewEvent};
 
 /// Height of the darker "chrome" band painted at the top of every test
 /// page, in physical pixels.
@@ -25,6 +25,7 @@ struct Inner {
     scale_factor: f32,
     events: Vec<WebViewEvent>,
     commands: Vec<WebViewCommand>,
+    media_element: Option<MediaElementInfo>,
 }
 
 pub struct TestEngine {
@@ -53,6 +54,11 @@ impl TestEngine {
     pub fn current_uri(&self) -> Option<String> {
         let inner = self.lock_inner();
         inner.history.get(inner.index).cloned()
+    }
+
+    /// Configure the deterministic response to a media-element probe.
+    pub fn set_media_element(&self, media: Option<MediaElementInfo>) {
+        self.lock_inner().media_element = media;
     }
 
     /// Stable page colour for a URL — exposed so tests can compute the
@@ -185,6 +191,33 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::SetContentFilters { .. }
             | WebViewCommand::SetUserScripts(_)
             | WebViewCommand::ClearWebsiteData => {}
+            WebViewCommand::RequestMediaElement { request_id } => {
+                let event = inner.media_element.clone().map_or(
+                    WebViewEvent::MediaElementUnavailable { request_id },
+                    |element| WebViewEvent::MediaElement {
+                        request_id,
+                        element,
+                    },
+                );
+                inner.events.push(event);
+            }
+            WebViewCommand::RequestMediaElementById {
+                request_id,
+                element_id,
+            } => {
+                let event = inner
+                    .media_element
+                    .clone()
+                    .filter(|element| element.element_id == element_id)
+                    .map_or(
+                        WebViewEvent::MediaElementUnavailable { request_id },
+                        |element| WebViewEvent::MediaElement {
+                            request_id,
+                            element,
+                        },
+                    );
+                inner.events.push(event);
+            }
         }
         // Nothing below uses `inner` — drop the guard here rather than
         // leaving it held until the function's closing brace.
@@ -237,6 +270,37 @@ mod tests {
         let below = (HEADER_BAND_PX * frame.width * 4) as usize;
         assert_eq!(&frame.rgba[below..below + 4], &[r, g, b, 0xFF]);
         assert_eq!(&frame.rgba[0..4], &[r / 2, g / 2, b / 2, 0xFF]);
+    }
+
+    #[test]
+    fn media_probe_reports_configured_visible_element() {
+        let engine = TestEngine::new();
+        let element = MediaElementInfo {
+            element_id: "media:test".into(),
+            viewport_rect: [0.2, 0.1, 0.6, 0.5],
+            intrinsic_size: [1280, 720],
+            label: "Video".into(),
+        };
+        engine.set_media_element(Some(element.clone()));
+        engine.send(WebViewCommand::RequestMediaElement { request_id: 7 });
+        assert_eq!(
+            engine.drain_events(),
+            vec![WebViewEvent::MediaElement {
+                request_id: 7,
+                element: element.clone(),
+            }]
+        );
+        engine.send(WebViewCommand::RequestMediaElementById {
+            request_id: 8,
+            element_id: "media:test".into(),
+        });
+        assert_eq!(
+            engine.drain_events(),
+            vec![WebViewEvent::MediaElement {
+                request_id: 8,
+                element,
+            }]
+        );
     }
 
     #[test]
