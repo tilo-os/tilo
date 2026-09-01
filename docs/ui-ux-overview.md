@@ -55,6 +55,15 @@ to infer present product behaviour.
 - Shared workspaces replicate their strips and windows. Focus remains personal;
   Follow is the explicit opt-in that also drives supported app viewport and
   view-mode state, and direct interaction stops Follow.
+- Shell overlays now remain frame-driven through their complete transition,
+  including reduced-motion mode. Notifications wake the compositor only for
+  meaningful animation or expiry deadlines, and narrow layouts constrain their
+  width instead of overflowing.
+- Contacts and Mail use the shared empty-state language and interaction model.
+  Contacts presents first run as one app-wide state, with one primary action;
+  Mail distinguishes no account, pending sync, empty folder and empty search.
+- A source audit ratchets hard-coded colour escapes across apps and shell so new
+  theme debt fails tests instead of silently increasing.
 
 ## Capability honesty
 
@@ -64,6 +73,14 @@ to infer present product behaviour.
 - Device pairing is manual-copy today: the screen asks for the code and pairing
   payload supplied by the existing device. It does not advertise a scanner that
   is absent.
+- Production does not advertise screen sharing while the compositor lacks a
+  consuming PipeWire producer. Native and hosted paths fail provisioning
+  explicitly; synthetic nodes are confined to tests. Existing defensive receive
+  and stop handling remains available for future integration.
+- Calendar's visible CalDAV operations use the live queued PUT/DELETE and pull
+  paths. Music and Tube's visible streaming/playback paths use their production
+  backends; cross-device library synchronisation is a separate release gate, not
+  implied by those controls.
 - Golden-image snapshots may seed locally for deliberate first-time work.
   Continuous integration requires an existing checked-in golden. End-to-end
   shell captures decode pixels, check for rendered content, and assert visible
@@ -81,10 +98,11 @@ acceptance record.
    longer the blocker.
 2. **Localisation.** Public shell and app strings need Fluent ownership and
    expansion-safe layouts. English literals are not a release-ready fallback.
-3. **App capability audit.** Every visible control must either operate on a
-   production backend, be clearly presented as unavailable, or be removed.
-   Experimental apps need an explicit experimental label rather than the same
-   implied readiness as product-proof apps.
+3. **Standard-app journey acceptance.** The visible-control audit is complete,
+   but each promised standard app still needs a driven, product-shaped journey
+   before release-surface promotion. Office breadth and Music/Tube cross-device
+   library sync are the main unproven capabilities; experimental developer tools
+   must remain clearly separated from standard apps.
 4. **Responsive coverage.** Product-proof journeys require visual and driven
    acceptance at phone portrait, small tablet/half-screen, laptop and large
    desktop widths.

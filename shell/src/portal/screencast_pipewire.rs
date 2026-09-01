@@ -2,17 +2,17 @@
 //!
 //! [`ScreenCastStreamProvisioner`] is the surface the portal calls into to
 //! allocate a Pipewire node and return its id + properties to the
-//! frontend. [`MockScreenCastProvisioner`] is the default implementor,
-//! used by tests and the `pipewire`-feature-disabled build, returning a
-//! synthetic node id without touching the system daemon.
+//! frontend. Production uses [`UnavailableScreenCastProvisioner`] until a
+//! consuming capture producer is integrated; it fails explicitly rather than
+//! returning a synthetic node. [`MockScreenCastProvisioner`] is test-only.
 //! `RealPipewireProvisioner` (behind the `pipewire` Cargo feature) opens
 //! a connection to the system daemon, creates a video stream of the
 //! workspace's composed scene at the negotiated dimensions, and returns
 //! the real node id, which the compositor's frame loop pushes buffers into.
 //!
 //! Pipewire is a C-library system dep not guaranteed on every build host
-//! (CI, distrobox, dev laptops), so the crate is optional and the mock
-//! ships by default; production OS builds turn the feature on.
+//! (CI, distrobox, dev laptops), so the crate is optional. Tests inject the
+//! mock; neither native nor hosted production paths do.
 //!
 //! The current stream carries only the workspace owner's own composed
 //! scene; compositing in peers or the overlay layer is future work.
