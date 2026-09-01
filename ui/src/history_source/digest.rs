@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::time::SystemTime;
 
 use crate::history_source::seen::HistorySeenFrontier;
-use crate::widget::history::{HistoryAuthor, HistoryEntry};
+use crate::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
 use crate::widget::history_group::{GroupingConfig, group_entries};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -27,6 +27,9 @@ pub struct ActivityBrief {
     pub last_at: SystemTime,
     /// Stable explicit work-group id, when the actions supplied one.
     pub group_id: Option<String>,
+    /// Exact evidence backing this brief. Generated prose may cite only this
+    /// set, keeping a summary auditable and invalidatable as the feed moves.
+    pub entry_ids: Vec<HistoryEntryId>,
 }
 
 impl ActivityBrief {
@@ -133,6 +136,7 @@ impl ActivityDigest {
                     first_at: group.first_time,
                     last_at: group.last_time,
                     group_id,
+                    entry_ids: slice.iter().map(|entry| entry.id).collect(),
                 }
             })
             .collect();
