@@ -17,7 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use rand::RngCore;
 use reqwest::Certificate;
-use reqwest::blocking::{Client, Response};
+use reqwest::blocking::{Body, Client, Response};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -33,12 +33,150 @@ const BRIDGE_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_RESPONSE_BYTES: u64 = 512 * 1024;
 const MAX_CERTIFICATE_BYTES: usize = 64 * 1024;
 const MAX_SECRET_BYTES: usize = 128;
+/// A deliberately finite appliance import. The stream is never buffered in
+/// memory by this crate, but both ends reject anything larger before writing.
+pub const MAX_INSTALLER_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+const INSTALLER_UPLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const MAX_INSTALLER_EXPIRY_SECONDS: u64 = 60 * 60;
 const PIN_FILE: &str = "guest-bridge.sha256";
 const CERTIFICATE_FILE: &str = "guest-bridge.der";
 // `pin_directory` is shared with the owner-writable session state in the live
 // appliance.  Pins get their own private child so first enrollment never
 // changes the access mode of the state directory.
 const PINS_DIRECTORY: &str = "guest-bridge-pins";
+
+/// The only two package formats accepted by the appliance import protocol.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InstallerKind {
+    Exe,
+    Msi,
+}
+
+impl InstallerKind {
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::Exe => "exe",
+            Self::Msi => "msi",
+        }
+    }
+}
+
+/// Host-generated identity and immutable digest for one portal-owned stream.
+/// It intentionally contains no host or guest path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstallerPackage {
+    package_id: String,
+    kind: InstallerKind,
+    byte_len: u64,
+    sha256: String,
+}
+
+impl InstallerPackage {
+    pub fn new(
+        kind: InstallerKind,
+        byte_len: u64,
+        sha256: impl Into<String>,
+    ) -> Result<Self, AgentError> {
+        let sha256 = sha256.into().to_ascii_lowercase();
+        if byte_len == 0 || byte_len > MAX_INSTALLER_BYTES || !is_sha256(&sha256) {
+            return Err(AgentError::InvalidInstaller);
+        }
+        Ok(Self {
+            package_id: nonce(),
+            kind,
+            byte_len,
+            sha256,
+        })
+    }
+
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.package_id
+    }
+
+    #[must_use]
+    pub fn byte_len(&self) -> u64 {
+        self.byte_len
+    }
+
+    #[must_use]
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+}
+
+/// A package accepted into the guest's one-use, expiring staging area.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StagedInstaller {
+    package_id: String,
+    expires_at_unix: u64,
+}
+
+impl StagedInstaller {
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.package_id
+    }
+
+    #[must_use]
+    pub fn expires_at_unix(&self) -> u64 {
+        self.expires_at_unix
+    }
+}
+
+/// Opaque handle for one installer process in the managed interactive session.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstallationOperationId(String);
+
+impl InstallationOperationId {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallationState {
+    Starting,
+    Running,
+    Completed,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiscoveredUninstaller {
+    pub id: String,
+    pub display_name: String,
+    pub display_version: Option<String>,
+    pub publisher: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiscoveredApplication {
+    pub id: String,
+    pub display_name: String,
+    pub product_name: Option<String>,
+    pub publisher: Option<String>,
+    pub version: Option<String>,
+    pub uninstall: Option<DiscoveredUninstaller>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstallationStatus {
+    pub operation_id: InstallationOperationId,
+    pub state: InstallationState,
+    pub exit_code: Option<u32>,
+    pub candidates: Vec<DiscoveredApplication>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublicationResult {
+    pub application_id: String,
+    pub catalog_generation: u64,
+}
 
 /// Root-owned bridge locations and the fixed host-only endpoint.  qOS's
 /// libvirt network reserves `192.168.251.2` for the singleton appliance; the
@@ -138,6 +276,10 @@ impl HttpsGuestBridge {
     }
 
     fn pinned_client(&self) -> Result<Client, AgentError> {
+        self.pinned_client_with_timeout(BRIDGE_TIMEOUT)
+    }
+
+    fn pinned_client_with_timeout(&self, timeout: Duration) -> Result<Client, AgentError> {
         let (certificate, _) = self.enrolled_certificate()?;
         let certificate = Certificate::from_der(&certificate)
             .map_err(|error| AgentError::Transport(format!("stored guest certificate: {error}")))?;
@@ -149,7 +291,7 @@ impl HttpsGuestBridge {
             // Chain validation still occurs against the exact persisted DER.
             .danger_accept_invalid_hostnames(true)
             .connect_timeout(BRIDGE_TIMEOUT)
-            .timeout(BRIDGE_TIMEOUT)
+            .timeout(timeout)
             .build()
             .map_err(|error| AgentError::Transport(format!("TLS client: {error}")))
     }
@@ -192,6 +334,181 @@ impl HttpsGuestBridge {
         write_private_new_or_equal(&pin_path, digest.as_bytes())?;
         write_private_new_or_equal(&pins_directory.join(CERTIFICATE_FILE), &certificate)?;
         self.pinned_client()
+    }
+
+    /// Streams one already-authorised portal file into the guest. Authentication
+    /// binds the package's opaque identity, format, exact size and digest; the
+    /// guest independently verifies all four before making the file visible.
+    pub fn stage_installer<R>(
+        &self,
+        package: &InstallerPackage,
+        reader: R,
+    ) -> Result<StagedInstaller, AgentError>
+    where
+        R: Read + Send + 'static,
+    {
+        if package.byte_len == 0
+            || package.byte_len > MAX_INSTALLER_BYTES
+            || !valid_identifier(&package.package_id)
+            || !is_sha256(&package.sha256)
+        {
+            return Err(AgentError::InvalidInstaller);
+        }
+        // Enrollment must complete with the short control-plane timeout. The
+        // actual byte stream then uses a separately bounded transfer timeout.
+        let _ = self.client()?;
+        let client = self.pinned_client_with_timeout(INSTALLER_UPLOAD_TIMEOUT)?;
+        let timestamp = now_unix()?;
+        let request_nonce = nonce();
+        let canonical = format!(
+            "{timestamp}\n{request_nonce}\nUPLOAD\n{}\n{}\n{}\n{}\n",
+            package.package_id,
+            package.kind.wire_name(),
+            package.byte_len,
+            package.sha256
+        );
+        let authentication = hmac_hex(&self.bootstrap_secret, canonical.as_bytes(), &[]);
+        let path = format!("/v1/installers/{}", package.package_id);
+        let mut response = client
+            .post(self.bridge_url(&path))
+            .header("X-qOS-Timestamp", timestamp.to_string())
+            .header("X-qOS-Nonce", &request_nonce)
+            .header("X-qOS-Auth", authentication)
+            .header("X-qOS-Installer-Kind", package.kind.wire_name())
+            .header("X-qOS-Payload-SHA256", &package.sha256)
+            .header("Content-Type", "application/octet-stream")
+            .header("Content-Length", package.byte_len)
+            .header("Accept", "application/json")
+            .body(Body::sized(reader, package.byte_len))
+            .send()
+            .map_err(|error| AgentError::Transport(format!("guest installer upload: {error}")))?;
+        if !response.status().is_success() {
+            return Err(AgentError::Transport(format!(
+                "guest bridge rejected installer with HTTP {}",
+                response.status()
+            )));
+        }
+        let response_auth = response
+            .headers()
+            .get("X-qOS-Response-Auth")
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned)
+            .ok_or(AgentError::Authentication)?;
+        let mut response_body = Vec::new();
+        response
+            .by_ref()
+            .take(MAX_RESPONSE_BYTES + 1)
+            .read_to_end(&mut response_body)
+            .map_err(|error| AgentError::Transport(format!("guest bridge body: {error}")))?;
+        if response_body.len() > usize::try_from(MAX_RESPONSE_BYTES).unwrap_or(usize::MAX) {
+            return Err(AgentError::Transport(
+                "guest bridge response was too large".to_string(),
+            ));
+        }
+        response
+            .extensions_mut()
+            .insert(ResponseAuth(response_auth));
+        response.extensions_mut().insert(RequestBinding {
+            timestamp,
+            nonce: request_nonce,
+        });
+        self.verify_response(&response, &response_body)?;
+        let staged: WireStagedInstaller = deserialize(&response_body)?;
+        if staged.package_id != package.package_id
+            || staged.sha256 != package.sha256
+            || staged.byte_len != package.byte_len
+            || staged.expires_at_unix <= now_unix()?
+            || staged.expires_at_unix > now_unix()?.saturating_add(MAX_INSTALLER_EXPIRY_SECONDS)
+        {
+            return Err(AgentError::Authentication);
+        }
+        Ok(StagedInstaller {
+            package_id: staged.package_id,
+            expires_at_unix: staged.expires_at_unix,
+        })
+    }
+
+    /// Consumes a staged package exactly once and starts it in the appliance's
+    /// existing managed interactive session. No command line crosses the wire.
+    pub fn begin_installation(
+        &self,
+        staged: &StagedInstaller,
+    ) -> Result<InstallationOperationId, AgentError> {
+        if !valid_identifier(&staged.package_id) || staged.expires_at_unix <= now_unix()? {
+            return Err(AgentError::InvalidInstaller);
+        }
+        let operation_id = nonce();
+        let body = serde_json::to_vec(&WireBeginInstallation {
+            package_id: &staged.package_id,
+            operation_id: &operation_id,
+        })
+        .map_err(|error| AgentError::Transport(format!("installation request JSON: {error}")))?;
+        let accepted: WireInstallationAccepted =
+            deserialize(&self.request("POST", "/v1/installations", &body)?)?;
+        if accepted.operation_id != operation_id || accepted.package_id != staged.package_id {
+            return Err(AgentError::Authentication);
+        }
+        Ok(InstallationOperationId(operation_id))
+    }
+
+    pub fn installation_status(
+        &self,
+        operation: &InstallationOperationId,
+    ) -> Result<InstallationStatus, AgentError> {
+        if !valid_identifier(operation.as_str()) {
+            return Err(AgentError::InvalidInstaller);
+        }
+        let path = format!("/v1/installations/{}", operation.as_str());
+        let status: WireInstallationStatus = deserialize(&self.request("GET", &path, &[])?)?;
+        status.validate(operation)
+    }
+
+    /// Publishes only a candidate previously discovered by the SYSTEM bridge.
+    /// Neither executable paths nor process arguments are accepted from qOS.
+    pub fn publish_candidate(
+        &self,
+        operation: &InstallationOperationId,
+        candidate_id: &str,
+        application_id: &str,
+        display_name: &str,
+        expected_generation: u64,
+    ) -> Result<PublicationResult, AgentError> {
+        if !valid_identifier(operation.as_str())
+            || !valid_identifier(candidate_id)
+            || !valid_identifier(application_id)
+            || !valid_display_name(display_name)
+        {
+            return Err(AgentError::InvalidInstaller);
+        }
+        let body = serde_json::to_vec(&WirePublishRequest {
+            operation_id: operation.as_str(),
+            candidate_id,
+            application_id,
+            display_name,
+            expected_generation,
+        })
+        .map_err(|error| AgentError::Transport(format!("publication request JSON: {error}")))?;
+        let result: WirePublicationResult =
+            deserialize(&self.request("POST", "/v1/publications", &body)?)?;
+        result.validate(application_id, expected_generation)
+    }
+
+    pub fn remove_publication(
+        &self,
+        application_id: &str,
+        expected_generation: u64,
+    ) -> Result<PublicationResult, AgentError> {
+        if !valid_identifier(application_id) {
+            return Err(AgentError::InvalidInstaller);
+        }
+        let body = serde_json::to_vec(&WireRemovePublicationRequest {
+            application_id,
+            expected_generation,
+        })
+        .map_err(|error| AgentError::Transport(format!("removal request JSON: {error}")))?;
+        let result: WirePublicationResult =
+            deserialize(&self.request("POST", "/v1/publications/remove", &body)?)?;
+        result.validate(application_id, expected_generation)
     }
 
     fn request(&self, method: &str, path: &str, body: &[u8]) -> Result<Vec<u8>, AgentError> {
@@ -347,6 +664,140 @@ struct ResponseAuth(String);
 struct RequestBinding {
     timestamp: u64,
     nonce: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WireStagedInstaller {
+    package_id: String,
+    byte_len: u64,
+    sha256: String,
+    expires_at_unix: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBeginInstallation<'a> {
+    package_id: &'a str,
+    operation_id: &'a str,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WireInstallationAccepted {
+    package_id: String,
+    operation_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WireInstallationStatus {
+    operation_id: String,
+    state: InstallationState,
+    exit_code: Option<u32>,
+    candidates: Vec<DiscoveredApplication>,
+}
+
+impl WireInstallationStatus {
+    fn validate(
+        self,
+        expected: &InstallationOperationId,
+    ) -> Result<InstallationStatus, AgentError> {
+        if self.operation_id != expected.as_str()
+            || self.candidates.len() > 512
+            || self.candidates.iter().any(|candidate| !candidate.valid())
+            || (matches!(
+                self.state,
+                InstallationState::Starting | InstallationState::Running
+            ) && (self.exit_code.is_some() || !self.candidates.is_empty()))
+            || (self.state == InstallationState::Completed && self.exit_code.is_none())
+        {
+            return Err(AgentError::Authentication);
+        }
+        Ok(InstallationStatus {
+            operation_id: expected.clone(),
+            state: self.state,
+            exit_code: self.exit_code,
+            candidates: self.candidates,
+        })
+    }
+}
+
+impl DiscoveredApplication {
+    fn valid(&self) -> bool {
+        valid_identifier(&self.id)
+            && valid_display_name(&self.display_name)
+            && self
+                .product_name
+                .as_deref()
+                .is_none_or(valid_optional_metadata)
+            && self
+                .publisher
+                .as_deref()
+                .is_none_or(valid_optional_metadata)
+            && self.version.as_deref().is_none_or(valid_optional_metadata)
+            && self
+                .uninstall
+                .as_ref()
+                .is_none_or(DiscoveredUninstaller::valid)
+    }
+}
+
+impl DiscoveredUninstaller {
+    fn valid(&self) -> bool {
+        valid_identifier(&self.id)
+            && valid_display_name(&self.display_name)
+            && self
+                .display_version
+                .as_deref()
+                .is_none_or(valid_optional_metadata)
+            && self
+                .publisher
+                .as_deref()
+                .is_none_or(valid_optional_metadata)
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WirePublishRequest<'a> {
+    operation_id: &'a str,
+    candidate_id: &'a str,
+    application_id: &'a str,
+    display_name: &'a str,
+    expected_generation: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireRemovePublicationRequest<'a> {
+    application_id: &'a str,
+    expected_generation: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WirePublicationResult {
+    application_id: String,
+    catalog_generation: u64,
+}
+
+impl WirePublicationResult {
+    fn validate(
+        self,
+        expected_id: &str,
+        expected_generation: u64,
+    ) -> Result<PublicationResult, AgentError> {
+        if self.application_id != expected_id
+            || self.catalog_generation != expected_generation.saturating_add(1)
+        {
+            return Err(AgentError::Authentication);
+        }
+        Ok(PublicationResult {
+            application_id: self.application_id,
+            catalog_generation: self.catalog_generation,
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -685,6 +1136,15 @@ fn valid_username(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 
+fn valid_display_name(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty() && trimmed.len() <= 256 && !trimmed.chars().any(char::is_control)
+}
+
+fn valid_optional_metadata(value: &str) -> bool {
+    value.len() <= 256 && !value.chars().any(char::is_control)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -711,6 +1171,53 @@ mod tests {
         assert_eq!(first, hmac_hex(&key, b"7\nnonce\n", b"body"));
         assert_ne!(first, hmac_hex(&key, b"7\nnonce\n", b"different"));
         assert!(constant_time_eq(first.as_bytes(), first.as_bytes()));
+    }
+
+    #[test]
+    fn installer_package_is_opaque_digest_bound_and_bounded() {
+        let package = InstallerPackage::new(InstallerKind::Msi, 4096, "a".repeat(64)).unwrap();
+        assert!(valid_identifier(package.id()));
+        assert_eq!(package.byte_len(), 4096);
+        assert_eq!(package.sha256(), "a".repeat(64));
+        assert!(InstallerPackage::new(InstallerKind::Exe, 0, "a".repeat(64)).is_err());
+        assert!(
+            InstallerPackage::new(InstallerKind::Exe, MAX_INSTALLER_BYTES + 1, "a".repeat(64))
+                .is_err()
+        );
+        assert!(InstallerPackage::new(InstallerKind::Exe, 1, "not-a-digest").is_err());
+    }
+
+    #[test]
+    fn installation_status_rejects_unbounded_or_early_candidates() {
+        let operation = InstallationOperationId("a".repeat(48));
+        let candidate = DiscoveredApplication {
+            id: "candidate.id".to_string(),
+            display_name: "Candidate".to_string(),
+            product_name: None,
+            publisher: None,
+            version: None,
+            uninstall: None,
+        };
+        assert!(
+            WireInstallationStatus {
+                operation_id: operation.as_str().to_string(),
+                state: InstallationState::Running,
+                exit_code: None,
+                candidates: vec![candidate.clone()],
+            }
+            .validate(&operation)
+            .is_err()
+        );
+        assert!(
+            WireInstallationStatus {
+                operation_id: operation.as_str().to_string(),
+                state: InstallationState::Completed,
+                exit_code: Some(0),
+                candidates: vec![candidate],
+            }
+            .validate(&operation)
+            .is_ok()
+        );
     }
 
     #[test]
