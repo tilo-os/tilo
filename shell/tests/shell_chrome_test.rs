@@ -102,12 +102,12 @@ fn quick_settings_brightness_and_volume_clamp_and_mutate() {
     let mut q = QuickSettings::new();
     q.set_brightness(50.0);
     q.set_volume(80.0);
-    assert_eq!(q.brightness(), 50.0);
-    assert_eq!(q.volume(), 80.0);
+    assert!((q.brightness() - 50.0).abs() <= f32::EPSILON);
+    assert!((q.volume() - 80.0).abs() <= f32::EPSILON);
     q.set_brightness(-10.0);
     q.set_volume(999.0);
-    assert_eq!(q.brightness(), 0.0);
-    assert_eq!(q.volume(), 100.0);
+    assert!(q.brightness().abs() <= f32::EPSILON);
+    assert!((q.volume() - 100.0).abs() <= f32::EPSILON);
 }
 
 #[test]
@@ -501,7 +501,7 @@ fn sidebar_wheel_overscroll_below_threshold_snaps_back() {
     w.drag_overscroll(-1, 50.0);
     w.release_overscroll(&mut tree);
     assert_eq!(tree.workspaces.len(), 1);
-    assert_eq!(w.overscroll_progress(), 0.0);
+    assert!(w.overscroll_progress().abs() <= f32::EPSILON);
 }
 
 #[test]

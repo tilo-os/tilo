@@ -170,7 +170,14 @@ impl ApplicationsProvider {
                             .with_app_name("Applications"),
                         );
                         st.bump();
-                        return Ok(());
+                        // The notification is how the person at the machine
+                        // learns; this is how a caller with no screen learns —
+                        // the same failure, rather than success reported for an
+                        // app that was never started.
+                        return Err(ActionError::Refused(format!(
+                            "Couldn't open {display_name}: {}",
+                            launcher::LaunchError::NoWorkspace.user_message()
+                        )));
                     };
                     // The palette closes the instant this returns, so this
                     // notice is what stands between the user and an
@@ -920,7 +927,12 @@ mod tests {
         );
         let row = out.first().expect("a row for the offered app");
         assert!(c.borrow().notifications().is_empty());
-        let _ = (row.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none());
+        let opened = (row.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none());
+        assert!(
+            opened.is_err(),
+            "no active workspace is no room to launch into — the caller must be told, \
+             not answered as though the app had started",
+        );
         let st = c.borrow();
         let n = st
             .notifications()

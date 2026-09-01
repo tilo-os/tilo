@@ -49,7 +49,7 @@ pub fn menu_label(path: &Path) -> String {
         .map(|s| s.to_string_lossy().into_owned())
         .or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_default();
-    format!("New {stem}")
+    crate::i18n::t_args("files-new-from-template", &[crate::i18n::arg("name", stem)])
 }
 
 /// Create a new file in `dest_dir` by copying `template` there under a

@@ -101,11 +101,19 @@ struct Pending {
     /// Set by the download thread after the first staged chunk lands — playback
     /// may begin (progressively) from whatever is on disk so far.
     ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Set by the download thread once it has fetched the *entire* file (or given
-    /// up). Distinct from `ready` (first-chunk): a seek to a late position is only
-    /// safe once the bytes for it have landed, so the full-track proof waits on
-    /// this before scrubbing near the end.
+    /// Set by the download thread when it stops fetching — whether because the
+    /// whole file landed *or* because the source refused a range. Distinct from
+    /// `ready` (first chunk) and, crucially, from "the file is complete": a
+    /// range-gated source ends the fetch early, and asking `done` alone reports
+    /// that as a finished download. Whether the bytes are all here is
+    /// `fetched`/`expected`, not this.
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Bytes written to `path` so far, published live by the download thread.
+    fetched: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// The source's declared content length (`clen=`), or 0 when it did not
+    /// declare one. With `fetched` this is the only honest answer to "is a seek
+    /// to a late position backed by bytes on disk?".
+    expected: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Whether the transport wants to be playing once the file is ready.
     want_play: bool,
     /// Whether playback has already been switched onto the temp file.
@@ -128,13 +136,10 @@ impl AudioEngine {
     ///
     /// # Panics
     ///
-    /// With the `audio` feature: if `playbin` (a core `GStreamer` element from
-    /// `gstreamer1-plugins-base`) fails to construct, meaning that runtime
-    /// dependency is missing from the deployment.
-    #[allow(
-        clippy::expect_used,
-        reason = "a missing playbin means the audio feature's runtime dependency isn't installed; panicking with a diagnostic is the intended behaviour, not a bug to route around (see doc comment above)"
-    )]
+    /// With the `audio` feature enabled, panics when `GStreamer` cannot create
+    /// its core `playbin` element. This indicates that the required
+    /// `gstreamer1-plugins-base` runtime package is missing or unusable.
+    #[allow(clippy::panic)] // A missing required runtime is not recoverable here.
     pub fn new() -> Self {
         #[cfg(feature = "audio")]
         let inner = {
@@ -142,9 +147,13 @@ impl AudioEngine {
             if let Err(e) = gstreamer::init() {
                 tracing::error!(target: "music::audio", error = %e, "gstreamer::init failed — the `audio` feature needs a working GStreamer runtime");
             }
-            let playbin = gstreamer::ElementFactory::make("playbin").build().expect(
-                "playbin: requires gstreamer1-plugins-base, the audio feature's runtime dependency",
-            );
+            let playbin = match gstreamer::ElementFactory::make("playbin").build() {
+                Ok(playbin) => playbin,
+                Err(error) => panic!(
+                    "could not create GStreamer playbin; install the \
+                     gstreamer1-plugins-base runtime package: {error}"
+                ),
+            };
             let frames = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             // Route audio through an explicit **real** sink chain, so the
             // output is audible and verifiable. `autoaudiosink` selects
@@ -530,9 +539,44 @@ impl AudioEngine {
 
     /// Whether the staging download (if any) has fetched the **entire** file, so
     /// a seek to a late position is backed by bytes on disk. `true` when there is
-    /// no in-flight staging (a local `file://` uri, or nothing loaded). Used by
-    /// the full-track proof to wait before scrubbing past the 1-minute mark.
+    /// no in-flight staging (a local `file://` uri, or nothing loaded).
+    ///
+    /// This asks the byte counts, not the download thread's exit. A range-gated
+    /// source (`YouTube`'s SABR gating refuses every range past the first ~1 MB)
+    /// ends the fetch early with a partial file, and the thread finishes exactly
+    /// as it does on success — so reading "the download stopped" as "the file is
+    /// complete" reports a ~1-minute stub as a whole track. Everything
+    /// downstream then believes a seek to a late position is backed by bytes
+    /// that are not there.
+    ///
+    /// A source that declares no length cannot be checked this way; there,
+    /// "the fetch ran to its end" is the best available answer.
     pub fn staging_complete(&self) -> bool {
+        #[cfg(all(feature = "audio", feature = "live"))]
+        {
+            use std::sync::atomic::Ordering::Relaxed;
+            match &self.inner.pending {
+                Some(p) => {
+                    let expected = p.expected.load(Relaxed);
+                    if expected == 0 {
+                        return p.done.load(Relaxed);
+                    }
+                    p.fetched.load(Relaxed) >= expected
+                }
+                None => true,
+            }
+        }
+        #[cfg(not(all(feature = "audio", feature = "live")))]
+        {
+            true
+        }
+    }
+
+    /// Whether the staging download has stopped fetching, for any reason —
+    /// the whole file landed, or the source refused a range. Pair it with
+    /// [`Self::staging_complete`] to tell a finished download from a complete
+    /// one; on its own it only says the bytes will not grow any further.
+    pub fn staging_finished(&self) -> bool {
         #[cfg(all(feature = "audio", feature = "live"))]
         {
             match &self.inner.pending {
@@ -543,6 +587,24 @@ impl AudioEngine {
         #[cfg(not(all(feature = "audio", feature = "live")))]
         {
             true
+        }
+    }
+
+    /// Bytes of the staged stream on disk so far, and the length the source
+    /// declared (`None` when it declared none, or when nothing is staging).
+    /// Reported so a caller can say *how far short* a refused fetch fell rather
+    /// than only that it did.
+    pub fn staged_progress(&self) -> Option<(u64, Option<u64>)> {
+        #[cfg(all(feature = "audio", feature = "live"))]
+        {
+            use std::sync::atomic::Ordering::Relaxed;
+            let p = self.inner.pending.as_ref()?;
+            let expected = p.expected.load(Relaxed);
+            Some((p.fetched.load(Relaxed), (expected > 0).then_some(expected)))
+        }
+        #[cfg(not(all(feature = "audio", feature = "live")))]
+        {
+            None
         }
     }
 
@@ -641,17 +703,23 @@ impl AudioEngine {
         ));
         let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fetched = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let expected = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         spawn_stream_download(
             uri.to_string(),
             fallback,
             path.clone(),
             ready.clone(),
             done.clone(),
+            fetched.clone(),
+            expected.clone(),
         );
         self.inner.pending = Some(Pending {
             path,
             ready,
             done,
+            fetched,
+            expected,
             want_play: false,
             started: false,
         });
@@ -666,28 +734,38 @@ impl AudioEngine {
     }
 }
 
-/// The HTTP `User-Agent`s of the player clients rustypipe resolves streams
-/// through (its default order with no `BotGuard` is `[Ios, Tv]`). We present the
-/// client UA matching the URL's `c=` param on the media fetch to mirror the
-/// client that signed it. Values mirror rustypipe's own client UAs (crate 0.11).
+/// The HTTP `User-Agent`s of the player clients that sign the media URLs this
+/// app plays: the two rustypipe resolves through (its default order with no
+/// `BotGuard` is `[Ios, Tv]`) plus `android_vr`, the client
+/// [`crate::backend::ytdlp`] asks `yt-dlp` for. We present the client UA
+/// matching the URL's `c=` param on the media fetch to mirror the client that
+/// signed it. The iOS/TV values mirror rustypipe's own client UAs (crate 0.11);
+/// the `android_vr` one mirrors `yt-dlp`'s `INNERTUBE_CLIENTS["android_vr"]`.
 #[cfg(all(feature = "audio", feature = "live"))]
 const IOS_UA: &str =
     "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X)";
 #[cfg(all(feature = "audio", feature = "live"))]
 const TV_UA: &str = "Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/5.0 NativeTVAds Safari/538.1";
+/// The client the yt-dlp full-track resolver asks for. Without this arm such a
+/// URL was fetched under the iOS UA — a client it was not signed for, which the
+/// rule above exists to prevent.
+#[cfg(all(feature = "audio", feature = "live"))]
+const ANDROID_VR_UA: &str = "com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
 
 /// Pick the `User-Agent` for fetching a media URL.
 ///
 /// A signed **googlevideo** URL is presented with the client UA matching its
-/// `c=` query param (`c=IOS`, `c=TV`, …), mirroring the client that signed it.
-/// Any other source (notably an Invidious `local` proxy) gets a plain browser
-/// UA — those proxies expect a normal browser, not the iOS `YouTube` app.
+/// `c=` query param (`c=IOS`, `c=TV`, `c=ANDROID_VR`, …), mirroring the client
+/// that signed it. Any other source (notably an Invidious `local` proxy) gets a
+/// plain browser UA — those proxies expect a normal browser, not the iOS
+/// `YouTube` app.
 #[cfg(all(feature = "audio", feature = "live"))]
 fn ua_for_uri(uri: &str) -> &'static str {
     if uri.contains("googlevideo.com") {
         let client = uri.split(['?', '&']).find_map(|kv| kv.strip_prefix("c="));
         return match client {
             Some(c) if c.starts_with("TV") => TV_UA,
+            Some(c) if c.starts_with("ANDROID_VR") => ANDROID_VR_UA,
             _ => IOS_UA,
         };
     }
@@ -723,6 +801,8 @@ fn spawn_stream_download(
     path: std::path::PathBuf,
     ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fetched: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    expected: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) {
     use std::sync::atomic::Ordering::Relaxed;
     let _ = std::thread::Builder::new()
@@ -741,14 +821,29 @@ fn spawn_stream_download(
             // segment). Both stream progressively: `ready` flips after the first
             // staged chunk so audio starts without waiting for the full download.
             tracing::info!(target: "music::audio", %uri, has_fallback = fallback.is_some(), "stream staging: begin (primary source)");
-            let mut wrote = download_into(&uri, &mut file, &ready);
+            let mut wrote = download_into(&uri, &mut file, &ready, &fetched, &expected);
             if wrote == 0
                 && let Some(fb) = fallback
             {
                 tracing::info!(target: "music::audio", fallback = %fb, "stream staging: primary yielded no media, trying fallback (direct)");
-                wrote = download_into(&fb, &mut file, &ready);
+                // The primary wrote nothing, so the file restarts from zero and
+                // the fallback's own declared length replaces the primary's —
+                // otherwise a completeness check would compare the fallback's
+                // bytes against the wrong total.
+                fetched.store(0, Relaxed);
+                expected.store(0, Relaxed);
+                wrote = download_into(&fb, &mut file, &ready, &fetched, &expected);
             }
-            tracing::info!(target: "music::audio", bytes = wrote, "stream staging: finished");
+            let want = expected.load(Relaxed);
+            if want > 0 && wrote < want {
+                tracing::warn!(
+                    target: "music::audio",
+                    bytes = wrote,
+                    declared = want,
+                    "stream staging: source stopped short of the declared length — the staged file is a partial track"
+                );
+            }
+            tracing::info!(target: "music::audio", bytes = wrote, declared = want, "stream staging: finished");
             let _ = std::io::Write::flush(&mut file);
             finish();
         });
@@ -763,9 +858,12 @@ fn download_into(
     uri: &str,
     file: &mut std::fs::File,
     ready: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fetched: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+    expected: &std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) -> u64 {
-    use std::sync::atomic::Ordering::Relaxed;
     const CHUNK: u64 = 1_048_576;
+
+    use std::sync::atomic::Ordering::Relaxed;
     let Ok(client) = reqwest::blocking::Client::builder()
         .user_agent(ua_for_uri(uri))
         .timeout(std::time::Duration::from_secs(30))
@@ -774,6 +872,7 @@ fn download_into(
         return 0;
     };
     let clen = parse_clen(uri);
+    expected.store(clen.unwrap_or(0), Relaxed);
     let mut off = 0u64;
     loop {
         if let Some(c) = clen
@@ -827,6 +926,7 @@ fn download_into(
         let _ = std::io::Write::flush(file);
         let n = bytes.len() as u64;
         off += n;
+        fetched.store(off, Relaxed);
         // Progressive start: the first staged chunk (the moov header + initial
         // samples) is enough to begin playback, so mark the file playable now and
         // keep fetching the rest into the SAME file. The whole track still lands

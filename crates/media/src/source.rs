@@ -112,10 +112,23 @@ impl Source {
     }
 }
 
-/// Turn an absolute path into a `file://` URI with percent-encoded path
-/// segments. Hand-rolled (no `url` dep) because the encoding rules here are
-/// narrow: keep the unreserved set + `/`, percent-encode everything else.
+/// Turn a path into a `file://` URI with percent-encoded path segments.
+/// Hand-rolled (no `url` dep) because the encoding rules here are narrow: keep
+/// the unreserved set + `/`, percent-encode everything else.
+///
+/// A relative path is resolved against the current directory first. `file://`
+/// requires an absolute path — the text after the `//` is a *hostname*, so
+/// `file://clips/a.mp4` names a host called `clips`, which every `GStreamer`
+/// source element rejects ("the hostname of the URI is invalid"). Resolving
+/// here turns a silently unplayable source into a working one.
 pub fn path_to_file_uri(path: &Path) -> String {
+    let absolute;
+    let path = if path.is_absolute() {
+        path
+    } else {
+        absolute = std::env::current_dir().map_or_else(|_| path.to_path_buf(), |d| d.join(path));
+        &absolute
+    };
     let s = path.to_string_lossy();
     let mut out = String::with_capacity(s.len().saturating_add(8));
     out.push_str("file://");
@@ -143,6 +156,18 @@ fn hex_digit(n: u8) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_relative_path_becomes_an_absolute_file_uri_not_a_hostname() {
+        // `file://clips/a.mp4` parses `clips` as a host and is rejected by
+        // every GStreamer source element, so the media never plays.
+        let uri = Source::LocalFile(PathBuf::from("clips/a.mp4")).to_uri();
+        assert!(
+            uri.starts_with("file:///"),
+            "must be an absolute file URI, got {uri}"
+        );
+        assert!(uri.ends_with("/clips/a.mp4"), "path preserved: {uri}");
+    }
 
     #[test]
     fn local_file_uri_is_percent_encoded() {

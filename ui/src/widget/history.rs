@@ -145,12 +145,31 @@ pub enum HistoryClassification {
 }
 
 impl HistoryFilter {
+    fn matches_facets(&self, context: &ActionContext) -> bool {
+        let mut visited = std::collections::HashSet::new();
+        for facet in &self.facets {
+            if !visited.insert(facet.key.as_str()) {
+                continue;
+            }
+            if !self
+                .facets
+                .iter()
+                .filter(|candidate| candidate.key == facet.key)
+                .any(|candidate| context.facets.contains(candidate))
+            {
+                return false;
+            }
+        }
+        true
+    }
+
     pub fn matches(&self, entry: &HistoryEntry) -> bool {
         match self.classification {
-            HistoryClassification::Any => {}
             HistoryClassification::Classified if entry.context.is_none() => return false,
             HistoryClassification::Unclassified if entry.context.is_some() => return false,
-            HistoryClassification::Classified | HistoryClassification::Unclassified => {}
+            HistoryClassification::Any
+            | HistoryClassification::Classified
+            | HistoryClassification::Unclassified => {}
         }
         if !self.authors.is_empty() {
             let needle = entry.author.name.to_lowercase();
@@ -236,19 +255,8 @@ impl HistoryFilter {
             };
             // Values within one key are alternatives; separate facet keys
             // intersect. `path:A OR path:B` plus `file-type:Markdown`.
-            for key in self
-                .facets
-                .iter()
-                .map(|facet| facet.key.as_str())
-                .collect::<std::collections::HashSet<_>>()
-            {
-                let selected = self.facets.iter().filter(|facet| facet.key == key);
-                if !selected
-                    .into_iter()
-                    .any(|facet| context.facets.contains(facet))
-                {
-                    return false;
-                }
+            if !self.matches_facets(context) {
+                return false;
             }
         }
         true

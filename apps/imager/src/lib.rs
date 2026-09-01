@@ -4,9 +4,9 @@
 //! A single guided **wizard** with a six-station step indicator, covering both
 //! "write this image to a USB stick" and "install qOS onto a disk":
 //!
-//!   1. **Source** — pick a local `.iso` / `.img` via the host XDG portal
-//!      file picker (never a bespoke dialog), or a known qOS release.
-//!   2. **Drive** — choose the target from the *real* block devices (`lsblk`);
+//!   1. **Source** — pick a local `.iso` / `.img` via the platform's native
+//!      file picker, or a known qOS release.
+//!   2. **Drive** — choose a target from real platform block-device discovery;
 //!      internal disks are hidden behind an explicit opt-in, the **system disk**
 //!      needs a second acknowledgement before it can even be selected, and an
 //!      honest empty state asks the user to insert a drive.
@@ -29,7 +29,9 @@
 //! only peer-local capture state before returning the same widget. The live binary sets
 //! `IMAGER_LIVE=1` so the drive list comes from a real `lsblk` probe and the
 //! app starts genuinely blank; `--shots` / `--demo` seed sample content so the
-//! screenshot is deterministic offline.
+//! screenshot is deterministic offline. Immediately before writing, the live
+//! inventory is read again and its stable device identity, size, and system-
+//! disk status must still match the confirmed target.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -182,6 +184,7 @@ fn seed_scenario_drive_internal(doc: &mut automerge::AutoCommit) {
         TargetDrive {
             name: "nvme0n1".into(),
             model: "Samsung SSD 990 PRO 1TB".into(),
+            stable_id: Some("demo-running-system".into()),
             size: 1_000_204_886_016,
             kind: TargetKind::Nvme,
             tran: Some("nvme".into()),

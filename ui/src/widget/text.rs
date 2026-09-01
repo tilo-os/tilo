@@ -3,7 +3,7 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::{
     FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign,
-    TextRenderer, TextStyle, TextWeight, TextWrapMode,
+    TextLayoutConstraints, TextLayoutEngine, TextRenderer, TextStyle, TextWeight, TextWrapMode,
 };
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -15,14 +15,28 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::event::WindowEvent;
 
+type DynamicTextSource = Box<dyn FnMut() -> Option<String>>;
+type DocumentTextSource = Box<dyn FnMut(&AutoCommit, &ObjId) -> String>;
+
+enum TextSource {
+    Local(DynamicTextSource),
+    Document(DocumentTextSource),
+}
+
 pub struct Text {
     label: String,
+    test_id: Option<String>,
+    /// Returns `Some` only when a bound value should replace `label`.
+    source: Option<TextSource>,
     /// Named variables interpolated into the label's Fluent placeables. Held
     /// owned so a localized string like `counter = Count is { $count }` resolves
     /// to `Count is 5` (not the literal `{$count}`) every frame, even though the
     /// widget caches its rendered scene. Empty for plain, variable-free labels.
     args: Vec<(String, ArgValue)>,
+    i18n_revision: u64,
     style: TextStyle,
+    layout_engine: Option<Box<dyn TextLayoutEngine>>,
+    engine_revision: u64,
     /// `None` (default) renders with the theme's `text_primary`.
     color: Option<vello::peniko::Color>,
     rect: vello::kurbo::Rect,
@@ -37,6 +51,8 @@ pub struct Text {
     /// `Scrollable` offsetting child rects) keeps the cache, absorbed by
     /// the `Scene::append` transform in `draw`.
     dirty: bool,
+    /// A content change can alter intrinsic size as well as paint output.
+    layout_dirty: bool,
     /// Rect the cache was emitted at: size is compared against the
     /// current rect to decide whether to re-emit, and origin gives the
     /// per-frame translate so the cache follows its widget without
@@ -48,16 +64,93 @@ impl Text {
     pub fn new(label: &str) -> Self {
         Self {
             label: label.to_string(),
+            test_id: None,
+            source: None,
             args: Vec::new(),
+            i18n_revision: crate::i18n::I18nManager::revision(),
             style: TextStyle::new(16.0),
+            layout_engine: None,
+            engine_revision: 0,
             color: None,
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             permission_scope: None,
             cached: Scene::new(),
             dirty: true,
+            layout_dirty: false,
             cache_rect: vello::kurbo::Rect::ZERO,
         }
+    }
+
+    /// Give this retained text node a stable address for inspection and
+    /// headless scenarios.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.test_id = Some(id.into());
+        self
+    }
+
+    /// Text recomputed during widget synchronization.
+    ///
+    /// Prefer [`Self::from_state`] for [`LocalState`](crate::LocalState): it
+    /// uses the state's revision to skip the formatter when unchanged.
+    pub fn dynamic(mut source: impl FnMut() -> String + 'static) -> Self {
+        let initial = source();
+        let mut text = Self::new(&initial);
+        text.source = Some(TextSource::Local(Box::new(move || Some(source()))));
+        text
+    }
+
+    /// Bind rendered text to typed process-local state.
+    pub fn from_state<T: 'static>(
+        state: &crate::LocalState<T>,
+        mut render: impl FnMut(&T) -> String + 'static,
+    ) -> Self {
+        let initial = state.with(&mut render);
+        let state = state.clone();
+        let mut observed_revision = state.revision();
+        let mut observed_i18n_revision = crate::i18n::I18nManager::revision();
+        let mut text = Self::new(&initial);
+        text.source = Some(TextSource::Local(Box::new(move || {
+            let revision = state.revision();
+            let i18n_revision = crate::i18n::I18nManager::revision();
+            if revision == observed_revision && i18n_revision == observed_i18n_revision {
+                return None;
+            }
+            observed_revision = revision;
+            observed_i18n_revision = i18n_revision;
+            Some(state.with(&mut render))
+        })));
+        text
+    }
+
+    /// Derive text from the shared Automerge model during the standard sync
+    /// pass. Several views can read the same fields without notifications or
+    /// app-owned fan-out; each invalidates only when its rendered value changes.
+    pub fn from_document(render: impl FnMut(&AutoCommit, &ObjId) -> String + 'static) -> Self {
+        let mut text = Self::new("");
+        text.source = Some(TextSource::Document(Box::new(render)));
+        text
+    }
+
+    /// Display a string scalar or Automerge `Text` object stored under `key`.
+    /// This is the zero-boilerplate companion to
+    /// [`TextInput::from_document_string`](super::TextInput::from_document_string)
+    /// using the same key; use [`Self::from_document`] for projections.
+    pub fn from_document_string(key: impl Into<String>) -> Self {
+        use automerge::{ObjType, ReadDoc, ScalarValue, Value};
+
+        let key = key.into();
+        Self::from_document(move |doc, root| match doc.get(root, key.as_str()) {
+            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
+                ScalarValue::Str(value) => value.to_string(),
+                _ => String::new(),
+            },
+            Ok(Some((Value::Object(ObjType::Text), object))) => {
+                doc.text(&object).unwrap_or_default()
+            }
+            _ => String::new(),
+        })
     }
 
     /// Construct text from a key whose Fluent message takes variables, e.g.
@@ -111,6 +204,48 @@ impl Text {
         self
     }
 
+    /// Replace measurement and painting while retaining Text's localization,
+    /// accessibility, Taffy lifecycle, caching, and inspection behavior.
+    #[must_use]
+    pub fn with_layout_engine<E>(mut self, engine: E) -> Self
+    where
+        E: TextLayoutEngine + 'static,
+    {
+        self.engine_revision = engine.revision();
+        self.layout_engine = Some(Box::new(engine));
+        self.dirty = true;
+        self.layout_dirty = true;
+        self
+    }
+
+    /// Force a remeasure/repaint after mutating engine state through a shared
+    /// owner whose revision cannot be observed automatically.
+    pub fn invalidate_layout_engine(&mut self) {
+        self.dirty = true;
+        self.layout_dirty = true;
+    }
+
+    fn observe_engine_revision(&mut self) {
+        let Some(engine) = self.layout_engine.as_deref() else {
+            return;
+        };
+        let revision = engine.revision();
+        if revision != self.engine_revision {
+            self.engine_revision = revision;
+            self.dirty = true;
+            self.layout_dirty = true;
+        }
+    }
+
+    fn observe_i18n_revision(&mut self) {
+        let revision = crate::i18n::I18nManager::revision();
+        if revision != self.i18n_revision {
+            self.i18n_revision = revision;
+            self.dirty = true;
+            self.layout_dirty = true;
+        }
+    }
+
     /// Resolve a semantic role from the active theme. This is the preferred
     /// application-level API: one role selects size, leading, weight, and face
     /// together and automatically reflects text/UI scaling in `theme`.
@@ -131,6 +266,18 @@ impl Text {
     #[must_use]
     pub fn with_auto_hyphenation(mut self, language: impl Into<String>) -> Self {
         self.style = self.style.with_auto_hyphenation(language);
+        self.dirty = true;
+        self
+    }
+
+    /// Use an application-supplied discretionary-break algorithm while
+    /// retaining the standard Text widget lifecycle and accessibility.
+    #[must_use]
+    pub fn with_hyphenator(
+        mut self,
+        hyphenator: std::sync::Arc<dyn crate::text_render::Hyphenator>,
+    ) -> Self {
+        self.style = self.style.with_hyphenator(hyphenator);
         self.dirty = true;
         self
     }
@@ -307,7 +454,23 @@ impl Text {
 }
 
 impl Widget for Text {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.observe_i18n_revision();
+        self.observe_engine_revision();
+        let label = match self.source.as_mut() {
+            Some(TextSource::Local(source)) => source(),
+            Some(TextSource::Document(source)) => Some(source(state, path)),
+            None => None,
+        };
+        let Some(label) = label else {
+            return;
+        };
+        if self.label != label {
+            self.label = label;
+            self.dirty = true;
+            self.layout_dirty = true;
+        }
+    }
 
     fn build_layout(
         &mut self,
@@ -336,6 +499,8 @@ impl Widget for Text {
         available_space: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
+        self.observe_i18n_revision();
+        self.observe_engine_revision();
         let label = self.resolved_label();
 
         let max_w = if let Some(w) = known_dimensions.width {
@@ -348,7 +513,23 @@ impl Widget for Text {
             }
         };
 
-        let (w, h) = text_renderer.measure_style(&label, max_w, &self.style);
+        let max_h = if let Some(height) = known_dimensions.height {
+            Some(height)
+        } else {
+            match available_space.height {
+                taffy::AvailableSpace::Definite(height) => Some(height),
+                taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => None,
+            }
+        };
+        let constraints = TextLayoutConstraints {
+            max_width: max_w,
+            max_height: max_h,
+        };
+        let (w, h) = if let Some(engine) = self.layout_engine.as_deref_mut() {
+            engine.measure(text_renderer, &label, constraints, &self.style)
+        } else {
+            text_renderer.measure_style(&label, max_w, &self.style)
+        };
 
         // Tiny epsilon on width so rounding in Row/Column doesn't read the
         // text as "just a bit too big" and wrap it unnecessarily.
@@ -389,6 +570,8 @@ impl Widget for Text {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
+        self.observe_i18n_revision();
+        self.observe_engine_revision();
         if self.dirty || self.cache_rect == vello::kurbo::Rect::ZERO {
             self.cached.reset();
             let label = self.resolved_label();
@@ -399,14 +582,34 @@ impl Widget for Text {
             let max_width = self.rect.width() as f32;
             let color = self.color.unwrap_or(theme.tokens.colors.text_primary);
             let origin = Affine::translate((self.rect.x0, self.rect.y0));
-            text_renderer.draw_style(
-                &mut self.cached,
-                &label,
-                color,
-                origin,
-                Some(max_width + 1.0),
-                &self.style,
-            );
+            let constraints = TextLayoutConstraints {
+                max_width: Some(max_width + 1.0),
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "text widget height is an ordinary logical-pixel value"
+                )]
+                max_height: Some(self.rect.height() as f32),
+            };
+            if let Some(engine) = self.layout_engine.as_deref_mut() {
+                engine.draw(
+                    text_renderer,
+                    &mut self.cached,
+                    &label,
+                    constraints,
+                    &self.style,
+                    color,
+                    origin,
+                );
+            } else {
+                text_renderer.draw_style(
+                    &mut self.cached,
+                    &label,
+                    color,
+                    origin,
+                    constraints.max_width,
+                    &self.style,
+                );
+            }
             self.cache_rect = self.rect;
         }
         let dx = self.rect.x0 - self.cache_rect.x0;
@@ -435,16 +638,21 @@ impl Widget for Text {
         "Text"
     }
 
+    fn test_id(&self) -> Option<&str> {
+        self.test_id.as_deref()
+    }
+
     /// Opt into incremental redraw: true while the cache is unwritten or
     /// invalidated by a rect change. The App's redraw gate uses this to
     /// skip frames where no Text widget changed.
     fn needs_redraw(&self) -> bool {
-        self.dirty
+        self.dirty || self.i18n_revision != crate::i18n::I18nManager::revision()
     }
 
     /// Clears the cache-stale flag after the App consumes the scene.
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        self.layout_dirty = false;
     }
 
     /// Text's intrinsic size is fixed at construction, so once
@@ -453,6 +661,12 @@ impl Widget for Text {
     /// `Rect::ZERO` means "not laid out yet," so the first frame still runs.
     fn is_layout_dirty(&self) -> bool {
         self.rect == vello::kurbo::Rect::ZERO
+            || self.layout_dirty
+            || self.i18n_revision != crate::i18n::I18nManager::revision()
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.i18n_revision != crate::i18n::I18nManager::revision()
     }
 
     fn get_rect(&self) -> vello::kurbo::Rect {
@@ -534,6 +748,202 @@ impl Widget for Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct RecordingEngine {
+        measures: std::rc::Rc<std::cell::Cell<u32>>,
+        draws: std::rc::Rc<std::cell::Cell<u32>>,
+        revision: std::rc::Rc<std::cell::Cell<u64>>,
+    }
+
+    impl TextLayoutEngine for RecordingEngine {
+        fn measure(
+            &mut self,
+            _renderer: &mut TextRenderer,
+            _text: &str,
+            _constraints: TextLayoutConstraints,
+            _style: &TextStyle,
+        ) -> (f32, f32) {
+            self.measures.set(self.measures.get().saturating_add(1));
+            (123.0, 45.0)
+        }
+
+        fn draw(
+            &mut self,
+            _renderer: &mut TextRenderer,
+            _scene: &mut Scene,
+            _text: &str,
+            _constraints: TextLayoutConstraints,
+            _style: &TextStyle,
+            _color: vello::peniko::Color,
+            _transform: Affine,
+        ) {
+            self.draws.set(self.draws.get().saturating_add(1));
+        }
+
+        fn revision(&self) -> u64 {
+            self.revision.get()
+        }
+    }
+
+    #[test]
+    fn custom_layout_engine_keeps_text_widget_lifecycle() {
+        let measures = std::rc::Rc::new(std::cell::Cell::new(0));
+        let draws = std::rc::Rc::new(std::cell::Cell::new(0));
+        let revision = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut text = Text::new("engine text").with_layout_engine(RecordingEngine {
+            measures: std::rc::Rc::clone(&measures),
+            draws: std::rc::Rc::clone(&draws),
+            revision: std::rc::Rc::clone(&revision),
+        });
+        let mut renderer = TextRenderer::new();
+        let size = Widget::measure(
+            &mut text,
+            taffy::Size {
+                width: None,
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::MaxContent,
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut renderer,
+        );
+        assert_eq!(size.width, 123.1);
+        assert_eq!(size.height, 45.0);
+        assert_eq!(measures.get(), 1);
+
+        text.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 123.1, 45.0));
+        let mut scene = Scene::new();
+        Widget::draw(
+            &mut text,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            &Theme::dark(),
+            &crate::presence::PresenceCtx::empty(),
+        );
+        assert_eq!(draws.get(), 1);
+        let node = Widget::accessibility(&text).expect("custom text stays accessible");
+        assert_eq!(node.role, crate::a11y::Role::StaticText);
+        assert_eq!(node.name.as_deref(), Some("engine text"));
+
+        Widget::mark_drawn(&mut text);
+        assert!(!Widget::needs_redraw(&text));
+        assert!(!Widget::is_layout_dirty(&text));
+        revision.set(1);
+        let mut document = AutoCommit::new();
+        Widget::sync(&mut text, &mut document, &automerge::ROOT);
+        assert!(Widget::needs_redraw(&text));
+        assert!(Widget::is_layout_dirty(&text));
+    }
+
+    #[test]
+    fn local_state_binding_invalidates_text_only_after_a_change() {
+        let state = crate::LocalState::new(String::from("Ada"));
+        let mut text = Text::from_state(&state, |name| format!("Hello, {name}"));
+        text.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 200.0, 40.0));
+        Widget::mark_drawn(&mut text);
+        assert!(!Widget::needs_redraw(&text));
+        assert!(!Widget::is_layout_dirty(&text));
+        assert_eq!(
+            Widget::accessibility(&text).unwrap().name.as_deref(),
+            Some("Hello, Ada")
+        );
+
+        let mut document = AutoCommit::new();
+        Widget::sync(&mut text, &mut document, &automerge::ROOT);
+        assert!(!Widget::needs_redraw(&text));
+        assert!(!Widget::is_layout_dirty(&text));
+
+        state.set(String::from("Grace"));
+        Widget::sync(&mut text, &mut document, &automerge::ROOT);
+        assert!(Widget::needs_redraw(&text));
+        assert!(Widget::is_layout_dirty(&text));
+        assert_eq!(
+            Widget::accessibility(&text).unwrap().name.as_deref(),
+            Some("Hello, Grace")
+        );
+    }
+
+    #[test]
+    fn dynamic_text_compares_output_before_invalidating() {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0_u32));
+        let captured = std::rc::Rc::clone(&calls);
+        let mut text = Text::dynamic(move || {
+            captured.set(captured.get().saturating_add(1));
+            String::from("constant")
+        });
+        text.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 200.0, 40.0));
+        Widget::mark_drawn(&mut text);
+
+        let mut document = AutoCommit::new();
+        Widget::sync(&mut text, &mut document, &automerge::ROOT);
+        assert_eq!(calls.get(), 2);
+        assert!(!Widget::needs_redraw(&text));
+        assert!(!Widget::is_layout_dirty(&text));
+    }
+
+    #[test]
+    fn document_text_keeps_multiple_views_in_sync_through_undo() {
+        use automerge::{ReadDoc, ScalarValue, Value, transaction::Transactable};
+
+        fn title(doc: &AutoCommit, root: &ObjId) -> String {
+            match doc.get(root, "title") {
+                Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
+                    ScalarValue::Str(value) => value.to_string(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            }
+        }
+
+        let mut state = crate::State::new();
+        state.doc.put(&state.root, "title", "Alpha").unwrap();
+        state.commit_action(None, None);
+        let mut master = Text::from_document_string("title");
+        let mut detail = Text::from_document(|doc, root| format!("Editing: {}", title(doc, root)));
+        Widget::sync(&mut master, &mut state.doc, &state.root);
+        Widget::sync(&mut detail, &mut state.doc, &state.root);
+        assert_eq!(
+            Widget::accessibility(&master).unwrap().name.as_deref(),
+            Some("Alpha")
+        );
+        assert_eq!(
+            Widget::accessibility(&detail).unwrap().name.as_deref(),
+            Some("Editing: Alpha")
+        );
+
+        master.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 100.0, 20.0));
+        detail.apply_layout_external(vello::kurbo::Rect::new(0.0, 20.0, 100.0, 40.0));
+        Widget::mark_drawn(&mut master);
+        Widget::mark_drawn(&mut detail);
+        state.doc.put(&state.root, "title", "Beta").unwrap();
+        state.commit_action(None, None);
+        Widget::sync(&mut master, &mut state.doc, &state.root);
+        Widget::sync(&mut detail, &mut state.doc, &state.root);
+        assert_eq!(
+            Widget::accessibility(&master).unwrap().name.as_deref(),
+            Some("Beta")
+        );
+        assert_eq!(
+            Widget::accessibility(&detail).unwrap().name.as_deref(),
+            Some("Editing: Beta")
+        );
+        assert!(Widget::needs_redraw(&master));
+        assert!(Widget::needs_redraw(&detail));
+
+        state.undo(None, None).unwrap();
+        Widget::sync(&mut master, &mut state.doc, &state.root);
+        Widget::sync(&mut detail, &mut state.doc, &state.root);
+        assert_eq!(
+            Widget::accessibility(&master).unwrap().name.as_deref(),
+            Some("Alpha")
+        );
+        assert_eq!(
+            Widget::accessibility(&detail).unwrap().name.as_deref(),
+            Some("Editing: Alpha")
+        );
+    }
 
     #[test]
     fn complete_style_is_retained_by_the_widget() {
@@ -627,6 +1037,55 @@ mod tests {
         let t = Text::new("totally-unknown-key").with_arg("x", 1);
         let node = Widget::accessibility(&t).expect("resolved");
         assert_eq!(node.name.as_deref(), Some("totally-unknown-key"));
+    }
+
+    #[test]
+    fn locale_switch_remeasures_and_repaints_retained_text_and_button() {
+        fn named<'a>(node: &'a InspectionNode, id: &str) -> Option<&'a InspectionNode> {
+            if node.test_id.as_deref() == Some(id) {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| named(child, id))
+        }
+
+        use crate::headless::InspectionNode;
+        use crate::widget::{Button, Column};
+
+        const EN: &str = "title = Apps\naction = Open";
+        const DE: &str = "title = Anwendungen\naction = Einstellungen öffnen";
+        I18nManager::install("en-US", "en-US", &[("en-US", EN), ("de", DE)]).unwrap();
+        let root = Column::new()
+            .push(Box::new(Text::new("title")))
+            .push(Box::new(
+                Button::new("localized-action", "action", None).fit_content(40.0),
+            ));
+        let mut driver =
+            crate::headless::Driver::new(crate::State::new(), Box::new(root), (700, 300));
+
+        let before = driver.inspection();
+        let before_button = named(&before.root, "localized-action").unwrap();
+        let before_width = before_button.rect[2];
+        assert_eq!(
+            before_button
+                .semantics
+                .as_ref()
+                .and_then(|node| node.name.as_deref()),
+            Some("Open")
+        );
+
+        I18nManager::set_locale("de-DE");
+        driver.relayout();
+        let after = driver.inspection();
+        let after_button = named(&after.root, "localized-action").unwrap();
+        assert_eq!(
+            after_button
+                .semantics
+                .as_ref()
+                .and_then(|node| node.name.as_deref()),
+            Some("Einstellungen öffnen")
+        );
+        assert!(after_button.rect[2] > before_width);
+        assert!(driver.inspection_json().unwrap().contains("Anwendungen"));
     }
 
     /// A label with a font-family override resolves to that family: after

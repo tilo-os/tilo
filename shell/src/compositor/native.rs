@@ -3524,6 +3524,10 @@ fn spawn_auto_brightness_worker() {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "deterministic control-path geometry fixtures use exactly representable values"
+)]
 mod tests {
     //! Unit coverage for the test-control execution path. The integration test
     //! (`tests/control_socket_test.rs`) needs a Wayland display and is

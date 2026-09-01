@@ -185,6 +185,10 @@ impl TargetPartition {
 pub struct TargetDrive {
     pub name: String,
     pub model: String,
+    /// Platform-provided hardware/media identity (WWN/serial/UniqueId) used
+    /// to detect unplug/replug target substitution before a destructive open.
+    #[serde(default)]
+    pub stable_id: Option<String>,
     pub size: u64,
     pub kind: TargetKind,
     pub tran: Option<String>,
@@ -197,7 +201,23 @@ pub struct TargetDrive {
 
 impl TargetDrive {
     pub fn dev_path(&self) -> String {
-        format!("/dev/{}", self.name)
+        if self.name.starts_with('/') || self.name.starts_with(r"\\.\") {
+            return self.name.clone();
+        }
+        #[cfg(target_os = "windows")]
+        {
+            return format!(r"\\.\{}", self.name);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // The raw character device avoids the buffered `/dev/diskN` path
+            // and is the interface Apple documents for imaging removable media.
+            return format!("/dev/r{}", self.name);
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            format!("/dev/{}", self.name)
+        }
     }
     /// Human description of what currently lives on the drive.
     pub fn contents_summary(&self) -> String {
@@ -747,6 +767,7 @@ pub fn sample_targets() -> Vec<TargetDrive> {
         TargetDrive {
             name: "sdb".into(),
             model: "SanDisk Ultra USB 3.0".into(),
+            stable_id: Some("demo-sandisk-ultra".into()),
             size: 30_752_000_000,
             kind: TargetKind::Usb,
             tran: Some("usb".into()),
@@ -762,6 +783,7 @@ pub fn sample_targets() -> Vec<TargetDrive> {
         TargetDrive {
             name: "nvme0n1".into(),
             model: "Samsung SSD 990 PRO 1TB".into(),
+            stable_id: Some("demo-samsung-990".into()),
             size: 1_000_204_886_016,
             kind: TargetKind::Nvme,
             tran: Some("nvme".into()),

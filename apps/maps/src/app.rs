@@ -20,6 +20,7 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::format::bytes as format_bytes;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -698,7 +699,7 @@ impl MapsApp {
         self.offline_panel.set_cache_bytes(self.tiles.cache_bytes());
         // The metadata row is the action; the tile deletion above is external.
         self.perform(doc, &MapsAction::DeleteRegion { id: id.to_string() });
-        self.model.status = format!("Removed “{}” · {} freed", region.name, fmt_bytes(freed));
+        self.model.status = format!("Removed “{}” · {} freed", region.name, format_bytes(freed));
         self.mark_dirty();
     }
 
@@ -1885,7 +1886,7 @@ impl MapsApp {
                 let freed = self.tiles.clear_cache();
                 self.offline_panel.set_cache_bytes(0);
                 self.perform(doc, &MapsAction::ClearRegions);
-                self.model.status = format!("Cleared {} of offline tiles", fmt_bytes(freed));
+                self.model.status = format!("Cleared {} of offline tiles", format_bytes(freed));
                 self.mark_dirty();
             }
             OfflineAction::Consume => {}
@@ -1921,22 +1922,6 @@ fn keyword_match(needle: &str, cat: Category) -> bool {
 
 fn vmid(y: f64, h: f64, size: f32) -> f64 {
     y + (h - f64::from(size) * 1.25) / 2.0
-}
-
-/// Human-readable byte count for the cache-size readouts.
-fn fmt_bytes(n: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-    if n >= GB {
-        format!("{:.1} GB", n as f64 / GB as f64)
-    } else if n >= MB {
-        format!("{:.1} MB", n as f64 / MB as f64)
-    } else if n >= KB {
-        format!("{} KB", n / KB)
-    } else {
-        format!("{n} B")
-    }
 }
 
 // ===========================================================================

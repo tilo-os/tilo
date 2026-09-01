@@ -61,7 +61,7 @@ pub fn main() {
             .shot_handler(shot_handler)
             .allowed_flags(&["--empty", "--narrow"])
             .allowed_options(&["--import"])
-            .scenarios(&["filters", "split", "menu", "rename", "drag", "effects"])
+            .scenarios(video_editor::app::ShotScenario::ALL_NAMES)
             .configure_app(|app| video_editor::actions::register(app.action_registry_mut())),
     );
 }
@@ -136,49 +136,24 @@ fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
         )?;
     } else {
         let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        match scenario {
-            Some("filters") => render_shot_to_png(
-                video_editor::app_root_filters(),
+        // Every scenario resolves through the same `ShotScenario` selector the
+        // app itself defines, so adding one there is enough to make it
+        // capturable — there is no second list here to keep in step.
+        match scenario.and_then(video_editor::app::ShotScenario::from_arg) {
+            Some(s) => render_shot_to_png(
+                Box::new(video_editor::VideoEditorApp::new_for_shot(s)),
                 viewport,
                 out,
                 ui::State::new(),
             )?,
-            Some("split") => render_shot_to_png(
-                video_editor::app_root_split(),
-                viewport,
-                out,
-                ui::State::new(),
-            )?,
-            Some("menu") => render_shot_to_png(
-                video_editor::app_root_menu(),
-                viewport,
-                out,
-                ui::State::new(),
-            )?,
-            Some("rename") => render_shot_to_png(
-                video_editor::app_root_rename(),
-                viewport,
-                out,
-                ui::State::new(),
-            )?,
-            Some("drag") => render_shot_to_png(
-                video_editor::app_root_drag(),
-                viewport,
-                out,
-                ui::State::new(),
-            )?,
-            Some("effects") => render_shot_to_png(
-                video_editor::app_root_effects(),
-                viewport,
-                out,
-                ui::State::new(),
-            )?,
-            _ => render_shot_to_png(
-                video_editor::app_root_demo(),
-                viewport,
-                out,
-                ui::State::new(),
-            )?,
+            None => {
+                render_shot_to_png(
+                    video_editor::app_root_demo(),
+                    viewport,
+                    out,
+                    ui::State::new(),
+                )?;
+            }
         }
     }
     Ok(())

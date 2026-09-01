@@ -54,10 +54,15 @@ pub mod transport;
     clippy::nursery,
     clippy::pedantic,
     clippy::restriction,
+    unused_imports,
+    unused_qualifications,
+    unused_results,
+    non_camel_case_types,
+    missing_docs,
+    dead_code,
+    unsafe_code,
     reason = "generated Cap'n Proto bindings do not follow repository lint policy"
 )]
-#[allow(unused)]
-#[allow(dead_code)]
 pub mod app_host_capnp {
     include!(concat!(env!("OUT_DIR"), "/app_host_capnp.rs"));
 }
