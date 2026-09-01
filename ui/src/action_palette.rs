@@ -102,6 +102,7 @@ pub struct ActionPalette {
     arg: Option<ArgState>,
     /// A ready-to-dispatch action, set on activation, drained by `take_dispatch`.
     pending_dispatch: Option<(EncodedAction, ActionContext)>,
+    ambient_context: Option<ActionContext>,
     /// A navigation target, set on activation, drained by `take_navigation`.
     pending_nav: Option<String>,
     /// The palette's outer rect (field + results), set by `layout`.
@@ -135,6 +136,7 @@ impl ActionPalette {
             open: false,
             arg: None,
             pending_dispatch: None,
+            ambient_context: None,
             pending_nav: None,
             rect: Rect::ZERO,
             field_taffy: TaffyTree::new(),
@@ -150,6 +152,12 @@ impl ActionPalette {
         // `.to_string()` is load-bearing here, not redundant: it ends the
         // immutable borrow of `self.field` before `rebuild` takes `&mut self`.
         #[allow(clippy::unnecessary_to_owned)]
+        let query = self.field.value().to_string();
+        self.rebuild(&query);
+    }
+
+    pub fn set_ambient_context(&mut self, context: Option<ActionContext>) {
+        self.ambient_context = context;
         let query = self.field.value().to_string();
         self.rebuild(&query);
     }
@@ -328,12 +336,15 @@ impl ActionPalette {
             if let Some(desc) = &fa.action.description {
                 r = r.with_subtitle(desc.clone());
             }
-            let context = ActionContext::for_resource(
+            let mut context = ActionContext::for_resource(
                 &fa.action.label,
                 fa.resource_id.as_str(),
                 &fa.resource_kind,
                 &fa.resource_label,
             );
+            if let Some(ambient) = self.ambient_context.as_ref() {
+                context = context.enriched_by(ambient);
+            }
             let kind = match &fa.action.input {
                 ActionInput::Immediate(enc) => ActionKind::Immediate {
                     encoded: enc.clone(),
@@ -750,6 +761,41 @@ mod tests {
         assert!(
             p.take_navigation().is_none(),
             "an action is not a navigation"
+        );
+    }
+
+    #[test]
+    fn ambient_task_context_reaches_palette_actions_without_overwriting_resource() {
+        let mut p = ActionPalette::new();
+        p.load_open_resources(&[thing_resource()]);
+        p.set_ambient_context(Some(
+            ActionContext::default()
+                .with_app("org.qos.Agent", "Agent")
+                .with_purpose("Prepare launch")
+                .with_group("issue:42", "Launch", "issue"),
+        ));
+        p.open();
+        p.activate_selected();
+
+        let mut doc = AutoCommit::new();
+        let mut tx = LocalTransport::new();
+        let dispatched = p
+            .take_dispatch(&mut doc, &registry(), &mut tx)
+            .expect("action pending")
+            .expect("dispatch succeeds");
+        let context = dispatched.envelope().context.as_ref().expect("context");
+        assert_eq!(context.purpose.as_deref(), Some("Prepare launch"));
+        assert_eq!(
+            context.group.as_ref().map(|group| group.id.as_str()),
+            Some("issue:42")
+        );
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str()),
+            Some("test.thing:1"),
+            "the concrete palette resource wins over ambient provenance"
         );
     }
 
