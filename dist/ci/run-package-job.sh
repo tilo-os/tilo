@@ -156,13 +156,13 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
                     "$rootfs/var/lib/pacman" \
                     "$rootfs/var/lib/pacman/local" \
                     "$rootfs/var/lib/pacman/sync" \
-                    "$rootfs/var/lib/qos-pacman/local" \
-                    "$rootfs/var/lib/qos-pacman/sync" \
-                    "$rootfs/var/cache/qos-pacman"
+                    "$log_dir/arch-pacman/db/local" \
+                    "$log_dir/arch-pacman/db/sync" \
+                    "$log_dir/arch-pacman/cache"
                 cp -a "$rootfs/var/lib/pacman/." \
-                    "$rootfs/var/lib/qos-pacman/"
+                    "$log_dir/arch-pacman/db/"
                 for repo in core extra alarm aur; do
-                    database="$rootfs/var/lib/qos-pacman/sync/$repo.db"
+                    database="$log_dir/arch-pacman/db/sync/$repo.db"
                     curl --proto '=http' --proto-redir '=http' -fsSL --retry 3 \
                         "http://mirror.archlinuxarm.org/aarch64/$repo/$repo.db" \
                         -o "$database"
@@ -199,11 +199,12 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
         proot_package_binds=()
         if [[ $distro == arch ]]; then
             # libalpm could not see databases through PRoot's implicit rootfs
-            # translation even though the guest shell could stat them. Bind
-            # the host-seeded directories explicitly at their guest paths.
+            # translation even though the guest shell could stat them. Source
+            # explicit binds from outside the translated rootfs so PRoot cannot
+            # canonicalize them back into the same invisible guest path.
             proot_package_binds=(
-                -b "$rootfs/var/lib/qos-pacman:/var/lib/qos-pacman"
-                -b "$rootfs/var/cache/qos-pacman:/var/cache/qos-pacman"
+                -b "$log_dir/arch-pacman/db:/var/lib/qos-pacman"
+                -b "$log_dir/arch-pacman/cache:/var/cache/qos-pacman"
             )
         fi
         set +e
