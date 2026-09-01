@@ -184,20 +184,21 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
                 # The Arch OCI layers omit package-manager state directories
                 # when they are empty. PRoot/QEMU also fails libalpm's realpath
                 # check for the conventional /var/lib/pacman path even after
-                # it is recreated. Put package state in the exported workspace
-                # and seed current sync databases outside qemu: pacman 7's
-                # atomic sync-db rename vanishes under this PRoot combination.
+                # it is recreated. Put package state at a distinct rootfs path
+                # and seed current sync databases outside qemu: PRoot overlays
+                # /tmp and the image may mount /workspace, while pacman 7's
+                # atomic sync-db rename vanishes under this combination.
                 install -d -m 0755 \
                     "$rootfs/var/lib/pacman" \
                     "$rootfs/var/lib/pacman/local" \
                     "$rootfs/var/lib/pacman/sync" \
-                    "$rootfs/workspace/.qos-pacman-db/local" \
-                    "$rootfs/workspace/.qos-pacman-db/sync" \
-                    "$rootfs/workspace/.qos-pacman-cache"
+                    "$rootfs/var/lib/qos-pacman/local" \
+                    "$rootfs/var/lib/qos-pacman/sync" \
+                    "$rootfs/var/cache/qos-pacman"
                 cp -a "$rootfs/var/lib/pacman/." \
-                    "$rootfs/workspace/.qos-pacman-db/"
+                    "$rootfs/var/lib/qos-pacman/"
                 for repo in core extra alarm aur; do
-                    database="$rootfs/workspace/.qos-pacman-db/sync/$repo.db"
+                    database="$rootfs/var/lib/qos-pacman/sync/$repo.db"
                     curl --proto '=http' --proto-redir '=http' -fsSL --retry 3 \
                         "http://mirror.archlinuxarm.org/aarch64/$repo/$repo.db" \
                         -o "$database"
@@ -357,12 +358,15 @@ arch)
     # pacman 7's download sandbox uses Landlock. The Forgejo/Kata kernel does
     # not expose it; Arch documents DisableSandbox specifically for this case.
     if [[ $arch == arm64 ]]; then
-        sed -i '/^\[options\]/a CacheDir = /workspace/.qos-pacman-cache\nDBPath = /workspace/.qos-pacman-db' \
+        sed -i '/^\[options\]/a CacheDir = /var/cache/qos-pacman\nDBPath = /var/lib/qos-pacman' \
             /etc/pacman.conf
         install -d -m 0755 \
-            /workspace/.qos-pacman-db/local \
-            /workspace/.qos-pacman-db/sync \
-            /workspace/.qos-pacman-cache
+            /var/lib/qos-pacman/local \
+            /var/lib/qos-pacman/sync \
+            /var/cache/qos-pacman
+        for repo in core extra alarm aur; do
+            test -s "/var/lib/qos-pacman/sync/$repo.db"
+        done
     fi
     sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
     stage=install-dependencies
