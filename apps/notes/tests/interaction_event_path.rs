@@ -26,10 +26,13 @@ use notes::NotesApp;
 use notes::sidebar::OutEvent;
 use taffy::prelude::*;
 use tempfile::TempDir;
+use ui::permissions::PermissionContext;
+use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::kurbo::Point;
+use vello::Scene;
+use vello::kurbo::{Affine, Point};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
 
@@ -198,6 +201,94 @@ fn click_row(
     dispatch(app, state, taffy, child, no_mods, &cursor_moved(c.x, c.y));
     dispatch(app, state, taffy, child, no_mods, &mouse_press());
     Ok(())
+}
+
+/// Paint once after layout so immediate-mode affordances (including the
+/// first-note CTA) resolve their hit rects exactly as they do in the app.
+fn paint(app: &mut NotesApp) {
+    let mut scene = Scene::new();
+    let mut text = TextRenderer::new();
+    app.draw_with_presence(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &Theme::dark(),
+        &PresenceCtx::empty(),
+        &PermissionContext::permissive(),
+    );
+}
+
+#[test]
+fn first_note_empty_state_has_a_working_primary_action() {
+    let tmp = TempDir::new().unwrap();
+    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    assert!(app.workspace_pages_for_test().is_empty());
+
+    let mut state = ui::State::new();
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1024, 720).unwrap();
+    paint(&mut app);
+    let c = app
+        .main_panel_mut()
+        .empty_action_center_for_test()
+        .expect("empty state renders a Create note action");
+
+    let no_mods = Modifiers::default();
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        no_mods,
+        &cursor_moved(c.x, c.y),
+    );
+    assert!(
+        dispatch(&mut app, &mut state, &taffy, child, no_mods, &mouse_press(),),
+        "the first-note action consumes its click"
+    );
+
+    assert_eq!(app.workspace_pages_for_test().len(), 1);
+    assert!(app.selected_for_test().is_some());
+}
+
+#[test]
+fn focused_first_note_action_activates_with_enter() {
+    let tmp = TempDir::new().unwrap();
+    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut state = ui::State::new();
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1024, 720).unwrap();
+
+    app.main_panel_mut().set_focus(true);
+    let no_mods = Modifiers::default();
+    assert!(
+        dispatch(
+            &mut app,
+            &mut state,
+            &taffy,
+            child,
+            no_mods,
+            &named_key(NamedKey::Enter),
+        ),
+        "Enter activates the focused Create note button"
+    );
+    assert_eq!(app.workspace_pages_for_test().len(), 1);
+    assert!(app.selected_for_test().is_some());
+}
+
+#[test]
+fn focused_first_note_action_activates_with_space() {
+    let tmp = TempDir::new().unwrap();
+    let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+    let mut state = ui::State::new();
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1024, 720).unwrap();
+
+    app.main_panel_mut().set_focus(true);
+    let no_mods = Modifiers::default();
+    assert!(
+        dispatch(&mut app, &mut state, &taffy, child, no_mods, &char_key(" "),),
+        "Space activates the focused Create note button"
+    );
+    assert_eq!(app.workspace_pages_for_test().len(), 1);
+    assert!(app.selected_for_test().is_some());
 }
 
 #[test]

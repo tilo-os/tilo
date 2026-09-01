@@ -69,9 +69,37 @@ check_sysctl kernel.unprivileged_bpf_disabled 1
 check_sysctl kernel.kexec_load_disabled 1
 check_sysctl kernel.perf_event_paranoid 3
 check_sysctl kernel.io_uring_disabled 2
+check_sysctl kernel.sysrq 16
+check_sysctl kernel.randomize_va_space 2
 check_sysctl vm.unprivileged_userfaultfd 0
+check_sysctl vm.mmap_min_addr 65536
+check_sysctl fs.suid_dumpable 0
 check_sysctl fs.protected_symlinks 1
 check_sysctl fs.protected_hardlinks 1
+check_sysctl fs.protected_fifos 2
+check_sysctl fs.protected_regular 2
+check_sysctl dev.tty.ldisc_autoload 0
+check_sysctl net.core.bpf_jit_harden 2
+check_sysctl net.ipv4.conf.all.accept_redirects 0
+check_sysctl net.ipv4.conf.default.accept_redirects 0
+check_sysctl net.ipv4.conf.all.secure_redirects 0
+check_sysctl net.ipv4.conf.default.secure_redirects 0
+check_sysctl net.ipv4.conf.all.send_redirects 0
+check_sysctl net.ipv4.conf.default.send_redirects 0
+check_sysctl net.ipv6.conf.all.accept_redirects 0
+check_sysctl net.ipv6.conf.default.accept_redirects 0
+check_sysctl net.ipv4.conf.all.accept_source_route 0
+check_sysctl net.ipv4.conf.default.accept_source_route 0
+check_sysctl net.ipv6.conf.all.accept_source_route 0
+check_sysctl net.ipv6.conf.default.accept_source_route 0
+check_sysctl net.ipv4.conf.all.rp_filter 2
+check_sysctl net.ipv4.conf.default.rp_filter 2
+check_sysctl net.ipv4.conf.all.log_martians 1
+check_sysctl net.ipv4.conf.default.log_martians 1
+check_sysctl net.ipv4.icmp_echo_ignore_broadcasts 1
+check_sysctl net.ipv4.icmp_ignore_bogus_error_responses 1
+check_sysctl net.ipv4.tcp_syncookies 1
+check_sysctl net.ipv4.tcp_rfc1337 1
 
 # Hardware shadow stacks. Every qOS binary is marked compatible at link time,
 # but glibc only switches them on for a process that also asks via
@@ -122,6 +150,16 @@ if [ -f /var/lib/qos/secureboot/db.key ]; then
   fi
 else
   note "no owner Secure Boot keys (qos-secureboot generate-keys)"
+fi
+
+if [ -x /usr/libexec/qos-verified-boot-install-preflight ]; then
+  if /usr/libexec/qos-verified-boot-install-preflight --capability >/dev/null 2>&1; then
+    ok "native reinstall can preserve verified boot for TPM short-PIN enrollment"
+  else
+    note "TPM short-PIN install preflight is not satisfied; native install will require a strong passphrase"
+  fi
+else
+  warn "verified-boot target preflight is missing; TPM short-PIN install must remain disabled"
 fi
 
 # Root filesystem encryption. Walk from the root mount to its backing device and

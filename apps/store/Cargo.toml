@@ -19,6 +19,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 ui = { path = "../../ui" }
+qos-actions = { path = "../../crates/collab/actions" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The registry list, its client and its trust classification. Shared
 # with the desktop's search box, which offers the same registries' apps

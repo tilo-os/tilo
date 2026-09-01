@@ -407,7 +407,61 @@ pub struct BrokerHandle {
     channels: Arc<Mutex<BrokerChannels>>,
 }
 
+/// Cloneable, thread-safe slice of the broker used by shell chrome. Keeping
+/// the join handles out of the closure avoids extending broker lifetime or
+/// creating an ownership cycle with the root widget.
+#[derive(Clone)]
+pub struct SessionFollowDispatcher {
+    fanout: Arc<FanoutState>,
+}
+
+impl SessionFollowDispatcher {
+    pub fn set(&self, room: &str, peer_id: Option<String>) {
+        self.fanout.fanout_to_route(
+            &CollabEvent::FollowChanged { peer_id },
+            u64::MAX,
+            &CrdtRoute::cluster(room.to_string()),
+        );
+    }
+}
+
+/// Cloneable, transport-owning facade used by shell search providers. It
+/// keeps only the shared action directory alive, never the broker threads or
+/// socket owner.
+#[derive(Clone)]
+pub struct AppActionBroker {
+    state: Arc<CapnpBrokerState>,
+}
+
+impl AppActionBroker {
+    pub fn surfaces(&self) -> Vec<crate::shell::collab_broker_capnp::PublishedSurface> {
+        self.state.published_surfaces()
+    }
+
+    pub fn invoke(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        actor: &str,
+    ) -> Result<
+        std::sync::mpsc::Receiver<crate::shell::collab_broker_capnp::InvocationCompletion>,
+        String,
+    > {
+        self.state
+            .invoke(peer_id, resource, action, argument, actor)
+    }
+}
+
 impl BrokerHandle {
+    /// Cloneable handle for the live resource/action search provider.
+    pub fn app_action_broker(&self) -> Option<AppActionBroker> {
+        self.fanout
+            .capnp_state()
+            .map(|state| AppActionBroker { state })
+    }
+
     /// Number of typed connections accepted since this broker started.
     pub fn peer_count(&self) -> usize {
         // Saturates rather than truncates on a 32-bit target — this is a
@@ -429,6 +483,25 @@ impl BrokerHandle {
             .fanout_to_route(event, except.unwrap_or(u64::MAX), route);
     }
 
+    /// Bind every local app in `room` to one participant's published view,
+    /// or release the binding. This is session-local and never enters the
+    /// peer publisher; each app already receives that participant's normal
+    /// view-presence frames and applies them through `ui::App::follow`.
+    pub fn set_follow_target(&self, room: &str, peer_id: Option<String>) {
+        self.fanout_event(
+            &CollabEvent::FollowChanged { peer_id },
+            None,
+            &CrdtRoute::cluster(room.to_string()),
+        );
+    }
+
+    #[must_use]
+    pub fn follow_dispatcher(&self) -> SessionFollowDispatcher {
+        SessionFollowDispatcher {
+            fanout: Arc::clone(&self.fanout),
+        }
+    }
+
     /// Subscribe this process to the rooms it hosts. The sink runs on
     /// the reader thread that decoded the frame: keep it short.
     pub fn subscribe_rooms(&self, rooms: Vec<String>, sink: FanoutSink) -> Arc<RoomSubscription> {
@@ -444,6 +517,35 @@ impl BrokerHandle {
     /// to install a [`ChannelState`] before sending signed envelopes.
     pub fn channels(&self) -> Arc<Mutex<BrokerChannels>> {
         Arc::clone(&self.channels)
+    }
+
+    /// Snapshot the resource/action surfaces live applications published to
+    /// this session. The values are inert; invoking is a separate operation.
+    pub fn published_action_surfaces(
+        &self,
+    ) -> Vec<crate::shell::collab_broker_capnp::PublishedSurface> {
+        self.fanout
+            .capnp_state()
+            .map_or_else(Vec::new, |state| state.published_surfaces())
+    }
+
+    /// Direct one invocation to the exact application connection that
+    /// published the addressed operation.
+    pub fn invoke_published_action(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        actor: &str,
+    ) -> Result<
+        std::sync::mpsc::Receiver<crate::shell::collab_broker_capnp::InvocationCompletion>,
+        String,
+    > {
+        self.fanout
+            .capnp_state()
+            .ok_or_else(|| "the application action broker is unavailable".to_string())?
+            .invoke(peer_id, resource, action, argument, actor)
     }
 
     /// Install a populated [`ChannelState`] for one artifact id.
@@ -1123,6 +1225,33 @@ mod tests {
             vec![(format!("peer@{HANDLE}"), "Xaver".to_string())],
             "the room's name is announced exactly once, against the id \
              both frames arrived under",
+        );
+    }
+
+    #[test]
+    fn follow_dispatcher_is_local_and_room_scoped() {
+        let table = Arc::new(super::FanoutState::new());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = Arc::clone(&seen);
+        let _sub = table.subscribe_rooms(
+            vec!["room-1".to_string()],
+            Box::new(move |event, _route| {
+                if let CollabEvent::FollowChanged { peer_id } = event
+                    && let Ok(mut rows) = sink_seen.lock()
+                {
+                    rows.push(peer_id.clone());
+                }
+            }),
+        );
+        let dispatcher = super::SessionFollowDispatcher {
+            fanout: Arc::clone(&table),
+        };
+        dispatcher.set("room-2", Some("peer@wrong".into()));
+        dispatcher.set("room-1", Some("peer@7".into()));
+        dispatcher.set("room-1", None);
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[Some("peer@7".to_string()), None]
         );
     }
 

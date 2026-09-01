@@ -356,13 +356,23 @@ Everything else is a slot layered on top of it:
 
 The installer and privileged backend both require a startup secret. A short PIN
 is accepted only when TPM2 and Secure Boot are active, the running kernel
-reports integrity or confidentiality lockdown, **and a dedicated preflight
-proves the installed target retains that verified-boot boundary**. The current
-installer ships no such preflight, so it deliberately requires a strong
-passphrase even on a TPM-equipped machine until installation-time UKI signing
-and firmware trust enrollment are integrated. Checking the EFI variable
-without checking either its runtime consequence or the target handoff would
-make a live-medium firmware flag sufficient evidence for a security boundary.
+reports integrity or confidentiality lockdown, **and the target preflight
+proves the installed target retains that verified-boot boundary**. That
+preflight requires the owner's qOS db certificate to already be enrolled in
+firmware, verifies the running artifacts against it, signs the newly installed
+target artifacts with the same key, verifies every signature, and parses every
+target UKI to require sealed kernel, initrd, command line, OS identity,
+composefs digest, generation and hardening arguments. Enrollment happens only
+after this target-side proof succeeds. Checking the EFI variable without
+checking either its runtime consequence or the target handoff would make a
+live-medium firmware flag sufficient evidence for a security boundary.
+
+This means a stock machine that has not completed owner/OEM Secure Boot
+enrollment uses the strong-passphrase path even when it has a TPM. Software
+cannot truthfully manufacture firmware trust without the owner's physical
+ceremony. Reinstalls and OEM-provisioned machines can use one short PIN because
+the trust key is already in firmware and is carried continuously into the new
+target.
 TPM presence with unverified early boot instead
 uses a normal passphrase slot: sealing against a PCR 7 value that merely says
 "Secure Boot is off" would not prevent replacement boot code from capturing the

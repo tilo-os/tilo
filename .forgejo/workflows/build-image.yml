@@ -44,7 +44,9 @@ on:
         default: "1"
 
 concurrency:
-  group: build-image-${{ github.ref }}
+  # Generations are a single dense security series. Two tag/manual jobs must
+  # never both observe N and publish different images as N+1.
+  group: qos-os-image-series
   cancel-in-progress: false
 
 jobs:
@@ -52,7 +54,7 @@ jobs:
     runs-on: runner
     steps:
       - name: Checkout the monorepo
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           # Private repo checkout: reuse the REGISTRY_TOKEN PAT.
@@ -68,11 +70,16 @@ jobs:
       # (main pushes / PRs) need registry read. Pushing the image still only
       # happens on tags/dispatch (below).
       - name: Log in to the code.podesta.ai registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: code.podesta.ai
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
+
+      # Generation selection trusts signed provenance, never registry tag text.
+      # Install on build-only runs too so every CI build exercises that check.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
 
       # Pin the base image the build starts FROM. It is a mirror in our own
       # registry rather than quay.io because upstream deletes the manifest a
@@ -125,17 +132,17 @@ jobs:
       # driver doesn't support cache export (the registry-backed cache we
       # need to survive across ephemeral runners).
       - name: Set up buildx (docker-container driver for cache export)
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: docker-container
 
       - name: Extract image metadata (tags, labels)
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: code.podesta.ai/qos/qos
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
             type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=ref,event=pr
@@ -156,14 +163,14 @@ jobs:
       # exercise the complete build and registry cache without retaining output.
       - name: Build the qOS image
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
         with:
           context: .
           file: os/Containerfile
           push: false
-          outputs: ${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && 'type=oci,dest=/var/tmp/qos-image.tar' || '' }}
+          outputs: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) && 'type=oci,dest=/var/tmp/qos-image.tar' || '' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # QOS_WITH_BROWSER: a manual run can omit the browser + its WPE WebKit
@@ -203,9 +210,41 @@ jobs:
           cache-from: type=registry,ref=code.podesta.ai/qos/qos-buildcache:latest
           cache-to: type=registry,ref=code.podesta.ai/qos/qos-buildcache:latest,mode=max
 
+      # Reproducibility is a release gate, not a statement inferred from pinned
+      # inputs. Rebuild without the first build's layer cache and compare the
+      # resulting OCI manifest before a candidate is installed or published.
+      - name: Independently rebuild the release candidate
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+        with:
+          context: .
+          file: os/Containerfile
+          push: false
+          outputs: type=oci,dest=/var/tmp/qos-image-repro.tar
+          tags: code.podesta.ai/qos/qos:repro-${{ github.sha }}
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            BASE_REF=${{ env.BASE_REF }}
+            RPMS_REF=${{ env.RPMS_REF }}
+            KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
+            QOS_WITH_BROWSER=${{ github.event.inputs.with_browser || '1' }}
+            QOS_GENERATION=${{ env.QOS_GENERATION }}
+            SCCACHE_BUCKET=sccache
+            SCCACHE_ENDPOINT=http://forgejo-sccache-minio.forgejo.svc.cluster.local:9000
+            SCCACHE_REGION=auto
+            SCCACHE_S3_KEY_PREFIX=quickdesktop/image/v1
+            SCCACHE_S3_USE_SSL=false
+          secret-envs: |
+            aws_access_key_id=AWS_ACCESS_KEY_ID
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+          provenance: false
+          no-cache: true
+
       - name: Reseal, install, boot, and publish the verified image
         id: release
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
         timeout-minutes: 60
         env:
           QOS_IMAGE: localhost/qos:release-candidate
@@ -221,6 +260,7 @@ jobs:
           # default enters a named distrobox that does not exist on runners.
           QOS_DISTROBOX: ""
           QOS_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          QOS_RESEALED_DIGEST_FILE: /var/tmp/qos-resealed-composefs-digest
         run: |
           set -euo pipefail
 
@@ -237,9 +277,17 @@ jobs:
           sudo -n apt-get update
           sudo -n apt-get install -y --no-install-recommends \
             btrfs-progs dosfstools fuse-overlayfs openssh-client ovmf podman \
-            qemu-system-x86 qemu-utils slirp4netns socat sshpass sudo systemd \
+            jq qemu-system-x86 qemu-utils skopeo slirp4netns socat sshpass sudo systemd \
             uidmap util-linux
-          command -v podman qemu-img qemu-system-x86_64 sshpass socat systemd-repart >/dev/null
+          command -v jq podman qemu-img qemu-system-x86_64 skopeo sshpass socat systemd-repart >/dev/null
+
+          first_manifest="$(skopeo inspect --raw oci-archive:/var/tmp/qos-image.tar | sha256sum | awk '{print $1}')"
+          second_manifest="$(skopeo inspect --raw oci-archive:/var/tmp/qos-image-repro.tar | sha256sum | awk '{print $1}')"
+          test -n "$first_manifest" && test "$first_manifest" = "$second_manifest" || {
+            echo "::error::independent OS builds differ: $first_manifest != $second_manifest"
+            exit 1
+          }
+          echo "::notice::independent OS builds reproduced manifest sha256:$first_manifest"
 
           printf '%s' "$QOS_REGISTRY_TOKEN" | podman login code.podesta.ai \
             --username "${{ github.actor }}" --password-stdin
@@ -256,7 +304,26 @@ jobs:
           # calling disk-image.sh directly would only exercise the rejected
           # first pass and could never prove the published image bootable.
           mkdir -p "$QOS_OUTPUT" "$QOS_RUN"
+          rm -f "$QOS_RESEALED_DIGEST_FILE"
           ./os/dev/build-image.sh
+
+          # build-image may add a deterministic /boot-only UKI reseal layer.
+          # Reproduce that exact final layer on the independent image and gate
+          # the artifact that will actually be published, not merely its base.
+          repro_image="code.podesta.ai/qos/qos:repro-${GITHUB_SHA}"
+          podman load --input /var/tmp/qos-image-repro.tar
+          if [[ -s "$QOS_RESEALED_DIGEST_FILE" ]]; then
+            resealed_digest="$(tr -d '\n\r' < "$QOS_RESEALED_DIGEST_FILE")"
+            ./os/dev/reseal-image.sh "$repro_image" "$resealed_digest"
+          fi
+          final_manifest="$(skopeo inspect --raw "containers-storage:$QOS_IMAGE" | sha256sum | awk '{print $1}')"
+          repro_manifest="$(skopeo inspect --raw "containers-storage:$repro_image" | sha256sum | awk '{print $1}')"
+          test -n "$final_manifest" && test "$final_manifest" = "$repro_manifest" || {
+            echo "::error::final sealed OS images differ: $final_manifest != $repro_manifest"
+            exit 1
+          }
+          echo "::notice::final sealed OS image reproduced manifest sha256:$final_manifest"
+
           export QOS_DISK="$QOS_OUTPUT/qcow2/disk.qcow2"
           trap './os/dev/vm.sh stop || true' EXIT
           # The installed Files AT-SPI gate needs the real qOS compositor.
@@ -321,50 +388,46 @@ jobs:
           ./os/dev/vm.sh ssh /usr/libexec/qos/projection-boot-check.sh
           ./os/dev/vm.sh ssh /usr/libexec/qos/collaborative-files-image-contract.sh runtime
 
-          # Only the exact image that passed installation and boot receives a
-          # public tag. Every tag points at the same manifest digest.
+          # Upload through a non-channel candidate tag. latest, semver and genN
+          # are promoted only after signature, SBOM and provenance verification
+          # in later steps, so update clients can never observe a half-published
+          # release through a channel tag.
           digest_file="$(mktemp /var/tmp/qos-push-digest.XXXXXX)"
-          while IFS= read -r tag; do
-            test -n "$tag" || continue
-            podman tag "$QOS_IMAGE" "$tag"
-            podman push --digestfile "$digest_file" "$tag"
-          done <<'TAGS'
-          ${{ steps.meta.outputs.tags }}
-          TAGS
+          candidate="code.podesta.ai/qos/qos:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          podman tag "$QOS_IMAGE" "$candidate"
+          podman push --digestfile "$digest_file" "$candidate"
           digest="$(tr -d '[:space:]' < "$digest_file")"
           test -n "$digest"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "::notice::published boot-verified image $digest"
+          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+          echo "::notice::uploaded boot-verified candidate $digest; release channels remain unchanged"
 
       # Sign the pushed image with cosign (security plan §9). The signature
       # lets installed systems verify provenance before `bootc upgrade` applies
       # an image (see os/etc/containers/policy.json + the update path). Signs by
       # digest so the signature is bound to the exact image, not a mutable tag.
       # Skipped on PRs (the image isn't pushed; nothing to sign).
-      - name: Install cosign
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
-        uses: sigstore/cosign-installer@v3
-
       - name: Sign the published image
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
         env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          # URI only (for example gcpkms://, awskms://, azurekms:// or
+          # hashivault://). The signing key is non-exportable and never enters
+          # the Forgejo secret database or runner filesystem.
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
         run: |
-          # Own-key signing → no public sigstore/Rekor upload (offline-friendly,
-          # doesn't leak digests to the public log). The signature is stored as a
-          # cosign attachment in the registry; the image's policy.json verifies it
-          # against cosign.pub with --insecure-ignore-tlog semantics. A *self-hosted*
-          # transparency log (security plan §9) is a separate follow-up.
-          cosign sign --yes --tlog-upload=false --key env://COSIGN_PRIVATE_KEY \
+          case "$COSIGN_KEY_REF" in
+            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+          esac
+          cosign sign --yes --key "$COSIGN_KEY_REF" \
             "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
 
       # SBOM (security plan §9): generate an SPDX inventory of the image and
       # attach it as a SIGNED in-toto attestation, so consumers can audit exactly
       # what shipped + verify it came from us.
       - name: Generate SBOM (syft → SPDX)
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
-        uses: anchore/sbom-action@v0
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           image: code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}
           format: spdx-json
@@ -378,12 +441,82 @@ jobs:
           upload-release-assets: false
 
       - name: Attest the SBOM to the image (signed)
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
         env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
         run: |
-          cosign attest --yes --tlog-upload=false \
+          cosign attest --yes \
             --predicate sbom.spdx.json --type spdxjson \
-            --key env://COSIGN_PRIVATE_KEY \
+            --key "$COSIGN_KEY_REF" \
             "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
+
+      - name: Generate and attest SLSA provenance
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        env:
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          RELEASE_DIGEST: ${{ steps.release.outputs.digest }}
+        run: |
+          ./os/dev/release-provenance.sh provenance.json
+          cosign attest --yes \
+            --predicate provenance.json --type slsaprovenance \
+            --key "$COSIGN_KEY_REF" \
+            "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
+
+      # A short-lived, digest-bound statement makes release freshness an
+      # authenticated value instead of an inference from mutable registry tags.
+      # Independent timestamp witnesses will sign this same schema with distinct
+      # keys; this release-signed statement is the migration anchor and is still
+      # required before any channel becomes visible.
+      - name: Generate and attest release freshness
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        env:
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          RELEASE_DIGEST: ${{ steps.release.outputs.digest }}
+          FRESHNESS_TTL_SECONDS: "86400"
+        run: |
+          ./os/dev/release-freshness.sh freshness.json
+          cosign attest --yes \
+            --predicate freshness.json --type https://qos.dev/security/release-freshness/v1 \
+            --key "$COSIGN_KEY_REF" \
+            "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
+
+      - name: Verify candidate and promote release channels
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        run: |
+          set -euo pipefail
+          image="code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
+          cosign verify --key keys/cosign.pub "$image" >/dev/null
+          cosign verify-attestation --key keys/cosign.pub \
+            --type spdxjson "$image" >/dev/null
+          cosign verify-attestation --key keys/cosign.pub \
+            --type slsaprovenance "$image" >/dev/null
+          freshness="$(cosign verify-attestation --key keys/cosign.pub \
+            --type https://qos.dev/security/release-freshness/v1 "$image")"
+          now="$(date -u +%s)"
+          printf '%s' "$freshness" | jq -e \
+            --arg digest '${{ steps.release.outputs.digest }}' \
+            --arg source "$GITHUB_SHA" \
+            --argjson generation "$QOS_GENERATION" \
+            --argjson now "$now" '
+              [.[].payload | @base64d | fromjson | .predicate]
+              | any(
+                  .schema == "https://qos.dev/security/release-freshness/v1"
+                  and .repository == "code.podesta.ai/qos/qos"
+                  and .digest == $digest
+                  and .sourceRevision == $source
+                  and .generation == $generation
+                  and .issuedAt <= $now
+                  and .expiresAt > $now
+                  and (.expiresAt - .issuedAt) <= 604800
+                )
+            ' >/dev/null || {
+              echo "::error::release freshness attestation is absent, expired, or does not bind this release"
+              exit 1
+            }
+          while IFS= read -r tag; do
+            test -n "$tag" || continue
+            skopeo copy --all "docker://$image" "docker://$tag"
+          done <<'TAGS'
+          ${{ steps.meta.outputs.tags }}
+          TAGS
+          echo "::notice::promoted signed, attested generation $QOS_GENERATION"

@@ -472,6 +472,20 @@ impl<Row> DataTable<Row> {
         &mut self.model_selection
     }
 
+    /// Restore stable-key selection for a model-backed table, discarding keys
+    /// absent from the current model.
+    #[must_use]
+    pub fn with_model_selection(
+        mut self,
+        mut selection: crate::selection::KeySelection<u64>,
+    ) -> Self {
+        if let Some(model) = self.model.as_deref() {
+            selection.reconcile(|key| model.index_of(*key).is_some());
+        }
+        self.model_selection = selection;
+        self
+    }
+
     #[must_use]
     pub fn with_selection(mut self, sel: crate::selection::SelectionModel) -> Self {
         self.selection = sel;
@@ -891,6 +905,13 @@ impl<Row> DataTable<Row> {
         self.viewport
             .set_overscan(self.viewport.estimated_height() * 2.0);
         self.visible_window_changed();
+    }
+
+    /// Fluent form of [`Self::set_viewport`] for app constructors.
+    #[must_use]
+    pub fn with_viewport(mut self, height_px: f32, row_height_px: f32) -> Self {
+        self.set_viewport(height_px, row_height_px);
+        self
     }
 
     pub fn set_scroll_y(&mut self, y: f32) {
@@ -2566,6 +2587,32 @@ mod tests {
         assert_eq!(rects.len(), 2);
         assert!((rects[0].width() - 160.0).abs() < 0.01);
         assert!((rects[1].width() - 40.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn model_selection_builder_discards_absent_keys() {
+        let mut selection = crate::selection::KeySelection::new();
+        selection.toggle(3);
+        selection.toggle(100_000_000);
+        let table = DataTable::from_model(
+            sample_cols(),
+            HugeModel {
+                row: R {
+                    name: "resident".into(),
+                },
+                key_queries: Rc::new(Cell::new(0)),
+                row_queries: Rc::new(Cell::new(0)),
+            },
+        )
+        .with_model_selection(selection)
+        .with_viewport(120.0, 24.0);
+
+        assert!(table.model_selection().is_selected(&3));
+        assert!(!table.model_selection().is_selected(&100_000_000));
+        assert_eq!(table.model_selection().len(100_000_000), 1);
+        let visible = table.visible_row_range();
+        assert_eq!(visible.0, 0);
+        assert!(visible.1 <= 10, "viewport plus overscan stays bounded");
     }
 
     #[test]
