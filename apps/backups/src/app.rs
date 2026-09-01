@@ -3895,14 +3895,13 @@ impl Widget for BackupsApp {
         let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
         let mut runtime =
             qos_actions::Resource::new("backups.runtime", "backups.service", "Backup service");
-        for (id, label, type_id, available, reason, cancellable) in [
+        for (id, label, type_id, available, reason) in [
             (
                 "backup-now",
                 "Back up now",
                 "backups.start",
                 self.job.is_none(),
                 "A backup is already running",
-                true,
             ),
             (
                 "cancel-backup",
@@ -3910,7 +3909,6 @@ impl Widget for BackupsApp {
                 "backups.cancel",
                 self.job.is_some(),
                 "No backup is running",
-                true,
             ),
             (
                 "verify",
@@ -3918,7 +3916,6 @@ impl Widget for BackupsApp {
                 "backups.verify",
                 self.ui.sel_snapshot.is_some(),
                 "Select a snapshot to verify",
-                false,
             ),
         ] {
             let spec = qos_actions::ActionSpec::operation(
@@ -3944,8 +3941,8 @@ impl Widget for BackupsApp {
                 } else {
                     qos_actions::RetryPolicy::AtMostOnce
                 },
-                execution: qos_actions::ExecutionMode::Background { cancellable },
-                result: qos_actions::ResultSpec::Job,
+                execution: qos_actions::ExecutionMode::Immediate,
+                result: qos_actions::ResultSpec::None,
                 ..qos_actions::ActionContract::default()
             });
             runtime.actions.push(spec);
