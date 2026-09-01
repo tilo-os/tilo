@@ -585,6 +585,10 @@ fn default_engine() -> SharedEngine {
 }
 
 impl Widget for BrowserWidget {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[BROWSER_OPERATION_TYPE]
+    }
+
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut page = Resource::new(
             "browser.page",
@@ -634,6 +638,7 @@ impl Widget for BrowserWidget {
                 "Open address",
                 "https://…",
                 OperationKind::Effect,
+                BROWSER_OPERATION_TYPE,
                 vec![ActionParam::required_owned(
                     "url",
                     ParamType::Text,

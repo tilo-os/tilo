@@ -945,6 +945,10 @@ fn to_peniko(img: &Rgba) -> ImageData {
 }
 
 impl Widget for PhotosApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::PHOTOS_OPERATION_TYPE]
+    }
+
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }

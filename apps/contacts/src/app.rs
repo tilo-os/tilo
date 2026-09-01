@@ -3286,6 +3286,10 @@ fn draw_chevron(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme, left: b
 // =====================================================================
 
 impl Widget for ContactsApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::CONTACTS_OPERATION_TYPE]
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         // Drain any in-flight file-chooser portal request first, so a chosen
         // import/export lands in the book before this frame lays out.

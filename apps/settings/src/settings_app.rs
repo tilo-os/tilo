@@ -285,6 +285,10 @@ impl SettingsApp {
 }
 
 impl Widget for SettingsApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["settings.open-pane"]
+    }
+
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
         use automerge::{ReadDoc, Value, transaction::Transactable};
 

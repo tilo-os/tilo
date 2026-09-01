@@ -1758,6 +1758,10 @@ fn contrast_on(bg: Color) -> Color {
 // ===================================================================
 
 impl Widget for LogsApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["logs.refresh"]
+    }
+
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("journal", "logs.journal", "System journal");
         if let Ok(spec) = ActionSpec::operation(
