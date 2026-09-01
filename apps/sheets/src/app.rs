@@ -502,7 +502,7 @@ impl SheetsApp {
             doc,
             actions::SHEETS_ACTION_TYPE,
             action,
-            actions::history_context(action),
+            actions::history_context_for_doc(doc, action),
         );
     }
 
