@@ -40,7 +40,7 @@ apps/containers/src/app.rs literal_color 1
 apps/containers/src/panels.rs theme_blind_white 12
 apps/containers/src/panels.rs white_or_black 6
 apps/db_client/src/app.rs literal_color 2
-apps/db_client/src/app.rs white_or_black 4
+apps/db_client/src/app.rs white_or_black 3
 apps/db_client/src/connect_modal.rs literal_color 1
 apps/db_client/src/connect_modal.rs white_or_black 1
 apps/db_client/src/schema_tree.rs literal_color 1
@@ -83,8 +83,8 @@ apps/logs/src/app.rs literal_color 1
 apps/logs/src/app.rs theme_blind_white 6
 apps/logs/src/app.rs white_or_black 6
 apps/mail/src/app.rs literal_color 2
-apps/mail/src/app.rs theme_blind_white 11
-apps/mail/src/app.rs white_or_black 4
+apps/mail/src/app.rs theme_blind_white 10
+apps/mail/src/app.rs white_or_black 2
 apps/mail/src/compose.rs literal_color 1
 apps/mail/src/compose.rs theme_blind_white 17
 apps/mail/src/compose.rs white_or_black 2
