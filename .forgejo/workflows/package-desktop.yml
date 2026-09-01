@@ -29,6 +29,7 @@ on:
       # Temporary recovery-proof branch; delete after the runner incident is
       # classified without changing the packaging branch under development.
       # The second proof run starts only after the corrected drain hook is live.
+      # The final run starts after the recreated pods finish startup pruning.
       - "codex/runner-packaging-proof"
     tags: ["v*"]
   workflow_dispatch:
