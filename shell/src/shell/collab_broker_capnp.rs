@@ -29,8 +29,8 @@ use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use collab_types::{
-    Actor, ArtifactId, ArtifactKind, CapDecision, DocumentMutation, OpClass, RedactedMarker,
-    ResourceRef, SignedOp, ValidationError, Verb, document_artifact_id, document_attestation_id,
+    Actor, ArtifactId, ArtifactKind, CapDecision, DocumentMutation, RedactedMarker, ResourceRef,
+    SignedOp, ValidationError, document_artifact_id, document_attestation_id, role_permits,
     validate_admitted_inbound_op,
 };
 use runtime_collab::raw::{
@@ -346,7 +346,6 @@ impl CapnpBrokerState {
         if route.app_id.is_empty()
             || envelope.artifact != expected_artifact
             || envelope.attestation_id != expected_attestation
-            || envelope.op_class != OpClass::Splice
             || envelope.encryption.is_some()
         {
             return Err(capnp::Error::failed(
@@ -377,11 +376,13 @@ impl CapnpBrokerState {
             kind: ArtifactKind::Note,
             instance: expected_artifact,
         };
-        let decision = workspace.decide(&actor, &resource, Verb::Write);
+        let required = collab_types::caps::verb_for_opclass(envelope.op_class);
+        let decision = workspace.decide(&actor, &resource, required);
+        let role_allows = role_permits(admitted.role, ArtifactKind::Note, envelope.op_class);
         drop(tree);
-        if decision != CapDecision::Allow {
+        if decision != CapDecision::Allow || !role_allows {
             return Err(capnp::Error::failed(
-                "current workspace capability denies document editing".into(),
+                "current workspace capability denies this document action".into(),
             ));
         }
         Ok(mutation)
@@ -910,13 +911,13 @@ fn handle_signed_op_send(
             if let Ok(mut ch) = state.broker_channels.lock() {
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
-                if envelope.op_class == OpClass::Compaction
+                if envelope.op_class == collab_types::OpClass::Compaction
                     && let Ok(cp) = collab_types::parse_compaction_payload(&envelope)
                 {
                     let _ = ch_state.apply_compaction(&cp);
                 }
             }
-            if envelope.op_class == OpClass::Redact {
+            if envelope.op_class == collab_types::OpClass::Redact {
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
             }
             // Republishing is not vouching.
@@ -1792,7 +1793,7 @@ mod tests {
         workspace.capabilities.push(CapOverride::membership(
             Subject::person(principal),
             room,
-            Verb::Read,
+            collab_types::Verb::Read,
         ));
         drop(tree);
     }
@@ -2018,7 +2019,7 @@ mod tests {
             artifact,
             Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
             document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-            OpClass::Splice,
+            collab_types::OpClass::Splice,
             SystemTime::now(),
             1,
         );
