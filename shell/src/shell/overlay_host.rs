@@ -3907,8 +3907,10 @@ impl ShellOverlayHost {
         self.room_activity.layout(viewport);
         if let Some(chrome) = self.chrome.clone() {
             let st = chrome.borrow();
+            let records = st.records().clone();
             let mut tree = st.tree_mut();
             self.room_activity.refresh(&mut tree);
+            self.room_activity.refresh_records(&mut tree, &records);
         }
     }
 
@@ -3921,8 +3923,10 @@ impl ShellOverlayHost {
         };
         let workspace = {
             let st = chrome.borrow();
+            let records = st.records().clone();
             let mut tree = st.tree_mut();
             self.room_activity.refresh(&mut tree);
+            self.room_activity.refresh_records(&mut tree, &records);
             tree.active.raw()
         };
         let (headline, unread, pulse) = self.room_activity.glance_signal(workspace);
@@ -7077,6 +7081,17 @@ impl Widget for ShellOverlayHost {
 
     fn name(&self) -> &'static str {
         "ShellOverlayHost"
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, Role};
+
+        let mut root = AccessNode::new(Role::Group).with_name("qOS workspace");
+        if self.overlay_flags().room_activity {
+            root.children
+                .push(self.room_activity.accessibility_snapshot());
+        }
+        Some(root)
     }
 
     /// Expose content + palette + sidebar as direct children so trait
