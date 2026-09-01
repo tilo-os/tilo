@@ -61,7 +61,8 @@ fn run() -> Result<(), String> {
     let delay_ms: u64 = arg("--delay-ms").and_then(|s| s.parse().ok()).unwrap_or(0);
     let corrupt = std::env::args().any(|a| a == "--corrupt");
 
-    let identity = SigningIdentity::generate();
+    let key = SigningKey::from_bytes(&[23u8; 32]);
+    let identity = SigningIdentity::from_signing_key(key.clone());
     let authored = authoring::author(
         &package_id,
         &name,
@@ -84,6 +85,10 @@ fn run() -> Result<(), String> {
         }
     }
     let version = authored.version.clone();
+    let qpkg_root = app_registry::qpkg::load(&authored.qpkg)
+        .map_err(|e| format!("read authored qpkg root: {e}"))?
+        .package_id
+        .to_hex();
     let mut qpkg = authored.qpkg;
     let advertised_len = qpkg.len();
     if corrupt {
@@ -97,7 +102,6 @@ fn run() -> Result<(), String> {
         .port();
     let base_url = format!("http://127.0.0.1:{port}");
 
-    let key = SigningKey::from_bytes(&[23u8; 32]);
     let mut entry = RegistryEntry {
         package_id: package_id.clone(),
         name: name.clone(),
@@ -112,7 +116,7 @@ fn run() -> Result<(), String> {
             // the entry and the manifest have to agree.
             version,
             qpkg_url: format!("{base_url}/app.qpkg"),
-            qpkg_root_hash_hex: hex::encode([0u8; 32]),
+            qpkg_root_hash_hex: qpkg_root,
             qpkg_size_bytes: advertised_len as u64,
             released_at_unix: 1,
         }],

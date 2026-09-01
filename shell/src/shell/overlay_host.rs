@@ -817,6 +817,10 @@ impl ShellOverlayHost {
         crate::shell::search::SearchRegistry,
         std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
     ) {
+        // Start the remote-app refresh with the shell, not with the user's
+        // first Win+K query. A persisted metadata snapshot makes search
+        // useful immediately; this refresh quietly makes it current.
+        let _ = crate::shell::catalogue::available_apps();
         let mut search_registry = crate::shell::search::SearchRegistry::new();
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ActionsProvider::new(),

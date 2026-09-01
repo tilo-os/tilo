@@ -64,6 +64,9 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 /// Returns an error when the terminal widget fails to spawn (no PTY, no
 /// shell), when building the offscreen render tree for `--shots` fails, or
 /// when the live event loop's own setup fails.
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args("dev.qos.terminal", live_root)

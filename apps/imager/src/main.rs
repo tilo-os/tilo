@@ -59,6 +59,9 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1180, 820);
 ///
 /// Returns an error if a `--shots`/`--shots-dir` render fails: computing the
 /// offscreen layout for a scenario, or writing its PNG to disk.
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let viewport = parse_value_arg(&args, "--viewport")

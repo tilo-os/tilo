@@ -92,6 +92,9 @@ struct Cli {
     settle_ms: u64,
 }
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(

@@ -27,6 +27,9 @@ use ui::widget::Widget;
 const WIDE_VIEWPORT: (u32, u32) = (1280, 800);
 const NARROW_VIEWPORT: (u32, u32) = (680, 860);
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 fn prepare_shot(narrow: bool) -> Box<dyn Widget> {
     // An explicit repository is the only way screenshots may inspect the
     // surrounding checkout; otherwise use the deterministic sample fixture.
