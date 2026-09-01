@@ -41,6 +41,9 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() {
     // Install the rustls crypto provider before any HTTPS fetch. The tile worker
     // and the geocoding/routing client also call this, but doing it here at

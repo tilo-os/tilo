@@ -40,6 +40,9 @@
     )
 )]
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 use std::collections::HashMap;
 
 use browser::BrowserWidget;
