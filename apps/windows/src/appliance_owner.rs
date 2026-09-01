@@ -209,6 +209,7 @@ pub struct ApplianceOwnerClient {
     sender: Sender<OwnerEvent>,
     status_pending: bool,
     action_pending: bool,
+    action_result: Option<Result<String, String>>,
     next_refresh: Instant,
     status: ApplianceStatus,
 }
@@ -222,6 +223,7 @@ impl ApplianceOwnerClient {
             sender,
             status_pending: false,
             action_pending: false,
+            action_result: None,
             next_refresh: Instant::now()
                 .checked_sub(STATUS_INTERVAL)
                 .unwrap_or_else(Instant::now),
@@ -418,29 +420,36 @@ impl ApplianceOwnerClient {
                     // desktop route, then normal apps return to app-focused
                     // guest windows.
                     if let Err(error) = self.start_recovery() {
+                        self.action_result = Some(Err(error.clone()));
                         notice = Some(error);
                     }
                 }
                 OwnerEvent::Recovery(Ok(())) => {
                     self.action_pending = false;
-                    notice =
-                        Some("The authorised Windows setup or recovery desktop is open.".into());
+                    let detail =
+                        "The authorised Windows setup or recovery desktop is open.".to_string();
+                    self.action_result = Some(Ok(detail.clone()));
+                    notice = Some(detail);
                 }
                 OwnerEvent::Imported(Err(error))
                 | OwnerEvent::Recovery(Err(error))
                 | OwnerEvent::Lifecycle(_, Err(error))
                 | OwnerEvent::Egress(_, Err(error)) => {
                     self.action_pending = false;
+                    self.action_result = Some(Err(error.clone()));
                     notice = Some(error);
                 }
                 OwnerEvent::Lifecycle(action, Ok(())) => {
                     self.action_pending = false;
-                    notice = Some(action.complete_notice().into());
+                    let detail = action.complete_notice().to_string();
+                    self.action_result = Some(Ok(detail.clone()));
+                    notice = Some(detail);
                 }
                 OwnerEvent::Egress(purpose, Ok(())) => {
                     self.action_pending = false;
                     notice = Some(purpose.ready_notice().into());
                     if let Err(error) = self.start_recovery() {
+                        self.action_result = Some(Err(error.clone()));
                         notice = Some(error);
                     }
                 }
@@ -450,6 +459,11 @@ impl ApplianceOwnerClient {
             self.refresh();
         }
         notice
+    }
+
+    /// Take only a completed owner action, excluding periodic status notices.
+    pub fn take_action_result(&mut self) -> Option<Result<String, String>> {
+        self.action_result.take()
     }
 }
 
