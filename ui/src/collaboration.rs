@@ -11,7 +11,6 @@
 //! spawned.
 //!
 
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub use collab_types::DocumentMutation;
@@ -32,7 +31,7 @@ use tokio::task::LocalSet;
 /// something upstream is wedged.
 const SHOVEL_INIT_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub enum CollabRequest {
     Hello {
         app_id: String,
@@ -41,14 +40,10 @@ pub enum CollabRequest {
         /// adopted. The broker delivers payloads only to connections
         /// announcing the same record, so two people editing different
         /// files in one room don't merge each other's state; `None` means
-        /// one document per `(app, room)`. `#[serde(default)]` so a frame
-        /// from a pre-record peer still parses as `None` instead of being
-        /// dropped.
-        #[serde(default)]
+        /// one document per `(app, room)`.
         record: Option<String>,
         /// Name on the caret pill; `None` gets a synthetic `peer-<n>`.
         /// Informational only — never used for routing or grants.
-        #[serde(default)]
         handle: Option<String>,
     },
     /// Complete document state. The SDK wraps this mutation in a signed
@@ -97,7 +92,7 @@ pub enum CollabRequest {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportedInput {
     None,
     Text {
@@ -107,7 +102,7 @@ pub enum ExportedInput {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportedAction {
     pub resource: String,
     pub action: String,
@@ -166,7 +161,7 @@ impl RouteSpec {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub enum CollabEvent {
     Context {
         collaborators: Vec<Collaborator>,
@@ -239,7 +234,7 @@ impl CollabEvent {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PresencePayload {
     Pointer {
         x: f32,
@@ -265,22 +260,16 @@ pub enum PresencePayload {
     Left,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct Collaborator {
     pub id: String,
     pub name: String,
     pub color: [f32; 3],
-    /// Defaulted on the wire so a peer that omits the field reads as a
-    /// person — a smaller lie than a roster that won't load.
-    #[serde(default)]
+    /// Whether this participant is an agent rather than a person.
     pub is_agent: bool,
     /// Whether this row is the receiving machine's own participant.
     /// Apps can't derive this themselves: `id` is the address *other*
     /// machines use, and a machine never announces its own to its own apps.
-    ///
-    /// Defaulted on the wire, so a peer that predates this reads as someone
-    /// else.
-    #[serde(default)]
     pub is_self: bool,
 }
 
@@ -1683,10 +1672,14 @@ async fn dispatch_sdk_request(
                 PresencePayload::Caret { pos } => {
                     let _ = presence.publish_caret(&key_bytes, pos as u64).await;
                 }
-                PresencePayload::Selection { start, end }
-                | PresencePayload::Typing { start, end } => {
+                PresencePayload::Selection { start, end } => {
                     let _ = presence
                         .publish_selection(&key_bytes, start as u64, end as u64)
+                        .await;
+                }
+                PresencePayload::Typing { start, end } => {
+                    let _ = presence
+                        .publish_typing(&key_bytes, start as u64, end as u64)
                         .await;
                 }
                 PresencePayload::Arrived => {
@@ -1815,6 +1808,10 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
                         end: usize::try_from(end).unwrap_or(usize::MAX),
                     }
                 }
+                runtime_collab::PresencePayload::Typing { start, end } => PresencePayload::Typing {
+                    start: usize::try_from(start).unwrap_or(usize::MAX),
+                    end: usize::try_from(end).unwrap_or(usize::MAX),
+                },
                 runtime_collab::PresencePayload::Arrived => PresencePayload::Arrived,
                 // `Cursor` is fully handled and returned by the outer match, so
                 // it never reaches here; folding it in with `Left` keeps this
@@ -1876,6 +1873,7 @@ mod tests {
         pointer_publishes: Vec<(Vec<u8>, f32, f32)>,
         caret_publishes: Vec<(Vec<u8>, u64)>,
         selection_publishes: Vec<(Vec<u8>, u64, u64)>,
+        typing_publishes: Vec<(Vec<u8>, u64, u64)>,
         arrived: Vec<Vec<u8>>,
         left: Vec<Vec<u8>>,
         scrollback_requests: Vec<(Vec<u8>, u64, u32)>,
@@ -1897,8 +1895,10 @@ mod tests {
     #[derive(Clone)]
     enum SeedPayload {
         Cursor { x: f32, y: f32 },
+        Pointer { x: f32, y: f32 },
         Caret { pos: u64 },
         Selection { start: u64, end: u64 },
+        Typing { start: u64, end: u64 },
         Arrived,
         Left,
     }
@@ -1944,11 +1944,21 @@ mod tests {
                     b.set_x(x);
                     b.set_y(y);
                 }
+                SeedPayload::Pointer { x, y } => {
+                    let mut b = payload.init_pointer();
+                    b.set_x(x);
+                    b.set_y(y);
+                }
                 SeedPayload::Caret { pos } => {
                     payload.init_caret().set_pos(pos);
                 }
                 SeedPayload::Selection { start, end } => {
                     let mut b = payload.init_selection();
+                    b.set_start(start);
+                    b.set_end(end);
+                }
+                SeedPayload::Typing { start, end } => {
+                    let mut b = payload.init_typing();
                     b.set_start(start);
                     b.set_end(end);
                 }
@@ -2031,6 +2041,25 @@ mod tests {
                 return Promise::ok(());
             };
             self.captures.lock().unwrap().selection_publishes.push((
+                k.to_vec(),
+                r.get_start(),
+                r.get_end(),
+            ));
+            Promise::ok(())
+        }
+
+        fn publish_typing(
+            self: Rc<Self>,
+            params: presence_handle::PublishTypingParams,
+            _results: presence_handle::PublishTypingResults,
+        ) -> Promise<(), capnp::Error> {
+            let Ok(r) = params.get() else {
+                return Promise::ok(());
+            };
+            let Ok(k) = r.get_key_bytes() else {
+                return Promise::ok(());
+            };
+            self.captures.lock().unwrap().typing_publishes.push((
                 k.to_vec(),
                 r.get_start(),
                 r.get_end(),
@@ -2549,6 +2578,10 @@ mod tests {
         });
         mgr.send(CollabRequest::Presence {
             key: key.clone(),
+            payload: PresencePayload::Typing { start: 4, end: 10 },
+        });
+        mgr.send(CollabRequest::Presence {
+            key: key.clone(),
             payload: PresencePayload::Arrived,
         });
         mgr.send(CollabRequest::Presence {
@@ -2563,6 +2596,7 @@ mod tests {
                     c.pointer_publishes.len() == 1
                         && c.caret_publishes.len() == 1
                         && c.selection_publishes.len() == 1
+                        && c.typing_publishes.len() == 1
                         && c.arrived.len() == 1
                         && c.left.len() == 1
                 },
@@ -2575,6 +2609,7 @@ mod tests {
             cursor_publishes,
             caret_publishes,
             selection_publishes,
+            typing_publishes,
             arrived,
             left,
         ) = {
@@ -2584,6 +2619,7 @@ mod tests {
                 c.cursor_publishes.clone(),
                 c.caret_publishes.clone(),
                 c.selection_publishes.clone(),
+                c.typing_publishes.clone(),
                 c.arrived.clone(),
                 c.left.clone(),
             )
@@ -2604,6 +2640,7 @@ mod tests {
             selection_publishes,
             vec![(expected_key_bytes.clone(), 3, 9)]
         );
+        assert_eq!(typing_publishes, vec![(expected_key_bytes.clone(), 4, 10)]);
         assert_eq!(arrived, vec![expected_key_bytes.clone()]);
         assert_eq!(left, vec![expected_key_bytes]);
     }
@@ -2733,12 +2770,22 @@ mod tests {
             SeedPresence {
                 user_id: "peer-bob".to_owned(),
                 key_bytes: key_bytes.clone(),
+                payload: SeedPayload::Pointer { x: 6.0, y: 9.0 },
+            },
+            SeedPresence {
+                user_id: "peer-bob".to_owned(),
+                key_bytes: key_bytes.clone(),
                 payload: SeedPayload::Caret { pos: 7 },
             },
             SeedPresence {
                 user_id: "peer-bob".to_owned(),
                 key_bytes: key_bytes.clone(),
                 payload: SeedPayload::Selection { start: 1, end: 3 },
+            },
+            SeedPresence {
+                user_id: "peer-bob".to_owned(),
+                key_bytes: key_bytes.clone(),
+                payload: SeedPayload::Typing { start: 2, end: 5 },
             },
             SeedPresence {
                 user_id: "peer-bob".to_owned(),
@@ -2767,7 +2814,9 @@ mod tests {
         for e in events {
             match e {
                 CollabEvent::RemoteCursorMoved { x, y, .. } => cursor_moves.push((x, y)),
-                CollabEvent::RemotePresenceUpdate { payload, .. } => updates.push(payload),
+                CollabEvent::RemotePresenceUpdate { key, payload, .. } => {
+                    updates.push((key, payload));
+                }
                 _ => {}
             }
         }
@@ -2776,19 +2825,27 @@ mod tests {
             "cursor payload must land on RemoteCursorMoved"
         );
         assert!(
-            updates.contains(&PresencePayload::Caret { pos: 7 }),
+            updates.contains(&(key.clone(), PresencePayload::Pointer { x: 6.0, y: 9.0 })),
+            "keyed pointer retains its coordinate-space key"
+        );
+        assert!(
+            updates.contains(&(key.clone(), PresencePayload::Caret { pos: 7 })),
             "caret variant translated"
         );
         assert!(
-            updates.contains(&PresencePayload::Selection { start: 1, end: 3 }),
+            updates.contains(&(key.clone(), PresencePayload::Selection { start: 1, end: 3 })),
             "selection variant translated"
         );
         assert!(
-            updates.contains(&PresencePayload::Arrived),
+            updates.contains(&(key.clone(), PresencePayload::Typing { start: 2, end: 5 })),
+            "typing remains distinct from selection"
+        );
+        assert!(
+            updates.contains(&(key.clone(), PresencePayload::Arrived)),
             "arrived variant translated"
         );
         assert!(
-            updates.contains(&PresencePayload::Left),
+            updates.contains(&(key, PresencePayload::Left)),
             "left variant translated"
         );
     }

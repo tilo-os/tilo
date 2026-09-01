@@ -2242,6 +2242,7 @@ impl TypstApp {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
     use winit::dpi::PhysicalPosition;
@@ -2338,7 +2339,7 @@ mod tests {
         assert!(app.needs_commit());
 
         let context = app.take_commit_context().expect("native edit provenance");
-        assert_eq!(context.label, "Edit source");
+        assert_eq!(context.action_label, "Edit source");
         assert_eq!(
             context.app.as_ref().map(|app| app.id.as_str()),
             Some("org.qos.Typst")

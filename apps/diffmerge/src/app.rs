@@ -1041,20 +1041,36 @@ mod tests {
             "the take-a-side choice is recorded in the CRDT"
         );
 
-        // Exactly one undo boundary, bracketed by the host at the pre-action heads.
-        let stashed = Widget::take_committed_action(&mut app).expect("heads stashed for the host");
+        // Exactly one undo boundary, drained and recorded by the host's own
+        // recorder rather than pushed by hand: attribution happens in there,
+        // and undo is author-scoped. The node map is empty because the app
+        // widget is the root here.
+        let local_author = ui::collaboration::local_user_id();
+        let root: *mut dyn Widget = &mut app;
+        assert!(
+            ui::undo::record_dispatched_action(
+                &mut state,
+                root,
+                &std::collections::HashMap::new(),
+                &local_author,
+            ),
+            "the host recorded an undo boundary for the dispatched action"
+        );
+        let entry = state.peek_last_undo().expect("one undo boundary recorded");
         assert_eq!(
-            stashed, before_heads,
+            entry.before, before_heads,
             "bracket starts at the pre-action heads"
         );
-        state.record_committed_action(stashed, None, None);
-        assert!(
-            state.peek_last_undo().is_some(),
-            "one undo boundary recorded"
+        assert_eq!(
+            entry.author.as_ref(),
+            Some(&local_author),
+            "attributed to the local user, so their Ctrl+Z can reach it"
         );
 
         // Ctrl+Z reverts exactly this action.
-        state.undo(None, None).expect("an undo entry to pop");
+        state
+            .undo_as(Some(&local_author), None, None)
+            .expect("an undo entry to pop");
         assert_eq!(
             crate::doc::MergeDoc::merged_text(&state.doc),
             before_merged,

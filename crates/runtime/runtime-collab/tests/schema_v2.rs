@@ -49,8 +49,10 @@ use runtime_portal::UnixCapnpClient;
 
 #[derive(Default)]
 struct Captures {
+    presence_pointer: Vec<(Vec<u8>, f32, f32)>,
     presence_caret: Vec<(Vec<u8>, u64)>,
     presence_selection: Vec<(Vec<u8>, u64, u64)>,
+    presence_typing: Vec<(Vec<u8>, u64, u64)>,
     presence_arrived: Vec<Vec<u8>>,
     presence_left: Vec<Vec<u8>>,
     presence_cursor: Vec<(f32, f32)>,
@@ -77,10 +79,52 @@ struct SeedPresence {
 #[derive(Clone)]
 enum PresencePayloadKind {
     Cursor { x: f32, y: f32 },
+    Pointer { x: f32, y: f32 },
     Caret { pos: u64 },
     Selection { start: u64, end: u64 },
+    Typing { start: u64, end: u64 },
     Arrived,
     Left,
+}
+
+fn every_presence_payload() -> Vec<SeedPresence> {
+    vec![
+        SeedPresence {
+            user_id: "alice".into(),
+            key_bytes: b"key-1".to_vec(),
+            payload: PresencePayloadKind::Cursor { x: 12.5, y: -3.0 },
+        },
+        SeedPresence {
+            user_id: "alice-keyed".into(),
+            key_bytes: b"key-pointer".to_vec(),
+            payload: PresencePayloadKind::Pointer { x: 3.5, y: 8.0 },
+        },
+        SeedPresence {
+            user_id: "bob".into(),
+            key_bytes: b"key-2".to_vec(),
+            payload: PresencePayloadKind::Caret { pos: 42 },
+        },
+        SeedPresence {
+            user_id: "carol".into(),
+            key_bytes: b"key-3".to_vec(),
+            payload: PresencePayloadKind::Selection { start: 7, end: 11 },
+        },
+        SeedPresence {
+            user_id: "carol-typing".into(),
+            key_bytes: b"key-typing".to_vec(),
+            payload: PresencePayloadKind::Typing { start: 12, end: 15 },
+        },
+        SeedPresence {
+            user_id: "dave".into(),
+            key_bytes: b"key-4".to_vec(),
+            payload: PresencePayloadKind::Arrived,
+        },
+        SeedPresence {
+            user_id: "eve".into(),
+            key_bytes: b"key-5".to_vec(),
+            payload: PresencePayloadKind::Left,
+        },
+    ]
 }
 
 struct FakePresenceStream {
@@ -108,11 +152,21 @@ impl presence_stream::Server for FakePresenceStream {
                 b.set_x(x);
                 b.set_y(y);
             }
+            PresencePayloadKind::Pointer { x, y } => {
+                let mut b = payload.init_pointer();
+                b.set_x(x);
+                b.set_y(y);
+            }
             PresencePayloadKind::Caret { pos } => {
                 payload.init_caret().set_pos(pos);
             }
             PresencePayloadKind::Selection { start, end } => {
                 let mut b = payload.init_selection();
+                b.set_start(start);
+                b.set_end(end);
+            }
+            PresencePayloadKind::Typing { start, end } => {
+                let mut b = payload.init_typing();
                 b.set_start(start);
                 b.set_end(end);
             }
@@ -144,6 +198,26 @@ impl presence_handle::Server for FakePresence {
             .borrow_mut()
             .presence_cursor
             .push((r.get_x(), r.get_y()));
+        Promise::ok(())
+    }
+
+    fn publish_pointer(
+        self: Rc<Self>,
+        params: presence_handle::PublishPointerParams,
+        _results: presence_handle::PublishPointerResults,
+    ) -> Promise<(), capnp::Error> {
+        let r = match params.get() {
+            Ok(r) => r,
+            Err(e) => return Promise::err(e),
+        };
+        let key = match r.get_key_bytes() {
+            Ok(b) => b.to_vec(),
+            Err(e) => return Promise::err(e),
+        };
+        self.captures
+            .borrow_mut()
+            .presence_pointer
+            .push((key, r.get_x(), r.get_y()));
         Promise::ok(())
     }
 
@@ -183,6 +257,26 @@ impl presence_handle::Server for FakePresence {
         self.captures
             .borrow_mut()
             .presence_selection
+            .push((key, r.get_start(), r.get_end()));
+        Promise::ok(())
+    }
+
+    fn publish_typing(
+        self: Rc<Self>,
+        params: presence_handle::PublishTypingParams,
+        _results: presence_handle::PublishTypingResults,
+    ) -> Promise<(), capnp::Error> {
+        let r = match params.get() {
+            Ok(r) => r,
+            Err(e) => return Promise::err(e),
+        };
+        let key = match r.get_key_bytes() {
+            Ok(b) => b.to_vec(),
+            Err(e) => return Promise::err(e),
+        };
+        self.captures
+            .borrow_mut()
+            .presence_typing
             .push((key, r.get_start(), r.get_end()));
         Promise::ok(())
     }
@@ -488,39 +582,10 @@ async fn presence_variants_publish_and_stream_round_trip() {
         .run_until(async {
             let captures = Rc::new(RefCell::new(Captures::default()));
 
-            // Seed one of each payload variant for full-variant coverage on `subscribe_all`.
-            let presence_backlog = vec![
-                SeedPresence {
-                    user_id: "alice".into(),
-                    key_bytes: b"key-1".to_vec(),
-                    payload: PresencePayloadKind::Cursor { x: 12.5, y: -3.0 },
-                },
-                SeedPresence {
-                    user_id: "bob".into(),
-                    key_bytes: b"key-2".to_vec(),
-                    payload: PresencePayloadKind::Caret { pos: 42 },
-                },
-                SeedPresence {
-                    user_id: "carol".into(),
-                    key_bytes: b"key-3".to_vec(),
-                    payload: PresencePayloadKind::Selection { start: 7, end: 11 },
-                },
-                SeedPresence {
-                    user_id: "dave".into(),
-                    key_bytes: b"key-4".to_vec(),
-                    payload: PresencePayloadKind::Arrived,
-                },
-                SeedPresence {
-                    user_id: "eve".into(),
-                    key_bytes: b"key-5".to_vec(),
-                    payload: PresencePayloadKind::Left,
-                },
-            ];
-
             let broker = FakeBroker {
                 captures: captures.clone(),
                 op_backlog: Vec::new(),
-                presence_backlog,
+                presence_backlog: every_presence_payload(),
                 context_backlog: Vec::new(),
                 scrollback_response: None,
             };
@@ -530,16 +595,26 @@ async fn presence_variants_publish_and_stream_round_trip() {
 
             // Publish every variant.
             presence.publish_cursor(1.5, 2.5).await.unwrap();
+            presence
+                .publish_pointer(b"art-pointer", 4.0, 5.0)
+                .await
+                .unwrap();
             presence.publish_caret(b"art-a", 100).await.unwrap();
             presence.publish_selection(b"art-b", 3, 9).await.unwrap();
+            presence.publish_typing(b"art-typing", 6, 10).await.unwrap();
             presence.publish_arrived(b"art-c").await.unwrap();
             presence.publish_left(b"art-d").await.unwrap();
 
             {
                 let c = captures.borrow();
                 assert_eq!(c.presence_cursor, vec![(1.5, 2.5)]);
+                assert_eq!(
+                    c.presence_pointer,
+                    vec![(b"art-pointer".to_vec(), 4.0, 5.0)]
+                );
                 assert_eq!(c.presence_caret, vec![(b"art-a".to_vec(), 100)]);
                 assert_eq!(c.presence_selection, vec![(b"art-b".to_vec(), 3, 9)]);
+                assert_eq!(c.presence_typing, vec![(b"art-typing".to_vec(), 6, 10)]);
                 assert_eq!(c.presence_arrived, vec![b"art-c".to_vec()]);
                 assert_eq!(c.presence_left, vec![b"art-d".to_vec()]);
             }
@@ -554,20 +629,30 @@ async fn presence_variants_publish_and_stream_round_trip() {
             assert_eq!(e1.payload, PresencePayload::Cursor { x: 12.5, y: -3.0 });
 
             let e2 = stream.read().await.unwrap();
-            assert_eq!(e2.user_id, "bob");
-            assert_eq!(e2.payload, PresencePayload::Caret { pos: 42 });
+            assert_eq!(e2.user_id, "alice-keyed");
+            assert_eq!(e2.key_bytes, b"key-pointer");
+            assert_eq!(e2.payload, PresencePayload::Pointer { x: 3.5, y: 8.0 });
 
             let e3 = stream.read().await.unwrap();
-            assert_eq!(e3.user_id, "carol");
-            assert_eq!(e3.payload, PresencePayload::Selection { start: 7, end: 11 });
+            assert_eq!(e3.user_id, "bob");
+            assert_eq!(e3.payload, PresencePayload::Caret { pos: 42 });
 
             let e4 = stream.read().await.unwrap();
-            assert_eq!(e4.user_id, "dave");
-            assert_eq!(e4.payload, PresencePayload::Arrived);
+            assert_eq!(e4.user_id, "carol");
+            assert_eq!(e4.payload, PresencePayload::Selection { start: 7, end: 11 });
 
             let e5 = stream.read().await.unwrap();
-            assert_eq!(e5.user_id, "eve");
-            assert_eq!(e5.payload, PresencePayload::Left);
+            assert_eq!(e5.user_id, "carol-typing");
+            assert_eq!(e5.key_bytes, b"key-typing");
+            assert_eq!(e5.payload, PresencePayload::Typing { start: 12, end: 15 });
+
+            let e6 = stream.read().await.unwrap();
+            assert_eq!(e6.user_id, "dave");
+            assert_eq!(e6.payload, PresencePayload::Arrived);
+
+            let e7 = stream.read().await.unwrap();
+            assert_eq!(e7.user_id, "eve");
+            assert_eq!(e7.payload, PresencePayload::Left);
         })
         .await;
 }

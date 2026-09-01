@@ -73,14 +73,14 @@ const SHOT_SCENARIOS: &[&str] = &[
     "album-page",
 ];
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 /// # Errors
 ///
 /// Returns an error if `--probe` fails: backend init, the search itself, a
 /// zero-result search, or resolving/verifying the top hit's audio stream
 /// (network / API failure).
-#[cfg(feature = "thin")]
-extern crate runtime_dylib;
-
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 

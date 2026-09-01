@@ -30,8 +30,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, Resource, ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+    ResourceProvider,
 };
 
 use crate::doc::CalDoc;
@@ -224,7 +224,7 @@ pub fn history_context(action: &CalendarAction) -> qos_actions::ActionContext {
     context.resource = Some(qos_actions::ActionResource {
         id: format!("{kind}:{id}"),
         kind: kind.to_string(),
-        label: title.to_string(),
+        label: title.clone(),
     });
     context
 }
@@ -407,14 +407,13 @@ fn task_label(data: &TaskData) -> String {
 }
 
 fn immediate_spec(id: &str, label: &str, action: &CalendarAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, CALENDAR_ACTION_TYPE, action).unwrap_or_else(|_| ActionSpec {
-        id: id.to_string(),
-        label: label.to_string(),
-        description: None,
-        locus: action.locus(),
-        kind: qos_actions::OperationKind::Document,
-        input: ActionInput::Immediate(encode(action)),
-    })
+    ActionSpec::immediate(id, label, CALENDAR_ACTION_TYPE, action)
+        // `ActionSpec`'s fields are private now that it carries typed
+        // parameters; build the fallback through the constructor that
+        // takes an already-encoded action.
+        .unwrap_or_else(|_| {
+            ActionSpec::immediate_encoded(id, label.to_string(), action.locus(), encode(action))
+        })
 }
 
 /// Build the resource tree the calendar currently has open: the calendar itself

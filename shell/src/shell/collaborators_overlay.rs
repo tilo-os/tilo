@@ -67,6 +67,13 @@ pub struct CollaboratorsModel<'a> {
     pub followed_id: Option<&'a str>,
 }
 
+struct RowFrame<'a> {
+    row: &'a RosterRow,
+    y: f64,
+    followed: bool,
+    cursor: Option<Point>,
+}
+
 /// The complete interactive surface of the collaborator popover.
 #[derive(Debug, Default)]
 pub struct CollaboratorsOverlay {
@@ -157,10 +164,12 @@ impl CollaboratorsOverlay {
                 transform,
                 text_renderer,
                 theme,
-                row,
-                list_top + row_count_as_f64(index) * 48.0,
-                model.followed_id == Some(row.id.as_str()),
-                cursor,
+                &RowFrame {
+                    row,
+                    y: list_top + row_count_as_f64(index) * 48.0,
+                    followed: model.followed_id == Some(row.id.as_str()),
+                    cursor,
+                },
             );
         }
         self.draw_footer(scene, transform, text_renderer, theme, cursor);
@@ -269,43 +278,54 @@ impl CollaboratorsOverlay {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        row: &RosterRow,
-        row_y: f64,
-        followed: bool,
-        cursor: Option<Point>,
+        frame: &RowFrame<'_>,
     ) {
         let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let center = Point::new(self.panel.x0 + 28.0, row_y + 24.0);
-        if followed {
+        if frame.followed {
             let active = RoundedRect::new(
                 self.panel.x0 + 8.0,
-                row_y + 3.0,
+                frame.y + 3.0,
                 self.panel.x1 - 8.0,
-                row_y + 45.0,
+                frame.y + 45.0,
                 f64::from(tokens.radii.md),
             );
             scene.fill(
                 Fill::NonZero,
                 transform,
-                row.color.multiply_alpha(0.12),
+                frame.row.color.multiply_alpha(0.12),
                 None,
                 &active,
             );
             scene.fill(
                 Fill::NonZero,
                 transform,
-                row.color,
+                frame.row.color,
                 None,
                 &RoundedRect::new(
                     self.panel.x0 + 8.0,
-                    row_y + 11.0,
+                    frame.y + 11.0,
                     self.panel.x0 + 11.0,
-                    row_y + 37.0,
+                    frame.y + 37.0,
                     1.5,
                 ),
             );
         }
+
+        self.draw_row_identity(scene, transform, text_renderer, theme, frame);
+        self.draw_row_text(scene, transform, text_renderer, theme, frame);
+    }
+
+    fn draw_row_identity(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        frame: &RowFrame<'_>,
+    ) {
+        let row = frame.row;
+        let colors = &theme.tokens.colors;
+        let center = Point::new(self.panel.x0 + 28.0, frame.y + 24.0);
         let avatar_rect = Rect::new(
             center.x - 11.0,
             center.y - 11.0,
@@ -362,6 +382,21 @@ impl CollaboratorsOverlay {
             );
             scene.fill(Fill::NonZero, transform, row.color, None, &spark);
         }
+    }
+
+    fn draw_row_text(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        frame: &RowFrame<'_>,
+    ) {
+        let row = frame.row;
+        let row_y = frame.y;
+        let followed = frame.followed;
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
         let text_x = self.panel.x0 + 44.0;
         let label_x1 = if row.is_agent {
             self.panel.x1 - 142.0
@@ -446,7 +481,7 @@ impl CollaboratorsOverlay {
             );
             let face = ButtonFace::new(action, if followed { "Stop" } else { "Follow" })
                 .radius(f64::from(tokens.radii.sm))
-                .hovered(cursor.is_some_and(|point| action.contains(point)));
+                .hovered(frame.cursor.is_some_and(|point| action.contains(point)));
             Button::paint(scene, transform, text_renderer, theme, &face);
         }
     }

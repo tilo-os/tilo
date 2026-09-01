@@ -1,0 +1,18 @@
+[package]
+name = "qos-ui-builder"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Native visual editor for qOS serialized UI graphs"
+
+[[bin]]
+name = "qos-ui-builder"
+path = "src/main.rs"
+
+[dependencies]
+atomic-file = { path = "../../system/atomic-file" }
+ui = { path = "../../../ui" }
+
+[lints]
+workspace = true

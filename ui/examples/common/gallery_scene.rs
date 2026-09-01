@@ -99,10 +99,10 @@ fn specimen_pair(
 /// the same widget developers inspect in the full component gallery.
 /// Heading, lede and serif specimens. Split out of
 /// `build_typography_showcase` to keep that under the line cap.
-fn typography_intro_and_serif(column: Column, theme: &Theme) -> Column {
+fn typography_intro_and_serif(column: Column, _theme: &Theme) -> Column {
     column.push(Box::new(
         Text::new("A clear hierarchy makes dense interfaces feel calm.")
-            .with_role(TextRole::Heading, theme),
+            .with_role(TextRole::Heading),
     ))
     .push(Box::new(
         Text::new("A quiet page gives every letter room to speak.").with_style(
@@ -290,43 +290,43 @@ fn typography_wrapping_and_punctuation(column: Column, theme: &Theme) -> Column 
 /// Code sample, multilingual scripts, hyphenation demo, `BiDi` text and
 /// emoji clusters. Split out of `build_typography_showcase` to keep that
 /// under the line cap.
-fn typography_scripts_and_bidi(column: Column, theme: &Theme) -> Column {
+fn typography_scripts_and_bidi(column: Column, _theme: &Theme) -> Column {
     column
                 .push(Box::new(
                     Text::new("const greeting = \"Hello, 世界\";")
-                        .with_role(TextRole::Code, theme),
+                        .with_role(TextRole::Code),
                 ))
                 .push(Box::new(
-                    Text::new("العربية — مرحبًا بالعالم").with_role(TextRole::Body, theme),
+                    Text::new("العربية — مرحبًا بالعالم").with_role(TextRole::Body),
                 ))
                 .push(Box::new(
-                    Text::new("עברית — שלום עולם").with_role(TextRole::Body, theme),
+                    Text::new("עברית — שלום עולם").with_role(TextRole::Body),
                 ))
                 .push(Box::new(
                     Text::new("हिन्दी — नमस्ते दुनिया  ·  বাংলা — নমস্কার বিশ্ব")
-                        .with_role(TextRole::Body, theme),
+                        .with_role(TextRole::Body),
                 ))
                 .push(Box::new(
                     Text::new("ไทย — สวัสดีชาวโลก  ·  日本語 東京  ·  简体中文 上海")
-                        .with_role(TextRole::Body, theme),
+                        .with_role(TextRole::Body),
                 ))
                 .push(Box::new(
                     Text::new(
                         "Thai dictionary wrap (no spaces): ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์",
                     )
-                    .with_role(TextRole::Body, theme),
+                    .with_role(TextRole::Body),
                 ))
                 .push(Box::new(
                     col(4.0)
                         .push(Box::new(
                             Text::new("English auto hyphenation:")
-                                .with_role(TextRole::Body, theme),
+                                .with_role(TextRole::Body),
                         ))
                         .push(Box::new(
                             Container::new().with_no_padding().with_width(190.0).with_child(
                                 Box::new(
                                     Text::new("Internationalization demonstrates typography.")
-                                        .with_role(TextRole::Reading, theme)
+                                        .with_role(TextRole::Reading)
                                         .with_auto_hyphenation("en-US"),
                                 ),
                             ),
@@ -334,11 +334,11 @@ fn typography_scripts_and_bidi(column: Column, theme: &Theme) -> Column {
                 ))
                 .push(Box::new(
                     Text::new("Mixed BiDi: Invoice 123 — חשבון ٤٥٦ — total €78")
-                        .with_role(TextRole::Body, theme),
+                        .with_role(TextRole::Body),
                 ))
                 .push(Box::new(
                     Text::new("Emoji clusters: 👩🏽‍💻  👨‍👩‍👧‍👦  🏳️‍🌈  🇪🇺")
-                        .with_role(TextRole::Body, theme),
+                        .with_role(TextRole::Body),
                 ))
 }
 

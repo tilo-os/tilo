@@ -126,6 +126,8 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
 )]
 pub struct NumberInput {
     id: String,
+    /// Fluent message id spoken for the composite control.
+    accessible_name: Option<String>,
     /// Canonical value — the single source of truth. The embedded field's
     /// text is a *view* of this (re-synced on every commit); `value` is
     /// what [`value`](NumberInput::value) and the CRDT reflect.
@@ -167,6 +169,7 @@ pub struct NumberInput {
     enabled: bool,
     width: f64,
     height: f64,
+    interaction: crate::interaction::InteractionEnvironment,
 }
 
 impl NumberInput {
@@ -175,6 +178,7 @@ impl NumberInput {
     pub fn new(value: f64) -> Self {
         let mut s = Self {
             id: String::new(),
+            accessible_name: None,
             value,
             min: f64::NEG_INFINITY,
             max: f64::INFINITY,
@@ -198,6 +202,7 @@ impl NumberInput {
             enabled: true,
             width: DEFAULT_WIDTH,
             height: DEFAULT_HEIGHT,
+            interaction: crate::interaction::InteractionEnvironment::default(),
         };
         s.value = s.value.clamp(s.min, s.max);
         s.sync_field();
@@ -244,6 +249,13 @@ impl NumberInput {
     #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
         self.id = id.to_string();
+        self
+    }
+
+    /// Name the complete number input for assistive technology.
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
         self
     }
 
@@ -388,6 +400,16 @@ impl NumberInput {
 }
 
 impl Widget for NumberInput {
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
+        self.field.set_interaction_environment(environment);
+        self.minus_hover &= environment.supports_hover();
+        self.plus_hover &= environment.supports_hover();
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         // Flush a value committed while we lacked the state handle (blur).
         self.flush_crdt(state, root);
@@ -433,7 +455,10 @@ impl Widget for NumberInput {
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::length(px_f32(self.width)),
-                height: Dimension::length(px_f32(self.height)),
+                height: Dimension::length(px_f32(
+                    self.height
+                        .max(f64::from(self.interaction.minimum_target())),
+                )),
             },
             ..Default::default()
         });
@@ -712,6 +737,7 @@ impl Widget for NumberInput {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::SpinButton)
+                .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
                 .with_value(self.format_value())
                 .with_state(AccessState {
                     focusable: self.is_focusable(),
