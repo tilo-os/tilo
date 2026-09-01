@@ -651,29 +651,34 @@ State has two deliberate levels:
 - transient presentation state such as hover, an open popover, or a scroll
   offset lives on the widget and never enters the shared document.
 
-That is less magical than implicit two-way binding: the storage boundary is
-visible in types and debuggable as an ordinary document. Reusable actions go
-through `ActionHost`, so a button, command palette entry, agent action, and
-undo history can invoke the same operation.
+The storage boundary stays visible in types: durable fields name a document
+path, while process-local fields bind an explicit typed handle. Reusable
+actions go through `ActionHost`, so a button, command palette entry, agent
+action, and undo history can invoke the same operation.
 
 For process-local form state, use a typed `LocalState<T>` handle. Clones share
-the value, while `Text::from_state` observes its revision and only reruns the
-formatter after a mutation. A complete retained form needs no custom widget:
+the value. `TextInput::from_state` is a true two-way binding: every input edit
+updates the handle, and a mutation through any clone updates every bound input
+on the ordinary synchronization pass. `Text::from_state` observes the same
+revision and only reruns its formatter after a mutation. A complete retained
+form needs no snapshots, callbacks, or custom widget:
 
 ```rust
 let query = LocalState::new(String::from("status:open"));
 let summary = Text::from_state(&query, |value| format!("Filter: {value}"));
-let input = TextInput::local()
-    .with_initial_value(&query.get())
+let input = TextInput::from_state(&query)
     .with_id("filter-input")
-    .with_accessible_name("Filter")
-    .on_change(query.text_sink());
+    .with_accessible_name("Filter");
 ```
 
 `set` replaces a local value and `update` mutates it in place. A bound text
-change invalidates rendering, intrinsic measurement, and accessibility in the
-same synchronization pass. Use `Text::dynamic` when the value comes from an
-existing local owner instead of `LocalState`.
+change invalidates rendering, multiline intrinsic measurement, and
+accessibility in the same synchronization pass without being misreported as a
+user edit. Bind several inputs to the same handle for synchronized
+master/detail or inspector views. An optional `on_change` callback can still
+observe committed user edits without owning synchronization. Use
+`Text::dynamic` when the value comes from an existing local owner instead of
+`LocalState`.
 
 `LocalState` is also the typed boundary for background work. Create a writer
 before spawning the worker; every completed mutation wakes the standard app
