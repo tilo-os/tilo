@@ -21,8 +21,8 @@
 //!
 //! Every write is doubly gated: the typed confirmation at Confirm, plus the
 //! `QOS_IMAGER_ALLOW_WRITE=1` allow-gate in [`crate::write`]. With the gate off
-//! (tests, `--shots`, normal dev runs) the exact same progress UI is driven by
-//! a simulated worker that touches no device.
+//! (tests, `--shots`, normal dev runs) the write control is unavailable; the app
+//! never reports synthetic progress or success.
 //!
 //! All persistent state (selected source/target, the live profile, the typed
 //! confirmation, the current step, job progress) lives in the Automerge
@@ -232,7 +232,9 @@ impl ImagerApp {
             Step::Drive => self.selected.is_some(),
             Step::Customize => true,
             // Confirm advances into the (destructive) write only once armed.
-            Step::Confirm => self.confirm_matches() && self.image_fits(),
+            Step::Confirm => {
+                self.confirm_matches() && self.image_fits() && crate::write::allow_write()
+            }
             // Write is in-progress and Done is terminal — neither advances.
             Step::Write | Step::Done => false,
         }
@@ -2205,7 +2207,7 @@ impl ImagerApp {
         let note = if crate::write::allow_write() {
             "Live write enabled (QOS_IMAGER_ALLOW_WRITE=1)."
         } else {
-            "Safe mode — no bytes are written unless QOS_IMAGER_ALLOW_WRITE=1."
+            "Writing unavailable — enable the privileged backend with QOS_IMAGER_ALLOW_WRITE=1."
         };
         Self::txt(
             scene,
@@ -2847,15 +2849,10 @@ impl ImagerApp {
                     rate_bps: 0,
                 };
                 ImagerDoc::set_progress(state, &self.progress);
-                let mode = if crate::write::allow_write() {
-                    "writing"
-                } else {
-                    "simulated write"
-                };
                 self.set_status(
                     state,
                     &format!(
-                        "{} → {} ({mode})",
+                        "{} → {} (writing)",
                         self.source
                             .as_ref()
                             .map(|s| s.name.clone())
@@ -2874,6 +2871,12 @@ impl ImagerApp {
             }
             crate::write::JobStart::Incomplete => {
                 return Err("Select a source and drive before writing.".into());
+            }
+            crate::write::JobStart::WriteDisabled => {
+                return Err(
+                    "Raw-device writing is disabled; enable the privileged Imager backend first."
+                        .into(),
+                );
             }
         }
         self.dirty = true;
@@ -3040,6 +3043,10 @@ impl ImagerApp {
 // Widget impl
 // =========================================================================
 impl Widget for ImagerApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::IMAGER_OPERATION_TYPE]
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.seeded {
             if ImagerDoc::is_empty(state) {
@@ -3291,6 +3298,7 @@ impl Widget for ImagerApp {
             self.target().map(TargetDrive::dev_path).as_deref(),
             available,
             self.job_rx.is_some(),
+            crate::write::allow_write(),
         );
         job.actions.push(
             qos_actions::ActionSpec::operation(
@@ -3739,11 +3747,10 @@ mod tests {
     }
 
     /// The primary interaction, proven end to end by clicking the real
-    /// on-screen targets: walk Source → Drive → Customize → Confirm → Write,
-    /// then let the (simulated) job finish and land on Done. Every transition
+    /// on-screen targets: walk Source → Drive → Customize → Confirm. Every transition
     /// goes through the actual hit-testing + dispatch path, not a shortcut.
     #[test]
-    fn clicking_through_the_wizard_reaches_write_then_done() {
+    fn clicking_through_the_wizard_refuses_a_fake_write_when_backend_is_disabled() {
         let (mut app, mut doc) = seeded_app();
         app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
         assert_eq!(app.step, Step::Source);
@@ -3788,31 +3795,18 @@ mod tests {
             "destructive consent is never written to the shared document"
         );
 
-        // Confirm → Write: click the (now-enabled) primary button.
+        if crate::write::allow_write() {
+            // Never point this UI test at a real block device.
+            return;
+        }
+
+        // The primary control stays disabled: a matching phrase cannot turn an
+        // unavailable backend into a synthetic success.
         let primary = app.compute_layout().primary.unwrap();
         click_at(&mut app, &mut doc, center(primary));
-        assert_eq!(app.step, Step::Write);
-        assert_eq!(app.progress.phase, JobPhase::Writing);
-        assert!(app.job_rx.is_some());
-
-        // The job reports success → the flow lands on the Done station. (Drive
-        // the drain with a terminal progress so the test is deterministic and
-        // never waits on the worker thread.)
-        let (tx, rx) = std::sync::mpsc::channel();
-        tx.send(Progress {
-            phase: JobPhase::Success,
-            write_frac: 1.0,
-            verify_frac: 1.0,
-            rate_bps: 0,
-        })
-        .unwrap();
-        app.job_rx = Some(rx);
-        app.drain_job(&mut doc);
-        // Keep the sender alive past the drain: dropping it first would look like
-        // the worker died and be reported as a failure rather than success.
-        drop(tx);
-        assert_eq!(app.step, Step::Done);
-        assert_eq!(app.progress.phase, JobPhase::Success);
+        assert_eq!(app.step, Step::Confirm);
+        assert_eq!(app.progress.phase, JobPhase::Idle);
+        assert!(app.job_rx.is_none());
     }
 
     #[test]
@@ -3846,21 +3840,19 @@ mod tests {
     }
 
     #[test]
-    fn write_starts_with_matching_confirmation_and_advances_to_write_station() {
-        // A matching typed confirmation starts a job: the phase advances to
-        // Writing, the flow moves onto the Write station, and a progress channel
-        // is installed. Whether the backend is simulated or real is decided by
-        // the allow-gate in write.rs (tested there); either way these UI
-        // invariants hold and never depend on the process environment.
+    fn matching_confirmation_does_not_simulate_a_disabled_write() {
+        if crate::write::allow_write() {
+            return;
+        }
         let (mut app, mut doc) = seeded_app();
         app.select_target(&mut doc, 0); // sdb
         app.goto(&mut doc, Step::Confirm);
         app.confirm_input.set_text("sdb");
         app.start_write(&mut doc);
-        assert_eq!(app.progress.phase, JobPhase::Writing);
-        assert_eq!(app.step, Step::Write, "the write station is now showing");
-        assert!(app.job_rx.is_some());
-        assert!(app.needs_animation_frame());
+        assert_eq!(app.progress.phase, JobPhase::Idle);
+        assert_eq!(app.step, Step::Confirm);
+        assert!(app.job_rx.is_none());
+        assert!(ImagerDoc::status(&doc).contains("disabled"));
     }
 
     #[test]
