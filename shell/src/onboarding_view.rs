@@ -531,6 +531,16 @@ impl OnboardingView {
         if self.backup_saved.is_some() {
             finish = finish.with_style(ui::widget::ButtonStyle::Primary);
         }
+        let system_care = match self.context {
+            OnboardingContext::FullSystem => {
+                "qOS checks signed system updates automatically after setup when the machine is \
+                 online. You can check, stage, and roll back releases in Settings."
+            }
+            OnboardingContext::HostDesktop => {
+                "Your Linux distribution remains responsible for OS updates and system time. \
+                 This host-session package does not install or run qOS bootc update services."
+            }
+        };
         Box::new(
             Column::new()
                 .with_no_padding()
@@ -547,6 +557,10 @@ impl OnboardingView {
                      out and back in once.",
                     theme,
                 ))
+                .push(Box::new(Card::titled(
+                    "System care",
+                    paragraph(system_care, theme),
+                )))
                 .push(Box::new(Card::titled("Your fingerprint", Box::new(detail))))
                 .push(Box::new(Card::titled(
                     "Make a portable backup",
