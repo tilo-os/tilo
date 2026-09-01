@@ -1,6 +1,6 @@
 //! Immediate-mode `QuickUI` surface for compatibility routing.
 use crate::actions;
-use crate::appliance_owner::ApplianceOwnerClient;
+use crate::appliance_owner::{ApplianceOwnerClient, LifecycleAction};
 use crate::model::{Catalogue, Route};
 use crate::provider::{CompatibilityProvider, EmptyProvider, LiveProvider, SampleProvider};
 use crate::strings;
@@ -72,11 +72,16 @@ pub struct WindowsApp {
     confirm_vm_install_button: Button,
     publish_vm_candidate_button: Button,
     retry_button: Button,
+    escalate_to_vm_button: Button,
     remove_launcher_button: Button,
     vendor_uninstall_button: Button,
     delete_data_button: Button,
     choose_windows_iso_button: Button,
     recovery_desktop_button: Button,
+    restart_windows_button: Button,
+    suspend_windows_button: Button,
+    resume_windows_button: Button,
+    shutdown_windows_button: Button,
     route_signal: Rc<Cell<Option<Route>>>,
     reset_signal: Rc<Cell<bool>>,
     launch_signal: Rc<Cell<bool>>,
@@ -86,14 +91,20 @@ pub struct WindowsApp {
     confirm_vm_install_signal: Rc<Cell<bool>>,
     publish_vm_candidate_signal: Rc<Cell<bool>>,
     retry_signal: Rc<Cell<bool>>,
+    escalate_to_vm_signal: Rc<Cell<bool>>,
     remove_launcher_signal: Rc<Cell<bool>>,
     vendor_uninstall_signal: Rc<Cell<bool>>,
     delete_data_signal: Rc<Cell<bool>>,
     choose_windows_iso_signal: Rc<Cell<bool>>,
     recovery_desktop_signal: Rc<Cell<bool>>,
+    restart_windows_signal: Rc<Cell<bool>>,
+    suspend_windows_signal: Rc<Cell<bool>>,
+    resume_windows_signal: Rc<Cell<bool>>,
+    shutdown_windows_signal: Rc<Cell<bool>>,
     portal_rx: Option<OpenFileChannel>,
     iso_portal_rx: Option<OpenFileChannel>,
     appliance_owner: ApplianceOwnerClient,
+    confirm_escalate_to_vm: Option<String>,
     confirm_vendor_uninstall: Option<String>,
     confirm_delete_data: Option<String>,
 }
@@ -125,11 +136,16 @@ impl WindowsApp {
         let vm_fallback_signal = Rc::new(Cell::new(false));
         let install_signal = Rc::new(Cell::new(false));
         let retry_signal = Rc::new(Cell::new(false));
+        let escalate_to_vm_signal = Rc::new(Cell::new(false));
         let remove_launcher_signal = Rc::new(Cell::new(false));
         let vendor_uninstall_signal = Rc::new(Cell::new(false));
         let delete_data_signal = Rc::new(Cell::new(false));
         let choose_windows_iso_signal = Rc::new(Cell::new(false));
         let recovery_desktop_signal = Rc::new(Cell::new(false));
+        let restart_windows_signal = Rc::new(Cell::new(false));
+        let suspend_windows_signal = Rc::new(Cell::new(false));
+        let resume_windows_signal = Rc::new(Cell::new(false));
+        let shutdown_windows_signal = Rc::new(Cell::new(false));
         let route_buttons = Route::ALL
             .iter()
             .map(|route| {
@@ -153,11 +169,16 @@ impl WindowsApp {
         let confirm_vm_install_signal = Rc::new(Cell::new(false));
         let publish_vm_candidate_signal = Rc::new(Cell::new(false));
         let retry = Rc::clone(&retry_signal);
+        let escalate_to_vm = Rc::clone(&escalate_to_vm_signal);
         let remove_launcher = Rc::clone(&remove_launcher_signal);
         let vendor_uninstall = Rc::clone(&vendor_uninstall_signal);
         let delete_data = Rc::clone(&delete_data_signal);
         let choose_windows_iso = Rc::clone(&choose_windows_iso_signal);
         let recovery_desktop = Rc::clone(&recovery_desktop_signal);
+        let restart_windows = Rc::clone(&restart_windows_signal);
+        let suspend_windows = Rc::clone(&suspend_windows_signal);
+        let resume_windows = Rc::clone(&resume_windows_signal);
+        let shutdown_windows = Rc::clone(&shutdown_windows_signal);
         Self {
             provider,
             catalogue,
@@ -224,6 +245,14 @@ impl WindowsApp {
                 .with_size(118.0, 32.0)
                 .with_enabled(false)
                 .on_click(move || retry.set(true)),
+            escalate_to_vm_button: Button::new(
+                "windows-escalate-install-to-vm",
+                "windows-escalate-install-to-vm",
+                None,
+            )
+            .with_size(220.0, 32.0)
+            .with_enabled(false)
+            .on_click(move || escalate_to_vm.set(true)),
             remove_launcher_button: Button::new(
                 "windows-remove-launcher",
                 "windows-remove-launcher",
@@ -259,6 +288,38 @@ impl WindowsApp {
             .with_size(256.0, 32.0)
             .with_enabled(false)
             .on_click(move || recovery_desktop.set(true)),
+            restart_windows_button: Button::new(
+                "windows-restart-appliance",
+                "windows-restart-appliance",
+                None,
+            )
+            .with_size(118.0, 32.0)
+            .with_enabled(false)
+            .on_click(move || restart_windows.set(true)),
+            suspend_windows_button: Button::new(
+                "windows-suspend-appliance",
+                "windows-suspend-appliance",
+                None,
+            )
+            .with_size(118.0, 32.0)
+            .with_enabled(false)
+            .on_click(move || suspend_windows.set(true)),
+            resume_windows_button: Button::new(
+                "windows-resume-appliance",
+                "windows-resume-appliance",
+                None,
+            )
+            .with_size(118.0, 32.0)
+            .with_enabled(false)
+            .on_click(move || resume_windows.set(true)),
+            shutdown_windows_button: Button::new(
+                "windows-shutdown-appliance",
+                "windows-shutdown-appliance",
+                None,
+            )
+            .with_size(118.0, 32.0)
+            .with_enabled(false)
+            .on_click(move || shutdown_windows.set(true)),
             route_signal,
             reset_signal,
             launch_signal,
@@ -268,14 +329,20 @@ impl WindowsApp {
             confirm_vm_install_signal,
             publish_vm_candidate_signal,
             retry_signal,
+            escalate_to_vm_signal,
             remove_launcher_signal,
             vendor_uninstall_signal,
             delete_data_signal,
             choose_windows_iso_signal,
             recovery_desktop_signal,
+            restart_windows_signal,
+            suspend_windows_signal,
+            resume_windows_signal,
+            shutdown_windows_signal,
             portal_rx: None,
             iso_portal_rx: None,
             appliance_owner: ApplianceOwnerClient::new(),
+            confirm_escalate_to_vm: None,
             confirm_vendor_uninstall: None,
             confirm_delete_data: None,
         }
@@ -298,9 +365,14 @@ impl WindowsApp {
         self.confirm_vm_install_button.set_enabled(false);
         self.publish_vm_candidate_button.set_enabled(false);
         self.retry_button.set_enabled(false);
+        self.escalate_to_vm_button.set_enabled(false);
         self.remove_launcher_button.set_enabled(false);
         self.vendor_uninstall_button.set_enabled(false);
         self.delete_data_button.set_enabled(false);
+        self.restart_windows_button.set_enabled(false);
+        self.suspend_windows_button.set_enabled(false);
+        self.resume_windows_button.set_enabled(false);
+        self.shutdown_windows_button.set_enabled(false);
 
         self.route_signal.set(None);
         self.reset_signal.set(false);
@@ -310,9 +382,14 @@ impl WindowsApp {
         self.confirm_vm_install_signal.set(false);
         self.publish_vm_candidate_signal.set(false);
         self.retry_signal.set(false);
+        self.escalate_to_vm_signal.set(false);
         self.remove_launcher_signal.set(false);
         self.vendor_uninstall_signal.set(false);
         self.delete_data_signal.set(false);
+        self.restart_windows_signal.set(false);
+        self.suspend_windows_signal.set(false);
+        self.resume_windows_signal.set(false);
+        self.shutdown_windows_signal.set(false);
     }
     fn queue_import_path(&mut self, path: &Path) {
         let source_name = path
@@ -417,6 +494,7 @@ impl WindowsApp {
                 self.deactivate_selection_controls();
                 self.selected = index;
                 self.notice = None;
+                self.confirm_escalate_to_vm = None;
                 self.confirm_vendor_uninstall = None;
                 self.confirm_delete_data = None;
             }
@@ -438,6 +516,35 @@ impl WindowsApp {
             self.notice = self.appliance_owner.open_recovery().err();
             if self.notice.is_none() {
                 self.notice = Some(strings::t("windows-recovery-starting"));
+            }
+        }
+        for (signal, action, started) in [
+            (
+                &self.restart_windows_signal,
+                LifecycleAction::Restart,
+                "windows-restart-starting",
+            ),
+            (
+                &self.suspend_windows_signal,
+                LifecycleAction::Suspend,
+                "windows-suspend-starting",
+            ),
+            (
+                &self.resume_windows_signal,
+                LifecycleAction::Resume,
+                "windows-resume-starting",
+            ),
+            (
+                &self.shutdown_windows_signal,
+                LifecycleAction::Shutdown,
+                "windows-shutdown-starting",
+            ),
+        ] {
+            if signal.replace(false) && !self.appliance_owner.busy() {
+                self.notice = self.appliance_owner.lifecycle(action).err();
+                if self.notice.is_none() {
+                    self.notice = Some(strings::t(started));
+                }
             }
         }
         if self.confirm_capsule_signal.replace(false)
@@ -531,6 +638,25 @@ impl WindowsApp {
             self.notice = self.provider.retry_install(&capsule).err();
             if self.notice.is_none() {
                 self.notice = Some(strings::t("windows-retrying"));
+            }
+        }
+        if self.escalate_to_vm_signal.replace(false)
+            && let Some(app) = self.selected_app()
+            && app.can_escalate_install_to_vm
+        {
+            let capsule = app.capsule.clone();
+            if self.confirm_escalate_to_vm.as_deref() == Some(capsule.as_str()) {
+                self.confirm_escalate_to_vm = None;
+                self.notice = self.provider.escalate_install_to_vm(&capsule).err();
+                if self.notice.is_none() {
+                    self.notice = Some(strings::t("windows-escalation-started"));
+                }
+                self.refresh();
+            } else {
+                self.confirm_escalate_to_vm = Some(capsule);
+                self.confirm_vendor_uninstall = None;
+                self.confirm_delete_data = None;
+                self.notice = Some(strings::t("windows-confirm-escalation"));
             }
         }
         if self.remove_launcher_signal.replace(false)
@@ -840,8 +966,18 @@ impl Widget for WindowsApp {
             scene,
             t,
             Point::new(sidebar.x0 + PAD, appliance_y + 20.0),
-            appliance.phase_label(),
+            appliance.next_step_label(),
             11.0,
+            theme.text_primary,
+            TextWeight::Regular,
+        );
+        Self::text(
+            tr,
+            scene,
+            t,
+            Point::new(sidebar.x0 + PAD, appliance_y + 36.0),
+            appliance.phase_label(),
+            10.0,
             theme.text_dim,
             TextWeight::Regular,
         );
@@ -850,18 +986,55 @@ impl Widget for WindowsApp {
                 tr,
                 scene,
                 t,
-                Point::new(sidebar.x0 + PAD, appliance_y + 34.0),
+                Point::new(sidebar.x0 + PAD, appliance_y + 50.0),
                 detail,
                 10.0,
                 theme.text_dim,
                 TextWeight::Regular,
             );
         }
+        // The activation state intentionally exists only in this appliance
+        // management card. A published application's launch and window
+        // chrome never receive this status or an activation reminder.
+        if appliance.is_provisioned() {
+            Self::text(
+                tr,
+                scene,
+                t,
+                Point::new(sidebar.x0 + PAD, appliance_y + 64.0),
+                &strings::t("windows-activation-status"),
+                10.0,
+                theme.text_dim,
+                TextWeight::Regular,
+            );
+            Self::text(
+                tr,
+                scene,
+                t,
+                Point::new(sidebar.x0 + PAD, appliance_y + 78.0),
+                appliance.license_label(),
+                10.0,
+                theme.text_primary,
+                TextWeight::Regular,
+            );
+            if let Some(detail) = appliance.license_detail() {
+                Self::text(
+                    tr,
+                    scene,
+                    t,
+                    Point::new(sidebar.x0 + PAD, appliance_y + 92.0),
+                    detail,
+                    9.0,
+                    theme.text_dim,
+                    TextWeight::Regular,
+                );
+            }
+        }
         Self::text(
             tr,
             scene,
             t,
-            Point::new(sidebar.x0 + PAD, appliance_y + 48.0),
+            Point::new(sidebar.x0 + PAD, appliance_y + 110.0),
             &strings::t("windows-appliance-desktop-note"),
             10.0,
             theme.text_dim,
@@ -870,9 +1043,9 @@ impl Widget for WindowsApp {
         if appliance.is_provisioned() {
             let recovery = Rect::new(
                 sidebar.x0 + PAD,
-                appliance_y + 60.0,
+                appliance_y + 122.0,
                 sidebar.x1 - PAD,
-                appliance_y + 92.0,
+                appliance_y + 154.0,
             );
             self.recovery_desktop_button.apply_layout_external(recovery);
             self.recovery_desktop_button.set_style(ButtonStyle::Neutral);
@@ -880,12 +1053,41 @@ impl Widget for WindowsApp {
                 .set_enabled(appliance.recovery_available && !self.appliance_owner.busy());
             self.recovery_desktop_button
                 .draw(scene, t, tr, theme, presence);
+            let lifecycle_y = appliance_y + 160.0;
+            let lifecycle_buttons: [(&mut Button, f64, f64); 4] = [
+                (
+                    &mut self.restart_windows_button,
+                    sidebar.x0 + PAD,
+                    lifecycle_y,
+                ),
+                (
+                    &mut self.suspend_windows_button,
+                    sidebar.x0 + PAD + 124.0,
+                    lifecycle_y,
+                ),
+                (
+                    &mut self.resume_windows_button,
+                    sidebar.x0 + PAD,
+                    lifecycle_y + 36.0,
+                ),
+                (
+                    &mut self.shutdown_windows_button,
+                    sidebar.x0 + PAD + 124.0,
+                    lifecycle_y + 36.0,
+                ),
+            ];
+            for (button, x, y) in lifecycle_buttons {
+                button.apply_layout_external(Rect::new(x, y, x + 118.0, y + 32.0));
+                button.set_style(ButtonStyle::Neutral);
+                button.set_enabled(!self.appliance_owner.busy());
+                button.draw(scene, t, tr, theme, presence);
+            }
         } else {
             let choose_iso = Rect::new(
                 sidebar.x0 + PAD,
-                appliance_y + 60.0,
+                appliance_y + 122.0,
                 sidebar.x1 - PAD,
-                appliance_y + 92.0,
+                appliance_y + 154.0,
             );
             self.choose_windows_iso_button
                 .apply_layout_external(choose_iso);
@@ -896,7 +1098,12 @@ impl Widget for WindowsApp {
             self.choose_windows_iso_button
                 .draw(scene, t, tr, theme, presence);
         }
-        let mut y = appliance_y + 108.0;
+        let mut y = appliance_y
+            + if appliance.is_provisioned() {
+                246.0
+            } else {
+                170.0
+            };
         for (index, app) in self.catalogue.apps.iter().enumerate() {
             let row = Rect::new(sidebar.x0 + 10.0, y, sidebar.x1 - 10.0, y + ROW_H - 6.0);
             if index == self.selected {
@@ -1133,7 +1340,7 @@ impl Widget for WindowsApp {
             t,
             Point::new(info.x0 + PAD, info.y0 + 16.0),
             &strings::t(if app.route == Route::Vm {
-                "windows-appliance-access"
+                "windows-shared-windows-session-access"
             } else {
                 "windows-capsule-access"
             }),
@@ -1185,8 +1392,20 @@ impl Widget for WindowsApp {
             t,
             info.x0 + PAD,
             info.y0 + 121.0,
-            &strings::t("windows-host-access"),
-            &app.access_summary(),
+            &strings::t(if app.route == Route::Vm {
+                "windows-current-shared-session-access"
+            } else {
+                "windows-host-access"
+            }),
+            &if app.route == Route::Vm && self.catalogue.vm.shared_session_active {
+                format!(
+                    "{} · {}",
+                    self.catalogue.vm.shared_session_grants.join(", "),
+                    self.catalogue.vm.shared_session_contributors.join(", ")
+                )
+            } else {
+                app.access_summary()
+            },
             theme,
         );
         Self::text(
@@ -1202,6 +1421,7 @@ impl Widget for WindowsApp {
         let manage_y = (info.y1 + 48.0).min(detail.y1 - 70.0);
         let mut manage_x = detail.x0;
         if app.can_retry_install
+            || app.can_escalate_install_to_vm
             || app.can_remove_launcher
             || app.can_vendor_uninstall
             || app.can_delete_data
@@ -1235,6 +1455,15 @@ impl Widget for WindowsApp {
             self.retry_button.set_enabled(true);
             self.retry_button.draw(scene, t, tr, theme, presence);
             manage_x += 128.0;
+        }
+        if app.can_escalate_install_to_vm {
+            let rect = Rect::new(manage_x, manage_y, manage_x + 220.0, manage_y + 32.0);
+            self.escalate_to_vm_button.apply_layout_external(rect);
+            self.escalate_to_vm_button.set_style(ButtonStyle::Primary);
+            self.escalate_to_vm_button.set_enabled(true);
+            self.escalate_to_vm_button
+                .draw(scene, t, tr, theme, presence);
+            manage_x += 230.0;
         }
         if app.can_remove_launcher {
             let rect = Rect::new(manage_x, manage_y, manage_x + 142.0, manage_y + 32.0);
@@ -1305,6 +1534,8 @@ impl Widget for WindowsApp {
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.retry_button
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        self.escalate_to_vm_button
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.remove_launcher_button
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.vendor_uninstall_button
@@ -1314,6 +1545,14 @@ impl Widget for WindowsApp {
         self.choose_windows_iso_button
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.recovery_desktop_button
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        self.restart_windows_button
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        self.suspend_windows_button
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        self.resume_windows_button
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+        self.shutdown_windows_button
             .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
         self.apply_control_signals();
         match event {
@@ -1385,6 +1624,10 @@ impl Widget for WindowsApp {
         ));
         rects.push(("windows-retry-install".into(), self.retry_button.get_rect()));
         rects.push((
+            "windows-escalate-install-to-vm".into(),
+            self.escalate_to_vm_button.get_rect(),
+        ));
+        rects.push((
             "windows-remove-launcher".into(),
             self.remove_launcher_button.get_rect(),
         ));
@@ -1404,6 +1647,22 @@ impl Widget for WindowsApp {
             "windows-open-recovery-desktop".into(),
             self.recovery_desktop_button.get_rect(),
         ));
+        rects.push((
+            "windows-restart-appliance".into(),
+            self.restart_windows_button.get_rect(),
+        ));
+        rects.push((
+            "windows-suspend-appliance".into(),
+            self.suspend_windows_button.get_rect(),
+        ));
+        rects.push((
+            "windows-resume-appliance".into(),
+            self.resume_windows_button.get_rect(),
+        ));
+        rects.push((
+            "windows-shutdown-appliance".into(),
+            self.shutdown_windows_button.get_rect(),
+        ));
         rects
     }
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1420,11 +1679,16 @@ impl Widget for WindowsApp {
         children.push(&self.confirm_vm_install_button);
         children.push(&self.publish_vm_candidate_button);
         children.push(&self.retry_button);
+        children.push(&self.escalate_to_vm_button);
         children.push(&self.remove_launcher_button);
         children.push(&self.vendor_uninstall_button);
         children.push(&self.delete_data_button);
         children.push(&self.choose_windows_iso_button);
         children.push(&self.recovery_desktop_button);
+        children.push(&self.restart_windows_button);
+        children.push(&self.suspend_windows_button);
+        children.push(&self.resume_windows_button);
+        children.push(&self.shutdown_windows_button);
         children
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -1441,11 +1705,16 @@ impl Widget for WindowsApp {
         children.push(&mut self.confirm_vm_install_button);
         children.push(&mut self.publish_vm_candidate_button);
         children.push(&mut self.retry_button);
+        children.push(&mut self.escalate_to_vm_button);
         children.push(&mut self.remove_launcher_button);
         children.push(&mut self.vendor_uninstall_button);
         children.push(&mut self.delete_data_button);
         children.push(&mut self.choose_windows_iso_button);
         children.push(&mut self.recovery_desktop_button);
+        children.push(&mut self.restart_windows_button);
+        children.push(&mut self.suspend_windows_button);
+        children.push(&mut self.resume_windows_button);
+        children.push(&mut self.shutdown_windows_button);
         children
     }
 }
@@ -1503,6 +1772,10 @@ mod tests {
 
         fn retry_install(&mut self, capsule_id: &str) -> Result<(), String> {
             self.inner.retry_install(capsule_id)
+        }
+
+        fn escalate_install_to_vm(&mut self, capsule_id: &str) -> Result<(), String> {
+            self.inner.escalate_install_to_vm(capsule_id)
         }
 
         fn remove_launcher(&mut self, app_id: &str) -> Result<(), String> {
@@ -1596,11 +1869,16 @@ mod tests {
                 "windows-install-windows-appliance",
                 "windows-publish-vm-candidate",
                 "windows-retry-install",
+                "windows-escalate-install-to-vm",
                 "windows-remove-launcher",
                 "windows-vendor-uninstall",
                 "windows-delete-data",
                 "windows-choose-windows-iso",
                 "windows-open-recovery-desktop",
+                "windows-restart-appliance",
+                "windows-suspend-appliance",
+                "windows-resume-appliance",
+                "windows-shutdown-appliance",
             ]
         );
     }
@@ -1651,6 +1929,29 @@ mod tests {
     }
 
     #[test]
+    fn escalation_to_the_shared_windows_appliance_requires_a_second_click() {
+        let mut app = WindowsApp::new_offline();
+        let capsule = app.catalogue.apps[0].capsule.clone();
+        app.catalogue.apps[0].can_escalate_install_to_vm = true;
+
+        app.escalate_to_vm_signal.set(true);
+        app.apply_control_signals();
+        assert_eq!(
+            app.confirm_escalate_to_vm.as_deref(),
+            Some(capsule.as_str())
+        );
+        assert_eq!(app.catalogue.apps[0].status, crate::model::AppStatus::Ready);
+
+        app.escalate_to_vm_signal.set(true);
+        app.apply_control_signals();
+        assert_eq!(
+            app.catalogue.apps[0].status,
+            crate::model::AppStatus::Installing
+        );
+        assert!(!app.catalogue.apps[0].can_escalate_install_to_vm);
+    }
+
+    #[test]
     fn changing_selection_deactivates_controls_that_are_not_drawn_for_the_new_app() {
         let mut app = WindowsApp::new_offline();
         // Simulate the first row having been painted with every conditional
@@ -1662,23 +1963,34 @@ mod tests {
         app.launch_button.set_enabled(true);
         app.vm_fallback_button.set_enabled(true);
         app.retry_button.set_enabled(true);
+        app.escalate_to_vm_button.set_enabled(true);
         app.remove_launcher_button.set_enabled(true);
         app.vendor_uninstall_button.set_enabled(true);
         app.delete_data_button.set_enabled(true);
+        app.restart_windows_button.set_enabled(true);
+        app.suspend_windows_button.set_enabled(true);
+        app.resume_windows_button.set_enabled(true);
+        app.shutdown_windows_button.set_enabled(true);
         app.route_signal.set(Some(Route::Wine));
         app.reset_signal.set(true);
         app.launch_signal.set(true);
         app.vm_fallback_signal.set(true);
         app.retry_signal.set(true);
+        app.escalate_to_vm_signal.set(true);
         app.remove_launcher_signal.set(true);
         app.vendor_uninstall_signal.set(true);
         app.delete_data_signal.set(true);
+        app.restart_windows_signal.set(true);
+        app.suspend_windows_signal.set(true);
+        app.resume_windows_signal.set(true);
+        app.shutdown_windows_signal.set(true);
 
         let next = &mut app.catalogue.apps[1];
         next.route_override_available = false;
         next.launch_available = false;
         next.vm_fallback_available = false;
         next.can_retry_install = false;
+        next.can_escalate_install_to_vm = false;
         next.can_remove_launcher = false;
         next.can_vendor_uninstall = false;
         next.can_delete_data = false;
@@ -1689,16 +2001,26 @@ mod tests {
         assert!(!app.launch_button.is_enabled());
         assert!(!app.vm_fallback_button.is_enabled());
         assert!(!app.retry_button.is_enabled());
+        assert!(!app.escalate_to_vm_button.is_enabled());
         assert!(!app.remove_launcher_button.is_enabled());
         assert!(!app.vendor_uninstall_button.is_enabled());
         assert!(!app.delete_data_button.is_enabled());
+        assert!(!app.restart_windows_button.is_enabled());
+        assert!(!app.suspend_windows_button.is_enabled());
+        assert!(!app.resume_windows_button.is_enabled());
+        assert!(!app.shutdown_windows_button.is_enabled());
         assert_eq!(app.route_signal.get(), None);
         assert!(!app.reset_signal.get());
         assert!(!app.launch_signal.get());
         assert!(!app.vm_fallback_signal.get());
         assert!(!app.retry_signal.get());
+        assert!(!app.escalate_to_vm_signal.get());
         assert!(!app.remove_launcher_signal.get());
         assert!(!app.vendor_uninstall_signal.get());
         assert!(!app.delete_data_signal.get());
+        assert!(!app.restart_windows_signal.get());
+        assert!(!app.suspend_windows_signal.get());
+        assert!(!app.resume_windows_signal.get());
+        assert!(!app.shutdown_windows_signal.get());
     }
 }
