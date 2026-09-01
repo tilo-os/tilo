@@ -43,4 +43,34 @@
     <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/qos-windows-owner</annotate>
     <annotate key="org.freedesktop.policykit.exec.argv1">consume-recovery</annotate>
   </action>
+
+  <action id="org.qos.windows.lifecycle">
+    <description>Manage the Windows compatibility appliance</description>
+    <message>Authentication is required to manage the Windows compatibility appliance.</message>
+    <defaults>
+      <allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/qos-windows-owner</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">lifecycle</annotate>
+  </action>
+
+  <action id="org.qos.windows.egress-open">
+    <description>Temporarily allow Windows activation or updates</description>
+    <message>Authentication is required to temporarily connect Windows to the internet.</message>
+    <defaults>
+      <allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/qos-windows-owner</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">egress-open</annotate>
+  </action>
+
+  <action id="org.qos.windows.egress-close">
+    <description>Close the temporary Windows internet connection</description>
+    <message>Authentication is required to close the Windows internet connection.</message>
+    <defaults>
+      <allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/qos-windows-owner</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">egress-close</annotate>
+  </action>
 </policyconfig>
