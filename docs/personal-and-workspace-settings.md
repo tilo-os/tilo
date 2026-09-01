@@ -48,10 +48,14 @@ type. Workspace Settings contains two explicitly labelled columns:
 ## Collaboration and authority
 
 Workspace Settings never constructs a shareable URL from a stable workspace
-identifier. Its General pane opens the signed invite composer, where the owner
-chooses a recipient role and receives a one-hour token binding the room,
-inviter address, role, expiry, and device identity. A guest copy shows this
-control disabled because a locally generated token would not be authoritative.
+identifier. Its General pane opens the signed invite composer, where a
+governing administrator chooses a recipient role and receives a one-hour token
+binding the room, inviter address, role, expiry, and device identity. A guest
+copy shows this control disabled because a locally generated token would not be
+authoritative.
+Each redemption is correlated with that exact signed token, so several pending
+invitations retain their own recipient labels and roles regardless of arrival
+order.
 
 The same rule applies to every collaborative setting: the local tree must be
 the room's pinned governance authority and the acting person must hold live

@@ -92,8 +92,10 @@ const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingIdentityAdmission {
+    room: crate::shell::state::RoomId,
     name: String,
     role: crate::network::invite::InviteRole,
+    expiry_unix_seconds: u64,
 }
 
 /// Shell-side handle for the peer-sync subsystem. Owns the tokio
@@ -138,18 +140,14 @@ pub struct ShellNetwork {
     /// Production is fail-closed until a peer presents `IdentityHello`.
     /// The in-process test bridge disables this because it has no Iroh actor.
     require_peer_identity: bool,
-    /// Names this machine has promised to whoever redeems the invite it
-    /// last minted for a room, keyed by that room — held here rather
-    /// than in the token because the token is a bearer credential that
-    /// crosses machines, so a name inside it would be a name its
-    /// *holder* presents, which `apply_room_changes` refuses.
-    /// [`Self::name_invitee_on_arrival`] writes it once the invitee's
-    /// `PeerId` is known.
-    pending_invitees: Mutex<std::collections::HashMap<crate::shell::state::RoomId, String>>,
-    /// Invite redemptions awaiting a certificate-bearing person principal.
-    /// Unlike the display-name map, unnamed invites also enter this table.
+    /// Exact signed invitations awaiting a certificate-bearing person.
+    /// Keying by the invite hash permits concurrent invites without letting
+    /// one bearer receive another invite's name or role.
     pending_identity_admissions:
-        Mutex<std::collections::HashMap<crate::shell::state::RoomId, PendingIdentityAdmission>>,
+        Mutex<std::collections::HashMap<[u8; 32], PendingIdentityAdmission>>,
+    /// Invite ids this guest must attach to anti-entropy requests until the
+    /// authority's first governance response proves redemption completed.
+    pending_redemptions: Mutex<std::collections::HashMap<crate::shell::state::RoomId, [u8; 32]>>,
     /// Inbound presence updates pushed by [`Self::tick`], drained by the
     /// shell's frame-tick into `PresenceCtx::remote_cursors`.
     inbound_presence: Arc<Mutex<Vec<InboundPresence>>>,
@@ -375,8 +373,8 @@ impl ShellNetwork {
             last_sync_kick: Mutex::new(None),
             peer_identities: PeerIdentityStore::new(),
             require_peer_identity: true,
-            pending_invitees: Mutex::new(std::collections::HashMap::new()),
             pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
+            pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
@@ -465,7 +463,20 @@ impl ShellNetwork {
         true
     }
 
-    fn publish_message(&self, msg: NeighbourMsg) -> bool {
+    fn publish_message(&self, mut msg: NeighbourMsg) -> bool {
+        if let NeighbourMsg::SyncReq {
+            room, invite_id, ..
+        } = &mut msg
+            && invite_id.is_none()
+            && let Some(room_id) = RoomId::parse(room)
+            && let Some(redemption) = self
+                .pending_redemptions
+                .lock()
+                .ok()
+                .and_then(|pending| pending.get(&room_id).copied())
+        {
+            *invite_id = Some(redemption);
+        }
         let ws = self.topic_for_message(&msg);
         self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok()
     }
@@ -786,9 +797,8 @@ impl ShellNetwork {
     }
 
     /// [`Self::issue_invite`], for a person this machine will name.
-    /// `invitee` does not go into the token (see
-    /// [`Self::pending_invitees`]) and is held until that peer turns up.
-    /// A second invite for a room replaces the name waiting on it.
+    /// The name remains authority-side and is correlated with the exact
+    /// signed invite when it is redeemed.
     ///
     /// # Errors
     ///
@@ -844,7 +854,9 @@ impl ShellNetwork {
                     crate::shell::state::Verb::Invite,
                 )
             {
-                return Err("only this workspace's governing owner can create invitations".into());
+                return Err(
+                    "only a governing workspace administrator can create invitations".into(),
+                );
             }
             ws.clone()
         };
@@ -883,76 +895,22 @@ impl ShellNetwork {
         }
         self.join_topic(room_topic_id(room));
 
-        // And park the invitee's name against the room, for
-        // `name_invitee_on_arrival` to write when they turn up.
         let invitee = invitee.map(str::trim).filter(|name| !name.is_empty());
-        if let Some(invitee) = invitee
-            && let Ok(mut pending) = self.pending_invitees.lock()
-        {
-            pending.insert(room, invitee.to_string());
-        }
-        if let Ok(mut pending) = self.pending_identity_admissions.lock() {
-            pending.insert(
-                room,
+        let parsed = crate::network::invite::validate_invite_token(&token)?;
+        let invite_id = crate::network::invite::invite_id(&token);
+        self.pending_identity_admissions
+            .lock()
+            .map_err(|_| "invite admission state is unavailable".to_string())?
+            .insert(
+                invite_id,
                 PendingIdentityAdmission {
+                    room,
                     name: invitee.unwrap_or("Member").to_string(),
                     role,
+                    expiry_unix_seconds: parsed.expiry_unix_seconds,
                 },
             );
-        }
         Ok(token)
-    }
-
-    /// Name the peer that just redeemed this room's invite. `peer` is
-    /// the *authenticated* author — gossip runs
-    /// `MessageAuthenticity::Signed` with `ValidationMode::Strict`, so
-    /// it signed what arrived rather than merely forwarding it.
-    ///
-    /// Three guards close off naming the wrong person: never this
-    /// machine, never a peer the room has already named, and only if
-    /// `name_peer` accepts the write. The pending name is consumed by
-    /// the first peer to redeem it, so a second arrival keeps its own id.
-    fn name_invitee_on_arrival(&self, peer: &iroh::EndpointId, room: &str) {
-        if *peer == self.local_peer_id {
-            return;
-        }
-        let Some(room) = crate::shell::state::RoomId::parse(room) else {
-            return;
-        };
-        let Ok(mut pending) = self.pending_invitees.lock() else {
-            return;
-        };
-        let Some(name) = pending.get(&room).cloned() else {
-            return;
-        };
-        let endpoint_id = peer.to_string();
-        let Ok(replica) = self.replica.lock() else {
-            return;
-        };
-        let mut tree = replica.tree.write();
-        if let Some(existing) = tree
-            .room_peer_names
-            .get(&room)
-            .and_then(|n| n.get(&endpoint_id))
-        {
-            // Already named — but if it's the name that was waiting,
-            // this is the peer the invite was for. Spend the pending
-            // copy rather than leave it lying around.
-            if existing == &name {
-                pending.remove(&room);
-            }
-            return;
-        }
-        let me = crate::shell::state::local_user_id();
-        if tree.name_peer(room, &me, &endpoint_id, &name) {
-            tracing::info!(
-                peer = %endpoint_id,
-                %name,
-                %room,
-                "peer-sync: named the invitee that arrived"
-            );
-            pending.remove(&room);
-        }
     }
 
     /// Accept an invite token into `local`, then immediately ask the
@@ -985,6 +943,9 @@ impl ShellNetwork {
         // `validate_invite_token` already ran inside `accept_invite_into`,
         // so re-reading the token here cannot let an unverified address through.
         if let Ok(parsed) = crate::network::invite::validate_invite_token(token) {
+            if let Ok(mut pending) = self.pending_redemptions.lock() {
+                pending.insert(room, crate::network::invite::invite_id(token));
+            }
             let _ = self.cmd_tx.try_send(NetCmd::Connect {
                 addr: parsed.owner_addr,
             });
@@ -1151,12 +1112,28 @@ impl ShellNetwork {
             tracing::warn!(peer = %peer, "dropping collaboration message from an unauthenticated device");
             return;
         }
+        if self.require_peer_identity
+            && let Some(claimed_peer) = Self::claimed_publisher(&msg)
+            && claimed_peer != crate::network::behaviour::peer_liveness_handle(&peer)
+        {
+            tracing::warn!(
+                peer = %peer,
+                claimed_peer,
+                "dropping collaboration message whose session identity does not match its authenticated transport"
+            );
+            return;
+        }
+        if self.require_peer_identity
+            && let NeighbourMsg::SyncReq {
+                invite_id: Some(invite_id),
+                ..
+            } = &msg
+            && let Some(identity) = self.peer_identities.get(&origin)
+        {
+            self.redeem_invited_identity(ws, *invite_id, &peer, &identity.device_cert);
+        }
         if self.require_peer_identity && !matches!(&msg, NeighbourMsg::IdentityHello { .. }) {
-            let required = if matches!(&msg, NeighbourMsg::SyncResp { .. }) {
-                crate::shell::state::Verb::Write
-            } else {
-                crate::shell::state::Verb::Read
-            };
+            let required = Self::required_room_verb(&msg);
             let pinned_authority_may_bootstrap = matches!(&msg, NeighbourMsg::SyncResp { .. });
             if !self.peer_room_allows(&origin, ws, required, pinned_authority_may_bootstrap) {
                 tracing::warn!(
@@ -1167,6 +1144,12 @@ impl ShellNetwork {
                 );
                 return;
             }
+        }
+        if let NeighbourMsg::SyncResp { room, .. } = &msg
+            && let Some(room) = RoomId::parse(room)
+            && let Ok(mut pending) = self.pending_redemptions.lock()
+        {
+            pending.remove(&room);
         }
         match msg {
             // Ephemeral overlay state, not CRDT state — skips the replica entirely.
@@ -1225,6 +1208,49 @@ impl ShellNetwork {
                 ops.into_iter().map(|op| *op).collect(),
             ),
             other => self.dispatch_to_replica(peer, &other),
+        }
+    }
+
+    /// Return the session handle a message claims as its publisher.
+    ///
+    /// These fields are routing conveniences, not identities. Production
+    /// receive paths bind them to the authenticated Iroh endpoint before any
+    /// cursor, input, stream, app-presence, or scrollback state is accepted.
+    /// `PermissionGrant.peer` is deliberately excluded because it names the
+    /// grant's recipient rather than its publisher.
+    fn claimed_publisher(msg: &NeighbourMsg) -> Option<u64> {
+        match msg {
+            NeighbourMsg::PresenceMoved { peer, .. }
+            | NeighbourMsg::PresenceCleared { peer, .. }
+            | NeighbourMsg::RemoteInput { peer, .. }
+            | NeighbourMsg::PermissionRequest { peer, .. }
+            | NeighbourMsg::Heartbeat { peer, .. }
+            | NeighbourMsg::AppDocument { peer, .. }
+            | NeighbourMsg::AppPresenceV2 { peer, .. } => Some(*peer),
+            NeighbourMsg::SurfaceStreamStart { source_peer, .. }
+            | NeighbourMsg::SurfaceStreamEnd { source_peer, .. }
+            | NeighbourMsg::SurfaceFrame { source_peer, .. } => Some(*source_peer),
+            NeighbourMsg::ScrollbackRequest { requester, .. } => Some(*requester),
+            NeighbourMsg::ScrollbackResponse { responder, .. } => Some(*responder),
+            NeighbourMsg::SyncReq { .. }
+            | NeighbourMsg::SyncResp { .. }
+            | NeighbourMsg::PermissionGrant { .. }
+            | NeighbourMsg::IdentityHello { .. } => None,
+        }
+    }
+
+    /// Workspace capability required before variant-specific validation.
+    /// Publishing media, injecting input, granting control, and changing room
+    /// state are active collaboration actions and never ride on read access.
+    fn required_room_verb(msg: &NeighbourMsg) -> crate::shell::state::Verb {
+        match msg {
+            NeighbourMsg::SyncResp { .. }
+            | NeighbourMsg::SurfaceFrame { .. }
+            | NeighbourMsg::SurfaceStreamStart { .. }
+            | NeighbourMsg::SurfaceStreamEnd { .. }
+            | NeighbourMsg::RemoteInput { .. }
+            | NeighbourMsg::PermissionGrant { .. } => crate::shell::state::Verb::Write,
+            _ => crate::shell::state::Verb::Read,
         }
     }
 
@@ -1336,12 +1362,9 @@ impl ShellNetwork {
     /// Every [`NeighbourMsg`] variant not special-cased in
     /// [`Self::dispatch_neighbour_msg`] (`SyncReq`, `SyncResp`, ...)
     /// replicates through the shell-tree replica. `SyncReq`
-    /// additionally names the peer redeeming an invite before the
+    /// additionally carries an invite id which is redeemed before the
     /// replica answers, so roster and reply land together.
     fn dispatch_to_replica(&self, peer: iroh::EndpointId, msg: &NeighbourMsg) {
-        if let NeighbourMsg::SyncReq { room, .. } = msg {
-            self.name_invitee_on_arrival(&peer, room);
-        }
         // A poisoned replica lock here just drops this one message
         // rather than panicking the whole compositor.
         let Ok(mut rep) = self.replica.lock() else {
@@ -1408,7 +1431,6 @@ impl ShellNetwork {
             user = %hex::encode(cert.user_public_key),
             "accepted collaboration device identity"
         );
-        self.admit_invited_identity(workspace_topic, peer, cert);
         // The initial SyncReq can race ahead of the identity hello and is
         // intentionally dropped. Re-kick anti-entropy after trust is
         // established so joining never waits for another topology event.
@@ -1417,9 +1439,10 @@ impl ShellNetwork {
         }
     }
 
-    fn admit_invited_identity(
+    fn redeem_invited_identity(
         &self,
         workspace_topic: u64,
+        invite_id: [u8; 32],
         peer: &iroh::EndpointId,
         cert: &qos_user_identity::DeviceCert,
     ) {
@@ -1436,8 +1459,17 @@ impl ShellNetwork {
             .pending_identity_admissions
             .lock()
             .ok()
-            .and_then(|pending| pending.get(&room).cloned());
+            .and_then(|pending| pending.get(&invite_id).cloned());
         let Some(admission) = admission else { return };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        if admission.room != room || admission.expiry_unix_seconds < now {
+            if let Ok(mut pending) = self.pending_identity_admissions.lock() {
+                pending.remove(&invite_id);
+            }
+            return;
+        }
         let collab_types::caps::Principal::Person(person) =
             collab_types::caps::Principal::person_from_key(
                 collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
@@ -1494,7 +1526,7 @@ impl ShellNetwork {
         tree.flush_to_disk();
         drop(tree);
         if let Ok(mut pending) = self.pending_identity_admissions.lock() {
-            pending.remove(&room);
+            pending.remove(&invite_id);
         }
         tracing::info!(
             room = %room,
@@ -1688,8 +1720,8 @@ pub(crate) fn shell_network_for_test(
         last_sync_kick: Mutex::new(None),
         peer_identities: PeerIdentityStore::new(),
         require_peer_identity: false,
-        pending_invitees: Mutex::new(std::collections::HashMap::new()),
         pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
+        pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
@@ -1704,8 +1736,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn live_session_claims_are_identified_before_dispatch() {
+        assert_eq!(
+            ShellNetwork::claimed_publisher(&NeighbourMsg::PresenceCleared {
+                peer: 41,
+                key: "cursor".into(),
+            }),
+            Some(41),
+        );
+        assert_eq!(
+            ShellNetwork::required_room_verb(&NeighbourMsg::RemoteInput {
+                peer: 42,
+                surface: 7,
+                event: Vec::new(),
+            }),
+            crate::shell::state::Verb::Write,
+        );
+        assert_eq!(
+            ShellNetwork::required_room_verb(&NeighbourMsg::PermissionRequest {
+                peer: 42,
+                capability: "remote-input".into(),
+            }),
+            crate::shell::state::Verb::Read,
+        );
+        assert_eq!(
+            ShellNetwork::claimed_publisher(&NeighbourMsg::RemoteInput {
+                peer: 42,
+                surface: 7,
+                event: Vec::new(),
+            }),
+            Some(42),
+        );
+        assert_eq!(
+            ShellNetwork::claimed_publisher(&NeighbourMsg::ScrollbackRequest {
+                artifact: collab_types::ArtifactId::new(),
+                before_seq: 10,
+                max: 5,
+                requester: 43,
+            }),
+            Some(43),
+        );
+        assert_eq!(
+            ShellNetwork::claimed_publisher(&NeighbourMsg::PermissionGrant {
+                peer: 44,
+                capability: "remote-input".into(),
+            }),
+            None,
+            "a grant names its recipient, so it must not be mistaken for a publisher claim",
+        );
+    }
+
+    #[test]
     #[serial_test::serial(identity_env)]
-    fn identity_hello_redeems_invite_as_editor_and_revocation_removes_trust() {
+    fn exact_invite_redeems_as_editor_and_revocation_removes_trust() {
         use qos_user_identity::{
             DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
             sign_revocation_entry,
@@ -1733,20 +1816,75 @@ mod tests {
         workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
-        let (net, _commands) = shell_network_for_test(tree.shared(), 99);
+        let (mut net, _commands) = shell_network_for_test(tree.shared(), 99);
+        net.require_peer_identity = true;
         net.pending_identity_admissions
             .lock()
             .expect("pending")
             .insert(
-                room,
+                [1; 32],
                 PendingIdentityAdmission {
+                    room,
                     name: "Ada".into(),
                     role: crate::network::invite::InviteRole::Editor,
+                    expiry_unix_seconds: u64::MAX,
                 },
             );
 
         let origin = crate::shell::state::PeerOrigin::peer(&device.public());
-        net.accept_identity_hello(room_topic_id(room), &origin, &device.public(), &cert, &[]);
+        net.event_tx
+            .try_send(NetEvent::Msg {
+                ws: room_topic_id(room),
+                peer: device.public(),
+                msg: NeighbourMsg::IdentityHello {
+                    cert: Box::new(cert.clone()),
+                    revocations: Vec::new(),
+                },
+            })
+            .expect("identity hello");
+        net.tick();
+        assert!(
+            !net.peer_room_allows(
+                &origin,
+                room_topic_id(room),
+                crate::shell::state::Verb::Read,
+                false,
+            ),
+            "identity authentication alone must not consume an outstanding invite",
+        );
+        net.event_tx
+            .try_send(NetEvent::Msg {
+                ws: room_topic_id(room),
+                peer: device.public(),
+                msg: NeighbourMsg::SyncReq {
+                    since: Vec::new(),
+                    room: room.to_string(),
+                    invite_id: Some([99; 32]),
+                },
+            })
+            .expect("wrong invite redemption");
+        net.tick();
+        assert!(
+            !net.peer_room_allows(
+                &origin,
+                room_topic_id(room),
+                crate::shell::state::Verb::Read,
+                false,
+            ),
+            "a different invite hash must not grant room membership",
+        );
+        net.event_tx
+            .try_send(NetEvent::Msg {
+                ws: room_topic_id(room),
+                peer: device.public(),
+                msg: NeighbourMsg::SyncReq {
+                    since: Vec::new(),
+                    room: room.to_string(),
+                    invite_id: Some([1; 32]),
+                },
+            })
+            .expect("exact invite redemption");
+        net.tick();
         let collab_types::caps::Principal::Person(person) =
             collab_types::caps::Principal::person_from_key(
                 collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
@@ -1962,15 +2100,18 @@ mod tests {
             .lock()
             .expect("pending")
             .insert(
-                room,
+                [2; 32],
                 PendingIdentityAdmission {
+                    room,
                     name: "Vi".into(),
                     role: crate::network::invite::InviteRole::Viewer,
+                    expiry_unix_seconds: u64::MAX,
                 },
             );
 
         let origin = crate::shell::state::PeerOrigin::peer(&device.public());
         net.accept_identity_hello(room_topic_id(room), &origin, &device.public(), &cert, &[]);
+        net.redeem_invited_identity(room_topic_id(room), [2; 32], &device.public(), &cert);
         let collab_types::caps::Principal::Person(person) =
             collab_types::caps::Principal::person_from_key(
                 collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
@@ -2120,82 +2261,95 @@ mod tests {
             .cloned()
     }
 
-    /// The name the inviter typed reaches the room document only once
-    /// the person it was for turns up, when there's an identity to
-    /// attach it to.
     #[test]
-    fn the_invitee_is_named_when_they_ask_this_room_for_its_document() {
+    fn concurrent_invites_redeem_their_own_names_and_roles() {
+        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+
         let (_tmp, tree, net, rooms) = net_with_rooms();
         let room = rooms[0];
-        net.pending_invitees
-            .lock()
-            .unwrap()
-            .insert(room, "Xaver".to_string());
+        let make_guest = |seed: u8, label: &str| {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+            let device = iroh::SecretKey::from_bytes(&[seed.saturating_add(1); 32]);
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: *device.public().as_bytes(),
+                device_label: label.into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut cert, &root).expect("certificate");
+            (device, cert)
+        };
+        let (viewer_device, viewer_cert) = make_guest(31, "Viewer device");
+        let (editor_device, editor_cert) = make_guest(41, "Editor device");
+        net.pending_identity_admissions.lock().unwrap().extend([
+            (
+                [11; 32],
+                PendingIdentityAdmission {
+                    room,
+                    name: "Vera".into(),
+                    role: crate::network::invite::InviteRole::Viewer,
+                    expiry_unix_seconds: u64::MAX,
+                },
+            ),
+            (
+                [12; 32],
+                PendingIdentityAdmission {
+                    room,
+                    name: "Eli".into(),
+                    role: crate::network::invite::InviteRole::Editor,
+                    expiry_unix_seconds: u64::MAX,
+                },
+            ),
+        ]);
 
-        let guest = iroh::SecretKey::generate().public();
-        assert_eq!(name_in(&tree, room, &guest), None, "nobody is named yet");
-        net.name_invitee_on_arrival(&guest, &room.to_string());
+        net.redeem_invited_identity(
+            room_topic_id(room),
+            [12; 32],
+            &editor_device.public(),
+            &editor_cert,
+        );
+        net.redeem_invited_identity(
+            room_topic_id(room),
+            [11; 32],
+            &viewer_device.public(),
+            &viewer_cert,
+        );
+
+        let workspace = tree
+            .read()
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .cloned()
+            .expect("workspace");
+        let person = |cert: &DeviceCert| {
+            let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
+                collab_types::Ed25519PublicKey::from_bytes(cert.user_public_key),
+            ) else {
+                unreachable!()
+            };
+            person
+        };
         assert_eq!(
-            name_in(&tree, room, &guest).as_deref(),
-            Some("Xaver"),
-            "the room's own authority recorded the name the inviter gave"
+            workspace.role_of(&person(&viewer_cert)),
+            Some(crate::shell::state::CapRole::Viewer),
         );
-
-        let stranger = iroh::SecretKey::generate().public();
-        net.name_invitee_on_arrival(&stranger, &room.to_string());
         assert_eq!(
-            name_in(&tree, room, &stranger),
-            None,
-            "a name belongs to one person, and it was already given"
+            workspace.role_of(&person(&editor_cert)),
+            Some(crate::shell::state::CapRole::Editor),
         );
-    }
-
-    /// A name waiting on one room is not a name for another.
-    #[test]
-    fn a_pending_name_does_not_leak_into_another_room() {
-        let (_tmp, tree, net, rooms) = net_with_rooms();
-        net.pending_invitees
-            .lock()
-            .unwrap()
-            .insert(rooms[0], "Xaver".to_string());
-
-        let guest = iroh::SecretKey::generate().public();
-        net.name_invitee_on_arrival(&guest, &rooms[1].to_string());
-        assert_eq!(name_in(&tree, rooms[1], &guest), None);
         assert_eq!(
-            name_in(&tree, rooms[0], &guest),
-            None,
-            "asking about another room does not redeem this one's invite"
+            name_in(&tree, room, &viewer_device.public()).as_deref(),
+            Some("Vera"),
         );
-        assert!(
-            net.pending_invitees.lock().unwrap().contains_key(&rooms[0]),
-            "and the name is still waiting for whoever actually redeems it"
-        );
-    }
-
-    /// Nobody invites themselves, and nothing unparseable is a room.
-    #[test]
-    fn arrival_naming_refuses_this_machine_and_nonsense_rooms() {
-        let (_tmp, tree, net, rooms) = net_with_rooms();
-        let room = rooms[0];
-        net.pending_invitees
-            .lock()
-            .unwrap()
-            .insert(room, "Xaver".to_string());
-
-        let me = net.local_peer_id;
-        net.name_invitee_on_arrival(&me, &room.to_string());
         assert_eq!(
-            name_in(&tree, room, &me),
-            None,
-            "this machine's own sync request is not somebody arriving"
+            name_in(&tree, room, &editor_device.public()).as_deref(),
+            Some("Eli"),
         );
-
-        net.name_invitee_on_arrival(&iroh::SecretKey::generate().public(), "not-a-room");
-        assert!(
-            net.pending_invitees.lock().unwrap().contains_key(&room),
-            "a room id that does not parse names nothing and spends nothing"
-        );
+        assert!(net.pending_identity_admissions.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -2328,10 +2482,12 @@ mod tests {
             .lock()
             .expect("pending admission")
             .insert(
-                our_room,
+                [3; 32],
                 PendingIdentityAdmission {
+                    room: our_room,
                     name: "Peer".into(),
                     role: crate::network::invite::InviteRole::Editor,
+                    expiry_unix_seconds: u64::MAX,
                 },
             );
         net.event_tx
@@ -2339,12 +2495,13 @@ mod tests {
                 ws: room_topic_id(our_room),
                 peer: device.public(),
                 msg: NeighbourMsg::IdentityHello {
-                    cert: Box::new(cert),
+                    cert: Box::new(cert.clone()),
                     revocations: Vec::new(),
                 },
             })
             .expect("queue identity proof");
         net.tick();
+        net.redeem_invited_identity(room_topic_id(our_room), [3; 32], &device.public(), &cert);
 
         let stranger_room = crate::shell::state::RoomId::new();
         assert_ne!(stranger_room, our_room);
@@ -2452,11 +2609,20 @@ mod tests {
             NetCmd::Publish { ws, msg } => {
                 assert_eq!(ws, room_topic_id(host_room));
                 match msg {
-                    NeighbourMsg::SyncReq { room, .. } => assert_eq!(
-                        room,
-                        host_room.to_string(),
-                        "the request must name the room just joined",
-                    ),
+                    NeighbourMsg::SyncReq {
+                        room, invite_id, ..
+                    } => {
+                        assert_eq!(
+                            room,
+                            host_room.to_string(),
+                            "the request must name the room just joined",
+                        );
+                        assert_eq!(
+                            invite_id,
+                            Some(crate::network::invite::invite_id(&token)),
+                            "admission must redeem this exact signed invite",
+                        );
+                    }
                     other => panic!("expected a SyncReq, got {other:?}"),
                 }
             }
@@ -2495,10 +2661,7 @@ mod tests {
                 crate::network::invite::InviteRole::Editor,
             )
             .expect_err("a guest must not sign invites for somebody else's room");
-        assert!(
-            error.contains("governing owner"),
-            "unexpected error: {error}"
-        );
+        assert!(error.contains("governing workspace administrator"));
     }
 
     /// A token that does not verify joins nothing and asks nothing.
