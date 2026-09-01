@@ -472,6 +472,8 @@ enum ComponentTemplateArg {
     List,
     /// Source-agnostic sparse table with app-defined columns and cells.
     Table,
+    /// Styled text with polygon flow or a custom layout engine.
+    Text,
 }
 
 fn main() -> ExitCode {
@@ -640,6 +642,7 @@ fn run_add(args: AddArgs) -> Result<()> {
                     ComponentTemplateArg::Tree => qos_dev::ComponentTemplate::Tree,
                     ComponentTemplateArg::List => qos_dev::ComponentTemplate::List,
                     ComponentTemplateArg::Table => qos_dev::ComponentTemplate::Table,
+                    ComponentTemplateArg::Text => qos_dev::ComponentTemplate::Text,
                 },
             },
             options,
@@ -1077,6 +1080,29 @@ mod tests {
             Command::Add(AddArgs {
                 command: Some(AddCommand::Component {
                     template: ComponentTemplateArg::Table,
+                    ..
+                })
+            })
+        ));
+    }
+
+    #[test]
+    fn add_command_exposes_the_advanced_text_template() {
+        let cli = Cli::try_parse_from([
+            "qos-dev",
+            "add",
+            "component",
+            "article-body",
+            "--template",
+            "text",
+        ])
+        .expect("text component command");
+
+        assert!(matches!(
+            cli.command,
+            Command::Add(AddArgs {
+                command: Some(AddCommand::Component {
+                    template: ComponentTemplateArg::Text,
                     ..
                 })
             })
