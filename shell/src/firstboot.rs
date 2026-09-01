@@ -304,6 +304,10 @@ fn claim_device_owner(path: &Path, root_public: &[u8; 32]) -> io::Result<bool> {
 
     match claim {
         Ok(()) => {
+            // `hard_link` made the complete, synced file visible.  Sync its
+            // parent before treating the election as successful, so the
+            // winner's directory entry survives a sudden power loss.
+            fs::File::open(parent)?.sync_all()?;
             // Validate our own published winner too: a filesystem anomaly or
             // future refactor must fail closed instead of issuing a legacy
             // certificate against an unverified owner record.
@@ -676,6 +680,62 @@ mod tests {
                 .verifying_key()
                 .to_bytes()
         );
+    }
+
+    #[test]
+    fn simultaneous_user_provisioning_builds_one_consistent_device_chain() {
+        let tmp = TmpDir::new("simultaneous-user-provisioning");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+        let alice = tmp.path().join("alice/qos/identity");
+        let bob = tmp.path().join("bob/qos/identity");
+        ensure_primary_identity(&alice).expect("seed alice identity");
+        ensure_primary_identity(&bob).expect("seed bob identity");
+
+        let start = Arc::new(Barrier::new(3));
+        let alice_start = Arc::clone(&start);
+        let alice_paths = paths.clone();
+        let alice_dir = alice.clone();
+        let alice_thread = std::thread::spawn(move || {
+            alice_start.wait();
+            ensure_collaboration_identity(&alice_dir, &alice_paths)
+        });
+        let bob_start = Arc::clone(&start);
+        let bob_paths = paths.clone();
+        let bob_dir = bob.clone();
+        let bob_thread = std::thread::spawn(move || {
+            bob_start.wait();
+            ensure_collaboration_identity(&bob_dir, &bob_paths)
+        });
+        start.wait();
+        alice_thread
+            .join()
+            .expect("alice provisioning thread")
+            .expect("alice provisioning");
+        bob_thread
+            .join()
+            .expect("bob provisioning thread")
+            .expect("bob provisioning");
+
+        let device = persist::read_device_key(&paths.device_privkey)
+            .expect("one complete shared device key")
+            .verifying_key()
+            .to_bytes();
+        let owner = persist::read_public_key(&paths.user_pubkey).expect("elected owner");
+        let legacy = persist::read_device_cert(&paths.device_cert).expect("legacy owner cert");
+        assert_eq!(legacy.user_public_key, owner);
+        assert_eq!(legacy.device_public_key, device);
+        qos_user_identity::verify_device_cert(&legacy).expect("valid legacy certificate");
+
+        for identity_dir in [&alice, &bob] {
+            let signer = runtime_identity::load_from_path(identity_dir.join(PRIMARY_IDENTITY_FILE))
+                .expect("load user identity");
+            let cert =
+                persist::read_device_cert(&paths.device_cert_for_user(&signer.group_public_key()))
+                    .expect("identity-specific certificate");
+            assert_eq!(cert.device_public_key, device);
+            qos_user_identity::verify_device_cert(&cert)
+                .expect("identity-specific chain remains valid");
+        }
     }
 
     #[test]
