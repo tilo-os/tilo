@@ -74,7 +74,7 @@ pub use libvirt::{
 pub use lifecycle::{
     LifecycleAction, LifecycleError, ManagedSessionState, VmStatus, WindowsVmService,
 };
-pub use portal_files::{PortalDocumentStore, PortalRailCapabilityBroker};
+pub use portal_files::{PortalDocumentStore, PortalRailCapabilityBroker, portal_lease_root};
 pub use presentation::{ApplicationPresentation, RecoveryPresentation};
 pub use publication::{Association, AssociationKind, Catalog, CatalogError, PublishedApplication};
 pub use remote_app::{

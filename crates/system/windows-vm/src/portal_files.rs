@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Seek as _};
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::os::unix::io::AsRawFd as _;
 use std::os::unix::io::OwnedFd;
 use std::path::{Path, PathBuf};
@@ -23,7 +23,6 @@ use crate::{
     PortalDocumentGrant, ShareBinding,
 };
 
-const DEFAULT_LEASE_ROOT: &str = "/run/qos/windows-vm/leases";
 const MAX_PORTAL_DOCUMENTS_PER_LAUNCH: usize = 32;
 const MAX_PORTAL_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
@@ -62,8 +61,33 @@ pub struct PortalDocumentStore {
 
 impl Default for PortalDocumentStore {
     fn default() -> Self {
-        Self::new(DEFAULT_LEASE_ROOT)
+        Self::new(portal_lease_root())
     }
+}
+
+/// Per-login runtime location for RAIL portal projections.
+///
+/// The compositor and `FreeRDP` helper are unprivileged session processes.
+/// Keeping their private 0700 lease tree under the logind-owned runtime
+/// directory is deliberate: a root-owned `/run/qos/windows-vm/leases` cannot
+/// be safely made writable by the desktop user without broadening it to other
+/// sessions. If logind did not export `XDG_RUNTIME_DIR`, use that same user's
+/// conventional `/run/user/<uid>` root; never fall back into the root-owned
+/// appliance-control namespace below `/run/qos/windows-vm`.
+#[must_use]
+pub fn portal_lease_root() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|path| Path::new(path).is_absolute())
+        .map_or_else(
+            || {
+                // SAFETY: `geteuid` only reads the process credentials and has no
+                // preconditions.
+                let uid = unsafe { libc::geteuid() };
+                PathBuf::from(format!("/run/user/{uid}"))
+            },
+            PathBuf::from,
+        )
+        .join("qos/windows-vm/leases")
 }
 
 impl PortalDocumentStore {
@@ -258,10 +282,14 @@ impl PortalDocumentStore {
 /// RAIL capability broker that turns only registered portal descriptors into
 /// explicit `FreeRDP` drives. It is suitable for the native RAIL presentation;
 /// SPICE remains deny-all for files.
-#[derive(Debug)]
 pub struct PortalRailCapabilityBroker {
     documents: Arc<PortalDocumentStore>,
     next: AtomicU64,
+    /// Each launch owns a listener, token, and exact host-authorized
+    /// `NetHost` policy. This avoids expanding the host relay policy, but the
+    /// persistent guest user/session remains an effective-union boundary for
+    /// Windows programs and must be presented honestly as such.
+    network_leases: Mutex<HashMap<String, crate::GuestNetworkProxy>>,
 }
 
 impl PortalRailCapabilityBroker {
@@ -270,24 +298,63 @@ impl PortalRailCapabilityBroker {
         Self {
             documents,
             next: AtomicU64::new(0),
+            network_leases: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn store_network_lease(
+        &self,
+        lease_id: String,
+        proxy: crate::GuestNetworkProxy,
+    ) -> Result<(), LaunchError> {
+        let mut leases = self
+            .network_leases
+            .lock()
+            .map_err(|_| portal_error("portal network lease store is unavailable"))?;
+        if leases.contains_key(&lease_id) {
+            return Err(portal_error("portal network lease identifier was reused"));
+        }
+        leases.insert(lease_id, proxy);
+        drop(leases);
+        Ok(())
     }
 }
 
 impl CapabilityBroker for PortalRailCapabilityBroker {
     fn materialize(&self, request: &LaunchRequest) -> Result<BrokeredLaunch, LaunchError> {
-        if request.grants.network {
+        if request.grants.network == request.grants.network_hosts.is_empty() {
             return Err(portal_error(
-                "the Windows appliance received network without a filtered guest broker",
+                "the Windows appliance received an incomplete filtered network grant",
             ));
         }
         let sequence = self.next.fetch_add(1, Ordering::Relaxed);
         let lease_id = format!("rail-{}-{sequence}", std::process::id());
+        // Materialise documents first, then the network listener.  If either
+        // half fails, tear down the other before returning: callers never see
+        // a partially-live lease.
         let shares = self.documents.materialize(&lease_id, request)?;
+        let network_proxy = if request.grants.network {
+            match crate::GuestNetworkProxy::start(request.grants.network_hosts.clone()) {
+                Ok(proxy) => Some(proxy),
+                Err(error) => {
+                    let _ = self.documents.revoke_checked(&lease_id);
+                    return Err(portal_error(error.to_string()));
+                }
+            }
+        } else {
+            None
+        };
+        let network_binding = network_proxy.as_ref().map(|proxy| proxy.binding().clone());
+        if let Some(proxy) = network_proxy
+            && let Err(error) = self.store_network_lease(lease_id.clone(), proxy)
+        {
+            let _ = self.documents.revoke_checked(&lease_id);
+            return Err(error);
+        }
         Ok(BrokeredLaunch {
             lease_id,
-            network: false,
-            network_binding: None,
+            network: request.grants.network,
+            network_binding,
             clipboard: request.grants.clipboard,
             microphone: request.grants.microphone,
             shares,
@@ -298,6 +365,11 @@ impl CapabilityBroker for PortalRailCapabilityBroker {
         // The older CapabilityBroker trait cannot return revocation errors.
         // Keep the fallible API above for portal-facing callers and make an
         // integrity failure observable here rather than silently discarding.
+        // Remove/drop the proxy first: revocation must interrupt live TCP
+        // tunnels before the user-visible portal projection disappears.
+        if let Ok(mut leases) = self.network_leases.lock() {
+            leases.remove(lease_id);
+        }
         if let Err(error) = self.documents.revoke_checked(lease_id) {
             eprintln!("qOS Windows portal lease {lease_id} revoke failed: {error}");
         }
@@ -318,6 +390,16 @@ fn copy_from_portal_descriptor(
     source
         .rewind()
         .map_err(|error| portal_error(format!("could not rewind portal descriptor: {error}")))?;
+    if source
+        .metadata()
+        .map_err(|error| portal_error(format!("could not re-inspect portal document: {error}")))?
+        .len()
+        > MAX_PORTAL_DOCUMENT_BYTES
+    {
+        return Err(portal_error(
+            "portal document grew beyond the 16 GiB projection limit",
+        ));
+    }
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -333,8 +415,21 @@ fn copy_from_portal_descriptor(
 }
 
 fn copy_back_to_portal_descriptor(lease: &LeaseDocument) -> Result<(), LaunchError> {
-    let mut input = File::open(&lease.projection)
+    let mut input = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&lease.projection)
         .map_err(|error| portal_error(format!("could not read portal projection: {error}")))?;
+    let metadata = input.metadata().map_err(|error| {
+        portal_error(format!(
+            "could not inspect portal projection before save: {error}"
+        ))
+    })?;
+    if !metadata.is_file() || metadata.len() > MAX_PORTAL_DOCUMENT_BYTES {
+        return Err(portal_error(
+            "portal projection is not a bounded regular file",
+        ));
+    }
     let mut source = lease
         .document
         .source
@@ -471,6 +566,31 @@ mod tests {
             .read_to_string(&mut contents)
             .unwrap();
         assert_eq!(contents, "after");
+    }
+
+    #[test]
+    fn writable_projection_never_follows_a_replaced_symlink_on_save() {
+        let temp = TempDir::new().unwrap();
+        let source_path = temp.path().join("input");
+        let unrelated_path = temp.path().join("unrelated");
+        fs::write(&unrelated_path, b"must-not-be-copied").unwrap();
+        let store = Arc::new(PortalDocumentStore::new(temp.path().join("leases")));
+        let grant = store
+            .register(
+                "workspace",
+                "published.app",
+                source(&temp, "input", b"before"),
+                PortalDocumentAccess::ReadWrite,
+            )
+            .unwrap();
+        let broker = PortalRailCapabilityBroker::new(Arc::clone(&store));
+        let lease = broker.materialize(&request(grant)).unwrap();
+        let projection = lease.shares[0].host_path.join("document");
+        fs::remove_file(&projection).unwrap();
+        std::os::unix::fs::symlink(&unrelated_path, &projection).unwrap();
+
+        assert!(store.revoke_checked(&lease.lease_id).is_err());
+        assert_eq!(fs::read(source_path).unwrap(), b"before");
     }
 
     #[test]
