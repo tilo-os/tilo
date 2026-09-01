@@ -80,6 +80,9 @@ fn configure(app: &mut ui::App) {
     sheets::actions::register(app.action_registry_mut());
 }
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new(APP_ID, sheets::app_root)

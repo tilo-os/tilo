@@ -70,10 +70,40 @@ enum Cmd {
         json: bool,
     },
     /// Download and install one app by package id.
+    #[command(alias = "add")]
     Install {
         /// Reverse-DNS package id, as printed by `list`.
         package_id: String,
     },
+    /// Add, remove, or inspect app repositories.
+    #[command(alias = "registry")]
+    Repo {
+        #[command(subcommand)]
+        cmd: RepoCmd,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RepoCmd {
+    /// List configured repositories in priority order.
+    List,
+    /// Add and enable a repository.
+    Add {
+        /// Short name used by list/remove/enable/disable.
+        name: String,
+        /// Base HTTP(S) URL serving `/entries`.
+        url: String,
+        /// Pinned Ed25519 registry-owner key (64 hex characters).
+        #[arg(long, default_value = "")]
+        owner_key: String,
+    },
+    /// Remove a repository from the configuration.
+    #[command(alias = "rm")]
+    Remove { name: String },
+    /// Include a configured repository in catalogue refreshes.
+    Enable { name: String },
+    /// Keep a repository configured but stop querying it.
+    Disable { name: String },
 }
 
 fn main() -> ExitCode {
@@ -86,6 +116,80 @@ fn main() -> ExitCode {
     match cli.cmd {
         Cmd::List { json } => list(json),
         Cmd::Install { package_id } => install(&package_id),
+        Cmd::Repo { cmd } => repo(cmd),
+    }
+}
+
+fn repo(cmd: RepoCmd) -> ExitCode {
+    use app_catalogue::config;
+
+    let mut registries = config::load_registries();
+    let confirmation = match cmd {
+        RepoCmd::List => {
+            if registries.registries.is_empty() {
+                println!("no app repositories configured");
+            }
+            for registry in registries.registries {
+                let state = if registry.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                };
+                let key = if registry.owner_pubkey_hex.is_empty() {
+                    "un-pinned"
+                } else {
+                    "key pinned"
+                };
+                println!("{}  {}  ({state}, {key})", registry.name, registry.base_url);
+            }
+            return ExitCode::SUCCESS;
+        }
+        RepoCmd::Add {
+            name,
+            url,
+            owner_key,
+        } => {
+            if let Err(e) = config::add_registry(&mut registries, &name, &url, &owner_key) {
+                eprintln!("could not add repository: {e}");
+                return ExitCode::FAILURE;
+            }
+            if owner_key.is_empty() {
+                format!("added repository '{name}' (owner key is not pinned)")
+            } else {
+                format!("added repository '{name}'")
+            }
+        }
+        RepoCmd::Remove { name } => {
+            if let Err(e) = config::remove_registry(&mut registries, &name) {
+                eprintln!("could not remove repository: {e}");
+                return ExitCode::FAILURE;
+            }
+            format!("removed repository '{name}'")
+        }
+        RepoCmd::Enable { name } => {
+            if let Err(e) = config::set_registry_enabled(&mut registries, &name, true) {
+                eprintln!("could not enable repository: {e}");
+                return ExitCode::FAILURE;
+            }
+            format!("enabled repository '{name}'")
+        }
+        RepoCmd::Disable { name } => {
+            if let Err(e) = config::set_registry_enabled(&mut registries, &name, false) {
+                eprintln!("could not disable repository: {e}");
+                return ExitCode::FAILURE;
+            }
+            format!("disabled repository '{name}'")
+        }
+    };
+    match config::save_registries(&registries) {
+        Ok(()) => {
+            println!("{confirmation}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("could not save repositories: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 

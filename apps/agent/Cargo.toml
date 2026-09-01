@@ -14,7 +14,11 @@ path = "src/lib.rs"
 name = "qos-agent"
 path = "src/main.rs"
 
+[features]
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The blocking agent facade delegates to the toolkit's typed
 # `QOS_SVC_COLLAB_FD` client and consumes the same request/event model as a
 # windowed app.

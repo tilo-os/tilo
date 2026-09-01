@@ -83,6 +83,9 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (720, 360);
 /// compositor does not advertise `zwp_input_method_manager_v2`, or when
 /// `--shots` fails to render (taffy layout failure, e.g. the tree exceeds its
 /// node capacity).
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args("dev.qos.osk", shot_root)

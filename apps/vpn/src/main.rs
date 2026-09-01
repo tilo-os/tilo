@@ -44,6 +44,9 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     })
 }
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.vpn", vpn::app_root)

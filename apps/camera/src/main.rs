@@ -26,6 +26,9 @@ use ui::widget::Widget;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
     let Some(dir) = args.value("--emit-photos") else {
         return Ok(false);
