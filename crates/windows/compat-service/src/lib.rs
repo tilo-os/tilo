@@ -30,6 +30,7 @@
 mod audio_proxy;
 mod catalogue;
 mod execute;
+mod installer;
 mod plan;
 mod protocol;
 mod resources;
@@ -44,19 +45,22 @@ pub use catalogue::{
 pub use execute::{
     BwrapExecutor, ExecutionError, ExecutionOutcome, SECCOMP_CHILD_FD, SandboxExecutor,
 };
+pub use installer::{
+    InstallerError, InstallerInspection, MAX_INSTALLER_BYTES, PeMachine, inspect_installer,
+};
 pub use plan::{
     AudioBinding, AudioProtocol, CapsuleCommandPlan, HostSession, LaunchLease,
     LaunchResourceBroker, NetworkShape, PlanError, ResourceError, ResourceRequest, RuntimeImage,
     RuntimeRegistry, SandboxPlanner, SystemRuntimeRegistry,
 };
 pub use protocol::{
-    ManagedApplication, PROTOCOL_VERSION, ProtocolError, ProtocolRequest, ProtocolResponse,
-    ResolveRequest,
+    ManagedApplication, ManagedInstallation, PROTOCOL_VERSION, ProtocolError, ProtocolRequest,
+    ProtocolResponse, ResolveRequest,
 };
 pub use resources::SystemResourceBroker;
 pub use service::{
-    AccessSummary, CompatibilityService, ExplainStatus, LaunchInput, LaunchReceipt, MatchReason,
-    RouteKind, ServiceError, UnavailableVmDelegate, VmDelegate, VmRouteRequest,
+    AccessSummary, CompatibilityService, ExplainStatus, InstallReceipt, LaunchInput, LaunchReceipt,
+    MatchReason, RouteKind, ServiceError, UnavailableVmDelegate, VmDelegate, VmRouteRequest,
 };
 pub use session::{
     CapabilityAuthority, CompatSessionHandle, LauncherAuthenticator, ManagedCompatibility,
@@ -64,5 +68,5 @@ pub use session::{
 };
 pub use store::{
     CAPSULE_SCHEMA_VERSION, CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore,
-    RegisteredProgram,
+    InstallationRecord, InstallationStatus, InstallerKind, ProgramKind, RegisteredProgram,
 };

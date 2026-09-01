@@ -446,6 +446,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
                 .display()
                 .to_string(),
         );
+        argv.extend(program.arguments.iter().cloned());
 
         Ok(CapsuleCommandPlan {
             bwrap_argv: argv,
@@ -741,6 +742,8 @@ mod tests {
             display_name: "Program".to_string(),
             prefix_relative_executable: PathBuf::from("drive_c/Program Files/App/app.exe"),
             query: ApplicationQuery::executable("app.exe"),
+            kind: crate::ProgramKind::Application,
+            arguments: Vec::new(),
         };
         let state = store.register_program(&state.id, program.clone()).unwrap();
         (directory, store, state, program)
