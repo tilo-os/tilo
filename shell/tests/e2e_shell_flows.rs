@@ -34,7 +34,8 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
-use shell::shell::build_nirios_root_with_chrome;
+use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::room_activity::RoomActivityPane;
 use shell::shell::state::WorkspaceTree;
 use shell::shell::topbar_chrome::TopBarChrome;
 
@@ -128,8 +129,16 @@ impl Harness {
         // Rooms need recorded access, or access-reporting surfaces assert against
         // a state no user has ever been in.
         owned.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
-        let tree = &owned;
-        let (root, chrome) = build_nirios_root_with_chrome(tree);
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&owned);
+        // Headless snapshots must not inherit the developer machine's persisted
+        // seen-frontier. That changes the activity-glance headline while leaving
+        // the UI under test untouched, producing a machine- and run-dependent
+        // golden. Production still uses the persistent pane.
+        *host.room_activity_mut() = RoomActivityPane::new();
+        let active_workspace = owned.active.raw();
+        host.room_activity_mut().refresh(&mut owned);
+        host.room_activity_mut().finish_view(active_workspace);
+        let root = Box::new(host) as Box<dyn Widget>;
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();

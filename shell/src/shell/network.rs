@@ -872,6 +872,11 @@ impl ShellNetwork {
 
     /// Return the original signed token without extending its lifetime or
     /// minting a second grant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the inventory is unavailable, expired, canceled,
+    /// or does not contain `id`.
     pub fn resend_invitation(&self, id: &[u8; 32]) -> Result<String, String> {
         self.pending_identity_admissions
             .lock()
@@ -943,6 +948,10 @@ impl ShellNetwork {
     }
 
     /// Mint a named invite carrying the exact role the owner selected.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::issue_invite`].
     pub fn issue_invite_named_with_role(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -960,31 +969,31 @@ impl ShellNetwork {
         invitee: Option<&str>,
         role: crate::network::invite::InviteRole,
     ) -> Result<String, String> {
-        let ws = {
+        let tree_handle = {
             let replica = self
                 .replica
                 .lock()
                 .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
-            let tree = replica.tree.read();
-            let ws = tree
-                .workspaces
-                .iter()
-                .find(|w| w.id == local)
-                .ok_or_else(|| format!("no workspace {} to invite into", local.raw()))?;
-            let actor = crate::shell::state::local_user_id_for_room(&ws.room);
-            if !tree.governs_room(ws.room)
-                || !ws.allows(
-                    &ws.actor_for_person(&actor),
-                    &crate::shell::state::ResourceRef::Workspace,
-                    crate::shell::state::Verb::Invite,
-                )
-            {
-                return Err(
-                    "only a governing workspace administrator can create invitations".into(),
-                );
-            }
-            ws.clone()
+            replica.tree.clone()
         };
+        let tree = tree_handle.read();
+        let Some(ws) = tree.workspaces.iter().find(|w| w.id == local) else {
+            drop(tree);
+            return Err(format!("no workspace {} to invite into", local.raw()));
+        };
+        let actor = crate::shell::state::local_user_id_for_room(&ws.room);
+        if !tree.governs_room(ws.room)
+            || !ws.allows(
+                &ws.actor_for_person(&actor),
+                &crate::shell::state::ResourceRef::Workspace,
+                crate::shell::state::Verb::Invite,
+            )
+        {
+            drop(tree);
+            return Err("only a governing workspace administrator can create invitations".into());
+        }
+        let ws = ws.clone();
+        drop(tree);
         let addr = self
             .dial_addr()
             .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
@@ -1050,6 +1059,7 @@ impl ShellNetwork {
         if let Some(path) = self.pending_invitations_path.as_deref() {
             persist_pending_invitations(path, &pending);
         }
+        drop(pending);
         Ok(token)
     }
 
@@ -1289,6 +1299,10 @@ impl ShellNetwork {
     /// from `peer` to its per-variant handler, then flush anything the
     /// replica queued in response. Split out of [`Self::tick`] via
     /// [`Self::dispatch_net_event`].
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one security gate followed by an exhaustive wire-variant dispatcher; splitting the match would obscure the shared authentication order"
+    )]
     fn dispatch_neighbour_msg(&self, ws: u64, peer: iroh::EndpointId, msg: NeighbourMsg) {
         if let Some(expected) = Self::explicit_topic_for_message(&msg)
             && expected != ws
@@ -1467,14 +1481,20 @@ impl ShellNetwork {
     /// topic is derived from a UUID, it is only 64 bits; an ambiguous collision
     /// must not let membership in one room authorize traffic for another.
     fn unique_room_for_topic(&self, workspace_topic: u64) -> Option<RoomId> {
-        let replica = self.replica.lock().ok()?;
-        let tree = replica.tree.read();
+        let tree_handle = self.replica.lock().ok()?.tree.clone();
+        let tree = tree_handle.read();
         let mut matching = tree
             .rooms()
             .into_iter()
             .filter(|room| room_topic_id(*room) == workspace_topic);
-        let room = matching.next()?;
-        matching.next().is_none().then_some(room)
+        let Some(room) = matching.next() else {
+            drop(matching);
+            drop(tree);
+            return None;
+        };
+        let result = matching.next().is_none().then_some(room);
+        drop(tree);
+        result
     }
 
     /// Authenticate the transport device as a person and then authorize that
@@ -1494,37 +1514,38 @@ impl ShellNetwork {
         let Some(room) = self.unique_room_for_topic(workspace_topic) else {
             return false;
         };
-        let Ok(replica) = self.replica.lock() else {
+        let Some(tree_handle) = self.replica.lock().ok().map(|replica| replica.tree.clone()) else {
             return false;
         };
-        let tree = replica.tree.read();
+        let tree = tree_handle.read();
         // A newly joined guest has not received the owner's governance yet,
         // so it cannot derive the owner's membership locally. The invite pins
         // that exact transport peer as authority; allow only its SyncResp to
         // bootstrap the signed-invite room. The replica still checks that it
         // is the pinned governance writer before accepting the candidate.
-        if pinned_authority_may_bootstrap
+        let allowed = if pinned_authority_may_bootstrap
             && tree.room_authority(room) == crate::shell::state::RoomAuthority::Peer(origin.clone())
         {
-            return true;
-        }
-        let person = collab_types::caps::Principal::person_from_key(
-            collab_types::crypto::Ed25519PublicKey::from_bytes(identity.user_pubkey),
-        )
-        .id()
-        .to_string();
-        let Some(workspace) = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room == room)
-        else {
-            return false;
+            true
+        } else {
+            let person = collab_types::caps::Principal::person_from_key(
+                collab_types::crypto::Ed25519PublicKey::from_bytes(identity.user_pubkey),
+            )
+            .id()
+            .to_string();
+            tree.workspaces
+                .iter()
+                .find(|workspace| workspace.room == room)
+                .is_some_and(|workspace| {
+                    workspace.allows(
+                        &workspace.actor_for_person(&person),
+                        &crate::shell::state::ResourceRef::Workspace,
+                        required,
+                    )
+                })
         };
-        workspace.allows(
-            &workspace.actor_for_person(&person),
-            &crate::shell::state::ResourceRef::Workspace,
-            required,
-        )
+        drop(tree);
+        allowed
     }
 
     /// `AppPresenceV2`: app-level presence crossing the host boundary.
@@ -2309,27 +2330,27 @@ mod tests {
             "document authorization must use the declared action class, not hard-code text splice",
         );
 
-        {
-            let replica = net.replica.lock().expect("replica");
-            let mut tree = replica.tree.write();
-            let workspace = tree
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.room == room)
-                .expect("workspace");
-            workspace.capabilities.retain(|capability| {
-                !matches!(
-                    &capability.subject,
-                    collab_types::Subject::Principal(collab_types::Principal::Person(member))
-                        if member == &person
-                )
-            });
-            workspace.grant_capability(collab_types::CapOverride::membership(
-                collab_types::Subject::person(person.clone()),
-                room.to_string(),
-                collab_types::Verb::Comment,
-            ));
-        }
+        let replica = net.replica.lock().expect("replica");
+        let mut tree = replica.tree.write();
+        let workspace = tree
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room == room)
+            .expect("workspace");
+        workspace.capabilities.retain(|capability| {
+            !matches!(
+                &capability.subject,
+                collab_types::Subject::Principal(collab_types::Principal::Person(member))
+                    if member == &person
+            )
+        });
+        workspace.grant_capability(collab_types::CapOverride::membership(
+            collab_types::Subject::person(person.clone()),
+            room.to_string(),
+            collab_types::Verb::Comment,
+        ));
+        drop(tree);
+        drop(replica);
         let mut comment = envelope.clone();
         comment.op_class = collab_types::OpClass::Comment;
         collab_types::sign_op(&mut comment, &signing).expect("signed comment");
@@ -2355,22 +2376,22 @@ mod tests {
             "a commenter must not smuggle a splice through the generic document route",
         );
 
-        {
-            let replica = net.replica.lock().expect("replica");
-            let mut tree = replica.tree.write();
-            let workspace = tree
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.room == room)
-                .expect("workspace");
-            workspace.capabilities.retain(|capability| {
-                !matches!(
-                    &capability.subject,
-                    collab_types::Subject::Principal(collab_types::Principal::Person(member))
-                        if member == &person
-                )
-            });
-        }
+        let replica = net.replica.lock().expect("replica");
+        let mut tree = replica.tree.write();
+        let workspace = tree
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room == room)
+            .expect("workspace");
+        workspace.capabilities.retain(|capability| {
+            !matches!(
+                &capability.subject,
+                collab_types::Subject::Principal(collab_types::Principal::Person(member))
+                    if member == &person
+            )
+        });
+        drop(tree);
+        drop(replica);
         assert!(
             !net.peer_room_allows(
                 &origin,
@@ -2391,20 +2412,20 @@ mod tests {
             None,
             "an operation signed while online is still refused if it arrives after removal",
         );
-        {
-            let replica = net.replica.lock().expect("replica");
-            let mut tree = replica.tree.write();
-            let workspace = tree
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.room == room)
-                .expect("workspace");
-            workspace.grant_capability(collab_types::CapOverride::membership(
-                collab_types::Subject::person(person.clone()),
-                room.to_string(),
-                collab_types::Verb::Write,
-            ));
-        }
+        let replica = net.replica.lock().expect("replica");
+        let mut tree = replica.tree.write();
+        let workspace = tree
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room == room)
+            .expect("workspace");
+        workspace.grant_capability(collab_types::CapOverride::membership(
+            collab_types::Subject::person(person),
+            room.to_string(),
+            collab_types::Verb::Write,
+        ));
+        drop(tree);
+        drop(replica);
 
         let mut revoked = RevocationEntry {
             user_public_key: cert.user_public_key,
@@ -2637,10 +2658,10 @@ mod tests {
         let (_tmp, tree, net, rooms) = net_with_rooms();
         let room = rooms[0];
         let make_guest = |seed: u8, label: &str| {
-            let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+            let authority_key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
             let device = iroh::SecretKey::from_bytes(&[seed.saturating_add(1); 32]);
             let mut cert = DeviceCert {
-                user_public_key: root.verifying_key().to_bytes(),
+                user_public_key: authority_key.verifying_key().to_bytes(),
                 device_public_key: *device.public().as_bytes(),
                 device_label: label.into(),
                 capabilities: DeviceCapabilities::member(),
@@ -2648,7 +2669,7 @@ mod tests {
                 expires_at_ns: None,
                 signature: [0; 64],
             };
-            sign_device_cert(&mut cert, &root).expect("certificate");
+            sign_device_cert(&mut cert, &authority_key).expect("certificate");
             (device, cert)
         };
         let (viewer_device, viewer_cert) = make_guest(31, "Viewer device");
