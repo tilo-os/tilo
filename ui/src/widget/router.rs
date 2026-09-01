@@ -526,12 +526,12 @@ mod tests {
     #[test]
     fn failed_screen_build_restores_the_last_valid_route() {
         let theme = Theme::default();
-        let mut router = Router::new("home", ["home", "broken"], &theme, |route, theme, _| {
+        let mut router = Router::new("home", ["home", "broken"], &theme, |route, _theme, _| {
             if route == "broken" {
                 Err("invalid screen".into())
             } else {
                 Ok(Box::new(
-                    super::super::Text::new(route).with_role(crate::tokens::TextRole::Body, theme),
+                    super::super::Text::new(route).with_role(crate::tokens::TextRole::Body),
                 ))
             }
         })

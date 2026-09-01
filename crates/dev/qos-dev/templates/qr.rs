@@ -1,4 +1,5 @@
 use ui::LocalState;
+use ui::tokens::TextRole;
 use ui::widget::{Column, ModelView, QrWidget, Text, TextInput, Widget};
 
 /// A complete IME input → typed state → generated visual output loop.
@@ -23,8 +24,10 @@ pub fn app_root() -> Box<dyn Widget> {
 
     Box::new(
         Column::new()
-            .push(Box::new(Text::new("qr-title").with_size(28.0)))
-            .push(Box::new(Text::new("qr-input-label")))
+            .push(Box::new(Text::new("qr-title").with_role(TextRole::Title)))
+            .push(Box::new(
+                Text::new("qr-input-label").with_role(TextRole::Label),
+            ))
             .push(Box::new(input))
             .push(Box::new(output)),
     )
