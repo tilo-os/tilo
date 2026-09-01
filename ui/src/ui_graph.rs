@@ -10,7 +10,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::{
     Button, ButtonStyle, Checkbox, Column, Container, Element, Row, Scrollable, Spacer, Text,
-    TextInput, Toggle, Widget, labeled_field,
+    TextInput, Toggle, Widget, labeled_check, labeled_field,
 };
 use automerge::{AutoCommit, ObjId};
 use std::cell::RefCell;
@@ -281,26 +281,40 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Element {
         }
         UiNode::Checkbox {
             id,
+            label,
             accessible_name,
             value_path,
             enabled,
-        } => Box::new(
-            Checkbox::new(id, value_path)
+        } => {
+            let name = label.as_deref().unwrap_or(accessible_name);
+            let control = Checkbox::new(id, value_path)
                 .with_id(id)
-                .with_accessible_name(accessible_name)
-                .with_enabled(*enabled),
-        ),
+                .with_accessible_name(name)
+                .with_enabled(*enabled);
+            if let Some(label) = label {
+                Box::new(labeled_check(label, control))
+            } else {
+                Box::new(control)
+            }
+        }
         UiNode::Toggle {
             id,
+            label,
             accessible_name,
             value_path,
             enabled,
-        } => Box::new(
-            Toggle::new(id, value_path)
+        } => {
+            let name = label.as_deref().unwrap_or(accessible_name);
+            let control = Toggle::new(id, value_path)
                 .with_id(id)
-                .with_accessible_name(accessible_name)
-                .with_enabled(*enabled),
-        ),
+                .with_accessible_name(name)
+                .with_enabled(*enabled);
+            if let Some(label) = label {
+                Box::new(labeled_check(label, control))
+            } else {
+                Box::new(control)
+            }
+        }
         UiNode::Spacer { .. } => Box::new(Spacer::new()),
     }
 }
@@ -1034,6 +1048,7 @@ enum EditableProperty {
     InputValuePath,
     InputInitialValue,
     CheckAccessibleName,
+    CheckLabel,
     CheckValuePath,
 }
 
@@ -1438,19 +1453,27 @@ fn editable_properties(
             ),
         ]),
         UiNode::Checkbox {
+            label,
             accessible_name,
             value_path,
             ..
         }
         | UiNode::Toggle {
+            label,
             accessible_name,
             value_path,
             ..
         } => properties.extend([
             (
+                EditableProperty::CheckLabel,
+                label.clone().unwrap_or_default(),
+                "Visible label (also the accessible name)",
+                "builder-check-label",
+            ),
+            (
                 EditableProperty::CheckAccessibleName,
                 accessible_name.clone(),
-                "Accessible name",
+                "Accessible name (only without a visible label)",
                 "builder-check-accessible-name",
             ),
             (
@@ -1502,6 +1525,7 @@ fn parse_editable_property(
             | EditableProperty::ButtonClickPath
             | EditableProperty::ButtonClickValue
             | EditableProperty::InputLabel
+            | EditableProperty::CheckLabel
             | EditableProperty::InputValuePath
     ) {
         return Ok(ParsedProperty::OptionalText(
@@ -1605,6 +1629,20 @@ fn set_editable_property(node: &mut UiNode, property: EditableProperty, value: P
             },
             EditableProperty::InputLabel,
             ParsedProperty::OptionalText(value),
+        )
+        | (
+            UiNode::Checkbox {
+                label,
+                accessible_name,
+                ..
+            }
+            | UiNode::Toggle {
+                label,
+                accessible_name,
+                ..
+            },
+            EditableProperty::CheckLabel,
+            ParsedProperty::OptionalText(value),
         ) => {
             *label = value;
             if label.is_some() {
@@ -1619,22 +1657,26 @@ fn set_editable_property(node: &mut UiNode, property: EditableProperty, value: P
             },
             EditableProperty::InputAccessibleName,
             ParsedProperty::Text(value),
+        )
+        | (
+            UiNode::Checkbox {
+                label,
+                accessible_name,
+                ..
+            }
+            | UiNode::Toggle {
+                label,
+                accessible_name,
+                ..
+            },
+            EditableProperty::CheckAccessibleName,
+            ParsedProperty::Text(value),
         ) => {
             *accessible_name = value;
             if !accessible_name.trim().is_empty() {
                 *label = None;
             }
         }
-        (
-            UiNode::Checkbox {
-                accessible_name, ..
-            }
-            | UiNode::Toggle {
-                accessible_name, ..
-            },
-            EditableProperty::CheckAccessibleName,
-            ParsedProperty::Text(value),
-        ) => *accessible_name = value,
         (
             UiNode::TextInput { placeholder, .. },
             EditableProperty::InputPlaceholder,
@@ -2196,13 +2238,15 @@ fn new_editor_node(document: &UiDocument, kind: InsertKind) -> UiNode {
         InsertKind::Checkbox => UiNode::Checkbox {
             value_path: format!("{id}-checked"),
             id,
-            accessible_name: "Checkbox".to_owned(),
+            label: Some("Checkbox".to_owned()),
+            accessible_name: String::new(),
             enabled: true,
         },
         InsertKind::Toggle => UiNode::Toggle {
             value_path: format!("{id}-enabled"),
             id,
-            accessible_name: "Toggle".to_owned(),
+            label: Some("Toggle".to_owned()),
+            accessible_name: String::new(),
             enabled: true,
         },
         InsertKind::Spacer => UiNode::Spacer { id },
@@ -2550,6 +2594,77 @@ mod tests {
             .perform_named("save", &Action::Activate)
             .expect("serialized button is a real button");
         assert!(driver.dump_json().contains("save-requested"));
+    }
+
+    #[test]
+    fn serialized_check_label_builds_visible_and_spoken_semantics() {
+        fn has_visible_label(node: &crate::headless::InspectionNode) -> bool {
+            node.semantics.as_ref().is_some_and(|semantics| {
+                semantics.role == Role::StaticText
+                    && semantics.name.as_deref() == Some("Remember me")
+            }) || node.children.iter().any(has_visible_label)
+        }
+
+        let document = UiDocument::new(UiNode::Checkbox {
+            id: "remember".into(),
+            label: Some("Remember me".into()),
+            accessible_name: String::new(),
+            value_path: "remember".into(),
+            enabled: true,
+        });
+        let mut driver = crate::headless::Driver::new(
+            crate::State::new(),
+            document.build(&Theme::dark()).unwrap(),
+            (360, 120),
+        );
+
+        driver
+            .expect(
+                &crate::headless::SemanticExpectation::named("remember")
+                    .role(Role::Checkbox)
+                    .name("Remember me"),
+            )
+            .expect("serialized label names the checkbox");
+        assert!(has_visible_label(&driver.inspection().root));
+    }
+
+    #[test]
+    fn editor_label_fields_clear_the_fallback_name_and_vice_versa() {
+        let mut node = UiNode::Toggle {
+            id: "sync".into(),
+            label: None,
+            accessible_name: "Unlabeled sync".into(),
+            value_path: "sync".into(),
+            enabled: true,
+        };
+
+        set_editable_property(
+            &mut node,
+            EditableProperty::CheckLabel,
+            ParsedProperty::OptionalText(Some("Sync changes".into())),
+        );
+        assert!(matches!(
+            &node,
+            UiNode::Toggle {
+                label: Some(label),
+                accessible_name,
+                ..
+            } if label == "Sync changes" && accessible_name.is_empty()
+        ));
+
+        set_editable_property(
+            &mut node,
+            EditableProperty::CheckAccessibleName,
+            ParsedProperty::Text("Background synchronization".into()),
+        );
+        assert!(matches!(
+            &node,
+            UiNode::Toggle {
+                label: None,
+                accessible_name,
+                ..
+            } if accessible_name == "Background synchronization"
+        ));
     }
 
     #[test]

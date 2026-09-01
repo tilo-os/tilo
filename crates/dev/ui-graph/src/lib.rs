@@ -346,6 +346,9 @@ pub enum UiNode {
     },
     Checkbox {
         id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         accessible_name: String,
         value_path: String,
         #[serde(default = "default_true")]
@@ -353,6 +356,9 @@ pub enum UiNode {
     },
     Toggle {
         id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         accessible_name: String,
         value_path: String,
         #[serde(default = "default_true")]
@@ -555,26 +561,24 @@ impl UiNode {
                 value_path,
                 ..
             } => {
-                let effective_name = label.as_deref().unwrap_or(accessible_name);
-                validate_accessible_name(effective_name, id)?;
-                if label.is_some() && !accessible_name.trim().is_empty() {
-                    return Err(UiGraphError::ConflictingLabels(id.to_owned()));
-                }
+                validate_form_label(label.as_deref(), accessible_name, id)?;
                 if let Some(binding) = value_path {
                     validate_binding(binding, id)?;
                 }
             }
             Self::Checkbox {
+                label,
                 accessible_name,
                 value_path,
                 ..
             }
             | Self::Toggle {
+                label,
                 accessible_name,
                 value_path,
                 ..
             } => {
-                validate_accessible_name(accessible_name, id)?;
+                validate_form_label(label.as_deref(), accessible_name, id)?;
                 validate_binding(value_path, id)?;
             }
             Self::Row { .. } | Self::Spacer { .. } => {}
@@ -594,6 +598,19 @@ impl UiNode {
 fn validate_accessible_name(name: &str, id: &str) -> Result<(), UiGraphError> {
     if name.trim().is_empty() {
         Err(UiGraphError::MissingAccessibleName(id.to_owned()))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_form_label(
+    label: Option<&str>,
+    accessible_name: &str,
+    id: &str,
+) -> Result<(), UiGraphError> {
+    validate_accessible_name(label.unwrap_or(accessible_name), id)?;
+    if label.is_some() && !accessible_name.trim().is_empty() {
+        Err(UiGraphError::ConflictingLabels(id.to_owned()))
     } else {
         Ok(())
     }
@@ -793,7 +810,7 @@ mod tests {
     }
 
     #[test]
-    fn text_input_label_is_the_single_visible_and_accessible_source() {
+    fn form_labels_are_single_visible_and_accessible_sources() {
         let mut document = sample();
         document
             .insert_child(
@@ -811,9 +828,23 @@ mod tests {
                 },
             )
             .unwrap();
+        document
+            .insert_child(
+                "root",
+                2,
+                UiNode::Checkbox {
+                    id: "remember".into(),
+                    label: Some("profile-remember-label".into()),
+                    accessible_name: String::new(),
+                    value_path: "remember".into(),
+                    enabled: true,
+                },
+            )
+            .unwrap();
 
         let json = document.to_json_pretty().unwrap();
         assert!(json.contains(r#""label": "profile-name-label""#));
+        assert!(json.contains(r#""label": "profile-remember-label""#));
         assert!(!json.contains("accessible_name"));
         assert_eq!(UiDocument::from_json(&json).unwrap(), document);
 
@@ -826,6 +857,23 @@ mod tests {
         assert!(matches!(
             document.validate(),
             Err(UiGraphError::ConflictingLabels(id)) if id == "name"
+        ));
+
+        if let Some(UiNode::TextInput {
+            accessible_name, ..
+        }) = document.node_mut("name")
+        {
+            accessible_name.clear();
+        }
+        if let Some(UiNode::Checkbox {
+            accessible_name, ..
+        }) = document.node_mut("remember")
+        {
+            *accessible_name = "duplicate-check-name".into();
+        }
+        assert!(matches!(
+            document.validate(),
+            Err(UiGraphError::ConflictingLabels(id)) if id == "remember"
         ));
     }
 }
