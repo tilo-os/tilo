@@ -43,3 +43,6 @@ jobs:
 
       - name: Fuzz identity wire formats
         run: cargo +nightly-2026-08-25 fuzz run identity_wire -- -max_total_time=900 -timeout=10
+
+      - name: Fuzz sandbox policy parsing
+        run: cargo +nightly-2026-08-25 fuzz run sandbox_policy -- -max_total_time=900 -timeout=10
