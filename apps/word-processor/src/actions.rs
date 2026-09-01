@@ -25,19 +25,20 @@ use qdoc::{Containers, DocMut};
 use crate::num;
 
 use qos_actions::{
-    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, Resource, ResourceProvider,
+    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
+    ResourceProvider, ResultSpec,
 };
 
 /// Registry `type_id` for every word-processor action.
 pub const WORD_PROCESSOR_ACTION_TYPE: &str = "word-processor.action";
 pub const WORD_PROCESSOR_OPERATION_TYPE: &str = "word-processor.operation";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WordProcessorOperation {
-    Open,
-    Save,
-    SaveAs,
+    Open { path: Option<String> },
+    Save { path: Option<String> },
+    SaveAs { path: Option<String> },
     Find,
     ZoomIn,
     ZoomOut,
@@ -70,9 +71,12 @@ fn operation(
     let spec = ActionSpec::operation(id, label, kind, WORD_PROCESSOR_OPERATION_TYPE, &value)
         .expect("WordProcessorOperation is always serializable");
     match value {
-        WordProcessorOperation::Open
-        | WordProcessorOperation::Save
-        | WordProcessorOperation::SaveAs => spec.destructive(),
+        WordProcessorOperation::Open { .. }
+        | WordProcessorOperation::Save { .. }
+        | WordProcessorOperation::SaveAs { .. } => spec
+            .destructive()
+            .execution(ExecutionMode::Background { cancellable: false })
+            .returns(ResultSpec::Job),
         _ => spec.with_contract(ActionContract::view()),
     }
 }
@@ -841,25 +845,47 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
         "Document",
     );
 
+    for (id, label, variant) in [
+        ("open", "Open document", 0_u8),
+        ("save", "Save document", 1_u8),
+        ("save-as", "Save document as", 2_u8),
+    ] {
+        root = root.with_action(
+            ActionSpec::typed_operation(
+                id,
+                label,
+                "path (omit to use the system file picker)",
+                OperationKind::Effect,
+                WORD_PROCESSOR_OPERATION_TYPE,
+                vec![ActionParam::optional_owned(
+                    "path",
+                    ParamType::Text,
+                    "Direct filesystem path; omit to open the system file picker",
+                )],
+                move |args: &ActionArgs| {
+                    let path = args
+                        .text("path")
+                        .filter(|path| !path.trim().is_empty())
+                        .map(str::to_string);
+                    let operation = match variant {
+                        0 => WordProcessorOperation::Open { path },
+                        1 => WordProcessorOperation::Save { path },
+                        _ => WordProcessorOperation::SaveAs { path },
+                    };
+                    EncodedAction::encode_operation(WORD_PROCESSOR_OPERATION_TYPE, &operation)
+                        .unwrap_or_else(|_| EncodedAction {
+                            type_id: WORD_PROCESSOR_OPERATION_TYPE.into(),
+                            payload: Vec::new(),
+                        })
+                },
+            )
+            .destructive()
+            .execution(ExecutionMode::Background { cancellable: false })
+            .returns(ResultSpec::Job),
+        );
+    }
+
     for (id, label, kind, value) in [
-        (
-            "open",
-            "Open document",
-            OperationKind::Effect,
-            WordProcessorOperation::Open,
-        ),
-        (
-            "save",
-            "Save document",
-            OperationKind::Effect,
-            WordProcessorOperation::Save,
-        ),
-        (
-            "save-as",
-            "Save document as",
-            OperationKind::Effect,
-            WordProcessorOperation::SaveAs,
-        ),
         (
             "find",
             "Find in document",
@@ -1365,6 +1391,30 @@ mod tests {
             from_spec.payload, from_builder.payload,
             "align is one source of truth"
         );
+    }
+
+    #[test]
+    fn file_operations_are_typed_background_jobs() {
+        let (state, ids) = seeded("Intro\n");
+        let ctx = WpResourceCtx {
+            caret_block: ids[0].clone(),
+            caret_offset: 0,
+            target_blocks: vec![ids[0].clone()],
+        };
+        let resources = provide_resources(&ctx, &state.doc);
+        for id in ["open", "save", "save-as"] {
+            let action = resources[0]
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .expect("file action");
+            assert_eq!(action.contract.result, ResultSpec::Job);
+            assert!(matches!(
+                action.contract.execution,
+                ExecutionMode::Background { .. }
+            ));
+            assert!(action.contract.validate_declaration().is_empty());
+        }
     }
 
     /// Ctrl+K publishes the document resource with its structural children: an

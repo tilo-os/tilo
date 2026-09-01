@@ -8,9 +8,10 @@
 use crate::model::{Catalogue, Route};
 use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
 use qos_actions::{
-    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Availability,
-    ConfirmationPolicy, DiscoveryScope, Doc, EncodedAction, ExecutionLocus, ExecutionMode,
-    OperationKind, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
+    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
+    Availability, ConfirmationPolicy, DiscoveryScope, Doc, EncodedAction, ExecutionLocus,
+    ExecutionMode, OperationKind, ParamType, PermissionRequirement, Resource, ResultSpec,
+    RetryPolicy, RiskLevel,
 };
 use serde::{Deserialize, Serialize};
 
@@ -83,7 +84,7 @@ fn effect(
 }
 
 pub fn provide_resources(catalogue: &Catalogue) -> Vec<Resource> {
-    catalogue
+    let mut resources: Vec<Resource> = catalogue
         .apps
         .iter()
         .map(|app| {
@@ -122,8 +123,9 @@ pub fn provide_resources(catalogue: &Catalogue) -> Vec<Resource> {
                         app.launch_unavailable_reason.as_deref(),
                     ),
                     retry: RetryPolicy::AtMostOnce,
+                    execution: ExecutionMode::Background { cancellable: false },
                     discovery: DiscoveryScope::Launchable,
-                    result: ResultSpec::None,
+                    result: ResultSpec::Job,
                     ..ActionContract::default()
                 },
             ));
@@ -141,6 +143,8 @@ pub fn provide_resources(catalogue: &Catalogue) -> Vec<Resource> {
                     permission: PermissionRequirement::Admin,
                     confirmation: ConfirmationPolicy::Confirm,
                     retry: RetryPolicy::AtMostOnce,
+                    execution: ExecutionMode::Background { cancellable: false },
+                    result: ResultSpec::Job,
                     ..ActionContract::default()
                 },
             ));
@@ -163,15 +167,118 @@ pub fn provide_resources(catalogue: &Catalogue) -> Vec<Resource> {
                         risk,
                         confirmation,
                         retry: RetryPolicy::AtMostOnce,
-                        execution: ExecutionMode::Immediate,
-                        result: ResultSpec::None,
+                        execution: ExecutionMode::Background { cancellable: false },
+                        result: ResultSpec::Job,
                         ..ActionContract::default()
                     },
                 ));
             }
+            if app.route == Route::Vm && app.launch_available {
+                let app_id = app.id.clone();
+                resource = resource.with_action(
+                    ActionSpec::typed_operation(
+                        "open-file",
+                        "Open file in Windows",
+                        "path (omit to use the system file picker)",
+                        OperationKind::Effect,
+                        "windows.open-file",
+                        vec![ActionParam::optional_owned(
+                            "path",
+                            ParamType::Text,
+                            "Direct path; omit to use the system file picker",
+                        )],
+                        move |args: &ActionArgs| {
+                            EncodedAction::encode_operation(
+                                "windows.open-file",
+                                &vec![
+                                    app_id.clone(),
+                                    args.text("path").unwrap_or("").to_string(),
+                                ],
+                            )
+                            .unwrap_or_else(|_| EncodedAction {
+                                type_id: "windows.open-file".into(),
+                                payload: Vec::new(),
+                            })
+                        },
+                    )
+                    .execution(ExecutionMode::Background { cancellable: false })
+                    .returns(ResultSpec::Job),
+                );
+            }
             resource
         })
-        .collect()
+        .collect();
+    let mut manager = Resource::new("windows.manager", "windows.manager", "Windows manager");
+    for (id, label, type_id, description) in [
+        (
+            "install",
+            "Install Windows application",
+            "windows.install",
+            "installer path",
+        ),
+        (
+            "import-iso",
+            "Import Windows ISO",
+            "windows.import-iso",
+            "ISO path",
+        ),
+    ] {
+        manager = manager.with_action(
+            ActionSpec::typed_operation(
+                id,
+                label,
+                "path (omit to use the system file picker)",
+                OperationKind::Effect,
+                type_id,
+                vec![ActionParam::optional_owned(
+                    "path",
+                    ParamType::Text,
+                    description,
+                )],
+                move |args: &ActionArgs| {
+                    EncodedAction::encode_operation(type_id, &args.text("path").unwrap_or(""))
+                        .unwrap_or_else(|_| EncodedAction {
+                            type_id: type_id.into(),
+                            payload: Vec::new(),
+                        })
+                },
+            )
+            .requiring(PermissionRequirement::Admin)
+            .privileged()
+            .execution(ExecutionMode::Background { cancellable: false })
+            .returns(ResultSpec::Job),
+        );
+    }
+    for (id, label, type_id) in [
+        ("recovery", "Open recovery desktop", "windows.recovery"),
+        ("restart", "Restart Windows", "windows.restart"),
+        ("suspend", "Suspend Windows", "windows.suspend"),
+        ("resume", "Resume Windows", "windows.resume"),
+        ("shutdown", "Shut down Windows", "windows.shutdown"),
+        (
+            "temporary-network",
+            "Temporarily connect Windows",
+            "windows.temporary-network",
+        ),
+    ] {
+        manager = manager.with_action(effect(
+            id,
+            label,
+            type_id,
+            "",
+            ActionContract {
+                permission: PermissionRequirement::Admin,
+                risk: RiskLevel::Privileged,
+                confirmation: ConfirmationPolicy::Confirm,
+                retry: RetryPolicy::AtMostOnce,
+                execution: ExecutionMode::Background { cancellable: false },
+                result: ResultSpec::Job,
+                ..ActionContract::default()
+            },
+        ));
+    }
+    resources.insert(0, manager);
+    resources
 }
 
 #[cfg(test)]
@@ -205,6 +312,7 @@ mod tests {
         assert!(res.iter().all(|r| r.actions.len() >= 3));
         assert!(
             res.iter()
+                .filter(|resource| resource.kind == "windows.compat-app")
                 .all(|resource| resource.actions.iter().any(|action| action.id == "launch"))
         );
         assert!(
@@ -214,5 +322,23 @@ mod tests {
                     action.id == "delete-data" && action.contract.risk == RiskLevel::Destructive
                 })
         );
+    }
+
+    #[test]
+    fn every_background_operation_declares_a_job_result() {
+        let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
+        for action in resources
+            .iter()
+            .flat_map(|resource| resource.actions.iter())
+        {
+            if matches!(action.contract.execution, ExecutionMode::Background { .. }) {
+                assert_eq!(action.contract.result, ResultSpec::Job, "{}", action.id);
+                assert!(
+                    action.contract.validate_declaration().is_empty(),
+                    "{}",
+                    action.id
+                );
+            }
+        }
     }
 }

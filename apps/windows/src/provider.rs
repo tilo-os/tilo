@@ -19,6 +19,12 @@ use crate::model::{
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 pub trait CompatibilityProvider: Send {
+    /// Whether a successful method return is also the terminal outcome. Live
+    /// providers return `false`: they acknowledge queueing first and later
+    /// surface the service result through `take_notice`.
+    fn operations_complete_on_return(&self) -> bool {
+        false
+    }
     fn catalogue(&mut self) -> Catalogue;
     /// Queue a local launch of a server-owned managed entry.
     ///
@@ -97,6 +103,9 @@ pub trait CompatibilityProvider: Send {
     /// Returns an error when the capsule is unavailable or unauthorized.
     fn delete_data(&mut self, capsule_id: &str) -> Result<(), String>;
     fn take_notice(&mut self) -> Option<String> {
+        None
+    }
+    fn take_operation_result(&mut self) -> Option<Result<String, String>> {
         None
     }
     /// Sets a user route override.
@@ -238,6 +247,9 @@ impl Default for SampleProvider {
     }
 }
 impl CompatibilityProvider for SampleProvider {
+    fn operations_complete_on_return(&self) -> bool {
+        true
+    }
     fn catalogue(&mut self) -> Catalogue {
         self.catalogue.clone()
     }
@@ -399,6 +411,7 @@ enum WorkerEvent {
     },
     Unavailable(String),
     Notice(String),
+    Operation(Result<String, String>),
 }
 
 pub struct LiveProvider {
@@ -408,6 +421,7 @@ pub struct LiveProvider {
     refresh_pending: bool,
     next_refresh: Instant,
     notice: Option<String>,
+    operation_result: Option<Result<String, String>>,
     pending_vm_install: Option<(File, String)>,
 }
 
@@ -443,6 +457,7 @@ impl LiveProvider {
             refresh_pending: true,
             next_refresh: Instant::now() + REFRESH_INTERVAL,
             notice: None,
+            operation_result: None,
             pending_vm_install: None,
         })
     }
@@ -476,6 +491,12 @@ impl LiveProvider {
                     self.notice = Some(detail);
                 }
                 WorkerEvent::Notice(detail) => self.notice = Some(detail),
+                WorkerEvent::Operation(result) => {
+                    self.notice = Some(match &result {
+                        Ok(detail) | Err(detail) => detail.clone(),
+                    });
+                    self.operation_result = Some(result);
+                }
                 WorkerEvent::VmInstallConfirmation {
                     source,
                     source_name,
@@ -687,6 +708,11 @@ impl CompatibilityProvider for LiveProvider {
         self.notice.take()
     }
 
+    fn take_operation_result(&mut self) -> Option<Result<String, String>> {
+        self.drain();
+        self.operation_result.take()
+    }
+
     fn set_route_override(&mut self, _app_id: &str, _route: Route) -> Result<(), String> {
         Err(
             "Route changes need a trusted qOS policy action; this session API is launch-only."
@@ -786,19 +812,25 @@ fn worker(
                     entry_id,
                 }) {
                     Ok(ProtocolResponse::Launched { receipt }) if receipt.success => {
-                        WorkerEvent::Notice("The Windows application exited normally.".into())
+                        WorkerEvent::Operation(
+                            Ok("The Windows application exited normally.".into()),
+                        )
                     }
-                    Ok(ProtocolResponse::Launched { receipt }) => WorkerEvent::Notice(format!(
-                        "The Windows application exited with status {}.",
-                        receipt
-                            .exit_code
-                            .map_or_else(|| "unknown".to_string(), |code| code.to_string())
-                    )),
-                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
-                    Ok(_) => WorkerEvent::Unavailable(
+                    Ok(ProtocolResponse::Launched { receipt }) => {
+                        WorkerEvent::Operation(Err(format!(
+                            "The Windows application exited with status {}.",
+                            receipt
+                                .exit_code
+                                .map_or_else(|| "unknown".to_string(), |code| code.to_string())
+                        )))
+                    }
+                    Ok(ProtocolResponse::Error { error }) => {
+                        WorkerEvent::Operation(Err(error.message))
+                    }
+                    Ok(_) => WorkerEvent::Operation(Err(
                         "The compatibility service returned an invalid launch response.".into(),
-                    ),
-                    Err(error) => WorkerEvent::Unavailable(error.to_string()),
+                    )),
+                    Err(error) => WorkerEvent::Operation(Err(error.to_string())),
                 };
                 if events.send(event).is_err() {
                     return;
@@ -810,21 +842,25 @@ fn worker(
                     entry_id,
                 }) {
                     Ok(ProtocolResponse::Launched { receipt }) if receipt.success => {
-                        WorkerEvent::Notice(
+                        WorkerEvent::Operation(Ok(
                             "The application exited from the managed Windows fallback.".into(),
-                        )
+                        ))
                     }
-                    Ok(ProtocolResponse::Launched { receipt }) => WorkerEvent::Notice(format!(
-                        "The Windows fallback application exited with status {}.",
-                        receipt
-                            .exit_code
-                            .map_or_else(|| "unknown".to_string(), |code| code.to_string())
-                    )),
-                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
-                    Ok(_) => WorkerEvent::Unavailable(
+                    Ok(ProtocolResponse::Launched { receipt }) => {
+                        WorkerEvent::Operation(Err(format!(
+                            "The Windows fallback application exited with status {}.",
+                            receipt
+                                .exit_code
+                                .map_or_else(|| "unknown".to_string(), |code| code.to_string())
+                        )))
+                    }
+                    Ok(ProtocolResponse::Error { error }) => {
+                        WorkerEvent::Operation(Err(error.message))
+                    }
+                    Ok(_) => WorkerEvent::Operation(Err(
                         "The compatibility service returned an invalid VM launch response.".into(),
-                    ),
-                    Err(error) => WorkerEvent::Unavailable(error.to_string()),
+                    )),
+                    Err(error) => WorkerEvent::Operation(Err(error.to_string())),
                 };
                 if events.send(event).is_err() {
                     return;
@@ -832,11 +868,11 @@ fn worker(
             }
             WorkerCommand::LaunchVmWithFile { entry_id, source } => {
                 let event = match client.request_with_file(&ProtocolRequest::LaunchVmWithPortalFile { version: PROTOCOL_VERSION, entry_id, writable: false }, &source) {
-                    Ok(ProtocolResponse::Launched { receipt }) if receipt.success => WorkerEvent::Notice("Opened the portal-selected file in Windows.".into()),
-                    Ok(ProtocolResponse::Launched { receipt }) => WorkerEvent::Notice(format!("Windows closed with status {:?}.", receipt.exit_code)),
-                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
-                    Ok(_) => WorkerEvent::Unavailable("The compatibility service returned an invalid portal-file launch response.".into()),
-                    Err(error) => WorkerEvent::Unavailable(error.to_string()),
+                    Ok(ProtocolResponse::Launched { receipt }) if receipt.success => WorkerEvent::Operation(Ok("Opened the portal-selected file in Windows.".into())),
+                    Ok(ProtocolResponse::Launched { receipt }) => WorkerEvent::Operation(Err(format!("Windows closed with status {:?}.", receipt.exit_code))),
+                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Operation(Err(error.message)),
+                    Ok(_) => WorkerEvent::Operation(Err("The compatibility service returned an invalid portal-file launch response.".into())),
+                    Err(error) => WorkerEvent::Operation(Err(error.to_string())),
                 };
                 if events.send(event).is_err() {
                     return;
@@ -861,13 +897,15 @@ fn worker(
                         }
                     }
                     Ok(ProtocolResponse::Installed { receipt }) => {
-                        WorkerEvent::Notice(receipt.detail)
+                        WorkerEvent::Operation(Ok(receipt.detail))
                     }
-                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
-                    Ok(_) => WorkerEvent::Unavailable(
+                    Ok(ProtocolResponse::Error { error }) => {
+                        WorkerEvent::Operation(Err(error.message))
+                    }
+                    Ok(_) => WorkerEvent::Operation(Err(
                         "The compatibility service returned an invalid install response.".into(),
-                    ),
-                    Err(error) => WorkerEvent::Unavailable(error.to_string()),
+                    )),
+                    Err(error) => WorkerEvent::Operation(Err(error.to_string())),
                 };
                 let needs_confirmation = matches!(event, WorkerEvent::VmInstallConfirmation { .. });
                 if events.send(event).is_err() {
@@ -962,14 +1000,14 @@ fn worker(
                     capsule_id,
                 }) {
                     Ok(ProtocolResponse::VmInstallStarted { installation }) => {
-                        WorkerEvent::Notice(installation.detail)
+                        WorkerEvent::Operation(Ok(installation.detail))
                     }
-                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
-                    Ok(_) => WorkerEvent::Unavailable(
+                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Operation(Err(error.message)),
+                    Ok(_) => WorkerEvent::Operation(Err(
                         "The compatibility service returned an invalid Windows escalation response."
                             .into(),
-                    ),
-                    Err(error) => WorkerEvent::Unavailable(error.to_string()),
+                    )),
+                    Err(error) => WorkerEvent::Operation(Err(error.to_string())),
                 };
                 if events.send(event).is_err() {
                     return;
@@ -1039,15 +1077,15 @@ fn install_destination_request(
     success: &str,
 ) {
     let event = match client.request_with_file(request, source) {
-        Ok(ProtocolResponse::Installed { receipt }) => WorkerEvent::Notice(receipt.detail),
+        Ok(ProtocolResponse::Installed { receipt }) => WorkerEvent::Operation(Ok(receipt.detail)),
         Ok(ProtocolResponse::VmInstallStarted { installation }) => {
-            WorkerEvent::Notice(installation.detail)
+            WorkerEvent::Operation(Ok(installation.detail))
         }
-        Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
-        Ok(_) => WorkerEvent::Unavailable(
+        Ok(ProtocolResponse::Error { error }) => WorkerEvent::Operation(Err(error.message)),
+        Ok(_) => WorkerEvent::Operation(Err(
             "The compatibility service returned an invalid installer response.".into(),
-        ),
-        Err(error) => WorkerEvent::Unavailable(error.to_string()),
+        )),
+        Err(error) => WorkerEvent::Operation(Err(error.to_string())),
     };
     if events.send(event).is_err() {
         return;
@@ -1084,18 +1122,18 @@ fn lifecycle_request(
         },
         Ok(
             ProtocolResponse::Retried { receipt } | ProtocolResponse::VendorUninstalled { receipt },
-        ) => WorkerEvent::Notice(receipt.detail),
+        ) => WorkerEvent::Operation(Ok(receipt.detail)),
         Ok(ProtocolResponse::LauncherRemoved { .. } | ProtocolResponse::DataDeleted { .. }) => {
-            WorkerEvent::Notice(success.to_string())
+            WorkerEvent::Operation(Ok(success.to_string()))
         }
         Ok(ProtocolResponse::VmVendorUninstallation { uninstallation }) => {
-            WorkerEvent::Notice(uninstallation.detail)
+            WorkerEvent::Operation(Ok(uninstallation.detail))
         }
-        Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
-        Ok(_) => WorkerEvent::Unavailable(
+        Ok(ProtocolResponse::Error { error }) => WorkerEvent::Operation(Err(error.message)),
+        Ok(_) => WorkerEvent::Operation(Err(
             "The compatibility service returned an invalid management response.".into(),
-        ),
-        Err(error) => WorkerEvent::Unavailable(error.to_string()),
+        )),
+        Err(error) => WorkerEvent::Operation(Err(error.to_string())),
     };
     if events.send(event).is_err() {
         return;
@@ -1720,6 +1758,7 @@ mod tests {
             refresh_pending: true,
             next_refresh: Instant::now() + REFRESH_INTERVAL,
             notice: None,
+            operation_result: None,
             pending_vm_install: None,
         };
         event_tx
