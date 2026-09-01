@@ -134,15 +134,23 @@ top-bar glance.
 - An outcome-first Catch up tab with three-to-five expandable cards and honest
   app/resource provenance, beside the existing granular Explore timeline.
 - A private per-device, per-workspace seen frontier in the merged settings
-  store. The frontier snapshots on open and advances on close; neither action
-  writes to the collaborative document.
+  store. It retains full Automerge heads per record document and explicit
+  room-scoped tree exceptions, so delayed/concurrent changes remain unread and
+  bounded projections cannot make old work unread again. The frontier advances
+  on close; reading never writes to a collaborative document.
 - Passive top-bar awareness: a short-lived center-card override for new work, a
   bounded new-change badge at the people cluster, and a click-through into
   Activity. The user's chosen clock/calendar/monitor view is preserved.
 - A responsive explorer: wide desktops get lens, grouped-timeline, and
-  provenance columns; narrow layouts retain one focused timeline. App and
-  resource-kind lens choices compile into the same `HistoryFilter` as every
-  other history entry point.
+  provenance columns; narrow layouts use keyboard/accessibility-addressable
+  Timeline, Browse, and Details push navigation. Overflow controls keep every
+  contributor, lens, and outcome reachable at short heights.
+- Exact causal comparison with generic before/after patches, stable selection
+  across live feed reorder, provenance-aware Undo refusal, partial-Undo
+  reporting, and collaborative rename/split/merge controls.
+- Workspace aggregation across the tree, live records, and validated cold local
+  records. Cold reads are bounded and read-only; missing/corrupt records remain
+  visible as incomplete coverage rather than silently disappearing.
 
 Generated prose remains intentionally optional. It should ship only with
 source-frontier labeling and factual evaluation fixtures; every implemented
