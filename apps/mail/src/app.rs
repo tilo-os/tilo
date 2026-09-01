@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size as TSize, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -42,7 +42,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{NavPane, NavShell, TextInput, Toggle, ToggleFace, Widget};
+use ui::widget::{EmptyState, NavPane, NavShell, TextInput, Toggle, ToggleFace, Widget};
 
 use crate::account::{Account, AccountStore};
 use crate::compose::{ComposeAction, ComposeWindow};
@@ -94,8 +94,6 @@ enum OverlayHit {
     AuthOAuth,
     /// Trigger the OAuth authorization flow for the detected provider.
     OAuthSignIn,
-    /// The first-run "Add account" button.
-    FirstRunAdd,
 }
 
 /// The engine worker channel pair (live app only).
@@ -157,6 +155,10 @@ impl AccountsPersist {
 pub struct MailApp {
     shared: Shared,
     nav: NavShell,
+    /// Retained first-run surface so the primary action uses the shared
+    /// pointer, focus, keyboard and accessibility contract.
+    first_run: EmptyState,
+    first_run_node: Option<NodeId>,
     compose: ComposeWindow,
     /// The Drafts-folder message the open composer is editing, if any. On save
     /// the same message is updated (not duplicated); on send it is removed.
@@ -257,6 +259,11 @@ impl MailApp {
         Self {
             shared,
             nav,
+            first_run: EmptyState::new("Welcome to Mail")
+                .with_icon(Icon::Mail)
+                .with_message("Add your email account to start reading and sending mail.")
+                .with_action("Add account"),
+            first_run_node: None,
             compose: ComposeWindow::new(ComposeFormat::Html),
             editing_draft: None,
             context_menu: None,
@@ -1146,16 +1153,6 @@ impl MailApp {
 
     fn rebuild_overlay_hits(&mut self) {
         self.overlay_hits.clear();
-        if self.is_first_run() {
-            let p = self.overlay_panel_rect();
-            let bw = 200.0;
-            let cx = f64::midpoint(p.x0, p.x1);
-            let by = p.y0 + p.height() * 0.66;
-            self.overlay_hits.push((
-                Rect::new(cx - bw / 2.0, by, cx + bw / 2.0, by + 44.0),
-                OverlayHit::FirstRunAdd,
-            ));
-        }
         if self.setup_open {
             let p = self.overlay_panel_rect();
             let pad = 26.0;
@@ -2097,101 +2094,6 @@ impl MailApp {
         }
     }
 
-    /// The first-run onboarding screen: a welcome panel with a single
-    /// "Add account" call to action that opens the setup flow. Shown whenever
-    /// no account is configured (instead of an empty inbox).
-    fn draw_first_run(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        if !self.is_first_run() {
-            return;
-        }
-        let c = &theme.tokens.colors;
-        // Opaque cover over the (empty) mailbox behind it.
-        fill_rect(scene, t, self.rect, c.surfaces.base);
-        let p = self.overlay_panel_rect();
-        fill_round(scene, t, p, 18.0, c.surfaces.raised);
-        stroke_round(scene, t, p, 18.0, 1.0, c.border_white_10);
-        let cx = f64::midpoint(p.x0, p.x1);
-
-        // Hero mail glyph in an accent disc.
-        let disc_r = 34.0;
-        let disc_c = Point::new(cx, p.y0 + p.height() * 0.24);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            c.accent[5].with_alpha_factor(0.16),
-            None,
-            &Circle::new(disc_c, disc_r),
-        );
-        Icon::Mail.draw(
-            scene,
-            t,
-            Rect::new(
-                disc_c.x - 20.0,
-                disc_c.y - 20.0,
-                disc_c.x + 20.0,
-                disc_c.y + 20.0,
-            ),
-            c.accent[5],
-        );
-
-        let title = "Welcome to Mail";
-        let (tw, _) = tr.measure_weighted(title, 22.0, None, TextWeight::Bold);
-        tr.draw_text_weighted(
-            scene,
-            title,
-            22.0,
-            c.text_primary,
-            t * Affine::translate((cx - f64::from(tw) / 2.0, disc_c.y + disc_r + 18.0)),
-            None,
-            TextWeight::Bold,
-        );
-        let sub = "Add your email account to start reading and sending mail.";
-        let (sw, _) = tr.measure(sub, 13.0, None);
-        tr.draw_text(
-            scene,
-            sub,
-            13.0,
-            c.text_dim,
-            t * Affine::translate((cx - f64::from(sw) / 2.0, disc_c.y + disc_r + 50.0)),
-            None,
-        );
-
-        // The single call to action.
-        let last_mouse = self.shared.borrow().last_mouse;
-        for (rect, hit) in &self.overlay_hits {
-            if !matches!(hit, OverlayHit::FirstRunAdd) {
-                continue;
-            }
-            let hov = rect.contains(last_mouse);
-            fill_round(
-                scene,
-                t,
-                *rect,
-                11.0,
-                if hov { c.accent[4] } else { c.accent[5] },
-            );
-            let label = "Add account";
-            let (w, _) = tr.measure_weighted(label, 14.5, None, TextWeight::Semibold);
-            let group_w = 18.0 + 8.0 + f64::from(w);
-            let gx = f64::midpoint(rect.x0, rect.x1) - group_w / 2.0;
-            Icon::Plus.draw(
-                scene,
-                t,
-                Rect::new(gx, rect.y0 + 13.0, gx + 18.0, rect.y0 + 31.0),
-                Color::WHITE,
-            );
-            tr.draw_text_weighted(
-                scene,
-                label,
-                14.5,
-                Color::WHITE,
-                t * Affine::translate((gx + 26.0, rect.y0 + 13.0)),
-                None,
-                TextWeight::Semibold,
-            );
-        }
-    }
-
     fn draw_status(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let st = self.shared.borrow();
         let Some(msg) = &st.status else { return };
@@ -2233,6 +2135,7 @@ impl MailApp {
     #[cfg(test)]
     fn layout_for_test(&mut self, w: f64, h: f64) {
         self.rect = Rect::new(0.0, 0.0, w, h);
+        self.first_run.apply_layout_external(self.rect);
         self.layout_nav();
     }
 
@@ -2471,19 +2374,6 @@ impl MailApp {
         consumed
     }
 
-    /// Step 1.5 of [`Widget::handle_event`]: while first-run onboarding is
-    /// shown, the only interaction is a click on the "Add account" button.
-    fn handle_first_run_click(&mut self, pt: Point) {
-        self.rebuild_overlay_hits();
-        if self
-            .overlay_hits
-            .iter()
-            .any(|(rc, h)| matches!(h, OverlayHit::FirstRunAdd) && rc.contains(pt))
-        {
-            self.open_setup_edit(None);
-        }
-    }
-
     /// Step 3 of [`Widget::handle_event`]: while the row context menu is open,
     /// a click either activates the item under it or dismisses the menu.
     fn handle_context_menu_click(&mut self, pt: Point, state: &mut AutoCommit) {
@@ -2511,6 +2401,9 @@ impl MailApp {
 
 impl Widget for MailApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        if self.first_run.take_action() {
+            self.open_setup_edit(None);
+        }
         // Drain any engine results first so freshly-fetched messages are present
         // before layout/draw.
         self.drain_engine(state);
@@ -2609,27 +2502,30 @@ impl Widget for MailApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // `Widget::build_layout` returns a bare `NodeId`, not a `Result` — a
-        // framework-wide contract this one widget can't change — so a
-        // `new_leaf` failure (which a freshly-created tree with one valid
-        // leaf style cannot produce) has no propagation path here.
+        // `Widget::build_layout` returns a bare `NodeId`, so the retained
+        // first-run child and its full-size parent are inserted together.
         #[allow(
             clippy::unwrap_used,
-            reason = "new_leaf on a fresh tree with a valid Style cannot fail; Widget::build_layout's Result-free signature is shared by every implementor and out of this crate's scope to change"
+            reason = "new_with_children on a fresh tree with valid nodes cannot fail; Widget::build_layout's Result-free signature is shared by every implementor and out of this crate's scope to change"
         )]
+        let first_run_node = self.first_run.build_layout(taffy, theme, node_map);
         let node = taffy
-            .new_leaf(Style {
-                size: TSize {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
+            .new_with_children(
+                Style {
+                    size: TSize {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Default::default()
                 },
-                ..Default::default()
-            })
+                &[first_run_node],
+            )
             .unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        self.first_run_node = Some(first_run_node);
         node
     }
 
@@ -2650,6 +2546,10 @@ impl Widget for MailApp {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
+        if let Some(first_run_node) = self.first_run_node {
+            self.first_run.apply_layout(taffy, first_run_node, origin);
+            self.first_run.apply_layout_external(self.rect);
+        }
         self.layout_nav();
     }
 
@@ -2687,8 +2587,11 @@ impl Widget for MailApp {
         self.nav
             .draw_with_presence(scene, t, tr, theme, presence, permissions);
         // First-run onboarding covers the (empty) mailbox until an account is
-        // added.
-        self.draw_first_run(scene, t, tr, theme);
+        // added. This is the shared retained component, not a painted lookalike.
+        if self.is_first_run() {
+            fill_rect(scene, t, self.rect, c.surfaces.base);
+            self.first_run.draw(scene, t, tr, theme, presence);
+        }
         // App-owned overlays on top.
         self.compose.draw(scene, t, tr, theme, presence);
         self.compose.draw_inputs(scene, t, tr, theme, presence);
@@ -2732,18 +2635,25 @@ impl Widget for MailApp {
             return;
         }
 
-        // 1.5) First-run onboarding is modal until an account exists: the only
-        // action is "Add account", which opens the setup sheet.
-        if self.is_first_run()
-            && let WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } = event
-        {
-            let pt = self.shared.borrow().last_mouse;
-            self.handle_first_run_click(pt);
-            *handled = true;
+        // 1.5) First-run onboarding is modal until an account exists. Its
+        // shared empty-state child owns pointer, keyboard and AT activation.
+        if self.is_first_run() {
+            if let Some(first_run_node) = self.first_run_node {
+                self.first_run.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    first_run_node,
+                    taffy,
+                );
+            }
+            if self.first_run.take_action() {
+                self.open_setup_edit(None);
+            }
             self.dirty = true;
             return;
         }
@@ -2833,6 +2743,28 @@ impl Widget for MailApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        if self.is_first_run() {
+            vec![&self.first_run]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.is_first_run() {
+            vec![&mut self.first_run]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.is_first_run()
+            .then(|| self.first_run.cursor_shape(point))
+            .flatten()
     }
 
     fn modal_capture(&self) -> Option<Rect> {
@@ -3788,17 +3720,18 @@ mod tests {
             app.is_first_run(),
             "no configured account → first-run onboarding"
         );
-        app.rebuild_overlay_hits();
-        let add = app
-            .overlay_hits
-            .iter()
-            .find_map(|(r, h)| matches!(h, OverlayHit::FirstRunAdd).then_some(*r))
-            .expect("the onboarding Add-account button");
+        let semantics = app.first_run.accessibility().expect("first-run semantics");
+        assert_eq!(semantics.name.as_deref(), Some("Welcome to Mail"));
+        assert!(semantics.children.iter().any(|node| {
+            node.role == ui::a11y::Role::Button && node.name.as_deref() == Some("Add account")
+        }));
         assert!(
-            click_at(&mut app, &mut doc, add.center()),
-            "Add-account click consumed"
+            app.first_run
+                .perform_action(&ui::a11y::Action::Activate, &mut doc, &automerge::ROOT,),
+            "assistive activation reaches Add account"
         );
-        assert!(app.setup_open, "clicking Add opens the account setup sheet");
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.setup_open, "Add account opens the account setup sheet");
         assert!(
             !app.is_first_run(),
             "an open setup sheet supersedes the first-run screen"
