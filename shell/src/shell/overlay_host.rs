@@ -1244,7 +1244,13 @@ impl ShellOverlayHost {
                     self.run_peer_sync_request(&request, false);
                 }
                 PeerSyncAction::IssueInviteFor { name, copy } => {
-                    self.run_peer_sync_request(&PeerSyncRequest::IssueInviteFor(name), copy);
+                    self.run_peer_sync_request(
+                        &PeerSyncRequest::IssueInviteFor {
+                            name,
+                            role: crate::network::invite::InviteRole::Editor,
+                        },
+                        copy,
+                    );
                 }
                 PeerSyncAction::PromptInvite => self.peer_sync_overlay.prompt_invite(),
                 PeerSyncAction::PromptConnect => self.peer_sync_overlay.prompt_connect(),
@@ -12511,7 +12517,7 @@ mod palette_dispatch_tests {
     fn the_composer_mints_for_the_name_it_was_given_and_copies() {
         let (mut h, chrome) = host_with_chrome();
         h.set_peer_sync_bridge(std::rc::Rc::new(|req| match req {
-            PeerSyncRequest::IssueInviteFor(name) => Ok(format!("token-for-{name}")),
+            PeerSyncRequest::IssueInviteFor { name, .. } => Ok(format!("token-for-{name}")),
             PeerSyncRequest::IssueInvite => Ok("token-for-nobody".to_string()),
             PeerSyncRequest::AcceptInvite(_) => Err("not here".to_string()),
         }));

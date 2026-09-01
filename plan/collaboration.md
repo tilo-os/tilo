@@ -23,6 +23,13 @@ Existing installations are migrated idempotently by `shell
 --provision-identity`. Existing keys are checked for agreement and are never
 silently replaced.
 
+On both qOS and a qOS desktop session installed on another distribution, the
+identity belongs to the existing Unix login: its files live in that user's XDG
+trees with ordinary Unix ownership, and a newly-created identity takes its
+public display label from the account's passwd entry. This does not create a
+second login or add an identity password. Pre-existing identity files and
+account data are left untouched.
+
 ## Direct collaboration
 
 `shell/src/network/actor.rs` owns an Iroh endpoint and one `iroh-gossip` topic
@@ -33,6 +40,14 @@ establish one.
 
 Direct collaboration has no server requirement. It is the fast path for an
 ad-hoc invitation and remains active when a workspace host is configured.
+
+An invite also signs the maximum role its bearer receives: Viewer,
+Commenter, or Editor. The inviter chooses that role before the token is
+minted; changing it invalidates the signature. After the joining device
+presents its person-signed device certificate, the workspace authority turns
+that signed choice into the ordinary room-membership capability. From then on
+the same role checks gate app actions whether peers connect directly, through
+a home host, or through hosted infrastructure.
 
 ## Workspace hosts
 
