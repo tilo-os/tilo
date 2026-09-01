@@ -628,6 +628,10 @@ impl Default for DiffMergeApp {
 }
 
 impl Widget for DiffMergeApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::DIFFMERGE_OPERATION_TYPE]
+    }
+
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,
