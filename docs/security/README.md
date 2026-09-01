@@ -1,6 +1,7 @@
 # Security
 
-Start with **[architecture.md](architecture.md)**. It is the concept: what qOS
+Start with **[threat-model.md](threat-model.md)** for the current assurance
+boundary, then [architecture.md](architecture.md). The latter is the concept: what qOS
 defends against, what it deliberately does not, and how identity, boot, sandbox
 and collaboration fit together. Everything else here is detail hanging off it.
 
@@ -8,6 +9,7 @@ and collaboration fit together. Everything else here is detail hanging off it.
 
 | File | What it is | Read it when |
 |---|---|---|
+| [threat-model.md](threat-model.md) | As-built adversaries, trust boundaries, abuse cases, evidence levels, residual risk and priority gaps. | Making or reviewing a security claim |
 | [architecture.md](architecture.md) | The security concept. Threat model, identity spine, boot chain, runtime hardening, permissions, collaboration authority, attestation. Ends with what we do **not** claim, and a verified-versus-only-built split. | Always first |
 | [boot-chain.md](boot-chain.md) | How the machine boots and what that buys. Owner-enrolled Secure Boot, the unified kernel image, the sealed root. | Touching `os/`, the kernel, or signing |
 | [rollback.md](rollback.md) | Bounded rollback: the last few generations may unseal, older ones may not. Operator view plus the contract the boot chain must satisfy. | Changing update or unlock behaviour |
