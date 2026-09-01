@@ -62,23 +62,27 @@ else
   fi
 fi
 
-# --- 2. every app directory is a workspace member cargo can build by name ----
+# --- 2. every app is a workspace member with a unique Cargo package name -----
 missing_member=0
 bad_name=0
+declare -A app_package_names=()
 for m in "${manifests[@]}"; do
   dir="$(dirname "$m")"
   rel="apps/$(basename "$dir")"
   grep -qF "\"$rel\"" "$REPO/Cargo.toml" || { bad "$rel is not a workspace member"; missing_member=1; }
-  # The Containerfile passes the directory name to `cargo build -p`, so the
-  # package name has to equal it.
+  # build-thin-apps.sh reads this package name from Cargo.toml. It deliberately
+  # need not equal the directory (apps/windows uses windows-app to avoid the
+  # registry's `windows` package making `cargo -p windows` ambiguous).
   pkg="$(sed -n 's/^name = "\(.*\)"/\1/p' "$dir/Cargo.toml" | head -1)"
-  if [ "$pkg" != "$(basename "$dir")" ]; then
-    bad "$rel has package name '$pkg'; os/Containerfile builds it as '-p $(basename "$dir")'"
+  if [ -z "$pkg" ] || [ -n "${app_package_names[$pkg]:-}" ]; then
+    bad "$rel has an empty or duplicate app package name '$pkg'"
     bad_name=1
+  else
+    app_package_names[$pkg]="$rel"
   fi
 done
 [ "$missing_member" = 1 ] || ok "all ${#manifests[@]} app manifests sit in workspace members"
-[ "$bad_name" = 1 ] || ok "every app package name matches its directory, so -p resolves"
+[ "$bad_name" = 1 ] || ok "every app package name is present and unique, so -p resolves"
 
 # --- 3. every manifest entrypoint names a binary some crate produces ---------
 no_bin=0
