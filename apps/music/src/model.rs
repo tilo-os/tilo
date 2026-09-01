@@ -131,7 +131,7 @@ impl RepeatMode {
 /// Live playback state. This is genuinely shared across devices: pausing on
 /// one device and resuming on another, the queue, shuffle/repeat and volume
 /// all round-trip through the CRDT.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Playback {
     /// Currently-loaded track, if any.
     pub current: Option<TrackId>,

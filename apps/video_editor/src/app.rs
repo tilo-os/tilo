@@ -1586,6 +1586,10 @@ pub struct VideoEditorApp {
     /// What a `Save` should do once the destination comes back: just save, or
     /// save and then continue into the open that was interrupted.
     save_then_open: Option<PathBuf>,
+    /// Save requested by either the UI or the resource-operation door. The
+    /// effect adapter only has an immutable document borrow, so sync performs
+    /// the file write with the normal mutable event-loop document.
+    pending_save: bool,
     /// The project's format, worded once for the inspector to paint.
     ///
     /// Cached against the numbers it was built from for the same reason the
@@ -1781,6 +1785,7 @@ impl VideoEditorApp {
             recents: crate::project_file::recents::load(),
             pending_open: None,
             save_then_open: None,
+            pending_save: false,
             // Filled on the first `sync`, from whatever project the document
             // actually holds -- a blank one included.
             project_format_shown: String::new(),
@@ -4992,6 +4997,27 @@ impl VideoEditorApp {
         self.import_rx = Some(portal::request_import());
     }
 
+    fn perform_resource_operation(
+        &mut self,
+        operation: crate::actions::VideoEditorOperation,
+    ) -> Result<(), String> {
+        use crate::actions::VideoEditorOperation;
+        match operation {
+            VideoEditorOperation::ImportMedia => self.trigger_import(),
+            VideoEditorOperation::OpenProject => self.request_open_project(),
+            VideoEditorOperation::SaveProject => self.queue_save_project(),
+            VideoEditorOperation::SaveProjectAs => self.request_save_as(),
+            VideoEditorOperation::Export => self.request_export(),
+            VideoEditorOperation::CancelExport => {
+                let Some(job) = self.export_job.as_ref() else {
+                    return Err("no export is running".into());
+                };
+                job.cancel();
+            }
+        }
+        Ok(())
+    }
+
     /// Drain any pending imports (queued deterministic files first, then a
     /// portal outcome), bringing each chosen file into the bin as a real clip.
     fn drain_import(&mut self, doc: &mut AutoCommit) {
@@ -7081,9 +7107,6 @@ impl VideoEditorApp {
     /// is open (a blank project), so the palette shows an empty tree — a steady,
     /// level-triggered value recomputed each frame.
     pub(crate) fn video_resource_ctx(&self) -> Option<VideoResourceCtx> {
-        if self.project.tracks.is_empty() && self.project.clips.is_empty() {
-            return None;
-        }
         Some(VideoResourceCtx {
             project: self.project.clone(),
             playhead: self.playhead,
@@ -7362,7 +7385,14 @@ struct ExportLayout {
 // Widget impl
 // ==========================================================================
 impl Widget for VideoEditorApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::VIDEO_EDITOR_OPERATION_TYPE]
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        if std::mem::take(&mut self.pending_save) {
+            self.save_project(state);
+        }
         if !self.seeded {
             // The live app opens on a blank project; only the hermetic demo
             // build seeds the bundled sample project into a fresh document.
@@ -8362,6 +8392,24 @@ impl Widget for VideoEditorApp {
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        self.perform_resource_operation(operation)?;
+        Ok(true)
     }
 
     /// Fold the open project into qOS global search: every marker, title and
@@ -11069,7 +11117,7 @@ impl VideoEditorApp {
                 true
             }
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("s") => {
-                self.save_project(state);
+                self.queue_save_project();
                 true
             }
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("c") => {
@@ -12162,6 +12210,10 @@ impl VideoEditorApp {
         }
     }
 
+    fn queue_save_project(&mut self) {
+        self.pending_save = true;
+    }
+
     /// Ask the host where to write the project. Under a strict sandbox this
     /// round-trip is what earns the write at all.
     fn request_save_as(&mut self) {
@@ -12452,7 +12504,7 @@ impl VideoEditorApp {
     fn run_project_menu_item(&mut self, doc: &mut AutoCommit, item: ProjectMenuItem) {
         match item {
             ProjectMenuItem::Open => self.request_open_project(),
-            ProjectMenuItem::Save => self.save_project(doc),
+            ProjectMenuItem::Save => self.queue_save_project(),
             ProjectMenuItem::SaveAs => self.request_save_as(),
             ProjectMenuItem::Recent(p) => self.begin_open(doc, p),
         }
