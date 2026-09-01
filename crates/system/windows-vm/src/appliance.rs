@@ -182,8 +182,7 @@ where
     /// Refreshes the app catalogue only through the authenticated guest
     /// bridge. An RDP server alone is never enough to publish applications.
     pub fn catalog(&self) -> Result<Catalog, LaunchError> {
-        let state = self.ready_state()?;
-        self.ensure_running()?;
+        let state = self.ensure_ready()?;
         let session = self.agent.wait_ready(self.agent_timeout)?;
         validate_health(&state, &session.health)?;
         let catalog = self.agent.catalog(&session)?;
@@ -201,8 +200,7 @@ where
     /// every error after it is created and when `FreeRDP` exits normally.
     pub fn launch(&self, request: &LaunchRequest) -> Result<RunningRemoteApp, LaunchError> {
         validate_request(request)?;
-        let state = self.ready_state()?;
-        self.ensure_running()?;
+        let state = self.ensure_ready()?;
         let session = self.agent.wait_ready(self.agent_timeout)?;
         validate_health(&state, &session.health)?;
 
@@ -268,6 +266,35 @@ where
             return Err(LaunchError::NotReady(state));
         }
         Ok(state)
+    }
+
+    /// Turns a prepared guest into the one launchable appliance only after the
+    /// authenticated bridge proves its protocol, licence state, and monotonic
+    /// catalogue generation.  This is intentionally reached by an explicit
+    /// application launch, never by the manager's availability refresh.
+    fn ensure_ready(&self) -> Result<ApplianceState, LaunchError> {
+        let stored = self.state.load()?;
+        if stored.can_launch() {
+            self.ensure_running()?;
+            return Ok(stored);
+        }
+        if !matches!(
+            stored.phase,
+            crate::AppliancePhase::Installing { .. } | crate::AppliancePhase::AwaitingGuestBridge
+        ) {
+            return Err(LaunchError::NotReady(stored));
+        }
+        self.ensure_running()?;
+        let session = self.agent.wait_ready(self.agent_timeout)?;
+        validate_health(&stored, &session.health)?;
+        let ready = ApplianceState {
+            schema_version: stored.schema_version,
+            phase: crate::AppliancePhase::Ready,
+            license: session.health.license.clone(),
+            catalog_generation: session.health.catalog_generation,
+        };
+        self.state.save(&ready)?;
+        Ok(ready)
     }
 
     fn ensure_running(&self) -> Result<(), LaunchError> {
