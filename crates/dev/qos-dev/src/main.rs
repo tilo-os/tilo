@@ -100,7 +100,7 @@ enum AddCommand {
         /// Common component shape to scaffold.
         #[arg(long, value_enum, default_value = "display")]
         template: ComponentTemplateArg,
-        /// Also insert the first instance into this serialized graph screen.
+        /// Also insert the first display or form instance into this graph screen.
         #[arg(long)]
         mount: Option<String>,
         /// Stable mounted node id. Defaults to a unique component-name id.
@@ -709,17 +709,26 @@ fn run_add(args: AddArgs) -> Result<()> {
                 ComponentTemplateArg::Text => qos_dev::ComponentTemplate::Text,
             };
             let artifact = if let Some(screen) = mount {
-                if template != qos_dev::ComponentTemplate::Display {
-                    anyhow::bail!("--mount currently requires --template display");
-                }
-                let mut mount = qos_dev::ComponentMount::display(screen, &name);
+                let mut mount = match template {
+                    qos_dev::ComponentTemplate::Display => {
+                        qos_dev::ComponentMount::display(screen, &name)
+                    }
+                    qos_dev::ComponentTemplate::Form => qos_dev::ComponentMount::form(screen),
+                    _ => anyhow::bail!(
+                        "--mount supports --template display and --template form; tree, list, table, and text templates must be constructed from Rust"
+                    ),
+                };
                 mount.id = id;
                 mount.parent = parent.unwrap_or_else(|| "root".into());
                 mount.index = index;
                 if let Some(props) = props {
                     mount.props = props;
                 }
-                qos_dev::AddArtifact::GraphComponent { name, mount }
+                qos_dev::AddArtifact::GraphComponent {
+                    name,
+                    template,
+                    mount,
+                }
             } else {
                 qos_dev::AddArtifact::Component { name, template }
             };
