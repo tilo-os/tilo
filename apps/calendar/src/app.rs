@@ -4041,6 +4041,10 @@ impl Default for CalendarApp {
 }
 
 impl Widget for CalendarApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::CALENDAR_OPERATION_TYPE]
+    }
+
     /// Publish the open calendar + its events/tasks so the host's Ctrl+K action
     /// palette scopes to them. Delegates to the
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in

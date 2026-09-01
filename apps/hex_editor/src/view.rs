@@ -1591,6 +1591,10 @@ fn ui_accent_idx() -> usize {
 }
 
 impl Widget for HexView {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::HEX_EDITOR_OPERATION_TYPE]
+    }
+
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,

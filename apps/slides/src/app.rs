@@ -4567,6 +4567,10 @@ fn write_demo_image() -> Option<PathBuf> {
 }
 
 impl Widget for SlidesApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::SLIDES_OPERATION_TYPE]
+    }
+
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,

@@ -1529,6 +1529,10 @@ impl TubeApp {
 }
 
 impl Widget for TubeApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::TUBE_OPERATION_TYPE]
+    }
+
     /// Publish the open-resource tree (the playing video + its comments) so the
     /// host's Ctrl+K action palette scopes to it. Delegates to the
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in

@@ -1213,6 +1213,10 @@ const HISTORY_TRIM_SLACK: usize = 256;
 const HISTORY_TRIM_SLACK: usize = 8;
 
 impl Widget for TerminalWidget {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["terminal.send", "terminal.control"]
+    }
+
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut terminal = Resource::new("terminal", "terminal.session", "Terminal session");
         terminal.actions.push(
@@ -1222,6 +1226,7 @@ impl Widget for TerminalWidget {
                 "Text to send",
                 "command",
                 OperationKind::Effect,
+                "terminal.send",
                 |text| {
                     EncodedAction::encode_operation("terminal.send", &text).expect("string payload")
                 },

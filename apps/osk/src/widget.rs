@@ -922,6 +922,10 @@ fn draw_suggestion_chip(
 }
 
 impl Widget for OskWidget {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["osk.type", "osk.key"]
+    }
+
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut keyboard = Resource::new("keyboard", "osk.keyboard", "On-screen keyboard");
         keyboard.actions.push(
@@ -931,6 +935,7 @@ impl Widget for OskWidget {
                 "Text to type",
                 "Text",
                 OperationKind::Effect,
+                "osk.type",
                 |text| EncodedAction::encode_operation("osk.type", &text).expect("string payload"),
             )
             .retry_policy(RetryPolicy::AtMostOnce),

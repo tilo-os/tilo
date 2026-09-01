@@ -646,6 +646,10 @@ impl AuthenticatorApp {
 }
 
 impl Widget for AuthenticatorApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["totp.open-account", "totp.copy-code"]
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         // Pull in any QR image the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).

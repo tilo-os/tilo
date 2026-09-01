@@ -278,6 +278,10 @@ impl Default for WeatherApp {
 }
 
 impl Widget for WeatherApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["weather.open-location", "weather.refresh"]
+    }
+
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let core = self.core.borrow();
         let mut root = Resource::new("weather", "weather.locations", "Weather");

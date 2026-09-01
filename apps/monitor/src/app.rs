@@ -4175,6 +4175,10 @@ impl MonitorApp {
 }
 
 impl Widget for MonitorApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["monitor.refresh", "monitor.signal"]
+    }
+
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("processes", "monitor.processes", "Processes");
         root.actions.push(
