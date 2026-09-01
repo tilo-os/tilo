@@ -12082,6 +12082,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "hex",
  "libc",
+ "postcard",
  "runtime-portal",
  "serde",
  "serde_bytes",
@@ -15835,6 +15836,7 @@ name = "video-player"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "collab-types",
  "media",
  "taffy",
  "tracing",
