@@ -16,6 +16,12 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$processJobHelper = Join-Path $PSScriptRoot 'qOS-ProcessJob.ps1'
+if (-not (Test-Path -LiteralPath $processJobHelper -PathType Leaf)) {
+    throw 'qOS process containment helper is missing.'
+}
+. $processJobHelper
+
 $job = Get-Content -Raw -LiteralPath $JobPath | ConvertFrom-Json
 if ($null -eq $job -or [string]::IsNullOrWhiteSpace([string]$job.executable)) {
     throw 'qOS focused-application job is incomplete.'
@@ -38,13 +44,13 @@ try {
     foreach ($process in $explorer) {
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
     }
-    $arguments = [string]$job.arguments
-    if ([string]::IsNullOrEmpty($arguments)) {
-        $process = Start-Process -FilePath $executable -PassThru
-    } else {
-        $process = Start-Process -FilePath $executable -ArgumentList $arguments -PassThru
-    }
-    Wait-Process -Id $process.Id
+    # Native CreateProcess receives the exact validated application path.
+    # qOS creates it suspended, assigns the non-breakaway job, resumes it, and
+    # waits for every in-job descendant rather than only this bootstrap PID.
+    $null = [qOS.WindowsGuest.ProcessJob]::RunFocusedApplication(
+        $executable,
+        [string]$job.arguments
+    )
 } finally {
     # Reconstitute Explorer only when it was present before this managed
     # surface. This makes closing the fallback return the guest to its normal
