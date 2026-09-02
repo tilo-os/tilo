@@ -5,8 +5,7 @@
 //! registered document decoders, safe destructive declarations, usable
 //! unavailable reasons, and coherent execution/result contracts.
 
-use std::collections::HashSet;
-use std::hash::BuildHasher;
+use std::{collections::HashSet, hash::BuildHasher};
 
 use crate::{ActionInput, ActionRegistry, Resource};
 
@@ -32,7 +31,7 @@ pub fn validate_surface_contracts(
     resources: &[Resource],
     registry: &ActionRegistry,
 ) -> Vec<ContractViolation> {
-    validate_surface_inner::<std::collections::hash_map::RandomState>(resources, registry, None)
+    validate_surface_inner(resources, registry, None::<&HashSet<String>>)
 }
 
 fn validate_surface_inner<S: BuildHasher>(

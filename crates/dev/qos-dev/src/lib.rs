@@ -4081,10 +4081,23 @@ fn check_capnp_compiler(
 }
 
 fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
-    let source = std::fs::read_to_string(app_dir.join("src/lib.rs"));
-    let Ok(source) = source else {
+    fn append_rust_sources(dir: &Path, source: &mut String) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                append_rust_sources(&path, source)?;
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                source.push_str(&std::fs::read_to_string(path)?);
+                source.push('\n');
+            }
+        }
+        Ok(())
+    }
+
+    let mut source = String::new();
+    if append_rust_sources(&app_dir.join("src"), &mut source).is_err() {
         return;
-    };
+    }
     let code = rust_code_only(&source);
     let toolkit_host = code.contains("ui::widget::resource_actions::immediate(")
         || code.contains("ui::widget::resource_actions::background(");
@@ -4102,12 +4115,10 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
             DoctorStatus::Pass,
             if toolkit_surface {
                 "native SDK host publishes a typed resource/action catalogue"
+            } else if custom_operation {
+                "custom widget publishes and invokes a typed resource/action catalogue"
             } else {
-                if custom_operation {
-                    "custom widget publishes and invokes a typed resource/action catalogue"
-                } else {
-                    "custom widget publishes registered replayable resource actions"
-                }
+                "custom widget publishes registered replayable resource actions"
             }
             .to_owned(),
         )
@@ -4140,6 +4151,11 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
 /// Strip comments and string contents before checking generated Rust structure.
 /// This is intentionally a small lexical pass rather than a Rust parser: the
 /// doctor needs to reject prose that merely names the native SDK contract.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    reason = "the byte cursor is bounded by the loop and advances by inspected token widths"
+)]
 fn rust_code_only(source: &str) -> String {
     let bytes = source.as_bytes();
     let mut output = String::with_capacity(source.len());
@@ -5570,57 +5586,84 @@ fn check_package_manifest(app_dir: &Path, checks: &mut Vec<DoctorCheck>) -> Opti
 }
 
 fn check_ui_dependency(app_dir: &Path, manifest: &toml::Value, checks: &mut Vec<DoctorCheck>) {
-    let ui = manifest
+    let direct_dependency = manifest
         .get("dependencies")
-        .and_then(|dependencies| dependencies.get("ui"));
-    let package = ui
-        .and_then(|dependency| dependency.get("package"))
-        .and_then(toml::Value::as_str);
-    let path = ui
-        .and_then(|dependency| dependency.get("path"))
-        .and_then(toml::Value::as_str);
-    let (status, detail) = match (package, path) {
-        (Some(package), _) if package != "qos-app" => (
-            DoctorStatus::Fail,
-            format!("dependency `ui` renames `{package}`, expected the `qos-app` SDK"),
-        ),
-        (None, Some(_)) => (
-            DoctorStatus::Fail,
-            "dependency `ui` must declare `package = \"qos-app\"`; depending on rendering core directly bypasses native app contracts".to_owned(),
-        ),
-        (Some("qos-app"), Some(path)) => {
-            let resolved = app_dir.join(path);
-            let sdk_manifest = std::fs::read_to_string(resolved.join("Cargo.toml"))
-                .ok()
-                .and_then(|source| source.parse::<toml::Value>().ok());
-            let is_sdk = sdk_manifest.as_ref().is_some_and(|manifest| {
-                manifest
-                    .get("package")
-                    .and_then(|package| package.get("name"))
-                    .and_then(toml::Value::as_str)
-                    == Some("qos-app")
-            });
-            if is_sdk {
-                (DoctorStatus::Pass, format!("{}", resolved.display()))
-            } else {
-                (
-                    DoctorStatus::Fail,
-                    format!(
-                        "path {} is not a qos-app SDK crate",
-                        resolved.display()
-                    ),
-                )
+        .and_then(|table| table.get("ui"))
+        .into_iter();
+    let target_dependencies = manifest
+        .get("target")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flat_map(toml::map::Map::values)
+        .filter_map(|target| target.get("dependencies").and_then(|table| table.get("ui")));
+    let evaluate = |ui: &toml::Value| {
+        let package = ui.get("package").and_then(toml::Value::as_str);
+        let path = ui.get("path").and_then(toml::Value::as_str);
+        match (package, path) {
+            (None, Some(_)) => (
+                DoctorStatus::Fail,
+                "dependency `ui` must declare `package = \"qos-app\"`; depending on rendering core directly bypasses native app contracts".to_owned(),
+            ),
+            (Some("qos-app"), Some(path)) => {
+                let resolved = app_dir.join(path);
+                let sdk_manifest = std::fs::read_to_string(resolved.join("Cargo.toml"))
+                    .ok()
+                    .and_then(|source| source.parse::<toml::Value>().ok());
+                let is_sdk = sdk_manifest.as_ref().is_some_and(|manifest| {
+                    manifest
+                        .get("package")
+                        .and_then(|package| package.get("name"))
+                        .and_then(toml::Value::as_str)
+                        == Some("qos-app")
+                });
+                if is_sdk {
+                    (DoctorStatus::Pass, format!("{}", resolved.display()))
+                } else {
+                    (
+                        DoctorStatus::Fail,
+                        format!("path {} is not a qos-app SDK crate", resolved.display()),
+                    )
+                }
             }
+            (Some("qos-app"), None) => (
+                DoctorStatus::Warning,
+                "non-path qos-app dependency; SDK source could not be verified".to_string(),
+            ),
+            (Some(package), _) => (
+                DoctorStatus::Fail,
+                format!("dependency `ui` renames `{package}`, expected the `qos-app` SDK"),
+            ),
+            (None, None) => (
+                DoctorStatus::Fail,
+                "dependency `ui` must rename the `qos-app` SDK".to_string(),
+            ),
         }
-        (Some("qos-app"), None) => (
-            DoctorStatus::Warning,
-            "non-path qos-app dependency; SDK source could not be verified".to_string(),
-        ),
-        (_, None) if ui.is_some() => (
-            DoctorStatus::Fail,
-            "dependency `ui` must rename the `qos-app` SDK".to_string(),
-        ),
-        (_, _) => (DoctorStatus::Fail, "missing dependency `ui`".to_string()),
+    };
+    let results = direct_dependency
+        .chain(target_dependencies)
+        .map(evaluate)
+        .collect::<Vec<_>>();
+    let (status, detail) = if results.is_empty() {
+        (DoctorStatus::Fail, "missing dependency `ui`".to_string())
+    } else if let Some(failed) = results
+        .iter()
+        .find(|(status, _)| *status == DoctorStatus::Fail)
+    {
+        failed.clone()
+    } else if let Some(warning) = results
+        .iter()
+        .find(|(status, _)| *status == DoctorStatus::Warning)
+    {
+        warning.clone()
+    } else {
+        (
+            DoctorStatus::Pass,
+            results
+                .into_iter()
+                .map(|(_, detail)| detail)
+                .collect::<Vec<_>>()
+                .join(", "),
+        )
     };
     checks.push(DoctorCheck {
         status,
@@ -7840,13 +7883,17 @@ fn graph_document(spec: &AppSpec) -> Result<String> {
     Ok(json)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear generated README keeps the scaffolded workflow reviewable"
+)]
 fn app_readme(spec: &AppSpec) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# {}", spec.title);
     let _ = writeln!(out, "\nGenerated by `qos-dev new`.\n");
     let _ = writeln!(
         out,
-        "Every meaningful command is published as a stable `Resource`/`ActionSpec`. Keep the UI callback and external operation handler routed through the same domain function; `qos-dev doctor` rejects apps that remove this surface.\n"
+        "Every meaningful command is published as a stable `Resource`/`ActionSpec`. Bind UI controls to that action so clicks, search, scripts and agents enter through one route; `qos-dev doctor` rejects apps that remove this surface.\n"
     );
     let _ = writeln!(
         out,
@@ -10661,6 +10708,56 @@ mod tests {
         let mut checks = Vec::new();
         check_resource_action_surface(temp.path(), &mut checks);
         assert_eq!(checks[0].status, DoctorStatus::Pass, "{checks:#?}");
+    }
+
+    #[test]
+    fn doctor_finds_qos_app_sdk_in_target_specific_dependencies() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let app = temp.path().join("app");
+        let sdk = temp.path().join("sdk");
+        std::fs::create_dir_all(&app).expect("app directory");
+        std::fs::create_dir_all(&sdk).expect("SDK directory");
+        std::fs::write(
+            sdk.join("Cargo.toml"),
+            "[package]\nname = \"qos-app\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("SDK manifest");
+        let manifest = r#"
+            [package]
+            name = "target-app"
+            version = "0.1.0"
+
+            [target.'cfg(unix)'.dependencies]
+            ui = { package = "qos-app", path = "../sdk" }
+        "#
+        .parse::<toml::Value>()
+        .expect("target-specific manifest");
+        let mut checks = Vec::new();
+        check_ui_dependency(&app, &manifest, &mut checks);
+        assert_eq!(checks[0].status, DoctorStatus::Pass, "{checks:#?}");
+        assert!(checks[0].detail.contains("sdk"));
+    }
+
+    #[test]
+    fn doctor_rejects_one_invalid_target_specific_ui_dependency() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let manifest = r#"
+            [package]
+            name = "target-app"
+            version = "0.1.0"
+
+            [target.'cfg(unix)'.dependencies]
+            ui = { package = "not-qos-app", path = "../sdk" }
+
+            [target.'cfg(windows)'.dependencies]
+            ui = { package = "qos-app", version = "1" }
+        "#
+        .parse::<toml::Value>()
+        .expect("target-specific manifest");
+        let mut checks = Vec::new();
+        check_ui_dependency(temp.path(), &manifest, &mut checks);
+        assert_eq!(checks[0].status, DoctorStatus::Fail, "{checks:#?}");
+        assert!(checks[0].detail.contains("not-qos-app"));
     }
 
     #[test]

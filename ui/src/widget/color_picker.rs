@@ -85,7 +85,7 @@ pub struct ColorPicker {
 impl ColorPicker {
     pub fn new(initial: Color) -> Self {
         let mut s = Self {
-            accessible_name: None,
+            accessible_name: Some("Colour".to_owned()),
             color: initial,
             on_change: None,
             local_state: None,
@@ -99,7 +99,10 @@ impl ColorPicker {
             drag_target: None,
             last_cursor: Point::ZERO,
             is_focused: false,
-            hex_input: TextInput::local().with_kind(TextInputKind::Code),
+            hex_input: TextInput::local()
+                .with_kind(TextInputKind::Code)
+                .with_id("color_picker.hex")
+                .with_accessible_name("Hex colour"),
             hex_input_rect: Rect::ZERO,
             #[cfg(any(test, debug_assertions))]
             hex_input_force_dirty_for_test: false,
@@ -955,6 +958,7 @@ impl Widget for ColorPicker {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::ComboBox)
+                .with_action_target("color_picker")
                 .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
                 .with_value(self.hex_string())
                 .with_state(AccessState {

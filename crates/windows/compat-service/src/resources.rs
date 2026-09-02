@@ -14,7 +14,7 @@ use crate::{
 const LEASE_ROOT: &str = "/run/qos/windows-compat/leases";
 const SANDBOX_GATE: &str = "/run/qos/network/gate.sock";
 
-type AudioProxyStarter = fn(PathBuf, u32, bool) -> Result<AudioProxyLease, AudioProxyError>;
+type StartAudioProxy = fn(PathBuf, u32, bool) -> Result<AudioProxyLease, AudioProxyError>;
 
 /// Concrete qOS adapter for resources that already have a secure broker.
 /// Host-filtered networking reuses the launcher's net-gate implementation.
@@ -26,7 +26,7 @@ pub struct SystemResourceBroker {
     gates: Mutex<BTreeMap<String, NetGate>>,
     audio: Mutex<BTreeMap<String, AudioProxyLease>>,
     uid: u32,
-    audio_proxy_starter: AudioProxyStarter,
+    start_audio_proxy: StartAudioProxy,
 }
 
 impl SystemResourceBroker {
@@ -47,15 +47,18 @@ impl SystemResourceBroker {
             gates: Mutex::new(BTreeMap::new()),
             audio: Mutex::new(BTreeMap::new()),
             uid,
-            audio_proxy_starter: AudioProxyLease::start,
+            start_audio_proxy: AudioProxyLease::start,
         }
     }
 
     #[cfg(test)]
-    fn for_uid_with_audio_proxy(uid: u32, audio_proxy_starter: AudioProxyStarter) -> Self {
+    fn for_uid_with_audio_proxy(uid: u32, start_audio_proxy: StartAudioProxy) -> Self {
         Self {
-            audio_proxy_starter,
-            ..Self::for_uid(uid)
+            next: AtomicU64::new(1),
+            gates: Mutex::new(BTreeMap::new()),
+            audio: Mutex::new(BTreeMap::new()),
+            uid,
+            start_audio_proxy,
         }
     }
 
@@ -80,7 +83,7 @@ impl LaunchResourceBroker for SystemResourceBroker {
             .iter()
             .any(|device| device == "microphone");
         let audio_proxy =
-            (self.audio_proxy_starter)(PathBuf::from(LEASE_ROOT).join(&id), self.uid, microphone)
+            (self.start_audio_proxy)(PathBuf::from(LEASE_ROOT).join(&id), self.uid, microphone)
                 .map_err(|error| ResourceError::Refused(format!("audio proxy: {error}")))?;
         let audio = vec![
             AudioBinding {
@@ -146,22 +149,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn audio_proxy_is_fail_closed_when_private_pipewire_is_unavailable() {
-        // The broker must not substitute the session socket if its private
-        // proxy cannot start. Inject the exact spawn failure instead of
-        // assuming this test host lacks the image's PipeWire binaries.
-        fn unavailable(
-            _root: PathBuf,
+    fn audio_proxy_start_failure_is_fail_closed() {
+        fn unavailable_proxy(
+            root: PathBuf,
             _uid: u32,
             _microphone: bool,
         ) -> Result<AudioProxyLease, AudioProxyError> {
-            Err(AudioProxyError::SpawnPipeWire(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "hermetic missing PipeWire fixture",
-            )))
+            Err(AudioProxyError::UnsafeLeasePath(root))
         }
 
-        let broker = SystemResourceBroker::for_uid_with_audio_proxy(99_999, unavailable);
+        // Model an unavailable private PipeWire runtime explicitly. The
+        // broker must refuse the launch instead of substituting a session
+        // socket, independent of which audio packages the test host has.
+        let broker = SystemResourceBroker::for_uid_with_audio_proxy(99_999, unavailable_proxy);
         let caps = CapabilityPlan::empty();
         let result = broker.materialize(ResourceRequest {
             app_id: "dev.qos.windows.test",
@@ -169,7 +169,7 @@ mod tests {
             capabilities: &caps,
         });
         assert!(
-            matches!(result, Err(ResourceError::Refused(message)) if message.contains("audio proxy"))
+            matches!(result, Err(ResourceError::Refused(message)) if message.starts_with("audio proxy:"))
         );
     }
 }

@@ -211,9 +211,8 @@ impl Chooser {
     ///
     /// # Errors
     ///
-    /// Returns a [`Route::Keywords`] fallback when live model discovery is
-    /// disabled, unavailable, times out, exhausts retries, or returns an
-    /// invalid action plan.
+    /// Returns the deterministic fallback route when model discovery is
+    /// disabled, unavailable, invalid, exhausted, or misses its deadline.
     pub fn choose_actions(
         &self,
         rest: &str,
@@ -1015,7 +1014,7 @@ mod tests {
             },
         };
         let catalogue = Catalogue {
-            offers: vec![offer.clone()],
+            offers: vec![offer],
             facts: Vec::new(),
             held: vec!["calculator"],
         };

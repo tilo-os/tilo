@@ -2,8 +2,8 @@
 //! temp path, a peer that holds the document the way the word processor does
 //! (same route, answers `Arrived` with a full snapshot, absorbs incremental
 //! changes), and the agent joining late, reading the instruction out of the
-//! document, and carrying it out — asserted on the peer's replica, never on
-//! the agent's own.
+//! document, and carrying it out through the app's published action — asserted
+//! on the peer's replica, never on the agent's own.
 
 #![allow(
     clippy::unwrap_used,
@@ -21,6 +21,7 @@
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
+use qos_actions::Resource;
 use qos_agent::{Config, Session};
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload};
 use uuid::Uuid;
@@ -80,14 +81,14 @@ fn seed_document_as(actor: &str) -> AutoCommit {
             after = b;
         }
         let p = dm.insert_block(Some(&after), "paragraph");
-        dm.splice_text(&p, 0, 0, "Scribe: turn the bullets into a table");
+        dm.splice_text(&p, 0, 0, "Scribe: insert a table");
     }
     doc.commit();
     doc
 }
 
 /// A document with a title paragraph and an image, and one instruction
-/// written as two things to do.
+/// naming two operations on the app's production action surface.
 fn seed_sequence_document() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("ada".as_bytes()));
@@ -103,12 +104,7 @@ fn seed_sequence_document() -> AutoCommit {
         dm.splice_text(&title, 0, 0, "Launch plan");
         let img = dm.insert_block(Some(&title), "image");
         let p = dm.insert_block(Some(&img), "paragraph");
-        dm.splice_text(
-            &p,
-            0,
-            0,
-            "Scribe: give this a title, then caption the image",
-        );
+        dm.splice_text(&p, 0, 0, "Scribe: align centre, then insert a table");
     }
     doc.commit();
     doc
@@ -134,7 +130,7 @@ fn seed_unanswerable_sequence_document() -> AutoCommit {
             &p,
             0,
             0,
-            "Scribe: give this a title and then juggle three plates",
+            "Scribe: align centre and then juggle three plates",
         );
     }
     doc.commit();
@@ -184,15 +180,78 @@ fn blocks(doc: &AutoCommit) -> Vec<qdoc::BlockView> {
     qdoc::model::materialize(doc, &c).blocks
 }
 
+/// The live resource tree the Word Processor publishes for this document.
+/// The fixture's caret rests on the final bullet when there is one (the
+/// natural insertion point for a table), otherwise on the first block.
+fn word_processor_resources(doc: &AutoCommit) -> Vec<Resource> {
+    let b = blocks(doc);
+    let anchor = b
+        .iter()
+        .rev()
+        .find(|block| block.kind == "list_item")
+        .or_else(|| b.first())
+        .map(|block| block.id.clone())
+        .unwrap_or_default();
+    word_processor::actions::provide_resources(
+        &word_processor::actions::WpResourceCtx {
+            caret_block: anchor.clone(),
+            caret_offset: 0,
+            target_blocks: (!anchor.is_empty()).then_some(anchor).into_iter().collect(),
+        },
+        doc,
+    )
+}
+
+fn publish_word_processor_actions(peer: &mut UnixStream, doc: &AutoCommit) {
+    let resources = word_processor_resources(doc);
+    let exported = typed_peer::exported_actions(&resources);
+    assert!(
+        exported.iter().any(|action| {
+            action.resource == "word-processor.document" && action.action == "insert-table"
+        }),
+        "the production Word Processor surface must export insert-table"
+    );
+    typed_peer::publish_actions(peer, APP, &resources);
+}
+
+fn service_word_processor_invocation(
+    peer: &mut UnixStream,
+    replica: &mut AutoCommit,
+    id: u64,
+    resource: String,
+    action: String,
+    argument: Option<&str>,
+    actor: &str,
+) {
+    let resources = word_processor_resources(replica);
+    let update = typed_peer::service_document_invocation(
+        peer,
+        replica,
+        &resources,
+        word_processor::actions::register,
+        id,
+        resource,
+        action,
+        argument,
+        actor,
+    );
+    send(peer, &CollabRequest::UpdateInvocation { id, update }).unwrap();
+}
+
 /// Drive the peer exactly as the app would: answer the agent's Arrived with
 /// a full snapshot, apply every incremental change to the replica, and
 /// watch for the table. Returns the replica, whether it settled into the
-/// table, and whether Scribe's own presence was observed.
-fn drive_peer_to_table(mut peer: UnixStream, mut replica: AutoCommit) -> (AutoCommit, bool, bool) {
+/// table, whether Scribe's own presence was observed, and the authenticated
+/// actor attached to the broker invocation.
+fn drive_peer_to_table(
+    mut peer: UnixStream,
+    mut replica: AutoCommit,
+) -> (AutoCommit, bool, bool, String) {
     peer.set_read_timeout(Some(Duration::from_millis(200)));
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut saw_scribe_presence = false;
     let mut done = false;
+    let mut invocation_actor = None;
     // Presence and document events use independent typed subscriptions, so
     // their delivery is intentionally not globally ordered. Keep draining
     // until both guarantees have been observed instead of treating a fast
@@ -218,6 +277,7 @@ fn drive_peer_to_table(mut peer: UnixStream, mut replica: AutoCommit) -> (AutoCo
                     "the relay names presence by the announced handle"
                 );
                 saw_scribe_presence = true;
+                publish_word_processor_actions(&mut peer, &replica);
                 let snap = CollabRequest::DocumentSnapshot {
                     data: replica.save(),
                 };
@@ -230,6 +290,24 @@ fn drive_peer_to_table(mut peer: UnixStream, mut replica: AutoCommit) -> (AutoCo
             } => {
                 assert_eq!(user_id, "Scribe");
             }
+            CollabEvent::Invocation {
+                id,
+                resource,
+                action,
+                argument,
+                actor,
+            } => {
+                invocation_actor = Some(actor.clone());
+                service_word_processor_invocation(
+                    &mut peer,
+                    &mut replica,
+                    id,
+                    resource,
+                    action,
+                    argument.as_deref(),
+                    &actor,
+                );
+            }
             event @ CollabEvent::Document { .. } => {
                 let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
                     continue;
@@ -237,43 +315,37 @@ fn drive_peer_to_table(mut peer: UnixStream, mut replica: AutoCommit) -> (AutoCo
                 replica.load_incremental(&data).unwrap();
                 let b = blocks(&replica);
                 let has_cells = b.iter().any(|x| x.kind == "cell");
-                let has_bullets = b.iter().any(|x| x.kind == "list_item");
                 let has_instruction = b.iter().any(|x| x.text.starts_with("Scribe:"));
-                if has_cells && !has_bullets && !has_instruction {
+                if has_cells && !has_instruction {
                     done = true;
                 }
             }
             _ => {}
         }
     }
-    (replica, done, saw_scribe_presence)
+    (
+        replica,
+        done,
+        saw_scribe_presence,
+        invocation_actor.expect("the broker delivered the Word Processor invocation"),
+    )
 }
 
-/// Assert the replica settled into a table carrying the bullets' cells with
-/// the heading intact, and that every change is attributed to the agent's
-/// own actor.
-fn assert_table_and_attribution(replica: &mut AutoCommit) {
-    // The table, row-major, carries the bullets' cells; the heading stays.
+/// Assert the replica settled into exactly the production action's 2x2 table,
+/// leaving unrelated content intact, and that every change is attributed to
+/// the agent's own actor.
+fn assert_table_and_attribution(replica: &mut AutoCommit, invocation_actor: &str) {
+    // The insertion is the app's declared 2x2 table; existing content stays.
     let b = blocks(replica);
     assert_eq!(b[0].kind, "heading");
     assert_eq!(b[0].text, "Launch plan");
-    let mut cells: Vec<(i64, i64, String)> = b
-        .iter()
-        .filter(|x| x.kind == "cell")
-        .map(|x| {
-            let n = |k: &str| match x.attrs.get(k) {
-                Some(qdoc::AttrVal::Int(v)) => *v,
-                _ => -1,
-            };
-            (n("row"), n("col"), x.text.clone())
-        })
-        .collect();
-    cells.sort();
-    let texts: Vec<&str> = cells.iter().map(|c| c.2.as_str()).collect();
+    let cells: Vec<&qdoc::BlockView> = b.iter().filter(|x| x.kind == "cell").collect();
+    assert_eq!(cells.len(), 4, "insert-table declares a 2x2 table");
+    assert!(cells.iter().all(|cell| cell.text.is_empty()));
     assert_eq!(
-        texts,
-        ["Venue", "The Hall", "Date", "3 Sep", "Budget", "1200"],
-        "three 2-column rows, in order"
+        b.iter().filter(|block| block.kind == "list_item").count(),
+        3,
+        "the action does not rewrite unrelated bullets"
     );
 
     // Every change the agent made is attributed to it. Filtered rather than
@@ -289,13 +361,13 @@ fn assert_table_and_attribution(replica: &mut AutoCommit) {
         .collect();
     assert_eq!(
         actors,
-        std::collections::HashSet::from([hex::encode("Scribe")]),
-        "the agent's commits carry its own actor, so the history strip names it"
+        std::collections::HashSet::from([hex::encode("Scribe"), hex::encode(invocation_actor),]),
+        "the broker action carries the authenticated invocation actor and the acknowledgement edit carries Scribe's document actor"
     );
 }
 
 #[test]
-fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
+fn the_agent_inserts_a_table_on_the_peers_replica() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
     let _broker = typed_peer::spawn(&sock);
@@ -352,7 +424,8 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
             .expect("agent session")
     });
 
-    let (mut replica, done, saw_scribe_presence) = drive_peer_to_table(peer, replica);
+    let (mut replica, done, saw_scribe_presence, invocation_actor) =
+        drive_peer_to_table(peer, replica);
     assert!(
         saw_scribe_presence,
         "the agent must announce itself to the room"
@@ -367,7 +440,7 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
     );
     assert!(agent.join().unwrap(), "the agent reports having acted");
 
-    assert_table_and_attribution(&mut replica);
+    assert_table_and_attribution(&mut replica, &invocation_actor);
 }
 
 /// Another app's document in the same room must not end the run.
@@ -492,10 +565,28 @@ fn drive_word_processor_to_table(
                 // Shortly after the file manager, so the agent has already
                 // taken the wrong document by the time this arrives.
                 std::thread::sleep(Duration::from_millis(400));
+                publish_word_processor_actions(&mut wp_peer, &replica);
                 let snap = CollabRequest::DocumentSnapshot {
                     data: replica.save(),
                 };
                 send(&mut wp_peer, &snap).unwrap();
+            }
+            CollabEvent::Invocation {
+                id,
+                resource,
+                action,
+                argument,
+                actor,
+            } => {
+                service_word_processor_invocation(
+                    &mut wp_peer,
+                    &mut replica,
+                    id,
+                    resource,
+                    action,
+                    argument.as_deref(),
+                    &actor,
+                );
             }
             // The agent's edits. A delta from the file manager's document
             // would not apply here, so ignore what does not.
@@ -579,16 +670,16 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
             .collect::<Vec<_>>()
     );
 
-    // The content survived into the table, not just the grid.
+    // The production insertion landed without consuming the existing list.
     let b = blocks(&replica);
-    let cells: Vec<String> = b
-        .iter()
-        .filter(|x| x.kind == "cell")
-        .map(|x| x.text.clone())
-        .collect();
+    assert_eq!(
+        b.iter().filter(|x| x.kind == "cell").count(),
+        4,
+        "the app's insert-table action makes one 2x2 table"
+    );
     assert!(
-        cells.iter().any(|c| c == "Venue"),
-        "the bullets' text is in the cells: {cells:?}"
+        b.iter().any(|block| block.text == "Venue - The Hall"),
+        "the unrelated bullets survive: {b:?}"
     );
 
     let _ = files_thread.join();
@@ -669,6 +760,10 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
 /// document the step before it left, and the instruction paragraph goes
 /// away only once every step in it is done.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the scenario asserts both ordered application effects and broker attribution"
+)]
 fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
@@ -728,10 +823,28 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
                 payload: PresencePayload::Arrived,
                 ..
             } => {
+                publish_word_processor_actions(&mut peer, &replica);
                 let snap = CollabRequest::DocumentSnapshot {
                     data: replica.save(),
                 };
                 send(&mut peer, &snap).unwrap();
+            }
+            CollabEvent::Invocation {
+                id,
+                resource,
+                action,
+                argument,
+                actor,
+            } => {
+                service_word_processor_invocation(
+                    &mut peer,
+                    &mut replica,
+                    id,
+                    resource,
+                    action,
+                    argument.as_deref(),
+                    &actor,
+                );
             }
             event @ CollabEvent::Document { .. } => {
                 let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
@@ -739,12 +852,12 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
                 };
                 replica.load_incremental(&data).unwrap();
                 let b = blocks(&replica);
-                let has_heading = b
-                    .iter()
-                    .any(|x| x.kind == "heading" && x.text == "Launch plan");
-                let has_caption = b.iter().any(|x| x.text == "Figure 1");
+                let title_aligned = b.first().is_some_and(|x| {
+                    matches!(x.attrs.get("align"), Some(qdoc::AttrVal::Str(v)) if v == "center")
+                });
+                let has_table = b.iter().filter(|x| x.kind == "cell").count() == 4;
                 let has_instruction = b.iter().any(|x| x.text.starts_with("Scribe:"));
-                if has_heading && has_caption && !has_instruction {
+                if title_aligned && has_table && !has_instruction {
                     done = true;
                 }
             }
@@ -761,10 +874,20 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
     );
     assert!(agent.join().unwrap(), "the agent reports having acted");
 
-    // Both steps ran in order; only one removes the instruction.
+    // Both production actions ran; only the completed plan removes the
+    // instruction.
     let b = blocks(&replica);
-    assert_eq!(b[0].kind, "heading", "the title step ran");
+    assert_eq!(b[0].kind, "paragraph");
     assert_eq!(b[0].text, "Launch plan");
+    assert!(
+        matches!(b[0].attrs.get("align"), Some(qdoc::AttrVal::Str(v)) if v == "center"),
+        "the first catalogue action aligned the title"
+    );
+    assert_eq!(
+        b.iter().filter(|x| x.kind == "cell").count(),
+        4,
+        "the second catalogue action inserted exactly one 2x2 table"
+    );
     assert!(
         b.iter().any(|x| x.kind == "image"),
         "the image the caption belongs to is still there"
@@ -780,6 +903,10 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
 /// *whole*, before either step is touched — never the first step applied
 /// and the second one silently dropped.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the scenario proves preflight refusal leaves every application action untouched"
+)]
 fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
@@ -840,10 +967,18 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
                 payload: PresencePayload::Arrived,
                 ..
             } => {
+                publish_word_processor_actions(&mut peer, &replica);
                 let snap = CollabRequest::DocumentSnapshot {
                     data: replica.save(),
                 };
                 send(&mut peer, &snap).unwrap();
+            }
+            CollabEvent::Invocation {
+                resource, action, ..
+            } => {
+                panic!(
+                    "the whole sequence must be refused before dispatch, but invoked {resource}#{action}"
+                );
             }
             event @ CollabEvent::Document { .. } => {
                 let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
@@ -853,7 +988,7 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
                     .load_incremental(&data)
                     .expect("apply the agent's change");
                 let b = blocks(&replica);
-                if b.iter().any(|x| x.text.contains("juggle three plates")) {
+                if b.iter().any(|x| x.text.starts_with("Scribe: I can't")) {
                     done = true;
                 }
             }
@@ -879,6 +1014,10 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
         "the title step never ran: the whole sequence was refused first"
     );
     assert_eq!(b[0].text, "Launch plan");
+    assert!(
+        !b[0].attrs.contains_key("align"),
+        "the first catalogue action was not dispatched before refusal"
+    );
     assert!(
         b.iter().any(|x| x.text.starts_with("Scribe: I can't")),
         "the refusal names what could not be done: {:?}",

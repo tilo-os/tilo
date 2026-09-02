@@ -694,16 +694,23 @@ fn a_caller_with_no_display_crops_by_address_and_gets_those_pixels() {
     );
 }
 
-/// A resource tree with nothing open exports only the openable library, and a
-/// full frame in that state still renders the empty view.
+/// With nothing open, the resource tree still exports the library's open
+/// operation so agents, scripts, and search can enter the app; a full frame in
+/// that state renders the empty view.
 #[test]
-fn nothing_open_publishes_the_library_and_still_draws() {
+fn nothing_open_publishes_open_and_still_draws() {
     let mut hz = Harness::new(900.0, 600.0);
     let scene = hz.frame();
     let resources = PhotosResources.resources(&hz.state.doc);
     assert_eq!(resources.len(), 1);
-    assert_eq!(resources[0].kind, "photos.library");
-    assert_eq!(resources[0].actions[0].id, "open");
+    assert_eq!(resources[0].id.0, "photos.library");
+    assert!(
+        resources[0]
+            .actions
+            .iter()
+            .any(|action| action.id == "open"),
+        "the empty app must remain driveable through its published open action"
+    );
     assert!(
         scene.encoding().n_paths > 0,
         "the empty state drew nothing at all"

@@ -1,7 +1,8 @@
 use std::ffi::OsString;
+use std::io::{BufRead as _, BufReader};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command as ProcessCommand, ExitCode, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
@@ -36,6 +37,8 @@ enum Command {
     Doctor(DoctorArgs),
     /// Run structural checks, tests, and accessibility-audited scenarios.
     Check(CheckArgs),
+    /// Prove the production root satisfies the live qOS-native contract.
+    Certify(CertifyArgs),
     /// Run an app from any path inside it, after a structural preflight.
     Run(AppTaskArgs),
     /// Test an app from any path inside it, after a structural preflight.
@@ -344,6 +347,16 @@ struct CheckArgs {
 }
 
 #[derive(clap::Args)]
+struct CertifyArgs {
+    /// App directory or a file/directory inside it. Defaults to the current directory.
+    path: Option<PathBuf>,
+
+    /// Certify every graphical application in this qOS workspace.
+    #[arg(long)]
+    workspace: bool,
+}
+
+#[derive(clap::Args)]
 struct AppTaskArgs {
     /// App directory or a file/directory inside it. Defaults to the current directory.
     path: Option<PathBuf>,
@@ -556,6 +569,7 @@ fn main() -> ExitCode {
         Command::Scenario(args) => run_scenario(args),
         Command::Doctor(args) => run_doctor(args),
         Command::Check(args) => run_check(args),
+        Command::Certify(args) => run_certify(args),
         Command::Run(args) => run_app_task(args, qos_dev::AppTask::Run),
         Command::Test(args) => run_app_task(args, qos_dev::AppTask::Test),
         Command::Dev(args) => run_dev(args),
@@ -1023,6 +1037,9 @@ fn run_check(args: CheckArgs) -> Result<()> {
     println!("[check] Rust tests and generated accessibility contract");
     quality.test.execute()?;
 
+    println!("[check] qOS-native runtime certification");
+    certify_one(&path)?;
+
     if !args.no_scenarios {
         println!("[check] isolated accessibility-audited scenarios");
         let plan = qos_dev::plan_scenario_suite(&qos_dev::ScenarioRunRequest {
@@ -1035,6 +1052,158 @@ fn run_check(args: CheckArgs) -> Result<()> {
         execute_scenario_plan(&plan)?;
     }
     println!("All app checks passed");
+    Ok(())
+}
+
+fn certify_one(path: &Path) -> Result<()> {
+    qos_dev::plan_app_task(
+        path,
+        qos_dev::AppTask::Run,
+        &[OsString::from("--native-audit")],
+    )?
+    .execute()
+    .context("production app root failed qOS-native certification")
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "workspace certification deliberately keeps discovery, one unified build, and execution in one auditable flow"
+)]
+fn run_certify(args: CertifyArgs) -> Result<()> {
+    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+    if !args.workspace {
+        certify_one(&path)?;
+        println!("qOS-native certification passed");
+        return Ok(());
+    }
+
+    let apps = path.join("apps");
+    anyhow::ensure!(
+        apps.is_dir(),
+        "{} is not a qOS workspace root",
+        path.display()
+    );
+    let mut app_dirs = std::fs::read_dir(&apps)?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|dir| dir.join("Cargo.toml").is_file())
+        // The agent is the headless consumer being used to drive apps; its
+        // broker protocol is certified by the structural contract and tests.
+        .filter(|dir| dir.file_name().is_none_or(|name| name != "agent"))
+        .collect::<Vec<_>>();
+    app_dirs.sort();
+    let mut packages = Vec::with_capacity(app_dirs.len());
+    for app in &app_dirs {
+        let manifest_path = app.join("Cargo.toml");
+        let manifest = std::fs::read_to_string(&manifest_path)
+            .with_context(|| format!("reading {}", manifest_path.display()))?
+            .parse::<toml::Value>()
+            .with_context(|| format!("parsing {}", manifest_path.display()))?;
+        let package = manifest
+            .get("package")
+            .and_then(toml::Value::as_table)
+            .with_context(|| format!("{} has no [package] table", manifest_path.display()))?;
+        let package_name = package
+            .get("name")
+            .and_then(toml::Value::as_str)
+            .with_context(|| format!("{} has no package name", manifest_path.display()))?;
+        let explicit_bins = manifest
+            .get("bin")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|binary| binary.get("name").and_then(toml::Value::as_str))
+            .collect::<Vec<_>>();
+        let binary_name = package
+            .get("default-run")
+            .and_then(toml::Value::as_str)
+            .or(match explicit_bins.as_slice() {
+                [binary] => Some(*binary),
+                _ => None,
+            })
+            .unwrap_or(package_name);
+        packages.push((app.clone(), package_name.to_owned(), binary_name.to_owned()));
+    }
+
+    // Build the complete application set in one Cargo graph. Apart from being
+    // substantially faster, this keeps the SDK's feature set unified instead
+    // of recompiling ui-core for every application's individual `cargo run`.
+    println!(
+        "[certify] building {} graphical applications",
+        packages.len()
+    );
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let mut build = ProcessCommand::new(cargo);
+    build
+        .current_dir(&path)
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(path.join("Cargo.toml"))
+        .arg("--message-format=json-render-diagnostics");
+    for (_, package, _) in &packages {
+        build.arg("--package").arg(package);
+    }
+    let mut child = build
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("starting the workspace certification build")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("workspace certification build has no artifact stream")?;
+    let mut executables = std::collections::HashMap::new();
+    for line in BufReader::new(stdout).lines() {
+        let line = line.context("reading the workspace certification build")?;
+        let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if message.get("reason").and_then(serde_json::Value::as_str) != Some("compiler-artifact") {
+            continue;
+        }
+        let Some(executable) = message
+            .get("executable")
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        let Some(name) = message
+            .get("target")
+            .and_then(|target| target.get("name"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        executables.insert(name.to_owned(), PathBuf::from(executable));
+    }
+    let status = child
+        .wait()
+        .context("waiting for the workspace certification build")?;
+    anyhow::ensure!(status.success(), "workspace certification build failed");
+
+    for (app, _, binary) in &packages {
+        println!(
+            "[certify] {}",
+            app.file_name().unwrap_or_default().to_string_lossy()
+        );
+        let executable = executables.get(binary).with_context(|| {
+            format!(
+                "Cargo built no executable named {binary:?} for {}",
+                app.display()
+            )
+        })?;
+        let status = ProcessCommand::new(executable)
+            .arg("--native-audit")
+            .current_dir(app)
+            .status()
+            .with_context(|| format!("running {} --native-audit", executable.display()))?;
+        anyhow::ensure!(
+            status.success(),
+            "{} production root failed qOS-native certification",
+            app.display()
+        );
+    }
+    println!("Certified {} graphical qOS applications", app_dirs.len());
     Ok(())
 }
 
@@ -1428,6 +1597,25 @@ mod tests {
         };
         assert_eq!(test.path, None);
         assert_eq!(test.forwarded, [OsString::from("--nocapture")]);
+    }
+
+    #[test]
+    fn certify_accepts_one_app_or_a_workspace_root() {
+        let app = Cli::try_parse_from(["qos-dev", "certify", "apps/demo/src"])
+            .expect("single-app certification CLI");
+        let Command::Certify(app) = app.command else {
+            panic!("expected certify command");
+        };
+        assert_eq!(app.path, Some(PathBuf::from("apps/demo/src")));
+        assert!(!app.workspace);
+
+        let workspace = Cli::try_parse_from(["qos-dev", "certify", ".", "--workspace"])
+            .expect("workspace certification CLI");
+        let Command::Certify(workspace) = workspace.command else {
+            panic!("expected certify command");
+        };
+        assert_eq!(workspace.path, Some(PathBuf::from(".")));
+        assert!(workspace.workspace);
     }
 
     #[test]

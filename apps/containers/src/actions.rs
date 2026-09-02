@@ -159,6 +159,7 @@ mod tests {
         app.open_container_palette();
         let expected = app.engine.containers[0].id.clone();
         send(&mut app, &mut doc, &named_event(NamedKey::Enter));
+        app.dispatch_palette_invocation_for_test(&mut doc);
         assert_eq!(
             ViewDoc::selected(&mut doc).as_deref(),
             Some(expected.as_str()),
@@ -318,9 +319,9 @@ mod tests {
         let container = engine
             .children
             .iter()
-            .find(|resource| resource.kind == "containers.container")
-            .expect("a container resource");
-        let actions: Vec<_> = container.actions.iter().collect();
+            .flat_map(|resource| resource.actions.iter())
+            .filter(|action| action.kind == ui::qos_actions::OperationKind::Effect)
+            .collect();
         assert!(
             actions
                 .iter()

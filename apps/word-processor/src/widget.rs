@@ -8046,7 +8046,7 @@ impl Widget for WordProcessorWidget {
     /// the full subtree comes from [`WordProcessorWidget::accessibility_tree`]
     /// rather than `children()`; this returns that tree's root.
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        Some(self.accessibility_tree().node)
+        Some(self.accessibility_tree().node.with_name("Document editor"))
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -13867,7 +13867,7 @@ mod tests {
         let trait_root = Widget::accessibility(&wp).expect("editor exposes a document node");
         assert_eq!(
             trait_root,
-            wp.accessibility_tree().node,
+            wp.accessibility_tree().node.with_name("Document editor"),
             "Widget::accessibility() returns the tree root"
         );
     }
