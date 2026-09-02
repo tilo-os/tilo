@@ -16,8 +16,37 @@ fn item_label(id: u64) -> String {
     ui::i18n::I18nManager::lookup_plain(message)
 }
 
-fn share_item(_id: u64) {}
+fn item_resource() -> qos_actions::Resource {
+    let mut resource = ui::widget::resource_actions::typed_resource(
+        "generated.workspace-item",
+        "Workspace item",
+        "share",
+        "Share item",
+        vec![qos_actions::ActionParam::required_owned(
+            "id",
+            qos_actions::ParamType::Integer,
+            "Stable item id",
+        )],
+    );
+    if let Some(action) = resource.actions.first_mut() {
+        action.contract.result = qos_actions::ResultSpec::Resource {
+            resource_kind: "generated.workspace-item".into(),
+        };
+    }
+    resource
+}
 
+fn share_item(id: u64) -> qos_actions::ActionOutput {
+    qos_actions::ActionOutput {
+        value: None,
+        resources: vec![format!("generated.workspace-item:{id}/share")],
+    }
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "the binding uses the sole action constructed immediately above"
+)]
 fn detail_pane(item_id: u64) -> Box<dyn Widget> {
     let title_path = format!("workspace-item-{item_id}-title");
     let notes_path = format!("workspace-item-{item_id}-notes");
@@ -28,6 +57,13 @@ fn detail_pane(item_id: u64) -> Box<dyn Widget> {
         .with_id("workspace-notes-input")
         .with_placeholder("workspace-notes-placeholder")
         .multiline(true);
+    let resource = item_resource();
+    let share_binding = qos_actions::ActionBinding::static_json_for(
+        &resource,
+        "share",
+        serde_json::Map::from_iter([("id".into(), serde_json::json!(item_id))]),
+    )
+    .expect("generated item id matches the exported share action");
 
     Box::new(ui::column![
         Text::new(&item_label(item_id))
@@ -40,8 +76,7 @@ fn detail_pane(item_id: u64) -> Box<dyn Widget> {
             .with_id("workspace-title-preview")
             .with_role(TextRole::Heading),
         Text::from_document_string(&notes_path).with_id("workspace-notes-preview"),
-        Button::new("workspace-share", "workspace-share", None)
-            .on_click(move || share_item(item_id)),
+        Button::new("workspace-share", "workspace-share", None).on_action(share_binding),
     ])
 }
 
@@ -104,17 +139,7 @@ pub fn app_root() -> Box<dyn Widget> {
     );
     ui::widget::resource_actions::immediate(
         root,
-        ui::widget::resource_actions::typed_resource(
-            "generated.workspace-item",
-            "Workspace item",
-            "share",
-            "Share item",
-            vec![qos_actions::ActionParam::required_owned(
-                "id",
-                qos_actions::ParamType::Integer,
-                "Stable item id",
-            )],
-        ),
+        item_resource(),
         |payload| {
             let args: serde_json::Map<String, serde_json::Value> =
                 serde_json::from_slice(payload).map_err(|error| error.to_string())?;
@@ -122,8 +147,7 @@ pub fn app_root() -> Box<dyn Widget> {
                 .get("id")
                 .and_then(serde_json::Value::as_u64)
                 .ok_or("missing item id")?;
-            share_item(id);
-            Ok(qos_actions::ActionOutput::default())
+            Ok(share_item(id))
         },
     )
 }
