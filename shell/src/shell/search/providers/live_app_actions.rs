@@ -23,35 +23,74 @@ pub struct LiveAppActionsProvider {
     broker: AppActionBroker,
 }
 
+struct PeerInvocation<'a> {
+    peer_id: u64,
+    resource: &'a str,
+    action: &'a str,
+    argument: Option<&'a str>,
+    actor: &'a str,
+    confirmation: &'a qos_actions::ConfirmationPolicy,
+    confirmed: bool,
+    phrase: Option<&'a str>,
+}
+
 fn start_on_peer(
     broker: &AppActionBroker,
-    peer_id: u64,
-    resource: &str,
-    action: &str,
-    argument: Option<&str>,
-    actor: &str,
-    confirmation: &qos_actions::ConfirmationPolicy,
-    confirmed: bool,
-    phrase: Option<&str>,
+    invocation: &PeerInvocation<'_>,
 ) -> Result<crate::shell::collab_broker_capnp::InvocationJob, String> {
-    match confirmation {
-        qos_actions::ConfirmationPolicy::None => {
-            broker.start(peer_id, resource, action, argument, actor)
-        }
+    match invocation.confirmation {
+        qos_actions::ConfirmationPolicy::None => broker.start(
+            invocation.peer_id,
+            invocation.resource,
+            invocation.action,
+            invocation.argument,
+            invocation.actor,
+        ),
         qos_actions::ConfirmationPolicy::Confirm => {
-            if !confirmed {
+            if !invocation.confirmed {
                 return Err("explicit confirmation is required".into());
             }
-            let token =
-                broker.prepare_confirmation(peer_id, resource, action, argument, actor, None)?;
-            broker.start_confirmed(peer_id, resource, action, argument, actor, &token)
+            let token = broker.prepare_confirmation(
+                invocation.peer_id,
+                invocation.resource,
+                invocation.action,
+                invocation.argument,
+                invocation.actor,
+                None,
+            )?;
+            broker.start_confirmed(
+                invocation.peer_id,
+                invocation.resource,
+                invocation.action,
+                invocation.argument,
+                invocation.actor,
+                &token,
+            )
         }
         qos_actions::ConfirmationPolicy::Phrase { .. } => {
-            let token =
-                broker.prepare_confirmation(peer_id, resource, action, argument, actor, phrase)?;
-            broker.start_confirmed(peer_id, resource, action, argument, actor, &token)
+            let token = broker.prepare_confirmation(
+                invocation.peer_id,
+                invocation.resource,
+                invocation.action,
+                invocation.argument,
+                invocation.actor,
+                invocation.phrase,
+            )?;
+            broker.start_confirmed(
+                invocation.peer_id,
+                invocation.resource,
+                invocation.action,
+                invocation.argument,
+                invocation.actor,
+                &token,
+            )
         }
     }
+}
+
+fn deadline_after(duration: std::time::Duration) -> std::time::Instant {
+    let now = std::time::Instant::now();
+    now.checked_add(duration).unwrap_or(now)
 }
 
 fn receipt_for_job(
@@ -231,6 +270,10 @@ impl SearchProvider for LiveAppActionsProvider {
             })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the query constructs paired palette/headless callbacks from one captured action contract; splitting them would duplicate or desynchronise confirmation, launch, and job lifecycle state"
+    )]
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         let needle = ctx.needle.trim().to_lowercase();
         let actor = ctx.chrome.active_local_user();
@@ -430,15 +473,14 @@ impl SearchProvider for LiveAppActionsProvider {
                             let argument = argument.map(str::to_owned);
                             let actor = actor.clone();
                             let confirmation = confirmation.clone();
-                            let phrase = phrase.clone();
                             let app_id = app_id.clone();
                             let cluster_id = cluster_id.clone();
                             let action_label = action_label.clone();
                             std::thread::Builder::new()
                                 .name("qos-deferred-action".into())
                                 .spawn(move || {
-                                    let deadline = std::time::Instant::now()
-                                        + std::time::Duration::from_secs(30);
+                                    let deadline =
+                                        deadline_after(std::time::Duration::from_secs(30));
                                     while std::time::Instant::now() < deadline {
                                         let target =
                                             broker.surfaces().into_iter().find(|surface| {
@@ -453,14 +495,16 @@ impl SearchProvider for LiveAppActionsProvider {
                                         if let Some(target) = target {
                                             match start_on_peer(
                                                 &broker,
-                                                target.peer_id,
-                                                &resource,
-                                                &action_id,
-                                                argument.as_deref(),
-                                                &actor,
-                                                &confirmation,
-                                                confirmed,
-                                                phrase.as_deref(),
+                                                &PeerInvocation {
+                                                    peer_id: target.peer_id,
+                                                    resource: &resource,
+                                                    action: &action_id,
+                                                    argument: argument.as_deref(),
+                                                    actor: &actor,
+                                                    confirmation: &confirmation,
+                                                    confirmed,
+                                                    phrase: phrase.as_deref(),
+                                                },
                                             ) {
                                                 Ok(job) => {
                                                     tracing::debug!(
@@ -490,14 +534,16 @@ impl SearchProvider for LiveAppActionsProvider {
                         }
                         let job = start_on_peer(
                             &broker,
-                            peer_id,
-                            &resource,
-                            &action_id,
-                            argument,
-                            &actor,
-                            &confirmation,
-                            confirmed,
-                            phrase.as_deref(),
+                            &PeerInvocation {
+                                peer_id,
+                                resource: &resource,
+                                action: &action_id,
+                                argument,
+                                actor: &actor,
+                                confirmation: &confirmation,
+                                confirmed,
+                                phrase: phrase.as_deref(),
+                            },
                         )
                         .map_err(ActionError::Refused)?;
                         tracing::debug!(invocation_id = job.id, "application action accepted");
@@ -535,8 +581,7 @@ impl SearchProvider for LiveAppActionsProvider {
                                 &invoke_app_id,
                                 &invoke_app_id,
                             )?;
-                            let deadline =
-                                std::time::Instant::now() + std::time::Duration::from_secs(30);
+                            let deadline = deadline_after(std::time::Duration::from_secs(30));
                             while std::time::Instant::now() < deadline {
                                 let target = invoke_broker.surfaces().into_iter().find(|surface| {
                                     surface.live
@@ -550,14 +595,16 @@ impl SearchProvider for LiveAppActionsProvider {
                                 if let Some(target) = target {
                                     let job = start_on_peer(
                                         &invoke_broker,
-                                        target.peer_id,
-                                        &invoke_resource,
-                                        &invoke_action_id,
-                                        argument.as_deref(),
-                                        &invoke_actor,
-                                        &invoke_confirmation,
-                                        confirmed,
-                                        phrase.as_deref(),
+                                        &PeerInvocation {
+                                            peer_id: target.peer_id,
+                                            resource: &invoke_resource,
+                                            action: &invoke_action_id,
+                                            argument: argument.as_deref(),
+                                            actor: &invoke_actor,
+                                            confirmation: &invoke_confirmation,
+                                            confirmed,
+                                            phrase: phrase.as_deref(),
+                                        },
                                     )
                                     .map_err(ActionError::Refused)?;
                                     return Ok(receipt_for_job(&invoke_broker, job));

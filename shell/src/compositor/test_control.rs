@@ -490,7 +490,7 @@ pub fn dispatch_command<S: ControlState>(
 
 fn invocation_control(id: String) -> (Response, Vec<PlannedAction>) {
     (
-        Response::Answer(serde_json::json!({"invocation_id": id.clone()})),
+        Response::Answer(serde_json::json!({"invocation_id": id})),
         vec![PlannedAction::InvokeAction {
             provider: crate::shell::search::providers::live_app_actions::PROVIDER_ID.into(),
             id,
