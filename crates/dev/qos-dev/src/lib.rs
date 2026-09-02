@@ -4093,15 +4093,21 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
     let custom_catalogue = code.contains("fn resources(") && code.contains("ActionSpec::");
     let custom_invocation =
         code.contains("invoke_resource_operation") || code.contains("start_resource_operation");
+    let custom_operation =
+        code.contains("OperationKind::Effect") || code.contains("OperationKind::View");
     let toolkit_surface = toolkit_host && toolkit_descriptor;
-    let custom_surface = custom_catalogue && custom_invocation;
+    let custom_surface = custom_catalogue && (!custom_operation || custom_invocation);
     let (status, detail) = if toolkit_surface || custom_surface {
         (
             DoctorStatus::Pass,
             if toolkit_surface {
                 "native SDK host publishes a typed resource/action catalogue"
             } else {
-                "custom widget publishes and invokes a typed resource/action catalogue"
+                if custom_operation {
+                    "custom widget publishes and invokes a typed resource/action catalogue"
+                } else {
+                    "custom widget publishes registered replayable resource actions"
+                }
             }
             .to_owned(),
         )
@@ -7211,7 +7217,7 @@ workspace-share = Share\n",
 }
 
 fn app_main(spec: &AppSpec) -> String {
-    let register = if spec.template == Template::Document {
+    let register = if matches!(spec.template, Template::Document | Template::Workspace) {
         format!(
             "\n            {}::register_actions(app.action_registry_mut());",
             spec.crate_name
@@ -7388,32 +7394,30 @@ fn app_generates_an_accessible_visual_from_semantic_input() {{
 
 fn graph_app_test(crate_name: &str) -> String {
     format!(
-        r#"use ui::{{
-    UiGraphHandle, UiNode,
-    a11y::{{Action, Role}},
-    headless::SemanticExpectation,
-}};
+        r#"use ui::{{UiGraphHandle, UiNode}};
+use ui::automerge::{{AutoCommit, ObjId}};
+use ui::qos_actions::OperationKind;
+use ui::widget::Widget;
 
 #[test]
 fn serialized_screen_is_interactive() {{
-    let mut app = ui::headless::Driver::new(
-        ui::State::new(),
-        {crate_name}::app_root(),
-        (800, 500),
-    );
-
-    app.perform_named("name-input", &Action::SetValue("Atlas".into()))
-        .expect("the graph input remains addressable");
-    app.perform_named("create", &Action::Activate)
-        .expect("the graph button remains addressable");
-
-    app.expect(
-        &SemanticExpectation::named("name-preview")
-            .role(Role::StaticText)
-            .name("Atlas"),
-    )
-    .expect("document-bound preview semantics match");
-    assert!(app.dump_json().contains("create-requested"));
+    let mut root = {crate_name}::app_root();
+    let document = AutoCommit::new();
+    root.invoke_resource_operation_v2(
+        OperationKind::Effect,
+        ui::widget::resource_actions::OPERATION_TYPE,
+        b"{{\"draft\":\"Atlas\"}}",
+        &document,
+        &ObjId::Root,
+    ).expect("draft action succeeds");
+    let output = root.invoke_resource_operation_v2(
+        OperationKind::Effect,
+        ui::widget::resource_actions::OPERATION_TYPE,
+        b"{{\"name\":\"Atlas\"}}",
+        &document,
+        &ObjId::Root,
+    ).expect("create action succeeds").expect("create action is handled");
+    assert_eq!(output.resources, ["generated.graph-project:atlas"]);
 }}
 
 #[test]
@@ -7421,21 +7425,22 @@ fn serialized_graph_edits_have_shared_undo_history() {{
     let graph = UiGraphHandle::from_json(include_str!("../ui/main.json"))
         .expect("the generated graph is valid");
     for next_label in ["Publ", "Publish"] {{
-        graph.update_node_grouped("create", "create-label", |node| {{
-            if let UiNode::Button {{ label, .. }} = node {{
-                *label = next_label.into();
+        graph.update_node_grouped("graph-introduction", "intro-text", |node| {{
+            if let UiNode::Text {{ text: ui::UiTextSource::Static {{ value }}, .. }} = node {{
+                *value = next_label.into();
             }}
         }}).expect("a valid grouped runtime edit is published");
     }}
     assert!(matches!(
-        graph.node("create"),
-        Ok(UiNode::Button {{ label, .. }}) if label == "Publish"
+        graph.node("graph-introduction"),
+        Ok(UiNode::Text {{ text: ui::UiTextSource::Static {{ value }}, .. }}) if value == "Publish"
     ));
 
     assert!(graph.undo().expect("graph history remains available"));
     assert!(matches!(
-        graph.node("create"),
-        Ok(UiNode::Button {{ label, .. }}) if label == "graph-create"
+        graph.node("graph-introduction"),
+        Ok(UiNode::Text {{ text: ui::UiTextSource::Static {{ value }}, .. }})
+            if value.contains("read-only screen")
     ));
     assert!(!graph.can_undo(), "continuous typing created one undo step");
     assert!(graph.redo().expect("the undone edit can be reapplied"));
@@ -7448,14 +7453,14 @@ fn initial_accessibility_app_test(crate_name: &str) -> String {
     format!(
         r#"
 #[test]
-fn initial_accessibility_contract_is_clean() {{
+fn initial_native_app_contract_is_certified() {{
     let app = ui::headless::Driver::new(
         ui::State::new(),
         {crate_name}::app_root(),
         (800, 600),
     );
-    let audit = app.accessibility_audit();
-    assert!(audit.is_clean(), "{{:#?}}", audit.issues);
+    let audit = app.native_app_audit();
+    assert!(audit.is_certified(), "{{audit:#?}}");
 }}
 "#
     )
@@ -7472,6 +7477,7 @@ fn document_fields_are_synchronized_and_undoable() {{
         {crate_name}::app_root(),
         (800, 600),
     );
+    {crate_name}::register_actions(app.action_registry_mut());
 
     app.perform_named(
         "document-title-input",
@@ -7515,6 +7521,7 @@ fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
         {crate_name}::app_root(),
         (1000, 640),
     );
+    {crate_name}::register_actions(app.action_registry_mut());
     let targets = app.targets();
     for target in [
         "workspace-selected-item",
@@ -7811,34 +7818,14 @@ fn graph_document(spec: &AppSpec) -> Result<String> {
                 role: qos_ui_graph::UiTextRole::Title,
                 size: None,
             },
-            qos_ui_graph::UiNode::TextInput {
-                id: "name-input".into(),
-                label: Some("graph-project-name".into()),
-                accessible_name: String::new(),
-                placeholder: "graph-project-name".into(),
-                value_path: Some("name".into()),
-                initial_value: String::new(),
-                multiline: false,
-                disabled: false,
-            },
             qos_ui_graph::UiNode::Text {
-                id: "name-preview".into(),
-                text: qos_ui_graph::UiTextSource::Document {
-                    path: "name".into(),
+                id: "graph-introduction".into(),
+                text: qos_ui_graph::UiTextSource::Static {
+                    value: "This read-only screen remains live-editable; native controls below publish actions."
+                        .into(),
                 },
                 role: qos_ui_graph::UiTextRole::Body,
                 size: None,
-            },
-            qos_ui_graph::UiNode::Button {
-                id: "create".into(),
-                label: "graph-create".into(),
-                accessible_name: None,
-                tooltip: Some("graph-create-tooltip".into()),
-                on_click_path: Some("create-requested".into()),
-                click_value: Some("yes".into()),
-                navigate: None,
-                enabled: true,
-                style: qos_ui_graph::UiButtonStyle::Primary,
             },
         ],
         gap: Some(8.0),
@@ -10659,6 +10646,24 @@ mod tests {
     }
 
     #[test]
+    fn doctor_accepts_registered_document_actions_without_widget_operation_glue() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir(temp.path().join("src")).expect("source directory");
+        std::fs::write(
+            temp.path().join("src/lib.rs"),
+            r#"
+                fn resources() {
+                    let _ = ActionSpec::immediate("clear", "Clear", "doc.action", &());
+                }
+            "#,
+        )
+        .expect("document-only resource source");
+        let mut checks = Vec::new();
+        check_resource_action_surface(temp.path(), &mut checks);
+        assert_eq!(checks[0].status, DoctorStatus::Pass, "{checks:#?}");
+    }
+
+    #[test]
     fn doctor_fails_early_with_actionable_missing_capnp_diagnostic() {
         let temp = tempfile::tempdir().expect("temp dir");
         let destination = temp.path().join("reading-list");
@@ -11084,10 +11089,10 @@ mod tests {
             .find(|(path, _)| path == Path::new("ui/main.json"))
             .expect("graph template emits source");
         let document = qos_ui_graph::UiDocument::from_json(&graph.1).unwrap();
-        assert_eq!(document.nodes().len(), 5);
+        assert_eq!(document.nodes().len(), 3);
         assert!(matches!(
-            document.node("create"),
-            Some(qos_ui_graph::UiNode::Button { .. })
+            document.node("graph-introduction"),
+            Some(qos_ui_graph::UiNode::Text { .. })
         ));
         let registry = files
             .iter()
@@ -11105,6 +11110,7 @@ mod tests {
         assert!(app_lib(&spec).contains("pub mod screens;"));
         assert!(app_lib(&spec).contains("screens::router_with("));
         assert!(app_lib(&spec).contains("components::ui_graph_context()"));
+        assert!(app_lib(&spec).contains("ActionBinding::new"));
         assert!(app_test(&spec).contains("serialized_screen_is_interactive"));
         assert!(app_readme(&spec).contains("qos-dev ui tree"));
         assert!(app_readme(&spec).contains("qos-dev ui set"));
@@ -11294,8 +11300,8 @@ mod tests {
             syn::parse_file(&app_lib(&spec)).expect("generated library is valid Rust syntax");
             syn::parse_file(&app_main(&spec)).expect("generated binary is valid Rust syntax");
             let generated_test = app_test(&spec);
-            assert!(generated_test.contains("initial_accessibility_contract_is_clean"));
-            assert!(generated_test.contains("accessibility_audit"));
+            assert!(generated_test.contains("initial_native_app_contract_is_certified"));
+            assert!(generated_test.contains("native_app_audit"));
             syn::parse_file(&generated_test).expect("generated test is valid Rust syntax");
             let rendered = render(&spec).expect("render complete app");
             let locale_registry = rendered
