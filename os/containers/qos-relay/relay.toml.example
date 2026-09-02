@@ -1,0 +1,27 @@
+# qOS relay-only home-server configuration.
+#
+# This process durably hosts workspace CRDT state and queues updates for
+# offline collaborators. It intentionally does not retain file bytes, run
+# apps/compute, or provide a remote-control tunnel.
+identity_root = "/var/lib/qos"
+state_root = "/var/lib/qos-relay"
+
+# Compose exposes this UDP port. Iroh still uses encrypted relay fallback and
+# NAT traversal when a direct path is unavailable.
+iroh_listen = "0.0.0.0:4433"
+
+# Safe default: accept only device certificates chained to this owner's root.
+# See README.md before changing this for a cross-user workspace.
+trust_policy = { kind = "allow_matching_user" }
+
+# The process ignores unavailable service claims even if they are added here.
+# Do not set full_content_replication, app_serving, compute, or
+# remote_control_relay to true: this image does not start those host planes.
+
+# `allow_matching_user` hosts bind an owner workspace when it first subscribes.
+# Add an explicit entry only when you need a fixed, pre-pinned workspace:
+#
+# [[workspace]]
+# id = 12345
+# pin = true
+# replication = "workspace_only"

@@ -35,6 +35,14 @@ authenticates with its device certificate and sends durable collaboration
 messages to the host in addition to the direct gossip path. The host pins
 configured workspaces and store-and-forwards updates to offline devices.
 
+The currently shippable standalone host is `qos-relay`: it retains the
+workspace CRDT, shell/app checkpoints, and pending collaboration updates. It
+does **not** itself retain file bytes or thumbnails, and it does not run app,
+compute, or remote-control host planes. Full file residency requires the
+separate authenticated filesystem/blob host to be configured. The Compose
+deployment and its identity prerequisites are documented in
+`os/containers/qos-relay/README.md`.
+
 The identity files are created together by `shell --provision-identity`:
 
 ```text
