@@ -20,6 +20,42 @@ fn update_profile(
     region.set(values.4);
 }
 
+fn profile_resource() -> qos_actions::Resource {
+    crate::resource_actions::typed_resource(
+        "generated.form",
+        "Profile form",
+        "update-profile",
+        "Update profile",
+        vec![
+            qos_actions::ActionParam::required_owned(
+                "name",
+                qos_actions::ParamType::Text,
+                "Display name",
+            ),
+            qos_actions::ActionParam::required_owned(
+                "updates",
+                qos_actions::ParamType::Boolean,
+                "Receive updates",
+            ),
+            qos_actions::ActionParam::required_owned(
+                "refresh",
+                qos_actions::ParamType::Number,
+                "Refresh minutes",
+            ),
+            qos_actions::ActionParam::required_owned(
+                "volume",
+                qos_actions::ParamType::Number,
+                "Volume from 0 to 1",
+            ),
+            qos_actions::ActionParam::required_owned(
+                "region",
+                qos_actions::ParamType::Text,
+                "Region",
+            ),
+        ],
+    )
+}
+
 /// A complete local form → typed state → retained output loop.
 pub fn app_root() -> Box<dyn Widget> {
     crate::install_catalog();
@@ -78,33 +114,29 @@ pub fn app_root() -> Box<dyn Widget> {
         greeting,
         reset,
     ]);
-    crate::resource_actions::immediate(
-        root,
-        crate::resource_actions::typed_resource(
-            "generated.form",
-            "Profile form",
-            "update-profile",
-            "Update profile",
-            vec![
-                qos_actions::ActionParam::required_owned("name", qos_actions::ParamType::Text, "Display name"),
-                qos_actions::ActionParam::required_owned("updates", qos_actions::ParamType::Boolean, "Receive updates"),
-                qos_actions::ActionParam::required_owned("refresh", qos_actions::ParamType::Number, "Refresh minutes"),
-                qos_actions::ActionParam::required_owned("volume", qos_actions::ParamType::Number, "Volume from 0 to 1"),
-                qos_actions::ActionParam::required_owned("region", qos_actions::ParamType::Text, "Region"),
-            ],
-        ),
-        move |payload| {
-            let args: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(payload)
-                .map_err(|error| error.to_string())?;
-            let values = (
-                args.get("name").and_then(|value| value.as_str()).ok_or("missing name")?.to_owned(),
-                args.get("updates").and_then(|value| value.as_bool()).ok_or("missing updates")?,
-                args.get("refresh").and_then(serde_json::Value::as_f64).ok_or("missing refresh")?,
-                args.get("volume").and_then(serde_json::Value::as_f64).ok_or("missing volume")?,
-                args.get("region").and_then(|value| value.as_str()).ok_or("missing region")?.to_owned(),
-            );
-            update_profile(&name, &updates, &refresh_minutes, &volume, &region, values);
-            Ok(Default::default())
-        },
-    )
+    crate::resource_actions::immediate(root, profile_resource(), move |payload| {
+        let args: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let values = (
+            args.get("name")
+                .and_then(|value| value.as_str())
+                .ok_or("missing name")?
+                .to_owned(),
+            args.get("updates")
+                .and_then(serde_json::Value::as_bool)
+                .ok_or("missing updates")?,
+            args.get("refresh")
+                .and_then(serde_json::Value::as_f64)
+                .ok_or("missing refresh")?,
+            args.get("volume")
+                .and_then(serde_json::Value::as_f64)
+                .ok_or("missing volume")?,
+            args.get("region")
+                .and_then(|value| value.as_str())
+                .ok_or("missing region")?
+                .to_owned(),
+        );
+        update_profile(&name, &updates, &refresh_minutes, &volume, &region, values);
+        Ok(qos_actions::ActionOutput::default())
+    })
 }
