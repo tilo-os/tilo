@@ -24,9 +24,6 @@ pub fn app_root() -> Box<dyn Widget> {
                 .with_alt(alt),
         )
     });
-    let input = TextInput::from_state(&payload)
-        .with_id("qr-input")
-        .with_placeholder("qr-input-placeholder");
     let resource = ui::widget::resource_actions::typed_resource(
         "generated.qr-code",
         "QR code",
@@ -38,6 +35,20 @@ pub fn app_root() -> Box<dyn Widget> {
             "Text or URL to encode",
         )],
     );
+    let input_binding = qos_actions::ActionBinding::new(
+        &resource,
+        resource
+            .actions
+            .iter()
+            .find(|action| action.id == "set-payload")
+            .expect("generated QR resource exports set-payload"),
+        |value| serde_json::Map::from_iter([("payload".into(), serde_json::json!(value))]),
+    )
+    .expect("QR input produces valid payload arguments");
+    let input = TextInput::from_state(&payload)
+        .with_id("qr-input")
+        .with_placeholder("qr-input-placeholder")
+        .on_action(input_binding);
     let reset_binding = qos_actions::ActionBinding::static_json_for(
         &resource,
         "set-payload",
