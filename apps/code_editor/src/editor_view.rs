@@ -2382,6 +2382,19 @@ impl Widget for EditorView {
         Some("editor_view")
     }
 
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Document)
+                .with_name("Code editor")
+                .with_state(ui::a11y::AccessState {
+                    focusable: true,
+                    focused: self.is_focused,
+                    multiline: true,
+                    ..Default::default()
+                }),
+        )
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }

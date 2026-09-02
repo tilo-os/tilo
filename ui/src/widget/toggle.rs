@@ -61,7 +61,7 @@ impl Toggle {
             permission_scope: None,
             enabled: true,
             id_override: None,
-            accessible_name: None,
+            accessible_name: Some(crate::widget::humanize_control_id(id)),
             local_state: None,
             on_change: None,
             action: None,
@@ -604,15 +604,17 @@ impl Widget for Toggle {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        Some(
-            toggle_accessibility(
-                self.is_checked,
-                self.is_focused(),
-                self.is_enabled(),
-                self.accessible_name.as_deref(),
-            )
-            .with_semantic_key(&self._id),
+        let mut node = toggle_accessibility(
+            self.is_checked,
+            self.is_focused(),
+            self.is_enabled(),
+            self.accessible_name.as_deref(),
         )
+        .with_semantic_key(&self._id);
+        if self.action.is_none() && self.on_change.is_none() {
+            node = node.with_action_target(self.test_id().unwrap_or("toggle"));
+        }
+        Some(node)
     }
 
     fn presence_key(&self) -> Option<PresenceKey> {
@@ -649,15 +651,18 @@ impl Widget for Toggle {
         } else if !self.on_toggle_path.is_empty() {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyDocumentPath(self.on_toggle_path.clone()),
+                kind: ControlBindingKind::CollaborativeDocument(self.on_toggle_path.clone()),
             }]
-        } else if self.on_change.is_some() || self.local_state.is_some() {
+        } else if self.on_change.is_some() {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
                 kind: ControlBindingKind::LegacyCallback,
             }]
         } else {
-            Vec::new()
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
+            }]
         }
     }
 
@@ -740,7 +745,10 @@ mod tests {
     #[test]
     fn accessibility_uses_accessible_name_when_set() {
         let plain = Toggle::new("any", "path");
-        assert_eq!(Widget::accessibility(&plain).unwrap().name, None);
+        assert_eq!(
+            Widget::accessibility(&plain).unwrap().name.as_deref(),
+            Some("Any")
+        );
 
         let named = Toggle::new("any", "path").with_accessible_name("Airplane mode");
         assert_eq!(

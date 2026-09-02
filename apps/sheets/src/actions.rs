@@ -65,6 +65,8 @@ pub enum SheetsOperation {
     ExportXlsx { path: Option<String> },
     ExportOds { path: Option<String> },
     OpenCommandPalette,
+    GoToCell { reference: String },
+    ToggleFormulaView,
 }
 
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<SheetsOperation>, String> {
@@ -695,9 +697,13 @@ pub fn set_doc_settings_action(settings: &DocSettings) -> SheetsAction {
 /// The presentation context Sheets hands [`provide_resources`]: the sheet names
 /// it currently has open, in order. Derived from state the document already
 /// holds (the workbook mirrors the shared `sheets` list); nothing is fabricated.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SheetsResourceCtx {
     pub sheet_names: Vec<String>,
+    /// Selection-dependent actions authored by the live grid. Keeping these
+    /// as real `ActionSpec`s means Ctrl+K, agents and scripts consume the same
+    /// encoded operation instead of a parallel command-id switch.
+    pub palette_actions: Vec<ActionSpec>,
 }
 
 fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
@@ -727,6 +733,7 @@ fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
 /// the same action the on-screen affordance dispatches.
 pub fn provide_resources(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let mut workbook = Resource::new("sheets.workbook", "sheets.workbook", "Workbook");
+    workbook.actions.extend(ctx.palette_actions.clone());
 
     for (id, label, kind, variant) in [
         ("import-csv", "Import CSV", OperationKind::Effect, 0_u8),
@@ -954,6 +961,7 @@ mod tests {
     fn ctx_from(doc: &mut AutoCommit) -> SheetsResourceCtx {
         SheetsResourceCtx {
             sheet_names: SheetsDoc::sheet_names(doc),
+            palette_actions: Vec::new(),
         }
     }
 

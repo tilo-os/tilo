@@ -17,6 +17,7 @@ The same stages remain available separately for automation and focused work:
 ```bash
 cargo run -p qos-dev -- new reading-list
 cargo run -p qos-dev -- check apps/reading-list
+cargo run -p qos-dev -- certify apps/reading-list
 cargo run -p qos-dev -- test apps/reading-list
 cargo run -p qos-dev -- dev apps/reading-list
 cargo run -p qos-dev -- run apps/reading-list
@@ -39,11 +40,35 @@ qos-dev test -- --nocapture
 ## The qOS-native contract
 
 Generated applications depend on `qos-app` (normally under the concise Rust
-name `ui`), not directly on the lower-level renderer. This is not a reduced
-widget set: `qos-app` re-exports the complete layout, retained-widget, canvas,
-custom-painting, native-view and GPU surface API. The boundary exists so the
-tooling can prove that an application entered through the qOS runtime without
-taking presentation freedom away.
+name `ui`), never directly on the internal `ui-core` package. `qos-app` is not
+a reduced or declarative-only widget set: it re-exports the complete layout,
+retained-widget, canvas, custom-painting, native-view and GPU surface API.
+Applications keep full control of presentation and composition. The boundary
+exists so tooling can prove that an application participates in qOS actions,
+collaboration, history, accessibility and lifecycle contracts. `ui-core` is
+reserved for the shell and framework implementation.
+
+### The quick path: a local effect or view
+
+For a zero-argument control, keep ordinary closure ergonomics with
+`Button::on_effect` or `Button::on_view`:
+
+```rust
+let refresh = ui::Button::new("refresh", "Refresh", None)
+    .on_effect(move || refresh_from_service());
+
+let inspector = ui::Button::new("toggle-inspector", "Toggle inspector", None)
+    .on_view(move || inspector_state.toggle());
+```
+
+These are not private callbacks. The button synthesizes and publishes a real
+resource/action and invokes the closure only through that action's operation
+handler. Search, scripts and agents can discover and invoke it by stable ID.
+Use `on_effect` for external work and `on_view` for transient presentation
+state; use the domain path below for document mutations, parameters, explicit
+contracts, or an action shared by several controls.
+
+### The domain path: bind a declared action
 
 An interactive control binds to the same action that search, scripts and
 agents see:
@@ -54,20 +79,43 @@ let save = ui::qos_actions::ActionBinding::unit_for(&resource, "save")?;
 let button = ui::Button::new("save", "Save", None).on_action(save);
 ```
 
-The control emits an inert typed intent. The app host re-resolves it against
-the current resource tree, applies current permissions and confirmation
-policy, and dispatches through the ordinary action door. Document actions use
-the shared collaboration and undo-history executor; effects and background
-jobs use the same observable lifecycle as remote callers. There is no second
-callback whose behavior can drift from the exported operation.
+`ActionBinding::unit_for` looks up the actual `ActionSpec` on the resource, so
+the UI cannot silently drift to a parallel contract. Parameterized controls
+use `ActionBinding::new` to map typed control values to JSON arguments, or
+`static_json_for` for a fixed, strictly validated argument object.
+
+The control emits only an inert typed intent. The app host re-resolves its
+stable address against the fresh resource tree, applies current permissions
+and confirmation policy, and enters the ordinary action door. It never
+auto-confirms a destructive or phrase-confirmed operation; it opens the same
+confirmation flow used by the command palette. Document actions use the shared
+collaboration and undo-history executor. Effects and background jobs use the
+same admitted/progress/terminal lifecycle as remote callers. Do not duplicate
+the operation in `on_click`, a private command enum, or a second mutation path.
+
+### Command palettes come from resources
+
+`Widget::resources` is the source of truth for commands. qOS recursively
+flattens the live resource tree into native Ctrl+K rows, semantic actions and
+the broker catalogue. An app supplies stable resource/action IDs, typed
+parameters and contracts; it does not maintain a separate command-palette
+list or callback table. If availability changes, return the updated resource
+tree. The host resolves the selected address again immediately before
+execution.
+
+### Custom widgets retain custom rendering
 
 Custom rendering follows the same contract without being forced into a stock
-widget. A custom `Widget` owns an `ActionEmitter<T>`, drains it through
-`take_control_invocation`, inventories it through `control_action_bindings`,
-and describes its retained or synthetic accessibility nodes. Those semantics
-are automatically projected into the searchable, agent-operable resource
-tree. This is the deliberate escape hatch: specify more semantics, retain all
-rendering control.
+widget. A custom `Widget` can own `ActionEmitter<T>`, call `emit(value)` from
+its pointer, keyboard or accessibility path, return queued intents from
+`take_control_invocation`, and include `emitter.metadata(control_id)` in
+`control_action_bindings`. It must also expose explicit retained or synthetic
+accessibility semantics and route semantic activation to the same emitter.
+Those semantics and declared resources are projected into the searchable,
+agent-operable tree. Canvas geometry, native views, shaders and bespoke input
+remain app-defined; only the meaning and route of an interaction are explicit.
+
+### Certification is zero tolerance
 
 Every scaffold includes a strict `Driver::native_app_audit()` assertion. It
 checks the actual laid-out accessibility tree and resolves the actual control
@@ -76,6 +124,24 @@ document paths, stale bindings, unnamed/invalid semantics, and focusable
 widgets hidden from accessibility make certification fail. The workspace
 checker separately rejects direct core-UI dependencies and ratchets existing
 legacy escape hatches downward, so new code cannot silently bypass the model.
+Direct CRDT field controls remain a supported small-app primitive: the SDK
+projects them as semantic actions and their writes automatically enter shared
+history and collaboration.
+
+Run the same gates explicitly from an app directory:
+
+```bash
+qos-dev check
+qos-dev certify
+```
+
+`qos-dev check` runs structural checks, app-only formatting verification,
+Clippy, Rust/generated accessibility tests, production-root native
+certification, and audited saved scenarios. `qos-dev certify` is the focused
+runtime proof against the production app root; from a checkout,
+`qos-dev certify --workspace` certifies every graphical app. Certification is
+an app boundary, not a warning budget: one legacy callback, stale binding,
+missing semantic route, or invalid operation contract fails it.
 
 Every app using the shared `LaunchSpec` runner also gets a standard responsive
 acceptance capture without app-specific argument parsing:
@@ -619,12 +685,13 @@ let email = labeled_field(
 
 ### Pointer, touch, and keyboard
 
-Declare a semantic control once. Pointer, direct-touch tap, keyboard, and
-accessibility activation all reach the control's existing event or semantic
-action path and therefore the same callback or document binding:
+Declare a semantic control once. Pointer, direct-touch tap, keyboard,
+accessibility, Ctrl+K and headless activation all reach the same action intent:
 
 ```rust
-Button::new("save", "app-save", Some("save-requested"))
+let save = qos_actions::ActionBinding::unit_for(&document, "save")?;
+Button::new("save", "app-save", None)
+    .on_action(save)
     .primary()
     .fit_content(32.0)
 ```
@@ -755,14 +822,6 @@ Rust construction; it does not introduce a second renderer or event model.
         "label": "Title",
         "placeholder": "Untitled",
         "value_path": "title"
-      },
-      {
-        "type": "button",
-        "id": "save",
-        "label": "Save",
-        "style": "primary",
-        "on_click_path": "save-requested",
-        "click_value": "yes"
       }
     ]
   }
@@ -1048,8 +1107,9 @@ State has two deliberate levels:
 
 The storage boundary stays visible in types: durable fields name a document
 path, while process-local fields bind an explicit typed handle. Reusable
-actions go through `ActionHost`, so a button, command palette entry, agent
-action, and undo history can invoke the same operation.
+operations are declared once as resource actions and controls use
+`ActionBinding`, so a button, command palette entry, script, agent, and undo
+history all reach the same implementation.
 
 ### One driveability surface
 
@@ -1063,11 +1123,12 @@ command path.
 
 This is the qOS application API, not an optional automation adapter. A toolbar
 button, menu item, shortcut, context-menu item, search result, script, and agent
-must converge on the same command function. Put domain logic in that function;
-make both the direct control callback and `invoke_resource_operation` call it.
-Do not add a second socket, command enum, hidden test callback, or agent-only
-implementation. CI runs `tools/check_app_resource_action_contract.py`, and the
-runtime independently validates the concrete surface before publishing it.
+must converge on the same `ActionBinding` and action address. Do not wire a
+direct callback beside `invoke_resource_operation`; bind the control and let
+the host invoke that operation handler. Do not add a second socket, command
+enum, hidden test callback, or agent-only implementation. CI runs
+`tools/check_app_resource_action_contract.py`, and the runtime independently
+validates the concrete surface before publishing it.
 
 Every `ActionSpec` carries an `ActionContract`. Defaults are deliberately
 conservative (write permission, at-most-once, immediate, live-only). State the
@@ -1287,7 +1348,7 @@ let task = LatestTask::new(LoadState::Idle);
 let result = task.state();
 let run_task = task.clone();
 
-let run = Button::new("run", "Run", None).on_click(move || {
+let run_job = move || {
     let completion = run_task.begin(LoadState::Loading);
     std::thread::spawn(move || {
         let value = load_project().map_or_else(
@@ -1296,8 +1357,14 @@ let run = Button::new("run", "Run", None).on_click(move || {
         );
         let _ = completion.complete(value);
     });
-});
+};
 ```
+
+Register `run_job` behind an effect `ActionSpec` declared as
+`ExecutionMode::Background` with `ResultSpec::Job`, then bind the Run control
+to that action. Admission returns `Accepted`; polling reports its real terminal
+result. A raw `on_click` worker would be invisible to scripts and could only
+pretend that queueing meant success.
 
 A long-running worker may check `TaskCompletion::is_current` between units of
 work for cooperative early exit. Correctness does not depend on that check:
@@ -2182,10 +2249,11 @@ collapse through the same implementation used by AccessKit:
 
 Controls drawn as parts of one retained widget—tabs, toggle/radio segments,
 colour swatches, and slash-menu items—also expose an opaque `action_target`.
-Activating that target selects the exact part and fires the same callback or
-pending choice as pointer input. These nodes advertise only actions they can
-perform: unlike positioned virtual rows, an unpositioned drawn part does not
-claim that it can scroll itself into view.
+Activating that target selects the exact part and emits the same action intent
+or typed local choice as pointer input. Action-capable parts route through the
+custom widget's `ActionEmitter`; they do not hide a second callback. These
+nodes advertise only actions they can perform: unlike positioned virtual rows,
+an unpositioned drawn part does not claim that it can scroll itself into view.
 
 Collapsing a branch does not discard a selected descendant. Its semantic row
 temporarily leaves the bounded accessibility window, while the tree's value
