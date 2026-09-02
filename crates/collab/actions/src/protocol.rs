@@ -5,7 +5,7 @@
 //! registered document decoders, safe destructive declarations, usable
 //! unavailable reasons, and coherent execution/result contracts.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, hash::BuildHasher};
 
 use crate::{ActionInput, ActionRegistry, Resource};
 
@@ -15,10 +15,10 @@ pub struct ContractViolation {
     pub reason: String,
 }
 
-pub fn validate_surface(
+pub fn validate_surface<S: BuildHasher>(
     resources: &[Resource],
     registry: &ActionRegistry,
-    operation_handlers: &HashSet<String>,
+    operation_handlers: &HashSet<String, S>,
 ) -> Vec<ContractViolation> {
     validate_surface_inner(resources, registry, Some(operation_handlers))
 }
@@ -31,13 +31,13 @@ pub fn validate_surface_contracts(
     resources: &[Resource],
     registry: &ActionRegistry,
 ) -> Vec<ContractViolation> {
-    validate_surface_inner(resources, registry, None)
+    validate_surface_inner(resources, registry, None::<&HashSet<String>>)
 }
 
-fn validate_surface_inner(
+fn validate_surface_inner<S: BuildHasher>(
     resources: &[Resource],
     registry: &ActionRegistry,
-    operation_handlers: Option<&HashSet<String>>,
+    operation_handlers: Option<&HashSet<String, S>>,
 ) -> Vec<ContractViolation> {
     let mut seen_resources = HashSet::new();
     let mut seen_actions = HashSet::new();
@@ -55,10 +55,10 @@ fn validate_surface_inner(
     violations
 }
 
-fn validate_resource(
+fn validate_resource<S: BuildHasher>(
     resource: &Resource,
     registry: &ActionRegistry,
-    operation_handlers: Option<&HashSet<String>>,
+    operation_handlers: Option<&HashSet<String, S>>,
     seen_resources: &mut HashSet<String>,
     seen_actions: &mut HashSet<String>,
     violations: &mut Vec<ContractViolation>,
