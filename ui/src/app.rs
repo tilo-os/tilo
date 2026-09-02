@@ -232,6 +232,10 @@ type ResolvedResourceInvocation<'a> = (
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlBindingStatus {
     Resolved,
+    /// A high-frequency framework-owned CRDT editing stream with automatic
+    /// collaboration/history semantics rather than a discrete action address.
+    CollaborativeDocument,
+    SemanticAction,
     /// Multiple affordances intentionally invoke the same operation.
     SharedAddress,
     StaleAddress,
@@ -913,7 +917,13 @@ impl App {
     }
 
     fn collect_declared_resources(&self) -> Vec<qos_actions::Resource> {
-        self.root_widget.resources(&self.state.doc)
+        let mut resources = Vec::new();
+        crate::widget::collect_widget_resources(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            &mut resources,
+        );
+        resources
     }
 
     fn refresh_control_action_availability(&mut self) {
@@ -991,13 +1001,19 @@ impl App {
             .map(|binding| {
                 let status = match &binding.kind {
                     crate::widget::ControlBindingKind::Action(address) => {
-                        if qos_actions::door::resolve(&resources, address).is_none() {
+                        if qos_actions::door::resolve(resources, address).is_none() {
                             ControlBindingStatus::StaleAddress
                         } else if !seen.insert(address.clone()) {
                             ControlBindingStatus::SharedAddress
                         } else {
                             ControlBindingStatus::Resolved
                         }
+                    }
+                    crate::widget::ControlBindingKind::CollaborativeDocument(_) => {
+                        ControlBindingStatus::CollaborativeDocument
+                    }
+                    crate::widget::ControlBindingKind::SemanticAction(_) => {
+                        ControlBindingStatus::SemanticAction
                     }
                     crate::widget::ControlBindingKind::LegacyDocumentPath(_)
                     | crate::widget::ControlBindingKind::LegacyCallback => {
@@ -1349,7 +1365,7 @@ impl App {
     /// Resolve queued local control intents against the current resource tree
     /// and enter through the same door/lifecycle as every other caller.
     fn dispatch_control_invocations(&mut self) -> usize {
-        let mut dispatched = 0;
+        let mut dispatched = 0_usize;
         while let Some(intent) = self.root_widget.take_control_invocation() {
             let local_resources = self
                 .collect_resources()
@@ -1376,7 +1392,7 @@ impl App {
                 if let Some(palette) = self.action_palette.as_mut() {
                     palette.activate_address(&intent.address.resource, &intent.address.action);
                 }
-                dispatched += 1;
+                dispatched = dispatched.saturating_add(1);
                 continue;
             }
             let json = format!(
@@ -1386,7 +1402,7 @@ impl App {
             );
             let actor = self.local_author.0.clone();
             match self.invoke_resource_action(&intent.address, Some(&json), &actor, false, None) {
-                Ok(_) => dispatched += 1,
+                Ok(_) => dispatched = dispatched.saturating_add(1),
                 Err(error) => tracing::warn!(
                     resource = %intent.address.resource,
                     action = %intent.address.action,
@@ -3082,10 +3098,10 @@ impl App {
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Option<(f64, f64)> {
-        self.refresh_control_action_availability();
         use crate::a11y::Action;
         use crate::accesskit_bridge::{A11yTarget, resolve_node_id};
 
+        self.refresh_control_action_availability();
         let argument = match action {
             Action::Activate | Action::ToggleCheck => Some(None),
             Action::SetValue(value) => Some(Some(value.as_str())),
@@ -3284,10 +3300,10 @@ impl App {
                     }
                     other => other,
                 };
-                let Some((taffy_raw, semantic_target)) =
+                let Some((taffy_raw, semantic_target, bounds)) =
                     self.semantic_tree.node(id).and_then(|n| {
                         n.widget_taffy_id
-                            .map(|taffy| (taffy, n.semantic_target.clone()))
+                            .map(|taffy| (taffy, n.semantic_target.clone(), n.bounds))
                     })
                 else {
                     return Ok(false);
@@ -3297,13 +3313,32 @@ impl App {
                     let Some(&widget) = self.node_map.get(&taffy_id) else {
                         return Ok(false);
                     };
+                    let keyed_path = semantic_target
+                        .strip_prefix("qos.key-action:")
+                        .and_then(|target| target.rsplit_once(':'))
+                        .map(|(_, path)| {
+                            path.split('/')
+                                .map(str::parse::<u64>)
+                                .collect::<Result<Vec<_>, _>>()
+                        })
+                        .transpose()
+                        .map_err(|error| format!("invalid keyed semantic action: {error}"))?;
                     let handled = unsafe {
-                        (*widget).perform_semantic_action(
-                            &semantic_target,
-                            &verb,
-                            &mut self.state.doc,
-                            &self.state.root,
-                        )
+                        if let Some(key_path) = keyed_path {
+                            (*widget).perform_action_at(
+                                &verb,
+                                &key_path,
+                                &mut self.state.doc,
+                                &self.state.root,
+                            )
+                        } else {
+                            (*widget).perform_semantic_action(
+                                &semantic_target,
+                                &verb,
+                                &mut self.state.doc,
+                                &self.state.root,
+                            )
+                        }
                     };
                     if handled {
                         if matches!(verb, crate::a11y::Action::Focus) {
@@ -3311,8 +3346,18 @@ impl App {
                         }
                         self.needs_sync = true;
                         self.layout_dirty = true;
+                        return Ok(true);
                     }
-                    return Ok(handled);
+                    // A custom-painted widget may expose stable semantic
+                    // targets and geometry while intentionally reusing its
+                    // production pointer hit-testing instead of duplicating a
+                    // `perform_semantic_action` switch. Route the action back
+                    // through that exact event path.
+                    if let Some(bounds) = bounds {
+                        let center = bounds.center();
+                        return Ok(self.dispatch_semantic_click(center.x, center.y));
+                    }
+                    return Ok(false);
                 }
                 let ak = accesskit::NodeId(taffy_raw.saturating_add(1));
                 if let Some((x, y)) = self.dispatch_a11y_action(ak, &verb) {

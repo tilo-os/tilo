@@ -250,6 +250,20 @@ class AppResourceActionContractTests(unittest.TestCase):
         violations, _ = contract.audit(root)
         self.assertTrue(any("bespoke automation" in item.reason for item in violations))
 
+    def test_private_command_palette_paths_fail(self):
+        root = self.fixture(
+            "use qos_actions::ActionSpec;\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+            "fn private(palette: &mut Palette) -> Option<CommandOutcome> {\n"
+            " palette.open_argument(\"go\", \"Go\", \"Value\", None); None }\n"
+        )
+        violations, _ = contract.audit(root)
+        reasons = "\n".join(item.reason for item in violations)
+        self.assertIn("private command-palette argument route", reasons)
+        self.assertIn("private command-palette outcome", reasons)
+
 
 if __name__ == "__main__":
     unittest.main()

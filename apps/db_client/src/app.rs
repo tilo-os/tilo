@@ -203,7 +203,8 @@ impl DbClientApp {
                 .with_message(
                     "Connect to a PostgreSQL, MySQL or SQLite database to browse its schema and run queries.",
                 )
-                .with_action("New connection"),
+                .with_action("New connection")
+                .with_action_id("db.new-connection"),
             empty_state_node: None,
             grid: GridView::new(),
             data_grid: GridView::new(),

@@ -362,7 +362,7 @@ fn applications(catalogue: &Catalogue, revealed: &mut Revealed) -> String {
         if count > 0 {
             let _ = write!(
                 s,
-                "; ask `{LIST_OPERATIONS}` with application={application:?} for them"
+                "; ask `{LIST_OPERATIONS}` with application=\"{application}\" for them"
             );
         }
         match opener {
@@ -555,7 +555,7 @@ fn describe(input: &Value, catalogue: &Catalogue) -> String {
                 let choices = p
                     .choices
                     .iter()
-                    .map(AsRef::as_ref)
+                    .map(std::convert::AsRef::as_ref)
                     .collect::<Vec<_>>()
                     .join(", ");
                 let _ = write!(s, "; choices: {choices}");

@@ -517,7 +517,177 @@ impl SheetsApp {
     pub(crate) fn sheets_resource_ctx(&self) -> SheetsResourceCtx {
         SheetsResourceCtx {
             sheet_names: self.sheet_names.clone(),
+            palette_actions: self.native_palette_actions(),
         }
+    }
+
+    /// Build the context-sensitive command surface once, as resource actions.
+    /// Dense spreadsheet commands can retain their custom UI while still
+    /// sharing byte-identical action values with agents and the search bar.
+    fn native_palette_actions(&self) -> Vec<qos_actions::ActionSpec> {
+        use qos_actions::{ActionSpec, OperationKind};
+
+        let immediate = |id: &str, label: &str, action: SheetsAction| {
+            ActionSpec::immediate(id, label, actions::SHEETS_ACTION_TYPE, &action)
+                .expect("SheetsAction is serializable")
+                .reversible()
+        };
+        let sheet = self.active_sheet;
+        let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
+        let target_r = r1.saturating_add(1);
+        let sum_writes: Vec<(Addr, String, Option<CellFormat>)> = (c0..=c1)
+            .map(|c| {
+                (
+                    (c, target_r),
+                    format!(
+                        "=SUM({}:{})",
+                        crate::model::addr_to_a1(c, r0),
+                        crate::model::addr_to_a1(c, r1)
+                    ),
+                    None,
+                )
+            })
+            .collect();
+        let mut specs = vec![
+            immediate(
+                "sum-selection",
+                "Sum selection",
+                actions::set_cells_action(sheet, sum_writes),
+            ),
+            immediate(
+                "insert-row-active",
+                "Insert row above",
+                actions::insert_row_action(sheet, self.grid.active().1),
+            ),
+            immediate(
+                "delete-row-active",
+                "Delete row",
+                actions::delete_row_action(sheet, self.grid.active().1),
+            )
+            .destructive(),
+            immediate(
+                "insert-column-active",
+                "Insert column left",
+                actions::insert_column_action(sheet, self.grid.active().0),
+            ),
+            immediate(
+                "delete-column-active",
+                "Delete column",
+                actions::delete_column_action(sheet, self.grid.active().0),
+            )
+            .destructive(),
+        ];
+
+        let selected = self.grid.selected_cells();
+        for (id, label, format) in [
+            (
+                "format-currency",
+                "Format as currency",
+                CellFormat::Currency(self.default_currency()),
+            ),
+            ("format-percent", "Format as percent", CellFormat::Percent),
+            ("clear-format", "Clear formatting", CellFormat::General),
+        ] {
+            let cells: Vec<(Addr, CellFormat)> = selected
+                .iter()
+                .copied()
+                .map(|addr| (addr, format))
+                .collect();
+            specs.push(immediate(
+                id,
+                label,
+                actions::set_formats_action(sheet, cells),
+            ));
+        }
+
+        let mut down = Vec::new();
+        if r1 > r0 {
+            for c in c0..=c1 {
+                let raw = self.grid.cell_raw_at((c, r0));
+                let fmt = self.grid.cell_fmt_at((c, r0));
+                for (offset, r) in (1_i64..).zip(r0.saturating_add(1)..=r1) {
+                    down.push(((c, r), formula::offset_refs(&raw, 0, offset), Some(fmt)));
+                }
+            }
+        }
+        specs.push(immediate(
+            "fill-down",
+            "Fill down",
+            actions::set_cells_action(sheet, down),
+        ));
+
+        let mut right = Vec::new();
+        if c1 > c0 {
+            for r in r0..=r1 {
+                let raw = self.grid.cell_raw_at((c0, r));
+                let fmt = self.grid.cell_fmt_at((c0, r));
+                for (offset, c) in (1_i64..).zip(c0.saturating_add(1)..=c1) {
+                    right.push(((c, r), formula::offset_refs(&raw, offset, 0), Some(fmt)));
+                }
+            }
+        }
+        specs.push(immediate(
+            "fill-right",
+            "Fill right",
+            actions::set_cells_action(sheet, right),
+        ));
+
+        let (c, r) = self.grid.active();
+        if r > 0 {
+            let mut top = r;
+            for rr in (0..r).rev() {
+                let raw = self.grid.cell_raw_at((c, rr));
+                if raw.is_empty() || !(raw.trim().parse::<f64>().is_ok() || raw.starts_with('=')) {
+                    break;
+                }
+                top = rr;
+            }
+            if top < r {
+                let formula = format!(
+                    "=SUM({}:{})",
+                    crate::model::addr_to_a1(c, top),
+                    crate::model::addr_to_a1(c, r - 1)
+                );
+                specs.push(immediate(
+                    "autosum-active",
+                    "AutoSum column",
+                    actions::set_cell_action(sheet, (c, r), &formula, None),
+                ));
+            }
+        }
+
+        specs.push(qos_actions::ActionSpec::prompted_operation(
+            "go-to-cell",
+            "Go to cell…",
+            "Cell reference",
+            "e.g. B12",
+            OperationKind::View,
+            actions::SHEETS_OPERATION_TYPE,
+            |reference| {
+                qos_actions::EncodedAction::encode_operation(
+                    actions::SHEETS_OPERATION_TYPE,
+                    &actions::SheetsOperation::GoToCell {
+                        reference: reference.to_string(),
+                    },
+                )
+                .expect("SheetsOperation is serializable")
+            },
+        ));
+        specs.push(
+            ActionSpec::operation(
+                "toggle-formula-view",
+                if self.grid.formula_view() {
+                    "Hide formulas"
+                } else {
+                    "Show formulas"
+                },
+                OperationKind::View,
+                actions::SHEETS_OPERATION_TYPE,
+                &actions::SheetsOperation::ToggleFormulaView,
+            )
+            .expect("SheetsOperation is serializable"),
+        );
+        specs
     }
 
     /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
@@ -1551,62 +1721,51 @@ impl SheetsApp {
             let (c, r) = self.grid.active();
             crate::model::addr_to_a1(c, r)
         };
-        let formula_view_label = if self.grid.formula_view() {
-            "Hide formulas"
-        } else {
-            "Show formulas"
-        };
-
         self.palette.clear();
-        let entries = [
-            CommandEntry::new("goto", "Go to cell\u{2026}")
-                .description("Jump to and select a cell by its reference")
-                .with_argument("Go to cell", "e.g. B12")
-                .with_argument_prefill(active_ref),
-            CommandEntry::new("sum_selection", "Sum selection")
-                .description("Write =SUM() totals in the row below the selection")
-                .keybinding("Alt+="),
-            CommandEntry::new("autosum", "AutoSum column")
-                .description("Sum the run of numbers directly above the active cell"),
-            CommandEntry::new("fill_down", "Fill down")
-                .description("Copy the top row of the selection down over its rows")
-                .keybinding("Ctrl+D"),
-            CommandEntry::new("fill_right", "Fill right")
-                .description("Copy the left column of the selection across its columns")
-                .keybinding("Ctrl+R"),
-            CommandEntry::new("insert_row", "Insert row above")
-                .description("Insert a blank row above the selection, shifting cells down"),
-            CommandEntry::new("delete_row", "Delete row")
-                .description("Delete the active row, shifting the rows below it up"),
-            CommandEntry::new("insert_col", "Insert column left")
-                .description("Insert a blank column left of the selection, shifting cells right"),
-            CommandEntry::new("delete_col", "Delete column")
-                .description("Delete the active column, shifting the columns after it left"),
-            CommandEntry::new("formula_view", formula_view_label)
-                .description("Toggle between formula source and computed results"),
-            CommandEntry::new("format_currency", "Format as currency")
-                .description("Apply the document currency format to the selection"),
-            CommandEntry::new("format_percent", "Format as percent")
-                .description("Show the selected numbers as percentages"),
-            CommandEntry::new("clear_format", "Clear formatting")
-                .description("Reset the selection to the General format"),
-            CommandEntry::new("export_csv", "Export CSV")
-                .description("Write the active sheet to a .csv file"),
-            CommandEntry::new("export_xlsx", "Export Excel (.xlsx)")
-                .description("Write the workbook to an .xlsx spreadsheet file"),
-            CommandEntry::new("new_sheet", "New sheet")
-                .description("Add a fresh blank sheet to the workbook"),
-        ];
-        for e in entries {
-            self.palette.push(e);
+        let scratch = AutoCommit::new();
+        let resources = actions::provide_resources(&self.sheets_resource_ctx(), &scratch);
+        let mut actions = qos_actions::flatten(&resources);
+        actions.sort_by_key(|action| usize::from(action.action.id != "go-to-cell"));
+        for action in actions {
+            if action.action.id == "commands" {
+                continue;
+            }
+            let mut entry = CommandEntry::from_flat_action(&action);
+            if action.action.id == "go-to-cell" {
+                entry = entry.with_argument_prefill(active_ref.clone());
+            }
+            self.palette.push(entry);
         }
         self.palette.open();
         self.pending.redraw = true;
     }
 
+    #[cfg(test)]
+    fn dispatch_palette_view_for_test(&mut self, doc: &AutoCommit) {
+        let intent = self
+            .take_control_invocation()
+            .expect("palette emitted a resource action");
+        let resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+        let spec = qos_actions::door::resolve(&resources, &intent.address)
+            .expect("palette address resolves");
+        assert_eq!(spec.kind, qos_actions::OperationKind::View);
+        let encoded = spec.build_json(&intent.arguments).expect("valid arguments");
+        assert!(
+            self.invoke_resource_operation(
+                spec.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                doc,
+                &automerge::ROOT,
+            )
+            .expect("view operation")
+        );
+    }
+
     /// Run the action the palette emitted, dispatching by id. `argument`
     /// carries the free-text a `with_argument` entry collected (e.g. the cell
     /// reference for "Go to cell").
+    #[cfg(test)]
     fn dispatch_command(&mut self, doc: &mut AutoCommit, id: &str, argument: Option<&str>) {
         match id {
             "goto" => self.go_to_cell(argument.unwrap_or("")),
@@ -1654,6 +1813,7 @@ impl SheetsApp {
 
     /// "Sum selection": write a `=SUM(col_top:col_bottom)` total for each column
     /// of the selection into the row directly below it, then select that row.
+    #[cfg(test)]
     fn sum_selection(&mut self, doc: &mut AutoCommit) {
         let mut out = Vec::new();
         self.grid.flush_edit(&mut out);
@@ -1677,6 +1837,7 @@ impl SheetsApp {
         self.status = format!("Summed selection into row {}", target_r.saturating_add(1));
     }
 
+    #[cfg(test)]
     fn insert_row(&mut self, doc: &mut AutoCommit) {
         let r0 = self.grid.active().1;
         self.perform_action(doc, &actions::insert_row_action(self.active_sheet, r0));
@@ -1684,6 +1845,7 @@ impl SheetsApp {
         self.status = format!("Inserted row {}", r0.saturating_add(1));
     }
 
+    #[cfg(test)]
     fn delete_row(&mut self, doc: &mut AutoCommit) {
         let r0 = self.grid.active().1;
         self.perform_action(doc, &actions::delete_row_action(self.active_sheet, r0));
@@ -1691,6 +1853,7 @@ impl SheetsApp {
         self.status = format!("Deleted row {}", r0.saturating_add(1));
     }
 
+    #[cfg(test)]
     fn insert_column(&mut self, doc: &mut AutoCommit) {
         let c0 = self.grid.active().0;
         self.perform_action(doc, &actions::insert_column_action(self.active_sheet, c0));
@@ -1701,6 +1864,7 @@ impl SheetsApp {
         );
     }
 
+    #[cfg(test)]
     fn delete_column(&mut self, doc: &mut AutoCommit) {
         let c0 = self.grid.active().0;
         self.perform_action(doc, &actions::delete_column_action(self.active_sheet, c0));
@@ -3238,6 +3402,9 @@ impl Widget for SheetsApp {
         if kind == qos_actions::OperationKind::Document {
             return Ok(false);
         }
+        if type_id != actions::SHEETS_OPERATION_TYPE {
+            return Ok(false);
+        }
         let Some(operation) = actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
@@ -3269,6 +3436,15 @@ impl Widget for SheetsApp {
                 return Err("direct spreadsheet I/O requires lifecycle dispatch".into());
             }
             actions::SheetsOperation::OpenCommandPalette => self.open_command_palette(),
+            actions::SheetsOperation::GoToCell { reference } => self.go_to_cell(&reference),
+            actions::SheetsOperation::ToggleFormulaView => {
+                let on = self.grid.toggle_formula_view();
+                self.status = if on {
+                    "Showing formulas".into()
+                } else {
+                    "Showing results".into()
+                };
+            }
         }
         Ok(true)
     }
@@ -3614,6 +3790,18 @@ impl Widget for SheetsApp {
         "SheetsApp"
     }
 
+    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.palette.take_control_invocation()
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        if self.palette.is_open() {
+            self.palette.control_action_bindings()
+        } else {
+            Vec::new()
+        }
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -3787,9 +3975,6 @@ impl SheetsApp {
         if let Some(i) = self.palette.row_at(p) {
             self.palette.set_cursor(i);
             self.palette.activate_selected(state, path);
-            if let Some(outcome) = self.palette.take_outcome() {
-                self.dispatch_command(state, &outcome.id, outcome.argument.as_deref());
-            }
         } else if !Widget::get_rect(&self.palette).contains(p) {
             self.palette.close();
         }
@@ -4078,9 +4263,6 @@ impl SheetsApp {
                 ctx.node_id,
                 ctx.taffy,
             );
-            if let Some(outcome) = self.palette.take_outcome() {
-                self.dispatch_command(state, &outcome.id, outcome.argument.as_deref());
-            }
             self.pending.redraw = true;
             *handled = true;
             return;
@@ -5782,7 +5964,11 @@ mod tests {
         assert!(handled, "Ctrl+K must be consumed");
         assert!(app.palette.is_open(), "Ctrl+K must open the palette");
         // The first action is the argument-taking "Go to cell".
-        assert_eq!(app.palette.selected_id(), Some("goto"));
+        assert!(
+            app.palette
+                .selected_id()
+                .is_some_and(|id| id.ends_with("go-to-cell"))
+        );
     }
 
     #[test]
@@ -5790,7 +5976,11 @@ mod tests {
         let (mut app, mut doc) = seeded_app();
         let start = app.grid.active(); // E2 = (4, 1)
         app.open_command_palette();
-        assert_eq!(app.palette.selected_id(), Some("goto"));
+        assert!(
+            app.palette
+                .selected_id()
+                .is_some_and(|id| id.ends_with("go-to-cell"))
+        );
 
         // ArrowDown is consumed by the palette and advances its highlight — the
         // grid selection behind it must NOT move.
@@ -5801,9 +5991,10 @@ mod tests {
             Modifiers::default(),
         );
         assert!(handled, "the palette must consume ArrowDown");
-        assert_eq!(
-            app.palette.selected_id(),
-            Some("sum_selection"),
+        assert!(
+            app.palette
+                .selected_id()
+                .is_some_and(|id| id.ends_with("sum-selection")),
             "highlight advanced"
         );
         assert_eq!(app.grid.active(), start, "the grid selection must not move");
@@ -5816,7 +6007,11 @@ mod tests {
             Modifiers::default(),
         );
         assert!(handled);
-        assert_eq!(app.palette.selected_id(), Some("goto"));
+        assert!(
+            app.palette
+                .selected_id()
+                .is_some_and(|id| id.ends_with("go-to-cell"))
+        );
         assert_eq!(app.grid.active(), start);
     }
 
@@ -5851,6 +6046,7 @@ mod tests {
             &named_event(winit::keyboard::NamedKey::Enter),
             Modifiers::default(),
         );
+        app.dispatch_palette_view_for_test(&doc);
         assert!(
             !app.palette.is_open(),
             "running a command closes the palette"

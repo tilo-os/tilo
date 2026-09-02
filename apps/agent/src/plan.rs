@@ -1068,16 +1068,15 @@ mod tests {
         label: &str,
         collects: Option<qos_actions::Collects>,
     ) -> Offer {
-        let params = collects
-            .is_some()
-            .then(|| {
-                vec![qos_actions::ActionParam::required(
-                    "value",
-                    qos_actions::ParamType::Text,
-                    "value",
-                )]
-            })
-            .unwrap_or_default();
+        let params = if collects.is_some() {
+            vec![qos_actions::ActionParam::required(
+                "value",
+                qos_actions::ParamType::Text,
+                "value",
+            )]
+        } else {
+            Vec::new()
+        };
         Offer {
             app: app.to_string(),
             broker_peer_id: None,

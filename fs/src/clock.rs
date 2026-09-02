@@ -10,9 +10,9 @@
 //! and receipts instead of extending their authority.
 
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use thiserror::Error;
@@ -22,6 +22,11 @@ static TEST_CLOCK_FILE: OnceLock<TestClockFile> = OnceLock::new();
 
 struct TestClockFile {
     path: PathBuf,
+    // Keep the validated inode alive for the lifetime of the override.  Apart
+    // from making reads race-safe, this prevents an unlink/create sequence
+    // from immediately recycling the pinned inode number and defeating the
+    // path identity check below.
+    file: Mutex<fs::File>,
     #[cfg(unix)]
     device: u64,
     #[cfg(unix)]
@@ -71,9 +76,12 @@ impl TestClockFile {
         if !path.is_absolute() {
             return Err(ClockConfigurationError::NotAbsolute);
         }
-        let metadata = validate_metadata(path, None)?;
+        validate_metadata(path, None)?;
+        let file = fs::File::open(path).map_err(ClockConfigurationError::Io)?;
+        let metadata = file.metadata().map_err(ClockConfigurationError::Io)?;
         let clock = Self {
             path: path.to_path_buf(),
+            file: Mutex::new(file),
             #[cfg(unix)]
             device: {
                 use std::os::unix::fs::MetadataExt;
@@ -85,18 +93,28 @@ impl TestClockFile {
                 metadata.ino()
             },
         };
+        validate_open_file_metadata(&metadata, &clock)?;
+        // Close the validation/open race: the path must still name the file
+        // whose handle and identity we retain.
+        validate_metadata(path, Some(&clock))?;
         clock.read()?;
         Ok(clock)
     }
 
     fn read(&self) -> Result<u64, ClockConfigurationError> {
         validate_metadata(&self.path, Some(self))?;
-        let file = fs::File::open(&self.path).map_err(ClockConfigurationError::Io)?;
+        let mut file = self.file.lock().map_err(|_| {
+            ClockConfigurationError::Io(std::io::Error::other("test clock file lock poisoned"))
+        })?;
         validate_open_file_metadata(&file.metadata().map_err(ClockConfigurationError::Io)?, self)?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(ClockConfigurationError::Io)?;
         let mut bytes = Vec::new();
-        file.take(MAX_CLOCK_FILE_BYTES + 1)
+        (&mut *file)
+            .take(MAX_CLOCK_FILE_BYTES + 1)
             .read_to_end(&mut bytes)
             .map_err(ClockConfigurationError::Io)?;
+        drop(file);
         if bytes.is_empty() || bytes.len() as u64 > MAX_CLOCK_FILE_BYTES {
             return Err(ClockConfigurationError::InvalidFile);
         }

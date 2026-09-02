@@ -8741,7 +8741,8 @@ impl Widget for VideoEditorApp {
                     focused: self.has_focus,
                     ..Default::default()
                 })
-                .with_children(kids),
+                .with_children(kids)
+                .with_keyed_action_routes("video-editor"),
         )
     }
 

@@ -264,7 +264,8 @@ impl MailApp {
             first_run: EmptyState::new("Welcome to Mail")
                 .with_icon(Icon::Mail)
                 .with_message("Add your email account to start reading and sending mail.")
-                .with_action("Add account"),
+                .with_action("Add account")
+                .with_action_id("mail.add-account"),
             first_run_node: None,
             compose: ComposeWindow::new(ComposeFormat::Html),
             editing_draft: None,

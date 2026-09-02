@@ -256,6 +256,7 @@ pub struct EmptyState {
     title: String,
     message: Option<String>,
     action_label: Option<String>,
+    action_id: Option<String>,
     /// Optional CRDT action key, matching [`super::Button`]'s action-path
     /// contract. The drain channel remains available for immediate-mode
     /// parents; a retained shell can instead observe this semantic key.
@@ -280,6 +281,7 @@ impl EmptyState {
             title: title.into(),
             message: None,
             action_label: None,
+            action_id: None,
             action_path: None,
             action_fired: false,
             rect: Rect::ZERO,
@@ -308,6 +310,14 @@ impl EmptyState {
     #[must_use]
     pub fn with_action(mut self, label: impl Into<String>) -> Self {
         self.action_label = Some(label.into());
+        self
+    }
+
+    /// Stable identity for the optional call-to-action. Supplying it makes the
+    /// action automatically available to accessibility, search, and agents.
+    #[must_use]
+    pub fn with_action_id(mut self, id: impl Into<String>) -> Self {
+        self.action_id = Some(id.into());
         self
     }
 
@@ -545,15 +555,19 @@ impl Widget for EmptyState {
                     focused: self.action_focused,
                     ..Default::default()
                 })
-                .with_children(vec![
-                    AccessNode::new(Role::Button)
+                .with_children(vec![{
+                    let mut action_node = AccessNode::new(Role::Button)
                         .with_name(action.clone())
                         .with_state(AccessState {
                             focusable: true,
                             focused: self.action_focused,
                             ..Default::default()
-                        }),
-                ]);
+                        });
+                    if let Some(id) = &self.action_id {
+                        action_node = action_node.with_action_target(id.clone());
+                    }
+                    action_node
+                }]);
         }
         Some(node)
     }

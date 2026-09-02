@@ -148,7 +148,7 @@ impl FileToolbar {
                 // The glyph alone is ambiguous; the tooltip labels it on hover
                 // and doubles as the button's accessible name.
                 .tooltip(tip)
-                .on_click(move || push(&sink, cmd.clone())),
+                .on_effect(move || push(&sink, cmd.clone())),
         )
     }
 
@@ -197,7 +197,7 @@ impl FileToolbar {
                     ],
                     selected,
                 )
-                .on_change(move |i| {
+                .on_view("files.view-mode", move |i| {
                     let mode = if i == 0 {
                         ViewMode::List
                     } else {
@@ -215,7 +215,7 @@ impl FileToolbar {
                     Button::new("files.sort_menu", &t("files-sort-by"), None)
                         .with_icon(Icon::ArrowUpDown)
                         .with_size(104.0, NAV_H)
-                        .on_click(move || push(&sink, FileCommand::OpenSortMenu)),
+                        .on_effect(move || push(&sink, FileCommand::OpenSortMenu)),
                 ));
             }
         }
@@ -230,7 +230,7 @@ impl FileToolbar {
                 .with_size(NAV_W, NAV_H)
                 .with_accessible_name(&t("files-view-options"))
                 .tooltip(t("files-view-options"))
-                .on_click(move || push(&sink, FileCommand::OpenViewMenu)),
+                .on_effect(move || push(&sink, FileCommand::OpenViewMenu)),
         ));
         out
     }

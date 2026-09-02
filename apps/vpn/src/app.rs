@@ -2898,6 +2898,18 @@ impl Widget for VpnApp {
         Some("vpn_app")
     }
 
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Window)
+                .with_name("VPN connections")
+                .with_state(ui::a11y::AccessState {
+                    focusable: true,
+                    focused: self.is_focused,
+                    ..Default::default()
+                }),
+        )
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }

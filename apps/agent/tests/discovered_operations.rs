@@ -20,6 +20,7 @@
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
+use qos_actions::{Resource, ResourceProvider};
 use qos_agent::{Config, Session};
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload};
 use uuid::Uuid;
@@ -81,6 +82,23 @@ fn blocks(doc: &AutoCommit) -> Vec<qdoc::BlockView> {
     qdoc::model::materialize(doc, &c).blocks
 }
 
+fn word_processor_resources(doc: &AutoCommit) -> Vec<Resource> {
+    let b = blocks(doc);
+    let caret = b.last().map(|block| block.id.clone()).unwrap_or_default();
+    word_processor::actions::provide_resources(
+        &word_processor::actions::WpResourceCtx {
+            caret_block: caret.clone(),
+            caret_offset: 0,
+            target_blocks: (!caret.is_empty()).then_some(caret).into_iter().collect(),
+        },
+        doc,
+    )
+}
+
+fn photos_resources(doc: &AutoCommit) -> Vec<Resource> {
+    photos::actions::PhotosResources.resources(doc)
+}
+
 /// Bring up the relay, seed `replica`, connect a peer under it, and run the
 /// agent under `cfg` against that peer — driving `poll` on every incremental
 /// change until it says the run is over or `within` runs out.
@@ -92,7 +110,7 @@ fn run(
     mut replica: AutoCommit,
     mut poll: impl FnMut(&AutoCommit) -> bool,
     within: Duration,
-) -> (AutoCommit, bool) {
+) -> (AutoCommit, bool, Option<String>) {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
     let _broker = typed_peer::spawn(&sock);
@@ -133,6 +151,7 @@ fn run(
         .checked_add(within)
         .expect("test duration does not overflow Instant");
     let mut done = false;
+    let mut invocation_actor = None;
     while Instant::now() < deadline && !done {
         let Some(event) = recv(&mut peer) else {
             continue;
@@ -142,10 +161,34 @@ fn run(
                 payload: PresencePayload::Arrived,
                 ..
             } => {
+                typed_peer::publish_actions(&mut peer, APP, &word_processor_resources(&replica));
                 let snap = CollabRequest::DocumentSnapshot {
                     data: replica.save(),
                 };
                 send(&mut peer, &snap).unwrap();
+            }
+            CollabEvent::Invocation {
+                id,
+                resource,
+                action,
+                argument,
+                actor,
+            } => {
+                let resources = word_processor_resources(&replica);
+                let update = typed_peer::service_document_invocation(
+                    &mut peer,
+                    &mut replica,
+                    &resources,
+                    word_processor::actions::register,
+                    id,
+                    resource,
+                    action,
+                    argument.as_deref(),
+                    &actor,
+                );
+                send(&mut peer, &CollabRequest::UpdateInvocation { id, update }).unwrap();
+                invocation_actor = Some(actor);
+                done = poll(&replica);
             }
             event @ CollabEvent::Document { .. } => {
                 let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
@@ -160,7 +203,7 @@ fn run(
         }
     }
     let acted = agent.join().unwrap();
-    (replica, acted)
+    (replica, acted, invocation_actor)
 }
 
 /// A discovered destructive operation remains fail-closed when the planner
@@ -175,7 +218,7 @@ fn a_discovered_destructive_operation_requires_explicit_confirmation() {
     let replica = seed_document_with_image(
         "Scribe: delete the image, then give this a title, then delete the image again",
     );
-    let (mut replica, acted) = run(
+    let (mut replica, acted, invocation_actor) = run(
         |sock, room| Config {
             endpoint: Some(sock),
             endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
@@ -205,6 +248,10 @@ fn a_discovered_destructive_operation_requires_explicit_confirmation() {
         .map(|b| (b.kind.clone(), b.text.clone()))
         .collect();
     assert!(acted, "the agent reports having acted");
+    assert!(
+        invocation_actor.is_none(),
+        "an unconfirmed destructive operation must not reach the app broker"
+    );
 
     let b = blocks(&replica);
     assert!(
@@ -234,7 +281,82 @@ fn a_discovered_destructive_operation_requires_explicit_confirmation() {
     assert_eq!(
         actors,
         std::collections::HashSet::from([hex::encode("Scribe")]),
-        "the discovered operation's change must carry the agent's own actor"
+        "the refusal's change must carry the agent's own actor"
+    );
+}
+
+/// **The core claim of discovery.** An operation nowhere written down in
+/// the agent — Word Processor's own "insert table" — is found, performed,
+/// and attributed to the agent's own actor, exactly as a catalogue action
+/// is.
+///
+/// It also proves the re-entrancy guard: the instruction names the same
+/// operation twice, but one repeated clause still resolves to one operation.
+#[test]
+fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
+    let _serial = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let replica = seed_document_with_image("Scribe: insert a table, then insert a table again");
+    let (mut replica, acted, invocation_actor) = run(
+        |sock, room| Config {
+            endpoint: Some(sock),
+            endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
+            app_id: APP.into(),
+            cluster: room,
+            record: Some(RECORD.into()),
+            name: "Scribe".into(),
+            pace: Duration::from_millis(10),
+            once: true,
+            model: false,
+            model_timeout: Duration::from_secs(1),
+            await_document: Duration::ZERO,
+            settle: Duration::ZERO,
+            directory: None,
+            permissions: granted("Scribe", "word-processor"),
+        },
+        replica,
+        |doc| {
+            let b = blocks(doc);
+            let title_done = b.iter().any(|x| x.text == "Launch plan");
+            let one_table = b.iter().filter(|x| x.kind == "cell").count() == 4;
+            let answered = !b.iter().any(|x| x.text.starts_with("Scribe:"));
+            title_done && one_table && answered
+        },
+        Duration::from_secs(15),
+    );
+    let shown: Vec<(String, String)> = blocks(&replica)
+        .iter()
+        .map(|b| (b.kind.clone(), b.text.clone()))
+        .collect();
+    assert!(acted, "the agent reports having acted");
+
+    let b = blocks(&replica);
+    assert!(b.iter().any(|x| x.text == "Launch plan"), "{shown:?}");
+    assert_eq!(
+        b.iter().filter(|x| x.kind == "cell").count(),
+        4,
+        "the repeated request must insert exactly one 2x2 table: {shown:?}"
+    );
+    assert!(
+        !b.iter().any(|x| x.text.starts_with("Scribe:")),
+        "the instruction was left holding a refusal instead of being answered: {shown:?}"
+    );
+
+    // The app-hosted action is attributed to the authenticated broker actor;
+    // the agent's local acknowledgement edit may retain its display actor.
+    let genesis = qdoc::model::schema_genesis_actor_hex();
+    let seed = hex::encode("quinten");
+    let actors: std::collections::HashSet<String> = qdoc::history::versions(&mut replica)
+        .into_iter()
+        .map(|v| v.actor_hex)
+        .filter(|a| *a != genesis && *a != seed)
+        .collect();
+    let invocation_actor = invocation_actor.expect("the app received a broker invocation");
+    assert!(
+        actors.contains(&hex::encode(&invocation_actor)),
+        "the discovered operation must carry the broker-authenticated agent actor \
+         {invocation_actor}: {actors:?}"
     );
 }
 
@@ -331,6 +453,11 @@ fn drive_photo_peer(
                 payload: PresencePayload::Arrived,
                 ..
             } => {
+                typed_peer::publish_actions(
+                    &mut photo_peer,
+                    "dev.qos.photos",
+                    &photos_resources(&photo_replica),
+                );
                 let snap = CollabRequest::DocumentSnapshot {
                     data: photo_replica.save(),
                 };
@@ -338,6 +465,34 @@ fn drive_photo_peer(
                 if !signalled {
                     let _ = photo_ready_tx.send(());
                     signalled = true;
+                }
+            }
+            CollabEvent::Invocation {
+                id,
+                resource,
+                action,
+                argument,
+                actor,
+            } => {
+                let resources = photos_resources(&photo_replica);
+                let update = typed_peer::service_document_invocation(
+                    &mut photo_peer,
+                    &mut photo_replica,
+                    &resources,
+                    photos::actions::register,
+                    id,
+                    resource,
+                    action,
+                    argument.as_deref(),
+                    &actor,
+                );
+                send(
+                    &mut photo_peer,
+                    &CollabRequest::UpdateInvocation { id, update },
+                )
+                .unwrap();
+                if photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters != 0 {
+                    break;
                 }
             }
             event @ CollabEvent::Document { .. } => {
@@ -382,6 +537,11 @@ fn drive_word_processor_peer(
                 // `send` queues the photo snapshot asynchronously. Let the
                 // broker deliver it before revealing the instruction.
                 std::thread::sleep(Duration::from_millis(250));
+                typed_peer::publish_actions(
+                    &mut wp_peer,
+                    APP,
+                    &word_processor_resources(&wp_replica),
+                );
                 let snap = CollabRequest::DocumentSnapshot {
                     data: wp_replica.save(),
                 };
@@ -498,7 +658,7 @@ fn without_the_capability_a_discovered_operation_is_never_performed() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let replica = seed_document_with_image("Scribe: delete the image");
-    let (replica, acted) = run(
+    let (replica, acted, invocation_actor) = run(
         |sock, room| Config {
             endpoint: Some(sock),
             endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
@@ -524,6 +684,10 @@ fn without_the_capability_a_discovered_operation_is_never_performed() {
         Duration::from_secs(15),
     );
     assert!(acted, "the agent reports having acted");
+    assert!(
+        invocation_actor.is_none(),
+        "a denied operation reached the application host"
+    );
 
     let b = blocks(&replica);
     let shown: Vec<(String, String)> = b.iter().map(|x| (x.kind.clone(), x.text.clone())).collect();
