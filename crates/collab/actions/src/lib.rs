@@ -117,8 +117,9 @@ pub use params::{
 pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
 pub use registry::ActionRegistry;
 pub use resource::{
-    ActionInput, ActionSpec, ArgsBuilder, Collects, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource,
-    ResourceId, ResourceProvider, flatten,
+    ActionBinding, ActionBindingError, ActionInput, ActionSpec, ArgsBuilder, Collects,
+    ControlInvocation, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource, ResourceId, ResourceProvider,
+    flatten,
 };
 
 #[cfg(test)]

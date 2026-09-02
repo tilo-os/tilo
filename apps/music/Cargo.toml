@@ -53,7 +53,7 @@ p2p = ["dep:tokio"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
-ui = { path = "../../ui" }
+ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 # The qOS action model: document-mutating library edits (playlist create/rename/
 # delete, add/remove/reorder track, like/save/follow) are replayable actions the
 # Ctrl+K palette and the on-screen affordances both dispatch — one source of

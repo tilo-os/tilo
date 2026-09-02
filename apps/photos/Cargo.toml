@@ -18,7 +18,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { path = "../../ui" }
+ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 # The open photograph is published as a Resource whose edits are ActionSpecs,
 # so the shell's palette and an out-of-process caller drive the same operations
 # the toolbar buttons do.
