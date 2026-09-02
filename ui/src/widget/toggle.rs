@@ -4,6 +4,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -40,6 +41,7 @@ pub struct Toggle {
     local_state: Option<crate::local_state::LocalBinding<bool>>,
     /// Observes user intent without owning model synchronization.
     on_change: Option<BoolChangeCallback>,
+    action: Option<ActionEmitter<bool>>,
     interaction: crate::interaction::InteractionEnvironment,
 }
 
@@ -59,6 +61,7 @@ impl Toggle {
             accessible_name: None,
             local_state: None,
             on_change: None,
+            action: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
         }
     }
@@ -85,7 +88,17 @@ impl Toggle {
     /// refresh for new user intent.
     #[must_use]
     pub fn on_change(mut self, callback: impl FnMut(bool) + 'static) -> Self {
-        self.on_change = Some(Box::new(callback));
+        if self.action.is_none() {
+            self.on_change = Some(Box::new(callback));
+        }
+        self
+    }
+
+    /// Route pointer, keyboard, and accessibility toggles through an action.
+    #[must_use]
+    pub fn on_action(mut self, binding: qos_actions::ActionBinding<bool>) -> Self {
+        self.action = Some(ActionEmitter::new(binding));
+        self.on_change = None;
         self
     }
 
@@ -101,7 +114,9 @@ impl Toggle {
     /// Automerge path instead and let [`Widget::sync`] adopt the result.
     pub fn set_checked(&mut self, checked: bool) {
         self.is_checked = checked;
-        self.publish_local_state();
+        if self.action.is_none() {
+            self.publish_local_state();
+        }
     }
 
     fn publish_local_state(&mut self) {
@@ -112,7 +127,9 @@ impl Toggle {
 
     fn commit_user_toggle(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let checked = !self.is_checked;
-        if self.local_state.is_none() {
+        if let Some(action) = &mut self.action {
+            let _ = action.emit(checked);
+        } else if self.local_state.is_none() {
             let _ = state.put(
                 root,
                 self.on_toggle_path.as_str(),
@@ -120,8 +137,12 @@ impl Toggle {
             );
         }
         self.is_checked = checked;
-        self.publish_local_state();
-        if let Some(callback) = self.on_change.as_mut() {
+        if self.action.is_none() {
+            self.publish_local_state();
+        }
+        if self.action.is_none()
+            && let Some(callback) = self.on_change.as_mut()
+        {
             callback(checked);
         }
     }
@@ -605,6 +626,29 @@ impl Widget for Toggle {
         self.permission_scope.clone()
     }
 
+    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let control_id = self.test_id().unwrap_or("toggle");
+        if let Some(action) = &self.action {
+            vec![action.metadata(control_id)]
+        } else if !self.on_toggle_path.is_empty() {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::LegacyDocumentPath(self.on_toggle_path.clone()),
+            }]
+        } else if self.on_change.is_some() || self.local_state.is_some() {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::LegacyCallback,
+            }]
+        } else {
+            Vec::new()
+        }
+    }
+
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -879,6 +923,27 @@ mod tests {
         assert!(
             doc.get(&root, "on").unwrap().is_none(),
             "disabled toggle must not write the CRDT path"
+        );
+    }
+
+    #[test]
+    fn action_binding_owns_keyboard_and_accessibility_activation() {
+        let mut toggle = Toggle::new("native", "legacy")
+            .on_change(|_| panic!("legacy callback must be suppressed"))
+            .on_action(crate::widget::test_bool_action_binding());
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_action(
+            &mut toggle,
+            &crate::a11y::Action::ToggleCheck,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
+        assert_eq!(
+            Widget::take_control_invocation(&mut toggle)
+                .unwrap()
+                .arguments["value"],
+            true
         );
     }
 }
