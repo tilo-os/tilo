@@ -30,7 +30,7 @@ use ui::widget::{
 use ui::{
     ActivityBrief, ActivityDigest, ActivityTimeline, AuthorDirectory, BandUndoRequest, ChangeRun,
     GroupNameRequest, HistoryComparison, HistoryFacetIndex, HistorySelectionDetail, HistorySource,
-    NamedRange, NarrativeRequest, RecordStore, Theme, Widget,
+    NamedRange, NarrativeRequest, RecordStore, Theme, Widget, format_relative_time,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -1690,7 +1690,9 @@ impl RoomActivityPane {
             .skip(self.brief_offset)
         {
             let expanded = self.expanded_brief == Some(index);
-            let height = if expanded { 112.0 } else { 70.0 };
+            // Outcome, who/when, and affected context must all be scannable
+            // without opening the card.
+            let height = if expanded { 150.0 } else { 88.0 };
             let more_room = 34.0;
             let has_later = index
                 .checked_add(1)
@@ -1701,7 +1703,16 @@ impl RoomActivityPane {
             }
             let rect = Rect::new(x0, y, x1, y + height);
             self.brief_rects.push((index, rect));
-            draw_brief_card(scene, transform, tr, theme, brief, rect, expanded);
+            draw_brief_card(
+                scene,
+                transform,
+                tr,
+                theme,
+                brief,
+                rect,
+                expanded,
+                self.now(),
+            );
             y += height + 8.0;
             shown = shown.saturating_add(1);
         }
@@ -1740,8 +1751,9 @@ impl RoomActivityPane {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let title_size = tokens.typography.scale.lg;
-        let title = match self.scope {
-            RoomScope::ThisRoom | RoomScope::AllWorkspaces => "Workspace activity",
+        let title = match self.view {
+            ActivityView::CatchUp => "Since you looked",
+            ActivityView::Explore => "Workspace activity",
         };
         tr.draw_text(
             scene,
@@ -1752,28 +1764,53 @@ impl RoomActivityPane {
             None,
         );
         let sub_size = (tokens.typography.scale.sm - 1.0).max(10.0);
-        let contributor_count = self.contributors.len();
+        let (change_count, contributor_count) = match self.view {
+            ActivityView::CatchUp => (self.digest.total_changes, self.digest.people),
+            ActivityView::Explore => (self.total_entries, self.contributors.len()),
+        };
         let people = if contributor_count == 1 {
             "1 person".to_string()
         } else {
             format!("{contributor_count} people")
         };
-        let mut subtitle = match self.scope {
-            RoomScope::ThisRoom => {
-                let workspace = if self.room_name.is_empty() {
-                    "This workspace"
-                } else {
-                    self.room_name.as_str()
-                };
-                format!(
-                    "{workspace} \u{00b7} {} changes by {people}",
-                    self.total_entries
-                )
+        let freshness = if self.view == ActivityView::CatchUp {
+            "new "
+        } else {
+            ""
+        };
+        let change_noun = if change_count == 1 {
+            "change"
+        } else {
+            "changes"
+        };
+        let mut subtitle = if self.view == ActivityView::CatchUp && change_count == 0 {
+            match self.scope {
+                RoomScope::ThisRoom => format!(
+                    "{} · You're caught up",
+                    if self.room_name.is_empty() {
+                        "This workspace"
+                    } else {
+                        self.room_name.as_str()
+                    }
+                ),
+                RoomScope::AllWorkspaces => "Every workspace · You're caught up".to_string(),
             }
-            RoomScope::AllWorkspaces => format!(
-                "Every workspace on this machine \u{00b7} {} changes by {people}",
-                self.total_entries,
-            ),
+        } else {
+            match self.scope {
+                RoomScope::ThisRoom => {
+                    let workspace = if self.room_name.is_empty() {
+                        "This workspace"
+                    } else {
+                        self.room_name.as_str()
+                    };
+                    format!(
+                        "{workspace} \u{00b7} {change_count} {freshness}{change_noun} by {people}"
+                    )
+                }
+                RoomScope::AllWorkspaces => format!(
+                    "Every workspace on this machine \u{00b7} {change_count} {freshness}{change_noun} by {people}",
+                ),
+            }
         };
         if !self.feed_coverage.is_complete() {
             let missing = self.feed_coverage.unavailable_records.len();
@@ -2516,21 +2553,34 @@ impl RoomActivityPane {
             }
             ActivityFocus::Brief(index) => {
                 let brief = self.digest.briefs.get(*index)?;
+                let change_noun = if brief.changes == 1 {
+                    "change"
+                } else {
+                    "changes"
+                };
+                let mut description = format!(
+                    "{}; last changed {}; {} {} by {}",
+                    brief.detail,
+                    format_relative_time(brief.last_at, self.now()),
+                    brief.changes,
+                    change_noun,
+                    brief
+                        .authors
+                        .iter()
+                        .map(|author| author.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                if self.expanded_brief == Some(*index) {
+                    for action in &brief.actions {
+                        let _ = write!(description, "; {}: {}", action.author.name, action.summary);
+                    }
+                }
                 AccessControl {
                     role: Role::Button,
                     selected: false,
                     expanded: Some(self.expanded_brief == Some(*index)),
-                    description: format!(
-                        "{}; {} changes by {}",
-                        brief.detail,
-                        brief.changes,
-                        brief
-                            .authors
-                            .iter()
-                            .map(|author| author.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
+                    description,
                 }
             }
             ActivityFocus::MoreBriefs => {
@@ -2942,6 +2992,7 @@ fn draw_brief_card(
     brief: &ActivityBrief,
     rect: Rect,
     expanded: bool,
+    now: SystemTime,
 ) {
     scene.fill(
         Fill::NonZero,
@@ -2962,15 +3013,16 @@ fn draw_brief_card(
     );
     tr.draw_text(
         scene,
-        &brief.detail,
+        &format!(
+            "{} \u{00b7} {}",
+            brief.detail,
+            format_relative_time(brief.last_at, now)
+        ),
         theme.tokens.typography.scale.sm,
         theme.tokens.colors.text_dim,
         at(transform, rect.x0 + 12.0, rect.y0 + 34.0),
         Some(width),
     );
-    if !expanded {
-        return;
-    }
     let mut provenance = brief.apps.join(", ");
     if !brief.resources.is_empty() {
         if !provenance.is_empty() {
@@ -2979,14 +3031,72 @@ fn draw_brief_card(
         provenance.push_str(&brief.resources.join(", "));
     }
     if provenance.is_empty() {
-        provenance = format!("{} underlying changes", brief.changes);
+        provenance = if brief.changes == 1 {
+            "1 underlying action".to_string()
+        } else {
+            format!("{} underlying actions", brief.changes)
+        };
     }
     tr.draw_text(
         scene,
-        &format!("{provenance}\nOpen in Explorer →"),
+        &provenance,
         theme.tokens.typography.scale.sm,
         theme.tokens.colors.text_dim,
-        at(transform, rect.x0 + 12.0, rect.y0 + 76.0),
+        at(transform, rect.x0 + 12.0, rect.y0 + 56.0),
+        Some(width),
+    );
+    if expanded {
+        let mut action_y = rect.y0 + 78.0;
+        for action in brief.actions.iter().take(2) {
+            tr.draw_text(
+                scene,
+                &format!(
+                    "{} · {} · {}",
+                    action.author.name,
+                    action.summary,
+                    format_relative_time(action.timestamp, now)
+                ),
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_primary,
+                at(transform, rect.x0 + 20.0, action_y),
+                Some(text_width(rect.width() - 32.0)),
+            );
+            action_y += 18.0;
+        }
+        if brief.actions.len() > 2 {
+            tr.draw_text(
+                scene,
+                &format!("+{} more actions", brief.actions.len().saturating_sub(2)),
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_dim,
+                at(transform, rect.x0 + 20.0, action_y),
+                Some(text_width(rect.width() - 32.0)),
+            );
+        }
+    }
+    let affordance = if expanded {
+        "Open this outcome in Explorer →"
+    } else {
+        "Show affected resources and actions ⌄"
+    };
+    tr.draw_text(
+        scene,
+        affordance,
+        theme.tokens.typography.scale.sm,
+        if expanded {
+            theme.tokens.colors.accent[4]
+        } else {
+            theme.tokens.colors.text_dim
+        },
+        at(
+            transform,
+            rect.x0 + 12.0,
+            if expanded {
+                rect.y0 + 128.0
+            } else {
+                rect.y0 + 72.0
+            },
+        ),
         Some(width),
     );
 }
