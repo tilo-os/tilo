@@ -8,9 +8,10 @@
 use serde::{Deserialize, Serialize};
 
 /// Whether an action can be invoked in the resource's current state.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Availability {
+    #[default]
     Available,
     Unavailable {
         /// Stable programmatic reason such as `offline` or `selection_empty`.
@@ -18,12 +19,6 @@ pub enum Availability {
         /// Localised explanation suitable for a person or an agent transcript.
         reason: String,
     },
-}
-
-impl Default for Availability {
-    fn default() -> Self {
-        Self::Available
-    }
 }
 
 impl Availability {
@@ -135,9 +130,20 @@ pub enum ResultSpec {
 }
 
 impl ResultSpec {
+    /// Validate an action's concrete output against this advertised result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the output shape, resource kind, or JSON schema
+    /// does not match the declared result contract.
     pub fn validate(&self, output: &crate::ActionOutput) -> Result<(), String> {
         match self {
-            Self::None if output.value.is_none() && output.resources.is_empty() => Ok(()),
+            // The broker assigns and returns a durable invocation id for jobs
+            // at admission, so both no-result and job contracts legitimately
+            // have no terminal value in the application's output.
+            Self::None | Self::Job if output.value.is_none() && output.resources.is_empty() => {
+                Ok(())
+            }
             Self::None => Err("action declared no result but returned one".into()),
             Self::Json { schema } => {
                 let value = output
@@ -160,10 +166,6 @@ impl ResultSpec {
             Self::Resource { resource_kind } => Err(format!(
                 "action did not return a `{resource_kind}` resource address"
             )),
-            // The broker assigns and returns the durable invocation id at
-            // admission. Applications must not mint a second, unrelated job
-            // identity merely to satisfy the result validator.
-            Self::Job if output.value.is_none() && output.resources.is_empty() => Ok(()),
             Self::Job => Err("job action returned an undeclared terminal value".into()),
         }
     }

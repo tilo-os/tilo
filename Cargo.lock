@@ -1204,7 +1204,6 @@ dependencies = [
  "qos-actions",
  "runtime-dylib",
  "serde",
- "serde_json",
  "taffy",
  "ui",
  "vello",
@@ -1569,7 +1568,6 @@ dependencies = [
  "dirs 6.0.0",
  "png 0.18.1",
  "pollster",
- "qos-actions",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde_json",
@@ -2548,7 +2546,6 @@ name = "containers"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -8154,7 +8151,6 @@ name = "logs"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
  "runtime-dylib",
  "serde_json",
  "taffy",
@@ -8588,7 +8584,6 @@ name = "monitor"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
  "runtime-dylib",
  "serde_json",
  "sysinfo",
@@ -9953,7 +9948,6 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "libc",
- "qos-actions",
  "runtime-dylib",
  "serde_json",
  "swipe",
@@ -11361,10 +11355,7 @@ dependencies = [
 name = "qos-dev-template-smoke"
 version = "0.1.0"
 dependencies = [
- "qos-actions",
  "qos-dev",
- "serde",
- "serde_json",
  "ui",
 ]
 
@@ -14581,7 +14572,6 @@ dependencies = [
  "libc",
  "portable-pty",
  "qdoc",
- "qos-actions",
  "runtime-dylib",
  "serde_json",
  "serial_test",

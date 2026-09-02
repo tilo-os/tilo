@@ -29,7 +29,7 @@ const KNOB_RADIUS_PRESS_SCALE: f64 = 1.15;
     reason = "independent pointer, focus, drag, and enabled presentation states"
 )]
 pub struct Slider {
-    _id: String,
+    semantic_id: String,
     rect: Rect,
     is_hovered: bool,
     is_dragging: bool,
@@ -67,7 +67,7 @@ pub struct Slider {
 impl Slider {
     pub fn new(id: &str, on_change_path: &str) -> Self {
         Self {
-            _id: id.to_string(),
+            semantic_id: id.to_string(),
             rect: Rect::ZERO,
             is_hovered: false,
             is_dragging: false,
@@ -600,7 +600,7 @@ impl Widget for Slider {
             .filter(|n| !n.is_empty());
         Some(
             AccessNode::new(Role::Slider)
-                .with_semantic_key(&self._id)
+                .with_semantic_key(&self.semantic_id)
                 .with_optional_name(name)
                 .with_value(format!("{pct}%"))
                 .with_state(AccessState {
