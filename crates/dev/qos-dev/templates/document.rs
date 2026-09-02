@@ -1,6 +1,6 @@
-use qos_actions::{ActionError, ActionRegistry, Doc, ExecutionLocus, Resource};
 use serde::{Deserialize, Serialize};
 use ui::automerge::transaction::Transactable;
+use ui::qos_actions::{self, ActionError, ActionRegistry, Doc, ExecutionLocus, Resource};
 use ui::tokens::TextRole;
 use ui::widget::{Text, TextInput, Widget, labeled_field};
 
@@ -108,5 +108,7 @@ pub fn app_root() -> Box<dyn Widget> {
             )
             .expect("the generated document action is serializable"),
         );
-    crate::resource_actions::immediate(root, resource, |_| Ok(qos_actions::ActionOutput::default()))
+    ui::widget::resource_actions::immediate(root, resource, |_| {
+        Ok(qos_actions::ActionOutput::default())
+    })
 }
