@@ -527,7 +527,7 @@ impl Session {
                 request_id,
                 peer_id,
                 resource: descriptor.address.resource.clone(),
-                action: descriptor.address.action.clone(),
+                action: descriptor.address.action,
                 arguments: arguments.clone(),
                 confirmation: confirmation_json,
             })?;

@@ -898,15 +898,18 @@ impl Widget for Dropdown {
         } else if !self.value_path.is_empty() {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyDocumentPath(self.value_path.clone()),
+                kind: ControlBindingKind::CollaborativeDocument(self.value_path.clone()),
             }]
-        } else if self.on_change.is_some() || self.local_state.is_some() {
+        } else if self.on_change.is_some() {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
                 kind: ControlBindingKind::LegacyCallback,
             }]
         } else {
-            Vec::new()
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
+            }]
         }
     }
 
@@ -978,6 +981,9 @@ impl Widget for Dropdown {
         // Surface the chosen option's ordinal so the reader can say "2 of 5".
         if let Some(idx) = self.options.iter().position(|o| *o == self.selected) {
             node = node.with_position(idx.saturating_add(1), self.options.len());
+        }
+        if self.action.is_none() && self.on_change.is_none() {
+            node = node.with_action_target(self.test_id().unwrap_or("dropdown"));
         }
         Some(node)
     }
