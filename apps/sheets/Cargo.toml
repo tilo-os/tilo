@@ -22,7 +22,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 settings-store = { path = "../../crates/system/settings-store" }
 # The qOS action model: doc-mutating operations are replayable, undoable actions.
 qos-actions = { path = "../../crates/collab/actions" }
-ui = { path = "../../ui", features = ["portal"] }
+ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

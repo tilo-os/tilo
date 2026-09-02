@@ -30,7 +30,7 @@ portal = ["ui/portal"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { path = "../../ui" }
+ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 qos-actions = { path = "../../crates/collab/actions" }
 media = { path = "../../crates/media" }
 collab-types = { path = "../../crates/collab/collab-types" }

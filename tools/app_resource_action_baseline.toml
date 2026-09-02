@@ -1,0 +1,18 @@
+# Reviewed legacy ceilings for source shapes that can bypass the unified
+# resource/action surface. Values are maximum occurrence counts, not waivers
+# for new files or increases. Reduce entries as callbacks/private palettes are
+# migrated; raising a value is an explicit, reviewable exception.
+
+[ratchets.raw_on_click_closure]
+"apps/api_tester/src/app.rs" = 1
+"apps/file-explorer/src/files_app.rs" = 1
+"apps/file-explorer/src/toolbar.rs" = 3
+"apps/photos/src/app.rs" = 1
+"apps/settings/src/panes/permissions.rs" = 1
+"apps/settings/src/panes/personal_apps.rs" = 1
+"apps/windows/src/app.rs" = 21
+
+[ratchets.bespoke_command_entry]
+"apps/code_editor/src/command_palette.rs" = 1
+"apps/containers/src/app.rs" = 1
+"apps/sheets/src/app.rs" = 16
