@@ -328,6 +328,13 @@ type RowDraws = Vec<(f64, Vec<Seg>)>;
 type GutterNums = Vec<(f64, String, bool)>;
 
 impl TextInput {
+    fn effectively_disabled(&self) -> bool {
+        self.disabled
+            || self
+                .action
+                .as_ref()
+                .is_some_and(|action| !action.is_available())
+    }
     /// Empty `path` opts the widget out of presence rendering.
     pub fn new(path: Vec<PathSegment>) -> Self {
         let spell_language = spellcheck::default_language();
@@ -1691,7 +1698,7 @@ impl TextInput {
         theme: &Theme,
         caret_position: TextPosition,
     ) {
-        if !self.is_focused || self.disabled {
+        if !self.is_focused || self.effectively_disabled() {
             return;
         }
         let Some(layout) = self.single_layout.as_ref() else {
@@ -1792,7 +1799,7 @@ impl TextInput {
                 Some(available_width),
             );
         } else if let Some(layout) = &self.single_layout {
-            let color = if self.disabled {
+            let color = if self.effectively_disabled() {
                 theme.text_dim
             } else {
                 theme.text_primary
@@ -2053,7 +2060,7 @@ impl TextInput {
             tr.draw_text(scene, &placeholder, size, theme.text_dim, origin, None);
         }
 
-        let text_color = if self.disabled {
+        let text_color = if self.effectively_disabled() {
             theme.text_dim
         } else {
             theme.text_primary
@@ -2073,7 +2080,7 @@ impl TextInput {
         self.draw_body_gutter_numbers(scene, transform, tr, theme, size, gutter_w, &gutter_nums);
         self.draw_body_rows(scene, transform, tr, size, left, &row_draws);
 
-        if self.is_focused && !self.disabled {
+        if self.is_focused && !self.effectively_disabled() {
             let caret = self.caret_rect_ml(self.cursor_pos, theme.caret_width);
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -2148,7 +2155,7 @@ impl TextInput {
     /// Requires a prior draw so the highlight cache is current.
     #[cfg(test)]
     pub(crate) fn code_row_colors(&self, theme: &Theme) -> Vec<(String, vello::peniko::Color)> {
-        let default = if self.disabled {
+        let default = if self.effectively_disabled() {
             theme.text_dim
         } else {
             theme.text_primary
@@ -2406,7 +2413,7 @@ impl TextInput {
     }
 
     pub fn is_disabled(&self) -> bool {
-        self.disabled
+        self.effectively_disabled()
     }
 
     #[must_use]
@@ -3568,7 +3575,7 @@ impl Widget for TextInput {
 
         self.draw_single_line_selection(scene, transform, theme);
 
-        let text_color = if self.disabled {
+        let text_color = if self.effectively_disabled() {
             theme.text_dim
         } else {
             theme.text_primary
@@ -3585,7 +3592,7 @@ impl Widget for TextInput {
             text_color,
         );
 
-        if self.is_focused && !self.disabled {
+        if self.is_focused && !self.effectively_disabled() {
             self.draw_single_line_caret(scene, transform, theme);
         }
 
@@ -3608,7 +3615,7 @@ impl Widget for TextInput {
         _taffy: &TaffyTree<()>,
     ) {
         // Single guard that makes both pointer and keyboard input no-ops when disabled.
-        if self.disabled {
+        if self.effectively_disabled() {
             return;
         }
         self.clamp_to_text();
@@ -3616,7 +3623,7 @@ impl Widget for TextInput {
         match event {
             // Only when hovered, so it never steals the wheel from a surrounding scroll region.
             WindowEvent::MouseWheel { delta, .. }
-                if self.multiline && self.is_hovered && !self.disabled =>
+                if self.multiline && self.is_hovered && !self.effectively_disabled() =>
             {
                 self.handle_mouse_wheel(delta, handled);
             }
@@ -3627,7 +3634,7 @@ impl Widget for TextInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } if self.is_hovered && !self.disabled => {
+            } if self.is_hovered && !self.effectively_disabled() => {
                 self.handle_right_click(focus_target, node_id, handled);
             }
             WindowEvent::MouseInput {
@@ -3684,6 +3691,15 @@ impl Widget for TextInput {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
 
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+    }
+
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let control_id = self.test_id().unwrap_or("text_input");
         if let Some(action) = &self.action {
@@ -3731,7 +3747,7 @@ impl Widget for TextInput {
 
     /// A disabled input claims no cursor and defers to the host default.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if !self.disabled && self.rect.contains(point) {
+        if !self.effectively_disabled() && self.rect.contains(point) {
             Some(winit::window::CursorIcon::Text)
         } else {
             None
@@ -3739,7 +3755,7 @@ impl Widget for TextInput {
     }
 
     fn is_focusable(&self) -> bool {
-        !self.disabled
+        !self.effectively_disabled()
     }
     fn set_focus(&mut self, focused: bool) {
         self.is_focused = focused;
@@ -3755,7 +3771,7 @@ impl Widget for TextInput {
         self.is_focused
     }
     fn ime_cursor_rect(&self) -> Option<Rect> {
-        if !self.is_focused || self.disabled {
+        if !self.is_focused || self.effectively_disabled() {
             return None;
         }
         if self.multiline && !self.multiline_shaped {
@@ -3814,7 +3830,7 @@ impl Widget for TextInput {
             .with_state(AccessState {
                 focusable: self.is_focusable(),
                 focused: self.is_focused(),
-                disabled: self.disabled,
+                disabled: self.effectively_disabled(),
                 protected: self.secret,
                 multiline: self.multiline,
                 ..Default::default()
@@ -3842,7 +3858,7 @@ impl Widget for TextInput {
     ) -> bool {
         use crate::a11y::Action;
 
-        if self.disabled {
+        if self.effectively_disabled() {
             return false;
         }
         match action {
@@ -4063,7 +4079,7 @@ impl TextInput {
         theme: &Theme,
         shape: &RoundedRect,
     ) {
-        let bg_color = if self.disabled {
+        let bg_color = if self.effectively_disabled() {
             // One step darker than the raised form-field fill, to read as "inert".
             theme.tokens.colors.surfaces.base
         } else if self.is_focused {
@@ -4078,7 +4094,7 @@ impl TextInput {
             None,
             shape,
         );
-        let border_color = if self.disabled {
+        let border_color = if self.effectively_disabled() {
             theme.tokens.colors.border_standard
         } else if self.is_focused {
             theme.tokens.colors.border_focus
@@ -4086,7 +4102,7 @@ impl TextInput {
             theme.tokens.colors.border_standard
         };
         scene.stroke(
-            &Stroke::new(if self.is_focused && !self.disabled {
+            &Stroke::new(if self.is_focused && !self.effectively_disabled() {
                 2.0
             } else {
                 1.0
@@ -7149,6 +7165,16 @@ mod tests {
             .on_change(|_| panic!("legacy callback must be suppressed"))
             .on_action(crate::widget::test_string_action_binding());
         let mut doc = AutoCommit::new();
+        Widget::refresh_control_action_availability(&mut input, &std::collections::HashSet::new());
+        assert!(input.is_disabled());
+        Widget::refresh_control_action_availability(
+            &mut input,
+            &std::collections::HashSet::from([qos_actions::ActionAddress::new(
+                "test:control",
+                "set",
+            )]),
+        );
+        assert!(!input.is_disabled());
         assert!(Widget::perform_action(
             &mut input,
             &crate::a11y::Action::SetValue("Project Atlas".into()),

@@ -178,6 +178,9 @@ pub struct NumberInput {
 }
 
 impl NumberInput {
+    fn effectively_enabled(&self) -> bool {
+        self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
+    }
     /// Construct a number field showing `value`, with a default range of
     /// the full `f64` line, `step = 1`, integer display, and no suffix.
     pub fn new(value: f64) -> Self {
@@ -549,7 +552,7 @@ impl Widget for NumberInput {
     ) {
         let colors = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.md);
-        let disabled = !self.enabled;
+        let disabled = !self.effectively_enabled();
         if disabled {
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
@@ -620,7 +623,7 @@ impl Widget for NumberInput {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return;
         }
 
@@ -729,6 +732,15 @@ impl Widget for NumberInput {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
 
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+    }
+
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let control_id = self.test_id().unwrap_or("number_input");
         if let Some(action) = &self.action {
@@ -759,7 +771,7 @@ impl Widget for NumberInput {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return None;
         }
         if self.field_rect.contains(point) {
@@ -772,10 +784,10 @@ impl Widget for NumberInput {
     }
 
     fn is_focusable(&self) -> bool {
-        self.enabled
+        self.effectively_enabled()
     }
     fn is_enabled(&self) -> bool {
-        self.enabled
+        self.effectively_enabled()
     }
     fn set_focus(&mut self, focused: bool) {
         if focused {
@@ -827,7 +839,7 @@ impl Widget for NumberInput {
                 .with_state(AccessState {
                     focusable: self.is_focusable(),
                     focused: self.is_focused(),
-                    disabled: !self.enabled,
+                    disabled: !self.effectively_enabled(),
                     ..Default::default()
                 }),
         )
@@ -840,7 +852,7 @@ impl Widget for NumberInput {
         root: &ObjId,
     ) -> bool {
         use crate::a11y::Action;
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return false;
         }
         match action {
@@ -1233,6 +1245,16 @@ mod tests {
             .with_on_change_path("legacy")
             .on_action(crate::widget::test_number_action_binding());
         let mut doc = AutoCommit::new();
+        Widget::refresh_control_action_availability(&mut number, &std::collections::HashSet::new());
+        assert!(!Widget::is_enabled(&number));
+        Widget::refresh_control_action_availability(
+            &mut number,
+            &std::collections::HashSet::from([qos_actions::ActionAddress::new(
+                "test:control",
+                "set",
+            )]),
+        );
+        assert!(Widget::is_enabled(&number));
         assert!(Widget::perform_action(
             &mut number,
             &crate::a11y::Action::SetValue("42".into()),
