@@ -101,10 +101,12 @@ sibling staging directory, then publishes that directory and the workspace
 registration as one rollback-safe operation. A validation, write, or
 registration failure therefore leaves neither a partial app nor a stray
 workspace member; an explicitly supplied empty destination is restored with
-its original permissions if publication fails. Outside a checkout, the
-interactive wizard asks for the toolkit's `ui` directory, validates it before
-the review screen, and re-prompts on a bad path. For deterministic use, pass
-`--ui-path /path/to/quickdesktop/ui`; generation never guesses a dependency.
+its original permissions if publication fails. Outside a checkout, the tool
+discovers `ui` from `QOS_UI_PATH`, the running `qos-dev` binary's source tree,
+or the checkout it was built from. The interactive wizard shows that path as
+an editable default, validates it before the review screen, and re-prompts on
+a bad path. For a pinned or relocated toolkit, set `QOS_UI_PATH` or pass
+`--ui-path /path/to/quickdesktop/ui`; an explicit flag always wins.
 
 Grow an existing app from any directory inside it with `add`:
 
