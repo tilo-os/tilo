@@ -12,7 +12,32 @@ pub struct Activity {
     label: String,
 }
 
-fn open_activity(_id: u64) {}
+fn activity_resource() -> qos_actions::Resource {
+    let mut resource = ui::widget::resource_actions::typed_resource(
+        "generated.activity-list",
+        "Activity",
+        "open",
+        "Open activity",
+        vec![qos_actions::ActionParam::required_owned(
+            "id",
+            qos_actions::ParamType::Integer,
+            "Stable activity id",
+        )],
+    );
+    if let Some(action) = resource.actions.first_mut() {
+        action.contract.result = qos_actions::ResultSpec::Resource {
+            resource_kind: "generated.activity".into(),
+        };
+    }
+    resource
+}
+
+fn open_activity(id: u64) -> qos_actions::ActionOutput {
+    qos_actions::ActionOutput {
+        value: None,
+        resources: vec![format!("generated.activity:{id}")],
+    }
+}
 
 /// A sparse asynchronous model: the generated app never allocates
 /// `ITEM_COUNT` rows and only the newest virtual window may publish.
@@ -129,6 +154,10 @@ impl ListModel for ActivityModel {
 /// Rows have stable keys and measured variable heights. Each delegate is an
 /// ordinary widget subtree, so its button remains independently focusable and
 /// accessible without turning a button press into a row-selection gesture.
+#[expect(
+    clippy::expect_used,
+    reason = "the binding uses the sole action constructed immediately above"
+)]
 pub fn app_root() -> Box<dyn Widget> {
     crate::install_catalog();
     let list =
@@ -141,16 +170,21 @@ pub fn app_root() -> Box<dyn Widget> {
                     ListRowState::Ready => {
                         let label = model.item(index).map_or("", |item| item.label.as_str());
                         let open_key = *key;
+                        let resource = activity_resource();
+                        let binding = qos_actions::ActionBinding::static_json_for(
+                            &resource,
+                            "open",
+                            serde_json::Map::from_iter([(
+                                "id".into(),
+                                serde_json::json!(open_key),
+                            )]),
+                        )
+                        .expect("generated activity id matches the exported action");
                         Box::new(Container::new().with_height(height).with_child(Box::new(
                             ui::row![
                                 ui::column![Text::new(label)].with_no_padding(),
-                                Button::new(
-                                    &format!("open-{key}"),
-                                    "list-open",
-                                    Some("open-requested"),
-                                )
-                                .with_click_value(key.to_string())
-                                .on_click(move || open_activity(open_key))
+                                Button::new(&format!("open-{key}"), "list-open", None)
+                                .on_action(binding)
                                 .fit_content(36.0),
                             ],
                         )))
@@ -175,17 +209,7 @@ pub fn app_root() -> Box<dyn Widget> {
         .multi_select(true);
     ui::widget::resource_actions::immediate(
         Box::new(list),
-        ui::widget::resource_actions::typed_resource(
-            "generated.activity-list",
-            "Activity",
-            "open",
-            "Open activity",
-            vec![qos_actions::ActionParam::required_owned(
-                "id",
-                qos_actions::ParamType::Integer,
-                "Stable activity id",
-            )],
-        ),
+        activity_resource(),
         |payload| {
             let args: serde_json::Map<String, serde_json::Value> =
                 serde_json::from_slice(payload).map_err(|error| error.to_string())?;
@@ -193,8 +217,7 @@ pub fn app_root() -> Box<dyn Widget> {
                 .get("id")
                 .and_then(serde_json::Value::as_u64)
                 .ok_or("missing id")?;
-            open_activity(id);
-            Ok(qos_actions::ActionOutput::default())
+            Ok(open_activity(id))
         },
     )
 }
