@@ -133,7 +133,13 @@ pub fn app_root() -> Box<dyn Widget> {
         let refresh = refresh_minutes.clone();
         let region = region.clone();
         qos_actions::ActionBinding::new(&resource, action, move |value| {
-            profile_arguments(name.get(), updates.get(), refresh.get(), value, region.get())
+            profile_arguments(
+                name.get(),
+                updates.get(),
+                refresh.get(),
+                value,
+                region.get(),
+            )
         })
         .expect("profile volume produces complete action arguments")
     };
@@ -143,7 +149,13 @@ pub fn app_root() -> Box<dyn Widget> {
         let refresh = refresh_minutes.clone();
         let volume = volume.clone();
         qos_actions::ActionBinding::new(&resource, action, move |value| {
-            profile_arguments(name.get(), updates.get(), refresh.get(), volume.get(), value)
+            profile_arguments(
+                name.get(),
+                updates.get(),
+                refresh.get(),
+                volume.get(),
+                value,
+            )
         })
         .expect("profile region produces complete action arguments")
     };

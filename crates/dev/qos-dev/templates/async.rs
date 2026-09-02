@@ -58,9 +58,8 @@ pub fn app_root() -> Box<dyn Widget> {
         },
     );
     cancel_action.contract.discovery = qos_actions::DiscoveryScope::Launchable;
-    cancel_action.contract.execution = qos_actions::ExecutionMode::Background {
-        cancellable: false,
-    };
+    cancel_action.contract.execution =
+        qos_actions::ExecutionMode::Background { cancellable: false };
     cancel_action.contract.result = qos_actions::ResultSpec::Job;
     resource.actions.push(cancel_action);
     let run_binding = qos_actions::ActionBinding::unit_for(&resource, "run")
@@ -71,7 +70,7 @@ pub fn app_root() -> Box<dyn Widget> {
         "cancel",
         serde_json::Map::from_iter([("cancel".into(), serde_json::json!(true))]),
     )
-        .expect("generated cancel button matches the exported action");
+    .expect("generated cancel button matches the exported action");
 
     let body = ModelView::from_state_by(
         &result,
@@ -84,14 +83,12 @@ pub fn app_root() -> Box<dyn Widget> {
         move |result| -> Box<dyn Widget> {
             match result {
                 LoadState::Idle => Box::new(Text::new("task-idle")),
-                LoadState::Loading => {
-                    Box::new(ui::column![
-                        Spinner::new(),
-                        Text::new("task-loading"),
-                        Button::new("cancel-task", "task-cancel", None)
-                            .on_action(cancel_binding.clone()),
-                    ])
-                }
+                LoadState::Loading => Box::new(ui::column![
+                    Spinner::new(),
+                    Text::new("task-loading"),
+                    Button::new("cancel-task", "task-cancel", None)
+                        .on_action(cancel_binding.clone()),
+                ]),
                 LoadState::Ready(count) => Box::new(
                     Text::new("task-ready")
                         .with_arg("count", count.to_string())
@@ -108,32 +105,29 @@ pub fn app_root() -> Box<dyn Widget> {
         body,
     ]);
     let cancel_task = task.clone();
-    ui::widget::resource_actions::background(
-        root,
-        resource,
-        move |payload| {
-            if serde_json::from_slice::<serde_json::Value>(payload)
-                .ok()
-                .and_then(|value| value.get("cancel").and_then(serde_json::Value::as_bool))
-                == Some(true)
-            {
-                cancel_task.cancel(LoadState::Idle);
-                let (sender, receiver) = std::sync::mpsc::channel();
-                let _ = sender.send(Ok(qos_actions::ActionOutput::default()));
-                return Ok(receiver);
-            }
-            let completion = task.begin(LoadState::Loading);
+    ui::widget::resource_actions::background(root, resource, move |payload| {
+        if serde_json::from_slice::<serde_json::Value>(payload)
+            .ok()
+            .and_then(|value| value.get("cancel").and_then(serde_json::Value::as_bool))
+            == Some(true)
+        {
+            cancel_task.cancel(LoadState::Idle);
             let (sender, receiver) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let result = count_entries();
-                let state = result
-                    .as_ref()
-                    .map_or_else(|error| LoadState::Failed(error.clone()), |count| LoadState::Ready(*count));
-                let _ = completion.complete(state);
-                let result = result.map(|_| qos_actions::ActionOutput::default());
-                let _ = sender.send(result);
-            });
-            Ok(receiver)
-        },
-    )
+            let _ = sender.send(Ok(qos_actions::ActionOutput::default()));
+            return Ok(receiver);
+        }
+        let completion = task.begin(LoadState::Loading);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = count_entries();
+            let state = result.as_ref().map_or_else(
+                |error| LoadState::Failed(error.clone()),
+                |count| LoadState::Ready(*count),
+            );
+            let _ = completion.complete(state);
+            let result = result.map(|_| qos_actions::ActionOutput::default());
+            let _ = sender.send(result);
+        });
+        Ok(receiver)
+    })
 }

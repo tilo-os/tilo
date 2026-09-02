@@ -160,64 +160,58 @@ impl ListModel for ActivityModel {
 )]
 pub fn app_root() -> Box<dyn Widget> {
     crate::install_catalog();
-    let list =
-        VirtualList::new_async(
-            ActivityModel::new(ITEM_COUNT),
-            48.0,
-            |model, index, key, state| {
-                let height = if index % 5 == 0 { 72.0 } else { 44.0 };
-                match state {
-                    ListRowState::Ready => {
-                        let label = model.item(index).map_or("", |item| item.label.as_str());
-                        let open_key = *key;
-                        let resource = activity_resource();
-                        let binding = qos_actions::ActionBinding::static_json_for(
-                            &resource,
-                            "open",
-                            serde_json::Map::from_iter([(
-                                "id".into(),
-                                serde_json::json!(open_key),
-                            )]),
-                        )
-                        .expect("generated activity id matches the exported action");
-                        Box::new(Container::new().with_height(height).with_child(Box::new(
-                            ui::row![
+    let list = VirtualList::new_async(
+        ActivityModel::new(ITEM_COUNT),
+        48.0,
+        |model, index, key, state| {
+            let height = if index % 5 == 0 { 72.0 } else { 44.0 };
+            match state {
+                ListRowState::Ready => {
+                    let label = model.item(index).map_or("", |item| item.label.as_str());
+                    let open_key = *key;
+                    let resource = activity_resource();
+                    let binding = qos_actions::ActionBinding::static_json_for(
+                        &resource,
+                        "open",
+                        serde_json::Map::from_iter([("id".into(), serde_json::json!(open_key))]),
+                    )
+                    .expect("generated activity id matches the exported action");
+                    Box::new(
+                        Container::new()
+                            .with_height(height)
+                            .with_child(Box::new(ui::row![
                                 ui::column![Text::new(label)].with_no_padding(),
                                 Button::new(&format!("open-{key}"), "list-open", None)
-                                .on_action(binding)
-                                .fit_content(36.0),
-                            ],
-                        )))
-                    }
-                    ListRowState::Loading => Box::new(
-                        Container::new()
-                            .with_height(height)
-                            .with_child(Box::new(Text::new("list-loading"))),
-                    ),
-                    ListRowState::Error(message) => Box::new(
-                        Container::new()
-                            .with_height(height)
-                            .with_child(Box::new(Text::new(message))),
-                    ),
+                                    .on_action(binding)
+                                    .fit_content(36.0),
+                            ])),
+                    )
                 }
-            },
-        )
-        .with_id("activity-list")
-        .with_accessible_name("list-accessible-name")
-        .with_semantic_key(u64::to_string)
-        .with_viewport_height(420.0)
-        .multi_select(true);
-    ui::widget::resource_actions::immediate(
-        Box::new(list),
-        activity_resource(),
-        |payload| {
-            let args: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-            let id = args
-                .get("id")
-                .and_then(serde_json::Value::as_u64)
-                .ok_or("missing id")?;
-            Ok(open_activity(id))
+                ListRowState::Loading => Box::new(
+                    Container::new()
+                        .with_height(height)
+                        .with_child(Box::new(Text::new("list-loading"))),
+                ),
+                ListRowState::Error(message) => Box::new(
+                    Container::new()
+                        .with_height(height)
+                        .with_child(Box::new(Text::new(message))),
+                ),
+            }
         },
     )
+    .with_id("activity-list")
+    .with_accessible_name("list-accessible-name")
+    .with_semantic_key(u64::to_string)
+    .with_viewport_height(420.0)
+    .multi_select(true);
+    ui::widget::resource_actions::immediate(Box::new(list), activity_resource(), |payload| {
+        let args: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let id = args
+            .get("id")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or("missing id")?;
+        Ok(open_activity(id))
+    })
 }

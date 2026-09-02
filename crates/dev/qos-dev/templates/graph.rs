@@ -1,6 +1,6 @@
-use ui::{LocalState, ModelView, Theme};
 use ui::qos_actions;
 use ui::widget::{Button, Text, TextInput, Widget, labeled_field};
+use ui::{LocalState, ModelView, Theme};
 
 fn project_resource() -> qos_actions::Resource {
     let draft = qos_actions::ActionSpec::typed_operation(
@@ -119,21 +119,17 @@ pub fn app_root() -> Box<dyn Widget> {
                 Button::new("create-action", "graph-create", None).on_action(create),
             )),
     );
-    ui::widget::resource_actions::immediate(
-        root,
-        resource,
-        move |payload| {
-            let args: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-            if let Some(value) = args.get("draft").and_then(serde_json::Value::as_str) {
-                draft.set(value.to_owned());
-                return Ok(qos_actions::ActionOutput::default());
-            }
-            let name = args
-                .get("name")
-                .and_then(serde_json::Value::as_str)
-                .ok_or("missing project name")?;
-            Ok(create_project(name))
-        },
-    )
+    ui::widget::resource_actions::immediate(root, resource, move |payload| {
+        let args: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        if let Some(value) = args.get("draft").and_then(serde_json::Value::as_str) {
+            draft.set(value.to_owned());
+            return Ok(qos_actions::ActionOutput::default());
+        }
+        let name = args
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("missing project name")?;
+        Ok(create_project(name))
+    })
 }
