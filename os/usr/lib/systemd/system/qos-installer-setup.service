@@ -18,6 +18,13 @@ ExecStart=/usr/libexec/qos-installer-profile-extract
 # run /usr/libexec/qos-install via `sudo -n`. install(1) copies + chmods 0440
 # (sudo refuses world/group-writable drop-ins) in one shot.
 ExecStart=/usr/bin/install -D -m 0440 /usr/share/qos/installer-sudoers /etc/sudoers.d/qos-installer
+# Give the privileged backend a system-labelled, root-only rendezvous point for
+# its transient unit's stdin/stdout. Creating this from PID 1 avoids inheriting
+# the greeter session's xdm_tmp_t SELinux label, which systemd correctly refuses
+# to open while preparing an enforcing system service.
+ExecStart=/usr/bin/install -d -m 0755 /run/qos-installer
+ExecStart=/usr/bin/install -d -m 0700 /run/qos-installer/bridge
+ExecStart=-/usr/sbin/restorecon -RF /run/qos-installer
 # Load the live-medium SELinux module that lets the greeter session domain
 # (xdm_t) launch the privileged install backend as a transient system unit.
 # This is what lets the live medium stay SELinux-ENFORCING (the former

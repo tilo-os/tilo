@@ -81,6 +81,8 @@ mkdir -p "$INSTALLER_CONTEXT/rootfs/usr" \
 cp -a "$QOS_OS_DIR/usr/." "$INSTALLER_CONTEXT/rootfs/usr/"
 install -Dm0755 "$QOS_OS_DIR/qos-installer" \
   "$INSTALLER_CONTEXT/rootfs/usr/bin/qos-installer"
+install -Dm0755 "$QOS_OS_DIR/dev/uki-cmdline.py" \
+  "$INSTALLER_CONTEXT/rootfs/usr/libexec/qos-uki-cmdline"
 install -Dm0644 "$QOS_OS_DIR/etc/greetd/config.toml" \
   "$INSTALLER_CONTEXT/rootfs/usr/share/qos/greetd-config.toml"
 install -Dm0644 "$QOS_OS_DIR/etc/greetd/config.installer.toml" \
@@ -109,7 +111,27 @@ DISK_ARGS=(
 if [ "$DEV_LOGIN" = 1 ]; then
   DISK_ARGS+=(--user "quickuser:${QOS_INSTALLER_DEV_PASSWORD}:wheel")
 fi
-"$QOS_OS_DIR/dev/disk-image.sh" "${DISK_ARGS[@]}"
+INSTALL_LOG="$(dirname "$QOS_INSTALLER_DISK")/.install.log"
+if ! "$QOS_OS_DIR/dev/disk-image.sh" "${DISK_ARGS[@]}"; then
+  want="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+  [ -n "$want" ] || die "the installer disk-image step failed for a reason other than the
+  composefs seal; see the message above and $INSTALL_LOG"
+  had="$(sed -n "s/.*is 'sha512:\([0-9a-f]\{128\}\)'.*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+  msg "bootc#2334: the live UKI sealed sha512:${had:0:32}… but install wants sha512:${want:0:32}…"
+  msg "pass 2: rewriting that digest into the live UKI and retrying"
+  "$QOS_OS_DIR/dev/reseal-image.sh" "$QOS_INSTALLER_IMAGE" "$want" \
+    || die "could not rewrite the live installer's sealed composefs digest"
+  if ! "$QOS_OS_DIR/dev/disk-image.sh" "${DISK_ARGS[@]}"; then
+    want2="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+    if [ -n "$want2" ] && [ "$want2" != "$want" ]; then
+      die "the digest install expects MOVED between passes (${want:0:16}… -> ${want2:0:16}…),
+  even though only the UKI under /boot changed. Sealing is circular on this bootc
+  version and requires an upstream fix."
+    fi
+    die "the second installer image pass failed too; see above and $INSTALL_LOG"
+  fi
+  msg "live installer seal closed in two passes"
+fi
 
 msg "DONE: $QOS_INSTALLER_DISK"
 ls -lh "$QOS_INSTALLER_DISK"

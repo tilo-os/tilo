@@ -21,7 +21,7 @@ if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
 fi
 podman build "${build_args[@]}" "$stage" <<EOF
 ARG BASE_IMAGE
-FROM ${BASE_IMAGE}
+FROM \${BASE_IMAGE}
 RUN --mount=type=bind,source=uki-cmdline.py,target=/run/uki-cmdline.py,z \
     python3 /run/uki-cmdline.py set "composefs=$digest" \
  && python3 /run/uki-cmdline.py show
