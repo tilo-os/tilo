@@ -35,13 +35,21 @@ LLM is never allowed to turn low-confidence raw diffs into a confident status.
 Opening Activity starts on **Since you looked**, a readable overview rather
 than the raw timeline.
 
+`Super+H` opens or closes Catch up from anywhere; `Super+Shift+H` goes straight
+to the full explorer. `Ctrl+H` remains app-owned (for example, browser
+navigation history). The same workspace surface remains available from the
+top-bar activity glance, the People menu, and command search; document-owning
+apps may additionally expose a local History control.
+
 The header says the scope and frontier: “Design review · 18 changes by 3
 people”. Below it, three to five outcome cards show explicit work groups first:
 
 > Prepare launch brief
 > Ada and Maren · Notes and Files · 12 changes · 28 min
 
-Each card can expand in place to resources, then individual actions. Expansion
+Every collapsed card already shows who, when, and the affected app/resource;
+the user should not need to expand a card to orient themselves. Each card can
+then expand in place to resources and individual actions. Expansion
 preserves spatial context; it does not navigate to a second, unrelated log.
 Cards offer three actions:
 
