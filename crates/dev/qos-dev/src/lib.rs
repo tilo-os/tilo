@@ -7209,14 +7209,14 @@ fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
         {crate_name}::app_root(),
         (460, 820),
     );
+    compact.relayout();
     compact.expect(
-        &SemanticExpectation::named("workspace-shell")
-            .semantic_target("back")
+        &SemanticExpectation::named("workspace-shell-back")
             .role(Role::Button)
             .name("Back"),
     )
     .expect("compact detail exposes accessible Back");
-    compact.perform_semantic_named("workspace-shell", Some("back"), &Action::Activate)
+    compact.perform_named("workspace-shell-back", &Action::Activate)
         .expect("return to compact navigation");
     compact.expect(
         &SemanticExpectation::named("workspace-tree").role(Role::Tree),
