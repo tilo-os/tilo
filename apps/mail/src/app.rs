@@ -190,6 +190,8 @@ pub struct MailApp {
     /// app only keeps polling the worker while a reply is outstanding (it fully
     /// idles otherwise instead of busy-looping).
     awaiting_engine: bool,
+    resource_refresh_invocation: Option<qos_actions::InvocationId>,
+    resource_refresh_result: Option<qos_actions::InvocationUpdate>,
     /// Wall-clock minute of the last automatic inbox refresh, so periodic sync
     /// fires at most once per [`AUTO_REFRESH_MIN`] while the app is in use.
     last_auto_refresh_min: i64,
@@ -280,6 +282,8 @@ impl MailApp {
             accounts_persist,
             connect_requested: false,
             awaiting_engine: false,
+            resource_refresh_invocation: None,
+            resource_refresh_result: None,
             last_auto_refresh_min: 0,
             toast_text: None,
             toast_deadline: None,
@@ -1366,6 +1370,13 @@ impl MailApp {
                             Some("Mail is up to date"),
                         );
                         settled = true;
+                        if let Some(invocation) = self.resource_refresh_invocation.take() {
+                            self.resource_refresh_result =
+                                Some(qos_actions::InvocationUpdate::Succeeded {
+                                    invocation,
+                                    output: qos_actions::ActionOutput::default(),
+                                });
+                        }
                     }
                     EngineEvent::Sent { wire_bytes } => {
                         st.status = Some(format!("Delivered ({wire_bytes} bytes)"));
@@ -1404,6 +1415,18 @@ impl MailApp {
                             Some(&format!("{context}: {message}")),
                         );
                         settled = true;
+                        if let Some(invocation) = self.resource_refresh_invocation.take() {
+                            self.resource_refresh_result =
+                                Some(qos_actions::InvocationUpdate::Failed {
+                                    invocation,
+                                    error: qos_actions::ActionFailure {
+                                        code: "mail.refresh_failed".into(),
+                                        message: format!("{context}: {message}"),
+                                        details: None,
+                                        retryable: true,
+                                    },
+                                });
+                        }
                     }
                 }
             }
@@ -1509,12 +1532,14 @@ impl MailApp {
         let custom_folders = MailDoc::list_folders(doc);
         let draft = MailDoc::load_draft(doc);
         let has_draft = !draft.to.is_empty() || !draft.subject.is_empty() || !draft.body.is_empty();
+        let can_sync = self.engine.is_some() && mailbox_label != "Mailbox";
         crate::actions::MailResourceCtx {
             mailbox_label,
             current_folder,
             messages,
             custom_folders,
             has_draft,
+            can_sync,
         }
     }
 
@@ -1543,7 +1568,14 @@ impl MailApp {
             ),
         );
         fill_round(scene, t, mr, 10.0, c.surfaces.raised);
-        stroke_round(scene, t, mr, 10.0, 1.0, c.border_white_10);
+        stroke_round(
+            scene,
+            t,
+            mr,
+            10.0,
+            1.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+        );
         let (read, starred) = self
             .shared
             .borrow()
@@ -1560,7 +1592,7 @@ impl MailApp {
                     t,
                     Rect::new(item.x0 + 4.0, item.y0 + 1.0, item.x1 - 4.0, item.y1 - 1.0),
                     6.0,
-                    c.surface_white_10,
+                    c.lift(0.72),
                 );
             }
             let danger = matches!(a, CtxAction::Delete);
@@ -1604,7 +1636,14 @@ impl MailApp {
             &RoundedRect::from_rect(Rect::new(p.x0, p.y0 + 6.0, p.x1, p.y1 + 10.0), 16.0),
         );
         fill_round(scene, t, p, 16.0, c.surfaces.raised);
-        stroke_round(scene, t, p, 16.0, 1.0, c.border_white_10);
+        stroke_round(
+            scene,
+            t,
+            p,
+            16.0,
+            1.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+        );
         let pad = 26.0;
         let lx = p.x0 + pad;
         let last_mouse = self.shared.borrow().last_mouse;
@@ -1794,9 +1833,9 @@ impl MailApp {
             let bg = if active {
                 c.accent[5].with_alpha_factor(0.22)
             } else if hov {
-                c.surface_white_10
+                c.lift(0.72)
             } else {
-                c.surface_white_5
+                c.lift(0.35)
             };
             fill_round(scene, t, *rect, 8.0, bg);
             stroke_round(
@@ -1808,7 +1847,7 @@ impl MailApp {
                 if active {
                     c.accent[5]
                 } else {
-                    c.border_white_10
+                    ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26)
                 },
             );
             let col = if active { c.text_primary } else { c.neutral[7] };
@@ -2036,11 +2075,7 @@ impl MailApp {
                         t,
                         *rect,
                         9.0,
-                        if hov {
-                            c.surface_white_10
-                        } else {
-                            c.surface_white_5
-                        },
+                        if hov { c.lift(0.72) } else { c.lift(0.35) },
                     );
                     let (w, _) = tr.measure("Cancel", 13.0, None);
                     tr.draw_text(
@@ -2065,7 +2100,7 @@ impl MailApp {
                         if hov {
                             c.semantic.danger.with_alpha_factor(0.22)
                         } else {
-                            c.surface_white_5
+                            c.lift(0.35)
                         },
                     );
                     stroke_round(
@@ -2106,7 +2141,14 @@ impl MailApp {
             self.rect.y1 - 16.0,
         );
         fill_round(scene, t, toast, 10.0, c.neutral[2]);
-        stroke_round(scene, t, toast, 10.0, 1.0, c.border_white_10);
+        stroke_round(
+            scene,
+            t,
+            toast,
+            10.0,
+            1.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+        );
         tr.draw_text(
             scene,
             "\u{2713}",
@@ -2400,6 +2442,10 @@ impl MailApp {
 }
 
 impl Widget for MailApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::MAIL_OPERATION_TYPE]
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if self.first_run.take_action() {
             self.open_setup_edit(None);
@@ -2459,6 +2505,76 @@ impl Widget for MailApp {
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != qos_actions::OperationKind::Effect {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            crate::actions::MailOperation::RefreshCurrentFolder => {
+                if self.engine.is_none() {
+                    return Err("no connected mail account is available".into());
+                }
+                self.refresh_active_folder();
+            }
+        }
+        Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != qos_actions::OperationKind::Effect
+            || type_id != crate::actions::MAIL_OPERATION_TYPE
+        {
+            return Ok(None);
+        }
+        if self.resource_refresh_invocation.is_some() || self.awaiting_engine {
+            return Err("a mail operation is already running".into());
+        }
+        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        if !self.awaiting_engine {
+            return Err("mail refresh could not be queued".into());
+        }
+        self.resource_refresh_invocation = Some(invocation);
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if self
+            .resource_refresh_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            self.resource_refresh_result.take()
+        } else {
+            None
+        }
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched

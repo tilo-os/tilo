@@ -46,7 +46,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
+use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource, RetryPolicy};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -922,16 +922,24 @@ fn draw_suggestion_chip(
 }
 
 impl Widget for OskWidget {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["osk.type", "osk.key"]
+    }
+
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut keyboard = Resource::new("keyboard", "osk.keyboard", "On-screen keyboard");
-        keyboard.actions.push(ActionSpec::prompted_operation(
-            "type",
-            "Type text",
-            "Text to type",
-            "Text",
-            OperationKind::Effect,
-            |text| EncodedAction::encode_operation("osk.type", &text).expect("string payload"),
-        ));
+        keyboard.actions.push(
+            ActionSpec::prompted_operation(
+                "type",
+                "Type text",
+                "Text to type",
+                "Text",
+                OperationKind::Effect,
+                "osk.type",
+                |text| EncodedAction::encode_operation("osk.type", &text).expect("string payload"),
+            )
+            .retry_policy(RetryPolicy::AtMostOnce),
+        );
         for (id, label) in [
             ("backspace", "Backspace"),
             ("enter", "Enter"),
@@ -940,7 +948,9 @@ impl Widget for OskWidget {
             if let Ok(spec) =
                 ActionSpec::operation(id, label, OperationKind::Effect, "osk.key", &id)
             {
-                keyboard.actions.push(spec);
+                keyboard
+                    .actions
+                    .push(spec.retry_policy(RetryPolicy::AtMostOnce));
             }
         }
         vec![keyboard]

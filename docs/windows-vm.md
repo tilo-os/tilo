@@ -150,10 +150,10 @@ headers from an owner-session-readable, host-protected bootstrap key. qOS pins
 the guest TLS fingerprint after authenticated enrollment; a change requires
 repair rather than an automatic trust update.
 
-The target bridge returns a fresh temporary RemoteApp account and password for
-one launch when qOS has selected a native RAIL surface. The account is removed
-after ten minutes even if the client crashes. This limits credential reuse; it
-does not make two Windows programs inside the singleton VM mutually isolated.
+The target bridge uses the persistent, provisioned `qos-user` RemoteApp
+identity and returns one-use RDP credentials for the selected published
+application. It does not create a temporary Windows account per launch. This
+is intentionally one shared Windows user/session, not a per-app security VM.
 
 The app-focused SPICE fallback is playback-only: files, clipboard, microphone,
 and egress do not reach the guest. On a probed native RAIL surface, qOS
@@ -164,29 +164,27 @@ to the shared VM.
 Filtered network access is a real `NetHost` lease, not a temporary NAT NIC.
 The persistent VM NIC remains on the `forward mode="none"` host-only network.
 For an allowed launch qOS starts a token-authenticated CONNECT relay bound only
-to `192.168.251.1`; the guest's fixed RemoteApp wrapper receives only its
-authenticated operation ID and reads the one-use bridge job. The authenticated
-SYSTEM bridge owns one shared loopback proxy; each wrapper joins its
-mutex-protected WinINet lease counter and gives `HTTP_PROXY`/`HTTPS_PROXY` only
-to that target process tree.
+to `192.168.251.1`. The authenticated SYSTEM bridge creates a distinct guest
+loopback proxy and authenticated launch job for that request; the fixed wrapper
+passes its private proxy URL only through the target process environment. qOS
+does not mutate the managed user's global WinINet or WinHTTP proxy settings.
 The relay uses the same qOS name matcher and post-DNS device-local rejection as
 the normal launcher gate. It resolves only after checking the requested name,
 so a name grant cannot become an IP-literal bypass or a route to host-local
 services. It supports TCP CONNECT only; no SOCKS, UDP, bridge, or guest NAT is
-introduced. Ending a RAIL process deletes its guest job; the final active
-wrapper restores the prior WinINet state, while one app exiting cannot cut off
-another. Ending the host lease drops its policy contribution even if the guest
-crashes. The first/last wrapper transition snapshots, applies, refreshes, and
-restores the managed user's WinINet loopback proxy setting, improving ordinary
-desktop-app coverage without changing machine-wide WinHTTP state. Applications which
-deliberately bypass both standard proxy settings remain offline rather than
-acquiring an unrestricted route.
+introduced. Ending a RAIL process deletes its runtime marker and stops its
+guest proxy; ending the host lease also drops the listener and active tunnels.
+Applications which bypass standard proxy environment settings remain offline
+rather than acquiring an unrestricted route.
 
-Windows remains one shared security domain. While a lease is active, other
-processes in the managed Windows session might observe its loopback proxy/job
-and should be treated as able to use the effective union. qOS derives and shows
-that union and its contributing published applications from materialized leases;
-it does not claim per-application VM isolation.
+Windows remains one shared security domain. Per-launch proxy credentials and
+ephemeral listener lifecycle harden normal use, but they are not a
+hostile-process boundary for arbitrary Win32 software running as the same
+persistent user.
+While any redirect, file projection, or network lease is active, programs in
+that Windows session must be treated as able to use the effective union. qOS
+shows the host-authorized requests and the active effective union; it does not
+claim per-application VM isolation.
 
 The full desktop is available only through the owner-authorised recovery action
 for installation or repair. qOS's privileged owner-authorisation backend may
@@ -202,11 +200,14 @@ MAC, disk serial, secure-boot NVRAM and virtual TPM state stable. Keeping these
 identities stable is important for Windows activation and avoids turning a
 reboot into a new device. The service refuses a same-named foreign domain.
 
-Manager status is passive: it reads the qOS state document and libvirt domain
-state without waking Windows. It reports setup, activation state, guest
-readiness, managed-session readiness, and domain state only in the management
-UI. An unactivated guest remains usable for setup/testing, but qOS never calls
-it licensed and never stores a key.
+Manager status is passive: the unprivileged UI reads the qOS state document and
+an ID-free runtime summary atomically published by the root controller after
+lifecycle/egress changes and by its periodic reaper. Only that controller
+queries the system libvirt domain; status polling neither receives libvirt
+authority nor wakes Windows. The UI reports setup, activation state, guest
+readiness, managed-session readiness, and domain state only in its management
+surface. An unactivated guest remains usable for setup/testing, but qOS never
+calls it licensed and never stores a key.
 
 Start, graceful shutdown, restart, suspend, resume and forced shutdown are
 typed actions. They are idempotent where safe: starting an already-running

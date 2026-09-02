@@ -186,7 +186,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
     ) {
         let children = taffy.children(node_id).unwrap_or_default();
         let left_node = children.first().copied();
-        let right_node = children.get(2).copied();
+        let right_node = children.get(1).copied();
 
         let cursor_pt = if let WindowEvent::CursorMoved { position, .. } = event {
             Some(Point::new(
@@ -280,23 +280,19 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         let left_node = self.left.build_layout(taffy, theme, node_map);
         let right_node = self.right.build_layout(taffy, theme, node_map);
 
-        // The divider is a fixed-thickness leaf between the two panes.
-        // `flex_grow = 0` keeps them locked to their basis — without it a
-        // child would grow to absorb leftover space and skew the ratio.
+        // The layout tree has exactly the two children returned by
+        // `Widget::children`. The divider is painted and hit-tested by this
+        // container instead of masquerading as a third widget-less child;
+        // keeping those trees aligned is required by focus/action traversal.
         let s = self.split_position;
-        let (left_basis, right_basis) = (percent(s), percent(1.0 - s));
-        let (left_size, right_size, divider_size, flex_direction) = match self.orientation {
+        let (left_size, right_size, flex_direction) = match self.orientation {
             SplitOrientation::Horizontal => (
                 taffy::Size {
-                    width: left_basis,
+                    width: taffy::Dimension::auto(),
                     height: percent(1.0_f32),
                 },
                 taffy::Size {
-                    width: right_basis,
-                    height: percent(1.0_f32),
-                },
-                taffy::Size {
-                    width: length(px(DIVIDER_PX)),
+                    width: taffy::Dimension::auto(),
                     height: percent(1.0_f32),
                 },
                 taffy::FlexDirection::Row,
@@ -304,41 +300,32 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             SplitOrientation::Vertical => (
                 taffy::Size {
                     width: percent(1.0_f32),
-                    height: left_basis,
+                    height: taffy::Dimension::auto(),
                 },
                 taffy::Size {
                     width: percent(1.0_f32),
-                    height: right_basis,
-                },
-                taffy::Size {
-                    width: percent(1.0_f32),
-                    height: length(px(DIVIDER_PX)),
+                    height: taffy::Dimension::auto(),
                 },
                 taffy::FlexDirection::Column,
             ),
         };
 
-        // Overwrite only the size so the split ratio wins over the inner
-        // widget's own sizing, while its padding/gap style survives.
+        // A zero basis divides the available axis by the two grow factors,
+        // avoiding percentage sizing's circular intrinsic-width calculation.
         if let Ok(mut style) = taffy.style(left_node).cloned() {
             style.size = left_size;
-            style.flex_grow = 0.0;
-            style.flex_shrink = 0.0;
+            style.flex_basis = length(0.0_f32);
+            style.flex_grow = s;
+            style.flex_shrink = 1.0;
             let _ = taffy.set_style(left_node, style);
         }
         if let Ok(mut style) = taffy.style(right_node).cloned() {
             style.size = right_size;
-            style.flex_grow = 0.0;
-            style.flex_shrink = 0.0;
+            style.flex_basis = length(0.0_f32);
+            style.flex_grow = 1.0 - s;
+            style.flex_shrink = 1.0;
             let _ = taffy.set_style(right_node, style);
         }
-
-        let divider_node = taffy.leaf_node(Style {
-            size: divider_size,
-            flex_grow: 0.0,
-            flex_shrink: 0.0,
-            ..Default::default()
-        });
 
         let _ = theme; // unused — kept in signature for trait conformance
 
@@ -352,7 +339,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
                 },
                 ..Default::default()
             },
-            &[left_node, divider_node, right_node],
+            &[left_node, right_node],
         );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
@@ -368,11 +355,11 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         let children = taffy.children(node).unwrap_or_default();
-        // [left, divider leaf, right]
+        // The Taffy children deliberately match `Widget::children`.
         if let Some(&n) = children.first() {
             self.left.apply_layout(taffy, n, new_origin);
         }
-        if let Some(&n) = children.get(2) {
+        if let Some(&n) = children.get(1) {
             self.right.apply_layout(taffy, n, new_origin);
         }
         self.recompute_divider_rect();
@@ -731,12 +718,10 @@ mod tests {
         event: &WindowEvent,
     ) {
         let mut tree = TaffyTree::<()>::new();
-        // Node count must match the production `build_layout` shape so the
-        // index-based dispatch (children[0], children[2]) finds something.
+        // Node count must match the production `build_layout` shape.
         let left = tree.leaf_node(Style::default());
-        let divider = tree.leaf_node(Style::default());
         let right = tree.leaf_node(Style::default());
-        let node = tree.parent_node(Style::default(), &[left, divider, right]);
+        let node = tree.parent_node(Style::default(), &[left, right]);
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();
@@ -762,6 +747,42 @@ mod tests {
             SplitOrientation::Horizontal,
         );
         assert_eq!(s.split_position(), 0.5);
+    }
+
+    #[test]
+    fn layout_children_match_widget_children_and_fill_the_available_axis() {
+        let mut split = ResizableSplit::new(
+            TestLeaf::new(),
+            TestLeaf::new(),
+            SplitOrientation::Horizontal,
+        )
+        .with_split_position(0.32);
+        let mut tree = TaffyTree::<()>::new();
+        let mut node_map = HashMap::new();
+        let node = split.build_layout(&mut tree, &Theme::dark(), &mut node_map);
+        let root = tree.parent_node(
+            Style {
+                size: taffy::Size {
+                    width: length(1000.0_f32),
+                    height: length(640.0_f32),
+                },
+                ..Default::default()
+            },
+            &[node],
+        );
+        tree.compute_layout(
+            root,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(1000.0),
+                height: taffy::AvailableSpace::Definite(640.0),
+            },
+        )
+        .expect("valid split layout");
+        split.apply_layout(&tree, node, Point::ZERO);
+
+        assert_eq!(tree.children(node).expect("split children").len(), 2);
+        assert!((split.left.rect.width() - 320.0).abs() < 0.1);
+        assert!((split.right.rect.width() - 680.0).abs() < 0.1);
     }
 
     #[test]

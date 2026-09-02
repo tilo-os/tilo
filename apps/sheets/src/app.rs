@@ -383,6 +383,9 @@ pub struct SheetsApp {
     /// chosen path arrives on, drained once per frame in [`Self::drain_io`].
     /// `None` when no import/export chooser is open.
     io: Option<(PendingIo, PortalChannel)>,
+    resource_invocation: Option<qos_actions::InvocationId>,
+    resource_result: Option<qos_actions::InvocationUpdate>,
+    pending_resource_io: Option<(qos_actions::InvocationId, actions::SheetsOperation)>,
     /// The last copied/cut rectangle, kept so an in-app paste can restore raw
     /// inputs and formats exactly (and shift relative formula references),
     /// beyond the plain-text payload other apps see on the system clipboard.
@@ -483,6 +486,9 @@ impl SheetsApp {
             saved_heads: Vec::new(),
             cache: None,
             io: None,
+            resource_invocation: None,
+            resource_result: None,
+            pending_resource_io: None,
             clipboard: None,
             palette: CommandPalette::commands(),
             actions: ui::ActionHost::new(),
@@ -1235,10 +1241,16 @@ impl SheetsApp {
         self.status = format!("Imported {count} cells from {}", file_label(path));
     }
 
-    /// Build an export table for the active sheet from its computed values.
-    fn active_table(&self, doc: &mut AutoCommit) -> crate::xlsx::SheetTable {
+    /// Build an interchange table for one sheet from its computed values.
+    ///
+    /// This is intentionally explicit about the sheet index: CSV is a
+    /// single-table format and exports only the active sheet, while workbook
+    /// formats (`.xlsx`/`.ods`) must preserve every tab. Keeping the common
+    /// materialisation here also ensures formulas and propagated formats take
+    /// the same path for both kinds of export.
+    fn table_for_sheet(&self, doc: &mut AutoCommit, sheet: usize) -> crate::xlsx::SheetTable {
         let cur = self.default_currency();
-        let snap = SheetsDoc::snapshot_sheet(doc, self.active_sheet, cur);
+        let snap = SheetsDoc::snapshot_sheet(doc, sheet, cur);
         let values = formula::recalculate(&snap.raw);
         // Re-apply format propagation so exported computed cells carry units.
         let mut fmt = snap.fmt.clone();
@@ -1251,6 +1263,15 @@ impl SheetsApp {
             }
         }
         crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values)
+    }
+
+    /// Materialise the whole workbook in tab order for workbook interchange.
+    /// Export runs only after the user chooses a destination, so this work is
+    /// never paid on an interaction/render frame.
+    fn workbook_tables(&self, doc: &mut AutoCommit) -> Vec<crate::xlsx::SheetTable> {
+        (0..SheetsDoc::sheet_count(doc))
+            .map(|sheet| self.table_for_sheet(doc, sheet))
+            .collect()
     }
 
     fn export_csv(&mut self, _doc: &mut AutoCommit) {
@@ -1288,10 +1309,10 @@ impl SheetsApp {
         self.begin_export(Interchange::Xlsx);
     }
 
-    /// Core: write the active sheet to `path` as an `.xlsx` workbook.
+    /// Core: write every sheet to `path` as an `.xlsx` workbook.
     fn export_xlsx_to(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
-        let table = self.active_table(doc);
-        match crate::xlsx::write_xlsx(path, std::slice::from_ref(&table)) {
+        let tables = self.workbook_tables(doc);
+        match crate::xlsx::write_xlsx(path, &tables) {
             Ok(()) => self.status = format!("Exported {}", file_label(path)),
             Err(e) => self.status = format!("Excel export failed: {e}"),
         }
@@ -1301,10 +1322,10 @@ impl SheetsApp {
         self.begin_export(Interchange::Ods);
     }
 
-    /// Core: write the active sheet to `path` as an `.ods` spreadsheet.
+    /// Core: write every sheet to `path` as an `.ods` spreadsheet.
     fn export_ods_to(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
-        let table = self.active_table(doc);
-        match crate::ods::write_ods(path, std::slice::from_ref(&table)) {
+        let tables = self.workbook_tables(doc);
+        match crate::ods::write_ods(path, &tables) {
             Ok(()) => self.status = format!("Exported {}", file_label(path)),
             Err(e) => self.status = format!("Calc export failed: {e}"),
         }
@@ -1424,10 +1445,47 @@ impl SheetsApp {
                         PendingIo::Export(Interchange::Xlsx) => self.export_xlsx_to(doc, &path),
                         PendingIo::Export(Interchange::Ods) => self.export_ods_to(doc, &path),
                     },
-                    PortalOutcome::Cancelled => {}
+                    PortalOutcome::Cancelled => {
+                        if let Some(invocation) = self.resource_invocation.take() {
+                            self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                                invocation,
+                                message: Some("spreadsheet file selection was cancelled".into()),
+                            });
+                        }
+                    }
                     PortalOutcome::Failed(e) => {
                         self.status = format!("File chooser unavailable: {e}");
+                        if let Some(invocation) = self.resource_invocation.take() {
+                            self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                                invocation,
+                                error: qos_actions::ActionFailure {
+                                    code: "sheets.portal_failed".into(),
+                                    message: e,
+                                    details: None,
+                                    retryable: false,
+                                },
+                            });
+                        }
                     }
+                }
+                if let Some(invocation) = self.resource_invocation.take() {
+                    self.resource_result =
+                        Some(if self.status.to_ascii_lowercase().contains("failed") {
+                            qos_actions::InvocationUpdate::Failed {
+                                invocation,
+                                error: qos_actions::ActionFailure {
+                                    code: "sheets.io_failed".into(),
+                                    message: self.status.clone(),
+                                    details: None,
+                                    retryable: false,
+                                },
+                            }
+                        } else {
+                            qos_actions::InvocationUpdate::Succeeded {
+                                invocation,
+                                output: qos_actions::ActionOutput::default(),
+                            }
+                        });
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -3165,12 +3223,156 @@ fn file_label(path: &std::path::Path) -> String {
 }
 
 impl Widget for SheetsApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[actions::SHEETS_OPERATION_TYPE]
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            actions::SheetsOperation::ImportCsv { path: None } => {
+                self.begin_import(Interchange::Csv)
+            }
+            actions::SheetsOperation::ImportXlsx { path: None } => {
+                self.begin_import(Interchange::Xlsx)
+            }
+            actions::SheetsOperation::ImportOds { path: None } => {
+                self.begin_import(Interchange::Ods)
+            }
+            actions::SheetsOperation::ExportCsv { path: None } => {
+                self.begin_export(Interchange::Csv)
+            }
+            actions::SheetsOperation::ExportXlsx { path: None } => {
+                self.begin_export(Interchange::Xlsx)
+            }
+            actions::SheetsOperation::ExportOds { path: None } => {
+                self.begin_export(Interchange::Ods)
+            }
+            actions::SheetsOperation::ImportCsv { path: Some(_) }
+            | actions::SheetsOperation::ImportXlsx { path: Some(_) }
+            | actions::SheetsOperation::ImportOds { path: Some(_) }
+            | actions::SheetsOperation::ExportCsv { path: Some(_) }
+            | actions::SheetsOperation::ExportXlsx { path: Some(_) }
+            | actions::SheetsOperation::ExportOds { path: Some(_) } => {
+                return Err("direct spreadsheet I/O requires lifecycle dispatch".into());
+            }
+            actions::SheetsOperation::OpenCommandPalette => self.open_command_palette(),
+        }
+        Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        let direct = match &operation {
+            actions::SheetsOperation::ImportCsv { path }
+            | actions::SheetsOperation::ImportXlsx { path }
+            | actions::SheetsOperation::ImportOds { path }
+            | actions::SheetsOperation::ExportCsv { path }
+            | actions::SheetsOperation::ExportXlsx { path }
+            | actions::SheetsOperation::ExportOds { path } => path.is_some(),
+            _ => false,
+        };
+        if direct {
+            self.pending_resource_io = Some((invocation, operation));
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        if self.io.is_some() {
+            self.resource_invocation = Some(invocation);
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                qos_actions::ActionOutput::default(),
+            )))
+        }
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if self
+            .resource_result
+            .as_ref()
+            .is_some_and(|u| u.invocation() == invocation)
+        {
+            self.resource_result.take()
+        } else {
+            None
+        }
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.pending.seeded {
             // Pull the shared global defaults once at startup.
             self.global = GlobalSettings::load();
             self.initialize(state);
             self.pending.seeded = true;
+        }
+        if let Some((invocation, operation)) = self.pending_resource_io.take() {
+            let path = match &operation {
+                actions::SheetsOperation::ImportCsv { path }
+                | actions::SheetsOperation::ImportXlsx { path }
+                | actions::SheetsOperation::ImportOds { path }
+                | actions::SheetsOperation::ExportCsv { path }
+                | actions::SheetsOperation::ExportXlsx { path }
+                | actions::SheetsOperation::ExportOds { path } => {
+                    std::path::PathBuf::from(path.as_deref().unwrap_or_default())
+                }
+                _ => std::path::PathBuf::new(),
+            };
+            match operation {
+                actions::SheetsOperation::ImportCsv { .. } => self.import_csv_from(state, &path),
+                actions::SheetsOperation::ImportXlsx { .. } => self.import_xlsx_from(state, &path),
+                actions::SheetsOperation::ImportOds { .. } => self.import_ods_from(state, &path),
+                actions::SheetsOperation::ExportCsv { .. } => self.export_csv_to(state, &path),
+                actions::SheetsOperation::ExportXlsx { .. } => self.export_xlsx_to(state, &path),
+                actions::SheetsOperation::ExportOds { .. } => self.export_ods_to(state, &path),
+                _ => {}
+            }
+            self.resource_result = Some(if self.status.to_ascii_lowercase().contains("failed") {
+                qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "sheets.io_failed".into(),
+                        message: self.status.clone(),
+                        details: None,
+                        retryable: false,
+                    },
+                }
+            } else {
+                qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput::default(),
+                }
+            });
         }
         // Land a finished import/export file dialog before reloading, so the
         // imported sheet (or the export's status) is reflected this frame.
@@ -4632,7 +4834,7 @@ mod tests {
     fn xlsx_export_import_restores_live_formulas() {
         let (app, mut doc) = seeded_app();
         // Budget!E2 = =SUM(B2:D2) = 3600 in the seed.
-        let table = app.active_table(&mut doc);
+        let table = app.table_for_sheet(&mut doc, app.active_sheet);
         let path = std::env::temp_dir().join("sheets-app-formula-rt.xlsx");
         crate::xlsx::write_xlsx(&path, std::slice::from_ref(&table)).unwrap();
         let tables = crate::xlsx::read_xlsx(&path).unwrap();
@@ -5392,11 +5594,14 @@ mod tests {
         assert!(path.exists(), "no .{ext} written to {path:?}");
 
         let before = SheetsDoc::sheet_count(&mut doc);
+        // CSV is deliberately one active table; real workbook formats carry
+        // the whole two-tab workbook.
+        let expected_added = if ext == "csv" { 1 } else { before };
         import_from(&mut app, &mut doc, &path);
         assert_eq!(
             SheetsDoc::sheet_count(&mut doc),
-            before + 1,
-            "import must add a sheet"
+            before + expected_added,
+            "import must restore every table carried by the format"
         );
         assert!(
             app.status.starts_with("Imported"),
@@ -5404,8 +5609,14 @@ mod tests {
             app.status
         );
         // The re-imported sheet carries the Budget header text through the file.
-        let last = SheetsDoc::sheet_count(&mut doc) - 1;
-        assert_eq!(SheetsDoc::cell_raw(&mut doc, last, (0, 0)), "Category");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, before, (0, 0)), "Category");
+        if ext != "csv" {
+            assert_eq!(
+                SheetsDoc::cell_raw(&mut doc, before + 1, (0, 0)),
+                "Region",
+                "the second workbook tab is not silently discarded"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

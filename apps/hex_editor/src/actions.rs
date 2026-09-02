@@ -33,8 +33,9 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
+    ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::HexDoc;
@@ -42,6 +43,24 @@ use crate::model::BufferEdit;
 
 /// Registry `type_id` for every hex-editor action.
 pub const HEX_EDITOR_ACTION_TYPE: &str = "hex_editor.action";
+pub const HEX_EDITOR_OPERATION_TYPE: &str = "hex_editor.operation";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HexOperation {
+    Open { path: Option<String> },
+    Save { path: Option<String> },
+    Search,
+    GotoOffset,
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<HexOperation>, String> {
+    if type_id != HEX_EDITOR_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
 
 /// Every collaborative operation the hex editor exports on its byte buffer.
 ///
@@ -170,6 +189,7 @@ pub struct HexResourceCtx {
     pub len: usize,
     /// The inclusive selection `(lo, hi)`, when one is active.
     pub selection: Option<(usize, usize)>,
+    pub has_file: bool,
 }
 
 /// Parse a one-byte hex value out of a palette prompt: accepts `ff`, `0xFF`, or
@@ -188,8 +208,14 @@ fn parse_hex_byte(s: &str) -> Option<u8> {
     reason = "HexEditorAction always serializes (usize/Vec<u8> fields only); see encode()"
 )]
 fn immediate_spec(id: &str, label: &str, action: &HexEditorAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, HEX_EDITOR_ACTION_TYPE, action)
+    let spec = ActionSpec::immediate(id, label, HEX_EDITOR_ACTION_TYPE, action)
         .expect("encode hex_editor action")
+        .reversible();
+    if id.contains("delete") {
+        spec.destructive()
+    } else {
+        spec
+    }
 }
 
 /// Build the resource tree the editor currently has open: the buffer as one
@@ -201,6 +227,88 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
         "hex_editor.document",
         ctx.label.clone(),
     );
+
+    let open = ActionSpec::typed_operation(
+        "open",
+        "Open file",
+        "path (omit to use the system file picker)",
+        OperationKind::Effect,
+        HEX_EDITOR_OPERATION_TYPE,
+        vec![ActionParam::optional(
+            "path",
+            ParamType::Text,
+            "file to open",
+        )],
+        |args: &ActionArgs| {
+            EncodedAction::encode_operation(
+                HEX_EDITOR_OPERATION_TYPE,
+                &HexOperation::Open {
+                    path: args
+                        .text("path")
+                        .filter(|p| !p.is_empty())
+                        .map(str::to_owned),
+                },
+            )
+            .expect("HexOperation is always serializable")
+        },
+    )
+    .destructive()
+    .execution(ExecutionMode::Background { cancellable: true })
+    .returns(ResultSpec::Job);
+    root = root.with_action(open);
+    let save = ActionSpec::typed_operation(
+        "save",
+        "Save file",
+        "path (omit to save in place or use the system file picker)",
+        OperationKind::Effect,
+        HEX_EDITOR_OPERATION_TYPE,
+        vec![ActionParam::optional(
+            "path",
+            ParamType::Text,
+            "save destination",
+        )],
+        |args: &ActionArgs| {
+            EncodedAction::encode_operation(
+                HEX_EDITOR_OPERATION_TYPE,
+                &HexOperation::Save {
+                    path: args
+                        .text("path")
+                        .filter(|p| !p.is_empty())
+                        .map(str::to_owned),
+                },
+            )
+            .expect("HexOperation is always serializable")
+        },
+    )
+    .destructive()
+    .execution(ExecutionMode::Background { cancellable: true })
+    .returns(ResultSpec::Job);
+    root = root.with_action(if ctx.has_file {
+        save
+    } else {
+        save.unavailable("no_file", "Open a file first")
+    });
+    for (id, label, value) in [
+        ("search", "Search bytes", HexOperation::Search),
+        ("goto-offset", "Go to offset", HexOperation::GotoOffset),
+    ] {
+        let kind = OperationKind::View;
+        let mut spec = ActionSpec::operation(id, label, kind, HEX_EDITOR_OPERATION_TYPE, &value)
+            .expect("HexOperation is always serializable");
+        if kind == OperationKind::View {
+            spec = spec.with_contract(ActionContract::view());
+        } else {
+            spec = spec.destructive().retry_policy(RetryPolicy::AtMostOnce);
+        }
+        if !ctx.has_file {
+            spec = spec.unavailable("no_file", "Open a file first");
+        }
+        root = root.with_action(spec);
+    }
+
+    if !ctx.has_file {
+        return vec![root];
+    }
 
     // Insert a byte at the cursor — a prompted hex value. The offset is the
     // clamped cursor so it is valid even for an append cursor / empty buffer.
@@ -255,10 +363,6 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
 
 impl ResourceProvider for crate::view::HexView {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        // Nothing published in the empty state — there is no open buffer.
-        if !self.has_file() {
-            return Vec::new();
-        }
         provide_resources(&self.hex_resource_ctx())
     }
 }
@@ -274,6 +378,41 @@ mod tests {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
+    }
+
+    #[test]
+    fn open_and_save_publish_direct_paths_as_confirmed_jobs() {
+        let resources = provide_resources(&HexResourceCtx {
+            label: "x.bin".into(),
+            cursor: 0,
+            len: 1,
+            selection: None,
+            has_file: true,
+        });
+        for id in ["open", "save"] {
+            let spec = resources[0].actions.iter().find(|a| a.id == id).unwrap();
+            assert_eq!(spec.params()[0].name, "path");
+            assert!(matches!(
+                spec.contract.execution,
+                ExecutionMode::Background { cancellable: true }
+            ));
+            assert_eq!(spec.contract.result, ResultSpec::Job);
+            assert!(!matches!(
+                spec.contract.confirmation,
+                qos_actions::ConfirmationPolicy::None
+            ));
+            let args = serde_json::json!({"path": "/tmp/x.bin"})
+                .as_object()
+                .unwrap()
+                .clone();
+            let encoded = spec.build_json(&args).unwrap();
+            assert!(matches!(
+                decode_operation(HEX_EDITOR_OPERATION_TYPE, &encoded.payload)
+                    .unwrap()
+                    .unwrap(),
+                HexOperation::Open { path: Some(_) } | HexOperation::Save { path: Some(_) }
+            ));
+        }
     }
 
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
@@ -338,12 +477,27 @@ mod tests {
         );
     }
 
-    /// The empty state publishes nothing — there is no open buffer to act on.
+    /// The empty state still publishes the file-open effect, while buffer-only
+    /// commands remain explicitly unavailable.
     #[test]
     fn empty_state_publishes_no_resources() {
         let view = HexView::empty();
         let doc = AutoCommit::new();
-        assert!(Widget::resources(&view, &doc).is_empty());
+        let resources = Widget::resources(&view, &doc);
+        assert_eq!(resources.len(), 1);
+        assert!(
+            resources[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "open")
+        );
+        assert!(
+            resources[0]
+                .actions
+                .iter()
+                .find(|action| action.id == "save")
+                .is_some_and(|action| !action.contract.availability.is_available())
+        );
     }
 
     /// A selection swaps the single-byte delete for a whole-range one.

@@ -37,8 +37,8 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{SearchField, SearchResultsView, Widget};
 use qos_actions::{
-    ActionContext, ActionInput, ActionRegistry, ActionTransport, Dispatched, EncodedAction,
-    OperationKind, Resource, flatten,
+    ActionContext, ActionInput, ActionRegistry, ActionTransport, ConfirmationPolicy, Dispatched,
+    EncodedAction, OperationKind, Resource, flatten,
 };
 
 /// The group header for the focused app's exported actions.
@@ -71,6 +71,7 @@ enum ActionKind {
         encoded: EncodedAction,
         context: ActionContext,
         kind: OperationKind,
+        confirmation: ConfirmationPolicy,
     },
     /// Collects a free-text argument in the field first, then builds the action.
     Prompted {
@@ -78,14 +79,35 @@ enum ActionKind {
         build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>,
         context: ActionContext,
         kind: OperationKind,
+        confirmation: ConfirmationPolicy,
     },
+    /// Collects the canonical JSON object for a structured or
+    /// multi-parameter action, then uses the ActionSpec's strict binder.
+    Typed {
+        prompt: String,
+        spec: qos_actions::ActionSpec,
+        context: ActionContext,
+        kind: OperationKind,
+        confirmation: ConfirmationPolicy,
+    },
+}
+
+enum ArgumentBuilder {
+    Text(Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>),
+    Json(qos_actions::ActionSpec),
 }
 
 /// Live state while the field is collecting a prompted action's argument.
 struct ArgState {
-    build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>,
+    build: ArgumentBuilder,
     context: ActionContext,
     kind: OperationKind,
+    confirmation: ConfirmationPolicy,
+}
+
+struct ConfirmState {
+    pending: PendingOperation,
+    expected: String,
 }
 
 /// A palette activation after address resolution and argument collection.
@@ -110,6 +132,9 @@ pub struct ActionPalette {
     open: bool,
     /// `Some` while collecting a prompted action's argument in the field.
     arg: Option<ArgState>,
+    /// `Some` while collecting the explicit confirmation required by the
+    /// selected action contract.
+    confirm: Option<ConfirmState>,
     /// A ready-to-dispatch action, set on activation, drained by `take_dispatch`.
     pending_dispatch: Option<PendingOperation>,
     ambient_context: Option<ActionContext>,
@@ -145,6 +170,7 @@ impl ActionPalette {
             providers: Vec::new(),
             open: false,
             arg: None,
+            confirm: None,
             pending_dispatch: None,
             ambient_context: None,
             pending_nav: None,
@@ -192,6 +218,7 @@ impl ActionPalette {
     pub fn open(&mut self) {
         self.open = true;
         self.arg = None;
+        self.confirm = None;
         self.pending_dispatch = None;
         self.pending_nav = None;
         self.field = SearchField::new().with_placeholder("Search actions and results");
@@ -202,6 +229,7 @@ impl ActionPalette {
     pub fn close(&mut self) {
         self.open = false;
         self.arg = None;
+        self.confirm = None;
     }
 
     pub fn query(&self) -> &str {
@@ -243,7 +271,7 @@ impl ActionPalette {
     }
 
     pub fn in_argument_mode(&self) -> bool {
-        self.arg.is_some()
+        self.arg.is_some() || self.confirm.is_some()
     }
 
     /// Activate the highlighted row, exactly as pressing Enter would.
@@ -252,6 +280,19 @@ impl ActionPalette {
             return;
         };
         self.resolve_activation(&id);
+    }
+
+    /// Enter the argument/confirmation flow for an exact domain address.
+    /// Used by accessibility activation so consequential resource nodes cannot
+    /// jump around the palette's policy flow.
+    pub fn activate_address(&mut self, resource: &str, action: &str) -> bool {
+        let id = format!("{resource}{}{action}", qos_actions::KEY_SEP);
+        if self.index.contains_key(&id) {
+            self.resolve_activation(&id);
+            true
+        } else {
+            false
+        }
     }
 
     /// Drain a completed action activation and dispatch it against `doc` +
@@ -300,6 +341,11 @@ impl ActionPalette {
         transport: &mut dyn ActionTransport,
         context: ActionContext,
     ) -> Result<Dispatched, qos_actions::ActionError> {
+        if encoded.type_id == qos_actions::resource::INVALID_ARGUMENTS_TYPE {
+            return Err(qos_actions::ActionError::Refused(
+                String::from_utf8_lossy(&encoded.payload).into_owned(),
+            ));
+        }
         let action = registry.decode(encoded)?;
         let actor = doc.get_actor().to_bytes().to_vec();
         qos_actions::dispatch_by_with_context(
@@ -320,19 +366,23 @@ impl ActionPalette {
                     encoded,
                     context,
                     kind,
+                    confirmation,
                 } => {
-                    self.pending_dispatch = Some(PendingOperation {
-                        encoded,
-                        context,
-                        kind,
-                    });
-                    self.open = false;
+                    self.queue_or_confirm(
+                        PendingOperation {
+                            encoded,
+                            context,
+                            kind,
+                        },
+                        confirmation,
+                    );
                 }
                 ActionKind::Prompted {
                     prompt,
                     build,
                     context,
                     kind,
+                    confirmation,
                 } => {
                     // Repurpose the field to collect the argument; clear the result
                     // list so only the prompt shows.
@@ -341,9 +391,28 @@ impl ActionPalette {
                     self.field.set_focused(true);
                     self.results.set_groups(Vec::new());
                     self.arg = Some(ArgState {
-                        build,
+                        build: ArgumentBuilder::Text(build),
                         context,
                         kind,
+                        confirmation,
+                    });
+                }
+                ActionKind::Typed {
+                    prompt,
+                    spec,
+                    context,
+                    kind,
+                    confirmation,
+                } => {
+                    self.field = SearchField::new();
+                    self.field.set_placeholder(&prompt);
+                    self.field.set_focused(true);
+                    self.results.set_groups(Vec::new());
+                    self.arg = Some(ArgState {
+                        build: ArgumentBuilder::Json(spec),
+                        context,
+                        kind,
+                        confirmation,
                     });
                 }
             },
@@ -387,17 +456,40 @@ impl ActionPalette {
             if let Some(ambient) = self.ambient_context.as_ref() {
                 context = context.enriched_by(ambient);
             }
+            let structured = fa.action.params().len() > 1
+                || fa
+                    .action
+                    .params()
+                    .first()
+                    .is_some_and(|parameter| parameter.ty != qos_actions::ParamType::Text);
             let kind = match &fa.action.input {
                 ActionInput::Immediate(enc) => ActionKind::Immediate {
                     encoded: enc.clone(),
                     context,
                     kind: fa.action.kind,
+                    confirmation: fa.action.contract.confirmation.clone(),
+                },
+                ActionInput::Prompted { .. } if structured => ActionKind::Typed {
+                    prompt: format!(
+                        "JSON arguments: {}",
+                        fa.action
+                            .params()
+                            .iter()
+                            .map(|parameter| parameter.name.as_ref())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    spec: fa.action.clone(),
+                    context,
+                    kind: fa.action.kind,
+                    confirmation: fa.action.contract.confirmation.clone(),
                 },
                 ActionInput::Prompted { prompt, build, .. } => ActionKind::Prompted {
                     prompt: prompt.clone(),
                     build: build.clone(),
                     context,
                     kind: fa.action.kind,
+                    confirmation: fa.action.contract.confirmation.clone(),
                 },
             };
             index.insert(fa.key.clone(), RowResolution::Dispatch(Box::new(kind)));
@@ -515,10 +607,27 @@ impl ActionPalette {
         }
         // Escape: cancel the argument step, or close the palette.
         if matches!(&key.logical_key, Key::Named(NamedKey::Escape)) {
-            if self.arg.is_some() {
+            if self.arg.is_some() || self.confirm.is_some() {
                 self.exit_argument_mode();
             } else {
                 self.close();
+            }
+            return true;
+        }
+
+        if self.confirm.is_some() {
+            if matches!(&key.logical_key, Key::Named(NamedKey::Enter)) {
+                let value = self.field.value().trim().to_string();
+                let accepted = self
+                    .confirm
+                    .as_ref()
+                    .is_some_and(|state| value == state.expected);
+                if accepted {
+                    self.pending_dispatch = self.confirm.take().map(|state| state.pending);
+                    self.open = false;
+                }
+            } else {
+                self.route_to_field(event, *modifiers, doc, path);
             }
             return true;
         }
@@ -529,13 +638,31 @@ impl ActionPalette {
             if matches!(&key.logical_key, Key::Named(NamedKey::Enter)) {
                 let value = self.field.value().to_string();
                 if let Some(state) = self.arg.take() {
-                    self.pending_dispatch = Some(PendingOperation {
-                        encoded: (state.build)(&value),
-                        context: state.context,
-                        kind: state.kind,
-                    });
+                    let confirmation = state.confirmation;
+                    let encoded = match state.build {
+                        ArgumentBuilder::Text(build) => build(&value),
+                        ArgumentBuilder::Json(spec) => serde_json::from_str::<
+                            serde_json::Map<String, serde_json::Value>,
+                        >(&value)
+                        .map_err(|error| error.to_string())
+                        .and_then(|arguments| {
+                            spec.build_json(&arguments)
+                                .map_err(|error| error.to_string())
+                        })
+                        .unwrap_or_else(|error| EncodedAction {
+                            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                            payload: error.into_bytes(),
+                        }),
+                    };
+                    self.queue_or_confirm(
+                        PendingOperation {
+                            encoded,
+                            context: state.context,
+                            kind: state.kind,
+                        },
+                        confirmation,
+                    );
                 }
-                self.open = false;
             } else {
                 self.route_to_field(event, *modifiers, doc, path);
             }
@@ -569,10 +696,29 @@ impl ActionPalette {
 
     fn exit_argument_mode(&mut self) {
         self.arg = None;
+        self.confirm = None;
         // Restore the query field and result set.
         self.field = SearchField::new().with_placeholder("Search actions and results");
         self.field.set_focused(true);
         self.rebuild("");
+    }
+
+    fn queue_or_confirm(&mut self, pending: PendingOperation, confirmation: ConfirmationPolicy) {
+        let expected = match confirmation {
+            ConfirmationPolicy::None => {
+                self.pending_dispatch = Some(pending);
+                self.open = false;
+                return;
+            }
+            ConfirmationPolicy::Confirm => "CONFIRM".to_string(),
+            ConfirmationPolicy::Phrase { phrase } => phrase,
+        };
+        self.field = SearchField::new();
+        self.field
+            .set_placeholder(&format!("Type {expected} to confirm"));
+        self.field.set_focused(true);
+        self.results.set_groups(Vec::new());
+        self.confirm = Some(ConfirmState { pending, expected });
     }
 
     fn route_to_field(
@@ -918,6 +1064,64 @@ mod tests {
                 .and_then(|(v, _)| v.to_str().map(str::to_string)),
             Some("Sprocket".to_string()),
             "the action carries the typed argument",
+        );
+    }
+
+    #[test]
+    fn consequential_action_waits_for_exact_confirmation() {
+        let resource = Resource::new("test.thing:1", "test.thing", "Thing").with_action(
+            ActionSpec::immediate(
+                "mark",
+                "Mark done",
+                NOTE_TYPE,
+                &Note {
+                    key: "marked".into(),
+                    value: "yes".into(),
+                },
+            )
+            .unwrap()
+            .with_contract(qos_actions::ActionContract {
+                confirmation: ConfirmationPolicy::Phrase {
+                    phrase: "MARK THING".into(),
+                },
+                ..qos_actions::ActionContract::default()
+            }),
+        );
+        let mut palette = ActionPalette::new();
+        palette.load_open_resources(&[resource]);
+        palette.open();
+        palette.activate_selected();
+        assert!(palette.in_argument_mode());
+
+        let mut doc = AutoCommit::new();
+        let mut transport = LocalTransport::new();
+        assert!(
+            palette
+                .take_dispatch(&mut doc, &registry(), &mut transport)
+                .is_none(),
+            "activation alone must not queue the operation"
+        );
+
+        palette.field.set_query("mark thing");
+        palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+        assert!(
+            palette
+                .take_dispatch(&mut doc, &registry(), &mut transport)
+                .is_none(),
+            "confirmation is exact and case-sensitive"
+        );
+
+        palette.field.set_query("MARK THING");
+        palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+        palette
+            .take_dispatch(&mut doc, &registry(), &mut transport)
+            .expect("exact confirmation queues the operation")
+            .expect("confirmed dispatch succeeds");
+        assert_eq!(
+            doc.get(&ROOT, "marked")
+                .unwrap()
+                .and_then(|(value, _)| value.to_str().map(str::to_owned)),
+            Some("yes".into())
         );
     }
 

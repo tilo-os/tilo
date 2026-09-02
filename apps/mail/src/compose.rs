@@ -1425,7 +1425,14 @@ impl ComposeWindow {
 
         // Resize affordance (bottom-right grip dots).
         let g = Rect::new(r.x1 - 14.0, r.y1 - 14.0, r.x1 - 4.0, r.y1 - 4.0);
-        stroke_round(scene, t, g, 2.0, 1.2, c.border_white_20);
+        stroke_round(
+            scene,
+            t,
+            g,
+            2.0,
+            1.2,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
+        );
 
         let _ = presence;
     }
@@ -1582,7 +1589,14 @@ impl ComposeWindow {
         );
         // Window body.
         fill_round(scene, t, r, 14.0, c.surfaces.raised);
-        stroke_round(scene, t, r, 14.0, 1.0, c.border_white_10);
+        stroke_round(
+            scene,
+            t,
+            r,
+            14.0,
+            1.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+        );
 
         // Title bar.
         let title = Rect::new(r.x0, r.y0, r.x1, r.y0 + TITLE_H);
@@ -1635,7 +1649,7 @@ impl ComposeWindow {
             };
             let hov = rect.contains(self.last_mouse);
             if hov {
-                fill_round(scene, t, *rect, 7.0, c.surface_white_10);
+                fill_round(scene, t, *rect, 7.0, c.lift(0.72));
             }
             tr.draw_text(
                 scene,
@@ -1668,7 +1682,7 @@ impl ComposeWindow {
             let name = attachment_display_name(path);
             let (lw, _) = tr.measure(name, 11.5, None);
             let chip = Rect::new(ax, ay, ax + f64::from(lw) + 34.0, ay + 24.0);
-            fill_round(scene, t, chip, 7.0, c.surface_white_10);
+            fill_round(scene, t, chip, 7.0, c.lift(0.72));
             tr.draw_text(
                 scene,
                 "\u{1F4CE}",
@@ -1762,9 +1776,9 @@ impl ComposeWindow {
         let bg = if active {
             c.accent[5].with_alpha_factor(0.22)
         } else if hov {
-            c.surface_white_10
+            c.lift(0.72)
         } else {
-            c.surface_white_5
+            c.lift(0.35)
         };
         fill_round(scene, t, rect, 7.0, bg);
         let (lw, _) = tr.measure(label, 11.5, None);
@@ -1827,9 +1841,9 @@ impl ComposeWindow {
             let bg = if active {
                 c.accent[5].with_alpha_factor(0.28)
             } else if hov {
-                c.surface_white_10
+                c.lift(0.72)
             } else {
-                c.surface_white_5
+                c.lift(0.35)
             };
             fill_round(scene, t, *rect, 6.0, bg);
             let col = if active { c.text_primary } else { c.neutral[8] };
@@ -1887,13 +1901,16 @@ impl ComposeWindow {
             t,
             rect,
             7.0,
-            if hov {
-                c.surface_white_10
-            } else {
-                c.surface_white_5
-            },
+            if hov { c.lift(0.72) } else { c.lift(0.35) },
         );
-        stroke_round(scene, t, rect, 7.0, 1.0, c.border_white_10);
+        stroke_round(
+            scene,
+            t,
+            rect,
+            7.0,
+            1.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+        );
         let label = match self.format {
             ComposeFormat::Html => "\u{25CF} HTML",
             ComposeFormat::Text => "\u{25CB} Text",
@@ -1946,7 +1963,7 @@ impl ComposeWindow {
             if error.is_some() {
                 c.semantic.danger
             } else {
-                c.border_white_10
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26)
             },
         );
         let label = match kind {
@@ -2047,11 +2064,7 @@ impl ComposeWindow {
             t,
             cancel,
             7.0,
-            if hov_x {
-                c.surface_white_10
-            } else {
-                c.surface_white_5
-            },
+            if hov_x { c.lift(0.72) } else { c.lift(0.35) },
         );
         let (cw, _) = tr.measure("Cancel", 12.0, None);
         tr.draw_text(
@@ -2113,13 +2126,16 @@ impl ComposeWindow {
                 t,
                 rect,
                 9.0,
-                if hov {
-                    c.surface_white_10
-                } else {
-                    c.surface_white_5
-                },
+                if hov { c.lift(0.72) } else { c.lift(0.35) },
             );
-            stroke_round(scene, t, rect, 9.0, 1.0, c.border_white_10);
+            stroke_round(
+                scene,
+                t,
+                rect,
+                9.0,
+                1.0,
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            );
             let (w, _) = tr.measure(label, 13.0, None);
             tr.draw_text(
                 scene,

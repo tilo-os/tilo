@@ -5,8 +5,9 @@
 //! becomes an [`Action`](qos_actions::Action) — a serializable value that
 //! deterministically changes the shared Automerge document, so undo and
 //! multi-peer replay come for free — while presentation / view state stays plain
-//! app code. Applying that split to Containers leaves **nothing** on the action
-//! side, and this module records that finding rather than fabricate scaffolding.
+//! app code. Container lifecycle commands are therefore exported as
+//! [`OperationKind::Effect`](qos_actions::OperationKind::Effect) operations,
+//! while this module verifies they never masquerade as document mutations.
 //!
 //! ## What Containers actually is
 //!
@@ -52,15 +53,11 @@
 //!
 //! ## Consequence
 //!
-//! Containers exports **no** actions and publishes **no** Ctrl+K resource tree:
-//! [`Widget::resources`](ui::widget::Widget::resources) stays empty and
-//! [`take_committed_action`](ui::widget::Widget::take_committed_action) stays
-//! `None` (both toolkit defaults, so no [`ui::ActionHost`] is embedded — there is
-//! nothing for it to dispatch). The app keeps its app-local
-//! [`CommandPalette`](ui::widget::command_palette::CommandPalette) as an honest
-//! *find-and-jump-to-container* surface: activating a row selects that container,
-//! which is navigation (presentation), not a dispatched action. The tests below
-//! prove each half of this split on the real production path.
+//! Containers publishes the transient engine objects as stable session
+//! resources with typed effect operations. In demo/offline mode those same
+//! operations remain enumerable but carry an explicit `engine_offline`
+//! availability reason. [`take_committed_action`](ui::widget::Widget::take_committed_action)
+//! remains `None`: lifecycle effects never create a document undo boundary.
 
 #[cfg(test)]
 mod tests {
@@ -300,12 +297,10 @@ mod tests {
         );
     }
 
-    /// The honest steady state: Containers fabricates no action or resource
-    /// surface. `Widget::resources` is empty (nothing to publish to Ctrl+K) and no
-    /// action-host undo boundary is recorded, because no action is dispatched —
-    /// both the toolkit defaults, held on the real widget after a full event.
+    /// Offline/demo resources remain discoverable but their effects state why
+    /// they cannot run; external effects never create a document undo boundary.
     #[test]
-    fn exports_no_actions_and_no_resource_tree() {
+    fn exports_unavailable_effect_resources_without_document_actions() {
         let mut app = ContainersApp::new(false);
         let mut doc = AutoCommit::new();
 
@@ -316,10 +311,21 @@ mod tests {
         // A stray click on the surface, too.
         send(&mut app, &mut doc, &left_press());
 
+        let resources = Widget::resources(&app, &doc);
+        assert_eq!(resources.len(), 1, "one engine resource");
+        let actions: Vec<_> = resources[0]
+            .children
+            .iter()
+            .flat_map(|resource| resource.actions.iter())
+            .collect();
         assert!(
-            Widget::resources(&app, &doc).is_empty(),
-            "Containers publishes no Ctrl+K resource tree — its shared state is view state + native text",
+            !actions.is_empty(),
+            "engine objects export lifecycle effects"
         );
+        assert!(actions.iter().all(|action| {
+            action.kind == ui::qos_actions::OperationKind::Effect
+                && !action.contract.availability.is_available()
+        }));
         assert!(
             app.take_committed_action().is_none(),
             "no action is dispatched, so no action-host undo boundary is recorded",

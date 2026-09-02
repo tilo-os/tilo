@@ -452,6 +452,68 @@ impl AppActionBroker {
         self.state
             .invoke(peer_id, resource, action, argument, actor)
     }
+
+    pub fn start(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        actor: &str,
+    ) -> Result<crate::shell::collab_broker_capnp::InvocationJob, String> {
+        self.state
+            .start_invocation(peer_id, resource, action, argument, actor)
+    }
+
+    pub fn status(&self, id: u64) -> Option<qos_actions::InvocationUpdate> {
+        self.state.invocation_status(id)
+    }
+
+    pub fn statuses(&self, actor: &str) -> Vec<(u64, qos_actions::InvocationUpdate)> {
+        self.state.invocation_statuses(actor)
+    }
+
+    pub fn cancel(&self, id: u64, actor: &str) -> Result<(), String> {
+        self.state.request_cancellation(id, actor)
+    }
+
+    pub fn can_cancel(&self, id: u64, actor: &str) -> bool {
+        self.state.can_cancel(id, actor)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_confirmation(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        actor: &str,
+        phrase: Option<&str>,
+    ) -> Result<String, String> {
+        self.state
+            .prepare_confirmation(peer_id, resource, action, argument, actor, phrase)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_confirmed(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        actor: &str,
+        token: &str,
+    ) -> Result<crate::shell::collab_broker_capnp::InvocationJob, String> {
+        self.state.start_invocation_confirmed(
+            peer_id,
+            resource,
+            action,
+            argument,
+            actor,
+            Some(token),
+        )
+    }
 }
 
 impl BrokerHandle {
