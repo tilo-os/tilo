@@ -50,6 +50,7 @@ pub struct ControlBindingMetadata {
 pub struct ActionEmitter<I> {
     binding: qos_actions::ActionBinding<I>,
     pending: VecDeque<qos_actions::ControlInvocation>,
+    available: bool,
 }
 
 impl<I> ActionEmitter<I> {
@@ -57,11 +58,14 @@ impl<I> ActionEmitter<I> {
         Self {
             binding,
             pending: VecDeque::new(),
+            available: true,
         }
     }
 
     pub fn emit(&mut self, input: I) -> Result<(), qos_actions::ActionBindingError> {
-        self.pending.push_back(self.binding.invoke(input)?);
+        if self.available {
+            self.pending.push_back(self.binding.invoke(input)?);
+        }
         Ok(())
     }
 
@@ -71,6 +75,19 @@ impl<I> ActionEmitter<I> {
 
     pub fn binding(&self) -> &qos_actions::ActionBinding<I> {
         &self.binding
+    }
+
+    /// Refresh whether the bound action is in the host's current,
+    /// permission-filtered resource surface.
+    pub fn refresh_availability(&mut self, allowed: &HashSet<qos_actions::ActionAddress>) {
+        self.available = allowed.contains(self.binding.address());
+        if !self.available {
+            self.pending.clear();
+        }
+    }
+
+    pub fn is_available(&self) -> bool {
+        self.available
     }
 
     /// Inventory entry for a custom control using this emitter.
@@ -613,6 +630,17 @@ pub trait Widget {
             .iter()
             .flat_map(|child| child.control_action_bindings())
             .collect()
+    }
+    /// Push the fresh local permission-filtered action surface into every
+    /// retained control. Custom widgets should refresh their own emitter and
+    /// then recurse into children.
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &HashSet<qos_actions::ActionAddress>,
+    ) {
+        for child in self.children_mut() {
+            child.refresh_control_action_availability(allowed);
+        }
     }
     fn on_commit(&mut self) {
         for child in self.children_mut() {

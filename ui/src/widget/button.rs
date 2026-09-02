@@ -74,6 +74,9 @@ pub struct Button {
 }
 
 impl Button {
+    fn effectively_enabled(&self) -> bool {
+        self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
+    }
     pub fn new(id: &str, label: &str, on_click_path: Option<&str>) -> Self {
         Self {
             id: id.to_string(),
@@ -686,7 +689,7 @@ impl Button {
         inner: Affine,
         theme: &Theme,
     ) {
-        if self.enabled {
+        if self.effectively_enabled() {
             out_scene.append(&self.cached, Some(inner));
         } else {
             let clip = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
@@ -891,7 +894,7 @@ impl Widget for Button {
         _taffy: &TaffyTree<()>,
     ) {
         // Reject all input without setting `handled`.
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return;
         }
         match event {
@@ -970,7 +973,20 @@ impl Widget for Button {
         self.is_focused
     }
     fn is_enabled(&self) -> bool {
-        self.enabled
+        self.effectively_enabled()
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            let before = action.is_available();
+            action.refresh_availability(allowed);
+            if before != action.is_available() {
+                self.dirty = true;
+            }
+        }
     }
 
     fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
@@ -1007,7 +1023,7 @@ impl Widget for Button {
         root: &ObjId,
     ) -> bool {
         use crate::a11y::Action;
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return false;
         }
         match action {
@@ -1181,6 +1197,45 @@ mod tests {
         );
         assert!(intent.arguments.is_empty());
         assert_eq!(button.control_action_bindings().len(), 1);
+    }
+
+    #[test]
+    fn action_availability_revokes_and_restores_without_overriding_authored_state() {
+        let resource = qos_actions::Resource::new("doc:1", "doc", "Document").with_action(
+            qos_actions::ActionSpec::operation(
+                "save",
+                "Save",
+                qos_actions::OperationKind::Effect,
+                "test.save",
+                &(),
+            )
+            .unwrap(),
+        );
+        let binding = qos_actions::ActionBinding::unit_for(&resource, "save").unwrap();
+        let mut button = Button::new("save", "Save", None).on_action(binding);
+        button.activate(&mut AutoCommit::new(), &automerge::ROOT);
+        Widget::refresh_control_action_availability(&mut button, &std::collections::HashSet::new());
+        assert!(!Widget::is_enabled(&button));
+        assert!(
+            Widget::take_control_invocation(&mut button).is_none(),
+            "revocation drops queued authority"
+        );
+        Widget::refresh_control_action_availability(
+            &mut button,
+            &std::collections::HashSet::from([qos_actions::ActionAddress::new("doc:1", "save")]),
+        );
+        assert!(Widget::is_enabled(&button));
+
+        button.set_enabled(false);
+        Widget::refresh_control_action_availability(&mut button, &std::collections::HashSet::new());
+        Widget::refresh_control_action_availability(
+            &mut button,
+            &std::collections::HashSet::from([qos_actions::ActionAddress::new("doc:1", "save")]),
+        );
+        assert!(
+            !Widget::is_enabled(&button),
+            "permission restore cannot override app-authored disabled state"
+        );
     }
 
     #[test]
