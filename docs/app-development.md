@@ -61,6 +61,9 @@ saved scenario in isolated state with accessibility auditing enabled. Use
 document, and versioned audit report; `--no-scenarios` keeps the structural,
 format, lint, and Rust-test phases for apps that deliberately have no saved
 flows. Arguments after `--` are forwarded only to the Cargo test harness.
+Pass `--fix` to format only the app package before the strict lint, test, and
+scenario phases; dependency source and unrelated workspace packages are never
+rewritten.
 
 For serialized screens, that structural preflight crosses file boundaries: it
 checks every component node against `src/components/mod.rs`, verifies each
