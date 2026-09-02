@@ -228,6 +228,22 @@ type ResolvedResourceInvocation<'a> = (
     &'a qos_actions::ActionSpec,
 );
 
+/// Runtime audit result for one interactive control.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ControlBindingStatus {
+    Resolved,
+    /// Multiple affordances intentionally invoke the same operation.
+    SharedAddress,
+    StaleAddress,
+    ExplicitLegacy,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ControlBindingCoverage {
+    pub binding: crate::widget::ControlBindingMetadata,
+    pub status: ControlBindingStatus,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independently toggled, orthogonal opt-in/state bit with its own doc comment; grouping them into sub-structs would ripple through every read/write site in this file for no behavioural gain"
@@ -900,6 +916,30 @@ impl App {
         self.root_widget.resources(&self.state.doc)
     }
 
+    fn refresh_control_action_availability(&mut self) {
+        fn collect_addresses(
+            resources: &[qos_actions::Resource],
+            allowed: &mut std::collections::HashSet<qos_actions::ActionAddress>,
+        ) {
+            for resource in resources {
+                allowed.extend(resource.actions.iter().map(|action| {
+                    qos_actions::ActionAddress::new(resource.id.as_str(), &action.id)
+                }));
+                collect_addresses(&resource.children, allowed);
+            }
+        }
+
+        let resources = self
+            .collect_declared_resources()
+            .into_iter()
+            .filter_map(|resource| self.filter_resource_for_local_actor(resource))
+            .collect::<Vec<_>>();
+        let mut allowed = std::collections::HashSet::new();
+        collect_addresses(&resources, &mut allowed);
+        self.root_widget
+            .refresh_control_action_availability(&allowed);
+    }
+
     /// The complete machine-driveable surface: domain resources declared by
     /// the app plus ordinary controls projected from its retained semantic
     /// tree. Ctrl+K, scripts, and agents therefore consume one catalogue.
@@ -931,6 +971,44 @@ impl App {
         }
     }
 
+    /// Audit every retained control binding against the fresh resource tree.
+    /// This is public so development tooling can turn remaining explicit
+    /// legacy controls and stale/duplicate action addresses into a coverage
+    /// report without inspecting widget implementation details.
+    pub fn control_action_coverage(&self) -> Vec<ControlBindingCoverage> {
+        let resources = self.collect_resources();
+        self.control_action_coverage_for(&resources)
+    }
+
+    fn control_action_coverage_for(
+        &self,
+        resources: &[qos_actions::Resource],
+    ) -> Vec<ControlBindingCoverage> {
+        let mut seen = std::collections::HashSet::new();
+        self.root_widget
+            .control_action_bindings()
+            .into_iter()
+            .map(|binding| {
+                let status = match &binding.kind {
+                    crate::widget::ControlBindingKind::Action(address) => {
+                        if qos_actions::door::resolve(&resources, address).is_none() {
+                            ControlBindingStatus::StaleAddress
+                        } else if !seen.insert(address.clone()) {
+                            ControlBindingStatus::SharedAddress
+                        } else {
+                            ControlBindingStatus::Resolved
+                        }
+                    }
+                    crate::widget::ControlBindingKind::LegacyDocumentPath(_)
+                    | crate::widget::ControlBindingKind::LegacyCallback => {
+                        ControlBindingStatus::ExplicitLegacy
+                    }
+                };
+                ControlBindingCoverage { binding, status }
+            })
+            .collect()
+    }
+
     fn invoke_semantic_operation_encoded(
         &mut self,
         encoded: &qos_actions::EncodedAction,
@@ -956,6 +1034,37 @@ impl App {
             return;
         }
         let resources = self.collect_resources();
+        // Use this exact snapshot for coverage as well as publication. That
+        // prevents recursive/repeated resource collection and makes the audit
+        // correspond to the catalogue about to cross the wire.
+        let binding_coverage = self.control_action_coverage_for(&resources);
+        if binding_coverage
+            .iter()
+            .any(|entry| entry.status == ControlBindingStatus::StaleAddress)
+        {
+            for entry in binding_coverage
+                .iter()
+                .filter(|entry| entry.status == ControlBindingStatus::StaleAddress)
+            {
+                tracing::error!(
+                    control = %entry.binding.control_id,
+                    binding = ?entry.binding.kind,
+                    "refusing to publish a surface with a stale control action binding"
+                );
+            }
+            if self
+                .last_published_actions
+                .as_ref()
+                .is_some_and(|actions| !actions.is_empty())
+            {
+                self.collab_manager.send(CollabRequest::PublishActions {
+                    app_id: crate::collaboration::local_app_id(),
+                    actions: Vec::new(),
+                });
+                self.last_published_actions = Some(Vec::new());
+            }
+            return;
+        }
         let mut operation_handlers = self.root_widget.resource_operation_handlers();
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
         let violations =
@@ -1154,6 +1263,14 @@ impl App {
         invocation: Option<qos_actions::InvocationId>,
     ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
         let resources = self.collect_resources();
+        let resources = if actor == self.local_author.0 {
+            resources
+                .into_iter()
+                .filter_map(|resource| self.filter_resource_for_local_actor(resource))
+                .collect()
+        } else {
+            resources
+        };
         let (typed_arguments, resolved) =
             Self::resolve_resource_invocation(&resources, address, argument, confirmed_by_broker)?;
         let kind = resolved.kind;
@@ -1227,6 +1344,58 @@ impl App {
         }
         self.layout_dirty = true;
         Ok(started)
+    }
+
+    /// Resolve queued local control intents against the current resource tree
+    /// and enter through the same door/lifecycle as every other caller.
+    fn dispatch_control_invocations(&mut self) -> usize {
+        let mut dispatched = 0;
+        while let Some(intent) = self.root_widget.take_control_invocation() {
+            let local_resources = self
+                .collect_resources()
+                .into_iter()
+                .filter_map(|resource| self.filter_resource_for_local_actor(resource))
+                .collect::<Vec<_>>();
+            let Some(resolved) = qos_actions::door::resolve(&local_resources, &intent.address)
+            else {
+                tracing::warn!(
+                    resource = %intent.address.resource,
+                    action = %intent.address.action,
+                    "action-bound control is unavailable to the local actor"
+                );
+                continue;
+            };
+            if !matches!(
+                resolved.contract.confirmation,
+                qos_actions::ConfirmationPolicy::None
+            ) {
+                // A bound control never manufactures confirmation. Hand the
+                // exact address to the standard palette flow, which owns the
+                // explicit confirm/phrase UI and only then enters the door.
+                self.open_action_palette();
+                if let Some(palette) = self.action_palette.as_mut() {
+                    palette.activate_address(&intent.address.resource, &intent.address.action);
+                }
+                dispatched += 1;
+                continue;
+            }
+            let json = format!(
+                "{}{}",
+                qos_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::Value::Object(intent.arguments.clone())
+            );
+            let actor = self.local_author.0.clone();
+            match self.invoke_resource_action(&intent.address, Some(&json), &actor, false, None) {
+                Ok(_) => dispatched += 1,
+                Err(error) => tracing::warn!(
+                    resource = %intent.address.resource,
+                    action = %intent.address.action,
+                    %error,
+                    "action-bound control invocation refused"
+                ),
+            }
+        }
+        dispatched
     }
 
     fn request_invocation_cancellation(&mut self, wire_id: u64) {
@@ -2065,6 +2234,8 @@ impl App {
     }
     pub fn set_permission_ctx(&mut self, ctx: PermissionContext) {
         self.permission_ctx = ctx;
+        self.refresh_control_action_availability();
+        self.layout_dirty = true;
     }
 
     /// The server attributes the broadcast to this user's id automatically,
@@ -2911,6 +3082,7 @@ impl App {
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Option<(f64, f64)> {
+        self.refresh_control_action_availability();
         use crate::a11y::Action;
         use crate::accesskit_bridge::{A11yTarget, resolve_node_id};
 
@@ -3008,6 +3180,7 @@ impl App {
     /// move/press/release sequence through the widget tree preserves the same
     /// behavior as hardware input instead of reporting a false success.
     fn dispatch_semantic_click(&mut self, x: f64, y: f64) -> bool {
+        self.refresh_control_action_availability();
         let Some(root_node) = self.root_node else {
             return false;
         };
@@ -3048,6 +3221,7 @@ impl App {
             handled_any |= handled;
         }
         if handled_any {
+            self.dispatch_control_invocations();
             self.needs_sync = true;
             self.layout_dirty = true;
         }
@@ -3178,6 +3352,7 @@ impl App {
     /// Lets headless tests stand the App up without spinning a winit loop.
     #[doc(hidden)]
     pub fn init_layout(&mut self) {
+        self.refresh_control_action_availability();
         self.node_map.clear();
         self.root_node = Some(self.root_widget.build_layout(
             &mut self.taffy,
@@ -3729,6 +3904,7 @@ fn draw_frame_content(
     scale_factor: f32,
     t_draw_start: Option<std::time::Instant>,
 ) -> (Affine, KurboRect, u128) {
+    app.refresh_control_action_availability();
     // Widget rects are logical; this transform rasterises at the physical
     // resolution, so the frame stays crisp at any fractional scale.
     let transform = crate::scale::composite_transform(f64::from(scale_factor));
@@ -4462,6 +4638,7 @@ impl AppHandler {
         };
         let mut handled = false;
         let mut focus_target = None;
+        app.refresh_control_action_availability();
         app.root_widget.handle_event(
             &event,
             scale,
@@ -5104,6 +5281,7 @@ impl AppHandler {
         }
 
         if !handled && let Some(root_node) = app.root_node {
+            app.refresh_control_action_availability();
             let scale_factor = window.scale_factor();
             let presentation_was_floating =
                 !app.root_widget.floating_surface_presentations().is_empty();
@@ -5268,6 +5446,13 @@ impl AppHandler {
                 app.navigate_focus(d);
                 handled = true;
             }
+        }
+
+        if app.dispatch_control_invocations() != 0 {
+            handled = true;
+            app.needs_sync = true;
+            app.layout_dirty = true;
+            window.request_redraw();
         }
 
         app.broadcast_focus_presence();
@@ -5734,6 +5919,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         app.presence_ctx.prune_typing(typing_now);
         let typing_active = app.presence_ctx.has_active_typing(typing_now);
         if typing_active {
+            window.request_redraw();
+        }
+
+        if app.dispatch_control_invocations() != 0 {
+            app.needs_sync = true;
+            app.layout_dirty = true;
             window.request_redraw();
         }
 
@@ -8190,7 +8381,8 @@ mod semantic_tree_app_tests {
     use automerge::transaction::Transactable;
     use automerge::{ROOT, ReadDoc, ScalarValue, Value};
     use qos_actions::{
-        Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+        Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+        PermissionRequirement, Resource,
     };
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
@@ -8227,11 +8419,44 @@ mod semantic_tree_app_tests {
     /// `set-label`.
     struct CounterCard {
         button: Button,
+        destructive: bool,
     }
+
+    fn counter_resource(destructive: bool) -> Resource {
+        let bump = ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump)
+            .unwrap()
+            .requiring(PermissionRequirement::Write);
+        let bump = if destructive {
+            bump.destructive()
+        } else {
+            bump
+        };
+        Resource::new("test.counter", "test.counter", "Counter")
+            .with_action(bump)
+            .with_action(ActionSpec::prompted(
+                "set-label",
+                "Set label",
+                "Label",
+                "name…",
+                ExecutionLocus::ClientLocal,
+                |s: &str| {
+                    EncodedAction::encode(COUNTER_TYPE, &CounterAction::SetLabel(s.to_string()))
+                        .unwrap()
+                },
+            ))
+    }
+
     impl CounterCard {
         fn new() -> Self {
+            Self::with_destructive(false)
+        }
+
+        fn with_destructive(destructive: bool) -> Self {
+            let resource = counter_resource(destructive);
+            let binding = qos_actions::ActionBinding::unit_for(&resource, "bump").unwrap();
             Self {
-                button: Button::new("bump", "Bump", None),
+                button: Button::new("bump", "Bump", None).on_action(binding),
+                destructive,
             }
         }
     }
@@ -8288,27 +8513,7 @@ mod semantic_tree_app_tests {
             KurboRect::ZERO
         }
         fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
-            vec![
-                Resource::new("test.counter", "test.counter", "Counter")
-                    .with_action(
-                        ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump)
-                            .unwrap(),
-                    )
-                    .with_action(ActionSpec::prompted(
-                        "set-label",
-                        "Set label",
-                        "Label",
-                        "name…",
-                        ExecutionLocus::ClientLocal,
-                        |s: &str| {
-                            EncodedAction::encode(
-                                COUNTER_TYPE,
-                                &CounterAction::SetLabel(s.to_string()),
-                            )
-                            .unwrap()
-                        },
-                    )),
-            ]
+            vec![counter_resource(self.destructive)]
         }
     }
 
@@ -8325,6 +8530,94 @@ mod semantic_tree_app_tests {
             Ok(Some((v, _))) => v.to_i64().unwrap_or(0),
             _ => 0,
         }
+    }
+
+    fn activate_bound_button(app: &mut App) {
+        let node = app.focusable_order[0];
+        let pointer = app.node_map[&node];
+        assert!(unsafe {
+            (*pointer).perform_action(
+                &crate::a11y::Action::Activate,
+                &mut app.state.doc,
+                &app.state.root,
+            )
+        });
+    }
+
+    #[test]
+    fn action_bound_control_uses_fresh_door_and_records_history() {
+        let mut app = app();
+        activate_bound_button(&mut app);
+        assert_eq!(counter(&app), 0, "control only queued an intent");
+        assert_eq!(app.dispatch_control_invocations(), 1);
+        assert_eq!(counter(&app), 1);
+        assert!(app.state.peek_last_undo().is_some());
+        assert_eq!(
+            app.control_action_coverage()[0].status,
+            ControlBindingStatus::Resolved
+        );
+    }
+
+    #[test]
+    fn permission_revocation_and_restore_refresh_bound_control_presentation() {
+        let mut app = app();
+        let node = app.focusable_order[0];
+        let pointer = app.node_map[&node];
+        assert!(unsafe { (*pointer).is_enabled() });
+
+        app.set_permission_ctx(PermissionContext::from_capabilities(
+            collab_types::caps::Actor::person(None, "restricted"),
+            Vec::new(),
+        ));
+        assert!(!unsafe { (*pointer).is_enabled() });
+        assert!(!unsafe {
+            (*pointer).perform_action(
+                &crate::a11y::Action::Activate,
+                &mut app.state.doc,
+                &app.state.root,
+            )
+        });
+
+        app.set_permission_ctx(PermissionContext::permissive());
+        assert!(unsafe { (*pointer).is_enabled() });
+    }
+
+    #[test]
+    fn action_bound_control_never_auto_confirms_destructive_action() {
+        let mut app = App::new(State::new(), Box::new(CounterCard::with_destructive(true)));
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        activate_bound_button(&mut app);
+        assert_eq!(app.dispatch_control_invocations(), 1);
+        assert_eq!(counter(&app), 0);
+        assert!(app.state.peek_last_undo().is_none());
+        assert!(app.action_palette().is_some(), "confirmation UI is open");
+    }
+
+    #[test]
+    fn action_bound_background_control_remains_pending_until_terminal_update() {
+        let resource =
+            crate::widget::resource_actions::resource("test.job", "Job", "run", "Run", true);
+        let binding = qos_actions::ActionBinding::unit_for(&resource, "run").unwrap();
+        let button = Button::new("run", "Run", None).on_action(binding);
+        let root = crate::widget::resource_actions::background(Box::new(button), resource, |_| {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            sender
+                .send(Ok(qos_actions::ActionOutput::default()))
+                .unwrap();
+            Ok(receiver)
+        });
+        let mut app = App::new(State::new(), root);
+        app.init_layout();
+        activate_bound_button(&mut app);
+        assert_eq!(app.dispatch_control_invocations(), 1);
+        assert_eq!(app.local_invocations.len(), 1, "Accepted is not success");
+        assert!(app.poll_directed_invocations());
+        assert!(
+            app.local_invocations.is_empty(),
+            "terminal result closes the tracked local job"
+        );
     }
     fn label(app: &App) -> String {
         match app.state.doc.get(&ROOT, "label") {

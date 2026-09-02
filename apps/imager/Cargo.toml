@@ -32,10 +32,10 @@ taffy.workspace = true
 tempfile.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ui = { path = "../../ui", features = ["portal"] }
+ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-ui = { path = "../../ui" }
+ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 
 [lints]
 workspace = true

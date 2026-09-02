@@ -18,7 +18,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         self,
         source: str,
         *,
-        dependencies: str = 'qos-actions="1"\n',
+        dependencies: str = 'ui={package="qos-app",path="../../crates/app/qos-app"}\n',
         app_name: str = "sample",
     ) -> Path:
         temporary = tempfile.TemporaryDirectory()
@@ -51,7 +51,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         root = self.fixture("struct App;\n", dependencies="")
         violations, _ = contract.audit(root)
         reasons = "\n".join(item.reason for item in violations)
-        self.assertIn("does not depend", reasons)
+        self.assertIn("qos-app", reasons)
         self.assertIn("Widget::resources", reasons)
         self.assertIn("ActionSpec", reasons)
 
@@ -115,6 +115,140 @@ class AppResourceActionContractTests(unittest.TestCase):
         )
         violations, _ = contract.audit(root)
         self.assertEqual(violations, [])
+
+    def test_direct_ui_core_dependency_fails_even_when_renamed(self):
+        root = self.fixture(
+            "fn resources() {}\nstruct ActionDescriptor; struct BrokerActionSurface;\n"
+            "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
+            dependencies=(
+                'ui={package="qos-app",path="../../crates/app/qos-app"}\n'
+                'ui_core={package="ui",path="../../ui"}\n'
+            ),
+            app_name="agent",
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("direct ui-core dependency" in item.reason for item in violations))
+
+    def test_direct_ui_core_path_fails_without_explicit_package_name(self):
+        root = self.fixture(
+            "fn resources() {}\nstruct ActionDescriptor; struct BrokerActionSurface;\n"
+            "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
+            dependencies=(
+                'ui={package="qos-app",path="../../crates/app/qos-app"}\n'
+                'rendering={path="../../ui"}\n'
+            ),
+            app_name="agent",
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("direct ui-core dependency" in item.reason for item in violations))
+
+    def test_target_specific_facades_are_checked(self):
+        root = self.fixture(
+            "fn resources() {}\nstruct ActionDescriptor; struct BrokerActionSurface;\n"
+            "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
+            dependencies="",
+            app_name="agent",
+        )
+        manifest = root / "apps" / "agent" / "Cargo.toml"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8")
+            + "\n[target.'cfg(unix)'.dependencies]\n"
+            + 'ui={package="qos-app",path="../../crates/app/qos-app"}\n',
+            encoding="utf-8",
+        )
+        violations, _ = contract.audit(root)
+        self.assertEqual(violations, [])
+
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8")
+            + "\n[target.'cfg(windows)'.dependencies]\n"
+            + 'ui_core={package="ui",path="../../ui"}\n',
+            encoding="utf-8",
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("direct ui-core dependency" in item.reason for item in violations))
+
+    def test_toolkit_resource_action_host_needs_no_copied_widget_boilerplate(self):
+        root = self.fixture(
+            "pub fn app_root() {\n"
+            " let resource = ui::widget::resource_actions::typed_resource();\n"
+            " ui::widget::resource_actions::immediate(root, resource, |_| {});\n"
+            "}\n"
+        )
+        violations, apps = contract.audit(root)
+        self.assertEqual(violations, [])
+        self.assertEqual(apps, 1)
+
+    def test_toolkit_host_without_resource_descriptor_fails(self):
+        root = self.fixture(
+            "pub fn app_root() {\n"
+            " ui::widget::resource_actions::immediate(root, resource, |_| {});\n"
+            "}\n"
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("no toolkit resource descriptor" in item.reason for item in violations))
+
+    def test_new_raw_callback_exceeds_zero_default_ratchet(self):
+        root = self.fixture(
+            "use qos_actions::ActionSpec;\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+            "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("raw on_click closure" in item.reason for item in violations))
+
+    def test_audited_callback_ceiling_is_reduce_only(self):
+        root = self.fixture(
+            "use qos_actions::ActionSpec;\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+            "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
+        )
+        tools = root / "tools"
+        tools.mkdir()
+        (tools / contract.BASELINE).write_text(
+            '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
+            encoding="utf-8",
+        )
+        violations, _ = contract.audit(root)
+        self.assertEqual(violations, [])
+
+        app = root / "apps" / "sample" / "src" / "lib.rs"
+        app.write_text(
+            app.read_text(encoding="utf-8")
+            + "fn second() { Button::new().on_click(move || mutate_more()); }\n",
+            encoding="utf-8",
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("audited ceiling 1" in item.reason for item in violations))
+
+    def test_reducing_debt_requires_lowering_the_audited_ceiling(self):
+        root = self.fixture(
+            "use qos_actions::ActionSpec;\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+        )
+        tools = root / "tools"
+        tools.mkdir()
+        (tools / contract.BASELINE).write_text(
+            '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
+            encoding="utf-8",
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("stale raw_on_click_closure ceiling" in item.reason for item in violations))
+
+    def test_new_bespoke_automation_entry_point_fails(self):
+        root = self.fixture(
+            "use qos_actions::ActionSpec;\n"
+            "fn resources(&self) {}\n"
+            "fn automation_invoke() {}\n"
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("bespoke automation" in item.reason for item in violations))
 
 
 if __name__ == "__main__":

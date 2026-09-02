@@ -5,6 +5,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The app uses the protocol types through ui's canonical re-export.
+[package.metadata.cargo-machete]
+ignored = ["qos-actions"]
+
 [lib]
 name = "disks"
 path = "src/lib.rs"
@@ -34,7 +38,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # vello / taffy / winit / automerge are reached through `ui::` — the toolkit
 # re-exports its own stack so there is exactly one copy of each in the binary,
 # and it is the one the widget tree was compiled against.
-ui = { path = "../../ui" }
+ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 qos-actions = { path = "../../crates/collab/actions" }
 serde.workspace = true
 serde_json.workspace = true

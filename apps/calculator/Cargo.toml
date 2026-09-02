@@ -17,7 +17,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-ui = { path = "../../ui" }
+ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true

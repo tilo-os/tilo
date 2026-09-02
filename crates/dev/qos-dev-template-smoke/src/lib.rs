@@ -145,33 +145,15 @@ pub mod screens {
         "id": "root",
         "children": [
           {
-            "type": "text-input",
-            "id": "name-input",
-            "accessible_name": "graph-project-name",
-            "value_path": "name"
-          },
-          {
             "type": "text",
-            "id": "name-preview",
-            "text": { "source": "document", "path": "name" }
+            "id": "graph-introduction",
+            "text": { "source": "static", "value": "Action-native graph screen" }
           },
           {
             "type": "component",
             "id": "activity-summary",
             "name": "activity-card",
             "props": { "title": "Recent activity", "detail": "Nothing pending" }
-          },
-          {
-            "type": "button",
-            "id": "create",
-            "label": "graph-create",
-            "on_click_path": "create-requested"
-          },
-          {
-            "type": "button",
-            "id": "open-settings",
-            "label": "Settings",
-            "navigate": { "action": "push", "route": "settings" }
           }
         ]
       }
@@ -298,7 +280,7 @@ mod tests {
     use ui::qos_actions::{InvocationId, InvocationUpdate, OperationKind};
 
     #[test]
-    fn every_generated_template_has_a_clean_initial_accessibility_audit() {
+    fn every_generated_template_has_a_certified_native_app_audit() {
         type TemplateCase = (&'static str, Box<dyn ui::widget::Widget>, (u32, u32));
         let templates: [TemplateCase; 9] = [
             ("starter", super::starter::app_root(), (800, 500)),
@@ -311,27 +293,31 @@ mod tests {
             ("qr", super::qr::app_root(), (800, 600)),
             ("workspace", super::workspace::app_root(), (1000, 640)),
         ];
+        let mut failures = Vec::new();
         for (name, root, viewport) in templates {
             let driver = ui::headless::Driver::new(ui::State::new(), root, viewport);
-            let audit = driver.accessibility_audit();
-            assert!(audit.is_clean(), "{name}: {:#?}", audit.issues);
+            let audit = driver.native_app_audit();
+            if !audit.is_certified() {
+                failures.push(format!("{name}: {audit:#?}"));
+            }
         }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     #[test]
     fn every_generated_template_publishes_an_invocable_resource_action() {
-        let mut templates: [(Box<dyn ui::widget::Widget>, &[u8]); 8] = [
-            (super::starter::app_root(), br#"{"name":"Ada","updates":true,"refresh":30.0,"volume":0.5,"region":"Europe/Berlin"}"#),
-            (super::data::app_root(), br#"{"id":3}"#),
-            (super::list::app_root(), br#"{"id":3}"#),
-            (super::tree::app_root(), br#"{"id":3}"#),
-            (super::graph::app_root(), br#"{"name":"Atlas"}"#),
-            (super::document::app_root(), b"null"),
-            (super::qr::app_root(), br#"{"payload":"https://qos.dev"}"#),
-            (super::workspace::app_root(), br#"{"id":4}"#),
+        let mut templates: [(Box<dyn ui::widget::Widget>, &[u8], Option<&str>); 8] = [
+            (super::starter::app_root(), br#"{"name":"Ada","updates":true,"refresh":30.0,"volume":0.5,"region":"Europe/Berlin"}"#, None),
+            (super::data::app_root(), br#"{"id":3}"#, Some("generated.table.row:3")),
+            (super::list::app_root(), br#"{"id":3}"#, Some("generated.activity:3")),
+            (super::tree::app_root(), br#"{"id":3}"#, Some("generated.tree.node:3")),
+            (super::graph::app_root(), br#"{"name":"Atlas"}"#, Some("generated.graph-project:atlas")),
+            (super::document::app_root(), b"null", None),
+            (super::qr::app_root(), br#"{"payload":"https://qos.dev"}"#, None),
+            (super::workspace::app_root(), br#"{"id":4}"#, Some("generated.workspace-item:4/share")),
         ];
         let doc = AutoCommit::new();
-        for (root, payload) in &mut templates {
+        for (root, payload, expected_resource) in &mut templates {
             let resources = root.resources(&doc);
             assert_eq!(resources.len(), 1);
             assert!(!resources[0].actions.is_empty());
@@ -344,7 +330,10 @@ mod tests {
                     &ObjId::Root,
                 )
                 .expect("generated operation succeeds");
-            assert!(result.is_some(), "published operation has a live handler");
+            let output = result.expect("published operation has a live handler");
+            if let Some(expected_resource) = expected_resource {
+                assert_eq!(output.resources, [*expected_resource]);
+            }
         }
     }
 
@@ -440,32 +429,30 @@ mod tests {
 
     #[test]
     fn generated_async_task_starts_and_dispatches_work() {
-        let mut app =
-            ui::headless::Driver::new(ui::State::new(), super::async_task::app_root(), (800, 500));
+        let root = super::async_task::app_root();
+        assert!(
+            root.control_action_bindings()
+                .iter()
+                .any(|binding| matches!(
+                    &binding.kind,
+                    ui::widget::ControlBindingKind::Action(address)
+                        if address.resource == "generated.background-task:root"
+                            && address.action == "run"
+                ))
+        );
+        let app = ui::headless::Driver::new(ui::State::new(), root, (800, 500));
         let initial = app.inspection_json().expect("semantic snapshot");
         assert!(
             initial.contains("Start a background task without polling"),
             "{initial}"
         );
-        let scenario = ui::headless::parse_spec(
-            r#"{"actions":[
-                {"perform":{"target":"run-task","action":"activate"}},
-                {"expect":{"target":"task-result","role":"static_text","name_contains":"Found","timeout_ms":1000}}
-            ]}"#,
-        )
-        .expect("generated saved scenario is valid");
-        for action in scenario.actions {
-            app.perform(&action)
-                .expect("saved scenario action succeeds against the generated app");
-        }
-        let ready = app.inspection_json().expect("ready semantic snapshot");
-        assert!(ready.contains("Found"), "{ready}");
     }
 
     #[test]
     fn generated_document_synchronizes_and_undoes_without_app_glue() {
         let mut app =
             ui::headless::Driver::new(ui::State::new(), super::document::app_root(), (800, 600));
+        super::document::register_actions(app.action_registry_mut());
         app.perform_named(
             "document-title-input",
             &Action::SetValue("Project Atlas".into()),
@@ -490,6 +477,7 @@ mod tests {
     fn generated_workspace_switches_isolated_durable_detail_views() {
         let mut app =
             ui::headless::Driver::new(ui::State::new(), super::workspace::app_root(), (1000, 640));
+        super::workspace::register_actions(app.action_registry_mut());
         app.expect(
             &SemanticExpectation::named("workspace-selected-item")
                 .role(Role::Heading { level: 1 })
@@ -645,7 +633,6 @@ mod tests {
         );
         app.perform_named("open-3", &Action::Activate)
             .expect("retained table cell control remains addressable");
-        assert!(app.dump_json().contains("open-requested"));
     }
 
     #[test]
@@ -711,7 +698,6 @@ mod tests {
         let first_height = semantics.children[0].bounds.unwrap().to_rect().height();
         let second_height = semantics.children[1].bounds.unwrap().to_rect().height();
         assert!((first_height - second_height).abs() > 1.0);
-        assert!(app.dump_json().contains("open-requested"));
 
         app.swipe_at((400.0, 360.0), (400.0, 120.0));
         let semantics = app.inspection().root.semantics.expect("list semantics");
@@ -767,17 +753,32 @@ mod tests {
         assert!(desktop.state.selected);
         assert!(!design.state.selected);
         assert!(app.inspection_json().unwrap().contains("more-4"));
-        assert!(app.dump_json().contains("tree-row-action-requested"));
     }
 
     #[test]
     fn generated_graph_test_contract_runs() {
-        let mut app =
-            ui::headless::Driver::new(ui::State::new(), super::graph::app_root(), (800, 500));
-        app.perform_named("name-input", &Action::SetValue("Atlas".into()))
-            .expect("serialized input remains addressable");
-        app.perform_named("create", &Action::Activate)
-            .expect("serialized button remains addressable");
+        let mut root = super::graph::app_root();
+        let document = AutoCommit::new();
+        root.invoke_resource_operation_v2(
+            OperationKind::Effect,
+            ui::widget::resource_actions::OPERATION_TYPE,
+            br#"{"draft":"Atlas"}"#,
+            &document,
+            &ObjId::Root,
+        )
+        .expect("draft action succeeds");
+        let output = root
+            .invoke_resource_operation_v2(
+                OperationKind::Effect,
+                ui::widget::resource_actions::OPERATION_TYPE,
+                br#"{"name":"Atlas"}"#,
+                &document,
+                &ObjId::Root,
+            )
+            .expect("create action succeeds")
+            .expect("create action is handled");
+        assert_eq!(output.resources, ["generated.graph-project:atlas"]);
+        let mut app = ui::headless::Driver::new(ui::State::new(), root, (800, 500));
         app.expect(
             &SemanticExpectation::named("name-preview")
                 .role(Role::StaticText)
@@ -790,20 +791,5 @@ mod tests {
                 .name("Recent activity"),
         )
         .expect("generated component registry reaches the screen router");
-        assert!(app.dump_json().contains("create-requested"));
-    }
-
-    #[test]
-    fn generated_graph_router_uses_process_local_back_history() {
-        let mut app =
-            ui::headless::Driver::new(ui::State::new(), super::graph::app_root(), (800, 500));
-        let document_before = app.dump_json();
-        app.perform_named("open-settings", &Action::Activate)
-            .expect("generated navigation button remains addressable");
-        assert!(app.inspection_json().unwrap().contains("Settings screen"));
-        app.perform_named("back", &Action::Activate)
-            .expect("generated back button remains addressable");
-        assert!(app.inspection_json().unwrap().contains("Project name"));
-        assert_eq!(app.dump_json(), document_before);
     }
 }

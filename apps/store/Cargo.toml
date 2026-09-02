@@ -6,6 +6,10 @@ publish.workspace = true
 license.workspace = true
 description = "qOS app store — surfaces qOS registry entries and legacy Flatpak apps in one list."
 
+# The app uses the protocol types through ui's canonical re-export.
+[package.metadata.cargo-machete]
+ignored = ["qos-actions"]
+
 [lib]
 name = "store"
 path = "src/lib.rs"
@@ -18,7 +22,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-ui = { path = "../../ui" }
+ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 qos-actions = { path = "../../crates/collab/actions" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The registry list, its client and its trust classification. Shared
