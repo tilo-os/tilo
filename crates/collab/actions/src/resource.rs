@@ -441,6 +441,10 @@ impl ActionSpec {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the private constructor carries the complete declared action contract"
+    )]
     fn typed_with_kind(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -620,14 +624,14 @@ fn enforce_operation_type(encoded: EncodedAction, expected: &str) -> EncodedActi
     if encoded.type_id == expected {
         encoded
     } else {
-        EncodedAction::encode_operation(
-            INVALID_ARGUMENTS_TYPE,
-            &format!(
+        EncodedAction {
+            type_id: INVALID_ARGUMENTS_TYPE.into(),
+            payload: format!(
                 "operation builder returned `{}` but declared `{expected}`",
                 encoded.type_id
-            ),
-        )
-        .expect("framework refusal is serializable")
+            )
+            .into_bytes(),
+        }
     }
 }
 

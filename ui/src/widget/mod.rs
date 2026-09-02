@@ -724,6 +724,11 @@ pub trait Widget {
     /// V2 operation route with a typed result. Existing widgets inherit the
     /// legacy adapter; migrated operations override this method and return the
     /// output promised by their `ActionContract`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the legacy operation handler rejects the payload
+    /// or fails while routing it through the retained widget tree.
     fn invoke_resource_operation_v2(
         &mut self,
         kind: qos_actions::OperationKind,
@@ -741,6 +746,11 @@ pub trait Widget {
     /// Existing synchronous handlers inherit this adapter. A background or
     /// streaming handler overrides it, records `invocation`, and returns
     /// [`ResourceOperationStart::Accepted`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the first admission or synchronous-operation error reported
+    /// while routing the payload through the retained widget tree.
     fn start_resource_operation(
         &mut self,
         invocation: qos_actions::InvocationId,
