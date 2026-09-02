@@ -930,14 +930,16 @@ mod tests {
 
     #[test]
     fn consequential_actions_cannot_cross_the_door_without_consent() {
-        let resources = vec![Resource::new("notes.note:1", "notes.note", "Harbour").with_action(
-            ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star)
-                .unwrap()
-                .with_contract(ActionContract {
-                    confirmation: crate::ConfirmationPolicy::Confirm,
-                    ..ActionContract::default()
-                }),
-        )];
+        let resources = vec![
+            Resource::new("notes.note:1", "notes.note", "Harbour").with_action(
+                ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star)
+                    .unwrap()
+                    .with_contract(ActionContract {
+                        confirmation: crate::ConfirmationPolicy::Confirm,
+                        ..ActionContract::default()
+                    }),
+            ),
+        ];
         let mut doc = AutoCommit::new();
         let mut transport = LocalTransport::new();
 

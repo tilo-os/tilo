@@ -75,25 +75,21 @@ pub fn app_root() -> Box<dyn Widget> {
                 Box::new(ui::row![
                     Text::new(label),
                     Button::new(&format!("more-{id}"), "tree-row-action", None)
-                    .on_action(binding)
-                    .fit_content(32.0),
+                        .on_action(binding)
+                        .fit_content(32.0),
                 ])
             })
             .reorderable()
             .with_viewport(280.0, 36.0)
             .with_accessible_name("tree-accessible-name"),
     );
-    ui::widget::resource_actions::immediate(
-        root,
-        node_resource(),
-        |payload| {
-            let args: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-            let id = args
-                .get("id")
-                .and_then(serde_json::Value::as_u64)
-                .ok_or("missing id")?;
-            Ok(open_node(id))
-        },
-    )
+    ui::widget::resource_actions::immediate(root, node_resource(), |payload| {
+        let args: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let id = args
+            .get("id")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or("missing id")?;
+        Ok(open_node(id))
+    })
 }

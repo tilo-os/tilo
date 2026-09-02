@@ -20,10 +20,18 @@ impl qos_actions::Action for WorkspaceAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             Self::SetTitle { id, value } => {
-                doc.put(ui::automerge::ROOT, format!("workspace-item-{id}-title"), value)?;
+                doc.put(
+                    ui::automerge::ROOT,
+                    format!("workspace-item-{id}-title"),
+                    value,
+                )?;
             }
             Self::SetNotes { id, value } => {
-                doc.put(ui::automerge::ROOT, format!("workspace-item-{id}-notes"), value)?;
+                doc.put(
+                    ui::automerge::ROOT,
+                    format!("workspace-item-{id}-notes"),
+                    value,
+                )?;
             }
         }
         Ok(())
@@ -87,7 +95,11 @@ fn item_resource() -> qos_actions::Resource {
                 ),
             ],
             move |args| {
-                let id = args.integer("id").unwrap_or_default().try_into().unwrap_or_default();
+                let id = args
+                    .integer("id")
+                    .unwrap_or_default()
+                    .try_into()
+                    .unwrap_or_default();
                 let value = args.text("value").unwrap_or_default().to_owned();
                 let action = if field == "title" {
                     WorkspaceAction::SetTitle { id, value }
@@ -222,17 +234,13 @@ pub fn app_root() -> Box<dyn Widget> {
             .with_back_accessible_name("workspace-back")
             .with_narrow_screen_state(&narrow_screen),
     );
-    ui::widget::resource_actions::immediate(
-        root,
-        item_resource(),
-        |payload| {
-            let args: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-            let id = args
-                .get("id")
-                .and_then(serde_json::Value::as_u64)
-                .ok_or("missing item id")?;
-            Ok(share_item(id))
-        },
-    )
+    ui::widget::resource_actions::immediate(root, item_resource(), |payload| {
+        let args: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let id = args
+            .get("id")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or("missing item id")?;
+        Ok(share_item(id))
+    })
 }
