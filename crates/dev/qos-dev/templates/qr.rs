@@ -40,14 +40,21 @@ pub fn app_root() -> Box<dyn Widget> {
             "set-payload",
             "Set QR payload",
             vec![qos_actions::ActionParam::required_owned(
-                "payload", qos_actions::ParamType::Text, "Text or URL to encode",
+                "payload",
+                qos_actions::ParamType::Text,
+                "Text or URL to encode",
             )],
         ),
         move |bytes| {
-            let args: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-            let value = args.get("payload").and_then(|value| value.as_str()).ok_or("missing payload")?.to_owned();
+            let args: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+            let value = args
+                .get("payload")
+                .and_then(|value| value.as_str())
+                .ok_or("missing payload")?
+                .to_owned();
             set_payload(&payload, value);
-            Ok(Default::default())
+            Ok(qos_actions::ActionOutput::default())
         },
     )
 }
