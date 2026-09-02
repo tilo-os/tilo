@@ -202,7 +202,7 @@ impl WindowsApp {
                 )
                 .with_size(108.0, 32.0)
                 .with_enabled(false)
-                .on_click(move || signal.set(Some(route)))
+                .on_effect(move || signal.set(Some(route)))
             })
             .collect();
         let reset = Rc::clone(&reset_signal);
@@ -247,11 +247,11 @@ impl WindowsApp {
             )
             .with_size(195.0, 32.0)
             .with_enabled(false)
-            .on_click(move || reset.set(true)),
+            .on_effect(move || reset.set(true)),
             launch_button: Button::new("windows-launch", "windows-launch", None)
                 .with_size(132.0, 32.0)
                 .with_enabled(false)
-                .on_click(move || launch.set(true)),
+                .on_effect(move || launch.set(true)),
             open_file_button: Button::new(
                 "windows-open-file-in-vm",
                 "windows-open-file-in-vm",
@@ -259,14 +259,14 @@ impl WindowsApp {
             )
             .with_size(164.0, 32.0)
             .with_enabled(false)
-            .on_click(move || open_file.set(true)),
+            .on_effect(move || open_file.set(true)),
             vm_fallback_button: Button::new("windows-open-in-vm", "windows-open-in-vm", None)
                 .with_size(174.0, 32.0)
                 .with_enabled(false)
-                .on_click(move || vm_fallback.set(true)),
+                .on_effect(move || vm_fallback.set(true)),
             install_button: Button::new("windows-install", "windows-install", None)
                 .with_size(256.0, 32.0)
-                .on_click(move || install.set(true)),
+                .on_effect(move || install.set(true)),
             confirm_capsule_button: Button::new(
                 "windows-confirm-capsule-install",
                 "windows-install-private-capsule",
@@ -274,7 +274,7 @@ impl WindowsApp {
             )
             .with_size(256.0, 32.0)
             .with_enabled(false)
-            .on_click({
+            .on_effect({
                 let signal = Rc::clone(&confirm_capsule_signal);
                 move || signal.set(true)
             }),
@@ -285,7 +285,7 @@ impl WindowsApp {
             )
             .with_size(256.0, 32.0)
             .with_enabled(false)
-            .on_click({
+            .on_effect({
                 let signal = Rc::clone(&confirm_vm_install_signal);
                 move || signal.set(true)
             }),
@@ -296,14 +296,14 @@ impl WindowsApp {
             )
             .with_size(190.0, 32.0)
             .with_enabled(false)
-            .on_click({
+            .on_effect({
                 let signal = Rc::clone(&publish_vm_candidate_signal);
                 move || signal.set(true)
             }),
             retry_button: Button::new("windows-retry-install", "windows-retry-install", None)
                 .with_size(118.0, 32.0)
                 .with_enabled(false)
-                .on_click(move || retry.set(true)),
+                .on_effect(move || retry.set(true)),
             escalate_to_vm_button: Button::new(
                 "windows-escalate-install-to-vm",
                 "windows-escalate-install-to-vm",
@@ -311,7 +311,7 @@ impl WindowsApp {
             )
             .with_size(220.0, 32.0)
             .with_enabled(false)
-            .on_click(move || escalate_to_vm.set(true)),
+            .on_effect(move || escalate_to_vm.set(true)),
             remove_launcher_button: Button::new(
                 "windows-remove-launcher",
                 "windows-remove-launcher",
@@ -319,7 +319,7 @@ impl WindowsApp {
             )
             .with_size(142.0, 32.0)
             .with_enabled(false)
-            .on_click(move || remove_launcher.set(true)),
+            .on_effect(move || remove_launcher.set(true)),
             vendor_uninstall_button: Button::new(
                 "windows-vendor-uninstall",
                 "windows-vendor-uninstall",
@@ -327,18 +327,18 @@ impl WindowsApp {
             )
             .with_size(142.0, 32.0)
             .with_enabled(false)
-            .on_click(move || vendor_uninstall.set(true)),
+            .on_effect(move || vendor_uninstall.set(true)),
             delete_data_button: Button::new("windows-delete-data", "windows-delete-data", None)
                 .with_size(132.0, 32.0)
                 .with_enabled(false)
-                .on_click(move || delete_data.set(true)),
+                .on_effect(move || delete_data.set(true)),
             choose_windows_iso_button: Button::new(
                 "windows-choose-windows-iso",
                 "windows-choose-windows-iso",
                 None,
             )
             .with_size(256.0, 32.0)
-            .on_click(move || choose_windows_iso.set(true)),
+            .on_effect(move || choose_windows_iso.set(true)),
             recovery_desktop_button: Button::new(
                 "windows-open-recovery-desktop",
                 "windows-open-recovery-desktop",
@@ -346,7 +346,7 @@ impl WindowsApp {
             )
             .with_size(256.0, 32.0)
             .with_enabled(false)
-            .on_click(move || recovery_desktop.set(true)),
+            .on_effect(move || recovery_desktop.set(true)),
             start_windows_button: Button::new(
                 "windows-start-appliance",
                 "windows-start-appliance",
@@ -354,7 +354,7 @@ impl WindowsApp {
             )
             .with_size(118.0, 32.0)
             .with_enabled(false)
-            .on_click(move || start_windows.set(true)),
+            .on_effect(move || start_windows.set(true)),
             restart_windows_button: Button::new(
                 "windows-restart-appliance",
                 "windows-restart-appliance",
@@ -362,7 +362,7 @@ impl WindowsApp {
             )
             .with_size(118.0, 32.0)
             .with_enabled(false)
-            .on_click(move || restart_windows.set(true)),
+            .on_effect(move || restart_windows.set(true)),
             suspend_windows_button: Button::new(
                 "windows-suspend-appliance",
                 "windows-suspend-appliance",
@@ -370,7 +370,7 @@ impl WindowsApp {
             )
             .with_size(118.0, 32.0)
             .with_enabled(false)
-            .on_click(move || suspend_windows.set(true)),
+            .on_effect(move || suspend_windows.set(true)),
             resume_windows_button: Button::new(
                 "windows-resume-appliance",
                 "windows-resume-appliance",
@@ -378,7 +378,7 @@ impl WindowsApp {
             )
             .with_size(118.0, 32.0)
             .with_enabled(false)
-            .on_click(move || resume_windows.set(true)),
+            .on_effect(move || resume_windows.set(true)),
             shutdown_windows_button: Button::new(
                 "windows-shutdown-appliance",
                 "windows-shutdown-appliance",
@@ -386,7 +386,7 @@ impl WindowsApp {
             )
             .with_size(118.0, 32.0)
             .with_enabled(false)
-            .on_click(move || shutdown_windows.set(true)),
+            .on_effect(move || shutdown_windows.set(true)),
             connect_windows_button: Button::new(
                 "windows-connect-temporarily",
                 "windows-connect-for-activation",
@@ -394,7 +394,7 @@ impl WindowsApp {
             )
             .with_size(256.0, 32.0)
             .with_enabled(false)
-            .on_click(move || connect_windows.set(true)),
+            .on_effect(move || connect_windows.set(true)),
             update_windows_button: Button::new(
                 "windows-connect-for-update",
                 "windows-connect-for-update",
@@ -402,7 +402,7 @@ impl WindowsApp {
             )
             .with_size(118.0, 32.0)
             .with_enabled(false)
-            .on_click(move || update_windows.set(true)),
+            .on_effect(move || update_windows.set(true)),
             revoke_windows_connection_button: Button::new(
                 "windows-revoke-temporary-connection",
                 "windows-revoke-temporary-connection",
@@ -410,7 +410,7 @@ impl WindowsApp {
             )
             .with_size(256.0, 32.0)
             .with_enabled(false)
-            .on_click(move || revoke_windows_connection.set(true)),
+            .on_effect(move || revoke_windows_connection.set(true)),
             route_signal,
             reset_signal,
             launch_signal,

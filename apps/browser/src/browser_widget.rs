@@ -606,22 +606,27 @@ impl BrowserWidget {
         const NAV_BTN: (f32, f32) = (44.0, 40.0);
         let back = Button::new("browser.back", "", Some(BACK_FLAG))
             .with_icon(Icon::ArrowLeft)
+            .tooltip("Back")
             .with_size(NAV_BTN.0, NAV_BTN.1)
             .with_enabled(self.can_go_back);
         let forward = Button::new("browser.forward", "", Some(FORWARD_FLAG))
             .with_icon(Icon::ArrowRight)
+            .tooltip("Forward")
             .with_size(NAV_BTN.0, NAV_BTN.1)
             .with_enabled(self.can_go_forward);
         let reload = Button::new("browser.reload", "", Some(RELOAD_FLAG))
             .with_icon(Icon::Refresh)
+            .tooltip("Reload")
             .with_size(NAV_BTN.0, NAV_BTN.1);
         let url_input = TextInput::new(vec![])
             .with_kind(TextInputKind::Url)
             .with_id(URL_INPUT_ID)
             .with_on_change_path(URL_PATH)
+            .with_accessible_name("Address and search")
             .with_placeholder("Search or enter address");
         let settings_btn = Button::new("browser.settings", "", Some(SETTINGS_FLAG))
             .with_icon(Icon::Settings)
+            .tooltip("Browser settings")
             .with_size(NAV_BTN.0, NAV_BTN.1);
         let pip_label = if self.active_pip {
             "Close Picture in Picture"

@@ -93,8 +93,8 @@ impl<I> ActionBinding<I> {
     ///
     /// # Errors
     ///
-    /// Returns [`ActionBindingError::ActionNotExported`] when `resource` does
-    /// not export the supplied action specification.
+    /// Returns [`ActionBindingError::ActionNotExported`] if `spec` is absent
+    /// from `resource`.
     pub fn new(
         resource: &Resource,
         spec: &ActionSpec,
@@ -121,8 +121,8 @@ impl<I> ActionBinding<I> {
     ///
     /// # Errors
     ///
-    /// Returns [`ActionBindingError::InvalidArguments`] when the generated
-    /// arguments do not satisfy the exported action specification.
+    /// Returns [`ActionBindingError::InvalidArguments`] if the mapped input
+    /// violates the exported action's parameter contract.
     pub fn invoke(&self, input: I) -> Result<ControlInvocation, ActionBindingError> {
         let arguments = (self.arguments)(input);
         self.spec.build_json(&arguments)?;
@@ -142,8 +142,7 @@ impl ActionBinding<()> {
     ///
     /// # Errors
     ///
-    /// Returns an error when the action is not exported by `resource` or when
-    /// its specification requires arguments.
+    /// Returns an error if the action is not exported or requires arguments.
     pub fn unit(resource: &Resource, spec: &ActionSpec) -> Result<Self, ActionBindingError> {
         let binding = Self::new(resource, spec, |()| serde_json::Map::new())?;
         // Refuse a required-argument action at construction, not first click.
@@ -156,8 +155,7 @@ impl ActionBinding<()> {
     ///
     /// # Errors
     ///
-    /// Returns an error when `action_id` is not exported by `resource` or when
-    /// the exported action requires arguments.
+    /// Returns an error if `action_id` is not exported or requires arguments.
     pub fn unit_for(resource: &Resource, action_id: &str) -> Result<Self, ActionBindingError> {
         let spec = resource
             .actions
@@ -174,8 +172,8 @@ impl ActionBinding<()> {
     ///
     /// # Errors
     ///
-    /// Returns an error when the action is not exported by `resource` or when
-    /// `arguments` do not satisfy its specification.
+    /// Returns an error if the action is not exported or `arguments` violate
+    /// its parameter contract.
     pub fn static_json(
         resource: &Resource,
         spec: &ActionSpec,
@@ -190,8 +188,8 @@ impl ActionBinding<()> {
     ///
     /// # Errors
     ///
-    /// Returns an error when `action_id` is not exported by `resource` or when
-    /// `arguments` do not satisfy the exported action specification.
+    /// Returns an error if `action_id` is not exported or `arguments` violate
+    /// its parameter contract.
     pub fn static_json_for(
         resource: &Resource,
         action_id: &str,
@@ -341,6 +339,16 @@ pub struct ActionSpec {
     /// the app's closure with `input` rather than duplicating it, which is what
     /// makes the palette path and the external path provably one function.
     build: ArgsBuilder,
+}
+
+struct TypedActionSeed {
+    id: String,
+    label: String,
+    placeholder: String,
+    locus: ExecutionLocus,
+    kind: OperationKind,
+    operation_type: Option<String>,
+    params: Vec<ActionParam>,
 }
 
 impl ActionSpec {
@@ -563,13 +571,15 @@ impl ActionSpec {
         build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
         Self::typed_with_kind(
-            id,
-            label,
-            placeholder,
-            locus,
-            OperationKind::Document,
-            None,
-            params,
+            TypedActionSeed {
+                id: id.into(),
+                label: label.into(),
+                placeholder: placeholder.into(),
+                locus,
+                kind: OperationKind::Document,
+                operation_type: None,
+                params,
+            },
             build,
         )
     }
@@ -587,51 +597,43 @@ impl ActionSpec {
     ) -> Self {
         debug_assert_ne!(kind, OperationKind::Document);
         Self::typed_with_kind(
-            id,
-            label,
-            placeholder,
-            ExecutionLocus::ClientLocal,
-            kind,
-            Some(type_id.into()),
-            params,
+            TypedActionSeed {
+                id: id.into(),
+                label: label.into(),
+                placeholder: placeholder.into(),
+                locus: ExecutionLocus::ClientLocal,
+                kind,
+                operation_type: Some(type_id.into()),
+                params,
+            },
             build,
         )
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the private constructor carries the complete declared action contract"
-    )]
     fn typed_with_kind(
-        id: impl Into<String>,
-        label: impl Into<String>,
-        placeholder: impl Into<String>,
-        locus: ExecutionLocus,
-        kind: OperationKind,
-        operation_type: Option<String>,
-        params: Vec<ActionParam>,
+        seed: TypedActionSeed,
         build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
-        let build: ArgsBuilder = if let Some(expected) = operation_type.clone() {
+        let build: ArgsBuilder = if let Some(expected) = seed.operation_type.clone() {
             Arc::new(move |args| enforce_operation_type(build(args), &expected))
         } else {
             Arc::new(build)
         };
-        let input = derive_input(&params, &build, placeholder.into());
+        let input = derive_input(&seed.params, &build, seed.placeholder);
         Self {
-            id: id.into(),
-            label: label.into(),
+            id: seed.id,
+            label: seed.label,
             description: None,
-            locus,
-            kind,
-            operation_type,
-            contract: if kind == OperationKind::View {
+            locus: seed.locus,
+            kind: seed.kind,
+            operation_type: seed.operation_type,
+            contract: if seed.kind == OperationKind::View {
                 ActionContract::view()
             } else {
                 ActionContract::default()
             },
             input,
-            params,
+            params: seed.params,
             build,
         }
     }

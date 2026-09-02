@@ -130,17 +130,14 @@ pub enum ResultSpec {
 }
 
 impl ResultSpec {
-    /// Validate an action's concrete output against this advertised result.
+    /// Check that a completed action returned the shape it advertised.
     ///
     /// # Errors
     ///
-    /// Returns an error when the output shape, resource kind, or JSON schema
-    /// does not match the declared result contract.
+    /// Returns a human-readable contract violation when `output` does not
+    /// match this result specification.
     pub fn validate(&self, output: &crate::ActionOutput) -> Result<(), String> {
         match self {
-            // The broker assigns and returns a durable invocation id for jobs
-            // at admission, so both no-result and job contracts legitimately
-            // have no terminal value in the application's output.
             Self::None | Self::Job if output.value.is_none() && output.resources.is_empty() => {
                 Ok(())
             }
@@ -166,6 +163,9 @@ impl ResultSpec {
             Self::Resource { resource_kind } => Err(format!(
                 "action did not return a `{resource_kind}` resource address"
             )),
+            // The broker assigns and returns the durable invocation id at
+            // admission. Applications must not mint a second, unrelated job
+            // identity merely to satisfy the result validator.
             Self::Job => Err("job action returned an undeclared terminal value".into()),
         }
     }

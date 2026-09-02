@@ -512,8 +512,9 @@ impl Editor {
     ///
     /// # Errors
     ///
-    /// Returns any [`DoorError`] produced while resolving, binding, decoding,
-    /// or invoking the live operation.
+    /// Returns the live door's [`DoorError`] when the address is stale, the
+    /// typed arguments do not satisfy the published schema, or decoding or
+    /// execution fails.
     pub fn invoke_json(
         &mut self,
         view: &View,
@@ -546,8 +547,8 @@ impl Editor {
     ///
     /// # Errors
     ///
-    /// Returns any [`DoorError`] produced while resolving, binding, decoding,
-    /// or invoking the live confirmed operation.
+    /// Returns the live door's [`DoorError`] when the address or arguments no
+    /// longer match the published action, or decoding or execution fails.
     pub fn invoke_json_confirmed(
         &mut self,
         view: &View,

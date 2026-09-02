@@ -513,7 +513,7 @@ impl ChannelHandle {
     /// # Errors
     ///
     /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns invalid UTF-8.
+    /// drops during the call, or returns malformed catalogue data.
     pub async fn action_catalogue(&self) -> Result<String, NotAvailable> {
         let reply = self.inner.action_catalogue_request().send().promise.await?;
         Ok(reply
@@ -548,7 +548,8 @@ impl ChannelHandle {
     /// # Errors
     ///
     /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns an invalid UTF-8 update.
+    /// drops during the call, or returns a malformed initial invocation
+    /// update.
     pub async fn invoke_published_action(
         &self,
         peer_id: u64,
@@ -581,12 +582,12 @@ impl ChannelHandle {
         ))
     }
 
-    /// Fetch the latest lifecycle update for a published invocation.
+    /// Fetch the latest lifecycle update for a broker-published invocation.
     ///
     /// # Errors
     ///
     /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns an invalid UTF-8 update.
+    /// drops during the call, or returns a malformed invocation update.
     pub async fn published_invocation_status(
         &self,
         id: u64,
@@ -610,12 +611,13 @@ impl ChannelHandle {
         }
     }
 
-    /// Request cooperative cancellation and return the resulting update.
+    /// Request cancellation of a broker-published invocation and return its
+    /// resulting lifecycle update.
     ///
     /// # Errors
     ///
     /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns an invalid UTF-8 update.
+    /// drops during the call, or returns a malformed cancellation update.
     pub async fn cancel_published_invocation(&self, id: u64) -> Result<String, NotAvailable> {
         let mut request = self.inner.cancel_published_invocation_request();
         request.get().set_id(id);
@@ -628,12 +630,12 @@ impl ChannelHandle {
             .to_owned())
     }
 
-    /// Ask the broker to launch an application from the published directory.
+    /// Ask the broker to launch an application from the published catalogue.
     ///
     /// # Errors
     ///
     /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns an invalid UTF-8 update.
+    /// drops during the call, or returns a malformed launch update.
     pub async fn launch_published_application(
         &self,
         app_id: &str,
@@ -836,12 +838,12 @@ pub struct ActionCatalogueStream {
 }
 
 impl ActionCatalogueStream {
-    /// Pull the next complete action-directory snapshot.
+    /// Pull the next complete action-catalogue snapshot.
     ///
     /// # Errors
     ///
     /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or the snapshot is not valid UTF-8.
+    /// drops during the call, or returns malformed catalogue data.
     pub async fn read(&self) -> Result<String, NotAvailable> {
         let reply = self.inner.read_request().send().promise.await?;
         Ok(reply

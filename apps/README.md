@@ -1,13 +1,20 @@
 # qOS apps
 
-Every app here is a native qOS application built on the in-tree [`ui`](../ui) toolkit:
-retained-mode and CRDT-native — durable state lives in a shared Automerge document, so
-undo/redo, persistence and live collaboration ride one mechanism — drawn into a Vello
-scene and laid out with Taffy. Each is its own workspace crate and has a `--shots PATH`
-headless mode that renders one offscreen frame to a PNG (identical pixels to the live
-binary) for review and CI. Apps that reach the network or hardware keep that behind an
-off-by-default feature (`live`, `audio`, …) and fall back to bundled sample data, so the
-default build and `--shots` stay hermetic.
+Every app here is a native qOS application built on the public
+[`qos-app`](../crates/app/qos-app) SDK (normally renamed to `ui` in Cargo).
+`qos-app` re-exports the complete retained-widget, layout, canvas,
+custom-painting, native-view and GPU API: the action-native boundary does not
+limit presentation. The lower [`ui-core`](../ui) package is an implementation
+dependency for the shell and SDK, not an application dependency.
+
+Apps are retained-mode and CRDT-native: durable state lives in a shared
+Automerge document, so undo/redo, persistence and live collaboration ride one
+mechanism, while Vello and Taffy remain available for arbitrary rendering and
+layout. Each app is its own workspace crate and has a `--shots PATH` headless
+mode that renders the live production root offscreen for review and CI. Apps
+that reach the network or hardware keep that behind an off-by-default feature
+(`live`, `audio`, …) and fall back to bundled sample data, so default builds
+and screenshots stay hermetic.
 
 Toolkit exception: `browser` embeds Servo for page rendering.
 
@@ -35,6 +42,38 @@ operation:
    Apps never accept a boolean such as `trusted` as authority and never report
    simulated external success.
 
+For a small zero-argument control, use the action-native convenience path:
+
+```rust
+let sync = ui::Button::new("sync", "Sync", None)
+    .on_effect(move || sync_now());
+let preview = ui::Button::new("preview", "Preview", None)
+    .on_view(move || preview_state.toggle());
+```
+
+Both publish a real operation; they are not callback-only controls. For a
+domain operation, bind the actual advertised spec instead:
+
+```rust
+let resource = project_resource(&project);
+let binding = ui::qos_actions::ActionBinding::unit_for(&resource, "build")?;
+let build = ui::Button::new("build", "Build", None).on_action(binding);
+```
+
+Controls emit inert intents. The host permission-filters and re-resolves each
+address against fresh resources, uses the standard confirmation UI where
+required, and routes document/effect/view work through the shared execution
+and lifecycle machinery. Do not mirror the operation in `on_click`, a private
+message bus, or a hand-maintained command list.
+
+Ctrl+K is native and automatic: the host recursively flattens
+`Widget::resources` into command rows, semantic actions and the same broker
+catalogue consumed by scripts and agents. Custom widgets retain arbitrary
+rendering by owning an `ActionEmitter<T>`, exposing its metadata through
+`control_action_bindings`, draining `take_control_invocation`, and declaring
+explicit retained or synthetic accessibility semantics whose activation emits
+the same intent.
+
 The toolkit validates the live surface before publishing it, and the broker
 validates untrusted descriptors again. Presubmit runs
 `tools/check_app_resource_action_contract.py`, so an app without this surface or
@@ -51,6 +90,23 @@ cargo run -q --bin qos-control -- actions cancel <broker-invocation-id>
 The same catalogue and invocation/status/cancel protocol is available to
 workspace agents through the certified collaboration channel. Do not add a
 second app-specific automation protocol.
+
+The application boundary is zero tolerance. Validate one app, or the complete
+graphical workspace, with:
+
+```bash
+qos-dev check apps/my-app
+qos-dev certify apps/my-app
+qos-dev certify . --workspace
+```
+
+`check` includes structural validation, app-local formatting and Clippy,
+tests, runtime certification and audited scenarios. `certify` runs the focused
+production-root native audit. Direct `ui-core` dependencies, legacy callbacks,
+stale bindings, missing semantics, and invalid or unhandled operations are
+certification failures—not advisory warnings. Direct CRDT field controls are
+the small collaborative primitive: the SDK projects them into searchable
+semantic actions and records their mutations in shared history.
 
 ## Productivity & documents
 
@@ -124,7 +180,7 @@ second app-specific automation protocol.
 | Crate | What it is |
 |---|---|
 | `file-explorer` | Spatial file manager: walkdir / trash / infer / mime_guess; opens editable documents in the word processor via `qdoc`. Binary `file-explorer`. |
-| `agent` | `qos-agent`: a participant without a window. Joins a word-processor document through the session's collaboration broker and carries out instructions written in it (`Scribe: turn the bullets into a table`) with the word processor's own exported actions, under its own actor. |
+| `agent` | `qos-agent`: a participant without a window. Consumes the broker-published live catalogue for arbitrary applications, plans typed arguments from their descriptors, invokes through broker permission/confirmation policy, and follows invocation receipts through terminal status. |
 | `browser` | Web browser embedding Servo (libservo + surfman + glow) with adblock; chrome is a `ui` widget (migrated off iced). |
 
 ## Building
@@ -137,5 +193,7 @@ cargo build -p terminal -p file-explorer -p browser
 cargo run -p notes -- --shots out.png        # headless offscreen frame
 ```
 
-Each app depends on the in-tree `ui` toolkit (`ui = { path = "../../ui" }`), which resolves
-only inside the workspace checkout where `ui/` is a sibling.
+Each app depends on the public SDK under the concise source name
+`ui = { package = "qos-app", path = "../../crates/app/qos-app" }`. Direct
+dependencies on the internal `ui` package are reserved for framework code and
+are rejected at the app boundary.
