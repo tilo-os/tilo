@@ -522,7 +522,7 @@ mod tests {
             .expect("apply operation");
         assert_eq!(apply.kind, OperationKind::Effect);
         assert_eq!(apply.contract.discovery, DiscoveryScope::Launchable);
-        assert_eq!(apply.contract.result, qos_actions::ResultSpec::None);
+        assert_eq!(apply.contract.result, qos_actions::ResultSpec::Job);
 
         // The one palette surfaces the tree's actions as rows.
         let mut palette = ui::ActionPalette::new();
