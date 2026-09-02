@@ -80,6 +80,27 @@ class WatchCiTests(unittest.TestCase):
             )
         self.assertEqual([item["index_in_repo"] for item in runs], [2])
 
+    def test_watcher_retries_a_transient_fgj_failure(self) -> None:
+        run = {"workflow_id": "lint.yml", "index_in_repo": 3, "status": "success"}
+        with (
+            patch.object(
+                watch_ci,
+                "recent_runs",
+                side_effect=[subprocess.TimeoutExpired("fgj", 30), [run]],
+            ),
+            patch.object(watch_ci.time, "sleep"),
+            patch.object(watch_ci.time, "monotonic", side_effect=[0, 0, 1, 2, 3, 20]),
+        ):
+            outcome, runs = watch_ci.watch(
+                cwd=Path("/tmp"),
+                host="forgejo.example",
+                repo="owner/repo",
+                sha="abcdef",
+                started=dt.datetime.now(dt.timezone.utc),
+            )
+        self.assertEqual(outcome, "complete")
+        self.assertEqual(runs, [run])
+
 
 if __name__ == "__main__":
     unittest.main()
