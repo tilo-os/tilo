@@ -88,17 +88,16 @@ fn contact_operation(
     id: &str,
     label: &str,
     kind: OperationKind,
-    operation: ContactsOperation,
-) -> ActionSpec {
-    let spec = ActionSpec::operation(id, label, kind, CONTACTS_OPERATION_TYPE, &operation)
-        .expect("ContactsOperation is always serializable");
+    operation: &ContactsOperation,
+) -> Option<ActionSpec> {
+    let spec = ActionSpec::operation(id, label, kind, CONTACTS_OPERATION_TYPE, operation).ok()?;
     match operation {
-        ContactsOperation::Open { .. } => spec.retry_policy(RetryPolicy::Idempotent),
+        ContactsOperation::Open { .. } => Some(spec.retry_policy(RetryPolicy::Idempotent)),
         // These invocations synchronously enqueue a host-portal request and
         // return. The app has no durable job handle or cancellation channel,
         // so advertising a cancellable background lifecycle would be false.
-        ContactsOperation::ImportVcard { .. } => spec,
-        ContactsOperation::ExportAllVcard { .. } => spec.destructive(),
+        ContactsOperation::ImportVcard { .. } => Some(spec),
+        ContactsOperation::ExportAllVcard { .. } => Some(spec.destructive()),
     }
 }
 
@@ -124,10 +123,13 @@ fn file_operation(id: &str, label: &str, export: bool) -> ActionSpec {
             } else {
                 ContactsOperation::ImportVcard { path }
             };
-            EncodedAction {
-                type_id: CONTACTS_OPERATION_TYPE.into(),
-                payload: serde_json::to_vec(&operation).expect("ContactsOperation serializes"),
-            }
+            EncodedAction::encode_operation(CONTACTS_OPERATION_TYPE, &operation).unwrap_or_else(
+                |error| EncodedAction {
+                    type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    payload: format!("contacts file operation could not be serialized: {error}")
+                        .into_bytes(),
+                },
+            )
         },
     )
     .with_contract(ActionContract {
@@ -423,12 +425,14 @@ pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Re
             "contacts.contact",
             contact.display_name(),
         );
-        child = child.with_action(contact_operation(
+        if let Some(open) = contact_operation(
             "open",
             "Open contact",
             OperationKind::View,
-            ContactsOperation::Open { id: id.clone() },
-        ));
+            &ContactsOperation::Open { id: id.clone() },
+        ) {
+            child = child.with_action(open);
+        }
 
         // Rename — a prompted action carrying the rest of the record unchanged.
         let base = contact.clone();
