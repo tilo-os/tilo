@@ -49,6 +49,13 @@ printf '#!/bin/sh\nprintf "%%s" "$HOMEBREW_TAP_TOKEN"\n' > "$askpass"
 chmod 0700 "$askpass"
 GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone \
   "${GITHUB_SERVER_URL}/qos/homebrew-qos.git" "$work/tap"
+current_version="$(sed -n 's/^[[:space:]]*version "\([0-9][0-9.]*\)"/\1/p' \
+  "$work/tap/Formula/qos-imager.rb" 2>/dev/null | head -1)"
+if [ -n "$current_version" ] \
+   && [ "$(printf '%s\n%s\n' "$current_version" "$version" | sort -V | tail -1)" != "$version" ]; then
+  printf 'refusing to replace newer Homebrew release %s with %s\n' "$current_version" "$version" >&2
+  exit 1
+fi
 mkdir -p "$work/tap/Formula" "$work/tap/Casks"
 
 render() {

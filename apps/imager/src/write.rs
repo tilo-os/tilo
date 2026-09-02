@@ -142,6 +142,11 @@ pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
 /// SHA-256 detects incomplete writes and accidental corruption. It is not an
 /// authenticity claim: the installer treats every field as untrusted input,
 /// validates it, and displays the result again on Review.
+///
+/// # Errors
+///
+/// Returns an error if the profile cannot be serialized or does not fit in the
+/// reserved block.
 pub fn encode_profile_block(profile: &InstallProfile) -> io::Result<Vec<u8>> {
     let payload = profile
         .to_media_profile_json()
@@ -156,12 +161,23 @@ pub fn encode_profile_block(profile: &InstallProfile) -> io::Result<Vec<u8>> {
     }
     let mut block = vec![0u8; PROFILE_BLOCK_SIZE];
     let payload_at = header.len();
-    block[..payload_at].copy_from_slice(header.as_bytes());
-    block[payload_at..payload_at + payload.len()].copy_from_slice(&payload);
+    block
+        .get_mut(..payload_at)
+        .ok_or_else(|| io::Error::other("installation profile header is out of bounds"))?
+        .copy_from_slice(header.as_bytes());
+    block
+        .get_mut(payload_at..payload_at + payload.len())
+        .ok_or_else(|| io::Error::other("installation profile payload is out of bounds"))?
+        .copy_from_slice(&payload);
     Ok(block)
 }
 
 /// Write and read back the complete profile block at the device tail.
+///
+/// # Errors
+///
+/// Returns an error if the target is too small, cannot be opened or written,
+/// or if the complete read-back differs from the encoded profile block.
 pub fn write_profile_block(
     dst: &Path,
     target_size: u64,
@@ -620,8 +636,10 @@ mod tests {
 
     #[test]
     fn media_profile_is_secret_free_and_read_back_verified() {
-        let mut profile = InstallProfile::default();
-        profile.hostname = "studio".into();
+        let mut profile = InstallProfile {
+            hostname: "studio".into(),
+            ..InstallProfile::default()
+        };
         profile.user.username = "quinten".into();
         profile.user.password = "account-secret".into();
         profile.encryption_passphrase = "disk-secret".into();

@@ -5,8 +5,8 @@ publishes only from protected `imager-v*` tags. Configure these runner labels:
 
 | Label | Host | Required tooling |
 |---|---|---|
-| `runner` | Linux x86-64 | Rust, GPG or KMS client, `linuxdeploy`, `appimagetool`, Homebrew, Ruby, curl |
-| `runner-arm64` | Linux ARM64 | same Linux toolchain and Homebrew, running natively |
+| `runner` | Linux x86-64 | Rust, GPG or KMS client, Podman, QEMU tools, zstd, `linuxdeploy`, `appimagetool`, Homebrew, Ruby, curl, jq, Node.js and npm |
+| `runner-arm64` | Linux ARM64 | same Linux toolchain and release utilities, running natively |
 | `windows` | Windows x86-64 | Rust MSVC, Windows SDK `signtool`, Inno Setup 6, WinGet client |
 | `macos-x64` | Intel macOS | Xcode CLI tools, Rust, `hdiutil`, `notarytool`, Homebrew |
 | `macos-arm64` | Apple silicon | same macOS toolchain, running natively, Homebrew |

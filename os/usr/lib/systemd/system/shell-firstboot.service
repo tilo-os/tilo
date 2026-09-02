@@ -7,7 +7,7 @@ ConditionPathExists=!/etc/qos/.firstboot-done
 # The live medium is disposable and has no installed user's home. Running the
 # machine first-boot hook there both wastes startup time and can consume the
 # one-shot marker before the real installation exists.
-ConditionKernelCommandLine=!qos.installer
+ConditionKernelCommandLine=!qos.install
 After=network-online.target
 Wants=network-online.target
 

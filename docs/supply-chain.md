@@ -76,9 +76,10 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-qos-security-archite
   then does it move `latest`, the version tag, and the dense `gen<N>` tag to
   that digest. Release jobs share one global concurrency lock, preventing two
   jobs from allocating the same generation.
-- **Pinned release machinery.** Every external action executed by the OS
-  release workflow is referenced by its full commit hash. Moving an upstream
-  `v3`/`v5` tag cannot alter the signing job.
+- **Pinned workflow machinery.** Every external action executed by every CI
+  workflow is referenced by its full commit hash. Moving an upstream `v3`/`v5`
+  tag cannot alter a validation, build, signing, or promotion job;
+  `os/tests/workflow_dependency_invariants.sh` enforces that repository-wide.
 
 ## ⚠️ Operational caveat — first signed image
 
