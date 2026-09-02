@@ -56,6 +56,7 @@ pub mod peer_sync_overlay;
 pub mod peer_view;
 pub mod peer_windows;
 pub mod persist;
+pub mod personal_continuity;
 pub mod placement;
 mod power_menu;
 pub mod projection;
