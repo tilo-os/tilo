@@ -19,6 +19,12 @@ use crate::model::{
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 pub trait CompatibilityProvider: Send {
+    /// Whether a successful method return is also the terminal outcome. Live
+    /// providers return `false`: they acknowledge queueing first and later
+    /// surface the service result through `take_notice`.
+    fn operations_complete_on_return(&self) -> bool {
+        false
+    }
     fn catalogue(&mut self) -> Catalogue;
     /// Queue a local launch of a server-owned managed entry.
     ///
@@ -97,6 +103,9 @@ pub trait CompatibilityProvider: Send {
     /// Returns an error when the capsule is unavailable or unauthorized.
     fn delete_data(&mut self, capsule_id: &str) -> Result<(), String>;
     fn take_notice(&mut self) -> Option<String> {
+        None
+    }
+    fn take_operation_result(&mut self) -> Option<Result<String, String>> {
         None
     }
     /// Sets a user route override.
@@ -226,9 +235,9 @@ impl SampleProvider {
         };
         Self { catalogue: Catalogue {
             apps: vec![
-                WindowsApp { id: "adobe-reader".into(), name: "Adobe Acrobat Reader".into(), publisher: "Adobe".into(), route: Route::Wine, recommended_route: Route::Wine, runner: "Wine 11.0 (qOS pinned)".into(), capsule: "Adobe Reader".into(), prefix: "capsules/adobe-reader".into(), catalogue_source: "qOS compatibility catalogue".into(), confidence: Confidence::Verified, reason: "Verified desktop-app recipe; isolated Wine capsule is the smallest compatible layer.".into(), status: AppStatus::Ready, grants: grants(&[("Downloads", "Read and write", true), ("Clipboard", "On demand", true), ("Camera", "Not granted", false)]), fallback_detail: "Repair this private capsule or use its own supported route.".into(), launch_available: true, launch_unavailable_reason: None, route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed in a private capsule.".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for published Windows guest applications.".into()) },
-                WindowsApp { id: "cyberpunk-2077".into(), name: "Cyberpunk 2077".into(), publisher: "CD PROJEKT RED".into(), route: Route::Proton, recommended_route: Route::Proton, runner: "UMU-Proton 10.0-3".into(), capsule: "Steam · Cyberpunk 2077".into(), prefix: "games/cyberpunk-2077".into(), catalogue_source: "Steam + ProtonDB recipe".into(), confidence: Confidence::Community, reason: "Game route uses Steam Runtime and UMU-Proton, including the game's known compatibility fixups.".into(), status: AppStatus::Running, grants: grants(&[("Games library", "Read and write", true), ("Controller", "Connected devices", true), ("Microphone", "Not granted", false)]), fallback_detail: "Use the catalogue-selected Proton repair route.".into(), launch_available: true, launch_unavailable_reason: None, route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed in a private capsule.".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for published Windows guest applications.".into()) },
-                WindowsApp { id: "visual-studio".into(), name: "Visual Studio".into(), publisher: "Microsoft".into(), route: Route::Vm, recommended_route: Route::Vm, runner: "Managed Windows appliance · app-focused SPICE".into(), capsule: "Shared Windows appliance".into(), prefix: "Guest storage · host path hidden".into(), catalogue_source: "Authenticated guest catalogue".into(), confidence: Confidence::Fallback, reason: "Requires Windows services not safely reproduced in a Wine capsule; it opens in the single managed fallback appliance.".into(), status: AppStatus::Ready, grants: grants(&[("Audio playback", "Available through an isolated output", true), ("Host files", "Unavailable in focused SPICE", false), ("Clipboard", "Unavailable in focused SPICE", false), ("Microphone and network", "Unavailable in focused SPICE", false)]), fallback_detail: "Normal launch focuses this application and suppresses Explorer. The full desktop is only for owner-authorised setup or recovery.".into(), launch_available: true, launch_unavailable_reason: None, route_override_available: false, route_override_unavailable_reason: Some("Route changes need a trusted qOS policy action and are disabled in this session API.".into()), can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: false, can_publish_vm_candidate: false, installation_detail: Some("Published by the managed Windows appliance.".into()), vm_fallback_available: true, vm_fallback_unavailable_reason: None },
+                WindowsApp { id: "adobe-reader".into(), name: "Adobe Acrobat Reader".into(), publisher: "Adobe".into(), route: Route::Wine, recommended_route: Route::Wine, runner: "Wine 11.0 (qOS pinned)".into(), capsule: "Adobe Reader".into(), prefix: "capsules/adobe-reader".into(), catalogue_source: "qOS compatibility catalogue".into(), confidence: Confidence::Verified, reason: "Verified desktop-app recipe; isolated Wine capsule is the smallest compatible layer.".into(), status: AppStatus::Ready, grants: grants(&[("Downloads", "Read and write", true), ("Clipboard", "On demand", true), ("Camera", "Not granted", false)]), fallback_detail: "Repair this private capsule or use its own supported route.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is available only for published Windows guest applications.".into()), route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed in a private capsule.".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for published Windows guest applications.".into()) },
+                WindowsApp { id: "cyberpunk-2077".into(), name: "Cyberpunk 2077".into(), publisher: "CD PROJEKT RED".into(), route: Route::Proton, recommended_route: Route::Proton, runner: "UMU-Proton 10.0-3".into(), capsule: "Steam · Cyberpunk 2077".into(), prefix: "games/cyberpunk-2077".into(), catalogue_source: "Steam + ProtonDB recipe".into(), confidence: Confidence::Community, reason: "Game route uses Steam Runtime and UMU-Proton, including the game's known compatibility fixups.".into(), status: AppStatus::Running, grants: grants(&[("Games library", "Read and write", true), ("Controller", "Connected devices", true), ("Microphone", "Not granted", false)]), fallback_detail: "Use the catalogue-selected Proton repair route.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is available only for published Windows guest applications.".into()), route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed in a private capsule.".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for published Windows guest applications.".into()) },
+                WindowsApp { id: "visual-studio".into(), name: "Visual Studio".into(), publisher: "Microsoft".into(), route: Route::Vm, recommended_route: Route::Vm, runner: "Managed Windows appliance · app-focused SPICE".into(), capsule: "Shared Windows appliance".into(), prefix: "Guest storage · host path hidden".into(), catalogue_source: "Authenticated guest catalogue".into(), confidence: Confidence::Fallback, reason: "Requires Windows services not safely reproduced in a Wine capsule; it opens in the single managed fallback appliance.".into(), status: AppStatus::Ready, grants: grants(&[("Audio playback", "Available through an isolated output", true), ("Host files", "Unavailable in focused SPICE", false), ("Clipboard", "Unavailable in focused SPICE", false), ("Microphone and network", "Unavailable in focused SPICE", false)]), fallback_detail: "Normal launch focuses this application and suppresses Explorer. The full desktop is only for owner-authorised setup or recovery.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is unavailable in app-focused SPICE because this presentation has no portal file bridge.".into()), route_override_available: false, route_override_unavailable_reason: Some("Route changes need a trusted qOS policy action and are disabled in this session API.".into()), can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: false, can_publish_vm_candidate: false, installation_detail: Some("Published by the managed Windows appliance.".into()), vm_fallback_available: true, vm_fallback_unavailable_reason: None },
             ], vm: ApplianceState { ready: true, detail: "Managed Windows workspace · suspended when idle · 2 guest apps available".into(), running_apps: 0, shared_session_active: false, shared_session_grants: Vec::new(), shared_session_contributors: Vec::new() }, vm_install_confirmation: None } }
     }
 }
@@ -238,6 +247,9 @@ impl Default for SampleProvider {
     }
 }
 impl CompatibilityProvider for SampleProvider {
+    fn operations_complete_on_return(&self) -> bool {
+        true
+    }
     fn catalogue(&mut self) -> Catalogue {
         self.catalogue.clone()
     }
@@ -274,6 +286,8 @@ impl CompatibilityProvider for SampleProvider {
             fallback_detail: "Setup is isolated from the host.".into(),
             launch_available: false,
             launch_unavailable_reason: Some("Setup is still running.".into()),
+            portal_file_open_available: false,
+            portal_file_open_unavailable_reason: Some("Setup is still running.".into()),
             route_override_available: false,
             route_override_unavailable_reason: None,
             can_retry_install: false,
@@ -399,6 +413,7 @@ enum WorkerEvent {
     },
     Unavailable(String),
     Notice(String),
+    Operation(Result<String, String>),
 }
 
 pub struct LiveProvider {
@@ -408,7 +423,12 @@ pub struct LiveProvider {
     refresh_pending: bool,
     next_refresh: Instant,
     notice: Option<String>,
+    operation_result: Option<Result<String, String>>,
     pending_vm_install: Option<(File, String)>,
+    /// The portal-open descriptor is retained locally until the user chooses
+    /// a destination. Listing is periodic, so keep its inspected
+    /// confirmation separate from the refreshed server catalogue.
+    pending_vm_install_confirmation: Option<VmInstallConfirmation>,
 }
 
 impl LiveProvider {
@@ -443,7 +463,9 @@ impl LiveProvider {
             refresh_pending: true,
             next_refresh: Instant::now() + REFRESH_INTERVAL,
             notice: None,
+            operation_result: None,
             pending_vm_install: None,
+            pending_vm_install_confirmation: None,
         })
     }
 
@@ -464,6 +486,8 @@ impl LiveProvider {
                         vm_installation,
                         vm_uninstallation.as_ref(),
                     );
+                    self.cached.vm_install_confirmation =
+                        self.pending_vm_install_confirmation.clone();
                     self.refresh_pending = false;
                     self.next_refresh = Instant::now() + REFRESH_INTERVAL;
                 }
@@ -476,6 +500,12 @@ impl LiveProvider {
                     self.notice = Some(detail);
                 }
                 WorkerEvent::Notice(detail) => self.notice = Some(detail),
+                WorkerEvent::Operation(result) => {
+                    self.notice = Some(match &result {
+                        Ok(detail) | Err(detail) => detail.clone(),
+                    });
+                    self.operation_result = Some(result);
+                }
                 WorkerEvent::VmInstallConfirmation {
                     source,
                     source_name,
@@ -483,11 +513,13 @@ impl LiveProvider {
                 } => {
                     self.pending_vm_install = Some((source, source_name));
                     self.notice = Some(confirmation.detail.clone());
-                    self.cached.vm_install_confirmation = Some(VmInstallConfirmation {
+                    let confirmation = VmInstallConfirmation {
                         display_name: confirmation.display_name,
                         detail: confirmation.detail,
                         recommended_route: route_from_kind(confirmation.recommended_route),
-                    });
+                    };
+                    self.pending_vm_install_confirmation = Some(confirmation.clone());
+                    self.cached.vm_install_confirmation = Some(confirmation);
                 }
             }
         }
@@ -580,6 +612,8 @@ impl CompatibilityProvider for LiveProvider {
             fallback_detail: "Setup runs outside the manager in the compatibility service.".into(),
             launch_available: false,
             launch_unavailable_reason: Some("Setup is still running.".into()),
+            portal_file_open_available: false,
+            portal_file_open_unavailable_reason: Some("Setup is still running.".into()),
             route_override_available: false,
             route_override_unavailable_reason: None,
             can_retry_install: false,
@@ -606,6 +640,7 @@ impl CompatibilityProvider for LiveProvider {
             .take()
             .ok_or_else(|| "Choose an installer before confirming a destination.".to_string())?;
         self.cached.vm_install_confirmation = None;
+        self.pending_vm_install_confirmation = None;
         self.commands
             .send(WorkerCommand::InstallInCapsule {
                 source,
@@ -620,6 +655,7 @@ impl CompatibilityProvider for LiveProvider {
             .take()
             .ok_or_else(|| "Choose an installer before confirming a destination.".to_string())?;
         self.cached.vm_install_confirmation = None;
+        self.pending_vm_install_confirmation = None;
         self.commands
             .send(WorkerCommand::InstallInVm {
                 source,
@@ -685,6 +721,11 @@ impl CompatibilityProvider for LiveProvider {
     fn take_notice(&mut self) -> Option<String> {
         self.drain();
         self.notice.take()
+    }
+
+    fn take_operation_result(&mut self) -> Option<Result<String, String>> {
+        self.drain();
+        self.operation_result.take()
     }
 
     fn set_route_override(&mut self, _app_id: &str, _route: Route) -> Result<(), String> {
@@ -786,19 +827,25 @@ fn worker(
                     entry_id,
                 }) {
                     Ok(ProtocolResponse::Launched { receipt }) if receipt.success => {
-                        WorkerEvent::Notice("The Windows application exited normally.".into())
+                        WorkerEvent::Operation(
+                            Ok("The Windows application exited normally.".into()),
+                        )
                     }
-                    Ok(ProtocolResponse::Launched { receipt }) => WorkerEvent::Notice(format!(
-                        "The Windows application exited with status {}.",
-                        receipt
-                            .exit_code
-                            .map_or_else(|| "unknown".to_string(), |code| code.to_string())
-                    )),
-                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
-                    Ok(_) => WorkerEvent::Unavailable(
+                    Ok(ProtocolResponse::Launched { receipt }) => {
+                        WorkerEvent::Operation(Err(format!(
+                            "The Windows application exited with status {}.",
+                            receipt
+                                .exit_code
+                                .map_or_else(|| "unknown".to_string(), |code| code.to_string())
+                        )))
+                    }
+                    Ok(ProtocolResponse::Error { error }) => {
+                        WorkerEvent::Operation(Err(error.message))
+                    }
+                    Ok(_) => WorkerEvent::Operation(Err(
                         "The compatibility service returned an invalid launch response.".into(),
-                    ),
-                    Err(error) => WorkerEvent::Unavailable(error.to_string()),
+                    )),
+                    Err(error) => WorkerEvent::Operation(Err(error.to_string())),
                 };
                 if events.send(event).is_err() {
                     return;
@@ -810,33 +857,37 @@ fn worker(
                     entry_id,
                 }) {
                     Ok(ProtocolResponse::Launched { receipt }) if receipt.success => {
-                        WorkerEvent::Notice(
+                        WorkerEvent::Operation(Ok(
                             "The application exited from the managed Windows fallback.".into(),
-                        )
+                        ))
                     }
-                    Ok(ProtocolResponse::Launched { receipt }) => WorkerEvent::Notice(format!(
-                        "The Windows fallback application exited with status {}.",
-                        receipt
-                            .exit_code
-                            .map_or_else(|| "unknown".to_string(), |code| code.to_string())
-                    )),
-                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
-                    Ok(_) => WorkerEvent::Unavailable(
+                    Ok(ProtocolResponse::Launched { receipt }) => {
+                        WorkerEvent::Operation(Err(format!(
+                            "The Windows fallback application exited with status {}.",
+                            receipt
+                                .exit_code
+                                .map_or_else(|| "unknown".to_string(), |code| code.to_string())
+                        )))
+                    }
+                    Ok(ProtocolResponse::Error { error }) => {
+                        WorkerEvent::Operation(Err(error.message))
+                    }
+                    Ok(_) => WorkerEvent::Operation(Err(
                         "The compatibility service returned an invalid VM launch response.".into(),
-                    ),
-                    Err(error) => WorkerEvent::Unavailable(error.to_string()),
+                    )),
+                    Err(error) => WorkerEvent::Operation(Err(error.to_string())),
                 };
                 if events.send(event).is_err() {
                     return;
                 }
             }
             WorkerCommand::LaunchVmWithFile { entry_id, source } => {
-                let event = match client.request_with_file(&ProtocolRequest::LaunchVmWithPortalFile { version: PROTOCOL_VERSION, entry_id, writable: false }, &source) {
-                    Ok(ProtocolResponse::Launched { receipt }) if receipt.success => WorkerEvent::Notice("Opened the portal-selected file in Windows.".into()),
-                    Ok(ProtocolResponse::Launched { receipt }) => WorkerEvent::Notice(format!("Windows closed with status {:?}.", receipt.exit_code)),
-                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
-                    Ok(_) => WorkerEvent::Unavailable("The compatibility service returned an invalid portal-file launch response.".into()),
-                    Err(error) => WorkerEvent::Unavailable(error.to_string()),
+                let event = match client.request_with_file(&ProtocolRequest::LaunchVmWithPortalFile { version: PROTOCOL_VERSION, entry_id }, &source) {
+                    Ok(ProtocolResponse::Launched { receipt }) if receipt.success => WorkerEvent::Operation(Ok("Opened the portal-selected file in Windows.".into())),
+                    Ok(ProtocolResponse::Launched { receipt }) => WorkerEvent::Operation(Err(format!("Windows closed with status {:?}.", receipt.exit_code))),
+                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Operation(Err(error.message)),
+                    Ok(_) => WorkerEvent::Operation(Err("The compatibility service returned an invalid portal-file launch response.".into())),
+                    Err(error) => WorkerEvent::Operation(Err(error.to_string())),
                 };
                 if events.send(event).is_err() {
                     return;
@@ -861,13 +912,15 @@ fn worker(
                         }
                     }
                     Ok(ProtocolResponse::Installed { receipt }) => {
-                        WorkerEvent::Notice(receipt.detail)
+                        WorkerEvent::Operation(Ok(receipt.detail))
                     }
-                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
-                    Ok(_) => WorkerEvent::Unavailable(
+                    Ok(ProtocolResponse::Error { error }) => {
+                        WorkerEvent::Operation(Err(error.message))
+                    }
+                    Ok(_) => WorkerEvent::Operation(Err(
                         "The compatibility service returned an invalid install response.".into(),
-                    ),
-                    Err(error) => WorkerEvent::Unavailable(error.to_string()),
+                    )),
+                    Err(error) => WorkerEvent::Operation(Err(error.to_string())),
                 };
                 let needs_confirmation = matches!(event, WorkerEvent::VmInstallConfirmation { .. });
                 if events.send(event).is_err() {
@@ -962,14 +1015,14 @@ fn worker(
                     capsule_id,
                 }) {
                     Ok(ProtocolResponse::VmInstallStarted { installation }) => {
-                        WorkerEvent::Notice(installation.detail)
+                        WorkerEvent::Operation(Ok(installation.detail))
                     }
-                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
-                    Ok(_) => WorkerEvent::Unavailable(
+                    Ok(ProtocolResponse::Error { error }) => WorkerEvent::Operation(Err(error.message)),
+                    Ok(_) => WorkerEvent::Operation(Err(
                         "The compatibility service returned an invalid Windows escalation response."
                             .into(),
-                    ),
-                    Err(error) => WorkerEvent::Unavailable(error.to_string()),
+                    )),
+                    Err(error) => WorkerEvent::Operation(Err(error.to_string())),
                 };
                 if events.send(event).is_err() {
                     return;
@@ -1039,15 +1092,15 @@ fn install_destination_request(
     success: &str,
 ) {
     let event = match client.request_with_file(request, source) {
-        Ok(ProtocolResponse::Installed { receipt }) => WorkerEvent::Notice(receipt.detail),
+        Ok(ProtocolResponse::Installed { receipt }) => WorkerEvent::Operation(Ok(receipt.detail)),
         Ok(ProtocolResponse::VmInstallStarted { installation }) => {
-            WorkerEvent::Notice(installation.detail)
+            WorkerEvent::Operation(Ok(installation.detail))
         }
-        Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
-        Ok(_) => WorkerEvent::Unavailable(
+        Ok(ProtocolResponse::Error { error }) => WorkerEvent::Operation(Err(error.message)),
+        Ok(_) => WorkerEvent::Operation(Err(
             "The compatibility service returned an invalid installer response.".into(),
-        ),
-        Err(error) => WorkerEvent::Unavailable(error.to_string()),
+        )),
+        Err(error) => WorkerEvent::Operation(Err(error.to_string())),
     };
     if events.send(event).is_err() {
         return;
@@ -1084,18 +1137,18 @@ fn lifecycle_request(
         },
         Ok(
             ProtocolResponse::Retried { receipt } | ProtocolResponse::VendorUninstalled { receipt },
-        ) => WorkerEvent::Notice(receipt.detail),
+        ) => WorkerEvent::Operation(Ok(receipt.detail)),
         Ok(ProtocolResponse::LauncherRemoved { .. } | ProtocolResponse::DataDeleted { .. }) => {
-            WorkerEvent::Notice(success.to_string())
+            WorkerEvent::Operation(Ok(success.to_string()))
         }
         Ok(ProtocolResponse::VmVendorUninstallation { uninstallation }) => {
-            WorkerEvent::Notice(uninstallation.detail)
+            WorkerEvent::Operation(Ok(uninstallation.detail))
         }
-        Ok(ProtocolResponse::Error { error }) => WorkerEvent::Notice(error.message),
-        Ok(_) => WorkerEvent::Unavailable(
+        Ok(ProtocolResponse::Error { error }) => WorkerEvent::Operation(Err(error.message)),
+        Ok(_) => WorkerEvent::Operation(Err(
             "The compatibility service returned an invalid management response.".into(),
-        ),
-        Err(error) => WorkerEvent::Unavailable(error.to_string()),
+        )),
+        Err(error) => WorkerEvent::Operation(Err(error.to_string())),
     };
     if events.send(event).is_err() {
         return;
@@ -1223,6 +1276,10 @@ fn app_from_vm_candidate(candidate: &compat_service::VmInstallCandidate) -> Wind
         fallback_detail: "This is an installer discovery, not an executable host entry.".into(),
         launch_available: false,
         launch_unavailable_reason: Some("Add this discovered application to Windows Apps first.".into()),
+        portal_file_open_available: false,
+        portal_file_open_unavailable_reason: Some(
+            "Add this discovered application to Windows Apps first.".into(),
+        ),
         route_override_available: false,
         route_override_unavailable_reason: None,
         can_retry_install: false,
@@ -1271,6 +1328,11 @@ fn app_from_managed(
                 .then(|| application.vm_unavailable_reason.clone())
                 .flatten()
         });
+    let portal_file_open_available =
+        application.portal_file_open_available && active_vm_uninstall.is_none();
+    let portal_file_open_unavailable_reason = active_vm_uninstall
+        .map(|status| status.detail.clone())
+        .or_else(|| application.portal_file_open_unavailable_reason.clone());
     let mut grants = vec![
         Grant {
             label: "Read-only files".into(),
@@ -1323,6 +1385,9 @@ fn app_from_managed(
     if let Some(reason) = &application.audio_unavailable_reason {
         disabled.push(format!("Audio output: {reason}"));
     }
+    if let Some(reason) = &portal_file_open_unavailable_reason {
+        disabled.push(format!("Open file: {reason}"));
+    }
     WindowsApp {
         id: application.id,
         name: application.display_name,
@@ -1372,7 +1437,7 @@ fn app_from_managed(
                     |_| AppStatus::Failed,
                 )
             },
-            |_| AppStatus::Installing,
+            |_| AppStatus::Uninstalling,
         ),
         grants,
         fallback_detail: active_vm_uninstall
@@ -1385,6 +1450,8 @@ fn app_from_managed(
             },
         launch_available,
         launch_unavailable_reason,
+        portal_file_open_available,
+        portal_file_open_unavailable_reason,
         route_override_available: false,
         route_override_unavailable_reason: Some(
             "Route changes need a trusted qOS policy action and are disabled in this session API."
@@ -1425,6 +1492,10 @@ fn app_from_installation(installation: &ManagedInstallation) -> WindowsApp {
         launch_available: false,
         launch_unavailable_reason: Some(
             "No application launcher is currently available for this installation.".into(),
+        ),
+        portal_file_open_available: false,
+        portal_file_open_unavailable_reason: Some(
+            "No published guest application matches this retained setup.".into(),
         ),
         route_override_available: false,
         route_override_unavailable_reason: None,
@@ -1550,6 +1621,12 @@ mod tests {
             },
             vm_launch_available: false,
             vm_unavailable_reason: Some("Guest bridge unavailable".into()),
+            presentation: Some(compat_service::VmPresentation::AppFocusedSpice),
+            portal_file_open_available: false,
+            portal_file_open_unavailable_reason: Some(
+                "Open file is unavailable in app-focused SPICE because this presentation has no portal file bridge."
+                    .into(),
+            ),
             audio_output_available: false,
             audio_unavailable_reason: Some("Playback-only proxy unavailable".into()),
             installation_status: None,
@@ -1582,6 +1659,26 @@ mod tests {
             app.catalogue_source,
             "Authenticated Windows guest catalogue"
         );
+        assert!(!app.portal_file_open_available);
+        assert!(
+            app.portal_file_open_unavailable_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("SPICE"))
+        );
+    }
+
+    #[test]
+    fn native_rail_is_the_only_vm_presentation_that_enables_open_file() {
+        let mut application = managed_vm();
+        application.vm_launch_available = true;
+        application.presentation = Some(compat_service::VmPresentation::NativeRail);
+        application.portal_file_open_available = true;
+        application.portal_file_open_unavailable_reason = None;
+
+        let app = app_from_managed(application, None, None);
+
+        assert!(app.portal_file_open_available);
+        assert_eq!(app.portal_file_open_unavailable_reason, None);
     }
 
     #[test]
@@ -1684,8 +1781,14 @@ mod tests {
 
         let app = app_from_managed(application, None, Some(&uninstallation));
 
-        assert_eq!(app.status, AppStatus::Installing);
+        assert_eq!(app.status, AppStatus::Uninstalling);
         assert!(!app.launch_available);
+        assert!(!app.portal_file_open_available);
+        assert!(
+            app.portal_file_open_unavailable_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("uninstall is running"))
+        );
         assert!(!app.can_vendor_uninstall);
         assert!(app.fallback_detail.contains("uninstall is running"));
     }
@@ -1720,7 +1823,9 @@ mod tests {
             refresh_pending: true,
             next_refresh: Instant::now() + REFRESH_INTERVAL,
             notice: None,
+            operation_result: None,
             pending_vm_install: None,
+            pending_vm_install_confirmation: None,
         };
         event_tx
             .send(WorkerEvent::Unavailable("invalid response".into()))
@@ -1728,5 +1833,45 @@ mod tests {
         let catalogue = provider.catalogue();
         assert!(catalogue.apps.is_empty());
         assert_eq!(catalogue.vm.detail, "invalid response");
+    }
+
+    #[test]
+    fn vm_install_destination_confirmation_survives_a_catalogue_refresh() {
+        let (command_tx, _command_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut provider = LiveProvider {
+            cached: unavailable_catalogue("Connecting"),
+            commands: command_tx,
+            events: event_rx,
+            refresh_pending: true,
+            next_refresh: Instant::now() + REFRESH_INTERVAL,
+            notice: None,
+            operation_result: None,
+            pending_vm_install: None,
+            pending_vm_install_confirmation: Some(VmInstallConfirmation {
+                display_name: "Example setup".into(),
+                detail: "Choose a destination.".into(),
+                recommended_route: Route::Vm,
+            }),
+        };
+        event_tx
+            .send(WorkerEvent::Listed {
+                applications: Vec::new(),
+                installations: Vec::new(),
+                vm_availability: VmAvailability::ready("Ready"),
+                vm_installation: None,
+                vm_uninstallation: None,
+            })
+            .unwrap();
+
+        let catalogue = provider.catalogue();
+
+        assert_eq!(
+            catalogue
+                .vm_install_confirmation
+                .as_ref()
+                .map(|confirmation| confirmation.display_name.as_str()),
+            Some("Example setup")
+        );
     }
 }

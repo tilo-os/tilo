@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use ui::LatestRequest;
+use ui::qos_actions;
 use ui::widget::data_table::{
     ColumnDef, ColumnWidth, DataTable, TableModel, TableModelChange, TableRowState,
 };
@@ -13,6 +14,8 @@ pub struct Row {
     pub id: u64,
     pub name: String,
 }
+
+fn open_row(_id: u64) {}
 
 /// A sparse asynchronous model with one current viewport request.
 ///
@@ -127,6 +130,7 @@ pub fn app_root() -> Box<dyn Widget> {
             .with_text(|row| row.name.clone()),
         ColumnDef::<Row>::new("actions", "data-actions-column", ColumnWidth::Fixed(120.0))
             .with_widget(|row, _| {
+                let id = row.id;
                 Box::new(
                     Button::new(
                         &format!("open-{}", row.id),
@@ -134,6 +138,7 @@ pub fn app_root() -> Box<dyn Widget> {
                         Some("open-requested"),
                     )
                     .with_click_value(row.id.to_string())
+                    .on_click(move || open_row(id))
                     .fit_content(28.0),
                 )
             }),
@@ -143,5 +148,28 @@ pub fn app_root() -> Box<dyn Widget> {
         .with_accessible_name("data-accessible-name")
         .selectable(true);
     table.set_viewport(720.0, 32.0);
-    Box::new(table)
+    ui::widget::resource_actions::immediate(
+        Box::new(table),
+        ui::widget::resource_actions::typed_resource(
+            "generated.table",
+            "Results",
+            "open",
+            "Open row",
+            vec![qos_actions::ActionParam::required_owned(
+                "id",
+                qos_actions::ParamType::Integer,
+                "Stable row id",
+            )],
+        ),
+        |payload| {
+            let args: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            let id = args
+                .get("id")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or("missing id")?;
+            open_row(id);
+            Ok(qos_actions::ActionOutput::default())
+        },
+    )
 }

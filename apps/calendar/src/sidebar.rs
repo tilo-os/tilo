@@ -214,7 +214,7 @@ impl Sidebar {
         if !overlay {
             let button = Rect::new(rect.x1 - pad - 24.0, y - 3.0, rect.x1 - pad, y + 21.0);
             if button.contains(pointer) {
-                fill_round(scene, transform, colors.surface_white_5, button, 7.0);
+                fill_round(scene, transform, colors.lift(0.35), button, 7.0);
             }
             draw_chevron(scene, transform, colors.neutral[7], button.center(), true);
             hits.push((button, Action::ToggleCollapsed));
@@ -276,7 +276,7 @@ impl Sidebar {
                 fill_round(
                     scene,
                     transform,
-                    colors.surface_white_5,
+                    colors.lift(0.35),
                     cell.inflate(-3.0, -3.0),
                     7.0,
                 );

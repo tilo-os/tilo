@@ -97,6 +97,16 @@ impl ConnectionKind {
         matches!(self, ConnectionKind::Ssh | ConnectionKind::Vnc)
     }
 
+    /// Whether Remote can honestly start a connection attempt. qOS can check
+    /// authenticated direct/relay reachability even though its local workspace
+    /// session transport is still a separate integration seam.
+    pub fn can_attempt(self) -> bool {
+        matches!(
+            self,
+            ConnectionKind::Ssh | ConnectionKind::Vnc | ConnectionKind::Qos
+        )
+    }
+
     /// Iteration order for every persisted kind. Use
     /// [`Self::available_to_create`] in user-facing creation controls.
     pub fn all() -> [ConnectionKind; 4] {
@@ -451,6 +461,8 @@ mod tests {
         assert!(ConnectionKind::Vnc.is_supported());
         assert!(!ConnectionKind::Rdp.is_supported());
         assert!(!ConnectionKind::Qos.is_supported());
+        assert!(ConnectionKind::Qos.can_attempt());
+        assert!(!ConnectionKind::Rdp.can_attempt());
     }
 
     #[test]

@@ -34,6 +34,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::plan::{self, Block, Instruction};
+use crate::surface::Catalogue;
+use crate::tools::{self, Revealed};
 
 /// The model that makes the choice.
 pub const MODEL: &str = "claude-opus-5";
@@ -202,6 +204,93 @@ impl Chooser {
         }
     }
 
+    /// Decide through the live resource/action catalogue. Unlike [`choose`],
+    /// this path has no compiled-in application vocabulary: the model must
+    /// discover operation ids through read-only tools, and can finish only by
+    /// submitting `plan` with native JSON argument values.
+    pub fn choose_actions(
+        &self,
+        rest: &str,
+        blocks: &[Block],
+        catalogue: &Catalogue,
+        most_steps: usize,
+    ) -> Result<tools::Answer, Route> {
+        let fallback = |reason| Err(Route::Keywords(reason));
+        if !self.enabled {
+            return fallback(Fallback::Disabled);
+        }
+        let Some(key) = self.key.as_deref() else {
+            return fallback(Fallback::NoKey);
+        };
+        match self.ask_actions(key, rest, blocks, catalogue, most_steps) {
+            Ok(answer) => Ok(answer),
+            Err(AskError::Timeout) => fallback(Fallback::Timeout),
+            Err(AskError::Failed(error)) => fallback(Fallback::Failed(error)),
+            Err(AskError::Busy {
+                why,
+                attempts,
+                over,
+            }) => fallback(Fallback::Exhausted {
+                why,
+                attempts,
+                over,
+            }),
+        }
+    }
+
+    fn ask_actions(
+        &self,
+        key: &str,
+        rest: &str,
+        blocks: &[Block],
+        catalogue: &Catalogue,
+        most_steps: usize,
+    ) -> Result<tools::Answer, AskError> {
+        let began = Instant::now();
+        let remaining = || self.timeout.checked_sub(began.elapsed());
+        let mut revealed = Revealed::new();
+        let mut messages = vec![serde_json::json!({
+            "role": "user",
+            "content": action_user_turn(rest, blocks),
+        })];
+
+        for _ in 0..12 {
+            let body = action_request_body(&messages, &revealed, most_steps);
+            let raw = post(key, &body, &remaining)?;
+            match parse_action_turn(&raw).map_err(AskError::Failed)? {
+                ActionTurn::Plan { input, .. } => {
+                    return tools::read_plan(&input, &revealed, most_steps)
+                        .map_err(AskError::Failed);
+                }
+                ActionTurn::Tools { content, calls } => {
+                    messages.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": content,
+                    }));
+                    let results = calls
+                        .into_iter()
+                        .map(|call| {
+                            let answer =
+                                tools::answer(&call.name, &call.input, catalogue, &mut revealed);
+                            serde_json::json!({
+                                "type": "tool_result",
+                                "tool_use_id": call.id,
+                                "content": answer,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    messages.push(serde_json::json!({
+                        "role": "user",
+                        "content": results,
+                    }));
+                }
+            }
+        }
+        Err(AskError::Failed(
+            "the model exhausted the action-discovery turn limit".into(),
+        ))
+    }
+
     /// One bounded call, retried while the service is asking for that. The
     /// key travels in the header and nowhere else; no error path here
     /// carries it into a message, a log, or a document.
@@ -215,6 +304,101 @@ impl Chooser {
         let text = post(key, &body, &remaining)?;
         parse_answer(&text).map_err(AskError::Failed)
     }
+}
+
+#[derive(Debug)]
+struct ToolCall {
+    id: String,
+    name: String,
+    input: Value,
+}
+
+enum ActionTurn {
+    Tools {
+        content: Vec<Value>,
+        calls: Vec<ToolCall>,
+    },
+    Plan {
+        input: Value,
+    },
+}
+
+fn action_request_body(messages: &[Value], revealed: &Revealed, most_steps: usize) -> Value {
+    serde_json::json!({
+        "model": MODEL,
+        "max_tokens": 4096,
+        "system": "Drive qOS exclusively through the resource/action tools. Discover before planning. Preserve every argument's declared JSON type. Never invent an operation id or parameter.",
+        "tools": tools::definitions(revealed, most_steps),
+        "messages": messages,
+    })
+}
+
+fn parse_action_turn(body: &str) -> Result<ActionTurn, String> {
+    let root: Value = serde_json::from_str(body)
+        .map_err(|error| format!("unreadable action response: {error}"))?;
+    if root.get("stop_reason").and_then(Value::as_str) == Some("refusal") {
+        return Err("the model declined the action request".into());
+    }
+    let content = root
+        .get("content")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| "action response had no content blocks".to_string())?;
+    let mut calls = Vec::new();
+    let mut plan = None;
+    for block in &content {
+        if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+            continue;
+        }
+        let id = block
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "tool call had no id".to_string())?;
+        let name = block
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "tool call had no name".to_string())?;
+        let input = block
+            .get("input")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        if name == tools::PLAN {
+            if plan.replace(input).is_some() || !calls.is_empty() {
+                return Err("plan must be the only tool call in its turn".into());
+            }
+        } else {
+            if plan.is_some() {
+                return Err("plan must be the only tool call in its turn".into());
+            }
+            calls.push(ToolCall {
+                id: id.into(),
+                name: name.into(),
+                input,
+            });
+        }
+    }
+    if let Some(input) = plan {
+        return Ok(ActionTurn::Plan { input });
+    }
+    if calls.is_empty() {
+        return Err("the model neither discovered actions nor submitted a plan".into());
+    }
+    Ok(ActionTurn::Tools { content, calls })
+}
+
+fn action_user_turn(rest: &str, blocks: &[Block]) -> String {
+    let mut text = String::from("The shared document as it stands:\n\n");
+    for (index, block) in blocks.iter().take(MAX_BLOCKS).enumerate() {
+        let _ = writeln!(
+            text,
+            "{}. {}: {}",
+            index + 1,
+            block.kind,
+            first_chars(block.text.trim(), MAX_BLOCK_CHARS)
+        );
+    }
+    let _ = write!(text, "\nThe instruction asks for:\n\n{}\n", rest.trim());
+    text
 }
 
 /// Post one request, and post it again while the service is asking for
@@ -788,6 +972,9 @@ fn strip(msg: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::surface::Offer;
+    use qos_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
+    use qos_actions::{ActionContract, ActionParam, ExecutionLocus, OperationKind, ParamType};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
 
@@ -798,6 +985,95 @@ mod tests {
             text: text.into(),
             attrs: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn live_tool_transcript_selects_an_arbitrary_typed_app_action() {
+        let offer = Offer {
+            app: "calculator".to_string(),
+            broker_peer_id: None,
+            descriptor: ActionDescriptor {
+                address: ActionAddress::new("calculator.range:main", "sample"),
+                resource_kind: "calculator.range".into(),
+                resource_label: "Main range".into(),
+                action_label: "Sample values".into(),
+                description: Some("Generate a bounded sample".into()),
+                locus: ExecutionLocus::ClientLocal,
+                kind: OperationKind::Document,
+                contract: ActionContract::default(),
+                input: InputSpec::None,
+                params: vec![
+                    ActionParam::required("count", ParamType::Integer, "Number of values"),
+                    ActionParam::required("normalise", ParamType::Boolean, "Normalise output"),
+                ],
+            },
+        };
+        let catalogue = Catalogue {
+            offers: vec![offer.clone()],
+            facts: Vec::new(),
+            held: vec!["calculator"],
+        };
+        let mut revealed = Revealed::new();
+        let request = action_request_body(&[], &revealed, 4);
+        let encoded = request.to_string();
+        assert!(encoded.contains(tools::LIST_OPERATIONS));
+        assert!(!encoded.contains("turn the bullets into a table"));
+
+        let discovery = serde_json::json!({
+            "stop_reason": "tool_use",
+            "content": [{
+                "type": "tool_use",
+                "id": "tool-1",
+                "name": tools::LIST_OPERATIONS,
+                "input": {"application": "calculator"}
+            }]
+        })
+        .to_string();
+        let ActionTurn::Tools { calls, .. } = parse_action_turn(&discovery).unwrap() else {
+            panic!("the first turn must be discovery");
+        };
+        let listed = tools::answer(&calls[0].name, &calls[0].input, &catalogue, &mut revealed);
+        assert!(listed.contains("calculator.range:main#sample"));
+
+        let final_turn = serde_json::json!({
+            "stop_reason": "tool_use",
+            "content": [{
+                "type": "tool_use",
+                "id": "tool-2",
+                "name": tools::PLAN,
+                "input": {
+                    "steps": [{
+                        "operation": "calculator.range:main#sample",
+                        "arguments": {"count": 12, "normalise": true}
+                    }],
+                    "why": "the calculator publishes the requested sampler",
+                    "then": null
+                }
+            }]
+        })
+        .to_string();
+        let ActionTurn::Plan { input } = parse_action_turn(&final_turn).unwrap() else {
+            panic!("the second turn must be the final plan");
+        };
+        let answer = tools::read_plan(&input, &revealed, 4).unwrap();
+        let instruction = Instruction::from_answer(
+            &answer.actions[0],
+            "sample twelve values",
+            Some(&answer.arguments[0]),
+            &catalogue.offers,
+        )
+        .unwrap();
+        assert_eq!(
+            instruction,
+            Instruction::Perform {
+                id: "calculator.range:main#sample".into(),
+                arguments: serde_json::Map::from_iter([
+                    ("count".into(), serde_json::json!(12)),
+                    ("normalise".into(), serde_json::json!(true)),
+                ]),
+                confirmation: crate::plan::ConfirmationEvidence::None,
+            }
+        );
     }
 
     #[test]

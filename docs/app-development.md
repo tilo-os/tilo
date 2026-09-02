@@ -1,6 +1,18 @@
 # Build a qOS app
 
-The intended first minute is:
+The shortest path from an idea to an app running in the live development loop
+is one command:
+
+```bash
+cargo run -p qos-dev -- new reading-list --dev
+```
+
+Creation is atomic. Once the app exists, `--dev` runs its structural preflight,
+opens it, and watches both app code and the local toolkit. A successful edit
+replaces the running process; a failed build leaves the last good app open and
+waits for the next save. Press Ctrl-C to stop.
+
+The same stages remain available separately for automation and focused work:
 
 ```bash
 cargo run -p qos-dev -- new reading-list
@@ -41,12 +53,17 @@ complete. The text-scale pass exercises the supported 200% accessibility size.
 Pseudo-localization is a layout audit mode, not a language presented to users.
 
 `qos-dev check` is the copyable local/CI quality gate. It reports the complete
-structural `doctor` result, runs the app's Rust and generated accessibility
-tests, then executes every saved scenario in isolated state with accessibility
-auditing enabled. Use `--artifacts target/check` to retain each final semantic
-tree, target list, document, and versioned audit report; `--no-scenarios` keeps
-the structural and Rust-test phases for apps that deliberately have no saved
-flows. Arguments after `--` are forwarded to the Cargo test harness.
+structural `doctor` result, verifies formatting for only the app package, runs
+Clippy over every app target with warnings denied and dependencies excluded,
+runs the app's Rust and generated accessibility tests, then executes every
+saved scenario in isolated state with accessibility auditing enabled. Use
+`--artifacts target/check` to retain each final semantic tree, target list,
+document, and versioned audit report; `--no-scenarios` keeps the structural,
+format, lint, and Rust-test phases for apps that deliberately have no saved
+flows. Arguments after `--` are forwarded only to the Cargo test harness.
+Pass `--fix` to format only the app package before the strict lint, test, and
+scenario phases; dependency source and unrelated workspace packages are never
+rewritten.
 
 For serialized screens, that structural preflight crosses file boundaries: it
 checks every component node against `src/components/mod.rs`, verifies each
@@ -56,7 +73,7 @@ diagnostic. A customized router context is reported as app-owned and therefore
 not statically verifiable; generated contexts fail early on missing factories.
 
 With no name, `qos-dev new` runs as a small terminal wizard for the package
-name, window title, application ID, and starter shape. It presents eight
+name, window title, application ID, and starter shape. It presents nine
 numbered templates with their intended use; numbers, full names, and shortcuts
 are accepted. Invalid package names, IDs, and template choices are explained
 and re-prompted without discarding earlier answers. Enter accepts a displayed
@@ -77,7 +94,19 @@ cargo run -p qos-dev -- new activity-feed --template list
 cargo run -p qos-dev -- new qr-code --template qr
 cargo run -p qos-dev -- new repo-scan --template async
 cargo run -p qos-dev -- new notes --template document
+cargo run -p qos-dev -- new project-workspace --template workspace
 ```
+
+Use `--template workspace` for a composed professional starting point rather
+than an isolated widget example. It creates a responsive master-detail shell
+with stable tree selection, a keyed detail view, and directly document-bound
+fields for each item. Wide windows show both panes; compact windows switch
+between full-width navigation and detail panes with an accessible Back action.
+Switching items preserves independent edits, while the standard app document
+supplies persistence, collaboration, inspection, and undo without app-owned
+synchronization callbacks. The generated headless scenario exercises
+navigation and editing, and the normal generated test covers wide and compact
+geometry plus the initial accessibility audit.
 
 After creation, the printed commands use shell-safe paths and include the
 first test, development, run, saved-scenario, screenshot, inspection, and
@@ -89,10 +118,12 @@ sibling staging directory, then publishes that directory and the workspace
 registration as one rollback-safe operation. A validation, write, or
 registration failure therefore leaves neither a partial app nor a stray
 workspace member; an explicitly supplied empty destination is restored with
-its original permissions if publication fails. Outside a checkout, the
-interactive wizard asks for the toolkit's `ui` directory, validates it before
-the review screen, and re-prompts on a bad path. For deterministic use, pass
-`--ui-path /path/to/quickdesktop/ui`; generation never guesses a dependency.
+its original permissions if publication fails. Outside a checkout, the tool
+discovers `ui` from `QOS_UI_PATH`, the running `qos-dev` binary's source tree,
+or the checkout it was built from. The interactive wizard shows that path as
+an editable default, validates it before the review screen, and re-prompts on
+a bad path. For a pinned or relocated toolkit, set `QOS_UI_PATH` or pass
+`--ui-path /path/to/quickdesktop/ui`; an explicit flag always wins.
 
 Grow an existing app from any directory inside it with `add`:
 
@@ -357,7 +388,10 @@ cargo run -p qos-dev -- doctor apps/reading-list
 `doctor` finds the app from any descendant path, parses the Cargo manifest,
 resolves its `ui` dependency, validates `qos-app.toml` through the same package
 schema used by installation, and checks the standard app-root and launch
-lifecycle seams. It also validates every serialized screen with the renderer's
+lifecycle seams. It also runs `capnp --version`, because the shared UI runtime
+generates its collaboration protocol while compiling; a missing compiler is
+reported with an install-or-development-container remedy before Cargo starts.
+It validates every serialized screen with the renderer's
 lightweight graph schema, parses every Fluent catalog, reconciles the generated
 locale registry with files on disk, and checks saved headless scenarios with
 the exact wire grammar used by the runtime driver. It reports every problem in
@@ -986,22 +1020,128 @@ catalogue to Ctrl+K search, the `actions_enumerate` / `actions_invoke`
 automation socket, and agents; none of those consumers has an app-specific
 command path.
 
-Ordinary retained controls are projected into that catalogue automatically
-from the semantic tree. Buttons, tabs, links, toggles, tree rows, sliders, and
-editable fields therefore remain driveable while an app is being developed,
-including legacy controls that still activate through hit testing. Give every
-operable control a stable ID and a localized accessible name: the ID is its
-fresh invocation address and the name is what humans and agents search for.
-This projection is a completeness floor, not a substitute for domain actions:
-a domain action has durable resource identity, typed parameters, collaboration
-semantics, and a useful verb such as “Archive conversation” instead of the
-generic “Activate”.
+This is the qOS application API, not an optional automation adapter. A toolbar
+button, menu item, shortcut, context-menu item, search result, script, and agent
+must converge on the same command function. Put domain logic in that function;
+make both the direct control callback and `invoke_resource_operation` call it.
+Do not add a second socket, command enum, hidden test callback, or agent-only
+implementation. CI runs `tools/check_app_resource_action_contract.py`, and the
+runtime independently validates the concrete surface before publishing it.
+
+Every `ActionSpec` carries an `ActionContract`. Defaults are deliberately
+conservative (write permission, at-most-once, immediate, live-only). State the
+facts that let a caller plan safely:
+
+- `availability`: keep a temporarily impossible action discoverable with a
+  stable code and useful reason; the door checks it again immediately before
+  execution.
+- `permission`: `read`, `comment`, `write`, `invite`, or `admin`; the broker
+  uses this exact value for both discovery and invocation.
+- `risk`, `confirmation`, and `reversible`: destructive and privileged actions
+  require a confirmation policy. Confirmation grants are short-lived,
+  one-use, and bound to the actor, address, and arguments.
+- `retry`: use `idempotent` only when repetition is observably harmless;
+  otherwise use the default `at_most_once`. The reserved
+  `retry_with_invocation_id` mode must not be advertised until the calling
+  transport supplies its own deduplication key. Never let a transport timeout
+  silently repeat an at-most-once effect.
+- `execution`: immediate, background, or streaming, with explicit cooperative
+  cancellation. Long work reports monotonic progress and one terminal state;
+  every streaming item is validated against the stream's declared JSON Schema.
+- `discovery`: live, launchable, or durable. Instance operations normally stay
+  live; an app-level action may opt into launchable discovery when it can run
+  after the shell starts the installed app.
+- `result`: no value, JSON checked by JSON Schema, a resource address, or the
+  broker-owned job identity.
+
+Use `ActionSpec::typed` and `ActionParam` for inputs. Parameters support text,
+numbers, integers, booleans, objects, arrays, resource addresses, RFC 3339 date
+times, nullable values, and redacted secrets. A deterministic JSON Schema
+subset adds `type`, `enum`, `const`, numeric and length bounds, `pattern`, the
+`date-time`/`uuid`/`uri` formats, array `items`, object `properties`/`required`,
+and boolean `additionalProperties`. Common annotation keywords are accepted;
+every other keyword is rejected when the surface is published so an assertion
+is never silently ignored. Binding is strict: missing, extra, wrong-typed,
+out-of-range, and malformed structured input is refused before application
+code runs.
+
+An invocation is admitted with a stable `InvocationId`. Background and
+streaming operations publish ordered `InvocationUpdate::Progress` records and
+finish exactly once with a typed output, structured failure, or cancellation.
+The shell retains job status so Ctrl+K, scripts, and agents do not need to hold
+open an RPC request while work runs. A cancellable implementation polls the
+collaboration channel's cancellation flag and reports `Cancelled`; cancellation
+is cooperative and never fabricated by the shell.
+
+Resource and action IDs are protocol addresses. Derive them from durable model
+keys, not labels, row numbers, focus order, or localized text. The same applies
+to `semantic_key` on accessible controls. Reordering or relabeling a view must
+not invalidate an address. Duplicate resource or semantic IDs fail closed;
+they are never repaired with an ordinal suffix that could target the wrong
+thing.
+
+A representative effect looks like this:
+
+```rust
+ActionSpec::operation(
+    "archive",
+    "Archive conversation",
+    OperationKind::Effect,
+    "mail.archive",
+    &ArchiveArgs { conversation_id },
+)?
+.requiring(PermissionRequirement::Write)
+.reversible()
+.retry_policy(RetryPolicy::Idempotent)
+.returns(ResultSpec::Resource {
+    resource_kind: "mail.conversation".into(),
+})
+```
+
+For a small app with one launchable resource, wrap its ordinary retained root
+with `ui::widget::resource_actions::immediate` or `background`. The toolkit
+owns the forwarding widget, operation dispatch, pending-job bookkeeping, and
+failure conversion; the app supplies only its resource contract and operation
+closure. `qos-dev new` uses this path and imports action types through
+`ui::qos_actions`, so a generated project contains no copied host
+implementation and needs no direct internal actions dependency.
+
+Register document action decoders in `App::action_registry_mut`. Handle every
+effect and view type in `Widget::invoke_resource_operation_v2`, return an
+`ActionOutput`, and declare the locally handled type in
+`Widget::local_resource_operation_handlers`; the legacy unit-returning hook is
+only a compatibility adapter.
+Publication refuses duplicate addresses, unsafe confirmation declarations,
+unregistered document actions, empty availability reasons, incoherent job
+contracts, and other contract violations.
+
+Non-mutating retained controls are projected into that catalogue automatically
+from the semantic tree, so focus and safe navigation remain driveable while an
+app is being developed. Effectful generic activation, set-value, toggles, and
+sliders are deliberately not exported: without a domain contract they could
+bypass the real action's permission, risk, and confirmation. Give every
+projected control a stable ID and a localized accessible name. Every effectful
+control must instead converge on a domain action with durable resource
+identity, typed parameters, collaboration semantics, and a useful verb such as
+“Archive conversation” instead of the generic “Activate”.
 
 To verify the real external path, enumerate the running app through the test
 control socket, invoke the returned `(provider, id)` with `actions_invoke`, and
 assert the resulting document or effect. A successful invocation is never
 inferred from a stale snapshot: the shell re-resolves the address and checks
 its capability immediately before dispatch.
+
+```bash
+qos-control actions list --json
+qos-control actions invoke app-actions "$ACTION_ID" \
+  --args-json '{"destination":"archive","notify":false}'
+```
+
+The acceptance test for a feature should invoke this external address in
+addition to any direct-widget test. For consequential actions, assert that a
+call without confirmation is refused. For jobs, assert progress ordering,
+terminal status, and cancellation. For unavailable actions, assert the stable
+reason code and that invocation remains refused after a stale enumeration.
 
 For process-local form state, use a typed `LocalState<T>` handle. Clones share
 the value. `TextInput::from_state` is a true two-way binding: every input edit
@@ -1718,6 +1858,28 @@ the visible window, while an error row issues a `TreeLoadReason::Retry`
 request when clicked or activated with Enter or Space. Sources that cannot
 wake the application may return `true` from `needs_poll`; idle workers should
 prefer `LatestRequest`.
+
+Use `with_slot_delegate` to replace the built-in placeholder copy with
+localized retained widgets. The delegate receives the stable `TreeSlot`, its
+depth, and `TreeSlotState::Loading` or `TreeSlotState::Error`. Only unresolved
+rows in the virtual window are mounted. The tree keeps the outer tree-item
+semantics, marks loading rows busy and error rows invalid, measures variable
+placeholder heights, and preserves click/keyboard activation as retry:
+
+```rust
+tree.with_slot_delegate(|_, slot, _depth, state| {
+    let message = match state {
+        TreeSlotState::Loading => "project-tree-loading",
+        TreeSlotState::Error { .. } => "project-tree-load-error",
+    };
+    Box::new(Text::new(message).with_id(format!("tree-slot-{}", slot.index)))
+});
+```
+
+Generated tree components install this localized delegate by default. Replace
+it with a progress indicator, diagnostic detail, or a retry button when the app
+needs richer loading UI; ordinary child-widget focus and accessibility remain
+nested beneath the slot's `TreeItem` semantic node.
 
 When a slot changes state, send `TreeModelChange::SlotsChanged`. The tree
 invalidates request deduplication and transfers focus, measured height, and the

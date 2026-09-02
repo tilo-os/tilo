@@ -97,6 +97,27 @@ impl ResourceKind {
 /// correctly and still have nothing to act on — "it ran" and "there was
 /// nothing here" are different answers a headless caller must tell apart.
 pub type OpenFn = dyn Fn(&mut AutoCommit, &ObjId, &Chrome, &ActionArgs) -> Result<(), ActionError>;
+pub type InvokeFn =
+    dyn Fn(&mut AutoCommit, &ObjId, &Chrome, &ActionArgs) -> Result<ActionReceipt, ActionError>;
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ActionReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broker_invocation_id: Option<u64>,
+    pub update: qos_actions::InvocationUpdate,
+}
+
+impl ActionReceipt {
+    pub fn completed() -> Self {
+        Self {
+            broker_invocation_id: None,
+            update: qos_actions::InvocationUpdate::Succeeded {
+                invocation: qos_actions::InvocationId::new(),
+                output: qos_actions::ActionOutput::default(),
+            },
+        }
+    }
+}
 
 /// One row the palette will render. `score` is provider-supplied, higher
 /// ranks first; a stable scale is expected — prefix matches ~100,
@@ -115,7 +136,11 @@ pub struct SearchResult {
     /// What an invocation must carry; empty for the nullary majority (see
     /// [`SearchResult::nullary`]).
     pub params: Vec<ActionParam>,
+    /// Full operational semantics when the provider represents a canonical
+    /// qOS action. Ordinary content/open rows leave this absent.
+    pub contract: Option<qos_actions::ActionContract>,
     pub on_open: Rc<OpenFn>,
+    pub on_invoke: Option<Rc<InvokeFn>>,
 }
 
 impl SearchResult {
@@ -139,10 +164,12 @@ impl SearchResult {
             subtitle,
             score,
             params: Vec::new(),
+            contract: None,
             on_open: Rc::new(move |doc, root, chrome, _args| {
                 on_open(doc, root, chrome);
                 Ok(())
             }),
+            on_invoke: None,
         }
     }
 
@@ -167,7 +194,9 @@ impl SearchResult {
             subtitle,
             score,
             params: Vec::new(),
+            contract: None,
             on_open: Rc::new(move |doc, root, chrome, _args| on_open(doc, root, chrome)),
+            on_invoke: None,
         }
     }
 }
@@ -182,6 +211,8 @@ impl std::fmt::Debug for SearchResult {
             .field("subtitle", &self.subtitle)
             .field("score", &self.score)
             .field("params", &self.params)
+            .field("contract", &self.contract)
+            .field("has_invoke_receipt", &self.on_invoke.is_some())
             .finish_non_exhaustive()
     }
 }
