@@ -339,6 +339,14 @@ pub struct CargoPlan {
     pub args: Vec<OsString>,
 }
 
+/// Package-scoped static checks used by `qos-dev check` before scenarios.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AppQualityPlan {
+    pub format: CargoPlan,
+    pub clippy: CargoPlan,
+    pub test: CargoPlan,
+}
+
 /// Resolved native UI-builder invocation. The heavy graphical toolkit lives in
 /// the builder process, so ordinary `qos-dev` commands stay quick to compile.
 #[derive(Debug, PartialEq, Eq)]
@@ -806,7 +814,7 @@ pub fn add_app_artifact(request: AddRequest) -> Result<AddOutcome> {
         );
     }
 
-    let (writes, next_command) = match request.artifact {
+    let (mut writes, next_command) = match request.artifact {
         AddArtifact::Screen {
             name,
             title,
@@ -870,6 +878,7 @@ pub fn add_app_artifact(request: AddRequest) -> Result<AddOutcome> {
             (writes, Some("qos-dev dev".into()))
         }
     };
+    format_pending_rust(&mut writes)?;
     let updated = writes
         .iter()
         .filter(|write| write.path.exists())
@@ -945,7 +954,7 @@ fn locale_artifact_writes(app_dir: &Path, locale: &str, force: bool) -> Result<V
     if !locales.iter().any(|locale| locale == "en-US") {
         bail!("generated locale registry is missing its en-US source catalog");
     }
-    let registry_source = locale_registry_source(&locales);
+    let registry_source = rustfmt_source(&locale_registry_source(&locales), &registry_path)?;
     let source_path = app_dir.join("locales/en-US.ftl");
     let source_catalog = std::fs::read_to_string(&source_path)
         .with_context(|| format!("reading source catalog {}", source_path.display()))?;
@@ -1885,6 +1894,54 @@ fn write_batch(writes: &[PendingWrite]) -> Result<()> {
     write_batch_with(writes, |write| {
         write_atomic(&write.path, write.source.as_bytes(), write.description)
     })
+}
+
+fn format_pending_rust(writes: &mut [PendingWrite]) -> Result<()> {
+    for write in writes {
+        if write
+            .path
+            .extension()
+            .is_some_and(|extension| extension == "rs")
+        {
+            write.source = rustfmt_source(&write.source, &write.path)?;
+        }
+    }
+    Ok(())
+}
+
+fn rustfmt_source(source: &str, path: &Path) -> Result<String> {
+    let rustfmt = std::env::var_os("RUSTFMT").unwrap_or_else(|| OsString::from("rustfmt"));
+    let mut child = ProcessCommand::new(&rustfmt)
+        .args(["--emit", "stdout", "--edition", "2024"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "starting rustfmt for generated Rust {}; install the rustfmt component or set RUSTFMT",
+                path.display()
+            )
+        })?;
+    child
+        .stdin
+        .take()
+        .context("opening rustfmt input")?
+        .write_all(source.as_bytes())
+        .with_context(|| format!("sending generated Rust {} to rustfmt", path.display()))?;
+    let output = child
+        .wait_with_output()
+        .with_context(|| format!("waiting for rustfmt on {}", path.display()))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "rustfmt rejected generated Rust {}: {}",
+            path.display(),
+            detail.trim()
+        );
+    }
+    String::from_utf8(output.stdout)
+        .with_context(|| format!("rustfmt returned non-UTF-8 output for {}", path.display()))
 }
 
 fn write_batch_with(
@@ -4112,6 +4169,73 @@ pub fn plan_app_task(start: &Path, task: AppTask, forwarded: &[OsString]) -> Res
     })
 }
 
+/// Resolve an app and construct its package-scoped format, lint, and test
+/// commands. Clippy checks every app target with warnings denied while
+/// excluding dependency lint debt.
+///
+/// # Errors
+///
+/// Returns an error when no ready app can be resolved or its Cargo package
+/// name cannot be read.
+pub fn plan_app_quality(start: &Path, forwarded: &[OsString]) -> Result<AppQualityPlan> {
+    let app_dir = resolve_app_dir(start)?;
+    let report = doctor_resolved_app(app_dir.clone());
+    if !report.is_ready() {
+        bail!("app preflight failed\n\n{}", report.summary());
+    }
+    let manifest = app_dir.join("Cargo.toml");
+    let package = cargo_package_name(&manifest)?;
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let base = || CargoPlan {
+        app_dir: app_dir.clone(),
+        program: cargo.clone(),
+        args: Vec::new(),
+    };
+
+    let mut format = base();
+    format.args = vec![
+        OsString::from("fmt"),
+        OsString::from("--manifest-path"),
+        manifest.clone().into_os_string(),
+        OsString::from("--package"),
+        OsString::from(&package),
+        OsString::from("--check"),
+    ];
+
+    let mut clippy = base();
+    clippy.args = vec![
+        OsString::from("clippy"),
+        OsString::from("--manifest-path"),
+        manifest.clone().into_os_string(),
+        OsString::from("--package"),
+        OsString::from(&package),
+        OsString::from("--all-targets"),
+        OsString::from("--no-deps"),
+        OsString::from("--"),
+        OsString::from("-D"),
+        OsString::from("warnings"),
+    ];
+
+    let mut test = base();
+    test.args = vec![
+        OsString::from("test"),
+        OsString::from("--manifest-path"),
+        manifest.into_os_string(),
+        OsString::from("--package"),
+        OsString::from(package),
+    ];
+    if !forwarded.is_empty() {
+        test.args.push(OsString::from("--"));
+        test.args.extend_from_slice(forwarded);
+    }
+
+    Ok(AppQualityPlan {
+        format,
+        clippy,
+        test,
+    })
+}
+
 /// Construct a preflighted screenshot invocation using the app's standard
 /// launch lifecycle.
 ///
@@ -4927,6 +5051,20 @@ fn dev_binary_name(manifest: &Path) -> Result<String> {
     package
         .get("default-run")
         .or_else(|| package.get("name"))
+        .and_then(toml::Value::as_str)
+        .map(str::to_owned)
+        .with_context(|| format!("{} has no package name", manifest.display()))
+}
+
+fn cargo_package_name(manifest: &Path) -> Result<String> {
+    let source = std::fs::read_to_string(manifest)
+        .with_context(|| format!("reading {}", manifest.display()))?;
+    let value = source
+        .parse::<toml::Value>()
+        .with_context(|| format!("parsing {}", manifest.display()))?;
+    value
+        .get("package")
+        .and_then(|package| package.get("name"))
         .and_then(toml::Value::as_str)
         .map(str::to_owned)
         .with_context(|| format!("{} has no package name", manifest.display()))
@@ -5946,9 +6084,23 @@ fn check_locale_registry(
     }
     let registered = parse_locale_registry(&registry);
     let result = registered.and_then(|registered| {
-        let expected = locale_registry_source(&registered);
-        if expected != registry {
-            bail!("generated source does not match its locale entries");
+        syn::parse_file(&registry).context("generated locale registry is not valid Rust")?;
+        for (index, locale) in registered.iter().enumerate() {
+            let catalog =
+                format!("const CATALOG_{index}: &str = include_str!(\"../locales/{locale}.ftl\");");
+            if !registry.contains(&catalog) {
+                bail!("registered locale {locale:?} is not embedded as CATALOG_{index}");
+            }
+            let mapping = format!("({locale:?}, CATALOG_{index})");
+            if !registry.contains(&mapping) {
+                bail!("registered locale {locale:?} is absent from the install mapping");
+            }
+        }
+        if !registry.contains("pub const IDS:") {
+            bail!("locale id registry is absent");
+        }
+        if !registry.contains("I18nManager::install_system") {
+            bail!("locale installation is absent");
         }
         for locale in &registered {
             if !catalog_ids.iter().any(|catalog| catalog == locale) {
@@ -6836,6 +6988,11 @@ fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
             PathBuf::from("src/components/mod.rs"),
             component_registry_source(&[], &BTreeSet::new())?,
         ));
+    }
+    for (path, source) in &mut files {
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            *source = rustfmt_source(source, path)?;
+        }
     }
     Ok(files)
 }
@@ -11002,6 +11159,56 @@ mod tests {
         let test = plan_app_task(&destination, AppTask::Test, &[]).expect("test plan");
         assert_eq!(test.args[0], "test");
         assert!(!test.args.iter().any(|arg| arg == "--"));
+    }
+
+    #[test]
+    fn app_quality_plan_scopes_format_and_clippy_to_the_app_package() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("reading-list");
+        create_app(request(destination.clone())).expect("create app");
+        let forwarded = [OsString::from("--nocapture")];
+
+        let plan =
+            plan_app_quality(&destination.join("src/lib.rs"), &forwarded).expect("quality plan");
+        let manifest = destination.join("Cargo.toml").into_os_string();
+        assert_eq!(
+            plan.format.args,
+            [
+                OsString::from("fmt"),
+                OsString::from("--manifest-path"),
+                manifest.clone(),
+                OsString::from("--package"),
+                OsString::from("reading-list"),
+                OsString::from("--check"),
+            ]
+        );
+        assert_eq!(
+            plan.clippy.args,
+            [
+                OsString::from("clippy"),
+                OsString::from("--manifest-path"),
+                manifest.clone(),
+                OsString::from("--package"),
+                OsString::from("reading-list"),
+                OsString::from("--all-targets"),
+                OsString::from("--no-deps"),
+                OsString::from("--"),
+                OsString::from("-D"),
+                OsString::from("warnings"),
+            ]
+        );
+        assert_eq!(
+            plan.test.args,
+            [
+                OsString::from("test"),
+                OsString::from("--manifest-path"),
+                manifest,
+                OsString::from("--package"),
+                OsString::from("reading-list"),
+                OsString::from("--"),
+                OsString::from("--nocapture"),
+            ]
+        );
     }
 
     #[test]
