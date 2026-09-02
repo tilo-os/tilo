@@ -617,14 +617,16 @@ impl SearchProvider for LiveAppActionsProvider {
                         }
                         let job = start_on_peer(
                             &invoke_broker,
-                            peer_id,
-                            &invoke_resource,
-                            &invoke_action_id,
-                            argument.as_deref(),
-                            &invoke_actor,
-                            &invoke_confirmation,
-                            confirmed,
-                            phrase.as_deref(),
+                            &PeerInvocation {
+                                peer_id,
+                                resource: &invoke_resource,
+                                action: &invoke_action_id,
+                                argument: argument.as_deref(),
+                                actor: &invoke_actor,
+                                confirmation: &invoke_confirmation,
+                                confirmed,
+                                phrase: phrase.as_deref(),
+                            },
                         )
                         .map_err(ActionError::Refused)?;
                         Ok(receipt_for_job(&invoke_broker, job))
