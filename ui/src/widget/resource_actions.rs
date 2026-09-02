@@ -1,21 +1,27 @@
-// Generated resource/action host shared by every qOS application template.
+//! Toolkit-owned host for a small app's typed resource/action surface.
+//!
+//! Apps provide their retained root, one discoverable resource, and an
+//! immediate or background operation closure. The host supplies the widget
+//! forwarding and invocation lifecycle; scaffolds do not need to copy that
+//! infrastructure into every new project.
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-use ui::automerge::{AutoCommit, ObjId};
-use ui::kurbo::{Affine, Point, Rect};
-use ui::qos_actions::{
+use crate::automerge::{AutoCommit, ObjId};
+use crate::kurbo::{Affine, Point, Rect};
+use crate::qos_actions::{
     ActionContract, ActionFailure, ActionOutput, ActionParam, ActionSpec, DiscoveryScope,
     EncodedAction, ExecutionMode, InvocationId, InvocationUpdate, OperationKind, Resource,
     ResultSpec,
 };
-use ui::taffy::{NodeId, TaffyTree};
-use ui::vello::Scene;
-use ui::widget::{ResourceOperationStart, TaffyTreeExt, Widget};
+use crate::taffy::{NodeId, TaffyTree};
+use crate::vello::Scene;
+use crate::widget::{ResourceOperationStart, TaffyTreeExt, Widget};
 
-pub const OPERATION_TYPE: &str = "generated.app.operation";
+/// Shared effect-operation type used by the one-resource app host.
+pub const OPERATION_TYPE: &str = "qos.app.operation";
 
-/// Build one launchable generated resource with a unit operation.
+/// Build one launchable resource with a unit operation.
 ///
 /// # Panics
 ///
@@ -39,7 +45,7 @@ pub fn resource(
         OPERATION_TYPE,
         &(),
     )
-    .expect("the generated unit operation is serializable");
+    .expect("the unit operation is serializable");
     action.contract = ActionContract {
         discovery: DiscoveryScope::Launchable,
         execution: if background {
@@ -57,7 +63,7 @@ pub fn resource(
     Resource::new(format!("{kind}:root"), kind, label).with_action(action)
 }
 
-/// Build one launchable generated resource whose arguments are schema-bound.
+/// Build one launchable resource whose arguments are schema-bound.
 ///
 /// # Panics
 ///
@@ -83,7 +89,7 @@ pub fn typed_resource(
         params,
         |args| {
             EncodedAction::encode_operation(OPERATION_TYPE, &args.to_json())
-                .expect("bound generated arguments are serializable")
+                .expect("bound arguments are serializable")
         },
     );
     action.contract.discovery = DiscoveryScope::Launchable;
@@ -98,7 +104,8 @@ enum Runner {
     Background(Background),
 }
 
-pub struct ResourceActionApp {
+/// Transparent retained root that publishes and executes one app resource.
+pub struct ResourceActionHost {
     root: Box<dyn Widget>,
     resource: Resource,
     runner: Runner,
@@ -106,12 +113,13 @@ pub struct ResourceActionApp {
     rect: Rect,
 }
 
+/// Wrap a root with a synchronous typed resource operation.
 pub fn immediate(
     root: Box<dyn Widget>,
     resource: Resource,
     run: impl FnMut(&[u8]) -> Result<ActionOutput, String> + 'static,
 ) -> Box<dyn Widget> {
-    Box::new(ResourceActionApp {
+    Box::new(ResourceActionHost {
         root,
         resource,
         runner: Runner::Immediate(Box::new(run)),
@@ -120,12 +128,13 @@ pub fn immediate(
     })
 }
 
+/// Wrap a root with an accepted job whose receiver supplies terminal output.
 pub fn background(
     root: Box<dyn Widget>,
     resource: Resource,
     run: impl FnMut(&[u8]) -> Result<Receiver<Result<ActionOutput, String>>, String> + 'static,
 ) -> Box<dyn Widget> {
-    Box::new(ResourceActionApp {
+    Box::new(ResourceActionHost {
         root,
         resource,
         runner: Runner::Background(Box::new(run)),
@@ -134,7 +143,7 @@ pub fn background(
     })
 }
 
-impl Widget for ResourceActionApp {
+impl Widget for ResourceActionHost {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.root.sync(state, path);
     }
@@ -146,15 +155,15 @@ impl Widget for ResourceActionApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        theme: &ui::Theme,
+        theme: &crate::Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.root.build_layout(taffy, theme, node_map);
         let node = taffy.parent_node(
-            ui::taffy::Style {
-                size: ui::taffy::Size {
-                    width: ui::taffy::style_helpers::percent(1.0_f32),
-                    height: ui::taffy::style_helpers::percent(1.0_f32),
+            crate::taffy::Style {
+                size: crate::taffy::Size {
+                    width: crate::taffy::style_helpers::percent(1.0_f32),
+                    height: crate::taffy::style_helpers::percent(1.0_f32),
                 },
                 ..Default::default()
             },
@@ -184,9 +193,9 @@ impl Widget for ResourceActionApp {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::Theme,
+        presence: &crate::presence::PresenceCtx,
     ) {
         self.root
             .draw(scene, transform, text_renderer, theme, presence);
@@ -194,9 +203,9 @@ impl Widget for ResourceActionApp {
 
     fn handle_event(
         &mut self,
-        event: &ui::winit::event::WindowEvent,
+        event: &crate::winit::event::WindowEvent,
         scale_factor: f64,
-        modifiers: &ui::winit::event::Modifiers,
+        modifiers: &crate::winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -241,7 +250,23 @@ impl Widget for ResourceActionApp {
         self.root.is_focused()
     }
 
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    fn is_enabled(&self) -> bool {
+        self.root.is_enabled()
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.root.ime_cursor_rect()
+    }
+
+    fn ime_purpose(&self) -> Option<crate::winit::window::ImePurpose> {
+        self.root.ime_purpose()
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.root.traps_focus()
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.root.accessibility()
     }
 
@@ -251,7 +276,7 @@ impl Widget for ResourceActionApp {
 
     fn perform_action(
         &mut self,
-        action: &ui::a11y::Action,
+        action: &crate::a11y::Action,
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
@@ -260,7 +285,7 @@ impl Widget for ResourceActionApp {
 
     fn perform_action_at(
         &mut self,
-        action: &ui::a11y::Action,
+        action: &crate::a11y::Action,
         key_path: &[u64],
         state: &mut AutoCommit,
         path: &ObjId,
@@ -271,7 +296,7 @@ impl Widget for ResourceActionApp {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &ui::a11y::Action,
+        action: &crate::a11y::Action,
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
@@ -347,7 +372,7 @@ impl Widget for ResourceActionApp {
             Err(message) => InvocationUpdate::Failed {
                 invocation,
                 error: ActionFailure {
-                    code: "generated_operation_failed".into(),
+                    code: "app_operation_failed".into(),
                     message,
                     details: None,
                     retryable: false,
@@ -356,8 +381,40 @@ impl Widget for ResourceActionApp {
         })
     }
 
+    fn wants_pointer_capture(&self) -> bool {
+        self.root.wants_pointer_capture()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.root.needs_animation_frame()
+    }
+
+    fn next_wake_deadline(&self) -> Option<std::time::Instant> {
+        self.root.next_wake_deadline()
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        self.root.take_structure_dirty()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.root.needs_redraw()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.root.mark_drawn();
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.root.is_layout_dirty()
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        self.root.layout_needs_measure()
+    }
+
     fn name(&self) -> &'static str {
-        "ResourceActionApp"
+        "ResourceActionHost"
     }
 
     fn get_rect(&self) -> Rect {
