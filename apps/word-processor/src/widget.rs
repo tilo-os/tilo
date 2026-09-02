@@ -1690,13 +1690,16 @@ pub struct WordProcessorWidget {
     /// What the in-flight [`Self::portal_rx`] request is for (open a document,
     /// save the current one, or insert an image). Set alongside `portal_rx`.
     portal_purpose: Option<PortalPurpose>,
+    resource_file_invocation: Option<qos_actions::InvocationId>,
+    resource_file_result: Option<qos_actions::InvocationUpdate>,
+    pending_resource_open: Option<(qos_actions::InvocationId, std::path::PathBuf)>,
     // ---- paragraph-style context menu -------------------------------------
     /// Right-click style-menu lifecycle, drawing, hit-testing, and typed outcome.
     style_menu: StyleMenu,
     // ---- transient status toast -------------------------------------------
-    /// A transient confirmation message (e.g. "Table of contents updated"),
+    /// A transient operation result (e.g. save confirmation or failure),
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
-    toast: Option<String>,
+    toast: Option<(String, ToastKind)>,
     /// The style inspector's shared color-picker popover. It owns its lifecycle,
     /// layout, drawing, and modal input routing; this editor applies its result.
     color_picker: StyleColorPicker,
@@ -1785,6 +1788,9 @@ impl WordProcessorWidget {
             template_picker: TemplatePicker::default(),
             portal_rx: None,
             portal_purpose: None,
+            resource_file_invocation: None,
+            resource_file_result: None,
+            pending_resource_open: None,
             style_menu: StyleMenu::default(),
             toast: None,
             color_picker: StyleColorPicker::default(),
@@ -2239,23 +2245,51 @@ impl WordProcessorWidget {
                 self.portal_rx = None;
                 // A single-select open/save reports `Opened`; anything else
                 // (cancelled, or a portal failure) leaves the document alone.
-                if let ui::portal::PortalOutcome::Opened(path) = outcome {
+                let result = if let ui::portal::PortalOutcome::Opened(path) = outcome {
                     match purpose {
                         Some(PortalPurpose::InsertImage) => {
                             self.insert_image_from_path(state, &path);
+                            Ok(())
                         }
                         Some(PortalPurpose::OpenDocument) => {
-                            self.open_document_in_place(state, &path);
+                            self.try_open_document_in_place(state, &path)
                         }
                         Some(PortalPurpose::SaveAs) => {
                             let format = WpFormat::from_path(&path);
                             self.set_file(path, format);
-                            self.write_to_current_path(state);
+                            self.try_write_to_current_path(state)
                         }
-                        None => {}
+                        None => Ok(()),
                     }
                 } else if let portal::PortalOutcome::Failed(reason) = outcome {
                     eprintln!("word-processor: portal error: {reason}");
+                    self.toast = Some((t("toast-file-dialog-failed"), ToastKind::Error));
+                    Err(reason)
+                } else {
+                    Err("file picker was cancelled".into())
+                };
+                if let Some(invocation) = self.resource_file_invocation.take() {
+                    self.resource_file_result = Some(match result {
+                        Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                            invocation,
+                            output: qos_actions::ActionOutput::default(),
+                        },
+                        Err(message) if message == "file picker was cancelled" => {
+                            qos_actions::InvocationUpdate::Cancelled {
+                                invocation,
+                                message: Some(message),
+                            }
+                        }
+                        Err(message) => qos_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: qos_actions::ActionFailure {
+                                code: "word_processor.file_operation_failed".into(),
+                                message,
+                                details: None,
+                                retryable: false,
+                            },
+                        },
+                    });
                 }
             }
             // Still open (Empty) — leave the channel in place; a hangup
@@ -2264,6 +2298,17 @@ impl WordProcessorWidget {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.portal_rx = None;
                 self.portal_purpose = None;
+                if let Some(invocation) = self.resource_file_invocation.take() {
+                    self.resource_file_result = Some(qos_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: qos_actions::ActionFailure {
+                            code: "word_processor.portal_worker_lost".into(),
+                            message: "file picker stopped without returning a result".into(),
+                            details: None,
+                            retryable: false,
+                        },
+                    });
+                }
             }
         }
     }
@@ -2271,18 +2316,20 @@ impl WordProcessorWidget {
     /// Replace the current document in place with the file at `path` (format by
     /// extension), re-seat the caret, and adopt the path/format. Returns whether
     /// the document was replaced (a read or import failure leaves it untouched).
-    fn open_document_in_place(&mut self, state: &mut AutoCommit, path: &std::path::Path) -> bool {
+    fn try_open_document_in_place(
+        &mut self,
+        state: &mut AutoCommit,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("word-processor: could not open {}: {e}", path.display());
-                return false;
+                return Err(format!("could not open {}: {e}", path.display()));
             }
         };
         let format = WpFormat::from_path(path);
         if !self.inner.replace_with_format(state, &bytes, format) {
-            eprintln!("word-processor: could not parse {}", path.display());
-            return false;
+            return Err(format!("could not parse {}", path.display()));
         }
         self.set_file(path.to_path_buf(), format);
         self.refresh_blocks(state);
@@ -2294,7 +2341,7 @@ impl WordProcessorWidget {
         self.needs_commit = true;
         self.dirty = true;
         self.clear_recovery();
-        true
+        Ok(())
     }
 
     /// Ctrl+S: save to the current path, or — for an untitled document — open the
@@ -2311,7 +2358,12 @@ impl WordProcessorWidget {
     /// codec. Assumes `path` + `format` are set (the Save-As drain sets them, and
     /// a document opened with a path already has them).
     fn write_to_current_path(&mut self, state: &AutoCommit) {
-        let mut saved = false;
+        if let Err(error) = self.try_write_to_current_path(state) {
+            eprintln!("word-processor: {error}");
+        }
+    }
+
+    fn try_write_to_current_path(&mut self, state: &AutoCommit) -> Result<(), String> {
         if let (Some(path), Some(format), Some(c)) = (
             self.path.as_ref(),
             self.format,
@@ -2320,21 +2372,27 @@ impl WordProcessorWidget {
             let dr = qdoc::DocRef { doc: state, c };
             match format.export(dr) {
                 Ok(bytes) => {
-                    if let Err(e) = std::fs::write(path, bytes) {
+                    std::fs::write(path, bytes).map_err(|e| {
                         eprintln!("word-processor: could not write {}: {e}", path.display());
-                    } else {
-                        self.modified = false;
-                        saved = true;
-                    }
+                        self.toast = Some((t("toast-save-failed"), ToastKind::Error));
+                        format!("could not write {}: {e}", path.display())
+                    })?;
+                    self.modified = false;
+                    self.toast = Some((t("toast-saved"), ToastKind::Success));
                 }
-                Err(e) => eprintln!("word-processor: export failed: {e}"),
+                Err(e) => {
+                    eprintln!("word-processor: export failed: {e}");
+                    self.toast = Some((t("toast-save-failed"), ToastKind::Error));
+                    return Err(format!("export failed: {e}"));
+                }
             }
+        } else {
+            return Err("document has no writable path or initialized body".into());
         }
         // A successful real save supersedes any recovery copy — drop it so a later
         // session doesn't re-offer stale unsaved changes.
-        if saved {
-            self.clear_recovery();
-        }
+        self.clear_recovery();
+        Ok(())
     }
 
     // ---- Find & Replace -----------------------------------------------------
@@ -4103,7 +4161,7 @@ impl WordProcessorWidget {
             .collect();
         if entries.is_empty() {
             // Nothing to build a TOC from — tell the user *why* nothing happened.
-            self.toast = Some(t("toast-toc-empty"));
+            self.toast = Some((t("toast-toc-empty"), ToastKind::Info));
             self.dirty = true;
             return;
         }
@@ -4115,9 +4173,9 @@ impl WordProcessorWidget {
         // Scroll the freshly-inserted TOC (always at the document top) into view
         // and surface a confirmation toast, so the action has a visible result.
         self.scroll_y = 0.0;
-        self.toast = Some(t_args(
-            "toast-toc-updated",
-            &[arg("n", num::i64_of_usize(n))],
+        self.toast = Some((
+            t_args("toast-toc-updated", &[arg("n", num::i64_of_usize(n))]),
+            ToastKind::Success,
         ));
     }
 
@@ -4131,7 +4189,7 @@ impl WordProcessorWidget {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(msg) = self.toast.as_deref() else {
+        let Some((msg, kind)) = self.toast.as_ref() else {
             return;
         };
         let area = Rect::new(
@@ -4147,7 +4205,7 @@ impl WordProcessorWidget {
             theme,
             area,
             ToastAnchor::BottomCenter,
-            &ToastCard::new(msg, ToastKind::Success),
+            &ToastCard::new(msg, *kind),
         );
     }
 }
@@ -7409,6 +7467,131 @@ impl WordProcessorWidget {
 }
 
 impl Widget for WordProcessorWidget {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::WORD_PROCESSOR_OPERATION_TYPE]
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        use crate::actions::WordProcessorOperation;
+        match operation {
+            WordProcessorOperation::Open { .. }
+            | WordProcessorOperation::Save { .. }
+            | WordProcessorOperation::SaveAs { .. } => {
+                return Err("file operations require the lifecycle-capable operation host".into());
+            }
+            WordProcessorOperation::Find => self.open_find(doc),
+            WordProcessorOperation::ZoomIn => {
+                self.zoom_by(0.1);
+            }
+            WordProcessorOperation::ZoomOut => {
+                self.zoom_by(-0.1);
+            }
+            WordProcessorOperation::ToggleSpellcheck => self.toggle_spellcheck(),
+            WordProcessorOperation::ToggleMarkup => self.toggle_markup(),
+            WordProcessorOperation::ToggleStyles => {
+                self.styles_panel_open = !self.styles_panel_open;
+            }
+            WordProcessorOperation::ToggleRuler => self.ruler_on = !self.ruler_on,
+            WordProcessorOperation::ToggleOutline => self.outline.toggle(),
+            WordProcessorOperation::ToggleHistory => self.history.toggle(),
+        }
+        self.dirty = true;
+        Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        widget_path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(None);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        use crate::actions::WordProcessorOperation;
+        let (destination, force_picker) = match operation {
+            WordProcessorOperation::Open { path } => {
+                if self.portal_rx.is_some() || self.pending_resource_open.is_some() {
+                    return Err("another file operation is already running".into());
+                }
+                if let Some(path) = path {
+                    self.pending_resource_open = Some((invocation, std::path::PathBuf::from(path)));
+                } else {
+                    self.request_open_document();
+                    self.resource_file_invocation = Some(invocation);
+                }
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            WordProcessorOperation::Save { path } => (path, false),
+            WordProcessorOperation::SaveAs { path } => (path, true),
+            other => {
+                let encoded = serde_json::to_vec(&other).map_err(|error| error.to_string())?;
+                return self
+                    .invoke_resource_operation_v2(kind, type_id, &encoded, doc, widget_path)
+                    .map(|result| result.map(ui::widget::ResourceOperationStart::Completed));
+            }
+        };
+
+        if self.portal_rx.is_some() || self.pending_resource_open.is_some() {
+            return Err("another file operation is already running".into());
+        }
+        if let Some(destination) = destination {
+            let destination = std::path::PathBuf::from(destination);
+            let format = WpFormat::from_path(&destination);
+            self.set_file(destination, format);
+            self.try_write_to_current_path(doc)?;
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                qos_actions::ActionOutput::default(),
+            )))
+        } else if self.path.is_some() && !force_picker {
+            self.try_write_to_current_path(doc)?;
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                qos_actions::ActionOutput::default(),
+            )))
+        } else {
+            self.request_save_as();
+            self.resource_file_invocation = Some(invocation);
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        }
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if self
+            .resource_file_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            self.resource_file_result.take()
+        } else {
+            None
+        }
+    }
+
     /// The document being edited is a record; its identity is its path. Two
     /// editors on two different files in one room announce two different
     /// records, so they are never handed each other's text — "share this
@@ -7423,6 +7606,24 @@ impl Widget for WordProcessorWidget {
 
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.inner.bind(state, root);
+        if let Some((invocation, open_path)) = self.pending_resource_open.take() {
+            self.resource_file_result =
+                Some(match self.try_open_document_in_place(state, &open_path) {
+                    Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: qos_actions::ActionOutput::default(),
+                    },
+                    Err(message) => qos_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: qos_actions::ActionFailure {
+                            code: "word_processor.open_failed".into(),
+                            message,
+                            details: None,
+                            retryable: false,
+                        },
+                    },
+                });
+        }
         // Fold in a completed host portal request (open / save / image insert),
         // if the portal worker finished.
         self.drain_portal(state);
@@ -8917,7 +9118,7 @@ impl WordProcessorWidget {
                     self.refresh_blocks(state);
                     self.needs_commit = true;
                     self.modified = true;
-                    self.toast = Some(t("toast-style-deleted"));
+                    self.toast = Some((t("toast-style-deleted"), ToastKind::Success));
                 }
             }
             StyleMenuAction::Duplicate(id) => {
@@ -8928,7 +9129,7 @@ impl WordProcessorWidget {
                     self.refresh_blocks(state);
                     self.needs_commit = true;
                     self.modified = true;
-                    self.toast = Some(t("toast-style-duplicated"));
+                    self.toast = Some((t("toast-style-duplicated"), ToastKind::Success));
                 }
             }
         }
@@ -14335,6 +14536,10 @@ mod tests {
             Some(WpFormat::Docx),
             "format follows the chosen extension"
         );
+        assert!(
+            matches!(wp.toast.as_ref(), Some((_, ToastKind::Success))),
+            "a completed save is visibly confirmed"
+        );
 
         // The written file is a real docx (ZIP signature) — not markdown ...
         let written = std::fs::read(&dest).expect("Save As wrote the destination");
@@ -14359,6 +14564,23 @@ mod tests {
 
         let _ = std::fs::remove_file(&src);
         let _ = std::fs::remove_file(&dest);
+    }
+
+    #[test]
+    fn failed_save_is_visible_and_keeps_the_document_modified() {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "unsaved work");
+        wp.modified = true;
+        // Writing bytes to a directory reliably fails without relying on file
+        // permissions (the test suite may run as a privileged user).
+        wp.set_file(std::env::temp_dir(), WpFormat::Markdown);
+        wp.write_to_current_path(&state.doc);
+
+        assert!(wp.modified, "a failed save never clears the dirty state");
+        assert!(
+            matches!(wp.toast.as_ref(), Some((_, ToastKind::Error))),
+            "the user sees an error toast instead of an stderr-only failure"
+        );
     }
 
     /// A resolved **Open** pick replaces the running document in place: a blank

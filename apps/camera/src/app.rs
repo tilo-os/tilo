@@ -280,7 +280,7 @@ impl CameraApp {
 
     /// Finish the recording: mux the frames into a real MJPEG/AVI clip and
     /// save it (disk) or append an in-memory sample entry (hermetic).
-    fn stop_recording(&mut self, _doc: &mut AutoCommit, _root: &ObjId) {
+    fn stop_recording(&mut self) {
         let Some(state) = self.recording.take() else {
             return;
         };
@@ -382,7 +382,12 @@ impl CameraApp {
                 is_video: c.is_video(),
             })
             .collect();
-        crate::actions::CameraResourceCtx { items }
+        crate::actions::CameraResourceCtx {
+            items,
+            mode: self.mode,
+            facing: self.facing,
+            recording: self.is_recording(),
+        }
     }
 
     fn apply(&mut self, action: Action, doc: &mut AutoCommit, root: &ObjId) {
@@ -439,12 +444,12 @@ impl CameraApp {
         doc::write_screen(doc, root, self.return_to);
     }
 
-    fn apply_shutter(&mut self, doc: &mut AutoCommit, root: &ObjId) {
+    fn apply_shutter(&mut self, _doc: &mut AutoCommit, _root: &ObjId) {
         match self.mode {
-            CaptureMode::Photo => self.capture(doc, root),
+            CaptureMode::Photo => self.capture(),
             CaptureMode::Video => {
                 if self.is_recording() {
-                    self.stop_recording(doc, root);
+                    self.stop_recording();
                 } else {
                     self.start_recording();
                 }
@@ -456,7 +461,7 @@ impl CameraApp {
         // Switching mode mid-record would strand the clip; ignore.
         if !self.is_recording() {
             self.mode = m;
-            doc::write_mode(doc, root, m);
+            self.perform_action(doc, &crate::actions::CameraAction::SetMode { mode: m });
             // Photo/Video also bring the viewfinder forward when chosen
             // from the scanner's shared switcher.
             if self.screen != Screen::Camera {
@@ -466,9 +471,14 @@ impl CameraApp {
         }
     }
 
-    fn apply_cycle_facing(&mut self, doc: &mut AutoCommit, root: &ObjId) {
+    fn apply_cycle_facing(&mut self, doc: &mut AutoCommit, _root: &ObjId) {
         self.facing = self.facing.next();
-        doc::write_facing(doc, root, self.facing);
+        self.perform_action(
+            doc,
+            &crate::actions::CameraAction::SetFacing {
+                facing: self.facing,
+            },
+        );
         self.cam_view = None;
     }
 
@@ -579,7 +589,7 @@ impl CameraApp {
 
     /// Take a photo: write the current frame to disk (live) or append an
     /// in-memory sample (hermetic).
-    fn capture(&mut self, _doc: &mut AutoCommit, _root: &ObjId) {
+    fn capture(&mut self) {
         match &self.storage {
             Storage::Sample => {
                 let id = format!(
@@ -619,6 +629,31 @@ impl CameraApp {
                 }
             }
         }
+    }
+
+    fn perform_resource_operation(
+        &mut self,
+        operation: crate::actions::CameraOperation,
+    ) -> Result<(), String> {
+        use crate::actions::CameraOperation;
+        match operation {
+            CameraOperation::Capture => self.capture(),
+            CameraOperation::ToggleRecording => {
+                if self.is_recording() {
+                    self.stop_recording();
+                } else {
+                    self.start_recording();
+                }
+            }
+            CameraOperation::Share { id } => {
+                self.selected_capture = Some(id);
+                self.apply_share_selected();
+            }
+            CameraOperation::Delete { .. } => {
+                return Err("deletion requires a document-action completion step".into());
+            }
+        }
+        Ok(())
     }
 
     /// Decode a code out of a library photo by id. Real work: the photo is
@@ -870,12 +905,34 @@ fn sample_captures() -> Vec<Capture> {
 }
 
 impl Widget for CameraApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::CAMERA_OPERATION_TYPE]
+    }
+
     /// Publish the open gallery + its shots so the host's Ctrl+K action palette
     /// scopes to them. Delegates to the
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        self.perform_resource_operation(operation)?;
+        Ok(true)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -1186,7 +1243,15 @@ impl CameraApp {
         let (cx, cy, r) = (circle.center.x, circle.center.y, circle.radius);
         let c = &theme.tokens.colors;
         p::circle(scene, t, cx, cy, r, p::alpha(c.neutral[0], 0.5));
-        p::circle_stroke(scene, t, cx, cy, r, c.border_white_10, 1.0);
+        p::circle_stroke(
+            scene,
+            t,
+            cx,
+            cy,
+            r,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
         let ir = r * 0.52;
         p::icon(
             scene,
@@ -1361,7 +1426,14 @@ impl CameraApp {
             )
         };
         p::fill_round(scene, t, panel, 22.0, fill);
-        p::stroke_round(scene, t, panel, 22.0, c.border_white_10, 1.0);
+        p::stroke_round(
+            scene,
+            t,
+            panel,
+            22.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
 
         let icx = panel.center().x;
         let icy = panel.y0 + 56.0;
@@ -1691,7 +1763,14 @@ impl CameraApp {
                 height / 2.0,
                 p::alpha(colors.neutral[0], 0.5),
             );
-            p::stroke_round(scene, t, rect, height / 2.0, colors.border_white_10, 1.0);
+            p::stroke_round(
+                scene,
+                t,
+                rect,
+                height / 2.0,
+                ui::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
+                1.0,
+            );
         }
         let fg = if active {
             white()
@@ -1860,7 +1939,14 @@ impl CameraApp {
         } else {
             let c = &theme.tokens.colors;
             p::fill_round(scene, t, thumb, 14.0, p::alpha(c.neutral[0], 0.5));
-            p::stroke_round(scene, t, thumb, 14.0, c.border_white_10, 1.5);
+            p::stroke_round(
+                scene,
+                t,
+                thumb,
+                14.0,
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+                1.5,
+            );
             p::icon(
                 scene,
                 t,
@@ -1943,7 +2029,15 @@ impl CameraApp {
         let c = &theme.tokens.colors;
         let lx = full.x1 - 60.0;
         p::circle(scene, t, lx, cy, 26.0, p::alpha(c.neutral[0], 0.5));
-        p::circle_stroke(scene, t, lx, cy, 26.0, c.border_white_10, 1.0);
+        p::circle_stroke(
+            scene,
+            t,
+            lx,
+            cy,
+            26.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
         p::icon(
             scene,
             t,
@@ -2115,7 +2209,14 @@ impl CameraApp {
         let width = tw.max(sw) + 32.0;
         let rect = Rect::new(pos.x, pos.y, pos.x + width, pos.y + 52.0);
         p::fill_round(scene, t, rect, 16.0, p::alpha(colors.neutral[0], 0.55));
-        p::stroke_round(scene, t, rect, 16.0, colors.border_white_10, 1.0);
+        p::stroke_round(
+            scene,
+            t,
+            rect,
+            16.0,
+            ui::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
+            1.0,
+        );
         p::text(scene, tr, pos.x + 16.0, pos.y + 12.0, title, 15.0, white());
         p::text(
             scene,
@@ -2370,7 +2471,14 @@ impl CameraApp {
                 img.paint_at(scene, t, card);
             }
             p::pop(scene);
-            p::stroke_round(scene, t, card, 14.0, c.border_white_10, 1.0);
+            p::stroke_round(
+                scene,
+                t,
+                card,
+                14.0,
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+                1.0,
+            );
             self.push_region(card, Action::ScanLibraryItem(cap.id.clone()));
         }
         p::pop(scene);
@@ -2403,7 +2511,14 @@ impl CameraApp {
             bottom,
         );
         p::fill_round(scene, t, card, 18.0, p::alpha(c.neutral[0], 0.92));
-        p::stroke_round(scene, t, card, 18.0, c.border_white_10, 1.0);
+        p::stroke_round(
+            scene,
+            t,
+            card,
+            18.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
 
         let icon_name = code_icon(&s.kind);
         let badge = Rect::new(
@@ -2456,7 +2571,7 @@ impl CameraApp {
                 p::fill_round(scene, t, br, 15.0, theme.accent_primary);
                 p::text_in(scene, tr, br, label, 13.0, white());
             } else {
-                p::fill_round(scene, t, br, 15.0, c.surface_white_10);
+                p::fill_round(scene, t, br, 15.0, c.lift(0.72));
                 p::text_in(scene, tr, br, label, 13.0, p::alpha(white(), 0.92));
             }
             self.push_region(br, Action::Scan(i));
@@ -2474,7 +2589,14 @@ impl CameraApp {
     ) {
         let c = &theme.tokens.colors;
         p::fill_round(scene, t, panel, 20.0, p::alpha(c.neutral[0], 0.55));
-        p::stroke_round(scene, t, panel, 20.0, c.border_white_10, 1.0);
+        p::stroke_round(
+            scene,
+            t,
+            panel,
+            20.0,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            1.0,
+        );
         let px = panel.x0 + 18.0;
         p::text(
             scene,

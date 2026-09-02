@@ -994,6 +994,7 @@ impl Widget for Button {
         };
         Some(
             AccessNode::new(Role::Button)
+                .with_semantic_key(&self.id)
                 .with_optional_name(name)
                 .with_state(AccessState {
                     focusable: self.is_focusable(),

@@ -440,9 +440,9 @@ impl AccountList {
     ) {
         let card = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.lg));
         let bg = if is_selected {
-            theme.tokens.colors.surface_white_10
+            theme.tokens.colors.lift(0.72)
         } else if is_hovered {
-            theme.tokens.colors.surface_white_5
+            theme.tokens.colors.lift(0.35)
         } else {
             theme.tokens.colors.surfaces.raised.with_alpha_factor(0.55)
         };

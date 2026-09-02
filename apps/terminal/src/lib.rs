@@ -2,10 +2,9 @@
 //! widget construction to this module so the nirios shell can embed a
 //! `TerminalWidget` as an `AppWidget` inside a tile.
 //!
-//! See [`actions`] for the resource + action-model finding: the terminal's only
-//! shared-document state is the emulator's live-screen projection of an external
-//! process, so it exports no actions and publishes no Ctrl+K resource tree —
-//! proven on the production path.
+//! See [`actions`] for the resource + action-model split: the shared document is
+//! the emulator's live-screen projection, while Ctrl+K exposes real PTY controls
+//! as non-undoable effects.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -36,6 +35,9 @@
 )]
 
 pub mod actions;
+mod graphics;
+
+pub use graphics::TerminalImagePlacement;
 
 pub use crate::inner::{
     Attr, CellColor, GridPos, Selection, TermModes, TerminalBackend, TerminalPerformer,

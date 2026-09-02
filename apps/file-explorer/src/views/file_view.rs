@@ -565,7 +565,7 @@ impl FileView {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_white_10,
+            ui::tokens::colors::Colors::hairline_on(tokens.colors.surfaces.raised, 26),
             None,
             &Line::new(
                 (self.rect.x0 + self.pad_x(), top + header_h),
@@ -616,7 +616,7 @@ impl FileView {
             let bg = if selected {
                 tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX]
             } else {
-                tokens.colors.surface_white_10
+                tokens.colors.lift(0.72)
             };
             scene.fill(
                 Fill::NonZero,
@@ -886,7 +886,7 @@ impl FileView {
             };
             paint_image_cover(scene, transform, rect, &img, radius);
             // A hairline frame gives a light-on-light photo a defined edge.
-            let border = theme.tokens.colors.surface_white_10;
+            let border = theme.tokens.colors.lift(0.72);
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -1001,7 +1001,7 @@ impl FileView {
                 let bg = if selected {
                     tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX]
                 } else {
-                    tokens.colors.surface_white_10
+                    tokens.colors.lift(0.72)
                 };
                 scene.fill(
                     Fill::NonZero,

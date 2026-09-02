@@ -44,7 +44,7 @@ use std::path::PathBuf;
 
 use automerge::AutoCommit;
 use qos_actions::door::{ActionAddress, ActionDescriptor};
-use qos_actions::{ActionRegistry, Resource};
+use qos_actions::{ActionContract, ActionRegistry, PermissionRequirement, Resource};
 use ui::permissions::{PermissionContext, PermissionScope, ResourceRef, Verb};
 
 /// Separator between a resource id and an action id in an address.
@@ -63,6 +63,11 @@ pub fn encode_address(address: &ActionAddress) -> String {
 /// one — an address a model made up is refused rather than looked up
 /// against a half-parsed id.
 pub fn decode_address(id: &str) -> Option<ActionAddress> {
+    let id = if let Some(rest) = id.strip_prefix("broker:") {
+        rest.split_once(':')?.1
+    } else {
+        id
+    };
     let (resource, action) = id.rsplit_once(ADDRESS_SEP)?;
     if resource.is_empty() || action.is_empty() {
         return None;
@@ -103,6 +108,9 @@ pub fn open_address(namespace: &str) -> ActionAddress {
 pub fn opens(address: &ActionAddress) -> Option<&str> {
     if address.action != OPEN_ACTION {
         return None;
+    }
+    if let Some(app_id) = address.resource.strip_prefix("app.") {
+        return (!app_id.is_empty()).then_some(app_id);
     }
     let (namespace, tail) = address.resource.split_once('.')?;
     (tail == APP_RESOURCE).then_some(namespace)
@@ -444,23 +452,28 @@ pub fn registry() -> ActionRegistry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Offer {
     /// The app that published it, by namespace.
-    pub app: &'static str,
+    pub app: String,
+    /// Exact live publisher selected by the broker catalogue. `None` only
+    /// for the agent's local editorial/open helper offers.
+    pub broker_peer_id: Option<u64>,
     pub descriptor: ActionDescriptor,
 }
 
 impl Offer {
     /// The address, in the one-string form an answer names it by.
     pub fn id(&self) -> String {
-        encode_address(&self.descriptor.address)
+        let address = encode_address(&self.descriptor.address);
+        self.broker_peer_id
+            .map_or(address.clone(), |peer| format!("broker:{peer}:{address}"))
     }
 
     pub fn address(&self) -> &ActionAddress {
         &self.descriptor.address
     }
 
-    /// Whether performing it must supply text.
-    pub fn wants_text(&self) -> bool {
-        self.descriptor.input.wants_text()
+    /// Whether performing it requires a structured argument object.
+    pub fn wants_arguments(&self) -> bool {
+        !self.descriptor.params.is_empty()
     }
 
     /// Whether the text it wants is the address of content some other
@@ -474,6 +487,28 @@ impl Offer {
         self.descriptor.input.wants_content()
     }
 
+    /// Deterministic floor for the common one-text-parameter action. Richer
+    /// shapes are deliberately left to the structured planner; guessing how
+    /// prose maps onto multiple or non-text fields would violate the schema.
+    pub fn arguments_from_literal(
+        &self,
+        instruction: &str,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        let [param] = self.descriptor.params.as_slice() else {
+            return None;
+        };
+        if !matches!(
+            param.ty,
+            qos_actions::ParamType::Text | qos_actions::ParamType::Secret
+        ) {
+            return None;
+        }
+        let literal = quoted_literal(instruction)?;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(param.name.to_string(), serde_json::Value::String(literal));
+        Some(arguments)
+    }
+
     /// One line, in the app's own words: what this does and what it does it
     /// to.
     pub fn summary(&self) -> String {
@@ -483,30 +518,65 @@ impl Offer {
             self.descriptor.resource_label,
             self.descriptor.resource_kind
         );
-        if let qos_actions::InputSpec::Text {
-            prompt, collects, ..
-        } = &self.descriptor.input
-        {
-            match collects {
-                qos_actions::Collects::Words => {
-                    let _ = write!(s, "; takes text: {prompt}");
-                }
-                // Said differently on purpose: a reader offered this
-                // alongside a rename must not conclude it can be performed
-                // by saying something.
-                qos_actions::Collects::Content => {
-                    let _ = write!(
-                        s,
-                        "; takes what an earlier step produced, not words: {prompt}"
-                    );
-                }
-            }
+        if !self.descriptor.params.is_empty() {
+            let names = self
+                .descriptor
+                .params
+                .iter()
+                .map(|param| format!("{}: {}", param.name, param.ty.label()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = write!(s, "; arguments {{{names}}}");
         }
         if let Some(d) = &self.descriptor.description {
             let _ = write!(s, ". {d}");
         }
         s
     }
+}
+
+/// Convert the broker's permission-filtered, live catalogue into the same
+/// inert offers the planner already consumes. No application registry or
+/// document reconstruction is involved: arbitrary apps appear here solely
+/// because they published a descriptor to the authenticated broker.
+pub fn broker_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Offer> {
+    surfaces
+        .iter()
+        .filter(|surface| surface.live)
+        .flat_map(|surface| {
+            surface.actions.iter().map(|action| {
+                let input = if action.input.kind == "text" {
+                    qos_actions::InputSpec::Text {
+                        prompt: action.input.prompt.clone(),
+                        placeholder: action.input.placeholder.clone(),
+                        collects: if action.input.wants_content {
+                            qos_actions::Collects::Content
+                        } else {
+                            qos_actions::Collects::Words
+                        },
+                    }
+                } else {
+                    qos_actions::InputSpec::None
+                };
+                Offer {
+                    app: surface.app_id.clone(),
+                    broker_peer_id: Some(surface.peer_id),
+                    descriptor: ActionDescriptor {
+                        address: ActionAddress::new(&action.resource, &action.action),
+                        resource_kind: action.resource_kind.clone(),
+                        resource_label: action.resource_label.clone(),
+                        action_label: action.action_label.clone(),
+                        description: action.description.clone(),
+                        locus: qos_actions::ExecutionLocus::ServerPreferred,
+                        kind: action.operation_kind.clone(),
+                        contract: action.contract.clone(),
+                        params: action.params.clone(),
+                        input,
+                    },
+                }
+            })
+        })
+        .collect()
 }
 
 /// The permission question performing `address` has to pass.
@@ -546,6 +616,21 @@ pub fn permitted(perms: &PermissionContext, address: &ActionAddress) -> bool {
     perms.check(&scope_for(address))
 }
 
+/// Check the authority the operation itself declares. The address gate stays
+/// the fallback for legacy descriptors; a read-only view must not silently be
+/// upgraded to Write, and an administrative action must not be downgraded.
+fn permitted_descriptor(perms: &PermissionContext, descriptor: &ActionDescriptor) -> bool {
+    let mut scope = scope_for(&descriptor.address);
+    scope.op = match descriptor.contract.permission {
+        PermissionRequirement::None | PermissionRequirement::Read => Verb::Read,
+        PermissionRequirement::Comment => Verb::Comment,
+        PermissionRequirement::Write => Verb::Write,
+        PermissionRequirement::Invite => Verb::Invite,
+        PermissionRequirement::Admin => Verb::Admin,
+    };
+    perms.check(&scope)
+}
+
 /// The tree `contract` publishes for `doc` as it stands, seen from `view`.
 ///
 /// Rebuilt on every call, never cached — an app's tree changes with every
@@ -570,11 +655,12 @@ pub fn offers(
         for descriptor in qos_actions::door::survey(&resources) {
             // Denied means absent, so nothing downstream can decide to
             // perform an operation it may not.
-            if !permitted(perms, &descriptor.address) {
+            if !permitted_descriptor(perms, &descriptor) {
                 continue;
             }
             out.push(Offer {
-                app: contract.namespace,
+                app: contract.namespace.to_string(),
+                broker_peer_id: None,
                 descriptor,
             });
         }
@@ -638,7 +724,8 @@ fn openable(
         .iter()
         .filter(|c| !surveyable(held, view, c.namespace))
         .map(|c| Offer {
-            app: c.namespace,
+            app: c.namespace.to_string(),
+            broker_peer_id: None,
             descriptor: ActionDescriptor {
                 address: open_address(c.namespace),
                 resource_kind: APPLICATION_KIND.to_string(),
@@ -656,6 +743,7 @@ fn openable(
                 // work only the session hosting the room can do.
                 locus: qos_actions::ExecutionLocus::ServerPreferred,
                 kind: qos_actions::OperationKind::Effect,
+                contract: ActionContract::default(),
                 params: Vec::new(),
                 input: onto.clone(),
             },
@@ -776,8 +864,7 @@ pub fn catalogue(
 
 /// Find the offer an id names, in a freshly taken survey.
 pub fn find<'a>(offers: &'a [Offer], id: &str) -> Option<&'a Offer> {
-    let address = decode_address(id)?;
-    offers.iter().find(|o| *o.address() == address)
+    offers.iter().find(|offer| offer.id() == id)
 }
 
 /// The app's own words for the operation an id names.
@@ -963,7 +1050,7 @@ pub enum NoMatch {
 pub fn from_verbs<'a>(
     rest: &str,
     offers: &'a [Offer],
-) -> Result<(&'a Offer, Option<String>), NoMatch> {
+) -> Result<(&'a Offer, serde_json::Map<String, serde_json::Value>), NoMatch> {
     let words = keywords(rest);
     if words.is_empty() || offers.is_empty() {
         return Err(NoMatch::Nothing);
@@ -1022,10 +1109,10 @@ pub fn from_verbs<'a>(
         return Err(NoMatch::Nothing);
     };
     if !collects_a_value_said(chosen) {
-        return Ok((chosen, None));
+        return Ok((chosen, serde_json::Map::new()));
     }
-    match said {
-        Some(text) => Ok((chosen, Some(text))),
+    match chosen.arguments_from_literal(rest) {
+        Some(arguments) => Ok((chosen, arguments)),
         None => Err(NoMatch::NeedsText(chosen.descriptor.action_label.clone())),
     }
 }
@@ -1041,7 +1128,7 @@ pub fn from_verbs<'a>(
 /// place. This is the question to ask of an instruction and an operation
 /// together — whether what the one said is what the other takes.
 fn collects_a_value_said(offer: &Offer) -> bool {
-    offer.wants_text() && !offer.wants_content()
+    offer.wants_arguments() && !offer.wants_content()
 }
 
 #[cfg(test)]
@@ -1121,8 +1208,18 @@ mod tests {
         label: &str,
         input: qos_actions::InputSpec,
     ) -> Offer {
+        let params = matches!(&input, qos_actions::InputSpec::Text { .. })
+            .then(|| {
+                vec![qos_actions::ActionParam::required(
+                    "value",
+                    qos_actions::ParamType::Text,
+                    "value",
+                )]
+            })
+            .unwrap_or_default();
         Offer {
-            app,
+            app: app.to_string(),
+            broker_peer_id: None,
             descriptor: ActionDescriptor {
                 address: ActionAddress::new(resource, action),
                 resource_kind: format!("{app}.thing"),
@@ -1131,7 +1228,8 @@ mod tests {
                 description: None,
                 locus: qos_actions::ExecutionLocus::ClientLocal,
                 kind: qos_actions::OperationKind::Document,
-                params: Vec::new(),
+                contract: ActionContract::default(),
+                params,
                 input,
             },
         }
@@ -1182,12 +1280,15 @@ mod tests {
             "a quoted region must reach the crop that collects one, not {}",
             chosen.descriptor.action_label,
         );
-        assert_eq!(argument.as_deref(), Some("0.25,0.25,0.5,0.5"));
+        assert_eq!(
+            argument.get("value"),
+            Some(&serde_json::Value::String("0.25,0.25,0.5,0.5".into()))
+        );
 
         let (chosen, argument) = from_verbs("crop the photograph", &offers)
             .expect("with no region said, the crop that needs none is the one that can act");
         assert_eq!(chosen.address().action, "crop-square");
-        assert_eq!(argument, None);
+        assert!(argument.is_empty());
 
         // What is gone is a false ambiguity, not the mechanism: two
         // operations that both take nothing are still not told apart by an
@@ -1396,14 +1497,14 @@ mod tests {
         let view = View::default();
 
         let empty = openable(&[], &View::default(), &perms);
-        let missing: Vec<&str> = empty.iter().map(|o| o.app).collect();
+        let missing: Vec<&str> = empty.iter().map(|o| o.app.as_str()).collect();
         assert_eq!(
             missing,
             CONTRACTS.iter().map(|c| c.namespace).collect::<Vec<_>>(),
             "an empty room is missing every app the agent speaks"
         );
         assert!(
-            empty.iter().all(|o| !o.wants_text()),
+            empty.iter().all(|o| !o.wants_arguments()),
             "opening an application takes no argument"
         );
 
@@ -1505,5 +1606,67 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn duplicate_addresses_from_two_live_publishers_remain_distinct() {
+        let surface = |peer_id| ui::collaboration::BrokerActionSurface {
+            peer_id,
+            app_id: "dev.qos.calculator".into(),
+            cluster_id: "room".into(),
+            record_id: format!("window-{peer_id}"),
+            live: true,
+            actions: vec![ui::collaboration::BrokerActionDescriptor {
+                resource: "calculator.document".into(),
+                action: "clear".into(),
+                resource_kind: "calculator.document".into(),
+                resource_label: "Calculator".into(),
+                action_label: "Clear".into(),
+                description: None,
+                operation_kind: qos_actions::OperationKind::Effect,
+                params: Vec::new(),
+                contract: qos_actions::ActionContract::default(),
+                input: ui::collaboration::BrokerActionInput {
+                    kind: "none".into(),
+                    prompt: String::new(),
+                    placeholder: String::new(),
+                    wants_content: false,
+                },
+            }],
+        };
+        let offers = broker_offers(&[surface(41), surface(42)]);
+        assert_eq!(offers.len(), 2);
+        assert_ne!(offers[0].id(), offers[1].id());
+        assert_eq!(
+            find(&offers, &offers[0].id()).unwrap().broker_peer_id,
+            Some(41)
+        );
+        assert_eq!(
+            find(&offers, &offers[1].id()).unwrap().broker_peer_id,
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn broker_prefixed_shell_launch_is_still_recognised_as_an_open() {
+        let address = ActionAddress::new("app.dev.qos.diffmerge", OPEN_ACTION);
+        let offer = Offer {
+            app: "dev.qos.diffmerge".into(),
+            broker_peer_id: Some(0),
+            descriptor: ActionDescriptor {
+                address,
+                resource_kind: APPLICATION_KIND.into(),
+                resource_label: "Diffmerge".into(),
+                action_label: "Open Diffmerge".into(),
+                description: None,
+                locus: qos_actions::ExecutionLocus::ServerPreferred,
+                kind: qos_actions::OperationKind::Effect,
+                contract: ActionContract::default(),
+                params: Vec::new(),
+                input: qos_actions::InputSpec::None,
+            },
+        };
+        let decoded = decode_address(&offer.id()).expect("broker offer id remains decodable");
+        assert_eq!(opens(&decoded), Some("dev.qos.diffmerge"));
     }
 }

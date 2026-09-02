@@ -760,7 +760,29 @@ pub struct ChatResourceCtx {
     reason = "ChatAction is always encodable (see encode's reason), and the ResourceProvider trait contract this feeds returns Vec<Resource> directly, not a Result"
 )]
 fn immediate_spec(id: &str, label: &str, action: &ChatAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, CHAT_ACTION_TYPE, action).expect("encode chat action")
+    let spec = ActionSpec::immediate(id, label, CHAT_ACTION_TYPE, action)
+        .expect("encode chat action")
+        .reversible();
+    match action {
+        ChatAction::DeleteMessage { .. } | ChatAction::DeleteChannel { .. } => spec.destructive(),
+        _ => spec,
+    }
+}
+
+/// Attach the same operational promises to prompted and immediate document
+/// actions. Chat's document executor supplies one undo boundary for each, so
+/// all are reversible; only removal of durable rows needs confirmation.
+fn annotate_contracts(resource: &mut Resource) {
+    for action in &mut resource.actions {
+        action.contract.reversible = true;
+        if action.id == "delete" {
+            let old = action.clone();
+            *action = old.destructive();
+        }
+    }
+    for child in &mut resource.children {
+        annotate_contracts(child);
+    }
 }
 
 /// A channel's palette label: `#name` for text, a speaker glyph for voice.
@@ -797,6 +819,7 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
         workspace = workspace.with_child(channel);
     }
 
+    annotate_contracts(&mut workspace);
     vec![workspace]
 }
 
@@ -1524,5 +1547,23 @@ mod tests {
         let resource = context.resource.expect("message resource");
         assert_eq!(resource.id, "chat.message:msg-9");
         assert_eq!(resource.kind, "chat.message");
+    }
+
+    #[test]
+    fn resource_actions_declare_undo_and_delete_confirmation() {
+        let doc = seeded();
+        let resources = provide_resources(&ctx_from(&doc), &doc);
+        let channel = resources[0]
+            .children
+            .iter()
+            .find(|r| r.id.as_str() == "chat.channel:c_crit")
+            .unwrap();
+        assert!(channel.actions.iter().all(|a| a.contract.reversible));
+        let delete = channel.actions.iter().find(|a| a.id == "delete").unwrap();
+        assert_eq!(delete.contract.risk, qos_actions::RiskLevel::Destructive);
+        assert_eq!(
+            delete.contract.confirmation,
+            qos_actions::ConfirmationPolicy::Confirm
+        );
     }
 }

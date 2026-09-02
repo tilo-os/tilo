@@ -3760,6 +3760,9 @@ impl Widget for TextInput {
                 multiline: self.multiline,
                 ..Default::default()
             });
+        if !self.id.is_empty() {
+            node = node.with_semantic_key(&self.id);
+        }
         if !self.secret {
             node = node.with_text_selection(
                 self.selection_anchor.unwrap_or(self.cursor_pos),

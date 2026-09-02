@@ -334,6 +334,10 @@ struct CheckArgs {
     #[arg(long)]
     no_scenarios: bool,
 
+    /// Apply rustfmt to the app package before running the remaining strict checks.
+    #[arg(long)]
+    fix: bool,
+
     /// Arguments forwarded to the Cargo test harness. Write them after `--`.
     #[arg(last = true, allow_hyphen_values = true)]
     forwarded: Vec<OsString>,
@@ -478,13 +482,17 @@ struct NewArgs {
     #[arg(long)]
     directory: Option<PathBuf>,
 
-    /// Path to the toolkit's `ui` crate. Required outside a qOS checkout.
+    /// Override the discovered toolkit `ui` crate (or set `QOS_UI_PATH`).
     #[arg(long)]
     ui_path: Option<PathBuf>,
 
     /// Print the files that would be created without writing them.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "dev")]
     dry_run: bool,
+
+    /// Enter the live rebuild/restart loop after creating the app.
+    #[arg(long, conflicts_with = "dry_run")]
+    dev: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -505,6 +513,8 @@ enum TemplateArg {
     Document,
     /// IME-capable input driving an accessible generated QR image.
     Qr,
+    /// A responsive master-detail app with durable per-item editing.
+    Workspace,
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -996,8 +1006,22 @@ fn run_check(args: CheckArgs) -> Result<()> {
         anyhow::bail!("app checks failed");
     }
 
+    let format_mode = if args.fix {
+        qos_dev::AppFormatMode::Apply
+    } else {
+        qos_dev::AppFormatMode::Check
+    };
+    let quality = qos_dev::plan_app_quality(&path, &args.forwarded, format_mode)?;
+    if args.fix {
+        println!("[check] Rust formatting (applying fixes)");
+    } else {
+        println!("[check] Rust formatting");
+    }
+    quality.format.execute()?;
+    println!("[check] app-local Clippy");
+    quality.clippy.execute()?;
     println!("[check] Rust tests and generated accessibility contract");
-    qos_dev::plan_app_task(&path, qos_dev::AppTask::Test, &args.forwarded)?.execute()?;
+    quality.test.execute()?;
 
     if !args.no_scenarios {
         println!("[check] isolated accessibility-audited scenarios");
@@ -1015,6 +1039,7 @@ fn run_check(args: CheckArgs) -> Result<()> {
 }
 
 fn run_new(args: NewArgs) -> Result<()> {
+    let start_dev = args.dev;
     let request = qos_dev::NewAppRequest {
         name: args.name,
         app_id: args.id,
@@ -1028,14 +1053,28 @@ fn run_new(args: NewArgs) -> Result<()> {
             TemplateArg::Async => qos_dev::Template::Async,
             TemplateArg::Document => qos_dev::Template::Document,
             TemplateArg::Qr => qos_dev::Template::Qr,
+            TemplateArg::Workspace => qos_dev::Template::Workspace,
         }),
         directory: args.directory,
         ui_path: args.ui_path,
         dry_run: args.dry_run,
     };
     let outcome = qos_dev::create_app_interactive(request)?;
-    println!("{}", outcome.summary());
-    Ok(())
+    if start_dev {
+        println!("{}", outcome.headline());
+        println!("\nStarting live development; press Ctrl-C to stop.");
+        qos_dev::dev_app(
+            &outcome.destination,
+            &qos_dev::DevRequest {
+                forwarded: Vec::new(),
+                watch_ui: true,
+                debounce: Duration::from_millis(150),
+            },
+        )
+    } else {
+        println!("{}", outcome.summary());
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1080,6 +1119,35 @@ mod tests {
             panic!("expected new command");
         };
         assert!(matches!(args.template, Some(TemplateArg::Qr)));
+    }
+
+    #[test]
+    fn new_exposes_the_professional_workspace_template() {
+        let cli = Cli::try_parse_from([
+            "qos-dev",
+            "new",
+            "project-studio",
+            "--template",
+            "workspace",
+        ])
+        .expect("workspace template command");
+        let Command::New(args) = cli.command else {
+            panic!("expected new command");
+        };
+        assert!(matches!(args.template, Some(TemplateArg::Workspace)));
+    }
+
+    #[test]
+    fn new_can_enter_dev_but_cannot_dev_a_dry_run() {
+        let cli = Cli::try_parse_from(["qos-dev", "new", "notes", "--dev"])
+            .expect("create-and-develop command");
+        let Command::New(args) = cli.command else {
+            panic!("expected new command");
+        };
+        assert!(args.dev);
+        assert!(!args.dry_run);
+
+        assert!(Cli::try_parse_from(["qos-dev", "new", "notes", "--dev", "--dry-run"]).is_err());
     }
 
     #[test]
@@ -1468,6 +1536,7 @@ mod tests {
             "1280x720",
             "--artifacts",
             "target/check",
+            "--fix",
             "--",
             "--nocapture",
         ])
@@ -1479,6 +1548,7 @@ mod tests {
         assert_eq!(args.viewport, Some((1280, 720)));
         assert_eq!(args.artifacts, Some(PathBuf::from("target/check")));
         assert!(!args.no_scenarios);
+        assert!(args.fix);
         assert_eq!(args.forwarded, [OsString::from("--nocapture")]);
     }
 

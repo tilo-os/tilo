@@ -229,6 +229,7 @@ impl SettingsApp {
         match self.selected {
             Category::Network => panes::network::build(),
             Category::Bluetooth => panes::bluetooth::build(),
+            Category::DeviceMesh => panes::device_mesh::build(),
             Category::Sound => panes::sound::build(),
             Category::Displays => panes::display::build(),
             Category::MouseKeyboard => panes::mouse_keyboard::build(),
@@ -285,6 +286,10 @@ impl SettingsApp {
 }
 
 impl Widget for SettingsApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["settings.open-pane"]
+    }
+
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
         use automerge::{ReadDoc, Value, transaction::Transactable};
 
@@ -514,7 +519,47 @@ impl Widget for SettingsApp {
     /// in [`crate::actions`]. Level-triggered: recomputed each frame from the
     /// shared document.
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+        if let Some(root) = resources.first_mut() {
+            for category in Category::ALL {
+                if let Some(section) = root
+                    .children
+                    .iter_mut()
+                    .find(|section| section.id.0 == format!("settings.section:{}", category.slug()))
+                    && let Ok(action) = qos_actions::ActionSpec::operation(
+                        "open",
+                        format!("Open {}", category.label()),
+                        qos_actions::OperationKind::View,
+                        "settings.open-pane",
+                        &category.slug(),
+                    )
+                {
+                    section.actions.insert(0, action);
+                }
+            }
+        }
+        resources
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) -> Result<bool, String> {
+        if kind != qos_actions::OperationKind::View || type_id != "settings.open-pane" {
+            return Ok(false);
+        }
+        let slug: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let category = Category::ALL
+            .iter()
+            .copied()
+            .find(|category| category.slug() == slug)
+            .ok_or_else(|| "Settings pane is no longer available".to_string())?;
+        self.select(category);
+        Ok(true)
     }
 
     /// Fold the settings panes into the unified Ctrl+K palette: a stateless

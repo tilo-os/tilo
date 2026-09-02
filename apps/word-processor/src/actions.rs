@@ -25,12 +25,61 @@ use qdoc::{Containers, DocMut};
 use crate::num;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
+    ResourceProvider, ResultSpec,
 };
 
 /// Registry `type_id` for every word-processor action.
 pub const WORD_PROCESSOR_ACTION_TYPE: &str = "word-processor.action";
+pub const WORD_PROCESSOR_OPERATION_TYPE: &str = "word-processor.operation";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WordProcessorOperation {
+    Open { path: Option<String> },
+    Save { path: Option<String> },
+    SaveAs { path: Option<String> },
+    Find,
+    ZoomIn,
+    ZoomOut,
+    ToggleSpellcheck,
+    ToggleMarkup,
+    ToggleStyles,
+    ToggleRuler,
+    ToggleOutline,
+    ToggleHistory,
+}
+
+pub fn decode_operation(
+    type_id: &str,
+    payload: &[u8],
+) -> Result<Option<WordProcessorOperation>, String> {
+    if type_id != WORD_PROCESSOR_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn operation(
+    id: &str,
+    label: &str,
+    kind: OperationKind,
+    value: WordProcessorOperation,
+) -> ActionSpec {
+    let spec = ActionSpec::operation(id, label, kind, WORD_PROCESSOR_OPERATION_TYPE, &value)
+        .expect("WordProcessorOperation is always serializable");
+    match value {
+        WordProcessorOperation::Open { .. }
+        | WordProcessorOperation::Save { .. }
+        | WordProcessorOperation::SaveAs { .. } => spec
+            .destructive()
+            .execution(ExecutionMode::Background { cancellable: false })
+            .returns(ResultSpec::Job),
+        _ => spec.with_contract(ActionContract::view()),
+    }
+}
 
 /// Which page region a text/formatting op addresses. Mirrors [`qdoc::model::Region`]
 /// (which is not itself serializable) so the region travels in the payload.
@@ -763,7 +812,13 @@ fn immediate_spec(id: &str, label: &str, action: &WordProcessorAction) -> Action
     // Through the constructor rather than a struct literal: `ActionSpec`
     // carries private `params`/`build` fields, so a literal cannot name
     // them and the shared defaults would be bypassed if it could.
-    ActionSpec::immediate_encoded(id, label, action.locus(), encode(action))
+    let spec =
+        ActionSpec::immediate_encoded(id, label, action.locus(), encode(action)).reversible();
+    if id.contains("delete") || id.contains("remove") {
+        spec.destructive()
+    } else {
+        spec
+    }
 }
 
 /// A short label for a structural block in the palette.
@@ -789,6 +844,105 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
         "word_processor.document",
         "Document",
     );
+
+    for (id, label, variant) in [
+        ("open", "Open document", 0_u8),
+        ("save", "Save document", 1_u8),
+        ("save-as", "Save document as", 2_u8),
+    ] {
+        root = root.with_action(
+            ActionSpec::typed_operation(
+                id,
+                label,
+                "path (omit to use the system file picker)",
+                OperationKind::Effect,
+                WORD_PROCESSOR_OPERATION_TYPE,
+                vec![ActionParam::optional_owned(
+                    "path",
+                    ParamType::Text,
+                    "Direct filesystem path; omit to open the system file picker",
+                )],
+                move |args: &ActionArgs| {
+                    let path = args
+                        .text("path")
+                        .filter(|path| !path.trim().is_empty())
+                        .map(str::to_string);
+                    let operation = match variant {
+                        0 => WordProcessorOperation::Open { path },
+                        1 => WordProcessorOperation::Save { path },
+                        _ => WordProcessorOperation::SaveAs { path },
+                    };
+                    EncodedAction::encode_operation(WORD_PROCESSOR_OPERATION_TYPE, &operation)
+                        .unwrap_or_else(|_| EncodedAction {
+                            type_id: WORD_PROCESSOR_OPERATION_TYPE.into(),
+                            payload: Vec::new(),
+                        })
+                },
+            )
+            .destructive()
+            .execution(ExecutionMode::Background { cancellable: false })
+            .returns(ResultSpec::Job),
+        );
+    }
+
+    for (id, label, kind, value) in [
+        (
+            "find",
+            "Find in document",
+            OperationKind::View,
+            WordProcessorOperation::Find,
+        ),
+        (
+            "zoom-in",
+            "Zoom in",
+            OperationKind::View,
+            WordProcessorOperation::ZoomIn,
+        ),
+        (
+            "zoom-out",
+            "Zoom out",
+            OperationKind::View,
+            WordProcessorOperation::ZoomOut,
+        ),
+        (
+            "spellcheck",
+            "Toggle spellcheck",
+            OperationKind::View,
+            WordProcessorOperation::ToggleSpellcheck,
+        ),
+        (
+            "markup",
+            "Toggle review markup",
+            OperationKind::View,
+            WordProcessorOperation::ToggleMarkup,
+        ),
+        (
+            "styles",
+            "Toggle styles panel",
+            OperationKind::View,
+            WordProcessorOperation::ToggleStyles,
+        ),
+        (
+            "ruler",
+            "Toggle ruler",
+            OperationKind::View,
+            WordProcessorOperation::ToggleRuler,
+        ),
+        (
+            "outline",
+            "Toggle outline",
+            OperationKind::View,
+            WordProcessorOperation::ToggleOutline,
+        ),
+        (
+            "history",
+            "Toggle history",
+            OperationKind::View,
+            WordProcessorOperation::ToggleHistory,
+        ),
+    ] {
+        root = root.with_action(operation(id, label, kind, value));
+    }
 
     // Document-level structural inserts, anchored on the caret.
     root = root.with_action(immediate_spec(
@@ -1239,6 +1393,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn file_operations_are_typed_background_jobs() {
+        let (state, ids) = seeded("Intro\n");
+        let ctx = WpResourceCtx {
+            caret_block: ids[0].clone(),
+            caret_offset: 0,
+            target_blocks: vec![ids[0].clone()],
+        };
+        let resources = provide_resources(&ctx, &state.doc);
+        for id in ["open", "save", "save-as"] {
+            let action = resources[0]
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .expect("file action");
+            assert_eq!(action.contract.result, ResultSpec::Job);
+            assert!(matches!(
+                action.contract.execution,
+                ExecutionMode::Background { .. }
+            ));
+            assert!(action.contract.validate_declaration().is_empty());
+        }
+    }
+
     /// Ctrl+K publishes the document resource with its structural children: an
     /// image, a table and a heading each surface as their own resource with the
     /// expected actions. Drives the real resource-builder path.
@@ -1278,15 +1456,20 @@ mod tests {
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
+        palette.set_query("Insert table");
         let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Insert table")),
             "{labels:?}"
         );
+        palette.set_query("Delete image");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Delete image")),
             "{labels:?}"
         );
+        palette.set_query("Delete table");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Delete table")),
             "{labels:?}"
