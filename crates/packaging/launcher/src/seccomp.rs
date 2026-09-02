@@ -571,7 +571,8 @@ mod tests {
                 // SAFETY: arguments are ignored because seccomp returns EPERM
                 // before the target syscall runs.
                 let result = unsafe { libc::syscall(syscall, -1_i64, 0_i64, 0_i64, 0_i64) };
-                if result != -1 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM)
+                if result != -1
+                    || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM)
                 {
                     unsafe { libc::_exit(10) };
                 }
