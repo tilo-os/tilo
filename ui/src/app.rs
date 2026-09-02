@@ -906,6 +906,30 @@ impl App {
         self.root_widget.resources(&self.state.doc)
     }
 
+    fn refresh_control_action_availability(&mut self) {
+        fn collect_addresses(
+            resources: &[qos_actions::Resource],
+            allowed: &mut std::collections::HashSet<qos_actions::ActionAddress>,
+        ) {
+            for resource in resources {
+                allowed.extend(resource.actions.iter().map(|action| {
+                    qos_actions::ActionAddress::new(resource.id.as_str(), &action.id)
+                }));
+                collect_addresses(&resource.children, allowed);
+            }
+        }
+
+        let resources = self
+            .collect_declared_resources()
+            .into_iter()
+            .filter_map(|resource| self.filter_resource_for_local_actor(resource))
+            .collect::<Vec<_>>();
+        let mut allowed = std::collections::HashSet::new();
+        collect_addresses(&resources, &mut allowed);
+        self.root_widget
+            .refresh_control_action_availability(&allowed);
+    }
+
     /// The complete machine-driveable surface: domain resources declared by
     /// the app plus ordinary controls projected from its retained semantic
     /// tree. Ctrl+K, scripts, and agents therefore consume one catalogue.
@@ -2171,6 +2195,8 @@ impl App {
     }
     pub fn set_permission_ctx(&mut self, ctx: PermissionContext) {
         self.permission_ctx = ctx;
+        self.refresh_control_action_availability();
+        self.layout_dirty = true;
     }
 
     /// The server attributes the broadcast to this user's id automatically,
@@ -2998,6 +3024,7 @@ impl App {
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Option<(f64, f64)> {
+        self.refresh_control_action_availability();
         use crate::a11y::Action;
         use crate::accesskit_bridge::{A11yTarget, resolve_node_id};
 
@@ -3113,6 +3140,7 @@ impl App {
     /// move/press/release sequence through the widget tree preserves the same
     /// behavior as hardware input instead of reporting a false success.
     fn dispatch_semantic_click(&mut self, x: f64, y: f64) -> bool {
+        self.refresh_control_action_availability();
         let Some(root_node) = self.root_node else {
             return false;
         };
@@ -3284,6 +3312,7 @@ impl App {
     /// Lets headless tests stand the App up without spinning a winit loop.
     #[doc(hidden)]
     pub fn init_layout(&mut self) {
+        self.refresh_control_action_availability();
         self.node_map.clear();
         self.root_node = Some(self.root_widget.build_layout(
             &mut self.taffy,
@@ -3835,6 +3864,7 @@ fn draw_frame_content(
     scale_factor: f32,
     t_draw_start: Option<std::time::Instant>,
 ) -> (Affine, KurboRect, u128) {
+    app.refresh_control_action_availability();
     // Widget rects are logical; this transform rasterises at the physical
     // resolution, so the frame stays crisp at any fractional scale.
     let transform = crate::scale::composite_transform(f64::from(scale_factor));
@@ -4568,6 +4598,7 @@ impl AppHandler {
         };
         let mut handled = false;
         let mut focus_target = None;
+        app.refresh_control_action_availability();
         app.root_widget.handle_event(
             &event,
             scale,
@@ -5210,6 +5241,7 @@ impl AppHandler {
         }
 
         if !handled && let Some(root_node) = app.root_node {
+            app.refresh_control_action_availability();
             let scale_factor = window.scale_factor();
             let had_floating_presentation =
                 !app.root_widget.floating_surface_presentations().is_empty();
@@ -8298,7 +8330,8 @@ mod semantic_tree_app_tests {
     use automerge::transaction::Transactable;
     use automerge::{ROOT, ReadDoc, ScalarValue, Value};
     use qos_actions::{
-        Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+        Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+        PermissionRequirement, Resource,
     };
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
@@ -8339,8 +8372,9 @@ mod semantic_tree_app_tests {
     }
 
     fn counter_resource(destructive: bool) -> Resource {
-        let bump =
-            ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump).unwrap();
+        let bump = ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump)
+            .unwrap()
+            .requiring(PermissionRequirement::Write);
         let bump = if destructive {
             bump.destructive()
         } else {
@@ -8471,6 +8505,30 @@ mod semantic_tree_app_tests {
             app.control_action_coverage()[0].status,
             ControlBindingStatus::Resolved
         );
+    }
+
+    #[test]
+    fn permission_revocation_and_restore_refresh_bound_control_presentation() {
+        let mut app = app();
+        let node = app.focusable_order[0];
+        let pointer = app.node_map[&node];
+        assert!(unsafe { (*pointer).is_enabled() });
+
+        app.set_permission_ctx(PermissionContext::from_capabilities(
+            collab_types::caps::Actor::person(None, "restricted"),
+            Vec::new(),
+        ));
+        assert!(!unsafe { (*pointer).is_enabled() });
+        assert!(!unsafe {
+            (*pointer).perform_action(
+                &crate::a11y::Action::Activate,
+                &mut app.state.doc,
+                &app.state.root,
+            )
+        });
+
+        app.set_permission_ctx(PermissionContext::permissive());
+        assert!(unsafe { (*pointer).is_enabled() });
     }
 
     #[test]
