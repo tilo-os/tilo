@@ -362,6 +362,10 @@ pub fn invoke(
 /// Invoke after an outer policy boundary has completed the action contract's
 /// confirmation step. This is intentionally separate from [`invoke`], whose
 /// default is fail-closed for consequential actions.
+///
+/// # Errors
+///
+/// Returns the same errors as [`invoke`].
 #[allow(clippy::too_many_arguments)]
 pub fn invoke_confirmed(
     doc: &mut crate::action::Doc,
@@ -472,6 +476,12 @@ pub fn invoke_json(
     )
 }
 
+/// Invoke typed arguments after an outer policy boundary has completed the
+/// action contract's confirmation step.
+///
+/// # Errors
+///
+/// Returns the same errors as [`invoke_json`].
 #[allow(clippy::too_many_arguments)]
 pub fn invoke_json_confirmed(
     doc: &mut crate::action::Doc,

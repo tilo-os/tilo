@@ -22,7 +22,7 @@ type BoolChangeCallback = Box<dyn FnMut(bool)>;
     reason = "four independent state axes, all set/read by name, not positional bool args"
 )]
 pub struct Toggle {
-    _id: String,
+    semantic_id: String,
     rect: Rect,
     is_hovered: bool,
     is_checked: bool,
@@ -46,7 +46,7 @@ pub struct Toggle {
 impl Toggle {
     pub fn new(id: &str, on_toggle_path: &str) -> Self {
         Self {
-            _id: id.to_string(),
+            semantic_id: id.to_string(),
             rect: Rect::ZERO,
             is_hovered: false,
             is_checked: false,
@@ -587,7 +587,7 @@ impl Widget for Toggle {
                 self.is_enabled(),
                 self.accessible_name.as_deref(),
             )
-            .with_semantic_key(&self._id),
+            .with_semantic_key(&self.semantic_id),
         )
     }
 
