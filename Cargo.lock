@@ -11302,6 +11302,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-app"
+version = "0.1.0"
+dependencies = [
+ "ui",
+]
+
+[[package]]
 name = "qos-bluez"
 version = "0.1.0"
 dependencies = [
