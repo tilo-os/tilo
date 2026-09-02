@@ -3,8 +3,8 @@ name: Fast quality checks
 # Compilation-heavy warnings, Clippy, docs, and release-size gates run weekly.
 # This path stays intentionally cheap so it can run on every change.
 on:
-  push:
-    branches: ["main"]
+  # Give every branch a cheap signal before it opens or updates a PR.
+  push: {}
   pull_request:
     branches: ["main"]
   workflow_dispatch:
@@ -53,6 +53,11 @@ jobs:
 
       - name: CI selector unit tests
         run: python3 -m unittest tools/tests/test_ci_select.py
+
+      - name: Codex CI watcher unit tests
+        run: |
+          python3 -m json.tool .codex/hooks.json >/dev/null
+          python3 .codex/hooks/test_watch_ci.py
 
       - name: Application text-stack contract
         run: |

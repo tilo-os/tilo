@@ -6,6 +6,10 @@ publish.workspace = true
 license.workspace = true
 description = "qOS app store — surfaces qOS registry entries and legacy Flatpak apps in one list."
 
+# The app uses the protocol types through ui's canonical re-export.
+[package.metadata.cargo-machete]
+ignored = ["qos-actions"]
+
 [lib]
 name = "store"
 path = "src/lib.rs"
