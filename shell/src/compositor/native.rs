@@ -32,6 +32,8 @@ fn params_json(params: &[crate::shell::search::action_api::ActionParam]) -> Vec<
                 "required": p.required,
                 "description": p.description,
                 "choices": p.choices,
+                "schema": p.schema,
+                "nullable": p.nullable,
             })
         })
         .collect()
@@ -1227,6 +1229,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                     // What to pass; empty for the nullary majority. A parameter list describes
                     // an invocation, it is not one, so enumeration stays side-effect-free.
                     "params": params_json(&a.params),
+                    "contract": a.contract,
                 })
             })
             .collect();
@@ -1263,8 +1266,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         })?;
         // Bind before anything is planned: a bad argument set is refused with the
         // document untouched, and the refusal names the parameter to correct.
-        let values = test_control::arg_values_from_json(args)?;
-        ActionArgs::bind(selected.params(), values)
+        ActionArgs::bind_json(selected.params(), args)
             .map_err(|e| test_control::ActionRefusal::invalid_arguments(e.to_string()))?;
         Ok(serde_json::json!({
             "provider": provider,
@@ -1272,6 +1274,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             "kind": selected.kind().label(),
             "title": selected.title(),
             "params": params_json(selected.params()),
+            "contract": selected.contract(),
         }))
     }
 
@@ -1545,7 +1548,7 @@ fn execute_invoke_action(
     args: &serde_json::Map<String, serde_json::Value>,
     fb: &FrameBuilder,
     ctx: &mut TestControlCtx,
-) -> Option<InvokeFailure> {
+) -> Result<crate::shell::search::ActionReceipt, InvokeFailure> {
     // Re-resolve rather than carry a handle from dispatch: the document is
     // mutable between planning and execution, so we run the current action or nothing.
     let chrome_handle = fb.chrome_handle();
@@ -1558,7 +1561,10 @@ fn execute_invoke_action(
         Ok(catalog) => catalog,
         Err(why) => {
             eprintln!("nirios compositor: cannot invoke ({provider}, {id}): {why}");
-            return None;
+            return Err(InvokeFailure {
+                code: "action_failed".into(),
+                message: why,
+            });
         }
     };
     // The `Ref` above is dropped with the block, so the provider's callback
@@ -1566,35 +1572,28 @@ fn execute_invoke_action(
     if let Some(selected) = catalog.select(&ResourceRef::new(provider, id)) {
         // Re-bound against *this* resolution's parameters — the catalogue was just
         // rebuilt and may have landed on a different action under the same address.
-        let bound = test_control::arg_values_from_json(args)
-            .map_err(|r| InvokeFailure {
-                code: r.code.to_string(),
-                message: r.message,
-            })
-            .and_then(|values| {
-                selected
-                    .invoke(&mut ctx.doc, &ctx.root_obj, &chrome_handle, values)
-                    .map_err(|e| InvokeFailure {
-                        code: e.code().to_string(),
-                        message: e.to_string(),
-                    })
+        let bound = selected
+            .invoke_json(&mut ctx.doc, &ctx.root_obj, &chrome_handle, args)
+            .map_err(|e| InvokeFailure {
+                code: e.code().to_string(),
+                message: e.to_string(),
             });
-        if let Err(failure) = bound {
-            // Logged and returned in the socket reply. Actions run before the reply is
-            // written, so "it ran" and "it could not run" never look alike to a caller with no screen.
-            eprintln!(
-                "nirios compositor: ({provider}, {id}) did not run: {}",
-                failure.message
-            );
-            return Some(failure);
+        match bound {
+            Ok(receipt) => Ok(receipt),
+            Err(failure) => {
+                eprintln!(
+                    "nirios compositor: ({provider}, {id}) did not run: {}",
+                    failure.message
+                );
+                Err(failure)
+            }
         }
-        None
     } else {
         let message = format!(
             "action ({provider}, {id}) vanished between resolve and invoke; nothing was run"
         );
         eprintln!("nirios compositor: {message}");
-        Some(InvokeFailure {
+        Err(InvokeFailure {
             code: "action_failed".to_string(),
             message,
         })
@@ -1613,7 +1612,7 @@ fn execute_planned_action(
     fb: &mut FrameBuilder,
     ctx: &mut TestControlCtx,
     state: Option<&mut State>,
-) -> Option<InvokeFailure> {
+) -> Option<Result<crate::shell::search::ActionReceipt, InvokeFailure>> {
     let mut state = state;
     match action {
         PlannedAction::CursorMoved { x, y } => {
@@ -1719,7 +1718,7 @@ fn execute_planned_action(
             write_snapshot_png(fb, path, drag);
         }
         PlannedAction::InvokeAction { provider, id, args } => {
-            return execute_invoke_action(provider, id, args, fb, ctx);
+            return Some(execute_invoke_action(provider, id, args, fb, ctx));
         }
     }
     None
@@ -2048,15 +2047,21 @@ fn pump_test_control_conn(
                 // A planned action that could not run replaces this command's answer.
                 // Actions execute before the reply is written; first failure wins, the rest still run.
                 let mut failed: Option<InvokeFailure> = None;
+                let mut receipt: Option<crate::shell::search::ActionReceipt> = None;
                 for action in &actions {
                     if session.is_locked() {
                         // While locked the socket is captured by the lock surface like live input
                         // — actions go to the password field; `poll_verification` delivers unlock.
                         execute_locked_action(action, lock);
-                    } else if let Some(failure) =
+                    } else if let Some(outcome) =
                         execute_planned_action(action, frame_builder, ctx, Some(state))
                     {
-                        failed.get_or_insert(failure);
+                        match outcome {
+                            Ok(admitted) => receipt = Some(admitted),
+                            Err(failure) => {
+                                failed.get_or_insert(failure);
+                            }
+                        }
                     }
                 }
                 // Re-run layout so the next command/paint sees rects post-mutation — a
@@ -2070,7 +2075,19 @@ fn pump_test_control_conn(
                         code: failure.code,
                         message: failure.message,
                     },
-                    None => resp,
+                    None => match receipt {
+                        Some(receipt) => {
+                            let action = match resp {
+                                test_control::Response::Answer(action) => action,
+                                _ => serde_json::Value::Null,
+                            };
+                            test_control::Response::Answer(serde_json::json!({
+                                "action": action,
+                                "receipt": receipt,
+                            }))
+                        }
+                        None => resp,
+                    },
                 };
                 let mut out = serialise_response(&resp);
                 out.push('\n');

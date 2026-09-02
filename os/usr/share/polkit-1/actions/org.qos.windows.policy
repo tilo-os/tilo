@@ -74,6 +74,16 @@
     <annotate key="org.freedesktop.policykit.exec.argv1">egress-close</annotate>
   </action>
 
+  <action id="org.qos.windows.egress-revoke">
+    <description>Revoke the temporary Windows internet connection</description>
+    <message>Authentication is required to revoke the temporary Windows internet connection.</message>
+    <defaults>
+      <allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/qos-windows-owner</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">egress-revoke</annotate>
+  </action>
+
   <action id="org.qos.windows.graphics-attach">
     <description>Attach a prepared graphics partition to Windows</description>
     <message>Authentication is required to attach a prepared graphics partition to Windows.</message>

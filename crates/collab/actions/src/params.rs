@@ -58,6 +58,14 @@ pub enum ParamType {
     /// accepted and widened, because `1` and `1.0` are the same rate.
     Number,
     Boolean,
+    Object,
+    Array,
+    /// Stable address of another published qOS resource.
+    Resource,
+    /// RFC 3339 timestamp.
+    DateTime,
+    /// Text that must be redacted from logs, history, and confirmation copy.
+    Secret,
 }
 
 impl ParamType {
@@ -68,6 +76,11 @@ impl ParamType {
             ParamType::Integer => "integer",
             ParamType::Number => "number",
             ParamType::Boolean => "boolean",
+            ParamType::Object => "object",
+            ParamType::Array => "array",
+            ParamType::Resource => "resource",
+            ParamType::DateTime => "datetime",
+            ParamType::Secret => "secret",
         }
     }
 }
@@ -90,6 +103,15 @@ pub struct ActionParam {
     /// quietly falling through to a default.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub choices: Vec<Str>,
+    /// JSON Schema fragment applied after the basic type check. This carries
+    /// ranges, lengths, patterns, formats, item/object schemas, and defaults
+    /// without growing a second incompatible validation vocabulary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<serde_json::Value>,
+    /// Explicitly permits JSON null. Optional means omitted; nullable means
+    /// present with no value, and callers need to distinguish the two.
+    #[serde(default)]
+    pub nullable: bool,
 }
 
 impl ActionParam {
@@ -101,6 +123,8 @@ impl ActionParam {
             required: true,
             description: Cow::Borrowed(description),
             choices: Vec::new(),
+            schema: None,
+            nullable: false,
         }
     }
 
@@ -112,6 +136,8 @@ impl ActionParam {
             required: false,
             description: Cow::Borrowed(description),
             choices: Vec::new(),
+            schema: None,
+            nullable: false,
         }
     }
 
@@ -128,6 +154,8 @@ impl ActionParam {
             required: true,
             description: description.into(),
             choices: Vec::new(),
+            schema: None,
+            nullable: false,
         }
     }
 
@@ -143,6 +171,8 @@ impl ActionParam {
             required: false,
             description: description.into(),
             choices: Vec::new(),
+            schema: None,
+            nullable: false,
         }
     }
 
@@ -152,15 +182,97 @@ impl ActionParam {
         self.choices = choices.into_iter().map(Into::into).collect();
         self
     }
+
+    #[must_use]
+    pub fn with_schema(mut self, schema: serde_json::Value) -> Self {
+        self.schema = Some(schema);
+        self
+    }
+
+    #[must_use]
+    pub fn nullable(mut self) -> Self {
+        self.nullable = true;
+        self
+    }
+
+    /// Validate this parameter's descriptor independently of any supplied
+    /// value, suitable for an untrusted publication boundary.
+    pub fn validate_declaration(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        if self.name.trim().is_empty() {
+            errors.push("parameter name must be non-empty".into());
+        }
+        if self.description.trim().is_empty() {
+            errors.push("parameter description must be non-empty".into());
+        }
+        if self.ty == ParamType::Secret && !self.choices.is_empty() {
+            errors.push("secret parameters must not publish possible values".into());
+        }
+        for choice in &self.choices {
+            let valid = match self.ty {
+                ParamType::Text => true,
+                ParamType::Integer => choice.parse::<i64>().is_ok(),
+                ParamType::Number => choice.parse::<f64>().is_ok(),
+                ParamType::Boolean => matches!(choice.as_ref(), "true" | "false"),
+                ParamType::Object => {
+                    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(choice)
+                        .is_ok()
+                }
+                ParamType::Array => serde_json::from_str::<Vec<serde_json::Value>>(choice).is_ok(),
+                ParamType::Resource => {
+                    !choice.trim().is_empty()
+                        && !choice.contains(crate::KEY_SEP)
+                        && choice.contains(':')
+                }
+                ParamType::DateTime => looks_like_rfc3339(choice),
+                ParamType::Secret => false,
+            };
+            if !valid {
+                errors.push(format!(
+                    "choice `{choice}` does not have declared type {}",
+                    self.ty.label()
+                ));
+            }
+        }
+        if let Some(schema) = &self.schema
+            && let Err(reason) = validate_schema_definition(schema)
+        {
+            errors.push(format!("invalid schema: {reason}"));
+        }
+        errors
+    }
 }
 
 /// One bound argument value.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum ArgValue {
     Text(String),
     Integer(i64),
     Number(f64),
     Boolean(bool),
+    Object(serde_json::Map<String, serde_json::Value>),
+    Array(Vec<serde_json::Value>),
+    Resource(String),
+    DateTime(String),
+    Secret(String),
+    Null,
+}
+
+impl std::fmt::Debug for ArgValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text(value) => f.debug_tuple("Text").field(value).finish(),
+            Self::Integer(value) => f.debug_tuple("Integer").field(value).finish(),
+            Self::Number(value) => f.debug_tuple("Number").field(value).finish(),
+            Self::Boolean(value) => f.debug_tuple("Boolean").field(value).finish(),
+            Self::Object(value) => f.debug_tuple("Object").field(value).finish(),
+            Self::Array(value) => f.debug_tuple("Array").field(value).finish(),
+            Self::Resource(value) => f.debug_tuple("Resource").field(value).finish(),
+            Self::DateTime(value) => f.debug_tuple("DateTime").field(value).finish(),
+            Self::Secret(_) => f.debug_tuple("Secret").field(&"[REDACTED]").finish(),
+            Self::Null => f.write_str("Null"),
+        }
+    }
 }
 
 impl ArgValue {
@@ -171,6 +283,14 @@ impl ArgValue {
             ArgValue::Integer(_) => ParamType::Integer,
             ArgValue::Number(_) => ParamType::Number,
             ArgValue::Boolean(_) => ParamType::Boolean,
+            ArgValue::Object(_) => ParamType::Object,
+            ArgValue::Array(_) => ParamType::Array,
+            ArgValue::Resource(_) => ParamType::Resource,
+            ArgValue::DateTime(_) => ParamType::DateTime,
+            ArgValue::Secret(_) => ParamType::Secret,
+            // Null is validated against `ActionParam::nullable`, so its
+            // nominal type is irrelevant. Text keeps diagnostics stable.
+            ArgValue::Null => ParamType::Text,
         }
     }
 
@@ -196,7 +316,9 @@ impl ArgValue {
                 Some(i) => Some(ArgValue::Integer(i)),
                 None => n.as_f64().map(ArgValue::Number),
             },
-            _ => None,
+            serde_json::Value::Object(value) => Some(ArgValue::Object(value.clone())),
+            serde_json::Value::Array(value) => Some(ArgValue::Array(value.clone())),
+            serde_json::Value::Null => Some(ArgValue::Null),
         }
     }
 
@@ -208,6 +330,12 @@ impl ArgValue {
             ArgValue::Number(f) => serde_json::Number::from_f64(*f)
                 .map_or(serde_json::Value::Null, serde_json::Value::Number),
             ArgValue::Boolean(b) => serde_json::Value::Bool(*b),
+            ArgValue::Object(value) => serde_json::Value::Object(value.clone()),
+            ArgValue::Array(value) => serde_json::Value::Array(value.clone()),
+            ArgValue::Resource(value) | ArgValue::DateTime(value) | ArgValue::Secret(value) => {
+                serde_json::Value::String(value.clone())
+            }
+            ArgValue::Null => serde_json::Value::Null,
         }
     }
 }
@@ -241,6 +369,10 @@ pub enum ArgError {
     Unrepresentable {
         name: String,
     },
+    Constraint {
+        name: String,
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for ArgError {
@@ -272,7 +404,10 @@ impl std::fmt::Display for ArgError {
                 allowed.join(", ")
             ),
             ArgError::Unrepresentable { name } => {
-                write!(f, "argument `{name}` must be a string, number or boolean")
+                write!(f, "argument `{name}` has an unsupported JSON value")
+            }
+            ArgError::Constraint { name, reason } => {
+                write!(f, "argument `{name}` {reason}")
             }
         }
     }
@@ -321,16 +456,52 @@ impl ActionArgs {
                 // not get.
                 return Err(ArgError::Unknown { name });
             };
-            if !value.satisfies(param.ty) {
+            if matches!(value, ArgValue::Null) && !param.nullable {
+                return Err(ArgError::Constraint {
+                    name,
+                    reason: "may not be null".into(),
+                });
+            }
+            if !matches!(value, ArgValue::Null) && !value.satisfies(param.ty) {
                 return Err(ArgError::WrongType {
                     name,
                     expected: param.ty,
                     got: value.ty(),
                 });
             }
+            match &value {
+                ArgValue::Resource(address)
+                    if address.trim().is_empty()
+                        || address.contains(crate::KEY_SEP)
+                        || !address.contains(':') =>
+                {
+                    return Err(ArgError::Constraint {
+                        name,
+                        reason: "must be a stable resource address (`kind:id`)".into(),
+                    });
+                }
+                ArgValue::DateTime(value) if !looks_like_rfc3339(value) => {
+                    return Err(ArgError::Constraint {
+                        name,
+                        reason: "must be an RFC 3339 date-time with a timezone".into(),
+                    });
+                }
+                _ => {}
+            }
+            if let Some(schema) = &param.schema {
+                validate_schema(&value.to_json(), schema).map_err(|reason| {
+                    ArgError::Constraint {
+                        name: name.clone(),
+                        reason,
+                    }
+                })?;
+            }
             if !param.choices.is_empty() {
                 let got = match &value {
-                    ArgValue::Text(s) => s.clone(),
+                    ArgValue::Text(s)
+                    | ArgValue::Resource(s)
+                    | ArgValue::DateTime(s)
+                    | ArgValue::Secret(s) => s.clone(),
                     other => other.to_json().to_string(),
                 };
                 if !param.choices.iter().any(|c| c.as_ref() == got.as_str()) {
@@ -370,7 +541,22 @@ impl ActionArgs {
     ) -> Result<Self, ArgError> {
         let mut pairs = Vec::with_capacity(supplied.len());
         for (name, value) in supplied {
-            let Some(v) = ArgValue::from_json(value) else {
+            let Some(param) = params.iter().find(|param| param.name.as_ref() == name) else {
+                return Err(ArgError::Unknown { name: name.clone() });
+            };
+            let value = match (param.ty, value) {
+                (ParamType::Resource, serde_json::Value::String(value)) => {
+                    Some(ArgValue::Resource(value.clone()))
+                }
+                (ParamType::DateTime, serde_json::Value::String(value)) => {
+                    Some(ArgValue::DateTime(value.clone()))
+                }
+                (ParamType::Secret, serde_json::Value::String(value)) => {
+                    Some(ArgValue::Secret(value.clone()))
+                }
+                _ => ArgValue::from_json(value),
+            };
+            let Some(v) = value else {
                 return Err(ArgError::Unrepresentable { name: name.clone() });
             };
             pairs.push((name.clone(), v));
@@ -381,7 +567,12 @@ impl ActionArgs {
     /// The text bound to `name`, if any.
     pub fn text(&self, name: &str) -> Option<&str> {
         match self.values.get(name) {
-            Some(ArgValue::Text(s)) => Some(s.as_str()),
+            Some(
+                ArgValue::Text(s)
+                | ArgValue::Resource(s)
+                | ArgValue::DateTime(s)
+                | ArgValue::Secret(s),
+            ) => Some(s.as_str()),
             _ => None,
         }
     }
@@ -434,5 +625,398 @@ impl ActionArgs {
             .iter()
             .map(|(k, v)| (k.clone(), v.to_json()))
             .collect()
+    }
+}
+
+fn looks_like_rfc3339(value: &str) -> bool {
+    chrono::DateTime::parse_from_rfc3339(value).is_ok()
+}
+
+/// Validate the commonly useful, deterministic JSON Schema vocabulary used by
+/// action inputs and outputs. Unknown annotations are intentionally ignored;
+/// all assertion keywords accepted here are enforced centrally.
+pub(crate) fn validate_schema(
+    value: &serde_json::Value,
+    schema: &serde_json::Value,
+) -> Result<(), String> {
+    let Some(schema) = schema.as_object() else {
+        return Err("has a schema that is not an object".into());
+    };
+    if let Some(expected) = schema.get("type") {
+        let matches_type = |name: &str| match name {
+            "null" => value.is_null(),
+            "boolean" => value.is_boolean(),
+            "object" => value.is_object(),
+            "array" => value.is_array(),
+            "number" => value.is_number(),
+            "integer" => value
+                .as_number()
+                .is_some_and(|number| number.as_i64().is_some() || number.as_u64().is_some()),
+            "string" => value.is_string(),
+            _ => false,
+        };
+        let valid = expected.as_str().is_some_and(matches_type)
+            || expected.as_array().is_some_and(|types| {
+                !types.is_empty()
+                    && types.iter().all(serde_json::Value::is_string)
+                    && types
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .any(matches_type)
+            });
+        if !valid {
+            return Err(format!("must have JSON Schema type {expected}"));
+        }
+    }
+    if let Some(values) = schema.get("enum").and_then(serde_json::Value::as_array)
+        && !values.contains(value)
+    {
+        return Err("is not one of the allowed values".into());
+    }
+    if let Some(expected) = schema.get("const")
+        && value != expected
+    {
+        return Err("does not equal the required value".into());
+    }
+    if let Some(number) = value.as_f64() {
+        if let Some(minimum) = schema.get("minimum").and_then(serde_json::Value::as_f64)
+            && number < minimum
+        {
+            return Err(format!("must be at least {minimum}"));
+        }
+        if let Some(maximum) = schema.get("maximum").and_then(serde_json::Value::as_f64)
+            && number > maximum
+        {
+            return Err(format!("must be at most {maximum}"));
+        }
+    }
+    if let Some(text) = value.as_str() {
+        let length = text.chars().count() as u64;
+        if let Some(minimum) = schema.get("minLength").and_then(serde_json::Value::as_u64)
+            && length < minimum
+        {
+            return Err(format!("must contain at least {minimum} characters"));
+        }
+        if let Some(maximum) = schema.get("maxLength").and_then(serde_json::Value::as_u64)
+            && length > maximum
+        {
+            return Err(format!("must contain at most {maximum} characters"));
+        }
+        if let Some(pattern) = schema.get("pattern") {
+            let pattern = pattern
+                .as_str()
+                .ok_or_else(|| "has a non-string schema pattern".to_string())?;
+            let expression = regex::Regex::new(pattern)
+                .map_err(|error| format!("has an invalid schema pattern: {error}"))?;
+            if !expression.is_match(text) {
+                return Err(format!("must match pattern `{pattern}`"));
+            }
+        }
+        if let Some(format) = schema.get("format") {
+            let format = format
+                .as_str()
+                .ok_or_else(|| "has a non-string schema format".to_string())?;
+            let valid = match format {
+                "date-time" => looks_like_rfc3339(text),
+                "uuid" => uuid::Uuid::parse_str(text).is_ok(),
+                "uri" => text.split_once(':').is_some_and(|(scheme, rest)| {
+                    !scheme.is_empty()
+                        && !rest.is_empty()
+                        && scheme
+                            .chars()
+                            .next()
+                            .is_some_and(|ch| ch.is_ascii_alphabetic())
+                        && scheme
+                            .chars()
+                            .skip(1)
+                            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
+                        && !text.chars().any(char::is_whitespace)
+                }),
+                _ => return Err(format!("uses unsupported schema format `{format}`")),
+            };
+            if !valid {
+                return Err(format!("must match format `{format}`"));
+            }
+        }
+    }
+    if let Some(items) = value.as_array() {
+        if let Some(minimum) = schema.get("minItems").and_then(serde_json::Value::as_u64)
+            && items.len() < minimum as usize
+        {
+            return Err(format!("must contain at least {minimum} items"));
+        }
+        if let Some(maximum) = schema.get("maxItems").and_then(serde_json::Value::as_u64)
+            && items.len() > maximum as usize
+        {
+            return Err(format!("must contain at most {maximum} items"));
+        }
+        if let Some(item_schema) = schema.get("items") {
+            for (index, item) in items.iter().enumerate() {
+                validate_schema(item, item_schema)
+                    .map_err(|reason| format!("item {index} {reason}"))?;
+            }
+        }
+    }
+    if let Some(object) = value.as_object() {
+        if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
+            for key in required.iter().filter_map(serde_json::Value::as_str) {
+                if !object.contains_key(key) {
+                    return Err(format!("must contain property `{key}`"));
+                }
+            }
+        }
+        if let Some(properties) = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+        {
+            for (key, property_schema) in properties {
+                if let Some(property) = object.get(key) {
+                    validate_schema(property, property_schema)
+                        .map_err(|reason| format!("property `{key}` {reason}"))?;
+                }
+            }
+            if schema.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
+                for key in object.keys() {
+                    if !properties.contains_key(key) {
+                        return Err(format!("contains unknown property `{key}`"));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate one JSON value against the deterministic JSON Schema subset used
+/// by qOS action contracts.
+pub fn validate_json_schema(
+    value: &serde_json::Value,
+    schema: &serde_json::Value,
+) -> Result<(), String> {
+    validate_schema(value, schema)
+}
+
+/// Validate the assertion vocabulary itself before a surface is published.
+/// Runtime value validation is too late to discover a malformed regular
+/// expression or an unsupported format: callers must be able to trust every
+/// schema they enumerate.
+pub(crate) fn validate_schema_definition(schema: &serde_json::Value) -> Result<(), String> {
+    let object = schema
+        .as_object()
+        .ok_or_else(|| "schema must be an object".to_string())?;
+    const ASSERTIONS: &[&str] = &[
+        "type",
+        "enum",
+        "const",
+        "minimum",
+        "maximum",
+        "minLength",
+        "maxLength",
+        "pattern",
+        "format",
+        "minItems",
+        "maxItems",
+        "items",
+        "required",
+        "properties",
+        "additionalProperties",
+    ];
+    const ANNOTATIONS: &[&str] = &[
+        "$schema",
+        "$id",
+        "$comment",
+        "title",
+        "description",
+        "default",
+        "examples",
+        "deprecated",
+        "readOnly",
+        "writeOnly",
+    ];
+    for keyword in object.keys() {
+        if !ASSERTIONS.contains(&keyword.as_str()) && !ANNOTATIONS.contains(&keyword.as_str()) {
+            return Err(format!(
+                "schema uses unsupported keyword `{keyword}`; qOS rejects unknown keywords instead of silently weakening a contract"
+            ));
+        }
+    }
+    if let Some(types) = object.get("type") {
+        let supported = |name: &str| {
+            matches!(
+                name,
+                "null" | "boolean" | "object" | "array" | "number" | "integer" | "string"
+            )
+        };
+        let valid = types.as_str().is_some_and(supported)
+            || types.as_array().is_some_and(|types| {
+                !types.is_empty()
+                    && types
+                        .iter()
+                        .all(|value| value.as_str().is_some_and(supported))
+            });
+        if !valid {
+            return Err("schema has an unsupported `type`".into());
+        }
+    }
+    if let Some(pattern) = object.get("pattern") {
+        let pattern = pattern
+            .as_str()
+            .ok_or_else(|| "schema `pattern` must be a string".to_string())?;
+        regex::Regex::new(pattern)
+            .map_err(|error| format!("schema has an invalid pattern: {error}"))?;
+    }
+    if let Some(format) = object.get("format") {
+        let format = format
+            .as_str()
+            .ok_or_else(|| "schema `format` must be a string".to_string())?;
+        if !matches!(format, "date-time" | "uuid" | "uri") {
+            return Err(format!("schema uses unsupported format `{format}`"));
+        }
+    }
+    if let Some(required) = object.get("required")
+        && !required
+            .as_array()
+            .is_some_and(|values| values.iter().all(serde_json::Value::is_string))
+    {
+        return Err("schema `required` must be an array of strings".into());
+    }
+    if object.get("enum").is_some_and(|values| !values.is_array()) {
+        return Err("schema `enum` must be an array".into());
+    }
+    if object
+        .get("additionalProperties")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err("schema `additionalProperties` must be a boolean".into());
+    }
+    if let Some(properties) = object.get("properties") {
+        let properties = properties
+            .as_object()
+            .ok_or_else(|| "schema `properties` must be an object".to_string())?;
+        for (name, child) in properties {
+            validate_schema_definition(child)
+                .map_err(|reason| format!("property `{name}` {reason}"))?;
+        }
+    }
+    if let Some(items) = object.get("items") {
+        validate_schema_definition(items).map_err(|reason| format!("items {reason}"))?;
+    }
+    for keyword in ["minimum", "maximum"] {
+        if object.get(keyword).is_some_and(|value| !value.is_number()) {
+            return Err(format!("schema `{keyword}` must be a number"));
+        }
+    }
+    for keyword in ["minLength", "maxLength", "minItems", "maxItems"] {
+        if object
+            .get(keyword)
+            .is_some_and(|value| value.as_u64().is_none())
+        {
+            return Err(format!("schema `{keyword}` must be a non-negative integer"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod rich_schema_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn structured_arguments_are_typed_and_recursively_validated() {
+        let params = vec![
+            ActionParam::required("request", ParamType::Object, "request").with_schema(json!({
+                "required": ["items"],
+                "additionalProperties": false,
+                "properties": {
+                    "items": {"minItems": 1, "items": {"minimum": 1}}
+                }
+            })),
+        ];
+        let good = json!({"request": {"items": [1, 2]}})
+            .as_object()
+            .cloned()
+            .unwrap();
+        assert!(ActionArgs::bind_json(&params, &good).is_ok());
+
+        let bad = json!({"request": {"items": [0], "surprise": true}})
+            .as_object()
+            .cloned()
+            .unwrap();
+        assert!(matches!(
+            ActionArgs::bind_json(&params, &bad),
+            Err(ArgError::Constraint { .. })
+        ));
+
+        assert!(
+            validate_schema(
+                &json!("#A0b1C2"),
+                &json!({
+                    "type": "string",
+                    "pattern": "^#[0-9A-Fa-f]{6}$"
+                })
+            )
+            .is_ok()
+        );
+        assert!(validate_schema(&json!(42), &json!({"type": "string"})).is_err());
+        assert!(
+            validate_schema(
+                &json!("red"),
+                &json!({
+                    "type": "string",
+                    "pattern": "^#[0-9A-Fa-f]{6}$"
+                })
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn resource_datetime_secret_and_nullable_values_round_trip() {
+        let params = vec![
+            ActionParam::required("resource", ParamType::Resource, "target"),
+            ActionParam::required("at", ParamType::DateTime, "time"),
+            ActionParam::required("token", ParamType::Secret, "credential"),
+            ActionParam::optional("metadata", ParamType::Object, "metadata").nullable(),
+        ];
+        let supplied = json!({
+            "resource": "files.entry:abc",
+            "at": "2026-09-01T00:00:00Z",
+            "token": "not-for-logs",
+            "metadata": null
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        let bound = ActionArgs::bind_json(&params, &supplied).unwrap();
+        assert_eq!(bound.text("resource"), Some("files.entry:abc"));
+        assert_eq!(bound.to_json(), supplied);
+
+        for invalid in [
+            json!({"resource": "label only", "at": "2026-09-01T00:00:00Z", "token": "x"}),
+            json!({"resource": "files.entry:abc", "at": "tomorrow", "token": "x"}),
+            json!({"resource": "files.entry:abc", "at": "2026-09-01T00:00:00", "token": "x"}),
+            json!({"resource": "files.entry:abc", "at": "2026-02-31T00:00:00Z", "token": "x"}),
+        ] {
+            assert!(matches!(
+                ActionArgs::bind_json(&params, invalid.as_object().unwrap()),
+                Err(ArgError::Constraint { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn malformed_schema_is_rejected_before_it_describes_values() {
+        assert!(validate_schema_definition(&json!({"pattern":"["})).is_err());
+        assert!(validate_schema_definition(&json!({"format":"qos-maybe"})).is_err());
+        assert!(
+            validate_schema_definition(&json!({
+                "properties": {"nested": {"type":"mystery"}}
+            }))
+            .is_err()
+        );
+        assert!(validate_schema_definition(&json!({"minProperties": 1})).is_err());
+        assert!(validate_schema_definition(&json!({"additionalProperties": {}})).is_err());
+        assert!(validate_schema_definition(&json!({"title": "accepted annotation"})).is_ok());
     }
 }

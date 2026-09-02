@@ -39,6 +39,9 @@ use crate::model::{
     AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, Presence, Screen,
     Workspace,
 };
+use crate::qos_route::{
+    QosRouteDecision, QosRouteProvider, UnavailableQosRouteProvider, short_device_id,
+};
 use crate::session::{SessionStatus, live_sessions_enabled};
 use crate::ssh::{SshConfig, SshSession};
 use crate::theme_ext::ColorExt;
@@ -67,6 +70,16 @@ impl LiveSession {
             LiveSession::Preview(s) => s.clone(),
         }
     }
+}
+
+enum PendingResourceOperation {
+    Connect {
+        invocation: qos_actions::InvocationId,
+    },
+    SshInput {
+        invocation: qos_actions::InvocationId,
+        acknowledgement: std::sync::mpsc::Receiver<Result<(), String>>,
+    },
 }
 
 /// Accent of a non-live status surface (drives the toolbar dot colour).
@@ -282,6 +295,11 @@ pub struct RemoteApp {
     fullscreen: bool,
     /// Discoverable qOS peers for the form's device picker.
     qos_devices: Vec<QosDevice>,
+    /// Authenticated device-mesh route source injected by the shell. The live
+    /// app defaults to an explicitly unavailable provider until runtime
+    /// discovery is attached; saved host labels are never treated as proof of
+    /// reachability.
+    qos_routes: Arc<dyn QosRouteProvider>,
 
     /// Root rect, from `apply_layout`.
     rect: Rect,
@@ -299,6 +317,7 @@ pub struct RemoteApp {
     /// the undo boundary and applies each action through the executor, so the
     /// on-screen affordances and the Ctrl+K palette share one replayable path.
     actions: ui::ActionHost,
+    pending_resource_operation: Option<PendingResourceOperation>,
 
     /// Eased open/closed state of the primary navigation rail. On a wide
     /// window the rail is docked and open; on a narrow window it collapses
@@ -355,17 +374,25 @@ impl RemoteApp {
             scale_to_fit: true,
             fullscreen: false,
             qos_devices,
+            qos_routes: Arc::new(UnavailableQosRouteProvider),
             rect: Rect::ZERO,
             hits: Vec::new(),
             pointer: Point::ZERO,
             dirty: true,
             seeded: false,
             actions: ui::ActionHost::new(),
+            pending_resource_operation: None,
             rail: FlapState::open_when_docked(),
             rail_layout: SplitLayout::Docked,
             rail_snap: None,
             last_tick: std::time::Instant::now(),
         }
+    }
+
+    /// Attach the shell/device runtime's authenticated route source.
+    pub fn with_qos_route_provider(mut self, provider: Arc<dyn QosRouteProvider>) -> Self {
+        self.qos_routes = provider;
+        self
     }
 
     /// Stage a deterministic state for the single-frame `--shots` renderer.
@@ -518,14 +545,7 @@ impl RemoteApp {
                 // would push the remote selection into the local clipboard.
             }
             Action::Disconnect => {
-                // Dropping the live session closes the transport (the worker
-                // thread sees its channel close and disconnects).
-                self.live = None;
-                self.fb_image = None;
-                self.fb_canvas = None;
-                self.session_for = None;
-                self.fullscreen = false;
-                self.screen = Screen::List;
+                self.disconnect_session();
             }
             Action::PickQosDevice(i) => {
                 if let Some(d) = self.qos_devices.get(i) {
@@ -603,7 +623,7 @@ impl RemoteApp {
         };
         // Older documents may contain RDP or qOS Relay profiles. Keep them
         // editable, but never make an unavailable transport look connectable.
-        if !c.kind.is_supported() {
+        if !c.kind.can_attempt() {
             self.selected = Some(id);
             return;
         }
@@ -614,7 +634,7 @@ impl RemoteApp {
         self.vnc_buttons = 0;
         self.live = None;
         if live_sessions_enabled() {
-            self.live = Some(Self::start_live(&c));
+            self.live = Some(self.start_live(&c));
             // Record the attempt in "last used"; presence is only marked
             // Online once the transport actually reports Connected (in draw).
             if let Some(m) = self.workspace.get_mut(id) {
@@ -624,9 +644,20 @@ impl RemoteApp {
         self.screen = Screen::Session { id };
     }
 
+    fn disconnect_session(&mut self) {
+        // Dropping the live session closes the transport (the worker thread
+        // sees its channel close and disconnects).
+        self.live = None;
+        self.fb_image = None;
+        self.fb_canvas = None;
+        self.session_for = None;
+        self.fullscreen = false;
+        self.screen = Screen::List;
+    }
+
     /// Build the real transport for a connection from its kind + auth and
     /// the process environment (secrets are never stored in the document).
-    fn start_live(c: &Connection) -> LiveSession {
+    fn start_live(&self, c: &Connection) -> LiveSession {
         match c.kind {
             ConnectionKind::Ssh => {
                 let prefer_key = matches!(c.auth, AuthMethod::PublicKey);
@@ -662,6 +693,17 @@ impl RemoteApp {
             }) {
                 Ok(s) => LiveSession::Vnc(s),
                 Err(e) => LiveSession::Error(e.to_string()),
+            },
+            ConnectionKind::Qos => match self.qos_routes.route(&c.host) {
+                Ok(QosRouteDecision::Direct) => LiveSession::Error(
+                    "A direct authenticated route is available, but the local qOS workspace-session adapter is not attached in this build. No input was sent; the target must still grant control and its input firewall remains authoritative."
+                        .to_string(),
+                ),
+                Ok(QosRouteDecision::Relayed { via }) => LiveSession::Error(format!(
+                    "An encrypted relay route via server {} is available, but the local qOS workspace-session adapter is not attached in this build. No input was sent; the target must still grant control and its input firewall remains authoritative.",
+                    short_device_id(&via)
+                )),
+                Err(error) => LiveSession::Error(error),
             },
             other => LiveSession::Error(format!(
                 "{} transport is not implemented yet",
@@ -1119,12 +1161,27 @@ struct EventRouteCtx<'a> {
 // ===========================================================================
 
 impl Widget for RemoteApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::REMOTE_OPERATION_TYPE]
+    }
+
     /// Publish each saved connection as a Ctrl+K resource (rename / favourite /
     /// delete) so the shell's one action palette scopes to them. Delegates to the
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+        if let Some(id) = self.session_for
+            && let Some(connection) = self.workspace.get(id)
+        {
+            let can_send_text = matches!(
+                &self.live,
+                Some(LiveSession::Ssh(session))
+                    if session.status() == SessionStatus::Connected
+            );
+            resources.push(crate::actions::session_resource(connection, can_send_text));
+        }
+        resources
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -1142,26 +1199,191 @@ impl Widget for RemoteApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != qos_actions::OperationKind::Effect
-            || type_id != crate::actions::REMOTE_CONNECT_OPERATION_TYPE
-        {
+        if kind != qos_actions::OperationKind::Effect {
             return Ok(false);
         }
-        let encoded_id = std::str::from_utf8(payload)
-            .map_err(|_| "connection id payload is not UTF-8".to_string())?;
-        let Some(encoded_id) = encoded_id
-            .strip_prefix('"')
-            .and_then(|value| value.strip_suffix('"'))
-        else {
-            return Err("connection id payload is not a JSON string".to_string());
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
         };
-        let id = uuid::Uuid::parse_str(encoded_id)
-            .map_err(|_| "invalid Remote connection id".to_string())?;
-        if self.workspace.get(id).is_none() {
-            return Err("saved connection no longer exists".to_string());
+        match operation {
+            crate::actions::RemoteOperation::Connect { connection_id } => {
+                if self.workspace.get(connection_id).is_none() {
+                    return Err("saved connection no longer exists".to_string());
+                }
+                self.open_session(connection_id);
+            }
+            crate::actions::RemoteOperation::Disconnect { connection_id } => {
+                if self.session_for != Some(connection_id) {
+                    return Err("that remote session is no longer active".to_string());
+                }
+                self.disconnect_session();
+            }
+            crate::actions::RemoteOperation::SendText {
+                connection_id,
+                text,
+            } => {
+                if self.session_for != Some(connection_id) {
+                    return Err("that remote session is no longer active".to_string());
+                }
+                match &self.live {
+                    Some(LiveSession::Ssh(session))
+                        if session.status() == SessionStatus::Connected =>
+                    {
+                        session.send_input(text.into_bytes());
+                        self.dirty = true;
+                    }
+                    _ => return Err("text input requires a connected SSH terminal".to_string()),
+                }
+            }
         }
-        self.open_session(id);
         Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != qos_actions::OperationKind::Effect {
+            return Ok(None);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        if self.pending_resource_operation.is_some() {
+            return Err("another remote operation is still running".into());
+        }
+        match operation {
+            crate::actions::RemoteOperation::Connect { connection_id } => {
+                if !live_sessions_enabled() {
+                    return Err("live remote sessions are disabled".into());
+                }
+                if self.workspace.get(connection_id).is_none() {
+                    return Err("saved connection no longer exists".into());
+                }
+                self.open_session(connection_id);
+                match self.live.as_ref().map(LiveSession::status) {
+                    Some(SessionStatus::Connecting) => {
+                        self.pending_resource_operation =
+                            Some(PendingResourceOperation::Connect { invocation });
+                        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+                    }
+                    Some(SessionStatus::Connected) => {
+                        Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                            qos_actions::ActionOutput::default(),
+                        )))
+                    }
+                    Some(SessionStatus::Failed(message)) => Err(message),
+                    Some(SessionStatus::Closed) | None => {
+                        Err("remote transport did not start".into())
+                    }
+                }
+            }
+            crate::actions::RemoteOperation::SendText {
+                connection_id,
+                text,
+            } => {
+                if self.session_for != Some(connection_id) {
+                    return Err("that remote session is no longer active".into());
+                }
+                let acknowledgement = match &self.live {
+                    Some(LiveSession::Ssh(session))
+                        if session.status() == SessionStatus::Connected =>
+                    {
+                        session.send_input_ack(text.into_bytes())?
+                    }
+                    _ => return Err("text input requires a connected SSH terminal".into()),
+                };
+                self.pending_resource_operation = Some(PendingResourceOperation::SshInput {
+                    invocation,
+                    acknowledgement,
+                });
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            crate::actions::RemoteOperation::Disconnect { .. } => {
+                if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+                    return Ok(None);
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                    qos_actions::ActionOutput::default(),
+                )))
+            }
+        }
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        let update = match self.pending_resource_operation.as_ref()? {
+            PendingResourceOperation::Connect {
+                invocation: pending,
+            } if *pending == invocation => match self.live.as_ref().map(LiveSession::status) {
+                Some(SessionStatus::Connecting) => return None,
+                Some(SessionStatus::Connected) => qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput::default(),
+                },
+                Some(SessionStatus::Failed(message)) => qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "remote.connect_failed".into(),
+                        message,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+                Some(SessionStatus::Closed) | None => qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "remote.connection_closed".into(),
+                        message: "remote connection closed before it became ready".into(),
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            },
+            PendingResourceOperation::SshInput {
+                invocation: pending,
+                acknowledgement,
+            } if *pending == invocation => match acknowledgement.try_recv() {
+                Ok(Ok(())) => qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput::default(),
+                },
+                Ok(Err(message)) => qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "remote.input_failed".into(),
+                        message,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+                Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    qos_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: qos_actions::ActionFailure {
+                            code: "remote.input_worker_lost".into(),
+                            message: "remote input worker stopped before acknowledgement".into(),
+                            details: None,
+                            retryable: false,
+                        },
+                    }
+                }
+            },
+            _ => return None,
+        };
+        self.pending_resource_operation = None;
+        Some(update)
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
@@ -2008,7 +2230,7 @@ impl RemoteApp {
         let bg = if active {
             tokens.colors.accent[5].at_alpha(0.20)
         } else if hovered {
-            tokens.colors.surface_white_10
+            tokens.colors.lift(0.72)
         } else {
             Color::TRANSPARENT
         };
@@ -2416,14 +2638,18 @@ impl RemoteApp {
             row.x1 - 16.0,
             row.center().y + 16.0,
         );
-        if c.kind.is_supported() {
+        if c.kind.can_attempt() {
             self.draw_button(
                 scene,
                 transform,
                 text_renderer,
                 theme,
                 connect,
-                "Connect",
+                if c.kind == ConnectionKind::Qos {
+                    "Check route"
+                } else {
+                    "Connect"
+                },
                 true,
             );
             self.push_hit(connect, Action::Connect(c.id));
@@ -2787,7 +3013,7 @@ impl RemoteApp {
                 let bg = if picked {
                     tokens.colors.accent[5].at_alpha(0.16)
                 } else if hovered {
-                    tokens.colors.surface_white_10
+                    tokens.colors.lift(0.72)
                 } else {
                     tokens.colors.neutral[0]
                 };
@@ -3194,7 +3420,7 @@ impl RemoteApp {
         let bg = if active {
             tokens.colors.accent[5]
         } else if hovered {
-            tokens.colors.surface_white_10
+            tokens.colors.lift(0.72)
         } else {
             tokens.colors.neutral[0]
         };
@@ -3431,7 +3657,7 @@ impl RemoteApp {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_white_20,
+            ui::tokens::colors::Colors::hairline_on(tokens.colors.surfaces.raised, 51),
             None,
             &rr,
         );
@@ -3848,7 +4074,7 @@ impl RemoteApp {
         let hovered = rect.contains(self.pointer);
         let rr = RoundedRect::from_rect(rect, 8.0);
         let bg = if hovered {
-            tokens.colors.surface_white_10
+            tokens.colors.lift(0.72)
         } else {
             tokens.colors.neutral[0]
         };
@@ -4434,6 +4660,31 @@ mod tests {
             app.live.is_none(),
             "gated build opens no framebuffer transport"
         );
+    }
+
+    #[test]
+    fn qos_session_setup_consumes_route_provider_without_faking_transport() {
+        struct DirectRoute;
+        impl QosRouteProvider for DirectRoute {
+            fn route(&self, _target_hint: &str) -> Result<QosRouteDecision, String> {
+                Ok(QosRouteDecision::Direct)
+            }
+        }
+
+        let app = RemoteApp::new_demo().with_qos_route_provider(Arc::new(DirectRoute));
+        let connection = app
+            .workspace
+            .connections()
+            .iter()
+            .find(|connection| connection.kind == ConnectionKind::Qos)
+            .expect("demo qOS connection");
+        let status = app.start_live(connection).status();
+        let SessionStatus::Failed(message) = status else {
+            panic!("route-only bootstrap must remain an honest failed session")
+        };
+        assert!(message.contains("direct authenticated route"));
+        assert!(message.contains("target must still grant control"));
+        assert!(message.contains("No input was sent"));
     }
 
     #[test]

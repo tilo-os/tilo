@@ -357,6 +357,7 @@ pub struct DataTable<Row> {
     vbar: Scrollbar,
     drag_scroll: DragScroller,
     momentum: ScrollMomentum,
+    reduce_motion: bool,
     last_tick: Option<Instant>,
 }
 
@@ -409,6 +410,7 @@ impl<Row> DataTable<Row> {
             vbar: Scrollbar::vertical(),
             drag_scroll: DragScroller::new(),
             momentum: ScrollMomentum::new(),
+            reduce_motion: false,
             last_tick: None,
         }
     }
@@ -1497,8 +1499,12 @@ impl<Row> DataTable<Row> {
         }
         if let Some(drag) = self.drag_scroll.finish(Instant::now()) {
             if drag.dragged {
-                self.momentum.fling(drag.velocity);
-                self.last_tick = Some(Instant::now());
+                if self.reduce_motion {
+                    self.momentum.stop();
+                } else {
+                    self.momentum.fling(drag.velocity);
+                    self.last_tick = Some(Instant::now());
+                }
             } else {
                 self.select_row_at_cursor(modifiers, handled, focus_target, node_id);
             }
@@ -1515,8 +1521,12 @@ impl<Row> DataTable<Row> {
         if self.internal_scroll() {
             self.drag_scroll.cancel();
             let dy = match delta {
-                MouseScrollDelta::LineDelta(_, y) => {
+                MouseScrollDelta::LineDelta(_, y) if !self.reduce_motion => {
                     self.momentum.push(f64::from(*y) * -WHEEL_LINE_PX)
+                }
+                MouseScrollDelta::LineDelta(_, y) => {
+                    self.momentum.stop();
+                    f64::from(*y) * -WHEEL_LINE_PX
                 }
                 MouseScrollDelta::PixelDelta(pp) => {
                     self.momentum.stop();
@@ -1771,6 +1781,10 @@ impl<Row: 'static> Widget for DataTable<Row> {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.reduce_motion = theme.reduce_motion;
+        if self.reduce_motion {
+            self.momentum.stop();
+        }
         self.reconcile_mounted_cells();
         let mut child_nodes = Vec::with_capacity(self.mounted_cells.len());
         for cell in &mut self.mounted_cells {
@@ -1888,7 +1902,8 @@ impl<Row: 'static> Widget for DataTable<Row> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if theme.reduce_motion {
+        self.reduce_motion = theme.reduce_motion;
+        if self.reduce_motion {
             self.momentum.stop();
         }
         scene.fill(
@@ -2357,6 +2372,7 @@ mod tests {
     use crate::widget::Button;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+    use std::time::Duration;
 
     #[derive(Clone)]
     struct R {
@@ -3907,21 +3923,28 @@ mod tests {
     }
 
     #[test]
-    fn reduced_motion_stops_collection_momentum() {
-        let (mut table, _tree, _node) = scrolling_table();
+    fn reduced_motion_keeps_direct_scroll_without_wheel_or_drag_decay() {
+        let (mut table, _tree, node) = scrolling_table();
+        table.reduce_motion = true;
         let mut handled = false;
         table.on_wheel(&MouseScrollDelta::LineDelta(0.0, -1.0), &mut handled);
         assert!(handled);
-        assert!(table.momentum.is_active());
+        assert_eq!(table.scroll_y(), 60.0_f32);
+        assert!(!table.momentum.is_active());
 
-        let mut theme = Theme::dark();
-        theme.reduce_motion = true;
-        table.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &theme,
-            &PresenceCtx::default(),
+        let now = Instant::now();
+        let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
+        let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
+        table
+            .drag_scroll
+            .begin(50.0, f64::from(table.scroll_y()), started);
+        assert!(table.drag_scroll.update(10.0, moved).is_some());
+        let mut focus = None;
+        table.on_left_release(
+            winit::event::Modifiers::default(),
+            &mut handled,
+            &mut focus,
+            node,
         );
         assert!(!table.momentum.is_active());
         assert!(!table.needs_animation_frame());

@@ -204,7 +204,9 @@ impl ApplicationsProvider {
                     );
                     Ok(())
                 }),
+                on_invoke: None,
                 params: Vec::new(),
+                contract: None,
             });
         }
         out

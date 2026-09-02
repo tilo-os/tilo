@@ -16,6 +16,7 @@
 //! operation the caller may not perform is *absent* from the survey,
 //! never a flag to ignore.
 
+use crate::ActionContract;
 use crate::ActionParam;
 use crate::action::{EncodedAction, ExecutionLocus, OperationKind};
 use crate::context::ActionContext;
@@ -129,6 +130,7 @@ pub struct ActionDescriptor {
     pub description: Option<String>,
     pub locus: ExecutionLocus,
     pub kind: OperationKind,
+    pub contract: ActionContract,
     pub input: InputSpec,
     /// Canonical typed invocation surface. `input` remains the palette-facing
     /// projection for compatibility; headless callers use these parameters.
@@ -150,6 +152,12 @@ pub enum DoorError {
     UnexpectedArgument(ActionAddress),
     /// Typed arguments failed the action's declared schema.
     InvalidArguments(String),
+    /// The address exists and is intentionally advertised, but its current
+    /// precondition is not satisfied.
+    Unavailable { code: String, reason: String },
+    /// The action contract requires an explicit confirmation step that this
+    /// invocation did not carry.
+    ConfirmationRequired,
     /// The app never registered a decoder for the action's type, so the door
     /// can't prove what it would run. Fail-closed: a refusal, not a
     /// best-effort apply.
@@ -167,6 +175,8 @@ impl DoorError {
             DoorError::MissingArgument(_)
             | DoorError::UnexpectedArgument(_)
             | DoorError::InvalidArguments(_) => "invalid_arguments",
+            DoorError::Unavailable { .. } => "action_unavailable",
+            DoorError::ConfirmationRequired => "action_confirmation_required",
             DoorError::Failed(_) => "action_failed",
         }
     }
@@ -187,6 +197,10 @@ impl std::fmt::Display for DoorError {
                 write!(f, "action ({}, {}) takes no argument", a.resource, a.action)
             }
             DoorError::InvalidArguments(why) => write!(f, "{why}"),
+            DoorError::Unavailable { code, reason } => write!(f, "{code}: {reason}"),
+            DoorError::ConfirmationRequired => {
+                f.write_str("this action requires explicit confirmation")
+            }
             DoorError::UnregisteredType(t) => {
                 write!(f, "no decoder registered for action type `{t}`")
             }
@@ -217,6 +231,7 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
             description: action.description.clone(),
             locus: action.locus,
             kind: action.kind,
+            contract: action.contract.clone(),
             input: InputSpec::of(&action.input),
             params: action.params().to_vec(),
         });
@@ -259,10 +274,19 @@ pub fn encode(
     argument: Option<&str>,
 ) -> Result<EncodedAction, DoorError> {
     let spec = resolve(resources, address).ok_or_else(|| DoorError::Unknown(address.clone()))?;
+    ensure_available(spec)?;
     match (&spec.input, argument) {
         (ActionInput::Immediate(encoded), None) => Ok(encoded.clone()),
         (ActionInput::Immediate(_), Some(_)) => Err(DoorError::UnexpectedArgument(address.clone())),
-        (ActionInput::Prompted { build, .. }, Some(text)) => Ok(build(text)),
+        (ActionInput::Prompted { build, .. }, Some(text)) => {
+            let encoded = build(text);
+            if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
+                return Err(DoorError::InvalidArguments(
+                    String::from_utf8_lossy(&encoded.payload).into_owned(),
+                ));
+            }
+            Ok(encoded)
+        }
         (ActionInput::Prompted { .. }, None) => Err(DoorError::MissingArgument(address.clone())),
     }
 }
@@ -276,8 +300,26 @@ pub fn encode_json(
     arguments: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<EncodedAction, DoorError> {
     let spec = resolve(resources, address).ok_or_else(|| DoorError::Unknown(address.clone()))?;
-    spec.build_json(arguments)
-        .map_err(|error| DoorError::InvalidArguments(error.to_string()))
+    ensure_available(spec)?;
+    let encoded = spec
+        .build_json(arguments)
+        .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
+    if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
+        return Err(DoorError::InvalidArguments(
+            String::from_utf8_lossy(&encoded.payload).into_owned(),
+        ));
+    }
+    Ok(encoded)
+}
+
+fn ensure_available(spec: &ActionSpec) -> Result<(), DoorError> {
+    match &spec.contract.availability {
+        crate::Availability::Available => Ok(()),
+        crate::Availability::Unavailable { code, reason } => Err(DoorError::Unavailable {
+            code: code.clone(),
+            reason: reason.clone(),
+        }),
+    }
 }
 
 /// Perform the operation `address` names, attributed to `actor`.
@@ -307,7 +349,41 @@ pub fn invoke(
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
 ) -> Result<Dispatched, DoorError> {
-    invoke_with_context(
+    invoke_with_consent(
+        doc, resources, address, argument, actor, registry, transport, false,
+    )
+}
+
+/// Invoke after an outer policy boundary has completed the action contract's
+/// confirmation step. This is intentionally separate from [`invoke`], whose
+/// default is fail-closed for consequential actions.
+#[allow(clippy::too_many_arguments)]
+pub fn invoke_confirmed(
+    doc: &mut crate::action::Doc,
+    resources: &[Resource],
+    address: &ActionAddress,
+    argument: Option<&str>,
+    actor: &[u8],
+    registry: &ActionRegistry,
+    transport: &mut dyn ActionTransport,
+) -> Result<Dispatched, DoorError> {
+    invoke_with_consent(
+        doc, resources, address, argument, actor, registry, transport, true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn invoke_with_consent(
+    doc: &mut crate::action::Doc,
+    resources: &[Resource],
+    address: &ActionAddress,
+    argument: Option<&str>,
+    actor: &[u8],
+    registry: &ActionRegistry,
+    transport: &mut dyn ActionTransport,
+    confirmed: bool,
+) -> Result<Dispatched, DoorError> {
+    invoke_with_context_consent(
         doc,
         resources,
         address,
@@ -318,6 +394,7 @@ pub fn invoke(
         },
         registry,
         transport,
+        confirmed,
     )
 }
 
@@ -346,6 +423,23 @@ pub fn invoke_with_context(
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
 ) -> Result<Dispatched, DoorError> {
+    invoke_with_context_consent(
+        doc, resources, address, argument, provenance, registry, transport, false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn invoke_with_context_consent(
+    doc: &mut crate::action::Doc,
+    resources: &[Resource],
+    address: &ActionAddress,
+    argument: Option<&str>,
+    provenance: InvocationProvenance<'_>,
+    registry: &ActionRegistry,
+    transport: &mut dyn ActionTransport,
+    confirmed: bool,
+) -> Result<Dispatched, DoorError> {
+    ensure_confirmation(resources, address, confirmed)?;
     let encoded = encode(resources, address, argument)?;
     dispatch_encoded_with_context(
         doc, resources, address, encoded, provenance, registry, transport,
@@ -362,6 +456,38 @@ pub fn invoke_json(
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
 ) -> Result<Dispatched, DoorError> {
+    invoke_json_with_consent(
+        doc, resources, address, arguments, actor, registry, transport, false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn invoke_json_confirmed(
+    doc: &mut crate::action::Doc,
+    resources: &[Resource],
+    address: &ActionAddress,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    actor: &[u8],
+    registry: &ActionRegistry,
+    transport: &mut dyn ActionTransport,
+) -> Result<Dispatched, DoorError> {
+    invoke_json_with_consent(
+        doc, resources, address, arguments, actor, registry, transport, true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn invoke_json_with_consent(
+    doc: &mut crate::action::Doc,
+    resources: &[Resource],
+    address: &ActionAddress,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    actor: &[u8],
+    registry: &ActionRegistry,
+    transport: &mut dyn ActionTransport,
+    confirmed: bool,
+) -> Result<Dispatched, DoorError> {
+    ensure_confirmation(resources, address, confirmed)?;
     let encoded = encode_json(resources, address, arguments)?;
     dispatch_encoded_with_context(
         doc,
@@ -375,6 +501,18 @@ pub fn invoke_json(
         registry,
         transport,
     )
+}
+
+fn ensure_confirmation(
+    resources: &[Resource],
+    address: &ActionAddress,
+    confirmed: bool,
+) -> Result<(), DoorError> {
+    let spec = resolve(resources, address).ok_or_else(|| DoorError::Unknown(address.clone()))?;
+    if !matches!(spec.contract.confirmation, crate::ConfirmationPolicy::None) && !confirmed {
+        return Err(DoorError::ConfirmationRequired);
+    }
+    Ok(())
 }
 
 fn dispatch_encoded_with_context(
@@ -787,6 +925,48 @@ mod tests {
                 .as_ref()
                 .map(|resource| resource.id.as_str()),
             Some("notes.note:1")
+        );
+    }
+
+    #[test]
+    fn consequential_actions_cannot_cross_the_door_without_consent() {
+        let resources = vec![Resource::new("notes.note:1", "notes.note", "Harbour").with_action(
+            ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star)
+                .unwrap()
+                .with_contract(ActionContract {
+                    confirmation: crate::ConfirmationPolicy::Confirm,
+                    ..ActionContract::default()
+                }),
+        )];
+        let mut doc = AutoCommit::new();
+        let mut transport = LocalTransport::new();
+
+        let refusal = invoke(
+            &mut doc,
+            &resources,
+            &star(),
+            None,
+            b"caller-key",
+            &registry(),
+            &mut transport,
+        )
+        .unwrap_err();
+        assert_eq!(refusal, DoorError::ConfirmationRequired);
+        assert!(doc.get(&ROOT, "starred").unwrap().is_none());
+
+        invoke_confirmed(
+            &mut doc,
+            &resources,
+            &star(),
+            None,
+            b"caller-key",
+            &registry(),
+            &mut transport,
+        )
+        .expect("a policy gate may explicitly attest confirmation");
+        assert_eq!(
+            doc.get(&ROOT, "starred").unwrap().unwrap().0.to_bool(),
+            Some(true)
         );
     }
 

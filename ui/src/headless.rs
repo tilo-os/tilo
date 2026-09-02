@@ -382,12 +382,17 @@ pub struct FrameHarness {
 pub type Driver = FrameHarness;
 
 impl FrameHarness {
-    /// Stand the app up and run the first layout pass.
+    /// Stand the app up and resolve its first observable layout.
+    ///
+    /// Responsive structure discovered from the real viewport is settled
+    /// before this returns, so tests can address compact/wide controls
+    /// immediately without an app-specific warm-up frame.
     pub fn new(state: State, root: Box<dyn Widget>, viewport: (u32, u32)) -> Self {
         Self::new_with_theme(state, root, viewport, Theme::dark())
     }
 
-    /// Stand the app up under an explicit theme and run the first frame.
+    /// Stand the app up under an explicit theme and resolve the first
+    /// observable layout, including viewport-dependent structure.
     pub fn new_with_theme(
         state: State,
         root: Box<dyn Widget>,
@@ -419,7 +424,32 @@ impl FrameHarness {
             profiler: None,
         };
         d.relayout();
+        d.settle_initial_structure();
         d
+    }
+
+    /// Resolve structure changes discovered only after the first real layout
+    /// (for example a responsive shell crossing its width breakpoint).
+    ///
+    /// The live host schedules another frame when `take_structure_dirty`
+    /// reports this condition. A newly constructed headless driver has no
+    /// event loop to schedule that frame, so it performs the same bounded
+    /// convergence here before exposing targets, focus order, or semantics.
+    fn settle_initial_structure(&mut self) {
+        const MAX_SETTLE_PASSES: usize = 8;
+
+        for _ in 0..MAX_SETTLE_PASSES {
+            if !self.root.take_structure_dirty() {
+                return;
+            }
+            self.relayout();
+        }
+        if self.root.take_structure_dirty() {
+            tracing::warn!(
+                passes = MAX_SETTLE_PASSES,
+                "headless: initial widget structure did not converge"
+            );
+        }
     }
 
     /// Undo the last action, the way the live host does — through

@@ -13,9 +13,12 @@
 //! the action's [`ActionId`]) and commit timestamp on every apply, so
 //! the resulting change is content-addressed identical everywhere.
 //!
-//! Actions are strictly **not presentation** — anything local-only
-//! (rendering, scroll, selection) never becomes an action; only
-//! shared-CRDT mutations do.
+//! Replayable [`Action`] values are strictly **not presentation** and mutate
+//! only shared CRDT state. The wider resource/action protocol also describes
+//! client-local [`OperationKind::View`] and external
+//! [`OperationKind::Effect`] operations. Those use the same typed descriptors,
+//! permission checks and invocation receipts, but are dispatched through the
+//! toolkit's operation handler instead of being replayed as document history.
 //!
 //! ## Resources
 //!
@@ -77,11 +80,14 @@
 
 pub mod action;
 pub mod context;
+pub mod contract;
 pub mod door;
 pub mod envelope;
 pub mod executor;
 pub mod optimistic;
+pub mod outcome;
 pub mod params;
+pub mod protocol;
 pub mod registry;
 pub mod resource;
 
@@ -91,6 +97,10 @@ pub use action::{
 pub use context::{
     ActionApp, ActionContext, ActionFacet, ActionGroup, ActionResource, CHANGE_MESSAGE_PREFIX,
 };
+pub use contract::{
+    ActionContract, Availability, ConfirmationPolicy, DiscoveryScope, ExecutionMode,
+    PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
+};
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec};
 pub use envelope::ActionEnvelope;
 pub use executor::{
@@ -99,7 +109,12 @@ pub use executor::{
     dispatch_with_context, replay,
 };
 pub use optimistic::{Acknowledgement, OptimisticError, OptimisticQueue, RebaseBatch};
-pub use params::{ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
+pub use outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
+pub use params::{
+    ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, ParamType,
+    validate_json_schema,
+};
+pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
 pub use registry::ActionRegistry;
 pub use resource::{
     ActionInput, ActionSpec, ArgsBuilder, Collects, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource,

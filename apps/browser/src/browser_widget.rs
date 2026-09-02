@@ -28,7 +28,10 @@ use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
+use ui::qos_actions::{
+    ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
+    Resource, RetryPolicy,
+};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::webview::test_engine::TestEngine;
@@ -72,6 +75,63 @@ enum PipFeedbackKind {
 struct PipFeedback {
     kind: PipFeedbackKind,
     started: std::time::Instant,
+}
+
+const BROWSER_OPERATION_TYPE: &str = "browser.operation";
+
+#[derive(Clone, Debug)]
+enum BrowserOperation {
+    Back,
+    Forward,
+    Reload,
+    Navigate { url: String },
+}
+
+fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value {
+    match operation {
+        BrowserOperation::Back => serde_json::json!({ "operation": "back" }),
+        BrowserOperation::Forward => serde_json::json!({ "operation": "forward" }),
+        BrowserOperation::Reload => serde_json::json!({ "operation": "reload" }),
+        BrowserOperation::Navigate { url } => {
+            serde_json::json!({ "operation": "navigate", "url": url })
+        }
+    }
+}
+
+fn encode_browser_operation(operation: &BrowserOperation) -> EncodedAction {
+    let payload = browser_operation_payload(operation);
+    EncodedAction::encode_operation(BROWSER_OPERATION_TYPE, &payload).unwrap_or_else(|_| {
+        EncodedAction {
+            type_id: BROWSER_OPERATION_TYPE.to_string(),
+            payload: Vec::new(),
+        }
+    })
+}
+
+fn decode_browser_operation(payload: &[u8]) -> Result<BrowserOperation, String> {
+    let value: serde_json::Value = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+    match value.get("operation").and_then(serde_json::Value::as_str) {
+        Some("back") => Ok(BrowserOperation::Back),
+        Some("forward") => Ok(BrowserOperation::Forward),
+        Some("reload") => Ok(BrowserOperation::Reload),
+        Some("navigate") => value
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .map(|url| BrowserOperation::Navigate {
+                url: url.to_string(),
+            })
+            .ok_or_else(|| "browser navigate operation is missing `url`".to_string()),
+        _ => Err("unknown browser operation".to_string()),
+    }
+}
+
+fn navigation_contract() -> ActionContract {
+    ActionContract {
+        retry: RetryPolicy::Idempotent,
+        execution: ui::qos_actions::ExecutionMode::Background { cancellable: false },
+        tags: vec!["network".into(), "navigation".into()],
+        ..ActionContract::view()
+    }
 }
 
 /// First page loaded in a fresh live window.
@@ -127,6 +187,8 @@ pub struct BrowserWidget {
     /// The `WebView` content rect as window fractions `[x0,y0,x1,y1]`,
     /// published each layout for the zero-copy compositor to blit into.
     content_rect: std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>>,
+    resource_navigation_invocation: Option<ui::qos_actions::InvocationId>,
+    resource_navigation_result: Option<ui::qos_actions::InvocationUpdate>,
     pending_pip: Option<ui::floating_surface::FloatingSurfaceRequest>,
     pending_pip_region_update: Option<Rect>,
     published_pip_region: Option<Rect>,
@@ -213,6 +275,8 @@ impl BrowserWidget {
             last_query: None,
             force_suggestions: false,
             content_rect: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            resource_navigation_invocation: None,
+            resource_navigation_result: None,
             pending_pip: None,
             pending_pip_region_update: None,
             published_pip_region: None,
@@ -270,6 +334,18 @@ impl BrowserWidget {
     /// zero-copy compositor. Updated every layout.
     pub fn content_rect_handle(&self) -> std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>> {
         self.content_rect.clone()
+    }
+
+    fn perform_browser_operation(&self, operation: BrowserOperation) {
+        let command = match operation {
+            BrowserOperation::Back => WebViewCommand::GoBack,
+            BrowserOperation::Forward => WebViewCommand::GoForward,
+            BrowserOperation::Reload => WebViewCommand::Reload,
+            BrowserOperation::Navigate { url } => {
+                WebViewCommand::Navigate(normalise_url(url.trim()))
+            }
+        };
+        self.engine.send(command);
     }
 
     fn page_rect(&self) -> Rect {
@@ -686,11 +762,30 @@ impl BrowserWidget {
                         self.history.record(&self.current_uri, &self.title);
                         let _ = self.history.save();
                     }
+                    if let Some(invocation) = self.resource_navigation_invocation.take() {
+                        self.resource_navigation_result =
+                            Some(ui::qos_actions::InvocationUpdate::Succeeded {
+                                invocation,
+                                output: ui::qos_actions::ActionOutput::default(),
+                            });
+                    }
                 }
                 WebViewEvent::LoadFailed { uri, error } => {
                     self.progress = 1.0;
                     tracing::warn!("load failed for {uri}: {error}");
                     self.title = format!("Failed to load {uri}");
+                    if let Some(invocation) = self.resource_navigation_invocation.take() {
+                        self.resource_navigation_result =
+                            Some(ui::qos_actions::InvocationUpdate::Failed {
+                                invocation,
+                                error: ui::qos_actions::ActionFailure {
+                                    code: "browser.navigation_failed".into(),
+                                    message: error,
+                                    details: Some(serde_json::json!({ "uri": uri })),
+                                    retryable: true,
+                                },
+                            });
+                    }
                 }
                 WebViewEvent::HistoryChanged {
                     can_go_back,
@@ -892,6 +987,10 @@ fn default_engine() -> SharedEngine {
 }
 
 impl Widget for BrowserWidget {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[BROWSER_OPERATION_TYPE]
+    }
+
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut page = Resource::new(
             "browser.page",
@@ -902,27 +1001,59 @@ impl Widget for BrowserWidget {
                 &self.title
             },
         );
-        for (id, label) in [
-            ("back", "Go back"),
-            ("forward", "Go forward"),
-            ("reload", "Reload"),
+        for (id, label, operation, available, reason) in [
+            (
+                "back",
+                "Go back",
+                BrowserOperation::Back,
+                self.can_go_back,
+                "No previous page",
+            ),
+            (
+                "forward",
+                "Go forward",
+                BrowserOperation::Forward,
+                self.can_go_forward,
+                "No next page",
+            ),
+            ("reload", "Reload", BrowserOperation::Reload, true, ""),
         ] {
-            if let Ok(spec) =
-                ActionSpec::operation(id, label, OperationKind::Effect, "browser.operation", &id)
-            {
-                page.actions.push(spec);
+            let payload = browser_operation_payload(&operation);
+            if let Ok(spec) = ActionSpec::operation(
+                id,
+                label,
+                OperationKind::View,
+                BROWSER_OPERATION_TYPE,
+                &payload,
+            ) {
+                let spec = spec.with_contract(navigation_contract());
+                page.actions.push(if available {
+                    spec
+                } else {
+                    spec.unavailable("history_boundary", reason)
+                });
             }
         }
-        page.actions.push(ActionSpec::prompted_operation(
-            "navigate",
-            "Open address",
-            "Address or search",
-            "https://…",
-            OperationKind::Effect,
-            |value| {
-                EncodedAction::encode_operation("browser.navigate", &value).expect("string payload")
-            },
-        ));
+        page.actions.push(
+            ActionSpec::typed_operation(
+                "navigate",
+                "Open address",
+                "https://…",
+                OperationKind::Effect,
+                BROWSER_OPERATION_TYPE,
+                vec![ActionParam::required_owned(
+                    "url",
+                    ParamType::Text,
+                    "Absolute URL or search terms",
+                )],
+                |args: &ActionArgs| {
+                    encode_browser_operation(&BrowserOperation::Navigate {
+                        url: args.text("url").unwrap_or("").to_string(),
+                    })
+                },
+            )
+            .with_contract(navigation_contract()),
+        );
         vec![page]
     }
 
@@ -934,23 +1065,52 @@ impl Widget for BrowserWidget {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != OperationKind::Effect {
+        if kind == OperationKind::Document || type_id != BROWSER_OPERATION_TYPE {
             return Ok(false);
         }
-        let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        match type_id {
-            "browser.operation" => match value.as_str() {
-                "back" => self.engine.send(WebViewCommand::GoBack),
-                "forward" => self.engine.send(WebViewCommand::GoForward),
-                "reload" => self.engine.send(WebViewCommand::Reload),
-                _ => return Ok(false),
-            },
-            "browser.navigate" => self
-                .engine
-                .send(WebViewCommand::Navigate(normalise_url(&value))),
-            _ => return Ok(false),
-        }
+        let operation = decode_browser_operation(payload)?;
+        self.perform_browser_operation(operation);
         Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: ui::qos_actions::InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind == OperationKind::Document || type_id != BROWSER_OPERATION_TYPE {
+            return Ok(None);
+        }
+        if self.resource_navigation_invocation.is_some() {
+            return Err("another browser navigation is already running".into());
+        }
+        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        self.resource_navigation_invocation = Some(invocation);
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: ui::qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<ui::qos_actions::InvocationUpdate> {
+        if self
+            .resource_navigation_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            self.resource_navigation_result.take()
+        } else {
+            None
+        }
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -983,13 +1143,13 @@ impl Widget for BrowserWidget {
         self.apply_engine_events(state, path);
 
         if Self::take_flag(state, path, BACK_FLAG) {
-            self.engine.send(WebViewCommand::GoBack);
+            self.perform_browser_operation(BrowserOperation::Back);
         }
         if Self::take_flag(state, path, FORWARD_FLAG) {
-            self.engine.send(WebViewCommand::GoForward);
+            self.perform_browser_operation(BrowserOperation::Forward);
         }
         if Self::take_flag(state, path, RELOAD_FLAG) {
-            self.engine.send(WebViewCommand::Reload);
+            self.perform_browser_operation(BrowserOperation::Reload);
         }
         if Self::take_flag(state, path, SETTINGS_FLAG) {
             self.show_settings = !self.show_settings;
@@ -1776,5 +1936,45 @@ mod tests {
         // app, and blocker thread.
         let engine: SharedEngine = default_engine();
         let _clone: SharedEngine = Arc::clone(&engine);
+    }
+
+    #[test]
+    fn resource_surface_binds_typed_navigation_and_reports_history_availability() {
+        let engine = TestEngine::new();
+        let mut w = BrowserWidget::with_engine(engine.clone(), true);
+        let (mut doc, root) = synced(&mut w);
+        let resources = Widget::resources(&w, &doc);
+        let page = &resources[0];
+        let back = page.actions.iter().find(|a| a.id == "back").unwrap();
+        assert!(!back.contract.availability.is_available());
+        let navigate = page.actions.iter().find(|a| a.id == "navigate").unwrap();
+        assert_eq!(navigate.params()[0].name.as_ref(), "url");
+        assert_eq!(
+            navigate.contract.execution,
+            ui::qos_actions::ExecutionMode::Background { cancellable: false }
+        );
+        assert_eq!(navigate.contract.result, ui::qos_actions::ResultSpec::None);
+        let mut args = serde_json::Map::new();
+        args.insert("url".into(), serde_json::json!("qos.example"));
+        let encoded = navigate.build_json(&args).unwrap();
+        let invocation = ui::qos_actions::InvocationId::new();
+        assert_eq!(
+            w.start_resource_operation(
+                invocation,
+                OperationKind::Effect,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &root,
+            )
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        );
+        assert_eq!(engine.current_uri().as_deref(), Some("https://qos.example"));
+        w.sync(&mut doc, &root);
+        assert!(matches!(
+            w.poll_resource_operation(invocation, false, &doc, &root),
+            Some(ui::qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
     }
 }
