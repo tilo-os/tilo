@@ -14,7 +14,7 @@
 #      (--stub-ui skips cargo and writes a placeholder qos-installer so you can
 #      test the OS plumbing — session-select, sudoers, units — without the UI.)
 #   2. rootless `podman build` of localhost/qos-installer (FROM localhost/qos).
-#      qos.installer=1 is baked in here, as a kargs.d drop-in.
+#      qos.install is baked in here, as a kargs.d drop-in.
 #   3. os/dev/disk-image.sh -> os/output/installer/qcow2/disk.qcow2.
 #
 # Flags: --stub-ui (no cargo; placeholder UI)  --no-cargo (reuse os/qos-installer)
@@ -100,7 +100,7 @@ msg "3/3 disk image -> installer qcow2"
 # root runs out mid-copy ("no space left on device"). The qcow2 stays sparse, so
 # the file is still small.
 #
-# `qos.installer=1` is not passed here — it lives in the image, as
+# `qos.install` is not passed here — it lives in the image, as
 # /usr/lib/bootc/kargs.d/50-installer.toml (see os/Containerfile.installer).
 rm -rf "$QOS_INSTALLER_OUTPUT/qcow2" "$QOS_INSTALLER_OUTPUT"/manifest* 2>/dev/null || true
 DISK_ARGS=(

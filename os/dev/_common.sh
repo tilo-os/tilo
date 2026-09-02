@@ -70,6 +70,7 @@ QOS_SMP="${QOS_SMP:-4}"
 # Kata-isolated CI runner without exposing the Kubernetes node's /dev/kvm.
 QOS_ACCEL="${QOS_ACCEL:-auto}"
 QOS_BOOT_WAIT_ATTEMPTS="${QOS_BOOT_WAIT_ATTEMPTS:-90}"
+QOS_QEMU_START_ATTEMPTS="${QOS_QEMU_START_ATTEMPTS:-100}"
 
 # virtio-gpu resolution (the compositor modesets the connector's preferred
 # mode, which these set). Bigger = more software-render cost.
@@ -123,6 +124,23 @@ hmp() {
   else
     inenv "printf '%s\n' \"$1\" | socat - 'unix:$QOS_MON'"
   fi
+}
+
+# Keep the distrobox command scope alive until QEMU has finished its cold-start
+# work and published the monitor socket. Returning immediately after `disown`
+# races distrobox's scope cleanup on large, cold images and can kill a healthy
+# QEMU before the caller's separate one-second probe sees it.
+start_qemu() {
+  local args="$1"
+  inenv "setsid nohup qemu-system-x86_64 $args >'$QOS_QEMU_LOG' 2>&1 &
+    qemu_pid=\$!
+    for _ in \$(seq 1 '$QOS_QEMU_START_ATTEMPTS'); do
+      test -S '$QOS_MON' && exit 0
+      kill -0 \$qemu_pid 2>/dev/null || break
+      sleep 0.1
+    done
+    wait \$qemu_pid 2>/dev/null || true
+    exit 1"
 }
 
 # Run a command in the guest over SSH (password auth via sshpass, on the host

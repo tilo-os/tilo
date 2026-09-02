@@ -81,6 +81,18 @@ pub struct QosRelease {
     pub channel: String,
     /// Local path once available; empty means "needs download".
     pub local_path: String,
+    /// Immutable release asset URL. Empty only in screenshot/demo fixtures.
+    #[serde(default)]
+    pub url: String,
+    /// SHA-256 of the downloaded `.img.zst` release asset.
+    #[serde(default)]
+    pub archive_sha256: String,
+    /// Exact compressed transport size, used to bound an untrusted response.
+    #[serde(default)]
+    pub archive_size: u64,
+    /// SHA-256 of the expanded image that is written to the device.
+    #[serde(default)]
+    pub image_sha256: String,
 }
 
 impl QosRelease {
@@ -562,6 +574,11 @@ impl InstallProfile {
     /// host/target boundary. The target installer consumes these validated
     /// preferences, then asks only for the target disk, install method,
     /// account/startup secret, and recovery-key acknowledgement.
+    ///
+    /// # Errors
+    ///
+    /// Returns a serialization error if the bounded media profile cannot be
+    /// encoded as JSON.
     pub fn to_media_profile_json(&self) -> Result<Vec<u8>, serde_json::Error> {
         #[derive(Serialize)]
         struct MediaProfile<'a> {
@@ -796,6 +813,10 @@ pub fn sample_releases() -> Vec<QosRelease> {
             size: 2_415_919_104,
             channel: "stable".into(),
             local_path: "/var/lib/qos/images/qos-1.0-x86_64.iso".into(),
+            url: String::new(),
+            archive_sha256: String::new(),
+            archive_size: 0,
+            image_sha256: String::new(),
         },
         QosRelease {
             name: "qOS".into(),
@@ -803,6 +824,10 @@ pub fn sample_releases() -> Vec<QosRelease> {
             size: 2_499_805_184,
             channel: "testing".into(),
             local_path: String::new(),
+            url: String::new(),
+            archive_sha256: String::new(),
+            archive_size: 0,
+            image_sha256: String::new(),
         },
     ]
 }

@@ -374,9 +374,8 @@ esac
 
 # --- guards ------------------------------------------------------------------
 # Refuse to do anything unless we are clearly on the qOS installer live medium.
-grep -qw 'qos.installer' /proc/cmdline 2>/dev/null \
-  || grep -q 'qos.installer=1' /proc/cmdline 2>/dev/null \
-  || die "refusing: 'qos.installer' not present on the kernel cmdline (not the installer medium)"
+grep -qw 'qos.install' /proc/cmdline 2>/dev/null \
+  || die "refusing: 'qos.install' not present on the kernel cmdline (not the installer medium)"
 
 # Non-interactive: the UI must pass --yes. This is a destructive (wipe) op.
 [ "$ASSUME_YES" -eq 1 ] \
@@ -557,7 +556,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
 
   # A sealed UKI cannot accept bootc --karg/--karg-delete arguments. The live
   # UKI carries fixed-width, signed UUID placeholders; specialize only those
-  # bytes on the installed ESP, then restore its live-only mode token. Verified
+  # bytes on the installed ESP, then remove its live-only marker. Verified
   # TPM mode subsequently re-signs and validates this exact target UKI.
   TARGET_UKI="$(find "$ENC_MNT/boot/efi/EFI/Linux" -type f \
     -path '*/bootc/bootc_composefs-*.efi' -print -quit)"
@@ -570,7 +569,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
   /usr/libexec/qos-uki-cmdline replace \
     qos.luks=000000000000000000000000000000000000000000000 \
     "rd.luks.uuid=luks-$LUKS_UUID" "$TARGET_UKI"
-  /usr/libexec/qos-uki-cmdline replace qos.installer=1 qos.mode=normal "$TARGET_UKI"
+  /usr/libexec/qos-uki-cmdline remove qos.install "$TARGET_UKI"
 elif [ "$ALONGSIDE" -eq 1 ]; then
   validate_alongside
   step "Formatting only $ROOT_PARTITION for qOS; preserving every other partition"
@@ -596,7 +595,7 @@ elif [ "$ALONGSIDE" -eq 1 ]; then
     -v "$ALONGSIDE_MNT:/target" --security-opt label=type:unconfined_t \
     "$LOCAL_IMG" bootc install to-filesystem \
       --root-mount-spec "UUID=$ROOT_FS_UUID" \
-      --karg-delete qos.installer=1 --target-imgref "$QOS_TARGET_IMGREF" \
+      --karg-delete qos.install --target-imgref "$QOS_TARGET_IMGREF" \
       --skip-finalize /target
 else
   step "Installing qOS onto $DISK (this ERASES the disk; unencrypted)"
@@ -607,7 +606,7 @@ else
     "$LOCAL_IMG" \
     bootc install to-disk \
       --wipe \
-      --karg-delete qos.installer=1 \
+      --karg-delete qos.install \
       --filesystem "$FILESYSTEM" \
       --block-setup direct \
       --target-imgref "$QOS_TARGET_IMGREF" \

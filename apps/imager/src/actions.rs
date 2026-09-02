@@ -90,6 +90,12 @@ pub fn encode_operation(operation: &ImagerOperation) -> EncodedAction {
     })
 }
 
+/// Decode an app-owned operation payload.
+///
+/// # Errors
+///
+/// Returns the JSON decoding error when `type_id` identifies an imager
+/// operation but `payload` is malformed.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<ImagerOperation>, String> {
     if type_id != IMAGER_OPERATION_TYPE {
         return Ok(None);
@@ -97,6 +103,48 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<ImagerOp
     serde_json::from_slice(payload)
         .map(Some)
         .map_err(|error| error.to_string())
+}
+
+pub(crate) fn operation_spec(
+    id: &'static str,
+    title: &'static str,
+    kind: OperationKind,
+    operation: ImagerOperation,
+) -> ActionSpec {
+    ActionSpec::operation(id, title, kind, IMAGER_OPERATION_TYPE, &operation).unwrap_or_else(|_| {
+        ActionSpec::typed_operation(
+            id,
+            title,
+            "",
+            kind,
+            IMAGER_OPERATION_TYPE,
+            Vec::new(),
+            move |_| encode_operation(&operation),
+        )
+    })
+}
+
+fn apply_write_availability(
+    write: ActionSpec,
+    plan_complete: bool,
+    job_active: bool,
+    write_allowed: bool,
+) -> ActionSpec {
+    if !write_allowed {
+        write.unavailable(
+            "write_backend_disabled",
+            "Raw-device writing is disabled; enable the privileged Imager backend first",
+        )
+    } else if job_active {
+        write.unavailable("write_in_progress", "An image write is already in progress")
+    } else if !plan_complete {
+        write.unavailable(
+            "incomplete_plan",
+            "Select an image source and target drive before writing",
+        )
+    } else {
+        write
+    }
 }
 
 /// Build the live operational surface for the selected write plan.
@@ -129,42 +177,23 @@ pub fn operation_resource(
     .with_contract(ActionContract {
         permission: PermissionRequirement::Admin,
         risk: RiskLevel::Destructive,
-        confirmation: ConfirmationPolicy::Phrase {
-            phrase: device.clone(),
-        },
+        confirmation: ConfirmationPolicy::Phrase { phrase: device },
         retry: RetryPolicy::AtMostOnce,
-        // The handler starts the app-owned worker and returns. Progress is
-        // queried through the separate status operation, not a protocol job.
+        // The handler starts the worker; status is a separate operation.
         execution: ExecutionMode::Immediate,
         result: ResultSpec::None,
         tags: vec!["storage".into(), "raw-device".into()],
         ..ActionContract::default()
     });
 
-    let write = if !write_allowed {
-        write.unavailable(
-            "write_backend_disabled",
-            "Raw-device writing is disabled; enable the privileged Imager backend first",
-        )
-    } else if job_active {
-        write.unavailable("write_in_progress", "An image write is already in progress")
-    } else if !plan_complete {
-        write.unavailable(
-            "incomplete_plan",
-            "Select an image source and target drive before writing",
-        )
-    } else {
-        write
-    };
+    let write = apply_write_availability(write, plan_complete, job_active, write_allowed);
 
-    let verify = ActionSpec::operation(
+    let verify = operation_spec(
         "verify",
         "Verify written image",
         OperationKind::Effect,
-        IMAGER_OPERATION_TYPE,
-        &ImagerOperation::Verify,
+        ImagerOperation::Verify,
     )
-    .expect("ImagerOperation is always serializable")
     .with_contract(ActionContract {
         permission: PermissionRequirement::Admin,
         retry: RetryPolicy::Idempotent,
@@ -176,14 +205,12 @@ pub fn operation_resource(
         "Read-back verification runs automatically after every successful write",
     );
 
-    let cancel = ActionSpec::operation(
+    let cancel = operation_spec(
         "cancel",
         "Cancel image write",
         OperationKind::Effect,
-        IMAGER_OPERATION_TYPE,
-        &ImagerOperation::Cancel,
+        ImagerOperation::Cancel,
     )
-    .expect("ImagerOperation is always serializable")
     .with_contract(ActionContract {
         permission: PermissionRequirement::Admin,
         retry: RetryPolicy::Idempotent,
@@ -199,14 +226,12 @@ pub fn operation_resource(
         cancel.unavailable("no_active_write", "No image write is currently running")
     };
 
-    let status = ActionSpec::operation(
+    let status = operation_spec(
         "status",
         "Show image-write status",
         OperationKind::View,
-        IMAGER_OPERATION_TYPE,
-        &ImagerOperation::Status,
+        ImagerOperation::Status,
     )
-    .expect("ImagerOperation is always serializable")
     .with_contract(ActionContract {
         permission: PermissionRequirement::Read,
         retry: RetryPolicy::Idempotent,

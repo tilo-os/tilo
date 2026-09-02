@@ -17,12 +17,12 @@ fail=0
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
-karg_deletes="$(grep -c -- '--karg-delete qos.installer=1' "$backend" || true)"
+karg_deletes="$(grep -c -- '--karg-delete qos.install' "$backend" || true)"
 if [ "$karg_deletes" -eq 2 ] \
    && grep -Fq 'qos.root=0000000000000000000000000000000000000' "$backend" \
    && grep -Fq 'qos.luks=000000000000000000000000000000000000000000000' "$backend" \
-   && grep -Fq 'replace qos.installer=1 qos.mode=normal "$TARGET_UKI"' "$backend"; then
-  ok "sealed encrypted installs specialize UUID slots and restore normal mode"
+   && grep -Fq 'remove qos.install "$TARGET_UKI"' "$backend"; then
+  ok "sealed encrypted installs specialize UUID slots and remove the live marker"
 else
   bad "sealed target UKI handoff is incomplete (legacy deletions: $karg_deletes)"
 fi
@@ -112,8 +112,9 @@ fi
 if grep -Fq 'systemctl mask sshd.service' "$containerfile" \
    && ! grep -Fq 'quickuser:quickdesktop:wheel' "$builder" \
    && grep -Fq -- '--dev-login requires a non-empty QOS_INSTALLER_DEV_PASSWORD' "$builder" \
-   && grep -Fq 'replace qos.mode=normal qos.installer=1' "$containerfile" \
-   && grep -Fq 'show | grep -qw qos.installer=1' "$containerfile"; then
+   && grep -Fq 'append qos.install' "$containerfile" \
+   && grep -Fq 'show | grep -qw qos.mode=normal' "$containerfile" \
+   && grep -Fq 'show | grep -qw qos.install' "$containerfile"; then
   ok "release installer has no public debug credential and masks SSH"
 else
   bad "release installer still exposes a known debug login or SSH"
@@ -177,9 +178,9 @@ else
   bad "installed greeter configuration can retain a transient /run SELinux label"
 fi
 
-if grep -Fq 'ConditionKernelCommandLine=!qos.installer' \
+if grep -Fq 'ConditionKernelCommandLine=!qos.install' \
       "$repo_root/os/usr/lib/systemd/system/qos-rollback-harden.service" \
-   && grep -Fq 'ConditionKernelCommandLine=!qos.installer' \
+   && grep -Fq 'ConditionKernelCommandLine=!qos.install' \
       "$repo_root/os/usr/lib/systemd/system/shell-firstboot.service"; then
   ok "disposable live boots cannot consume first-boot state or mutate TPM lockout policy"
 else
@@ -203,6 +204,12 @@ if grep -Fq 'prepare-partition "$ROOT_PARTITION" --efi "$EFI_PARTITION"' "$backe
   ok "encrypted and unencrypted alongside paths preserve the partition table"
 else
   bad "alongside mode is not wired through both encryption paths"
+fi
+
+if bash "$repo_root/os/tests/live_installer_service_invariants.sh"; then
+  ok "durable-identity services stay quiet only on disposable installer media"
+else
+  bad "a durable-identity service has an incorrect live-installer gate"
 fi
 
 exit "$fail"
