@@ -40,6 +40,7 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::Selection;
 use crate::theme::Theme;
 use crate::widget::Widget;
+use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 
 /// Height of the closed control (matches `TextInput` / `SegChoice`).
 const CONTROL_HEIGHT: f64 = 40.0;
@@ -94,6 +95,7 @@ pub struct Dropdown {
     value_path: String,
     local_state: Option<crate::local_state::LocalBinding<String>>,
     on_change: Option<SelectionChangeCallback>,
+    action: Option<ActionEmitter<String>>,
     placeholder: String,
 
     /// Mirror of the CRDT value at `value_path`. Empty when unset.
@@ -133,6 +135,7 @@ impl Dropdown {
             value_path: value_path.to_string(),
             local_state: None,
             on_change: None,
+            action: None,
             placeholder: String::new(),
             selected: String::new(),
             open: false,
@@ -171,7 +174,17 @@ impl Dropdown {
     /// callback.
     #[must_use]
     pub fn on_change(mut self, callback: impl FnMut(&str) + 'static) -> Self {
-        self.on_change = Some(Box::new(callback));
+        if self.action.is_none() {
+            self.on_change = Some(Box::new(callback));
+        }
+        self
+    }
+
+    /// Route every committed selection through an exported resource action.
+    #[must_use]
+    pub fn on_action(mut self, binding: qos_actions::ActionBinding<String>) -> Self {
+        self.action = Some(ActionEmitter::new(binding));
+        self.on_change = None;
         self
     }
 
@@ -244,7 +257,9 @@ impl Dropdown {
     /// invoke [`Self::on_change`].
     pub fn set_selected(&mut self, selected: impl Into<String>) {
         self.selected = selected.into();
-        self.publish_local_state();
+        if self.action.is_none() {
+            self.publish_local_state();
+        }
     }
 
     fn publish_local_state(&mut self) {
@@ -382,7 +397,9 @@ impl Dropdown {
     /// Commit `value` into the CRDT `Text` at `value_path` (creating the
     /// object if needed) and mirror it locally.
     fn commit_value(&mut self, value: &str, state: &mut AutoCommit, root: &ObjId) {
-        if self.local_state.is_none() {
+        if let Some(action) = &mut self.action {
+            let _ = action.emit(value.to_string());
+        } else if self.local_state.is_none() {
             let obj = match state.get(root, self.value_path.as_str()) {
                 Ok(Some((Value::Object(ObjType::Text), obj))) => Some(obj),
                 _ => state
@@ -397,8 +414,12 @@ impl Dropdown {
             }
         }
         self.selected = value.to_string();
-        self.publish_local_state();
-        if let Some(callback) = self.on_change.as_mut() {
+        if self.action.is_none() {
+            self.publish_local_state();
+        }
+        if self.action.is_none()
+            && let Some(callback) = self.on_change.as_mut()
+        {
             callback(value);
         }
     }
@@ -852,6 +873,29 @@ impl Widget for Dropdown {
 
     fn name(&self) -> &'static str {
         "Dropdown"
+    }
+
+    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let control_id = self.test_id().unwrap_or("dropdown");
+        if let Some(action) = &self.action {
+            vec![action.metadata(control_id)]
+        } else if !self.value_path.is_empty() {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::LegacyDocumentPath(self.value_path.clone()),
+            }]
+        } else if self.on_change.is_some() || self.local_state.is_some() {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::LegacyCallback,
+            }]
+        } else {
+            Vec::new()
+        }
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -1591,5 +1635,26 @@ mod tests {
         let dd2 = Dropdown::new(opts(), "tz").with_enabled(false);
         let node2 = Widget::accessibility(&dd2).unwrap();
         assert!(node2.state.disabled);
+    }
+
+    #[test]
+    fn action_binding_owns_accessibility_selection() {
+        let mut dropdown = Dropdown::new(opts(), "legacy")
+            .on_change(|_| panic!("legacy callback must be suppressed"))
+            .on_action(crate::widget::test_string_action_binding());
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_action(
+            &mut dropdown,
+            &crate::a11y::Action::SetValue("Asia/Tokyo".into()),
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
+        assert_eq!(
+            Widget::take_control_invocation(&mut dropdown)
+                .unwrap()
+                .arguments["value"],
+            "Asia/Tokyo"
+        );
     }
 }

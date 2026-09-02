@@ -24,6 +24,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::code_editor::{Highlighter, Span, token_color};
 use crate::widget::context_menu::{ContextMenu, MenuItem};
+use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use unicode_segmentation::UnicodeSegmentation;
@@ -182,6 +183,7 @@ pub struct TextInput {
     /// App-local notification hook. The comparison value prevents cursor,
     /// selection, and IME-preedit events from repeating the last edit.
     on_change: Option<TextChangeCallback>,
+    action: Option<ActionEmitter<String>>,
     last_notified_text: String,
     /// Typed process-local model mirrored in both directions during the
     /// ordinary widget sync/event lifecycle.
@@ -359,6 +361,7 @@ impl TextInput {
             last_edit_time: None,
             dirty: false,
             on_change: None,
+            action: None,
             last_notified_text: String::new(),
             local_state: None,
             model_layout_dirty: false,
@@ -430,6 +433,9 @@ impl TextInput {
     }
 
     fn resolve_text_obj(&self, state: &AutoCommit, root: &ObjId) -> Option<ObjId> {
+        if self.action.is_some() {
+            return None;
+        }
         if let Some(obj) = &self.bound_text {
             return Some(obj.clone());
         }
@@ -449,7 +455,8 @@ impl TextInput {
     /// existing Automerge text object, publish the complete resulting value as
     /// one text object so sibling document readers observe that first edit.
     fn persist_first_path_edit(&self, previous_text: &str, state: &mut AutoCommit, root: &ObjId) {
-        if !self.crdt_bound
+        if self.action.is_some()
+            || !self.crdt_bound
             || self.bound_text.is_some()
             || self.on_change_path.is_empty()
             || self.text == previous_text
@@ -817,7 +824,9 @@ impl TextInput {
         self.text.retain(filter);
         self.clamp_to_text();
         self.last_notified_text.clone_from(&self.text);
-        self.publish_local_state();
+        if self.action.is_none() {
+            self.publish_local_state();
+        }
         self
     }
 
@@ -847,7 +856,9 @@ impl TextInput {
         self.model_layout_dirty = self.multiline;
         self.last_edit_time = None;
         self.last_notified_text.clone_from(&self.text);
-        self.publish_local_state();
+        if self.action.is_none() {
+            self.publish_local_state();
+        }
     }
 
     pub fn value(&self) -> &str {
@@ -861,8 +872,19 @@ impl TextInput {
     /// selection changes, [`Self::set_text`], and CRDT synchronization do not.
     #[must_use]
     pub fn on_change(mut self, callback: impl FnMut(&str) + 'static) -> Self {
-        self.on_change = Some(Box::new(callback));
+        if self.action.is_none() {
+            self.on_change = Some(Box::new(callback));
+        }
         self.last_notified_text.clone_from(&self.text);
+        self
+    }
+
+    /// Route committed keyboard, paste, IME, and accessibility edits through
+    /// an exported action with the complete current string as input.
+    #[must_use]
+    pub fn on_action(mut self, binding: qos_actions::ActionBinding<String>) -> Self {
+        self.action = Some(ActionEmitter::new(binding));
+        self.on_change = None;
         self
     }
 
@@ -871,8 +893,14 @@ impl TextInput {
             return;
         }
         self.last_notified_text.clone_from(&self.text);
-        self.publish_local_state();
-        if let Some(callback) = self.on_change.as_mut() {
+        if let Some(action) = &mut self.action {
+            let _ = action.emit(self.text.clone());
+        } else {
+            self.publish_local_state();
+        }
+        if self.action.is_none()
+            && let Some(callback) = self.on_change.as_mut()
+        {
             callback(&self.text);
         }
     }
@@ -3367,7 +3395,8 @@ impl Widget for TextInput {
         if let Some(value) = local_value {
             self.set_text(&value);
         }
-        if self.dirty
+        if self.action.is_none()
+            && self.dirty
             && let Some(buffer) = &self.external_buffer
             && let Ok(mut value) = buffer.lock()
         {
@@ -3649,6 +3678,36 @@ impl Widget for TextInput {
 
     fn name(&self) -> &'static str {
         "TextInput"
+    }
+
+    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let control_id = self.test_id().unwrap_or("text_input");
+        if let Some(action) = &self.action {
+            vec![action.metadata(control_id)]
+        } else if self.crdt_bound || self.bound_text.is_some() {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::LegacyDocumentPath(if self.on_change_path.is_empty() {
+                    "<nested-text>".to_string()
+                } else {
+                    self.on_change_path.clone()
+                }),
+            }]
+        } else if self.on_change.is_some()
+            || self.local_state.is_some()
+            || self.external_buffer.is_some()
+        {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::LegacyCallback,
+            }]
+        } else {
+            Vec::new()
+        }
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -7081,5 +7140,33 @@ mod tests {
 
         drive(&mut ti, &mut doc, &char_key_event("x"), mods(true, false));
         assert_eq!(ti.value(), "", "Ctrl+X cut the real selection");
+    }
+
+    #[test]
+    fn action_binding_owns_accessibility_set_value() {
+        let mut input = TextInput::local()
+            .with_on_change_path("legacy")
+            .on_change(|_| panic!("legacy callback must be suppressed"))
+            .on_action(crate::widget::test_string_action_binding());
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_action(
+            &mut input,
+            &crate::a11y::Action::SetValue("Project Atlas".into()),
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
+        assert_eq!(
+            Widget::take_control_invocation(&mut input)
+                .unwrap()
+                .arguments["value"],
+            "Project Atlas"
+        );
+        let object = doc
+            .put_object(&automerge::ROOT, "legacy", ObjType::Text)
+            .unwrap();
+        doc.splice_text(&object, 0, 0, "Remote title").unwrap();
+        Widget::sync(&mut input, &mut doc, &automerge::ROOT);
+        assert_eq!(input.value(), "Remote title");
     }
 }
