@@ -133,6 +133,14 @@ impl Link {
             std::thread::sleep((deadline - now).min(Duration::from_millis(5)));
         }
     }
+
+    /// Put events consumed while waiting for a correlated broker reply back
+    /// in front of the normal session loop, preserving their order.
+    pub fn defer(&mut self, events: Vec<CollabEvent>) {
+        for event in events.into_iter().rev() {
+            self.pending.push_front(event);
+        }
+    }
 }
 
 #[cfg(test)]

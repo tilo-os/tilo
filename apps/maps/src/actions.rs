@@ -41,8 +41,8 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, ConfirmationPolicy, Doc,
+    EncodedAction, ExecutionLocus, Resource, ResourceProvider, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::MapsDoc;
@@ -165,12 +165,35 @@ pub fn encode(action: &MapsAction) -> EncodedAction {
 
 fn immediate(id: &str, label: impl Into<String>, action: &MapsAction) -> ActionSpec {
     let label = label.into();
-    ActionSpec::immediate(id, label.clone(), MAPS_ACTION_TYPE, action).unwrap_or_else(|_| {
-        // The fallible builder's fallback. `ActionSpec`'s fields are
-        // private now that it carries typed parameters, so construct it
-        // through the constructor that takes an already-encoded action.
-        ActionSpec::immediate_encoded(id, label, action.locus(), encode(action))
-    })
+    ActionSpec::immediate(id, label.clone(), MAPS_ACTION_TYPE, action)
+        .unwrap_or_else(|_| {
+            // The fallible builder's fallback. `ActionSpec`'s fields are
+            // private now that it carries typed parameters, so construct it
+            // through the constructor that takes an already-encoded action.
+            ActionSpec::immediate_encoded(id, label, action.locus(), encode(action))
+        })
+        .with_contract(ActionContract {
+            risk: if matches!(
+                action,
+                MapsAction::DeleteRegion { .. } | MapsAction::ClearRegions
+            ) {
+                RiskLevel::Destructive
+            } else {
+                RiskLevel::Low
+            },
+            confirmation: if matches!(
+                action,
+                MapsAction::DeleteRegion { .. } | MapsAction::ClearRegions
+            ) {
+                ConfirmationPolicy::Confirm
+            } else {
+                ConfirmationPolicy::None
+            },
+            retry: RetryPolicy::Idempotent,
+            reversible: true,
+            tags: vec!["maps".into(), "workspace".into()],
+            ..ActionContract::default()
+        })
 }
 
 /// A one-line label for the active route (its resolved endpoints when known).
@@ -372,6 +395,15 @@ mod tests {
         let root_actions: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(root_actions.contains(&"save-place"), "{root_actions:?}");
         assert!(root_actions.contains(&"clear-regions"), "{root_actions:?}");
+        assert_eq!(
+            root.actions
+                .iter()
+                .find(|action| action.id == "clear-regions")
+                .expect("clear regions action")
+                .contract
+                .risk,
+            RiskLevel::Destructive
+        );
 
         let place = root
             .children
@@ -399,6 +431,10 @@ mod tests {
         assert!(
             reg.actions.iter().any(|a| a.id == "delete"),
             "region exports delete"
+        );
+        assert_eq!(
+            reg.actions[0].contract.confirmation,
+            ConfirmationPolicy::Confirm
         );
 
         // The one palette surfaces the tree's actions as rows.

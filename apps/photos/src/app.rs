@@ -260,6 +260,9 @@ pub struct PhotosApp {
     faces: Vec<Face>,
     /// Portal channel while a file chooser is open.
     picker: Option<ui::portal::PortalChannel>,
+    resource_invocation: Option<qos_actions::InvocationId>,
+    resource_result: Option<qos_actions::InvocationUpdate>,
+    pending_resource_open: Option<(qos_actions::InvocationId, String)>,
 }
 
 impl Default for PhotosApp {
@@ -292,6 +295,9 @@ impl PhotosApp {
             separator_rects: Vec::new(),
             faces,
             picker: None,
+            resource_invocation: None,
+            resource_result: None,
+            pending_resource_open: None,
         }
     }
 
@@ -561,7 +567,7 @@ impl PhotosApp {
 
     fn perform_effect(&mut self, operation: crate::actions::PhotosOperation, doc: &AutoCommit) {
         match operation {
-            crate::actions::PhotosOperation::OpenPicker => {
+            crate::actions::PhotosOperation::Open { path: None } => {
                 self.picker = Some(
                     ui::portal::PickRequest::open(&tr("photos-open-title"), &tr("photos-open"))
                         .thread_name("photos-portal-open")
@@ -578,11 +584,12 @@ impl PhotosApp {
             crate::actions::PhotosOperation::Copy => {
                 self.copy_to_clipboard();
             }
-            crate::actions::PhotosOperation::SaveSuggested => {
+            crate::actions::PhotosOperation::Save { path } => {
                 if let Some(open) = PhotosDoc::image(doc) {
-                    self.save_to(&Self::suggested_save_path(&open));
+                    self.save_to(path.as_deref().unwrap_or(&Self::suggested_save_path(&open)));
                 }
             }
+            crate::actions::PhotosOperation::Open { path: Some(_) } => {}
         }
     }
 
@@ -646,7 +653,7 @@ impl PhotosApp {
         let edits = PhotosDoc::edits(doc);
         match hit {
             Hit::Open => {
-                self.perform_effect(crate::actions::PhotosOperation::OpenPicker, doc);
+                self.perform_effect(crate::actions::PhotosOperation::Open { path: None }, doc);
             }
             Hit::RotateLeft => self.commit_edits(doc, edits.rotated_left()),
             Hit::RotateRight => self.commit_edits(doc, edits.rotated_right()),
@@ -665,7 +672,7 @@ impl PhotosApp {
                 self.perform_effect(crate::actions::PhotosOperation::Copy, doc);
             }
             Hit::Save => {
-                self.perform_effect(crate::actions::PhotosOperation::SaveSuggested, doc);
+                self.perform_effect(crate::actions::PhotosOperation::Save { path: None }, doc);
             }
         }
     }
@@ -680,9 +687,50 @@ impl PhotosApp {
                 self.picker = None;
                 let path = path.to_string_lossy().into_owned();
                 self.open_path(doc, &path);
+                if let Some(invocation) = self.resource_invocation.take() {
+                    self.resource_result = Some(if self.open_image_path().is_some() {
+                        qos_actions::InvocationUpdate::Succeeded {
+                            invocation,
+                            output: qos_actions::ActionOutput::default(),
+                        }
+                    } else {
+                        qos_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: qos_actions::ActionFailure {
+                                code: "photos.open_failed".into(),
+                                message: tr("photos-open-failed"),
+                                details: None,
+                                retryable: false,
+                            },
+                        }
+                    });
+                }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            _ => self.picker = None,
+            Ok(ui::portal::PortalOutcome::Cancelled) => {
+                self.picker = None;
+                if let Some(invocation) = self.resource_invocation.take() {
+                    self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                        invocation,
+                        message: Some("photo selection was cancelled".into()),
+                    });
+                }
+            }
+            Ok(ui::portal::PortalOutcome::Failed(message)) => {
+                self.picker = None;
+                if let Some(invocation) = self.resource_invocation.take() {
+                    self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: qos_actions::ActionFailure {
+                            code: "photos.portal_failed".into(),
+                            message,
+                            details: None,
+                            retryable: false,
+                        },
+                    });
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.picker = None,
         }
     }
 
@@ -945,6 +993,10 @@ fn to_peniko(img: &Rgba) -> ImageData {
 }
 
 impl Widget for PhotosApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::PHOTOS_OPERATION_TYPE]
+    }
+
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }
@@ -963,12 +1015,91 @@ impl Widget for PhotosApp {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
-        self.perform_effect(operation, doc);
+        match operation {
+            crate::actions::PhotosOperation::Open { path: Some(_) } => {
+                return Err("direct open requires lifecycle dispatch".into());
+            }
+            crate::actions::PhotosOperation::Save { path } => {
+                let open =
+                    PhotosDoc::image(doc).ok_or_else(|| "no photograph is open".to_string())?;
+                let destination = path.unwrap_or_else(|| Self::suggested_save_path(&open));
+                if !self.save_to(&destination) {
+                    return Err(tr("photos-save-failed"));
+                }
+            }
+            other => self.perform_effect(other, doc),
+        }
         Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        if let crate::actions::PhotosOperation::Open { path: Some(file) } = operation {
+            self.pending_resource_open = Some((invocation, file));
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        if self.picker.is_some() {
+            self.resource_invocation = Some(invocation);
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                qos_actions::ActionOutput::default(),
+            )))
+        }
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if self
+            .resource_result
+            .as_ref()
+            .is_some_and(|u| u.invocation() == invocation)
+        {
+            self.resource_result.take()
+        } else {
+            None
+        }
     }
 
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         PhotosDoc::seed(doc);
+        if let Some((invocation, path)) = self.pending_resource_open.take() {
+            self.open_path(doc, &path);
+            self.resource_result = Some(if self.open_image_path().is_some() {
+                qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput::default(),
+                }
+            } else {
+                qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "photos.open_failed".into(),
+                        message: tr("photos-open-failed"),
+                        details: None,
+                        retryable: false,
+                    },
+                }
+            });
+        }
         self.drain_picker(doc);
         self.refresh(doc);
 

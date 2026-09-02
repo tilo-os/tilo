@@ -22,7 +22,10 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use thumbnail::{ThumbKey, ThumbnailService};
-use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
+use ui::qos_actions::{
+    ActionContract, ActionSpec, Availability, ConfirmationPolicy, EncodedAction, ExecutionMode,
+    OperationKind, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
+};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{
     Column, NavShell, Row, ScrollAxis, Scrollable, ShellMode, Spacer, Text, TextInput, Widget,
@@ -384,6 +387,8 @@ pub struct FileExplorerWidget {
     history_result: Arc<std::sync::Mutex<Option<Result<(), String>>>>,
     history_pending_path: Option<PathBuf>,
     history_pending_success: Option<String>,
+    resource_invocation: Option<qos_actions::InvocationId>,
+    resource_result: Option<qos_actions::InvocationUpdate>,
     /// Folder rows the file view publishes each layout, so a drag's drop point
     /// can be resolved to the folder it lands on (the view never sees the
     /// release — the app captures the pointer for the duration of the drag).
@@ -548,6 +553,8 @@ impl FileExplorerWidget {
             history_result: Arc::new(std::sync::Mutex::new(None)),
             history_pending_path: None,
             history_pending_success: None,
+            resource_invocation: None,
+            resource_result: None,
             drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
             thumbs,
@@ -4321,6 +4328,24 @@ impl FileExplorerWidget {
         let Some(result) = result else {
             return false;
         };
+        let lifecycle = self
+            .resource_invocation
+            .take()
+            .map(|invocation| match &result {
+                Ok(_) => qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput::default(),
+                },
+                Err(message) => qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "files.share_failed".into(),
+                        message: message.clone(),
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            });
         let path = self.share_pending_path.take();
         match result {
             Ok(crate::sharing::ShareActionResult::LinkCreated(uri)) => {
@@ -4364,6 +4389,9 @@ impl FileExplorerWidget {
             Err(error) => self.status = Some(error),
         }
         self.structure_dirty = true;
+        if lifecycle.is_some() {
+            self.resource_result = lifecycle;
+        }
         true
     }
 
@@ -4376,6 +4404,24 @@ impl FileExplorerWidget {
         let Some(result) = result else {
             return false;
         };
+        let lifecycle = self
+            .resource_invocation
+            .take()
+            .map(|invocation| match &result {
+                Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput::default(),
+                },
+                Err(message) => qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "files.history_failed".into(),
+                        message: message.clone(),
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            });
         let path = self.history_pending_path.take();
         match result {
             Ok(()) => {
@@ -4397,6 +4443,9 @@ impl FileExplorerWidget {
         }
         self.close_collab_panel();
         self.structure_dirty = true;
+        if lifecycle.is_some() {
+            self.resource_result = lifecycle;
+        }
         true
     }
 
@@ -4833,6 +4882,19 @@ impl FileExplorerWidget {
 }
 
 impl Widget for FileExplorerWidget {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[
+            "files.refresh",
+            "files.new-folder",
+            "files.paste",
+            "files.navigate",
+            "files.open",
+            "files.folder-command",
+            "files.entry-command",
+            "files.share-link",
+        ]
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "JSON serialization of an owned String is infallible"
@@ -4850,18 +4912,121 @@ impl Widget for FileExplorerWidget {
             "files.refresh",
             &"",
         ) {
+            folder.actions.push(spec.with_contract(ActionContract {
+                availability: if self.current_path.exists() {
+                    Availability::Available
+                } else {
+                    Availability::Unavailable {
+                        code: "location_missing".into(),
+                        reason: "The current folder no longer exists".into(),
+                    }
+                },
+                permission: PermissionRequirement::Read,
+                retry: RetryPolicy::Idempotent,
+                ..ActionContract::default()
+            }));
+        }
+        folder.actions.push(
+            ActionSpec::prompted_operation(
+                "navigate",
+                "Open location",
+                "Folder path",
+                "/path/to/folder",
+                OperationKind::View,
+                "files.navigate",
+                |path| {
+                    EncodedAction::encode_operation("files.navigate", &path)
+                        .expect("string payload")
+                },
+            )
+            .with_contract(ActionContract::view()),
+        );
+        for (id, label, verb, kind) in [
+            ("up", "Parent folder", "up", OperationKind::View),
+            ("back", "Back", "back", OperationKind::View),
+            ("forward", "Forward", "forward", OperationKind::View),
+            (
+                "open-terminal",
+                "Open terminal here",
+                "terminal",
+                OperationKind::Effect,
+            ),
+            (
+                "toggle-hidden",
+                "Toggle hidden files",
+                "hidden",
+                OperationKind::View,
+            ),
+        ] {
+            folder.actions.push(
+                ActionSpec::operation(id, label, kind, "files.folder-command", &verb)
+                    .expect("folder command is serializable")
+                    .with_contract(if kind == OperationKind::View {
+                        ActionContract::view()
+                    } else {
+                        ActionContract::default()
+                    }),
+            );
+        }
+        let new_folder = ActionSpec::prompted_operation(
+            "new-folder",
+            "New folder",
+            "Folder name",
+            "New Folder",
+            OperationKind::Effect,
+            "files.new-folder",
+            |name| {
+                EncodedAction::encode_operation("files.new-folder", &name)
+                    .expect("folder name is serializable")
+            },
+        )
+        .with_contract(ActionContract {
+            availability: if self.current_path.is_dir() {
+                Availability::Available
+            } else {
+                Availability::Unavailable {
+                    code: "location_unavailable".into(),
+                    reason: "The current location cannot contain a new folder".into(),
+                }
+            },
+            permission: PermissionRequirement::Write,
+            reversible: true,
+            ..ActionContract::default()
+        });
+        folder.actions.push(new_folder);
+        for (id, label, type_id, available) in
+            [("paste", "Paste", "files.paste", !self.clipboard.is_empty())]
+        {
+            let spec = ActionSpec::operation(id, label, OperationKind::Effect, type_id, &"")
+                .expect("file operation payload is serializable")
+                .with_contract(ActionContract {
+                    availability: if available {
+                        Availability::Available
+                    } else {
+                        Availability::Unavailable {
+                            code: if id == "paste" {
+                                "clipboard_empty"
+                            } else {
+                                "location_unavailable"
+                            }
+                            .into(),
+                            reason: if id == "paste" {
+                                "Copy or cut files before pasting"
+                            } else {
+                                "The current location cannot contain a new folder"
+                            }
+                            .into(),
+                        }
+                    },
+                    permission: PermissionRequirement::Write,
+                    risk: RiskLevel::Low,
+                    confirmation: ConfirmationPolicy::None,
+                    retry: RetryPolicy::AtMostOnce,
+                    reversible: false,
+                    ..ActionContract::default()
+                });
             folder.actions.push(spec);
         }
-        folder.actions.push(ActionSpec::prompted_operation(
-            "navigate",
-            "Open location",
-            "Folder path",
-            "/path/to/folder",
-            OperationKind::View,
-            |path| {
-                EncodedAction::encode_operation("files.navigate", &path).expect("string payload")
-            },
-        ));
         for entry in &self.entries {
             let path = entry.path.to_string_lossy().into_owned();
             let mut resource =
@@ -4869,7 +5034,48 @@ impl Widget for FileExplorerWidget {
             if let Ok(spec) =
                 ActionSpec::operation("open", "Open", OperationKind::View, "files.open", &path)
             {
+                resource
+                    .actions
+                    .push(spec.with_contract(ActionContract::view()));
+            }
+            for (id, label, verb, destructive) in [
+                ("copy", "Copy", "copy", false),
+                ("cut", "Cut", "cut", false),
+                ("trash", "Move to Trash", "trash", true),
+                ("properties", "Properties", "properties", false),
+                ("sharing", "Sharing and access", "sharing", false),
+                ("history", "Version history", "history", false),
+            ] {
+                let mut spec = ActionSpec::operation(
+                    id,
+                    label,
+                    if matches!(verb, "properties" | "sharing" | "history") {
+                        OperationKind::View
+                    } else {
+                        OperationKind::Effect
+                    },
+                    "files.entry-command",
+                    &vec![verb.to_string(), path.clone()],
+                )
+                .expect("entry command is serializable");
+                if destructive {
+                    spec = spec.destructive();
+                }
                 resource.actions.push(spec);
+            }
+            if entry.record_id.is_some() {
+                resource.actions.push(
+                    ActionSpec::operation(
+                        "share-link",
+                        "Create one-time share link",
+                        OperationKind::Effect,
+                        "files.share-link",
+                        &path,
+                    )
+                    .expect("share path is serializable")
+                    .execution(ExecutionMode::Background { cancellable: false })
+                    .returns(ResultSpec::Job),
+                );
             }
             folder.children.push(resource);
         }
@@ -4886,14 +5092,158 @@ impl Widget for FileExplorerWidget {
     ) -> Result<bool, String> {
         match (kind, type_id) {
             (OperationKind::Effect, "files.refresh") => self.refresh(),
-            (OperationKind::View, "files.navigate" | "files.open") => {
+            (OperationKind::Effect, "files.new-folder") => {
+                let name: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                fileops::new_folder(&self.current_path, &name)?;
+                self.refresh();
+            }
+            (OperationKind::Effect, "files.paste") => {
+                if self.clipboard.is_empty() {
+                    return Err("The clipboard is empty".into());
+                }
+                let destination = self.current_path.clone();
+                let sources = self.clipboard.clone();
+                let cut = self.clipboard_cut;
+                let mut failures = Vec::new();
+                for source in &sources {
+                    let result = if cut {
+                        fileops::move_into(source, &destination)
+                    } else {
+                        fileops::copy_into(source, &destination)
+                    };
+                    if let Err(error) = result {
+                        failures.push(format!("{}: {error}", source.display()));
+                    }
+                }
+                if cut && failures.is_empty() {
+                    self.clipboard.clear();
+                }
+                self.refresh();
+                if !failures.is_empty() {
+                    return Err(format!("paste failed: {}", failures.join("; ")));
+                }
+            }
+            (OperationKind::View, "files.navigate") | (OperationKind::View, "files.open") => {
                 let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 self.open_path(PathBuf::from(value));
+            }
+            (_, "files.folder-command") => {
+                let verb: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                match verb.as_str() {
+                    "up" => self.go_up(),
+                    "back" => self.history_back(),
+                    "forward" => self.history_forward(),
+                    "hidden" => {
+                        self.apply_command(FileCommand::ToggleHidden);
+                    }
+                    "terminal" => self
+                        .open_terminal(&mut SystemRunner)
+                        .map_err(|e| format!("could not open terminal: {e}"))?,
+                    _ => return Ok(false),
+                }
+            }
+            (_, "files.entry-command") => {
+                let args: Vec<String> =
+                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let verb = args
+                    .first()
+                    .ok_or_else(|| "missing file command".to_string())?;
+                let path = args.get(1).ok_or_else(|| "missing file path".to_string())?;
+                let target = PathBuf::from(path);
+                let index = self
+                    .displayed_entries()
+                    .iter()
+                    .position(|entry| entry.path == target)
+                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
+                self.selection.select_only(index);
+                if verb == "trash" {
+                    if self.is_trash_view() {
+                        return Err("Use the separately confirmed permanent-delete action for items already in Trash".into());
+                    }
+                    fileops::delete_to_trash(&[target])?;
+                    self.refresh();
+                    self.structure_dirty = true;
+                    return Ok(true);
+                }
+                let command = match verb.as_str() {
+                    "copy" => FileCommand::Copy,
+                    "cut" => FileCommand::Cut,
+                    "properties" => FileCommand::ShowProperties,
+                    "sharing" => FileCommand::ShowSharing,
+                    "history" => FileCommand::ShowHistory,
+                    _ => return Ok(false),
+                };
+                if !self.apply_command(command) {
+                    return Err("file operation could not be applied".into());
+                }
+            }
+            (OperationKind::Effect, "files.share-link") => {
+                let path: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let target = PathBuf::from(path);
+                let index = self
+                    .displayed_entries()
+                    .iter()
+                    .position(|entry| entry.path == target)
+                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
+                self.selection.select_only(index);
+                if !self.apply_command(FileCommand::CreateOneTimeShareLink)
+                    || self.share_pending_path.is_none()
+                {
+                    return Err(self
+                        .status
+                        .clone()
+                        .unwrap_or_else(|| "sharing is unavailable for this file".into()));
+                }
             }
             _ => return Ok(false),
         }
         self.structure_dirty = true;
         Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if self.resource_invocation.is_some() {
+            return Err("another file operation is still running".into());
+        }
+        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        if type_id == "files.share-link" {
+            self.resource_invocation = Some(invocation);
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                qos_actions::ActionOutput::default(),
+            )))
+        }
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        self.poll_share_result();
+        self.poll_history_result();
+        if self
+            .resource_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            self.resource_result.take()
+        } else {
+            None
+        }
     }
 
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
@@ -6013,6 +6363,53 @@ mod command_path_tests {
         );
         assert!(w.is_renaming(), "new folder drops straight into rename");
         assert_eq!(w.rename_buffer(), "New Folder");
+    }
+
+    #[test]
+    fn external_new_folder_uses_the_typed_name_without_rename_ui() {
+        let d = tempfile::tempdir().unwrap();
+        let mut w = FileExplorerWidget::new();
+        w.navigate(d.path().to_path_buf());
+        let doc = automerge::AutoCommit::new();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut w,
+                OperationKind::Effect,
+                "files.new-folder",
+                &serde_json::to_vec("Agent Created").unwrap(),
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert!(d.path().join("Agent Created").is_dir());
+        assert!(!w.is_renaming());
+    }
+
+    #[test]
+    fn exported_background_operations_have_valid_job_contracts() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("shared.txt"), b"x").unwrap();
+        let mut w = FileExplorerWidget::new();
+        w.navigate(d.path().to_path_buf());
+        let resources = Widget::resources(&w, &automerge::AutoCommit::new());
+        for action in resources.iter().flat_map(|resource| {
+            resource.actions.iter().chain(
+                resource
+                    .children
+                    .iter()
+                    .flat_map(|child| child.actions.iter()),
+            )
+        }) {
+            if matches!(action.contract.execution, ExecutionMode::Background { .. }) {
+                assert_eq!(action.contract.result, ResultSpec::Job, "{}", action.id);
+                assert!(
+                    action.contract.validate_declaration().is_empty(),
+                    "{}",
+                    action.id
+                );
+            }
+        }
     }
 
     #[test]

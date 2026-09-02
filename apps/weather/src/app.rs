@@ -39,7 +39,10 @@ use winit::event::WindowEvent;
 
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionSpec, OperationKind, Resource};
+use ui::qos_actions::{
+    ActionContract, ActionSpec, Availability, DiscoveryScope, ExecutionMode, OperationKind,
+    PermissionRequirement, Resource, ResultSpec, RetryPolicy,
+};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Affordance, NavShell, ShellMode, Widget};
@@ -80,6 +83,8 @@ pub struct WeatherApp {
     initial_fetch_done: bool,
     seeded_doc: bool,
     last_activity: Instant,
+    resource_refresh_invocation: Option<qos_actions::InvocationId>,
+    resource_refresh_failure: Option<String>,
 }
 
 impl WeatherApp {
@@ -108,6 +113,8 @@ impl WeatherApp {
             initial_fetch_done: false,
             seeded_doc: false,
             last_activity: Instant::now(),
+            resource_refresh_invocation: None,
+            resource_refresh_failure: None,
         }
     }
 
@@ -210,6 +217,11 @@ impl WeatherApp {
             if !resps.is_empty() {
                 let mut core = self.core.borrow_mut();
                 for r in resps {
+                    if let crate::net::Response::Error(message) = &r
+                        && self.resource_refresh_invocation.is_some()
+                    {
+                        self.resource_refresh_failure = Some(message.clone());
+                    }
                     core.apply_response(r);
                 }
             }
@@ -275,6 +287,10 @@ impl Default for WeatherApp {
 }
 
 impl Widget for WeatherApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["weather.open-location", "weather.refresh"]
+    }
+
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let core = self.core.borrow();
         let mut root = Resource::new("weather", "weather.locations", "Weather");
@@ -285,15 +301,47 @@ impl Widget for WeatherApp {
             "weather.refresh",
             &"",
         ) {
-            root.actions.push(spec);
+            root.actions.push(spec.with_contract(ActionContract {
+                availability: if !self.live {
+                    Availability::Unavailable {
+                        code: "network_disabled".into(),
+                        reason: "Network refresh is disabled for this weather view".into(),
+                    }
+                } else if core.model.locations.is_empty() {
+                    Availability::Unavailable {
+                        code: "no_locations".into(),
+                        reason: "Save a weather location before refreshing".into(),
+                    }
+                } else {
+                    Availability::Available
+                },
+                permission: PermissionRequirement::Read,
+                retry: RetryPolicy::Idempotent,
+                execution: ExecutionMode::Background { cancellable: false },
+                discovery: DiscoveryScope::Launchable,
+                result: ResultSpec::None,
+                ..ActionContract::default()
+            }));
         }
         root.children
             .extend(core.model.locations.iter().map(|location| {
-                Resource::new(
+                let mut resource = Resource::new(
                     format!("location:{}", location.id),
                     "weather.location",
                     location.name.clone(),
-                )
+                );
+                resource.actions.push(
+                    ActionSpec::operation(
+                        "open",
+                        "Open forecast",
+                        OperationKind::View,
+                        "weather.open-location",
+                        &location.id.to_string(),
+                    )
+                    .expect("weather location id is serializable")
+                    .with_contract(ActionContract::view()),
+                );
+                resource
             }));
         vec![root]
     }
@@ -302,10 +350,23 @@ impl Widget for WeatherApp {
         &mut self,
         kind: OperationKind,
         type_id: &str,
-        _payload: &[u8],
+        payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
+        if kind == OperationKind::View && type_id == "weather.open-location" {
+            let raw: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            let id = raw
+                .parse()
+                .map_err(|_| "Invalid weather location id".to_string())?;
+            if !self.core.borrow_mut().open_location(id) {
+                return Err("Weather location is no longer saved".into());
+            }
+            if let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request() {
+                self.nav.show_detail();
+            }
+            return Ok(true);
+        }
         if kind != OperationKind::Effect || type_id != "weather.refresh" {
             return Ok(false);
         }
@@ -316,6 +377,67 @@ impl Widget for WeatherApp {
         self.core.borrow_mut().refresh_all();
         self.last_activity = Instant::now();
         Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != OperationKind::Effect || type_id != "weather.refresh" {
+            return Ok(None);
+        }
+        if self.resource_refresh_invocation.is_some() || self.core.borrow().is_fetching() {
+            return Err("a weather refresh is already running".into());
+        }
+        if self.core.borrow().model.locations.is_empty() {
+            return Err("save a weather location before refreshing".into());
+        }
+        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        self.resource_refresh_invocation = Some(invocation);
+        self.resource_refresh_failure = None;
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if self.resource_refresh_invocation != Some(invocation) {
+            return None;
+        }
+        self.tick_network();
+        if self.core.borrow().is_fetching() {
+            return None;
+        }
+        self.resource_refresh_invocation = None;
+        Some(
+            if let Some(message) = self.resource_refresh_failure.take() {
+                qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "weather.refresh_failed".into(),
+                        message,
+                        details: None,
+                        retryable: true,
+                    },
+                }
+            } else {
+                qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput::default(),
+                }
+            },
+        )
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {

@@ -37,6 +37,10 @@
 use std::sync::Arc;
 
 use crate::action::{Action, ActionError, EncodedAction, ExecutionLocus, OperationKind};
+use crate::contract::{
+    ActionContract, Availability, ConfirmationPolicy, DiscoveryScope, ExecutionMode,
+    PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
+};
 use crate::params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 
 /// Builds an action's encoded form from arguments already bound against its
@@ -54,6 +58,11 @@ pub type ArgsBuilder = Arc<dyn Fn(&ActionArgs) -> EncodedAction + Send + Sync>;
 /// Fixed rather than derived from the human prompt: the prompt is localisable
 /// display text, and an external caller addresses parameters by a stable name.
 pub const PROMPTED_PARAM: &str = "value";
+
+/// Inert envelope produced when the legacy one-field palette cannot satisfy a
+/// typed contract. Hosts recognize it as a refusal; it is never registered or
+/// dispatched as an application operation.
+pub const INVALID_ARGUMENTS_TYPE: &str = "qos.invalid_arguments";
 
 /// Stable identity of a resource within the publishing app instance
 /// (e.g. `tube.video:dQw4w9WgXcQ`, `ebook.annotation:<uuid>`).
@@ -159,6 +168,13 @@ pub struct ActionSpec {
     /// Whether this mutates the shared document, performs an external effect,
     /// or changes only the invoking application's local view.
     pub kind: OperationKind,
+    /// The single protocol type routed for an effect/view operation. Keeping
+    /// this beside the descriptor lets the host prove that publication and
+    /// the widget's handler registry agree, including prompted operations
+    /// whose encoded value does not exist until arguments are bound.
+    pub operation_type: Option<String>,
+    /// Machine-readable safety, availability, lifecycle, and result contract.
+    pub contract: ActionContract,
     pub input: ActionInput,
     /// The typed argument surface an external caller invokes against. Private
     /// because it must stay in step with `build` — the two are always set
@@ -198,6 +214,8 @@ impl ActionSpec {
             description: None,
             locus,
             kind: OperationKind::Document,
+            operation_type: None,
+            contract: ActionContract::default(),
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
             build: Arc::new(move |_| for_build.clone()),
@@ -225,6 +243,8 @@ impl ActionSpec {
             description: None,
             locus,
             kind: OperationKind::Document,
+            operation_type: None,
+            contract: ActionContract::default(),
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
             build: Arc::new(move |_| for_build.clone()),
@@ -257,6 +277,8 @@ impl ActionSpec {
             description: None,
             locus,
             kind: OperationKind::Document,
+            operation_type: None,
+            contract: ActionContract::default(),
             params: vec![ActionParam::required_owned(
                 PROMPTED_PARAM,
                 ParamType::Text,
@@ -288,7 +310,8 @@ impl ActionSpec {
         T: serde::Serialize,
     {
         debug_assert_ne!(kind, OperationKind::Document);
-        let encoded = EncodedAction::encode_operation(type_id, payload)?;
+        let type_id = type_id.into();
+        let encoded = EncodedAction::encode_operation(type_id.clone(), payload)?;
         let for_build = encoded.clone();
         Ok(Self {
             id: id.into(),
@@ -296,6 +319,12 @@ impl ActionSpec {
             description: None,
             locus: ExecutionLocus::ClientLocal,
             kind,
+            operation_type: Some(type_id),
+            contract: if kind == OperationKind::View {
+                ActionContract::view()
+            } else {
+                ActionContract::default()
+            },
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
             build: Arc::new(move |_| for_build.clone()),
@@ -309,11 +338,15 @@ impl ActionSpec {
         prompt: impl Into<String>,
         placeholder: impl Into<String>,
         kind: OperationKind,
+        type_id: impl Into<String>,
         build: impl Fn(&str) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
         debug_assert_ne!(kind, OperationKind::Document);
         let prompt = prompt.into();
-        let build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync> = Arc::new(build);
+        let type_id = type_id.into();
+        let expected = type_id.clone();
+        let build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync> =
+            Arc::new(move |value| enforce_operation_type(build(value), &expected));
         let for_args = build.clone();
         Self {
             id: id.into(),
@@ -321,6 +354,12 @@ impl ActionSpec {
             description: None,
             locus: ExecutionLocus::ClientLocal,
             kind,
+            operation_type: Some(type_id),
+            contract: if kind == OperationKind::View {
+                ActionContract::view()
+            } else {
+                ActionContract::default()
+            },
             params: vec![ActionParam::required_owned(
                 PROMPTED_PARAM,
                 ParamType::Text,
@@ -372,6 +411,7 @@ impl ActionSpec {
             placeholder,
             locus,
             OperationKind::Document,
+            None,
             params,
             build,
         )
@@ -384,6 +424,7 @@ impl ActionSpec {
         label: impl Into<String>,
         placeholder: impl Into<String>,
         kind: OperationKind,
+        type_id: impl Into<String>,
         params: Vec<ActionParam>,
         build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
@@ -394,6 +435,7 @@ impl ActionSpec {
             placeholder,
             ExecutionLocus::ClientLocal,
             kind,
+            Some(type_id.into()),
             params,
             build,
         )
@@ -405,10 +447,15 @@ impl ActionSpec {
         placeholder: impl Into<String>,
         locus: ExecutionLocus,
         kind: OperationKind,
+        operation_type: Option<String>,
         params: Vec<ActionParam>,
         build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
-        let build: ArgsBuilder = Arc::new(build);
+        let build: ArgsBuilder = if let Some(expected) = operation_type.clone() {
+            Arc::new(move |args| enforce_operation_type(build(args), &expected))
+        } else {
+            Arc::new(build)
+        };
         let input = derive_input(&params, &build, placeholder.into());
         Self {
             id: id.into(),
@@ -416,6 +463,12 @@ impl ActionSpec {
             description: None,
             locus,
             kind,
+            operation_type,
+            contract: if kind == OperationKind::View {
+                ActionContract::view()
+            } else {
+                ActionContract::default()
+            },
             input,
             params,
             build,
@@ -444,6 +497,77 @@ impl ActionSpec {
     #[must_use]
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_contract(mut self, contract: ActionContract) -> Self {
+        self.contract = contract;
+        self
+    }
+
+    #[must_use]
+    pub fn unavailable(mut self, code: impl Into<String>, reason: impl Into<String>) -> Self {
+        self.contract.availability = Availability::Unavailable {
+            code: code.into(),
+            reason: reason.into(),
+        };
+        self
+    }
+
+    #[must_use]
+    pub fn destructive(mut self) -> Self {
+        self.contract.risk = RiskLevel::Destructive;
+        self.contract.confirmation = ConfirmationPolicy::Confirm;
+        self
+    }
+
+    #[must_use]
+    pub fn privileged(mut self) -> Self {
+        self.contract.risk = RiskLevel::Privileged;
+        self.contract.confirmation = ConfirmationPolicy::Confirm;
+        self
+    }
+
+    #[must_use]
+    pub fn requiring(mut self, permission: PermissionRequirement) -> Self {
+        self.contract.permission = permission;
+        self
+    }
+
+    #[must_use]
+    pub fn reversible(mut self) -> Self {
+        self.contract.reversible = true;
+        self
+    }
+
+    #[must_use]
+    pub fn retry_policy(mut self, retry: RetryPolicy) -> Self {
+        self.contract.retry = retry;
+        self
+    }
+
+    #[must_use]
+    pub fn execution(mut self, execution: ExecutionMode) -> Self {
+        self.contract.execution = execution;
+        self
+    }
+
+    #[must_use]
+    pub fn returns(mut self, result: ResultSpec) -> Self {
+        self.contract.result = result;
+        self
+    }
+
+    #[must_use]
+    pub fn launchable_when_closed(mut self) -> Self {
+        self.contract.discovery = DiscoveryScope::Launchable;
+        self
+    }
+
+    #[must_use]
+    pub fn durably_discoverable(mut self) -> Self {
+        self.contract.discovery = DiscoveryScope::Durable;
         self
     }
 
@@ -492,6 +616,21 @@ impl ActionSpec {
     }
 }
 
+fn enforce_operation_type(encoded: EncodedAction, expected: &str) -> EncodedAction {
+    if encoded.type_id == expected {
+        encoded
+    } else {
+        EncodedAction::encode_operation(
+            INVALID_ARGUMENTS_TYPE,
+            &format!(
+                "operation builder returned `{}` but declared `{expected}`",
+                encoded.type_id
+            ),
+        )
+        .expect("framework refusal is serializable")
+    }
+}
+
 /// Derive the palette-facing [`ActionInput`] for a [`typed`](ActionSpec::typed)
 /// spec from its declared parameters. See that constructor's docs.
 fn derive_input(params: &[ActionParam], build: &ArgsBuilder, placeholder: String) -> ActionInput {
@@ -524,11 +663,27 @@ fn derive_input(params: &[ActionParam], build: &ArgsBuilder, placeholder: String
                     "false" | "no" | "off" => Some(ArgValue::Boolean(false)),
                     _ => None,
                 },
+                ParamType::Object => {
+                    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
+                        .ok()
+                        .map(ArgValue::Object)
+                }
+                ParamType::Array => serde_json::from_str::<Vec<serde_json::Value>>(text)
+                    .ok()
+                    .map(ArgValue::Array),
+                ParamType::Resource => Some(ArgValue::Resource(text.to_string())),
+                ParamType::DateTime => Some(ArgValue::DateTime(text.to_string())),
+                ParamType::Secret => Some(ArgValue::Secret(text.to_string())),
             };
             let supplied: Vec<(String, ArgValue)> =
                 parsed.map(|v| vec![(name.clone(), v)]).unwrap_or_default();
-            let bound = ActionArgs::bind(&params, supplied).unwrap_or_default();
-            build(&bound)
+            match ActionArgs::bind(&params, supplied) {
+                Ok(bound) => build(&bound),
+                Err(error) => EncodedAction {
+                    type_id: INVALID_ARGUMENTS_TYPE.into(),
+                    payload: error.to_string().into_bytes(),
+                },
+            }
         }),
     }
 }
@@ -614,6 +769,7 @@ mod tests {
             "Zoom",
             "factor",
             OperationKind::View,
+            "view.zoom",
             vec![ActionParam::required_owned(
                 "factor",
                 ParamType::Number,
@@ -638,5 +794,22 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn operation_builder_cannot_switch_its_declared_protocol_type() {
+        let spec = ActionSpec::typed_operation(
+            "run",
+            "Run",
+            "value",
+            OperationKind::Effect,
+            "safe.operation",
+            vec![ActionParam::required("value", ParamType::Text, "Value")],
+            |_| EncodedAction::encode_operation("other.operation", &()).unwrap(),
+        );
+        let encoded = spec
+            .build_json(serde_json::json!({"value":"x"}).as_object().unwrap())
+            .unwrap();
+        assert_eq!(encoded.type_id, INVALID_ARGUMENTS_TYPE);
     }
 }

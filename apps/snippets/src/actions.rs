@@ -22,8 +22,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+    OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::SnippetsDoc;
@@ -31,6 +31,37 @@ use crate::model::{Language, Snippet, SnippetId};
 
 /// Registry `type_id` for every Snippets action.
 pub const SNIPPETS_ACTION_TYPE: &str = "snippets.action";
+pub const SNIPPETS_OPERATION_TYPE: &str = "snippets.operation";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SnippetsOperation {
+    OpenSnippet { id: SnippetId },
+    FocusSearch,
+}
+
+pub fn decode_operation(
+    type_id: &str,
+    payload: &[u8],
+) -> Result<Option<SnippetsOperation>, String> {
+    if type_id != SNIPPETS_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn view_operation(id: &str, label: &str, operation: SnippetsOperation) -> ActionSpec {
+    ActionSpec::operation(
+        id,
+        label,
+        OperationKind::View,
+        SNIPPETS_OPERATION_TYPE,
+        &operation,
+    )
+    .expect("SnippetsOperation is always serializable")
+    .retry_policy(RetryPolicy::Idempotent)
+}
 
 /// Every collaborative operation Snippets exports on its library.
 ///
@@ -239,7 +270,14 @@ pub struct SnippetsResourceCtx {
     reason = "SnippetsAction's fields are plain strings/bools/vecs, which always serialize — a failure here would mean serde itself is broken"
 )]
 fn encode_spec(id: &str, label: &str, action: &SnippetsAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, SNIPPETS_ACTION_TYPE, action).expect("encode snippets action")
+    let spec = ActionSpec::immediate(id, label, SNIPPETS_ACTION_TYPE, action)
+        .expect("encode snippets action")
+        .reversible();
+    if id.contains("delete") {
+        spec.destructive()
+    } else {
+        spec
+    }
 }
 
 /// One-line label for a snippet resource in the palette.
@@ -253,6 +291,11 @@ fn snippet_label(s: &Snippet) -> String {
 /// resource per snippet exporting every document-mutating operation as an action.
 pub fn provide_resources(ctx: &SnippetsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let mut lib = Resource::new("snippets.library", "snippets.library", "Snippets");
+    lib = lib.with_action(view_operation(
+        "search",
+        "Search snippets",
+        SnippetsOperation::FocusSearch,
+    ));
 
     // Library-level: create a new snippet at the current folder. The uuid is
     // minted once when the title argument is committed, then baked into the
@@ -282,6 +325,11 @@ pub fn provide_resources(ctx: &SnippetsResourceCtx, doc: &AutoCommit) -> Vec<Res
             "snippets.snippet",
             snippet_label(&s),
         );
+        r = r.with_action(view_operation(
+            "open",
+            "Open snippet",
+            SnippetsOperation::OpenSnippet { id },
+        ));
 
         // Rename — prompted for the new title.
         r = r.with_action(ActionSpec::prompted(
@@ -440,11 +488,14 @@ mod tests {
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
+        palette.set_query("New snippet");
         let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("New snippet")),
             "{labels:?}"
         );
+        palette.set_query("Delete snippet");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Delete snippet")),
             "{labels:?}"

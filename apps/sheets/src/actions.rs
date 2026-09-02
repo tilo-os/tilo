@@ -41,8 +41,9 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
+    ResultSpec,
 };
 
 use crate::doc::SheetsDoc;
@@ -53,6 +54,38 @@ use crate::settings::DocSettings;
 
 /// Registry `type_id` for every Sheets action.
 pub const SHEETS_ACTION_TYPE: &str = "sheets.action";
+pub const SHEETS_OPERATION_TYPE: &str = "sheets.operation";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SheetsOperation {
+    ImportCsv { path: Option<String> },
+    ImportXlsx { path: Option<String> },
+    ImportOds { path: Option<String> },
+    ExportCsv { path: Option<String> },
+    ExportXlsx { path: Option<String> },
+    ExportOds { path: Option<String> },
+    OpenCommandPalette,
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<SheetsOperation>, String> {
+    if type_id != SHEETS_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn operation(id: &str, label: &str, kind: OperationKind, value: SheetsOperation) -> ActionSpec {
+    let spec = ActionSpec::operation(id, label, kind, SHEETS_OPERATION_TYPE, &value)
+        .expect("SheetsOperation is always serializable");
+    match value {
+        SheetsOperation::ExportCsv { .. }
+        | SheetsOperation::ExportXlsx { .. }
+        | SheetsOperation::ExportOds { .. } => spec.destructive(),
+        _ => spec,
+    }
+}
 
 /// The fixed default currency used when an action reads stored cell formats out
 /// of the document. It only seeds a legacy bare `"currency"` format that carries
@@ -668,7 +701,7 @@ pub struct SheetsResourceCtx {
 }
 
 fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, SHEETS_ACTION_TYPE, action)
+    let spec = ActionSpec::immediate(id, label, SHEETS_ACTION_TYPE, action)
         // `ActionSpec`'s fields are private now that it carries typed
         // parameters; build the fallback through the constructor that
         // takes an already-encoded action.
@@ -680,6 +713,12 @@ fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
                 inert_encoded_action(),
             )
         })
+        .reversible();
+    if id.contains("delete") {
+        spec.destructive()
+    } else {
+        spec
+    }
 }
 
 /// Build the resource tree Sheets currently has open: the workbook (always
@@ -688,6 +727,78 @@ fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
 /// the same action the on-screen affordance dispatches.
 pub fn provide_resources(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let mut workbook = Resource::new("sheets.workbook", "sheets.workbook", "Workbook");
+
+    for (id, label, kind, variant) in [
+        ("import-csv", "Import CSV", OperationKind::Effect, 0_u8),
+        (
+            "import-xlsx",
+            "Import Excel workbook",
+            OperationKind::Effect,
+            1,
+        ),
+        (
+            "import-ods",
+            "Import OpenDocument spreadsheet",
+            OperationKind::Effect,
+            2,
+        ),
+        ("export-csv", "Export CSV", OperationKind::Effect, 3),
+        (
+            "export-xlsx",
+            "Export Excel workbook",
+            OperationKind::Effect,
+            4,
+        ),
+        (
+            "export-ods",
+            "Export OpenDocument spreadsheet",
+            OperationKind::Effect,
+            5,
+        ),
+        ("commands", "Open command palette", OperationKind::View, 6),
+    ] {
+        if variant == 6 {
+            workbook = workbook.with_action(operation(
+                id,
+                label,
+                kind,
+                SheetsOperation::OpenCommandPalette,
+            ));
+            continue;
+        }
+        workbook = workbook.with_action(
+            ActionSpec::typed_operation(
+                id,
+                label,
+                "path (omit to use the system file picker)",
+                kind,
+                SHEETS_OPERATION_TYPE,
+                vec![ActionParam::optional_owned(
+                    "path",
+                    ParamType::Text,
+                    "Direct spreadsheet path",
+                )],
+                move |args: &ActionArgs| {
+                    let path = args
+                        .text("path")
+                        .filter(|p| !p.trim().is_empty())
+                        .map(str::to_string);
+                    let value = match variant {
+                        0 => SheetsOperation::ImportCsv { path },
+                        1 => SheetsOperation::ImportXlsx { path },
+                        2 => SheetsOperation::ImportOds { path },
+                        3 => SheetsOperation::ExportCsv { path },
+                        4 => SheetsOperation::ExportXlsx { path },
+                        _ => SheetsOperation::ExportOds { path },
+                    };
+                    EncodedAction::encode_operation(SHEETS_OPERATION_TYPE, &value)
+                        .expect("sheet operation serializes")
+                },
+            )
+            .execution(ExecutionMode::Background { cancellable: false })
+            .returns(ResultSpec::Job),
+        );
+    }
 
     // Workbook-level: create a new sheet. The default name is resolved from the
     // current sheet count at authoring time, so replay stays deterministic.
@@ -715,7 +826,13 @@ pub fn provide_resources(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Vec<Resou
         } else {
             name.clone()
         };
-        let stable = SheetsDoc::sheet_resource_id(doc, idx).unwrap_or_else(|| idx.to_string());
+        // Never publish a positional fallback: after a concurrent reorder it
+        // could make an old address operate on a different sheet. Legacy or
+        // malformed rows without a durable identity remain usable on-screen,
+        // but are deliberately absent from the headless action surface.
+        let Some(stable) = SheetsDoc::sheet_resource_id(doc, idx) else {
+            continue;
+        };
         let mut sheet = Resource::new(format!("sheets.sheet:{stable}"), "sheets.sheet", label);
 
         // Rename — a prompted action carrying the new name.
@@ -868,12 +985,17 @@ mod tests {
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
+        palette.set_query("New sheet");
         let labels = palette.result_labels();
         assert!(labels.iter().any(|l| l.contains("New sheet")), "{labels:?}");
+        palette.set_query("Rename sheet");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Rename sheet")),
             "{labels:?}"
         );
+        palette.set_query("Delete sheet");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Delete sheet")),
             "{labels:?}"
@@ -1134,5 +1256,33 @@ mod tests {
             .find(|resource| resource.label == "Budget")
             .expect("moved sheet remains published");
         assert_eq!(moved.id.0, format!("sheets.sheet:{stable}"));
+    }
+
+    #[test]
+    fn interchange_operations_are_typed_background_jobs() {
+        let mut doc = seeded();
+        let ctx = ctx_from(&mut doc);
+        let resources = provide_resources(&ctx, &doc);
+        for id in [
+            "import-csv",
+            "import-xlsx",
+            "import-ods",
+            "export-csv",
+            "export-xlsx",
+            "export-ods",
+        ] {
+            let action = resources[0]
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap();
+            assert_eq!(action.params()[0].name.as_ref(), "path");
+            assert!(matches!(
+                action.contract.execution,
+                ExecutionMode::Background { .. }
+            ));
+            assert_eq!(action.contract.result, ResultSpec::Job);
+            assert!(action.contract.validate_declaration().is_empty());
+        }
     }
 }

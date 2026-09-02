@@ -6,8 +6,6 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use vello::kurbo::Rect;
 
-use crate::shell::search::action_api::ArgValue;
-
 /// Which pointer button a [`Command::PointerButton`] means — spelled out because X11, evdev and winit each number buttons differently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -120,6 +118,10 @@ pub enum Command {
         #[serde(default)]
         args: serde_json::Map<String, serde_json::Value>,
     },
+    /// Read the latest broker lifecycle state for an invocation receipt id.
+    ActionsStatus { invocation_id: u64 },
+    /// Request cooperative cancellation for an invocation receipt id.
+    ActionsCancel { invocation_id: u64 },
 }
 
 /// Top-level response envelope: an `ok` payload (per-command shape) or a structured `err`.
@@ -283,43 +285,6 @@ impl ActionRefusal {
             message: message.into(),
         }
     }
-}
-
-/// Translate one JSON argument object into the action vocabulary's values. Kept at the transport, not the action API, so the catalogue never learns a wire format. JSON shapes with no parameter type (null, arrays and objects) are refused by name.
-///
-/// # Errors
-///
-/// Returns [`ActionRefusal::invalid_arguments`] for a JSON value with no matching parameter type: `null`, an array, an object, or a non-finite number.
-pub fn arg_values_from_json(
-    args: &serde_json::Map<String, serde_json::Value>,
-) -> Result<Vec<(String, ArgValue)>, ActionRefusal> {
-    let mut out = Vec::with_capacity(args.len());
-    for (name, value) in args {
-        let bound = match value {
-            serde_json::Value::String(s) => ArgValue::Text(s.clone()),
-            serde_json::Value::Bool(b) => ArgValue::Boolean(*b),
-            serde_json::Value::Number(n) => match n.as_i64() {
-                Some(i) => ArgValue::Integer(i),
-                None => n.as_f64().map(ArgValue::Number).ok_or_else(|| {
-                    ActionRefusal::invalid_arguments(format!(
-                        "argument `{name}` is not a finite number"
-                    ))
-                })?,
-            },
-            other => {
-                return Err(ActionRefusal::invalid_arguments(format!(
-                    "argument `{name}` has no parameter type: {}",
-                    match other {
-                        serde_json::Value::Null => "null",
-                        serde_json::Value::Array(_) => "array",
-                        _ => "object",
-                    }
-                )));
-            }
-        };
-        out.push((name.clone(), bound));
-    }
-    Ok(out)
 }
 
 /// Side-effect actions the transport must execute after a `dispatch_command` call. Pure values, no I/O — the transport synthesises `winit::WindowEvent`s from these through `host_and_taffy_mut`, the same wire as `WinitBackend`/`ShellDriver`.
@@ -514,7 +479,24 @@ pub fn dispatch_command<S: ControlState>(
             Vec::new(),
         ),
         Command::ActionsInvoke { provider, id, args } => actions_invoke(state, provider, id, args),
+        Command::ActionsStatus { invocation_id } => invocation_control(
+            crate::shell::search::providers::live_app_actions::job_status_id(*invocation_id),
+        ),
+        Command::ActionsCancel { invocation_id } => invocation_control(
+            crate::shell::search::providers::live_app_actions::job_cancel_id(*invocation_id),
+        ),
     }
+}
+
+fn invocation_control(id: String) -> (Response, Vec<PlannedAction>) {
+    (
+        Response::Answer(serde_json::json!({"invocation_id": id.clone()})),
+        vec![PlannedAction::InvokeAction {
+            provider: crate::shell::search::providers::live_app_actions::PROVIDER_ID.into(),
+            id,
+            args: serde_json::Map::new(),
+        }],
+    )
 }
 
 /// [`Command::ListTargets`]: every addressable widget, sorted by name for deterministic output.
@@ -1658,8 +1640,7 @@ mod tests {
                     )));
                 }
             };
-            let values = arg_values_from_json(args)?;
-            crate::shell::search::action_api::ActionArgs::bind(params, values)
+            crate::shell::search::action_api::ActionArgs::bind_json(params, args)
                 .map_err(|e| ActionRefusal::invalid_arguments(e.to_string()))?;
             Ok(serde_json::json!({
                 "provider": provider,
@@ -1732,6 +1713,31 @@ mod tests {
                 args: serde_json::Map::new(),
             }]
         );
+    }
+
+    #[test]
+    fn status_and_cancel_plan_the_broker_job_addresses() {
+        for (command, expected) in [
+            (
+                Command::ActionsStatus { invocation_id: 37 },
+                crate::shell::search::providers::live_app_actions::job_status_id(37),
+            ),
+            (
+                Command::ActionsCancel { invocation_id: 37 },
+                crate::shell::search::providers::live_app_actions::job_cancel_id(37),
+            ),
+        ] {
+            let (response, actions) = dispatch_command(&command, &ActionState);
+            assert!(matches!(response, Response::Answer(_)));
+            assert_eq!(
+                actions,
+                vec![PlannedAction::InvokeAction {
+                    provider: crate::shell::search::providers::live_app_actions::PROVIDER_ID.into(),
+                    id: expected,
+                    args: serde_json::Map::new(),
+                }]
+            );
+        }
     }
 
     #[test]

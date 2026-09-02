@@ -871,7 +871,9 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
 mod tests {
     use super::*;
     use iroh::endpoint::presets;
-    use qos_relay::{Relay, RelayConfig, WorkspaceBinding, daemon::RelayIdentity};
+    use qos_relay::{
+        Relay, RelayConfig, ReplicationIntent, WorkspaceBinding, daemon::RelayIdentity,
+    };
     use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     use tokio::time::timeout;
 
@@ -1146,7 +1148,7 @@ mod tests {
             workspaces: vec![WorkspaceBinding {
                 id: 42,
                 pin: true,
-                replication: qos_relay::ReplicationIntent::FullWorkspace,
+                replication: ReplicationIntent::FullWorkspace,
             }],
             ..RelayConfig::default()
         };

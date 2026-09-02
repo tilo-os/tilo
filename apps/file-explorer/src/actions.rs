@@ -286,10 +286,11 @@ mod tests {
         );
     }
 
-    /// The file explorer publishes the current folder's view/effect operations
-    /// to Ctrl+K without recording a document action or undo boundary.
+    /// Filesystem operations are exported as local resource operations, not
+    /// replayable CRDT actions. Publishing them must not fabricate an action
+    /// host undo boundary.
     #[test]
-    fn exports_ctrl_k_operations_without_recording_a_document_action() {
+    fn exports_local_resources_without_crdt_actions() {
         let mut w = FileExplorerWidget::new();
         let mut doc = AutoCommit::new();
         w.sync(&mut doc, &ROOT);
@@ -303,7 +304,12 @@ mod tests {
             .iter()
             .map(|action| action.id.as_str())
             .collect();
-        assert_eq!(actions, ["refresh", "navigate"]);
+        for expected in ["refresh", "navigate", "new-folder", "paste"] {
+            assert!(
+                actions.contains(&expected),
+                "folder publishes {expected}: {actions:?}",
+            );
+        }
         assert!(
             w.take_committed_action().is_none(),
             "no action is dispatched, so no action-host undo boundary is recorded",

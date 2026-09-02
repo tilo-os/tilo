@@ -37,13 +37,16 @@
 use automerge::AutoCommit;
 
 use qos_actions::{
-    ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, ConfirmationPolicy,
+    DiscoveryScope, Doc, EncodedAction, ExecutionLocus, OperationKind, ParamType,
+    PermissionRequirement, Resource, ResourceProvider, RetryPolicy, RiskLevel,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::doc::FirewallDoc;
-use crate::model::{Action, FirewallConfig, Matcher, Proto, Rule, RuleId, Target, Zone, ZoneKind};
+use crate::model::{
+    Action, FirewallConfig, Matcher, Proto, Rule, RuleId, ServiceCatalog, Target, Zone, ZoneKind,
+};
 
 /// Registry `type_id` for every firewall action.
 pub const FIREWALL_ACTION_TYPE: &str = "firewall.action";
@@ -380,7 +383,21 @@ fn rule_label(r: &Rule) -> String {
     reason = "FirewallAction always serializes; there is no meaningful fallback ActionSpec to return instead"
 )]
 fn immediate_spec(id: &str, label: &str, action: &FirewallAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, FIREWALL_ACTION_TYPE, action).expect("encode firewall action")
+    ActionSpec::immediate(id, label, FIREWALL_ACTION_TYPE, action)
+        .expect("encode firewall action")
+        .with_contract(config_contract())
+}
+
+fn config_contract() -> ActionContract {
+    ActionContract {
+        permission: PermissionRequirement::Admin,
+        risk: RiskLevel::Privileged,
+        confirmation: ConfirmationPolicy::Confirm,
+        retry: RetryPolicy::Idempotent,
+        reversible: true,
+        tags: vec!["security".into(), "firewall".into()],
+        ..ActionContract::default()
+    }
 }
 
 /// Build the resource tree the firewall currently has open: the configuration
@@ -396,21 +413,52 @@ pub fn provide_resources(config: &FirewallConfig) -> Vec<Resource> {
     } else {
         "Start firewall"
     };
-    root = root.with_action(immediate_spec(
-        "toggle-enabled",
-        enable_label,
-        &set_enabled_action(!config.enabled),
-    ));
+    root = root.with_action(
+        ActionSpec::operation(
+            "toggle-enabled",
+            enable_label,
+            OperationKind::Effect,
+            "firewall.set-enabled",
+            &(!config.enabled),
+        )
+        .expect("firewall enabled state is serializable")
+        .with_contract(ActionContract {
+            permission: PermissionRequirement::Admin,
+            risk: RiskLevel::Privileged,
+            confirmation: ConfirmationPolicy::Confirm,
+            retry: RetryPolicy::Idempotent,
+            discovery: DiscoveryScope::Launchable,
+            execution: qos_actions::ExecutionMode::Background { cancellable: true },
+            result: qos_actions::ResultSpec::Job,
+            tags: vec!["security".into(), "firewall".into()],
+            ..ActionContract::default()
+        }),
+    );
     let panic_label = if config.panic_mode {
         "Exit panic mode"
     } else {
         "Enter panic mode"
     };
-    root = root.with_action(immediate_spec(
-        "toggle-panic",
-        panic_label,
-        &set_panic_action(!config.panic_mode),
-    ));
+    root = root.with_action(
+        ActionSpec::operation(
+            "toggle-panic",
+            panic_label,
+            OperationKind::Effect,
+            "firewall.set-panic",
+            &(!config.panic_mode),
+        )
+        .expect("firewall panic state is serializable")
+        .with_contract(ActionContract {
+            confirmation: ConfirmationPolicy::Confirm,
+            permission: PermissionRequirement::Admin,
+            risk: RiskLevel::Privileged,
+            retry: RetryPolicy::Idempotent,
+            execution: qos_actions::ExecutionMode::Background { cancellable: true },
+            result: qos_actions::ResultSpec::Job,
+            tags: vec!["security".into(), "firewall".into()],
+            ..ActionContract::default()
+        }),
+    );
 
     for z in &config.zones {
         root = root.with_child(zone_resource(config, z));
@@ -440,37 +488,64 @@ fn zone_resource(config: &FirewallConfig, z: &Zone) -> Resource {
         ));
     }
     // Set the zone's default policy (target) — prompted by name.
-    zr = zr.with_action(ActionSpec::prompted(
-        "set-policy",
-        "Set default policy",
-        "Policy",
-        "default, accept, reject, drop",
-        ExecutionLocus::ClientLocal,
-        move |name: &str| encode(&set_zone_target_action(kind, parse_target(name))),
-    ));
+    zr = zr.with_action(
+        ActionSpec::typed(
+            "set-policy",
+            "Set default policy",
+            "default, accept, reject, drop",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required("policy", ParamType::Text, "Default zone policy")
+                    .with_choices(["default", "accept", "reject", "drop"]),
+            ],
+            move |args| {
+                encode(&set_zone_target_action(
+                    kind,
+                    parse_target(args.text("policy").unwrap_or("default")),
+                ))
+            },
+        )
+        .with_contract(config_contract()),
+    );
     // Add an allow rule for a port — prompted. The rule's uuid is minted once
     // when the argument is committed, then baked into the envelope, so replay
     // stays deterministic.
-    zr = zr.with_action(ActionSpec::prompted(
-        "add-allow",
-        "Add allow rule",
-        "Port",
-        "e.g. 8080 or 8000-8080",
-        ExecutionLocus::ClientLocal,
-        move |port: &str| {
-            encode(&add_rule_action(
-                kind,
-                Rule::new(
-                    Matcher::Port {
-                        port: normalize_port(port),
-                        proto: Proto::Tcp,
-                    },
-                    Action::Allow,
-                    "",
-                ),
-            ))
-        },
-    ));
+    zr = zr.with_action(
+        ActionSpec::typed(
+            "add-allow",
+            "Add allow rule",
+            "e.g. 8080 or 8000-8080",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required("port", ParamType::Text, "TCP port or inclusive port range")
+                    .with_schema(serde_json::json!({ "pattern": "^[0-9]{1,5}(-[0-9]{1,5})?$" })),
+            ],
+            move |args| {
+                let port = args.text("port").unwrap_or_default();
+                encode(&add_rule_action(
+                    kind,
+                    Rule::new(
+                        Matcher::Port {
+                            port: normalize_port(port),
+                            proto: Proto::Tcp,
+                        },
+                        Action::Allow,
+                        "",
+                    ),
+                ))
+            },
+        )
+        .with_contract(config_contract()),
+    );
+
+    for service in ServiceCatalog::ALL {
+        let on = !z.has_service(service.id);
+        zr = zr.with_action(immediate_spec(
+            &format!("service-{}", service.id),
+            &format!("{} {}", if on { "Enable" } else { "Disable" }, service.name),
+            &set_service_action(kind, service.id, on),
+        ));
+    }
 
     let n = z.rules.len();
     for (idx, r) in z.rules.iter().enumerate() {
@@ -498,27 +573,38 @@ fn rule_resource(kind: ZoneKind, idx: usize, n: usize, r: &Rule) -> Resource {
         toggle_label,
         &toggle_rule_action(kind, id),
     ))
-    .with_action(immediate_spec(
-        "delete",
-        "Delete rule",
-        &delete_rule_action(kind, id),
-    ));
+    .with_action(
+        immediate_spec("delete", "Delete rule", &delete_rule_action(kind, id)).with_contract(
+            ActionContract {
+                confirmation: ConfirmationPolicy::Confirm,
+                risk: RiskLevel::Destructive,
+                ..config_contract()
+            },
+        ),
+    );
 
     // Edit — replace the rule's source (its most editable field). Carries
     // the rest of the rule unchanged so the edit is a whole-rule replace.
     let base = r.clone();
-    rr = rr.with_action(ActionSpec::prompted(
-        "edit",
-        "Set source",
-        "Source",
-        "CIDR, or blank for anywhere",
-        ExecutionLocus::ClientLocal,
-        move |src: &str| {
-            let mut edited = base.clone();
-            edited.source = src.trim().to_string();
-            encode(&edit_rule_action(kind, edited))
-        },
-    ));
+    rr = rr.with_action(
+        ActionSpec::typed(
+            "edit",
+            "Set source",
+            "CIDR, or blank for anywhere",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::optional(
+                "source",
+                ParamType::Text,
+                "CIDR/address; omitted means anywhere",
+            )],
+            move |args| {
+                let mut edited = base.clone();
+                edited.source = args.text("source").unwrap_or_default().trim().to_string();
+                encode(&edit_rule_action(kind, edited))
+            },
+        )
+        .with_contract(config_contract()),
+    );
 
     // Reorder — offered only where there is room to move.
     if idx > 0 {
@@ -603,6 +689,15 @@ mod tests {
         let cfg_actions: Vec<&str> = cfg.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(cfg_actions.contains(&"toggle-enabled"), "{cfg_actions:?}");
         assert!(cfg_actions.contains(&"toggle-panic"), "{cfg_actions:?}");
+        let enabled = cfg
+            .actions
+            .iter()
+            .find(|action| action.id == "toggle-enabled")
+            .expect("start/stop operation");
+        assert_eq!(enabled.kind, OperationKind::Effect);
+        assert_eq!(enabled.contract.permission, PermissionRequirement::Admin);
+        assert_eq!(enabled.contract.confirmation, ConfirmationPolicy::Confirm);
+        assert_eq!(enabled.contract.discovery, DiscoveryScope::Launchable);
         assert_eq!(cfg.children.len(), 9, "all nine stock zones are published");
 
         // The public zone carries rules in the sample; find it and check both
@@ -616,6 +711,14 @@ mod tests {
         let z_actions: Vec<&str> = public.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(z_actions.contains(&"set-policy"), "{z_actions:?}");
         assert!(z_actions.contains(&"add-allow"), "{z_actions:?}");
+        assert!(z_actions.contains(&"service-ssh"), "{z_actions:?}");
+        assert!(
+            public
+                .actions
+                .iter()
+                .find(|action| action.id == "set-policy")
+                .is_some_and(|action| !action.params().is_empty())
+        );
         // public is the active zone in the sample, so make-active is suppressed.
         assert!(
             !z_actions.contains(&"set-default"),
@@ -629,6 +732,15 @@ mod tests {
         assert!(r_actions.contains(&"toggle"), "{r_actions:?}");
         assert!(r_actions.contains(&"edit"), "{r_actions:?}");
         assert!(r_actions.contains(&"delete"), "{r_actions:?}");
+        assert_eq!(
+            rule.actions
+                .iter()
+                .find(|action| action.id == "delete")
+                .expect("delete action")
+                .contract
+                .risk,
+            RiskLevel::Destructive
+        );
         // First rule can't move up; it can move down.
         assert!(!r_actions.contains(&"move-up"), "{r_actions:?}");
         assert!(r_actions.contains(&"move-down"), "{r_actions:?}");

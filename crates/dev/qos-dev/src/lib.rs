@@ -29,6 +29,7 @@ const GRAPH_APP_TEMPLATE: &str = include_str!("../templates/graph.rs");
 const ASYNC_APP_TEMPLATE: &str = include_str!("../templates/async.rs");
 const DOCUMENT_APP_TEMPLATE: &str = include_str!("../templates/document.rs");
 const QR_APP_TEMPLATE: &str = include_str!("../templates/qr.rs");
+const RESOURCE_ACTIONS_TEMPLATE: &str = include_str!("../templates/resource_actions.rs");
 const WORKSPACE_APP_TEMPLATE: &str = include_str!("../templates/workspace.rs");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,7 +70,7 @@ impl Template {
             Self::Async => "Restartable background task with cancellation",
             Self::Document => "Durable synchronized editor with undo",
             Self::Qr => "IME input to accessible generated QR output",
-            Self::Workspace => "Resizable master-detail workspace with durable item editing",
+            Self::Workspace => "Responsive master-detail workspace with durable item editing",
         }
     }
 }
@@ -3932,6 +3933,7 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
         "LaunchSpec::new",
         &mut checks,
     );
+    check_resource_action_surface(&app_dir, &mut checks);
     check_ui_graph_artifacts(&app_dir, &mut checks);
     check_locale_artifacts(&app_dir, &mut checks);
     check_headless_scenarios(&app_dir, &mut checks);
@@ -3945,6 +3947,57 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
     }
 
     DoctorReport { app_dir, checks }
+}
+
+fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
+    let manifest = std::fs::read_to_string(app_dir.join("Cargo.toml"));
+    let source = std::fs::read_to_string(app_dir.join("src/lib.rs"));
+    let (Ok(manifest), Ok(source)) = (manifest, source) else {
+        return;
+    };
+    let dependency = manifest.lines().any(|line| {
+        line.trim_start().starts_with("qos-actions")
+            && line
+                .split_once('=')
+                .is_some_and(|(_, value)| !value.trim().is_empty())
+    });
+    let publishes = source.contains("fn resources(")
+        || source.contains("resource_actions::resource(")
+        || source.contains("ResourceActionApp");
+    let invokes = source.contains("invoke_resource_operation")
+        || source.contains("start_resource_operation")
+        || source.contains("resource_actions::immediate(")
+        || source.contains("resource_actions::background(");
+    let (status, detail) = if dependency && publishes && invokes {
+        (
+            DoctorStatus::Pass,
+            "qos-actions dependency, resource catalogue, and invocation route are present"
+                .to_owned(),
+        )
+    } else {
+        let mut missing = Vec::new();
+        if !dependency {
+            missing.push("direct qos-actions dependency");
+        }
+        if !publishes {
+            missing.push("Widget::resources catalogue");
+        }
+        if !invokes {
+            missing.push("operation invocation handler");
+        }
+        (
+            DoctorStatus::Fail,
+            format!(
+                "missing {}; qOS apps must expose meaningful controls through resources/actions",
+                missing.join(", ")
+            ),
+        )
+    };
+    checks.push(DoctorCheck {
+        status,
+        label: "resource/action surface",
+        detail,
+    });
 }
 
 fn resolve_app_dir(start: &Path) -> Result<PathBuf> {
@@ -6497,7 +6550,7 @@ fn prompt_component_template(
 fn prompt_template(input: &mut impl io::BufRead, output: &mut impl io::Write) -> Result<Template> {
     writeln!(
         output,
-        "\nStarter template:\n  1) starter    Accessible form and standard lifecycle\n  2) data       Sparse table with retained cell controls\n  3) list       Sparse variable-height retained list\n  4) tree       Professional hierarchy browser\n  5) graph      Serialized UI graph and router\n  6) async      Restartable background task with cancellation\n  7) document   Durable synchronized editor with undo\n  8) qr         IME input to accessible generated QR output\n  9) workspace  Resizable master-detail app with durable item editing"
+        "\nStarter template:\n  1) starter    Accessible form and standard lifecycle\n  2) data       Sparse table with retained cell controls\n  3) list       Sparse variable-height retained list\n  4) tree       Professional hierarchy browser\n  5) graph      Serialized UI graph and router\n  6) async      Restartable background task with cancellation\n  7) document   Durable synchronized editor with undo\n  8) qr         IME input to accessible generated QR output\n  9) workspace  Responsive master-detail app with durable item editing"
     )
     .context("showing template choices")?;
     loop {
@@ -6691,11 +6744,17 @@ fn cargo_toml(spec: &AppSpec) -> String {
         )
     };
     let extras = format!("{lints}{patches}");
+    let repo = spec.ui_path.parent().unwrap_or_else(|| Path::new(".."));
+    let actions = format!(
+        "qos-actions = {{ path = {:?} }}",
+        repo.join("crates/collab/actions").to_string_lossy()
+    );
     format!(
-        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[dependencies]\nui = {{ path = {ui_path:?} }}\n{lints}",
+        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[dependencies]\nui = {{ path = {ui_path:?} }}\n{actions}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n{lints}",
         name = spec.package_name,
         crate_name = spec.crate_name,
         ui_path = spec.ui_path.to_string_lossy(),
+        actions = actions,
         lints = extras,
     )
 }
@@ -6715,7 +6774,7 @@ fn app_lib(spec: &AppSpec) -> String {
         Template::Workspace => WORKSPACE_APP_TEMPLATE.to_owned(),
     };
     format!(
-        "//! {} application.\n\n{GENERATED_LOCALE_SETUP}\n\n{application}",
+        "//! {} application.\n\n{GENERATED_LOCALE_SETUP}\n\npub mod resource_actions {{\n{RESOURCE_ACTIONS_TEMPLATE}\n}}\n\n{application}",
         spec.title,
     )
 }
@@ -6772,15 +6831,25 @@ workspace-title-placeholder = Untitled item\n\
 workspace-notes-label = Notes\n\
 workspace-notes-placeholder = Add project notes…\n\
 workspace-preview-heading = Live preview\n\
+workspace-back = Back\n\
 workspace-share = Share\n",
     )
 }
 
 fn app_main(spec: &AppSpec) -> String {
+    let register = if spec.template == Template::Document {
+        format!(
+            "\n            {}::register_actions(app.action_registry_mut());",
+            spec.crate_name
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "//! Standard qOS lifecycle: live window, persistence, and headless driving.\n\nfn main() {{\n    ui::launch::run_or_exit(\n        &ui::launch::LaunchSpec::new({app_id:?}, {crate_name}::app_root).configure_app(|app| {{\n            app.autofocus_first = true;\n            app.autofocus_on_structure_change = true;\n        }}),\n    );\n}}\n",
+        "//! Standard qOS lifecycle: live window, persistence, and headless driving.\n\nfn main() {{\n    ui::launch::run_or_exit(\n        &ui::launch::LaunchSpec::new({app_id:?}, {crate_name}::app_root).configure_app(|app| {{{register}\n            app.autofocus_first = true;\n            app.autofocus_on_structure_change = true;\n        }}),\n    );\n}}\n",
         app_id = spec.app_id,
         crate_name = spec.crate_name,
+        register = register,
     )
 }
 
@@ -6793,7 +6862,6 @@ fn app_test(spec: &AppSpec) -> String {
 fn starter_app_test(crate_name: &str) -> String {
     format!(
         r#"use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
-
 #[test]
 fn app_responds_to_semantic_input() {{
     let mut app = ui::headless::Driver::new(
@@ -7059,6 +7127,10 @@ fn document_fields_are_synchronized_and_undoable() {{
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the single format template keeps the generated workspace behavior test reviewable as one artifact"
+)]
 fn workspace_app_test(crate_name: &str) -> String {
     format!(
         r#"use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
@@ -7070,7 +7142,6 @@ fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
         {crate_name}::app_root(),
         (1000, 640),
     );
-
     let targets = app.targets();
     for target in [
         "workspace-selected-item",
@@ -7082,7 +7153,6 @@ fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
         assert!(rect.width() > 0.0 && rect.height() > 0.0, "{{target}}: {{rect:?}}");
         assert!(rect.y0 >= 0.0 && rect.y1 <= 640.0, "{{target}}: {{rect:?}}");
     }}
-
     app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
         .expect("select the design-system project");
     app.expect(
@@ -7109,7 +7179,6 @@ fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
             .name("Design tokens"),
     )
     .expect("the detail preview shares the document binding");
-
     app.perform_semantic_named("workspace-tree", Some("node:3"), &Action::Activate)
         .expect("switch to another project");
     app.expect(
@@ -7126,7 +7195,6 @@ fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
     assert!(app.perform_undo(), "detail edits use standard document undo");
     let snapshot = app.inspection_json().expect("undone workspace snapshot");
     assert!(!snapshot.contains("Desktop refresh"), "{{snapshot}}");
-
     app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
         .expect("return to the first project");
     app.expect(
@@ -7136,6 +7204,37 @@ fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
     )
     .expect("the first project's persisted view remains synchronized");
     assert!(app.dump_json().contains("workspace-item-4-title"));
+    let mut compact = ui::headless::Driver::new(
+        ui::State::new(),
+        {crate_name}::app_root(),
+        (460, 820),
+    );
+    compact.relayout();
+    compact.expect(
+        &SemanticExpectation::named("workspace-shell-back")
+            .role(Role::Button)
+            .name("Back"),
+    )
+    .expect("compact detail exposes accessible Back");
+    compact.perform_named("workspace-shell-back", &Action::Activate)
+        .expect("return to compact navigation");
+    compact.expect(
+        &SemanticExpectation::named("workspace-tree").role(Role::Tree),
+    )
+    .expect("compact navigation uses the full-width tree pane");
+    compact.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
+        .expect("choose a compact navigation row");
+    compact.expect(
+        &SemanticExpectation::named("workspace-selected-item")
+            .role(Role::Heading {{ level: 1 }})
+            .name("Design system"),
+    )
+    .expect("compact selection navigates to full-width detail");
+    let issues = compact.accessibility_audit();
+    assert!(
+        issues.issues.is_empty(),
+        "compact workspace audit: {{issues:#?}}"
+    );
 }}
 "#
     )
@@ -7369,6 +7468,10 @@ fn app_readme(spec: &AppSpec) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# {}", spec.title);
     let _ = writeln!(out, "\nGenerated by `qos-dev new`.\n");
+    let _ = writeln!(
+        out,
+        "Every meaningful command is published as a stable `Resource`/`ActionSpec`. Keep the UI callback and external operation handler routed through the same domain function; `qos-dev doctor` rejects apps that remove this surface.\n"
+    );
     let _ = writeln!(out, "```bash");
     let _ = writeln!(out, "qos-dev check");
     let _ = writeln!(out, "qos-dev test");
@@ -7435,7 +7538,7 @@ fn app_readme(spec: &AppSpec) -> String {
     if spec.template == Template::Workspace {
         let _ = writeln!(
             out,
-            "\nThe workspace starter composes a resizable master-detail shell from ordinary retained widgets. Stable tree selection changes one `LocalState<u64>` key; `ModelView` replaces only the detail subtree, while its inputs bind directly to per-item document paths. Switching projects therefore needs no synchronization callbacks and preserves independent persisted, collaborative, undoable edits."
+            "\nThe workspace starter composes a responsive master-detail shell from ordinary retained widgets. Wide windows show navigation and detail together; compact windows expose an accessible Back action and switch between full-width panes through typed `LocalState<NarrowScreen>`. Stable tree selection changes one `LocalState<u64>` key; `ModelView` replaces only the detail subtree, while its inputs bind directly to per-item document paths. Switching projects therefore needs no synchronization callbacks and preserves independent persisted, collaborative, undoable edits."
         );
     }
     let _ = writeln!(
@@ -9754,7 +9857,7 @@ mod tests {
         assert!(library.contains("NumberInput::from_state(&refresh_minutes)"));
         assert!(library.contains("Slider::from_state(&volume)"));
         assert!(library.contains("Dropdown::from_state("));
-        assert!(library.contains("labeled_check(\"starter-updates-label\", updates)"));
+        assert!(library.contains("labeled_check(\"starter-updates-label\", updates_widget)"));
         assert!(!library.contains("on_change(name.text_sink())"));
         assert!(!library.contains("with_initial_value(&name.get())"));
         assert!(library.contains("pub mod locales;"));
@@ -10326,6 +10429,37 @@ mod tests {
     }
 
     #[test]
+    fn every_template_generates_a_direct_resource_action_surface() {
+        for template in [
+            Template::Starter,
+            Template::Data,
+            Template::List,
+            Template::Tree,
+            Template::Graph,
+            Template::Async,
+            Template::Document,
+            Template::Qr,
+        ] {
+            let spec = AppSpec {
+                package_name: "generated-app".into(),
+                crate_name: "generated_app".into(),
+                title: "Generated App".into(),
+                app_id: "dev.qos.generated.app".into(),
+                ui_path: PathBuf::from("../../ui"),
+                workspace_member: true,
+                template,
+            };
+            let manifest = cargo_toml(&spec);
+            assert!(manifest.contains("qos-actions = { path ="), "{template:?}");
+            let source = app_lib(&spec);
+            assert!(source.contains("ResourceActionApp"), "{template:?}");
+            assert!(source.contains("resource_actions::"), "{template:?}");
+            assert!(source.contains("fn resources("), "{template:?}");
+            assert!(source.contains("start_resource_operation"), "{template:?}");
+        }
+    }
+
+    #[test]
     fn qr_template_composes_ime_input_state_visual_output_and_accessibility() {
         let spec = AppSpec {
             package_name: "qr-code".into(),
@@ -10363,7 +10497,9 @@ mod tests {
             template: Template::Workspace,
         };
         let source = app_lib(&spec);
-        assert!(source.contains("ResizableSplit::new"));
+        assert!(source.contains("AppShell::new"));
+        assert!(source.contains("with_narrow_screen_state"));
+        assert!(source.contains("workspace-back"));
         assert!(source.contains("ModelView::from_state(&selected"));
         assert!(source.contains(".on_select"));
         assert!(source.contains("TextInput::from_document_string"));
@@ -10371,7 +10507,7 @@ mod tests {
         let test = app_test(&spec);
         assert!(test.contains("workspace_keeps_master_detail_views_isolated_and_synchronized"));
         assert!(test.contains("perform_undo"));
-        assert!(app_readme(&spec).contains("resizable master-detail shell"));
+        assert!(app_readme(&spec).contains("responsive master-detail shell"));
     }
 
     #[test]

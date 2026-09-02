@@ -46,8 +46,8 @@
 use automerge::AutoCommit;
 
 use qos_actions::{
-    ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    ActionContract, ActionError, ActionRegistry, ActionSpec, ConfirmationPolicy, Doc,
+    EncodedAction, ExecutionLocus, Resource, ResourceProvider, RetryPolicy, RiskLevel,
 };
 use serde::{Deserialize, Serialize};
 
@@ -195,7 +195,18 @@ pub fn set_tor_global_action(on: bool) -> VpnAction {
     reason = "VpnAction's fields are all JSON-safe primitives; see encode()'s # Panics doc"
 )]
 fn immediate_spec(id: &str, label: &str, action: &VpnAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, VPN_ACTION_TYPE, action).expect("encode vpn action")
+    ActionSpec::immediate(id, label, VPN_ACTION_TYPE, action)
+        .expect("encode vpn action")
+        .with_contract(config_contract())
+}
+
+fn config_contract() -> ActionContract {
+    ActionContract {
+        retry: RetryPolicy::Idempotent,
+        reversible: true,
+        tags: vec!["configuration".into(), "vpn".into()],
+        ..ActionContract::default()
+    }
 }
 
 /// A one-line label for a connection in the palette.
@@ -234,14 +245,17 @@ pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
             ConnKind::WireGuard => ("add-wireguard", "Add WireGuard connection"),
             ConnKind::OpenVpn => ("add-openvpn", "Add OpenVPN connection"),
         };
-        root = root.with_action(ActionSpec::prompted(
-            id,
-            label,
-            "Name",
-            "e.g. Home",
-            ExecutionLocus::ClientLocal,
-            move |name: &str| encode(&add_connection_action(stub_connection(name, kind))),
-        ));
+        root = root.with_action(
+            ActionSpec::prompted(
+                id,
+                label,
+                "Name",
+                "e.g. Home",
+                ExecutionLocus::ClientLocal,
+                move |name: &str| encode(&add_connection_action(stub_connection(name, kind))),
+            )
+            .with_contract(config_contract()),
+        );
     }
 
     for c in &vault.connections {
@@ -253,14 +267,17 @@ pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
         );
 
         // Rename — prompted for the new name.
-        cr = cr.with_action(ActionSpec::prompted(
-            "rename",
-            "Rename connection",
-            "Name",
-            "new name",
-            ExecutionLocus::ClientLocal,
-            move |name: &str| encode(&rename_connection_action(id, name.trim().to_string())),
-        ));
+        cr = cr.with_action(
+            ActionSpec::prompted(
+                "rename",
+                "Rename connection",
+                "Name",
+                "new name",
+                ExecutionLocus::ClientLocal,
+                move |name: &str| encode(&rename_connection_action(id, name.trim().to_string())),
+            )
+            .with_contract(config_contract()),
+        );
 
         // Toggle this tunnel's Tor routing preference.
         let tor_label = if c.tor {
@@ -275,11 +292,17 @@ pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
         ));
 
         // Delete the saved connection.
-        cr = cr.with_action(immediate_spec(
-            "delete",
-            "Delete connection",
-            &remove_connection_action(id),
-        ));
+        cr = cr.with_action(
+            immediate_spec("delete", "Delete connection", &remove_connection_action(id))
+                .with_contract(ActionContract {
+                    risk: RiskLevel::Destructive,
+                    confirmation: ConfirmationPolicy::Confirm,
+                    retry: RetryPolicy::Idempotent,
+                    reversible: true,
+                    tags: vec!["configuration".into(), "vpn".into()],
+                    ..ActionContract::default()
+                }),
+        );
 
         root = root.with_child(cr);
     }
@@ -308,6 +331,19 @@ mod tests {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
+    }
+
+    #[test]
+    fn published_delete_declares_destructive_confirmation() {
+        let vault = crate::model::sample_vault();
+        let resources = provide_resources(&vault);
+        let delete = resources[0].children[0]
+            .actions
+            .iter()
+            .find(|action| action.id == "delete")
+            .expect("saved connection exports delete");
+        assert_eq!(delete.contract.risk, RiskLevel::Destructive);
+        assert_eq!(delete.contract.confirmation, ConfirmationPolicy::Confirm);
     }
 
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
