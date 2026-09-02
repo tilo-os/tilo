@@ -78,10 +78,6 @@ fn install_catalog() {
     locales::install();
 }
 
-pub mod resource_actions {
-    include!("../../qos-dev/templates/resource_actions.rs");
-}
-
 pub mod starter {
     include!("../../qos-dev/templates/starter.rs");
 }
@@ -324,7 +320,7 @@ mod tests {
 
     #[test]
     fn every_generated_template_publishes_an_invocable_resource_action() {
-        let mut templates: [(Box<dyn ui::widget::Widget>, &[u8]); 7] = [
+        let mut templates: [(Box<dyn ui::widget::Widget>, &[u8]); 8] = [
             (super::starter::app_root(), br#"{"name":"Ada","updates":true,"refresh":30.0,"volume":0.5,"region":"Europe/Berlin"}"#),
             (super::data::app_root(), br#"{"id":3}"#),
             (super::list::app_root(), br#"{"id":3}"#),
@@ -332,6 +328,7 @@ mod tests {
             (super::graph::app_root(), br#"{"name":"Atlas"}"#),
             (super::document::app_root(), b"null"),
             (super::qr::app_root(), br#"{"payload":"https://qos.dev"}"#),
+            (super::workspace::app_root(), br#"{"id":4}"#),
         ];
         let doc = AutoCommit::new();
         for (root, payload) in &mut templates {
@@ -341,7 +338,7 @@ mod tests {
             let result = root
                 .invoke_resource_operation_v2(
                     OperationKind::Effect,
-                    super::resource_actions::OPERATION_TYPE,
+                    ui::widget::resource_actions::OPERATION_TYPE,
                     payload,
                     &doc,
                     &ObjId::Root,
@@ -360,7 +357,7 @@ mod tests {
             .start_resource_operation(
                 invocation,
                 OperationKind::Effect,
-                super::resource_actions::OPERATION_TYPE,
+                ui::widget::resource_actions::OPERATION_TYPE,
                 b"null",
                 &doc,
                 &ObjId::Root,

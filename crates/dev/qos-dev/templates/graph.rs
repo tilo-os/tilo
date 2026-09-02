@@ -1,4 +1,5 @@
 use ui::Theme;
+use ui::qos_actions;
 use ui::widget::{Text, Widget};
 
 /// The graph is validated before any widget reaches the app tree.
@@ -14,9 +15,9 @@ pub fn app_root() -> Box<dyn Widget> {
             "Unable to load the generated UI: {error}"
         ))),
     };
-    crate::resource_actions::immediate(
+    ui::widget::resource_actions::immediate(
         root,
-        crate::resource_actions::typed_resource(
+        ui::widget::resource_actions::typed_resource(
             "generated.graph-project",
             "Project",
             "create",
