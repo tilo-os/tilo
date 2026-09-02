@@ -8485,6 +8485,31 @@ mod semantic_tree_app_tests {
         assert!(app.state.peek_last_undo().is_none());
         assert!(app.action_palette().is_some(), "confirmation UI is open");
     }
+
+    #[test]
+    fn action_bound_background_control_remains_pending_until_terminal_update() {
+        let resource =
+            crate::widget::resource_actions::resource("test.job", "Job", "run", "Run", true);
+        let binding = qos_actions::ActionBinding::unit_for(&resource, "run").unwrap();
+        let button = Button::new("run", "Run", None).on_action(binding);
+        let root = crate::widget::resource_actions::background(Box::new(button), resource, |_| {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            sender
+                .send(Ok(qos_actions::ActionOutput::default()))
+                .unwrap();
+            Ok(receiver)
+        });
+        let mut app = App::new(State::new(), root);
+        app.init_layout();
+        activate_bound_button(&mut app);
+        assert_eq!(app.dispatch_control_invocations(), 1);
+        assert_eq!(app.local_invocations.len(), 1, "Accepted is not success");
+        assert!(app.poll_directed_invocations());
+        assert!(
+            app.local_invocations.is_empty(),
+            "terminal result closes the tracked local job"
+        );
+    }
     fn label(app: &App) -> String {
         match app.state.doc.get(&ROOT, "label") {
             Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
