@@ -479,6 +479,11 @@ impl ChannelHandle {
 
     /// Publish an accepted/progress/terminal v2 lifecycle update. The broker
     /// validates ownership, invocation identity, ordering, and terminal-once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn update_invocation(&self, id: u64, update_json: &str) -> Result<(), NotAvailable> {
         let mut req = self.inner.update_invocation_request();
         {
@@ -491,6 +496,11 @@ impl ChannelHandle {
     }
 
     /// Whether the caller requested cooperative cancellation of this job.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn invocation_cancellation(&self, id: u64) -> Result<bool, NotAvailable> {
         let mut req = self.inner.invocation_cancellation_request();
         req.get().set_id(id);
@@ -499,6 +509,11 @@ impl ChannelHandle {
     }
 
     /// Snapshot the authenticated session action directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable,
+    /// drops during the call, or returns malformed catalogue data.
     pub async fn action_catalogue(&self) -> Result<String, NotAvailable> {
         let reply = self.inner.action_catalogue_request().send().promise.await?;
         Ok(reply
@@ -510,6 +525,11 @@ impl ChannelHandle {
     }
 
     /// Subscribe to complete, level-triggered action-directory snapshots.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn subscribe_action_catalogue(&self) -> Result<ActionCatalogueStream, NotAvailable> {
         let reply = self
             .inner
@@ -524,6 +544,12 @@ impl ChannelHandle {
 
     /// Invoke one broker-published action. Actor identity and policy are
     /// resolved by the broker from this certified channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable,
+    /// drops during the call, or returns a malformed initial invocation
+    /// update.
     pub async fn invoke_published_action(
         &self,
         peer_id: u64,
@@ -556,6 +582,12 @@ impl ChannelHandle {
         ))
     }
 
+    /// Fetch the latest lifecycle update for a broker-published invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable,
+    /// drops during the call, or returns a malformed invocation update.
     pub async fn published_invocation_status(
         &self,
         id: u64,
@@ -579,6 +611,13 @@ impl ChannelHandle {
         }
     }
 
+    /// Request cancellation of a broker-published invocation and return its
+    /// resulting lifecycle update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable,
+    /// drops during the call, or returns a malformed cancellation update.
     pub async fn cancel_published_invocation(&self, id: u64) -> Result<String, NotAvailable> {
         let mut request = self.inner.cancel_published_invocation_request();
         request.get().set_id(id);
@@ -591,6 +630,12 @@ impl ChannelHandle {
             .to_owned())
     }
 
+    /// Ask the broker to launch an application from the published catalogue.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable,
+    /// drops during the call, or returns a malformed launch update.
     pub async fn launch_published_application(
         &self,
         app_id: &str,
@@ -793,6 +838,12 @@ pub struct ActionCatalogueStream {
 }
 
 impl ActionCatalogueStream {
+    /// Pull the next complete action-catalogue snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable,
+    /// drops during the call, or returns malformed catalogue data.
     pub async fn read(&self) -> Result<String, NotAvailable> {
         let reply = self.inner.read_request().send().promise.await?;
         Ok(reply
