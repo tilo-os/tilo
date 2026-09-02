@@ -29,7 +29,6 @@ const GRAPH_APP_TEMPLATE: &str = include_str!("../templates/graph.rs");
 const ASYNC_APP_TEMPLATE: &str = include_str!("../templates/async.rs");
 const DOCUMENT_APP_TEMPLATE: &str = include_str!("../templates/document.rs");
 const QR_APP_TEMPLATE: &str = include_str!("../templates/qr.rs");
-const RESOURCE_ACTIONS_TEMPLATE: &str = include_str!("../templates/resource_actions.rs");
 const WORKSPACE_APP_TEMPLATE: &str = include_str!("../templates/workspace.rs");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3924,7 +3923,11 @@ fn doctor_app_with_capnp_probe(
 }
 
 fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
-    doctor_resolved_app_with_capnp_probe(app_dir, probe_capnp_compiler)
+    #[cfg(not(test))]
+    let probe = probe_capnp_compiler;
+    #[cfg(test)]
+    let probe = || Ok("Cap'n Proto version 1.0.2".to_owned());
+    doctor_resolved_app_with_capnp_probe(app_dir, probe)
 }
 
 fn doctor_resolved_app_with_capnp_probe(
@@ -4017,29 +4020,31 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
     let (Ok(manifest), Ok(source)) = (manifest, source) else {
         return;
     };
-    let dependency = manifest.lines().any(|line| {
+    let direct_dependency = manifest.lines().any(|line| {
         line.trim_start().starts_with("qos-actions")
             && line
                 .split_once('=')
                 .is_some_and(|(_, value)| !value.trim().is_empty())
     });
+    let toolkit_host = source.contains("ui::widget::resource_actions");
+    let action_api = direct_dependency || source.contains("ui::qos_actions") || toolkit_host;
     let publishes = source.contains("fn resources(")
         || source.contains("resource_actions::resource(")
-        || source.contains("ResourceActionApp");
+        || source.contains("resource_actions::typed_resource(")
+        || source.contains("ResourceActionHost");
     let invokes = source.contains("invoke_resource_operation")
         || source.contains("start_resource_operation")
         || source.contains("resource_actions::immediate(")
         || source.contains("resource_actions::background(");
-    let (status, detail) = if dependency && publishes && invokes {
+    let (status, detail) = if action_api && publishes && invokes {
         (
             DoctorStatus::Pass,
-            "qos-actions dependency, resource catalogue, and invocation route are present"
-                .to_owned(),
+            "resource catalogue and invocation route are present".to_owned(),
         )
     } else {
         let mut missing = Vec::new();
-        if !dependency {
-            missing.push("direct qos-actions dependency");
+        if !action_api {
+            missing.push("qOS action API");
         }
         if !publishes {
             missing.push("Widget::resources catalogue");
@@ -6047,22 +6052,30 @@ fn relative_artifact(app_dir: &Path, path: &Path) -> String {
 }
 
 impl CreateOutcome {
+    /// One-line result suitable when another workflow starts immediately.
     #[must_use]
-    pub fn summary(&self) -> String {
+    pub fn headline(&self) -> String {
         let action = if self.dry_run {
             "Would create"
         } else {
             "Created"
         };
-        let destination = shell_display_path(&self.destination);
-        let next = format!(
-            "qos-dev check {destination}\n  qos-dev test {destination}\n  qos-dev dev {destination}\n  qos-dev run {destination}\n  qos-dev scenario run --app {destination}\n  qos-dev shot {destination}\n  qos-dev inspect {destination}\n  qos-dev package {destination}"
-        );
         format!(
-            "{action} {} ({}) in {}\n\nNext:\n  {next}",
+            "{action} {} ({}) in {}",
             self.package_name,
             self.app_id,
             self.destination.display()
+        )
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let destination = shell_display_path(&self.destination);
+        let develop = format!("qos-dev dev {destination}");
+        let verify = format!("qos-dev check {destination}");
+        format!(
+            "{}\n\nStart developing:\n  {develop}\n\nVerify everything:\n  {verify}\n\nRun `qos-dev --help` for testing, scenarios, screenshots, inspection, localization, and packaging.",
+            self.headline()
         )
     }
 }
@@ -6845,17 +6858,11 @@ fn cargo_toml(spec: &AppSpec) -> String {
         )
     };
     let extras = format!("{lints}{patches}");
-    let repo = spec.ui_path.parent().unwrap_or_else(|| Path::new(".."));
-    let actions = format!(
-        "qos-actions = {{ path = {:?} }}",
-        repo.join("crates/collab/actions").to_string_lossy()
-    );
     format!(
-        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[dependencies]\nui = {{ path = {ui_path:?} }}\n{actions}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n{lints}",
+        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[dependencies]\nui = {{ path = {ui_path:?} }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n{lints}",
         name = spec.package_name,
         crate_name = spec.crate_name,
         ui_path = spec.ui_path.to_string_lossy(),
-        actions = actions,
         lints = extras,
     )
 }
@@ -6875,7 +6882,7 @@ fn app_lib(spec: &AppSpec) -> String {
         Template::Workspace => WORKSPACE_APP_TEMPLATE.to_owned(),
     };
     format!(
-        "//! {} application.\n\n{GENERATED_LOCALE_SETUP}\n\npub mod resource_actions {{\n{RESOURCE_ACTIONS_TEMPLATE}\n}}\n\n{application}",
+        "//! {} application.\n\n{GENERATED_LOCALE_SETUP}\n\n{application}",
         spec.title,
     )
 }
@@ -10534,7 +10541,9 @@ mod tests {
         let summary = outcome.summary();
         assert!(summary.contains("qos-dev check '/tmp/O'\\''Reilly app'"));
         assert!(summary.contains("qos-dev dev '/tmp/O'\\''Reilly app'"));
-        assert!(summary.contains("qos-dev scenario run --app '/tmp/O'\\''Reilly app'"));
+        assert!(summary.contains("Start developing:"));
+        assert!(summary.contains("Verify everything:"));
+        assert!(summary.contains("qos-dev --help"));
     }
 
     #[test]
@@ -10617,7 +10626,7 @@ mod tests {
     }
 
     #[test]
-    fn every_template_generates_a_direct_resource_action_surface() {
+    fn every_template_uses_the_toolkit_resource_action_host() {
         for template in [
             Template::Starter,
             Template::Data,
@@ -10627,6 +10636,7 @@ mod tests {
             Template::Async,
             Template::Document,
             Template::Qr,
+            Template::Workspace,
         ] {
             let spec = AppSpec {
                 package_name: "generated-app".into(),
@@ -10638,12 +10648,18 @@ mod tests {
                 template,
             };
             let manifest = cargo_toml(&spec);
-            assert!(manifest.contains("qos-actions = { path ="), "{template:?}");
+            assert!(!manifest.contains("qos-actions ="), "{template:?}");
             let source = app_lib(&spec);
-            assert!(source.contains("ResourceActionApp"), "{template:?}");
-            assert!(source.contains("resource_actions::"), "{template:?}");
-            assert!(source.contains("fn resources("), "{template:?}");
-            assert!(source.contains("start_resource_operation"), "{template:?}");
+            assert!(
+                source.contains("ui::widget::resource_actions::"),
+                "{template:?}"
+            );
+            assert!(
+                !source.contains("struct ResourceActionHost"),
+                "{template:?}"
+            );
+            assert!(!source.contains("fn resources("), "{template:?}");
+            assert!(!source.contains("start_resource_operation"), "{template:?}");
         }
     }
 
