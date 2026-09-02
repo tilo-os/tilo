@@ -396,7 +396,9 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
     }
 
     if let Err(error) = close_ambient_fds(&parsed.keep_fds) {
-        eprintln!("qos-sandbox-exec: refusing qpkg launch: could not close ambient descriptors: {error}");
+        eprintln!(
+            "qos-sandbox-exec: refusing qpkg launch: could not close ambient descriptors: {error}"
+        );
         std::process::exit(126);
     }
 
@@ -512,12 +514,7 @@ mod tests {
     #[test]
     fn invalid_or_standard_keep_fd_is_rejected() {
         for value in ["no", "-1", "2", "1025"] {
-            let args = vec![
-                "--keep-fd".into(),
-                value.into(),
-                "--".into(),
-                "/app".into(),
-            ];
+            let args = vec!["--keep-fd".into(), value.into(), "--".into(), "/app".into()];
             assert!(matches!(
                 ShimArgs::parse(&args),
                 Err(ShimParseError::DanglingValue(_))
