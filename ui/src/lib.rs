@@ -233,8 +233,8 @@ pub use widget::name_field::{NameField, NameFieldOutcome};
 // without knowing the module layout.
 pub use history_source::groups as history_groups;
 pub use history_source::{
-    ActivityBrief, ActivityDigest, ActivityNarrator, AuthorDirectory, CompareError,
-    GroundedNarrative, HistoryComparison, HistoryFacetIndex, HistoryResourceTarget,
+    ActivityBrief, ActivityBriefAction, ActivityDigest, ActivityNarrator, AuthorDirectory,
+    CompareError, GroundedNarrative, HistoryComparison, HistoryFacetIndex, HistoryResourceTarget,
     HistorySeenFrontier, HistorySelectionDetail, HistorySource, NarrativeRequest, compare_entries,
     deterministic_narrative, heads_for_entry, validate_narrative, version_index_for_entry,
 };
