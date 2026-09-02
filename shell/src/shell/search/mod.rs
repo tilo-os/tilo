@@ -245,6 +245,13 @@ pub trait SearchProvider {
     fn owns_tab(&self, _tab_id: u64, _chrome: &ChromeState) -> bool {
         false
     }
+    /// Keep this provider available while the palette is narrowed to the
+    /// focused app. Shell-level commands are still useful in that scope: a
+    /// person should not have to switch search scopes just to open Activity,
+    /// Settings, or another piece of workspace chrome.
+    fn available_in_active_app_scope(&self) -> bool {
+        false
+    }
 }
 
 /// Bundle of everything a provider might need to answer a query. Passed
@@ -476,7 +483,7 @@ fn scope_allows(
     match scope {
         SearchScope::All | SearchScope::Workspace => true,
         SearchScope::ActiveApp => match active_provider_id {
-            Some(id) => provider.id() == id,
+            Some(id) => provider.id() == id || provider.available_in_active_app_scope(),
             None => true,
         },
     }
@@ -636,6 +643,17 @@ mod tests {
         });
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].provider_id, "notes");
+    }
+
+    #[test]
+    fn active_app_scope_keeps_shell_actions_available() {
+        use crate::shell::search::providers::actions::ActionsProvider;
+
+        assert!(scope_allows(
+            &ActionsProvider::new(),
+            SearchScope::ActiveApp,
+            Some("notes")
+        ));
     }
 
     #[test]
