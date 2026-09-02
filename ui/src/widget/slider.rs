@@ -67,6 +67,9 @@ pub struct Slider {
 }
 
 impl Slider {
+    fn effectively_enabled(&self) -> bool {
+        self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
+    }
     pub fn new(id: &str, on_change_path: &str) -> Self {
         Self {
             _id: id.to_string(),
@@ -508,7 +511,7 @@ impl Widget for Slider {
                 .hovered(self.is_hovered)
                 .dragging(self.is_dragging)
                 .focused(self.is_focused)
-                .disabled(!self.enabled),
+                .disabled(!self.effectively_enabled()),
         );
     }
 
@@ -525,7 +528,7 @@ impl Widget for Slider {
         _taffy: &TaffyTree<()>,
     ) {
         // Disabled: reject all input — no drag, no value change, no hover.
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return;
         }
         match event {
@@ -600,7 +603,7 @@ impl Widget for Slider {
         self.is_focused
     }
     fn is_enabled(&self) -> bool {
-        self.enabled
+        self.effectively_enabled()
     }
 
     #[allow(
@@ -649,7 +652,7 @@ impl Widget for Slider {
     ) -> bool {
         use crate::a11y::Action;
         const STEP: f64 = 0.05;
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return false;
         }
         match action {
@@ -694,6 +697,15 @@ impl Widget for Slider {
 
     fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
     }
 
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
@@ -1059,6 +1071,16 @@ mod tests {
             .on_change(|_| panic!("legacy callback must be suppressed"))
             .on_action(crate::widget::test_number_action_binding());
         let mut doc = AutoCommit::new();
+        Widget::refresh_control_action_availability(&mut slider, &std::collections::HashSet::new());
+        assert!(!Widget::is_enabled(&slider));
+        Widget::refresh_control_action_availability(
+            &mut slider,
+            &std::collections::HashSet::from([qos_actions::ActionAddress::new(
+                "test:control",
+                "set",
+            )]),
+        );
+        assert!(Widget::is_enabled(&slider));
         assert!(Widget::perform_action(
             &mut slider,
             &crate::a11y::Action::SetValue("80%".into()),
