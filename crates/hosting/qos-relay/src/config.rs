@@ -77,7 +77,10 @@ pub struct RelayConfig {
     #[serde(default = "default_device_role")]
     pub device_role: DeviceRole,
 
-    /// Services advertised to same-identity clients and federated peers.
+    /// Services requested by the operator. The standalone relay clamps this
+    /// to services it actually starts; in particular it cannot advertise
+    /// content residency, app serving, compute, or remote-control tunnelling
+    /// without their corresponding host planes.
     #[serde(default = "default_services")]
     pub services: ServiceCapabilities,
 
@@ -135,8 +138,9 @@ pub struct WorkspaceBinding {
     #[serde(default = "true_default")]
     pub pin: bool,
 
-    /// Which existing collaboration/blob streams this device retains. A
-    /// server defaults to a full workspace replica, including file content.
+    /// Which existing collaboration/blob streams this device retains. The
+    /// standalone relay defaults to workspace records only because it does
+    /// not run the filesystem/blob host plane.
     #[serde(default = "default_server_replication")]
     pub replication: ReplicationIntent,
 }
@@ -150,11 +154,14 @@ fn default_device_role() -> DeviceRole {
 }
 
 fn default_services() -> ServiceCapabilities {
-    ServiceCapabilities::personal_server()
+    ServiceCapabilities::relay_only()
 }
 
 fn default_server_replication() -> ReplicationIntent {
-    ReplicationIntent::FullWorkspace
+    // CRDT persistence is the only replication plane present in qos-relay.
+    // FullWorkspace needs the separate filesystem/blob host, so an operator
+    // must opt into it only after deploying that service.
+    ReplicationIntent::WorkspaceOnly
 }
 
 fn default_identity_root() -> PathBuf {
@@ -285,6 +292,10 @@ mod tests {
         assert_eq!(cfg.device_role, DeviceRole::AlwaysOnServer);
         assert!(cfg.services.workspace_replication);
         assert!(cfg.services.inbound_relay);
+        assert!(!cfg.services.full_content_replication);
+        assert!(!cfg.services.remote_control_relay);
+        assert!(!cfg.services.app_serving);
+        assert!(!cfg.services.compute);
     }
 
     #[test]
@@ -317,7 +328,7 @@ mod tests {
         assert_eq!(cfg.workspaces.len(), 1);
         assert_eq!(
             cfg.workspaces[0].replication,
-            ReplicationIntent::FullWorkspace
+            ReplicationIntent::WorkspaceOnly
         );
     }
 

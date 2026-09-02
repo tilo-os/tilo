@@ -155,9 +155,14 @@ impl Relay {
                 "qos-relay requires an always-on-server or hybrid device role".into(),
             ));
         }
+        // A certificate authorises a service, but it cannot make a service
+        // exist. This binary only starts the CRDT/store-and-forward relay;
+        // keep its advertised capabilities aligned with that runtime even if
+        // a hand-edited config requests future filesystem/app/compute planes.
         cfg.services = cfg
             .services
-            .authorized_by(&identity.device_cert.capabilities);
+            .authorized_by(&identity.device_cert.capabilities)
+            .limited_to(&crate::mesh::ServiceCapabilities::relay_only());
         let mesh_profile = Arc::new(crate::mesh::DeviceMeshProfile {
             device: identity.device_cert.device_public_key,
             role: cfg.device_role,
@@ -1061,5 +1066,26 @@ mod tests {
         relay.device_signing_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
         let error = validate_relay_identity(&relay).unwrap_err();
         assert!(error.to_string().contains("does not match"));
+    }
+
+    #[tokio::test]
+    async fn standalone_relay_clamps_unimplemented_service_advertisements() {
+        let state = tempfile::tempdir().unwrap();
+        let relay = Relay::start(
+            RelayConfig {
+                state_root: state.path().to_path_buf(),
+                services: crate::mesh::ServiceCapabilities::personal_server(),
+                ..RelayConfig::default()
+            },
+            identity(DeviceCapabilities::host()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            relay.handle().mesh_profile.services,
+            crate::mesh::ServiceCapabilities::relay_only()
+        );
+        relay.shutdown().await;
     }
 }

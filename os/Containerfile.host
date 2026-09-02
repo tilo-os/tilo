@@ -53,8 +53,10 @@ ENV CARGO_HOME=/build/.cargo-home \
     LC_ALL=C.UTF-8 \
     TZ=UTC
 
-# Host image only needs qos-relay + fs (for local mount) + a small
-# admin CLI. Drop the browser member (Servo) before resolving.
+# Host image currently ships qos-relay plus the fs binary for future composite
+# host work. It does not install or enable an fs host service, so this image is
+# CRDT/store-and-forward only and must not be described as full file residency.
+# Drop the browser member (Servo) before resolving.
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
@@ -72,7 +74,7 @@ FROM ${BASE_REF}
 
 # Minimal runtime — no display stack, no PipeWire, no greetd. Just
 # what a headless network appliance needs: time sync, firewall,
-# fuse for the workspace mount, ca-certs for iroh relays.
+# fuse reserved for the future filesystem host plane, ca-certs for iroh relays.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         chrony \
         firewalld \
