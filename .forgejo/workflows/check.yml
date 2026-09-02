@@ -54,6 +54,7 @@ jobs:
         password: ${{ secrets.REGISTRY_TOKEN }}
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      base: ${{ steps.plan.outputs.base }}
       full: ${{ steps.plan.outputs.full }}
       selected_count: ${{ steps.plan.outputs.selected_count }}
       workspace_count: ${{ steps.plan.outputs.workspace_count }}
@@ -120,8 +121,9 @@ jobs:
             base='${{ github.event.before }}'
           fi
           if [ "$base" = "0000000000000000000000000000000000000000" ]; then
-            base=""
+            base=HEAD^
           fi
+          echo "base=$(git rev-parse "$base^{commit}")" >> "$GITHUB_OUTPUT"
           python3 tools/ci_select.py --base "$base" --shards 2 \
             --github-output "$GITHUB_OUTPUT" | tee ci-plan.json
           {
@@ -199,10 +201,10 @@ jobs:
           bash scripts/ci-run.sh "cargo check (affected shard ${{ matrix.shard }})" --
           cargo check --locked --all-targets ${{ matrix.packages }}
 
-      # The workspace lints are `deny`, so this fails on the first new
-      # violation rather than letting one land and be found by the weekly
-      # ratchet up to six days later. It reuses the rlibs the two steps above
-      # just built, so the marginal cost is clippy's own analysis.
+      # Lint the exact same reverse-dependency closure at the selected base and
+      # at HEAD. Historical diagnostics in an otherwise untouched dependant do
+      # not make an unrelated change impossible to merge, while compiler errors
+      # and every newly introduced Clippy site still fail this exact SHA.
       #
       # The pre-commit hook runs the same lints on the crates a commit
       # touches, but a hook is per-clone and `--no-verify`-able. This is the
@@ -212,8 +214,8 @@ jobs:
           XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
         run: >-
           bash tools/ci-measure.sh "clippy shard ${{ matrix.shard }}" --
-          bash scripts/ci-run.sh "cargo clippy (affected shard ${{ matrix.shard }})" --
-          cargo clippy --locked --all-targets ${{ matrix.packages }}
+          bash scripts/ci-run.sh "Clippy diagnostic diff (affected shard ${{ matrix.shard }})" --
+          tools/clippy-diff.sh '${{ needs.select.outputs.base }}' ${{ matrix.packages }}
 
       - name: Report remote compiler-cache effectiveness
         if: always()
