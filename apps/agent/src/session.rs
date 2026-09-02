@@ -558,8 +558,8 @@ impl Session {
             self.link.send(&CollabRequest::InvokePublishedAction {
                 request_id,
                 peer_id,
-                resource: descriptor.address.resource.clone(),
-                action: descriptor.address.action.clone(),
+                resource: descriptor.address.resource,
+                action: descriptor.address.action,
                 arguments: arguments.clone(),
                 confirmation: confirmation_json,
             })?;

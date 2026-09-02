@@ -463,8 +463,10 @@ impl Offer {
     /// The address, in the one-string form an answer names it by.
     pub fn id(&self) -> String {
         let address = encode_address(&self.descriptor.address);
-        self.broker_peer_id
-            .map_or(address.clone(), |peer| format!("broker:{peer}:{address}"))
+        self.broker_peer_id.map_or_else(
+            || address.clone(),
+            |peer| format!("broker:{peer}:{address}"),
+        )
     }
 
     pub fn address(&self) -> &ActionAddress {
@@ -568,7 +570,7 @@ pub fn broker_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec
                         action_label: action.action_label.clone(),
                         description: action.description.clone(),
                         locus: qos_actions::ExecutionLocus::ServerPreferred,
-                        kind: action.operation_kind.clone(),
+                        kind: action.operation_kind,
                         contract: action.contract.clone(),
                         params: action.params.clone(),
                         input,
