@@ -1143,7 +1143,11 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let config = RelayConfig {
             state_root: state.path().to_path_buf(),
-            workspaces: vec![WorkspaceBinding { id: 42, pin: true }],
+            workspaces: vec![WorkspaceBinding {
+                id: 42,
+                pin: true,
+                replication: qos_relay::ReplicationIntent::FullWorkspace,
+            }],
             ..RelayConfig::default()
         };
         let relay = Relay::start(
