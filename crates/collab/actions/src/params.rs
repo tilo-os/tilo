@@ -279,7 +279,7 @@ impl ArgValue {
     /// The declared type this value satisfies.
     pub fn ty(&self) -> ParamType {
         match self {
-            ArgValue::Text(_) => ParamType::Text,
+            ArgValue::Text(_) | ArgValue::Null => ParamType::Text,
             ArgValue::Integer(_) => ParamType::Integer,
             ArgValue::Number(_) => ParamType::Number,
             ArgValue::Boolean(_) => ParamType::Boolean,
@@ -290,7 +290,6 @@ impl ArgValue {
             ArgValue::Secret(_) => ParamType::Secret,
             // Null is validated against `ActionParam::nullable`, so its
             // nominal type is irrelevant. Text keeps diagnostics stable.
-            ArgValue::Null => ParamType::Text,
         }
     }
 
@@ -642,6 +641,18 @@ pub(crate) fn validate_schema(
     let Some(schema) = schema.as_object() else {
         return Err("has a schema that is not an object".into());
     };
+    validate_schema_type(value, schema)?;
+    validate_schema_equality(value, schema)?;
+    validate_schema_number(value, schema)?;
+    validate_schema_string(value, schema)?;
+    validate_schema_array(value, schema)?;
+    validate_schema_object(value, schema)
+}
+
+fn validate_schema_type(
+    value: &serde_json::Value,
+    schema: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
     if let Some(expected) = schema.get("type") {
         let matches_type = |name: &str| match name {
             "null" => value.is_null(),
@@ -668,6 +679,13 @@ pub(crate) fn validate_schema(
             return Err(format!("must have JSON Schema type {expected}"));
         }
     }
+    Ok(())
+}
+
+fn validate_schema_equality(
+    value: &serde_json::Value,
+    schema: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
     if let Some(values) = schema.get("enum").and_then(serde_json::Value::as_array)
         && !values.contains(value)
     {
@@ -678,6 +696,13 @@ pub(crate) fn validate_schema(
     {
         return Err("does not equal the required value".into());
     }
+    Ok(())
+}
+
+fn validate_schema_number(
+    value: &serde_json::Value,
+    schema: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
     if let Some(number) = value.as_f64() {
         if let Some(minimum) = schema.get("minimum").and_then(serde_json::Value::as_f64)
             && number < minimum
@@ -690,6 +715,13 @@ pub(crate) fn validate_schema(
             return Err(format!("must be at most {maximum}"));
         }
     }
+    Ok(())
+}
+
+fn validate_schema_string(
+    value: &serde_json::Value,
+    schema: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
     if let Some(text) = value.as_str() {
         let length = text.chars().count() as u64;
         if let Some(minimum) = schema.get("minLength").and_then(serde_json::Value::as_u64)
@@ -739,14 +771,22 @@ pub(crate) fn validate_schema(
             }
         }
     }
+    Ok(())
+}
+
+fn validate_schema_array(
+    value: &serde_json::Value,
+    schema: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
     if let Some(items) = value.as_array() {
+        let length = u64::try_from(items.len()).unwrap_or(u64::MAX);
         if let Some(minimum) = schema.get("minItems").and_then(serde_json::Value::as_u64)
-            && items.len() < minimum as usize
+            && length < minimum
         {
             return Err(format!("must contain at least {minimum} items"));
         }
         if let Some(maximum) = schema.get("maxItems").and_then(serde_json::Value::as_u64)
-            && items.len() > maximum as usize
+            && length > maximum
         {
             return Err(format!("must contain at most {maximum} items"));
         }
@@ -757,6 +797,13 @@ pub(crate) fn validate_schema(
             }
         }
     }
+    Ok(())
+}
+
+fn validate_schema_object(
+    value: &serde_json::Value,
+    schema: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
     if let Some(object) = value.as_object() {
         if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
             for key in required.iter().filter_map(serde_json::Value::as_str) {
@@ -789,12 +836,47 @@ pub(crate) fn validate_schema(
 
 /// Validate one JSON value against the deterministic JSON Schema subset used
 /// by qOS action contracts.
+///
+/// # Errors
+///
+/// Returns a human-readable contract violation when `schema` is not an object
+/// or `value` fails one of its supported assertions.
 pub fn validate_json_schema(
     value: &serde_json::Value,
     schema: &serde_json::Value,
 ) -> Result<(), String> {
     validate_schema(value, schema)
 }
+
+const SCHEMA_ASSERTIONS: &[&str] = &[
+    "type",
+    "enum",
+    "const",
+    "minimum",
+    "maximum",
+    "minLength",
+    "maxLength",
+    "pattern",
+    "format",
+    "minItems",
+    "maxItems",
+    "items",
+    "required",
+    "properties",
+    "additionalProperties",
+];
+const SCHEMA_ANNOTATIONS: &[&str] = &[
+    "$schema",
+    "$id",
+    "$comment",
+    "title",
+    "description",
+    "default",
+    "examples",
+    "deprecated",
+    "readOnly",
+    "writeOnly",
+];
 
 /// Validate the assertion vocabulary itself before a surface is published.
 /// Runtime value validation is too late to discover a malformed regular
@@ -804,42 +886,24 @@ pub(crate) fn validate_schema_definition(schema: &serde_json::Value) -> Result<(
     let object = schema
         .as_object()
         .ok_or_else(|| "schema must be an object".to_string())?;
-    const ASSERTIONS: &[&str] = &[
-        "type",
-        "enum",
-        "const",
-        "minimum",
-        "maximum",
-        "minLength",
-        "maxLength",
-        "pattern",
-        "format",
-        "minItems",
-        "maxItems",
-        "items",
-        "required",
-        "properties",
-        "additionalProperties",
-    ];
-    const ANNOTATIONS: &[&str] = &[
-        "$schema",
-        "$id",
-        "$comment",
-        "title",
-        "description",
-        "default",
-        "examples",
-        "deprecated",
-        "readOnly",
-        "writeOnly",
-    ];
     for keyword in object.keys() {
-        if !ASSERTIONS.contains(&keyword.as_str()) && !ANNOTATIONS.contains(&keyword.as_str()) {
+        if !SCHEMA_ASSERTIONS.contains(&keyword.as_str())
+            && !SCHEMA_ANNOTATIONS.contains(&keyword.as_str())
+        {
             return Err(format!(
                 "schema uses unsupported keyword `{keyword}`; qOS rejects unknown keywords instead of silently weakening a contract"
             ));
         }
     }
+    validate_schema_definition_type(object)?;
+    validate_schema_definition_strings(object)?;
+    validate_schema_definition_collections(object)?;
+    validate_schema_definition_numbers(object)
+}
+
+fn validate_schema_definition_type(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
     if let Some(types) = object.get("type") {
         let supported = |name: &str| {
             matches!(
@@ -858,6 +922,12 @@ pub(crate) fn validate_schema_definition(schema: &serde_json::Value) -> Result<(
             return Err("schema has an unsupported `type`".into());
         }
     }
+    Ok(())
+}
+
+fn validate_schema_definition_strings(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
     if let Some(pattern) = object.get("pattern") {
         let pattern = pattern
             .as_str()
@@ -873,6 +943,12 @@ pub(crate) fn validate_schema_definition(schema: &serde_json::Value) -> Result<(
             return Err(format!("schema uses unsupported format `{format}`"));
         }
     }
+    Ok(())
+}
+
+fn validate_schema_definition_collections(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
     if let Some(required) = object.get("required")
         && !required
             .as_array()
@@ -901,6 +977,12 @@ pub(crate) fn validate_schema_definition(schema: &serde_json::Value) -> Result<(
     if let Some(items) = object.get("items") {
         validate_schema_definition(items).map_err(|reason| format!("items {reason}"))?;
     }
+    Ok(())
+}
+
+fn validate_schema_definition_numbers(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
     for keyword in ["minimum", "maximum"] {
         if object.get(keyword).is_some_and(|value| !value.is_number()) {
             return Err(format!("schema `{keyword}` must be a number"));

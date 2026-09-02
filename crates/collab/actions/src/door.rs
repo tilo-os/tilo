@@ -196,7 +196,7 @@ impl std::fmt::Display for DoorError {
             DoorError::UnexpectedArgument(a) => {
                 write!(f, "action ({}, {}) takes no argument", a.resource, a.action)
             }
-            DoorError::InvalidArguments(why) => write!(f, "{why}"),
+            DoorError::InvalidArguments(why) | DoorError::Failed(why) => write!(f, "{why}"),
             DoorError::Unavailable { code, reason } => write!(f, "{code}: {reason}"),
             DoorError::ConfirmationRequired => {
                 f.write_str("this action requires explicit confirmation")
@@ -204,7 +204,6 @@ impl std::fmt::Display for DoorError {
             DoorError::UnregisteredType(t) => {
                 write!(f, "no decoder registered for action type `{t}`")
             }
-            DoorError::Failed(why) => write!(f, "{why}"),
         }
     }
 }
@@ -294,6 +293,13 @@ pub fn encode(
 /// Build an action from the canonical typed JSON argument object advertised
 /// by [`ActionDescriptor::params`]. Binding is strict and completes before any
 /// document mutation or application effect is attempted.
+///
+/// # Errors
+///
+/// Returns [`DoorError::Unknown`] when the address is not published,
+/// [`DoorError::Unavailable`] when policy currently disables it, or
+/// [`DoorError::InvalidArguments`] when the object violates its parameter
+/// contract.
 pub fn encode_json(
     resources: &[Resource],
     address: &ActionAddress,
@@ -357,6 +363,10 @@ pub fn invoke(
 /// Invoke after an outer policy boundary has completed the action contract's
 /// confirmation step. This is intentionally separate from [`invoke`], whose
 /// default is fail-closed for consequential actions.
+///
+/// # Errors
+///
+/// Returns the same errors as [`invoke`].
 #[allow(clippy::too_many_arguments)]
 pub fn invoke_confirmed(
     doc: &mut crate::action::Doc,
@@ -447,6 +457,11 @@ fn invoke_with_context_consent(
 }
 
 /// Typed-argument counterpart to [`invoke`].
+///
+/// # Errors
+///
+/// Returns address, availability, confirmation, argument, registry, dispatch,
+/// and result-contract errors encountered while invoking the action.
 pub fn invoke_json(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -462,6 +477,13 @@ pub fn invoke_json(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Typed-argument invocation after an outer policy boundary has completed the
+/// action contract's confirmation step.
+///
+/// # Errors
+///
+/// Returns the same errors as [`invoke_json`], except confirmation has already
+/// been granted by the caller.
 pub fn invoke_json_confirmed(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
