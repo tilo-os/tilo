@@ -64,6 +64,11 @@ pub enum ReplicationResource {
     Workspace,
     /// Filesystem names, metadata, versions and ACL records.
     FileTree,
+    /// Bounded previews used by Files and open-workspace cards. This is
+    /// deliberately separate from [`Self::FileBlobs`]: an ordinary device may
+    /// show a useful workspace before the user opens a file without silently
+    /// downloading the file itself.
+    FileThumbnails,
     /// File bytes addressed by their existing content hash.
     FileBlobs,
     /// Ebook records and reading state; book bytes resolve through FileBlobs.
@@ -104,10 +109,12 @@ impl ReplicationIntent {
             Self::OnDemand => BTreeSet::from([
                 ReplicationResource::Workspace,
                 ReplicationResource::FileTree,
+                ReplicationResource::FileThumbnails,
             ]),
             Self::FullWorkspace => BTreeSet::from([
                 ReplicationResource::Workspace,
                 ReplicationResource::FileTree,
+                ReplicationResource::FileThumbnails,
                 ReplicationResource::FileBlobs,
                 ReplicationResource::EbookLibrary,
                 ReplicationResource::MediaLibrary,
@@ -119,6 +126,7 @@ impl ReplicationIntent {
                     || resolved.contains(&ReplicationResource::MediaLibrary)
                 {
                     resolved.insert(ReplicationResource::FileTree);
+                    resolved.insert(ReplicationResource::FileThumbnails);
                     resolved.insert(ReplicationResource::FileBlobs);
                 }
                 resolved
@@ -152,7 +160,29 @@ pub struct ServiceCapabilities {
 }
 
 impl ServiceCapabilities {
+    /// Capabilities implemented by the standalone relay daemon.
+    ///
+    /// The relay durably carries authenticated workspace CRDT updates and
+    /// presence. It does not run the filesystem/blob host plane, an app
+    /// runtime, a compute worker, or the remote-control tunnel endpoint, so
+    /// none of those capabilities may be advertised merely because this is
+    /// an always-on machine.
+    pub const fn relay_only() -> Self {
+        Self {
+            workspace_replication: true,
+            full_content_replication: false,
+            inbound_relay: true,
+            remote_control_relay: false,
+            app_serving: false,
+            compute: false,
+        }
+    }
+
     /// Services expected from a personal always-on server.
+    ///
+    /// This is a policy template for a future composite host which also
+    /// starts the filesystem/blob host and app workers. The standalone
+    /// `qos-relay` binary deliberately uses [`Self::relay_only`] instead.
     pub const fn personal_server() -> Self {
         Self {
             workspace_replication: true,
@@ -179,6 +209,21 @@ impl ServiceCapabilities {
             remote_control_relay: self.remote_control_relay,
             app_serving: self.app_serving,
             compute: self.compute,
+        }
+    }
+
+    /// Intersect two service sets. Used by a process to ensure its wire
+    /// advertisement cannot exceed the planes it has actually started.
+    #[must_use]
+    pub const fn limited_to(&self, available: &Self) -> Self {
+        Self {
+            workspace_replication: self.workspace_replication && available.workspace_replication,
+            full_content_replication: self.full_content_replication
+                && available.full_content_replication,
+            inbound_relay: self.inbound_relay && available.inbound_relay,
+            remote_control_relay: self.remote_control_relay && available.remote_control_relay,
+            app_serving: self.app_serving && available.app_serving,
+            compute: self.compute && available.compute,
         }
     }
 }
@@ -428,9 +473,37 @@ mod tests {
         let resources = ReplicationIntent::FullWorkspace.resources();
         assert!(resources.contains(&ReplicationResource::Workspace));
         assert!(resources.contains(&ReplicationResource::FileTree));
+        assert!(resources.contains(&ReplicationResource::FileThumbnails));
         assert!(resources.contains(&ReplicationResource::FileBlobs));
         assert!(resources.contains(&ReplicationResource::EbookLibrary));
         assert!(resources.contains(&ReplicationResource::MediaLibrary));
+    }
+
+    #[test]
+    fn on_demand_syncs_previews_without_file_bytes() {
+        let resources = ReplicationIntent::OnDemand.resources();
+        assert!(resources.contains(&ReplicationResource::Workspace));
+        assert!(resources.contains(&ReplicationResource::FileTree));
+        assert!(resources.contains(&ReplicationResource::FileThumbnails));
+        assert!(!resources.contains(&ReplicationResource::FileBlobs));
+        assert!(!resources.contains(&ReplicationResource::EbookLibrary));
+        assert!(!resources.contains(&ReplicationResource::MediaLibrary));
+    }
+
+    #[test]
+    fn relay_only_never_claims_unstarted_host_planes() {
+        let services = ServiceCapabilities::relay_only();
+        assert!(services.workspace_replication);
+        assert!(services.inbound_relay);
+        assert!(!services.full_content_replication);
+        assert!(!services.remote_control_relay);
+        assert!(!services.app_serving);
+        assert!(!services.compute);
+
+        assert_eq!(
+            ServiceCapabilities::personal_server().limited_to(&services),
+            services
+        );
     }
 
     #[test]
@@ -440,6 +513,7 @@ mod tests {
         let resources = intent.resources();
         assert!(resources.contains(&ReplicationResource::Workspace));
         assert!(resources.contains(&ReplicationResource::FileTree));
+        assert!(resources.contains(&ReplicationResource::FileThumbnails));
         assert!(resources.contains(&ReplicationResource::FileBlobs));
     }
 

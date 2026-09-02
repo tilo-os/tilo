@@ -29,6 +29,23 @@ and, if a peer is offline, its deltas are store-and-forwarded.
 - Ships a `qos-relay-admin` CLI for binding/unbinding workspaces
   and listing what a running relay is pinning.
 
+## Standalone deployment boundary
+
+The standalone `qos-relay` image and Compose deployment are **CRDT relay
+only**. They retain workspace/app collaboration records, checkpoints, and
+offline queues; they do not retain filesystem blobs, media/book bytes, or
+full-resolution thumbnails. They also do not run app/compute workers or a
+remote-control tunnel. The default configuration therefore advertises only
+workspace replication and inbound collaboration relay.
+
+`ReplicationIntent::FullWorkspace` is an explicit request for a composite
+host that has also started the authenticated filesystem/blob host plane. The
+relay binary clamps content, app, compute, and remote-control capability
+advertisements off until those backing services exist. For the current
+operator deployment, use `WorkspaceOnly` (the default). See
+[`os/containers/qos-relay/README.md`](../../../os/containers/qos-relay/README.md)
+for the persistent-volume and identity requirements.
+
 ## Binaries
 
 - `qos-relay` — daemon. Systemd `Type=notify`; subcommands `init`,
