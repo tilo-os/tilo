@@ -478,7 +478,7 @@ struct NewArgs {
     #[arg(long)]
     directory: Option<PathBuf>,
 
-    /// Path to the toolkit's `ui` crate. Required outside a qOS checkout.
+    /// Override the discovered toolkit `ui` crate (or set `QOS_UI_PATH`).
     #[arg(long)]
     ui_path: Option<PathBuf>,
 
