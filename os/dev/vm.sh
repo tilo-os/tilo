@@ -113,9 +113,8 @@ cmd_boot() {
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
     -pidfile $QOS_PIDFILE -name qos"
   swtpm_start
-  inenv "setsid nohup qemu-system-x86_64 $args $(tpm_qemu_args) $(secboot_qemu_args) >'$QOS_QEMU_LOG' 2>&1 & disown"
-  sleep 1
-  inenv "test -S '$QOS_MON'" || { warn "monitor socket not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot failed"; }
+  start_qemu "$args $(tpm_qemu_args) $(secboot_qemu_args)" \
+    || { warn "monitor socket not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot failed"; }
   msg "up. monitor=$QOS_MON serial=$QOS_SERIAL"
 }
 
@@ -159,9 +158,8 @@ cmd_boot_installer() {
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
     -pidfile $QOS_PIDFILE -name qos-custom-installer"
   swtpm_start
-  inenv "setsid nohup qemu-system-x86_64 $args $(tpm_qemu_args) $(secboot_qemu_args) >'$QOS_QEMU_LOG' 2>&1 & disown"
-  sleep 1
-  inenv "test -S '$QOS_MON'" || { warn "monitor not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot-installer failed"; }
+  start_qemu "$args $(tpm_qemu_args) $(secboot_qemu_args)" \
+    || { warn "monitor not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot-installer failed"; }
   msg "installer up. monitor=$QOS_MON serial=$QOS_SERIAL  (installs onto $target as /dev/vdb)"
 }
 
@@ -194,9 +192,8 @@ cmd_boot_target() {
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
     -pidfile $QOS_PIDFILE -name qos-target"
   swtpm_start
-  inenv "setsid nohup qemu-system-x86_64 $args $(tpm_qemu_args) $(secboot_qemu_args) >'$QOS_QEMU_LOG' 2>&1 & disown"
-  sleep 1
-  inenv "test -S '$QOS_MON'" || { warn "monitor not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot-target failed"; }
+  start_qemu "$args $(tpm_qemu_args) $(secboot_qemu_args)" \
+    || { warn "monitor not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot-target failed"; }
   msg "target up. monitor=$QOS_MON serial=$QOS_SERIAL"
 }
 

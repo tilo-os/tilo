@@ -13,6 +13,10 @@ DefaultDependencies=no
 # Hard-fail the unit when the FUSE module isn't loadable so we don't
 # silently boot the compositor with an empty mount.
 ConditionPathExists=/dev/fuse
+# The disposable installer has no durable device certificate. Starting the
+# collaborative mount there can only enter a restart loop; qos-install removes
+# this kernel marker from the target UKI, so installed systems remain enabled.
+ConditionKernelCommandLine=!qos.install
 
 [Service]
 Type=simple

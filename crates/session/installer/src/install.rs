@@ -304,10 +304,10 @@ pub fn run_install<F: FnMut(String)>(
 ) -> std::io::Result<bool> {
     // The PIN only travels on stdin; it mirrors the `--pin` flag added by
     // `install_command`.
-    let extra: Vec<&str> = if !opts.pin.is_empty() {
-        vec![opts.pin.as_str()]
-    } else {
+    let extra: Vec<&str> = if opts.pin.is_empty() {
         Vec::new()
+    } else {
+        vec![opts.pin.as_str()]
     };
     stream_command(install_command(disk, user, opts), password, &extra, on_line)
 }
@@ -670,10 +670,10 @@ mod tests {
             ..InstallOptions::default()
         };
         // Mirror run_install's stdin-extra derivation.
-        let extra: Vec<&str> = if !opts.pin.is_empty() {
-            vec![opts.pin.as_str()]
-        } else {
+        let extra: Vec<&str> = if opts.pin.is_empty() {
             Vec::new()
+        } else {
+            vec![opts.pin.as_str()]
         };
         assert_eq!(extra, vec!["9182"], "PIN is queued as a second stdin line");
 
@@ -693,10 +693,10 @@ mod tests {
             pin: String::new().into(),
             ..InstallOptions::default()
         };
-        let extra: Vec<&str> = if !opts.pin.is_empty() {
-            vec![opts.pin.as_str()]
-        } else {
+        let extra: Vec<&str> = if opts.pin.is_empty() {
             Vec::new()
+        } else {
+            vec![opts.pin.as_str()]
         };
         assert!(extra.is_empty());
     }
