@@ -41,7 +41,8 @@ use uuid::Uuid;
 
 use qos_actions::{
     Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ParamType, Resource, ResourceProvider,
+    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
+    ResultSpec,
 };
 
 use crate::doc::VideoDoc;
@@ -53,6 +54,29 @@ use crate::param::{Interp, Param};
 
 /// Registry `type_id` for every video-editor action.
 pub const VIDEO_EDITOR_ACTION_TYPE: &str = "video_editor.action";
+pub const VIDEO_EDITOR_OPERATION_TYPE: &str = "video_editor.operation";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VideoEditorOperation {
+    ImportMedia { path: Option<String> },
+    OpenProject { path: Option<String> },
+    SaveProject { path: Option<String> },
+    SaveProjectAs { path: Option<String> },
+    Export { path: Option<String> },
+    CancelExport,
+}
+
+pub fn decode_operation(
+    type_id: &str,
+    payload: &[u8],
+) -> Result<Option<VideoEditorOperation>, String> {
+    if type_id != VIDEO_EDITOR_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
 
 /// A serializable snapshot of a clip's scalar fields, in exactly the
 /// representation [`crate::doc`] stores (ids as strings, transition as its
@@ -734,6 +758,30 @@ pub struct VideoResourceCtx {
 fn immediate(id: &str, label: &str, action: &VideoEditorAction) -> ActionSpec {
     ActionSpec::immediate(id, label, VIDEO_EDITOR_ACTION_TYPE, action)
         .expect("encode video-editor action")
+        .reversible()
+}
+
+/// Publish the undo and consequence semantics the editor already implements.
+/// Every exported operation is one atomic document transaction. Removing a
+/// track, clip, effect, marker, or bin source is additionally destructive and
+/// therefore requires confirmation when invoked headlessly.
+fn annotate_contracts(resource: &mut Resource) {
+    for action in &mut resource.actions {
+        if action.kind == OperationKind::Document {
+            action.contract.reversible = true;
+        }
+        if action.kind == OperationKind::Document
+            && (action.id == "delete"
+                || action.id.starts_with("delete-")
+                || action.id.starts_with("remove-"))
+        {
+            let old = action.clone();
+            *action = old.destructive();
+        }
+    }
+    for child in &mut resource.children {
+        annotate_contracts(child);
+    }
 }
 
 /// Every spelling `EffectKind::from_str` accepts, in the exact form a caller
@@ -818,6 +866,96 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             p.name.clone()
         },
     );
+    for (id, label, variant) in [
+        ("import", "Import media", 0_u8),
+        ("open", "Open project", 1),
+        ("save", "Save project", 2),
+        ("save-as", "Save project as", 3),
+    ] {
+        root = root.with_action(
+            ActionSpec::typed_operation(
+                id,
+                label,
+                "path (omit to use the system picker/current project)",
+                OperationKind::Effect,
+                VIDEO_EDITOR_OPERATION_TYPE,
+                vec![ActionParam::optional_owned(
+                    "path",
+                    ParamType::Text,
+                    "Direct filesystem path",
+                )],
+                move |args: &ActionArgs| {
+                    let path = args
+                        .text("path")
+                        .filter(|p| !p.trim().is_empty())
+                        .map(str::to_string);
+                    let op = match variant {
+                        0 => VideoEditorOperation::ImportMedia { path },
+                        1 => VideoEditorOperation::OpenProject { path },
+                        2 => VideoEditorOperation::SaveProject { path },
+                        _ => VideoEditorOperation::SaveProjectAs { path },
+                    };
+                    EncodedAction::encode_operation(VIDEO_EDITOR_OPERATION_TYPE, &op)
+                        .expect("video operation serializes")
+                },
+            )
+            .execution(ExecutionMode::Background { cancellable: false })
+            .returns(ResultSpec::Job),
+        );
+    }
+    if let Ok(spec) = ActionSpec::operation(
+        "export",
+        "Export video",
+        OperationKind::Effect,
+        VIDEO_EDITOR_OPERATION_TYPE,
+        &VideoEditorOperation::Export { path: None },
+    ) {
+        root = root.with_action(if crate::export::unavailable_reason().is_some() {
+            spec.unavailable(
+                "export_unavailable",
+                "Video export is unavailable on this system",
+            )
+        } else {
+            ActionSpec::typed_operation(
+                "export",
+                "Export video",
+                "path (omit to use the system picker)",
+                OperationKind::Effect,
+                VIDEO_EDITOR_OPERATION_TYPE,
+                vec![ActionParam::optional_owned(
+                    "path",
+                    ParamType::Text,
+                    "Direct export path",
+                )],
+                |args: &ActionArgs| {
+                    EncodedAction::encode_operation(
+                        VIDEO_EDITOR_OPERATION_TYPE,
+                        &VideoEditorOperation::Export {
+                            path: args
+                                .text("path")
+                                .filter(|p| !p.trim().is_empty())
+                                .map(str::to_string),
+                        },
+                    )
+                    .expect("export operation serializes")
+                },
+            )
+            .execution(ExecutionMode::Background { cancellable: true })
+            .returns(ResultSpec::Job)
+        });
+    }
+    if let Ok(spec) = ActionSpec::operation(
+        "cancel-export",
+        "Cancel export",
+        OperationKind::Effect,
+        VIDEO_EDITOR_OPERATION_TYPE,
+        &VideoEditorOperation::CancelExport,
+    ) {
+        root = root.with_action(spec.destructive().unavailable(
+            "runtime_state_required",
+            "Cancel is offered in the Export panel while a render is running",
+        ));
+    }
 
     // Project-level: rename (settings live in the doc).
     {
@@ -2214,6 +2352,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
         root = root.with_child(mr);
     }
 
+    annotate_contracts(&mut root);
     vec![root]
 }
 
@@ -2432,6 +2571,10 @@ mod tests {
             serde_json::from_slice(&encoded.payload).expect("payload decodes");
         action.apply(&mut doc).expect("applies");
         VideoDoc::load_project(&doc)
+    }
+
+    fn rejects(spec: &ActionSpec, arg: &str) -> bool {
+        serde_json::from_slice::<VideoEditorAction>(&prompted_encode(spec, arg).payload).is_err()
     }
 
     /// A project with one clip under the playhead.
@@ -3384,7 +3527,7 @@ mod tests {
 
         let known = declared();
         for (id, sp) in all_specs(&ctx) {
-            if sp.params().is_empty() {
+            if sp.params().is_empty() || sp.kind == OperationKind::Effect {
                 continue;
             }
             assert!(
@@ -3832,8 +3975,7 @@ mod tests {
 
         // `parse_unit("half")` answered 0.5 — half the frame cropped away, on
         // a typo. The word cannot bind now, so the edge keeps its value.
-        let cropped = run(&ctx.project, &spec(&ctx, "crop-left"), Some("half"));
-        assert_eq!(cropped.clip(cid).unwrap().transform.crop_left, 0.0);
+        assert!(rejects(&spec(&ctx, "crop-left"), "half"));
         // A number still lands, and out of range still clamps: asking to cut
         // 1.4 of the frame is a legible "all of it".
         let cropped = run(&ctx.project, &spec(&ctx, "crop-left"), Some("1.4"));
@@ -3843,8 +3985,7 @@ mod tests {
 
         // The geometry parse answered 0.0, which for scale is a clip that is
         // no longer on screen.
-        let scaled = run(&ctx.project, &spec(&ctx, "set-scale"), Some("banana"));
-        assert_eq!(scaled.clip(cid).unwrap().transform.scale_x, 1.0);
+        assert!(rejects(&spec(&ctx, "set-scale"), "banana"));
         let scaled = run(&ctx.project, &spec(&ctx, "set-scale"), Some("0.5"));
         assert_eq!(scaled.clip(cid).unwrap().transform.scale_y, 0.5);
         // Rotation is a real number and stays one — degrees are not integers.
@@ -3858,8 +3999,7 @@ mod tests {
             project: fast,
             ..ctx
         };
-        let still_fast = run(&ctx2.project, &spec(&ctx2, "set-speed"), Some("quickly"));
-        assert_eq!(still_fast.clip(cid).unwrap().speed.rate(), 2.0);
+        assert!(rejects(&spec(&ctx2, "set-speed"), "quickly"));
     }
 
     /// A named transition and effect still land; a name the action never
@@ -3882,12 +4022,7 @@ mod tests {
             mix: ctx.mix.clone(),
             ..ctx
         };
-        let kept = run(&ctx2.project, &spec(&ctx2, "set-transition"), Some("swipe"));
-        assert_eq!(
-            kept.clip(cid).unwrap().transition,
-            Transition::DipToBlack,
-            "an unoffered name no longer falls through to a hard cut",
-        );
+        assert!(rejects(&spec(&ctx2, "set-transition"), "swipe"));
 
         // An alias the placeholder never listed but the parser has always
         // taken still works — declaring the type must not take a working name
@@ -3897,8 +4032,7 @@ mod tests {
             inverted.clip(cid).unwrap().effects.last().map(|e| e.kind),
             Some(EffectKind::Invert),
         );
-        let none = run(&ctx.project, &spec(&ctx, "add-effect"), Some("chrome"));
-        assert!(none.clip(cid).unwrap().effects.is_empty());
+        assert!(rejects(&spec(&ctx, "add-effect"), "chrome"));
     }
 
     /// The title's own arguments: three declared names for alignment, numbers
@@ -3916,12 +4050,7 @@ mod tests {
         };
         // "centre" used to be read as `Center` — an edit, from a spelling the
         // action never offered, indistinguishable from a real one.
-        let same = run(
-            &ctx2.project,
-            &spec(&ctx2, "set-title-align"),
-            Some("centre"),
-        );
-        assert_eq!(title_of(&same).align, crate::model::TextAlign::Left);
+        assert!(rejects(&spec(&ctx2, "set-title-align"), "centre"));
 
         let big = run(&ctx2.project, &spec(&ctx2, "set-title-size"), Some("0.3"));
         assert_eq!(title_of(&big).size, 0.3);
@@ -4278,5 +4407,64 @@ mod tests {
         let words = sp.description.unwrap_or_default();
         assert!(words.contains("+4.0 dB over"), "how far over: {words}");
         assert!(words.contains("1 place"), "and in how many places: {words}");
+    }
+
+    #[test]
+    fn exported_edits_declare_undo_and_destructive_removals() {
+        let (ctx, _) = ctx_fixture();
+        let specs = all_specs(&ctx);
+        assert!(
+            specs
+                .iter()
+                .filter(|(_, action)| action.kind == OperationKind::Document)
+                .all(|(_, action)| action.contract.reversible)
+        );
+        assert!(
+            specs
+                .iter()
+                .filter(|(_, action)| action.kind != OperationKind::Document)
+                .all(|(_, action)| !action.contract.reversible)
+        );
+        let (_, delete) = specs
+            .iter()
+            .find(|(_, action)| action.id == "delete")
+            .expect("fixture clip exports deletion");
+        assert_eq!(delete.contract.risk, qos_actions::RiskLevel::Destructive);
+        assert_eq!(
+            delete.contract.confirmation,
+            qos_actions::ConfirmationPolicy::Confirm
+        );
+    }
+
+    #[test]
+    fn file_and_render_effects_are_canonical_and_not_falsely_reversible() {
+        let resources = provide_resources(&VideoResourceCtx::default());
+        let root = &resources[0];
+        for id in [
+            "import",
+            "open",
+            "save",
+            "save-as",
+            "export",
+            "cancel-export",
+        ] {
+            let action = root.actions.iter().find(|action| action.id == id).unwrap();
+            assert_eq!(action.kind, OperationKind::Effect, "{id}");
+            assert!(!action.contract.reversible, "{id}");
+            if id != "cancel-export" {
+                assert!(
+                    matches!(action.contract.execution, ExecutionMode::Background { .. }),
+                    "{id}"
+                );
+                assert_eq!(action.contract.result, ResultSpec::Job, "{id}");
+                assert_eq!(action.params()[0].name.as_ref(), "path", "{id}");
+            }
+        }
+        let cancel = root
+            .actions
+            .iter()
+            .find(|a| a.id == "cancel-export")
+            .unwrap();
+        assert!(!cancel.contract.availability.is_available());
     }
 }

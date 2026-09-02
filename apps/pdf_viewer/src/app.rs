@@ -20,10 +20,17 @@ use winit::keyboard::{Key, NamedKey};
 
 use std::time::Duration;
 
+use crate::actions::PdfOperation;
 use ui::Widget;
 use ui::gesture::{DragSelect, Granularity};
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+
+#[derive(Clone, Copy)]
+enum PortalActionKind {
+    Open,
+    Save,
+}
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -490,6 +497,8 @@ pub struct PdfApp {
     status_note: Option<String>,
     /// An in-flight XDG-portal *save* request (mirrors `portal_rx`).
     portal_save_rx: Option<PortalChannel>,
+    portal_action: Option<(qos_actions::InvocationId, PortalActionKind)>,
+    completed_portal_action: Option<qos_actions::InvocationUpdate>,
 
     // Interaction transients.
     last_mouse: Point,
@@ -803,6 +812,8 @@ impl PdfApp {
             source_path: None,
             status_note: None,
             portal_save_rx: None,
+            portal_action: None,
+            completed_portal_action: None,
             last_mouse: Point::ZERO,
             drag: None,
             pan: None,
@@ -878,6 +889,7 @@ impl PdfApp {
             doc_id,
             title,
             page: self.current_page,
+            page_count: self.doc.page_count(),
             author: self.author.clone(),
             created_seed: self.created_counter,
         })
@@ -1717,6 +1729,33 @@ impl PdfApp {
         self.dirty = true;
     }
 
+    fn finish_portal_action(&mut self, success: bool, error: Option<String>) {
+        let Some((invocation, _)) = self.portal_action.take() else {
+            return;
+        };
+        self.completed_portal_action = Some(if success {
+            qos_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: qos_actions::ActionOutput::default(),
+            }
+        } else if let Some(message) = error {
+            qos_actions::InvocationUpdate::Failed {
+                invocation,
+                error: qos_actions::ActionFailure {
+                    code: "pdf.portal_failed".into(),
+                    message,
+                    details: None,
+                    retryable: false,
+                },
+            }
+        } else {
+            qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("file selection cancelled".into()),
+            }
+        });
+    }
+
     /// Drain a completed portal *save* request, if any, and flatten the current
     /// markup to the chosen path. Called once per frame from [`Widget::sync`].
     fn drain_portal_save(&mut self) {
@@ -1729,12 +1768,17 @@ impl PdfApp {
                 match outcome {
                     PortalOutcome::Opened(path) => {
                         let path = ensure_pdf_extension(path);
-                        self.save_annotated_to(&path);
+                        let success = self.save_annotated_to(&path);
+                        self.finish_portal_action(
+                            success,
+                            (!success).then(|| "PDF could not be saved".into()),
+                        );
                     }
-                    PortalOutcome::Cancelled => {}
+                    PortalOutcome::Cancelled => self.finish_portal_action(false, None),
                     PortalOutcome::Failed(reason) => {
                         self.status_note = Some(format!("Couldn't open the save dialog: {reason}"));
                         self.dirty = true;
+                        self.finish_portal_action(false, Some(reason));
                     }
                 }
             }
@@ -2377,15 +2421,19 @@ impl PdfApp {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    PortalOutcome::Opened(path) => self.load_path(&path, state),
+                    PortalOutcome::Opened(path) => {
+                        self.load_path(&path, state);
+                        self.finish_portal_action(self.has_document, self.load_error.clone());
+                    }
                     // A cancel is not an error — leave the current view intact.
-                    PortalOutcome::Cancelled => {}
+                    PortalOutcome::Cancelled => self.finish_portal_action(false, None),
                     PortalOutcome::Failed(reason) => {
                         if !self.has_document {
                             self.load_error =
                                 Some(format!("Couldn't open the file chooser: {reason}"));
                         }
                         self.dirty = true;
+                        self.finish_portal_action(false, Some(reason));
                     }
                 }
             }
@@ -2506,6 +2554,134 @@ include!("app_draw.rs");
 include!("app_events.rs");
 
 impl Widget for PdfApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::PDF_VIEWER_OPERATION_TYPE]
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        use crate::actions::PdfOperation;
+        match operation {
+            PdfOperation::PreviousPage => self.prev_page(),
+            PdfOperation::NextPage => self.next_page(),
+            PdfOperation::ZoomIn => self.zoom_by(1.15),
+            PdfOperation::ZoomOut => self.zoom_by(1.0 / 1.15),
+            PdfOperation::FitPage => self.fit_page(),
+            PdfOperation::FitWidth => self.fit_width(),
+            PdfOperation::ToggleSidebar => self.toggle_sidebar(),
+            PdfOperation::Open { .. } | PdfOperation::SaveAs { .. } => {
+                return Err("file operations require the lifecycle-capable operation host".into());
+            }
+        }
+        Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        match operation {
+            PdfOperation::Open { path: Some(file) } => {
+                self.load_path(std::path::Path::new(&file), doc);
+                if !self.has_document {
+                    return Err(self
+                        .load_error
+                        .clone()
+                        .unwrap_or_else(|| "PDF could not be opened".into()));
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                    qos_actions::ActionOutput::default(),
+                )))
+            }
+            PdfOperation::SaveAs { path: Some(file) } => {
+                let file = ensure_pdf_extension(file.into());
+                if !self.save_annotated_to(&file) {
+                    return Err("PDF could not be saved".into());
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                    qos_actions::ActionOutput::default(),
+                )))
+            }
+            PdfOperation::Open { path: None } => {
+                self.portal_action = Some((invocation, PortalActionKind::Open));
+                self.request_open_via_portal();
+                if self.portal_rx.is_none() {
+                    self.portal_action = None;
+                    return Err("PDF picker could not be started".into());
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            PdfOperation::SaveAs { path: None } => {
+                self.portal_action = Some((invocation, PortalActionKind::Save));
+                self.request_save_via_portal();
+                if self.portal_save_rx.is_none() {
+                    self.portal_action = None;
+                    return Err("PDF save picker could not be started".into());
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            _ => self
+                .invoke_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            qos_actions::ActionOutput::default(),
+                        )
+                    })
+                }),
+        }
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if cancellation_requested
+            && self
+                .portal_action
+                .is_some_and(|(pending, _)| pending == invocation)
+        {
+            self.portal_action = None;
+            self.portal_rx = None;
+            self.portal_save_rx = None;
+            return Some(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("file operation cancelled".into()),
+            });
+        }
+        if self
+            .completed_portal_action
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            return self.completed_portal_action.take();
+        }
+        None
+    }
+
     fn record_intent(&self) -> Option<ui::RecordCheckout> {
         self.markup_record.clone()
     }

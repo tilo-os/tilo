@@ -21,8 +21,8 @@
 //!
 //! Every write is doubly gated: the typed confirmation at Confirm, plus the
 //! `QOS_IMAGER_ALLOW_WRITE=1` allow-gate in [`crate::write`]. With the gate off
-//! (tests, `--shots`, normal dev runs) the exact same progress UI is driven by
-//! a simulated worker that touches no device.
+//! (tests, `--shots`, normal dev runs) the write control is unavailable; the app
+//! never reports synthetic progress or success.
 //!
 //! All persistent state (selected source/target, the live profile, the typed
 //! confirmation, the current step, job progress) lives in the Automerge
@@ -232,7 +232,9 @@ impl ImagerApp {
             Step::Drive => self.selected.is_some(),
             Step::Customize => true,
             // Confirm advances into the (destructive) write only once armed.
-            Step::Confirm => self.confirm_matches() && self.image_fits(),
+            Step::Confirm => {
+                self.confirm_matches() && self.image_fits() && crate::write::allow_write()
+            }
             // Write is in-progress and Done is terminal — neither advances.
             Step::Write | Step::Done => false,
         }
@@ -2205,7 +2207,7 @@ impl ImagerApp {
         let note = if crate::write::allow_write() {
             "Live write enabled (QOS_IMAGER_ALLOW_WRITE=1)."
         } else {
-            "Safe mode — no bytes are written unless QOS_IMAGER_ALLOW_WRITE=1."
+            "Writing unavailable — enable the privileged backend with QOS_IMAGER_ALLOW_WRITE=1."
         };
         Self::txt(
             scene,
@@ -2783,15 +2785,52 @@ impl ImagerApp {
     }
 
     fn start_write(&mut self, state: &mut AutoCommit) {
-        let (Some(src), Some(tgt)) = (self.source.clone(), self.target().cloned()) else {
-            self.set_status(state, "Select a source and drive first.");
-            self.dirty = true;
-            return;
+        let operation = crate::actions::ImagerOperation::Write {
+            device: self.target().map(TargetDrive::dev_path).unwrap_or_default(),
+            confirmation: self.confirm_input.value().to_string(),
         };
-        if !self.confirm_matches() {
-            self.set_status(state, "Type the exact device name to confirm.");
+        if let Err(reason) = self.perform_operation(&operation, state) {
+            self.set_status(state, &reason);
             self.dirty = true;
-            return;
+        }
+    }
+
+    /// One semantic implementation shared by the direct Confirm control and
+    /// the resource-operation route.
+    fn perform_operation(
+        &mut self,
+        operation: &crate::actions::ImagerOperation,
+        state: &mut AutoCommit,
+    ) -> Result<(), String> {
+        let crate::actions::ImagerOperation::Write {
+            device,
+            confirmation,
+        } = operation
+        else {
+            return match operation {
+                crate::actions::ImagerOperation::Verify => Err(
+                    "Read-back verification runs automatically after every successful write".into(),
+                ),
+                crate::actions::ImagerOperation::Cancel => {
+                    Err("The raw-device writer cannot yet stop safely between write chunks".into())
+                }
+                crate::actions::ImagerOperation::Status => Ok(()),
+                crate::actions::ImagerOperation::ExportConfig => {
+                    if self.source.is_none() || self.target().is_none() {
+                        Err("Select an image source and target drive first".into())
+                    } else {
+                        self.export_config(state);
+                        Ok(())
+                    }
+                }
+                crate::actions::ImagerOperation::Write { .. } => unreachable!(),
+            };
+        };
+        let (Some(src), Some(tgt)) = (self.source.clone(), self.target().cloned()) else {
+            return Err("Select a source and drive first.".into());
+        };
+        if *device != tgt.dev_path() {
+            return Err("The selected target changed; review the write plan again.".into());
         }
         let req = WriteRequest {
             source: src,
@@ -2799,7 +2838,7 @@ impl ImagerApp {
             action: self.action,
             profile: self.profile.clone(),
         };
-        let (start, rx) = spawn_job(req, self.confirm_input.value());
+        let (start, rx) = spawn_job(req, confirmation);
         match start {
             crate::write::JobStart::Started => {
                 self.job_rx = rx;
@@ -2810,15 +2849,10 @@ impl ImagerApp {
                     rate_bps: 0,
                 };
                 ImagerDoc::set_progress(state, &self.progress);
-                let mode = if crate::write::allow_write() {
-                    "writing"
-                } else {
-                    "simulated write"
-                };
                 self.set_status(
                     state,
                     &format!(
-                        "{} → {} ({mode})",
+                        "{} → {} (writing)",
                         self.source
                             .as_ref()
                             .map(|s| s.name.clone())
@@ -2830,16 +2864,23 @@ impl ImagerApp {
                 self.goto(state, Step::Write);
             }
             crate::write::JobStart::ConfirmationMismatch => {
-                self.set_status(state, "Confirmation does not match — write refused.");
+                return Err("Confirmation does not match — write refused.".into());
             }
             crate::write::JobStart::TooSmall => {
-                self.set_status(state, "Image is larger than the drive — write refused.");
+                return Err("Image is larger than the drive — write refused.".into());
             }
             crate::write::JobStart::Incomplete => {
-                self.set_status(state, "Select a source and drive before writing.");
+                return Err("Select a source and drive before writing.".into());
+            }
+            crate::write::JobStart::WriteDisabled => {
+                return Err(
+                    "Raw-device writing is disabled; enable the privileged Imager backend first."
+                        .into(),
+                );
             }
         }
         self.dirty = true;
+        Ok(())
     }
 
     /// Drain live job progress, folding it into the doc. Called each `sync`.
@@ -3002,6 +3043,10 @@ impl ImagerApp {
 // Widget impl
 // =========================================================================
 impl Widget for ImagerApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::IMAGER_OPERATION_TYPE]
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.seeded {
             if ImagerDoc::is_empty(state) {
@@ -3247,7 +3292,110 @@ impl Widget for ImagerApp {
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
     /// [`crate::actions`]. Empty unless an installable qOS image is selected.
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+        let available = self.source.is_some() && self.target().is_some();
+        let mut job = crate::actions::operation_resource(
+            self.target().map(TargetDrive::dev_path).as_deref(),
+            available,
+            self.job_rx.is_some(),
+            crate::write::allow_write(),
+        );
+        job.actions.push(
+            qos_actions::ActionSpec::operation(
+                "export-config",
+                "Export headless configuration",
+                qos_actions::OperationKind::View,
+                crate::actions::IMAGER_OPERATION_TYPE,
+                &crate::actions::ImagerOperation::ExportConfig,
+            )
+            .expect("imager operation payload is serializable")
+            .with_contract(qos_actions::ActionContract {
+                availability: if available {
+                    qos_actions::Availability::Available
+                } else {
+                    qos_actions::Availability::Unavailable {
+                        code: "incomplete_plan".into(),
+                        reason: "Select an image source and target drive first".into(),
+                    }
+                },
+                result: qos_actions::ResultSpec::Json {
+                    schema: serde_json::json!({ "type": "string" }),
+                },
+                discovery: qos_actions::DiscoveryScope::Launchable,
+                ..qos_actions::ActionContract::view()
+            }),
+        );
+        resources.push(job);
+        resources
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        _payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, _payload)? else {
+            return Ok(false);
+        };
+        let expected_kind = match operation {
+            crate::actions::ImagerOperation::Status
+            | crate::actions::ImagerOperation::ExportConfig => qos_actions::OperationKind::View,
+            _ => qos_actions::OperationKind::Effect,
+        };
+        if kind != expected_kind {
+            return Err("Imager operation kind does not match its contract".into());
+        }
+        let mut local_doc = _doc.clone();
+        self.perform_operation(&operation, &mut local_doc)?;
+        Ok(true)
+    }
+
+    fn invoke_resource_operation_v2(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<qos_actions::ActionOutput>, String> {
+        match crate::actions::decode_operation(type_id, payload)? {
+            Some(crate::actions::ImagerOperation::Status) => {
+                if kind != qos_actions::OperationKind::View {
+                    return Err("Imager status is a view operation".into());
+                }
+                return Ok(Some(qos_actions::ActionOutput {
+                    value: Some(serde_json::json!({
+                        "phase": self.progress.phase.key(),
+                        "progress": self.progress.overall(),
+                        "message": self.status,
+                    })),
+                    resources: Vec::new(),
+                }));
+            }
+            Some(crate::actions::ImagerOperation::ExportConfig) => {
+                if kind != qos_actions::OperationKind::View {
+                    return Err("Imager config export is a view operation".into());
+                }
+                if self.source.is_none() || self.target().is_none() {
+                    return Err("Select an image source and target drive first".into());
+                }
+                let text = self
+                    .profile
+                    .to_headless_config(self.source.as_ref(), self.target());
+                self.export_dialog.show(text.clone());
+                self.dirty = true;
+                return Ok(Some(qos_actions::ActionOutput {
+                    value: Some(serde_json::Value::String(text)),
+                    resources: Vec::new(),
+                }));
+            }
+            _ => {}
+        }
+        self.invoke_resource_operation(kind, type_id, payload, doc, path)
+            .map(|handled| handled.then(qos_actions::ActionOutput::default))
     }
 
     /// The framework host drains the undo boundary an on-screen profile control
@@ -3599,11 +3747,10 @@ mod tests {
     }
 
     /// The primary interaction, proven end to end by clicking the real
-    /// on-screen targets: walk Source → Drive → Customize → Confirm → Write,
-    /// then let the (simulated) job finish and land on Done. Every transition
+    /// on-screen targets: walk Source → Drive → Customize → Confirm. Every transition
     /// goes through the actual hit-testing + dispatch path, not a shortcut.
     #[test]
-    fn clicking_through_the_wizard_reaches_write_then_done() {
+    fn clicking_through_the_wizard_refuses_a_fake_write_when_backend_is_disabled() {
         let (mut app, mut doc) = seeded_app();
         app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
         assert_eq!(app.step, Step::Source);
@@ -3648,31 +3795,18 @@ mod tests {
             "destructive consent is never written to the shared document"
         );
 
-        // Confirm → Write: click the (now-enabled) primary button.
+        if crate::write::allow_write() {
+            // Never point this UI test at a real block device.
+            return;
+        }
+
+        // The primary control stays disabled: a matching phrase cannot turn an
+        // unavailable backend into a synthetic success.
         let primary = app.compute_layout().primary.unwrap();
         click_at(&mut app, &mut doc, center(primary));
-        assert_eq!(app.step, Step::Write);
-        assert_eq!(app.progress.phase, JobPhase::Writing);
-        assert!(app.job_rx.is_some());
-
-        // The job reports success → the flow lands on the Done station. (Drive
-        // the drain with a terminal progress so the test is deterministic and
-        // never waits on the worker thread.)
-        let (tx, rx) = std::sync::mpsc::channel();
-        tx.send(Progress {
-            phase: JobPhase::Success,
-            write_frac: 1.0,
-            verify_frac: 1.0,
-            rate_bps: 0,
-        })
-        .unwrap();
-        app.job_rx = Some(rx);
-        app.drain_job(&mut doc);
-        // Keep the sender alive past the drain: dropping it first would look like
-        // the worker died and be reported as a failure rather than success.
-        drop(tx);
-        assert_eq!(app.step, Step::Done);
-        assert_eq!(app.progress.phase, JobPhase::Success);
+        assert_eq!(app.step, Step::Confirm);
+        assert_eq!(app.progress.phase, JobPhase::Idle);
+        assert!(app.job_rx.is_none());
     }
 
     #[test]
@@ -3706,21 +3840,19 @@ mod tests {
     }
 
     #[test]
-    fn write_starts_with_matching_confirmation_and_advances_to_write_station() {
-        // A matching typed confirmation starts a job: the phase advances to
-        // Writing, the flow moves onto the Write station, and a progress channel
-        // is installed. Whether the backend is simulated or real is decided by
-        // the allow-gate in write.rs (tested there); either way these UI
-        // invariants hold and never depend on the process environment.
+    fn matching_confirmation_does_not_simulate_a_disabled_write() {
+        if crate::write::allow_write() {
+            return;
+        }
         let (mut app, mut doc) = seeded_app();
         app.select_target(&mut doc, 0); // sdb
         app.goto(&mut doc, Step::Confirm);
         app.confirm_input.set_text("sdb");
         app.start_write(&mut doc);
-        assert_eq!(app.progress.phase, JobPhase::Writing);
-        assert_eq!(app.step, Step::Write, "the write station is now showing");
-        assert!(app.job_rx.is_some());
-        assert!(app.needs_animation_frame());
+        assert_eq!(app.progress.phase, JobPhase::Idle);
+        assert_eq!(app.step, Step::Confirm);
+        assert!(app.job_rx.is_none());
+        assert!(ImagerDoc::status(&doc).contains("disabled"));
     }
 
     #[test]

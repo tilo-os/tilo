@@ -47,7 +47,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionSpec, OperationKind, Resource};
+use ui::qos_actions::{
+    ActionContract, ActionSpec, Availability, DiscoveryScope, ExecutionMode, OperationKind,
+    PermissionRequirement, Resource, ResultSpec, RetryPolicy,
+};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{TextInput, Widget};
@@ -1751,6 +1754,10 @@ fn contrast_on(bg: Color) -> Color {
 // ===================================================================
 
 impl Widget for LogsApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["logs.refresh"]
+    }
+
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("journal", "logs.journal", "System journal");
         if let Ok(spec) = ActionSpec::operation(
@@ -1760,7 +1767,22 @@ impl Widget for LogsApp {
             "logs.refresh",
             &"",
         ) {
-            root.actions.push(spec);
+            root.actions.push(spec.with_contract(ActionContract {
+                availability: if self.allow_live {
+                    Availability::Available
+                } else {
+                    Availability::Unavailable {
+                        code: "journal_access_disabled".into(),
+                        reason: "Live journal access is disabled".into(),
+                    }
+                },
+                permission: PermissionRequirement::Read,
+                retry: RetryPolicy::Idempotent,
+                execution: ExecutionMode::Immediate,
+                discovery: DiscoveryScope::Launchable,
+                result: ResultSpec::None,
+                ..ActionContract::default()
+            }));
         }
         vec![root]
     }

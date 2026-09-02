@@ -505,7 +505,7 @@ enum TemplateArg {
     Document,
     /// IME-capable input driving an accessible generated QR image.
     Qr,
-    /// A resizable master-detail app with durable per-item editing.
+    /// A responsive master-detail app with durable per-item editing.
     Workspace,
 }
 

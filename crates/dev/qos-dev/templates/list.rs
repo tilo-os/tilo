@@ -11,6 +11,8 @@ pub struct Activity {
     label: String,
 }
 
+fn open_activity(_id: u64) {}
+
 /// A sparse asynchronous model: the generated app never allocates
 /// `ITEM_COUNT` rows and only the newest virtual window may publish.
 pub struct ActivityModel {
@@ -137,6 +139,7 @@ pub fn app_root() -> Box<dyn Widget> {
                 match state {
                     ListRowState::Ready => {
                         let label = model.item(index).map_or("", |item| item.label.as_str());
+                        let open_key = *key;
                         Box::new(Container::new().with_height(height).with_child(Box::new(
                             ui::row![
                                 ui::column![Text::new(label)].with_no_padding(),
@@ -146,6 +149,7 @@ pub fn app_root() -> Box<dyn Widget> {
                                     Some("open-requested"),
                                 )
                                 .with_click_value(key.to_string())
+                                .on_click(move || open_activity(open_key))
                                 .fit_content(36.0),
                             ],
                         )))
@@ -168,5 +172,22 @@ pub fn app_root() -> Box<dyn Widget> {
         .with_semantic_key(u64::to_string)
         .with_viewport_height(420.0)
         .multi_select(true);
-    Box::new(list)
+    crate::resource_actions::immediate(
+        Box::new(list),
+        crate::resource_actions::typed_resource(
+            "generated.activity-list",
+            "Activity",
+            "open",
+            "Open activity",
+            vec![qos_actions::ActionParam::required_owned(
+                "id", qos_actions::ParamType::Integer, "Stable activity id",
+            )],
+        ),
+        |payload| {
+            let args: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            let id = args.get("id").and_then(serde_json::Value::as_u64).ok_or("missing id")?;
+            open_activity(id);
+            Ok(Default::default())
+        },
+    )
 }

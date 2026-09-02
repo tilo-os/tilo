@@ -23,6 +23,7 @@ ui = { path = "../../ui", features = ["portal"] }
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 uuid.workspace = true
 vello.workspace = true
 image = { workspace = true, default-features = true }
