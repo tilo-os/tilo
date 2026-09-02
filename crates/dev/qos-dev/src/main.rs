@@ -483,8 +483,12 @@ struct NewArgs {
     ui_path: Option<PathBuf>,
 
     /// Print the files that would be created without writing them.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "dev")]
     dry_run: bool,
+
+    /// Enter the live rebuild/restart loop after creating the app.
+    #[arg(long, conflicts_with = "dry_run")]
+    dev: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -1017,6 +1021,7 @@ fn run_check(args: CheckArgs) -> Result<()> {
 }
 
 fn run_new(args: NewArgs) -> Result<()> {
+    let start_dev = args.dev;
     let request = qos_dev::NewAppRequest {
         name: args.name,
         app_id: args.id,
@@ -1037,8 +1042,21 @@ fn run_new(args: NewArgs) -> Result<()> {
         dry_run: args.dry_run,
     };
     let outcome = qos_dev::create_app_interactive(request)?;
-    println!("{}", outcome.summary());
-    Ok(())
+    if start_dev {
+        println!("{}", outcome.headline());
+        println!("\nStarting live development; press Ctrl-C to stop.");
+        qos_dev::dev_app(
+            &outcome.destination,
+            &qos_dev::DevRequest {
+                forwarded: Vec::new(),
+                watch_ui: true,
+                debounce: Duration::from_millis(150),
+            },
+        )
+    } else {
+        println!("{}", outcome.summary());
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1099,6 +1117,19 @@ mod tests {
             panic!("expected new command");
         };
         assert!(matches!(args.template, Some(TemplateArg::Workspace)));
+    }
+
+    #[test]
+    fn new_can_enter_dev_but_cannot_dev_a_dry_run() {
+        let cli = Cli::try_parse_from(["qos-dev", "new", "notes", "--dev"])
+            .expect("create-and-develop command");
+        let Command::New(args) = cli.command else {
+            panic!("expected new command");
+        };
+        assert!(args.dev);
+        assert!(!args.dry_run);
+
+        assert!(Cli::try_parse_from(["qos-dev", "new", "notes", "--dev", "--dry-run"]).is_err());
     }
 
     #[test]
