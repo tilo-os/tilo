@@ -8,6 +8,10 @@ publish.workspace = true
 license.workspace = true
 description = "qOS on-screen keyboard — data-driven layouts, responsive sizing, customizable toolbar."
 
+# The app uses the protocol types through ui's canonical re-export.
+[package.metadata.cargo-machete]
+ignored = ["qos-actions"]
+
 [lib]
 name = "osk"
 path = "src/lib.rs"
@@ -21,7 +25,8 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { path = "../../ui" }
+ui = { package = "qos-app", path = "../../crates/app/qos-app" }
+qos-actions = { path = "../../crates/collab/actions" }
 # Real FUTO swipe decoder (ExecuTorch over FFI). Builds a stub reporting
 # "unavailable" when the FUTO libs aren't linked, so the OSK falls back to
 # its geometric decoder — see src/futo.rs.

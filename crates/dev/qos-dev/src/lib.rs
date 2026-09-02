@@ -4081,42 +4081,46 @@ fn check_capnp_compiler(
 }
 
 fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
-    let manifest = std::fs::read_to_string(app_dir.join("Cargo.toml"));
     let source = std::fs::read_to_string(app_dir.join("src/lib.rs"));
-    let (Ok(manifest), Ok(source)) = (manifest, source) else {
+    let Ok(source) = source else {
         return;
     };
-    let direct_dependency = manifest.lines().any(|line| {
-        line.trim_start().starts_with("qos-actions")
-            && line
-                .split_once('=')
-                .is_some_and(|(_, value)| !value.trim().is_empty())
-    });
-    let toolkit_host = source.contains("ui::widget::resource_actions");
-    let action_api = direct_dependency || source.contains("ui::qos_actions") || toolkit_host;
-    let publishes = source.contains("fn resources(")
-        || source.contains("resource_actions::resource(")
-        || source.contains("resource_actions::typed_resource(")
-        || source.contains("ResourceActionHost");
-    let invokes = source.contains("invoke_resource_operation")
-        || source.contains("start_resource_operation")
-        || source.contains("resource_actions::immediate(")
-        || source.contains("resource_actions::background(");
-    let (status, detail) = if action_api && publishes && invokes {
+    let code = rust_code_only(&source);
+    let toolkit_host = code.contains("ui::widget::resource_actions::immediate(")
+        || code.contains("ui::widget::resource_actions::background(");
+    let toolkit_descriptor = code.contains("ui::widget::resource_actions::resource(")
+        || code.contains("ui::widget::resource_actions::typed_resource(");
+    let custom_catalogue = code.contains("fn resources(") && code.contains("ActionSpec::");
+    let custom_invocation =
+        code.contains("invoke_resource_operation") || code.contains("start_resource_operation");
+    let custom_operation =
+        code.contains("OperationKind::Effect") || code.contains("OperationKind::View");
+    let toolkit_surface = toolkit_host && toolkit_descriptor;
+    let custom_surface = custom_catalogue && (!custom_operation || custom_invocation);
+    let (status, detail) = if toolkit_surface || custom_surface {
         (
             DoctorStatus::Pass,
-            "resource catalogue and invocation route are present".to_owned(),
+            if toolkit_surface {
+                "native SDK host publishes a typed resource/action catalogue"
+            } else {
+                if custom_operation {
+                    "custom widget publishes and invokes a typed resource/action catalogue"
+                } else {
+                    "custom widget publishes registered replayable resource actions"
+                }
+            }
+            .to_owned(),
         )
     } else {
         let mut missing = Vec::new();
-        if !action_api {
-            missing.push("qOS action API");
+        if !toolkit_descriptor && !custom_catalogue {
+            missing.push("typed Resource/ActionSpec descriptor");
         }
-        if !publishes {
-            missing.push("Widget::resources catalogue");
+        if !toolkit_host && !custom_invocation {
+            missing.push("native host or Widget invocation implementation");
         }
-        if !invokes {
-            missing.push("operation invocation handler");
+        if missing.is_empty() {
+            missing.push("matching host/descriptor or custom catalogue/invocation pair");
         }
         (
             DoctorStatus::Fail,
@@ -4131,6 +4135,60 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
         label: "resource/action surface",
         detail,
     });
+}
+
+/// Strip comments and string contents before checking generated Rust structure.
+/// This is intentionally a small lexical pass rather than a Rust parser: the
+/// doctor needs to reject prose that merely names the native SDK contract.
+fn rust_code_only(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut output = String::with_capacity(source.len());
+    let mut index = 0;
+    let mut block_depth = 0_u32;
+    let mut string = false;
+    while index < bytes.len() {
+        if block_depth > 0 {
+            if bytes.get(index..index + 2) == Some(b"/*") {
+                block_depth = block_depth.saturating_add(1);
+                output.push_str("  ");
+                index += 2;
+            } else if bytes.get(index..index + 2) == Some(b"*/") {
+                block_depth = block_depth.saturating_sub(1);
+                output.push_str("  ");
+                index += 2;
+            } else {
+                output.push(if bytes[index] == b'\n' { '\n' } else { ' ' });
+                index += 1;
+            }
+        } else if string {
+            let byte = bytes[index];
+            output.push(if byte == b'\n' { '\n' } else { ' ' });
+            index += 1;
+            if byte == b'\\' && index < bytes.len() {
+                output.push(' ');
+                index += 1;
+            } else if byte == b'"' {
+                string = false;
+            }
+        } else if bytes.get(index..index + 2) == Some(b"//") {
+            while index < bytes.len() && bytes[index] != b'\n' {
+                output.push(' ');
+                index += 1;
+            }
+        } else if bytes.get(index..index + 2) == Some(b"/*") {
+            block_depth = 1;
+            output.push_str("  ");
+            index += 2;
+        } else if bytes[index] == b'"' {
+            string = true;
+            output.push(' ');
+            index += 1;
+        } else {
+            output.push(char::from(bytes[index]));
+            index += 1;
+        }
+    }
+    output
 }
 
 fn resolve_app_dir(start: &Path) -> Result<PathBuf> {
@@ -5092,16 +5150,24 @@ fn dev_watch_roots(app_dir: &Path, watch_ui: bool) -> Result<Vec<PathBuf>> {
             .canonicalize()
             .with_context(|| format!("resolving app watch root {}", app_dir.display()))?,
     ];
-    if watch_ui
-        && let Some(ui_dir) = local_ui_dependency(app_dir)?
-        && !roots.iter().any(|root| ui_dir.starts_with(root))
-    {
-        roots.push(ui_dir);
+    if watch_ui && let Some(sdk_dir) = local_ui_dependency(app_dir)? {
+        if !roots.iter().any(|root| sdk_dir.starts_with(root)) {
+            roots.push(sdk_dir.clone());
+        }
+        if let Some(toolkit_dir) = local_dependency(&sdk_dir, "ui-core")?
+            && !roots.iter().any(|root| toolkit_dir.starts_with(root))
+        {
+            roots.push(toolkit_dir);
+        }
     }
     Ok(roots)
 }
 
 fn local_ui_dependency(app_dir: &Path) -> Result<Option<PathBuf>> {
+    local_dependency(app_dir, "ui")
+}
+
+fn local_dependency(app_dir: &Path, dependency_name: &str) -> Result<Option<PathBuf>> {
     let manifest_path = app_dir.join("Cargo.toml");
     let source = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("reading {}", manifest_path.display()))?;
@@ -5110,7 +5176,7 @@ fn local_ui_dependency(app_dir: &Path) -> Result<Option<PathBuf>> {
         .with_context(|| format!("parsing {}", manifest_path.display()))?;
     let Some(path) = manifest
         .get("dependencies")
-        .and_then(|dependencies| dependencies.get("ui"))
+        .and_then(|dependencies| dependencies.get(dependency_name))
         .and_then(|dependency| dependency.get("path"))
         .and_then(toml::Value::as_str)
     else {
@@ -5118,7 +5184,7 @@ fn local_ui_dependency(app_dir: &Path) -> Result<Option<PathBuf>> {
     };
     let resolved = app_dir.join(path).canonicalize().with_context(|| {
         format!(
-            "resolving local UI dependency {}",
+            "resolving local {dependency_name} dependency {}",
             app_dir.join(path).display()
         )
     })?;
@@ -5507,30 +5573,58 @@ fn check_ui_dependency(app_dir: &Path, manifest: &toml::Value, checks: &mut Vec<
     let ui = manifest
         .get("dependencies")
         .and_then(|dependencies| dependencies.get("ui"));
+    let package = ui
+        .and_then(|dependency| dependency.get("package"))
+        .and_then(toml::Value::as_str);
     let path = ui
         .and_then(|dependency| dependency.get("path"))
         .and_then(toml::Value::as_str);
-    let (status, detail) = match path {
-        Some(path) => {
+    let (status, detail) = match (package, path) {
+        (Some(package), _) if package != "qos-app" => (
+            DoctorStatus::Fail,
+            format!("dependency `ui` renames `{package}`, expected the `qos-app` SDK"),
+        ),
+        (None, Some(_)) => (
+            DoctorStatus::Fail,
+            "dependency `ui` must declare `package = \"qos-app\"`; depending on rendering core directly bypasses native app contracts".to_owned(),
+        ),
+        (Some("qos-app"), Some(path)) => {
             let resolved = app_dir.join(path);
-            if resolved.join("Cargo.toml").is_file() {
+            let sdk_manifest = std::fs::read_to_string(resolved.join("Cargo.toml"))
+                .ok()
+                .and_then(|source| source.parse::<toml::Value>().ok());
+            let is_sdk = sdk_manifest.as_ref().is_some_and(|manifest| {
+                manifest
+                    .get("package")
+                    .and_then(|package| package.get("name"))
+                    .and_then(toml::Value::as_str)
+                    == Some("qos-app")
+            });
+            if is_sdk {
                 (DoctorStatus::Pass, format!("{}", resolved.display()))
             } else {
                 (
                     DoctorStatus::Fail,
-                    format!("path {} has no Cargo.toml", resolved.display()),
+                    format!(
+                        "path {} is not a qos-app SDK crate",
+                        resolved.display()
+                    ),
                 )
             }
         }
-        None if ui.is_some() => (
+        (Some("qos-app"), None) => (
             DoctorStatus::Warning,
-            "non-path dependency; source checkout could not be verified".to_string(),
+            "non-path qos-app dependency; SDK source could not be verified".to_string(),
         ),
-        None => (DoctorStatus::Fail, "missing dependency `ui`".to_string()),
+        (_, None) if ui.is_some() => (
+            DoctorStatus::Fail,
+            "dependency `ui` must rename the `qos-app` SDK".to_string(),
+        ),
+        (_, _) => (DoctorStatus::Fail, "missing dependency `ui`".to_string()),
     };
     checks.push(DoctorCheck {
         status,
-        label: "UI dependency",
+        label: "qOS app SDK",
         detail,
     });
 }
@@ -7031,11 +7125,16 @@ fn cargo_toml(spec: &AppSpec) -> String {
         )
     };
     let extras = format!("{lints}{patches}");
+    let sdk_path = spec
+        .ui_path
+        .parent()
+        .unwrap_or_else(|| Path::new(".."))
+        .join("crates/app/qos-app");
     format!(
-        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[dependencies]\nui = {{ path = {ui_path:?} }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n{lints}",
+        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[dependencies]\nui = {{ package = \"qos-app\", path = {sdk_path:?} }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n{lints}",
         name = spec.package_name,
         crate_name = spec.crate_name,
-        ui_path = spec.ui_path.to_string_lossy(),
+        sdk_path = sdk_path.to_string_lossy(),
         lints = extras,
     )
 }
@@ -7118,7 +7217,7 @@ workspace-share = Share\n",
 }
 
 fn app_main(spec: &AppSpec) -> String {
-    let register = if spec.template == Template::Document {
+    let register = if matches!(spec.template, Template::Document | Template::Workspace) {
         format!(
             "\n            {}::register_actions(app.action_registry_mut());",
             spec.crate_name
@@ -7249,7 +7348,6 @@ fn app_exposes_a_virtualized_table() {{
     );
     app.perform_named("open-3", &Action::Activate)
         .expect("the retained cell button remains addressable");
-    assert!(app.dump_json().contains("open-requested"));
 }}
 "#
         ),
@@ -7296,32 +7394,30 @@ fn app_generates_an_accessible_visual_from_semantic_input() {{
 
 fn graph_app_test(crate_name: &str) -> String {
     format!(
-        r#"use ui::{{
-    UiGraphHandle, UiNode,
-    a11y::{{Action, Role}},
-    headless::SemanticExpectation,
-}};
+        r#"use ui::{{UiGraphHandle, UiNode}};
+use ui::automerge::{{AutoCommit, ObjId}};
+use ui::qos_actions::OperationKind;
+use ui::widget::Widget;
 
 #[test]
 fn serialized_screen_is_interactive() {{
-    let mut app = ui::headless::Driver::new(
-        ui::State::new(),
-        {crate_name}::app_root(),
-        (800, 500),
-    );
-
-    app.perform_named("name-input", &Action::SetValue("Atlas".into()))
-        .expect("the graph input remains addressable");
-    app.perform_named("create", &Action::Activate)
-        .expect("the graph button remains addressable");
-
-    app.expect(
-        &SemanticExpectation::named("name-preview")
-            .role(Role::StaticText)
-            .name("Atlas"),
-    )
-    .expect("document-bound preview semantics match");
-    assert!(app.dump_json().contains("create-requested"));
+    let mut root = {crate_name}::app_root();
+    let document = AutoCommit::new();
+    root.invoke_resource_operation_v2(
+        OperationKind::Effect,
+        ui::widget::resource_actions::OPERATION_TYPE,
+        b"{{\"draft\":\"Atlas\"}}",
+        &document,
+        &ObjId::Root,
+    ).expect("draft action succeeds");
+    let output = root.invoke_resource_operation_v2(
+        OperationKind::Effect,
+        ui::widget::resource_actions::OPERATION_TYPE,
+        b"{{\"name\":\"Atlas\"}}",
+        &document,
+        &ObjId::Root,
+    ).expect("create action succeeds").expect("create action is handled");
+    assert_eq!(output.resources, ["generated.graph-project:atlas"]);
 }}
 
 #[test]
@@ -7329,21 +7425,22 @@ fn serialized_graph_edits_have_shared_undo_history() {{
     let graph = UiGraphHandle::from_json(include_str!("../ui/main.json"))
         .expect("the generated graph is valid");
     for next_label in ["Publ", "Publish"] {{
-        graph.update_node_grouped("create", "create-label", |node| {{
-            if let UiNode::Button {{ label, .. }} = node {{
-                *label = next_label.into();
+        graph.update_node_grouped("graph-introduction", "intro-text", |node| {{
+            if let UiNode::Text {{ text: ui::UiTextSource::Static {{ value }}, .. }} = node {{
+                *value = next_label.into();
             }}
         }}).expect("a valid grouped runtime edit is published");
     }}
     assert!(matches!(
-        graph.node("create"),
-        Ok(UiNode::Button {{ label, .. }}) if label == "Publish"
+        graph.node("graph-introduction"),
+        Ok(UiNode::Text {{ text: ui::UiTextSource::Static {{ value }}, .. }}) if value == "Publish"
     ));
 
     assert!(graph.undo().expect("graph history remains available"));
     assert!(matches!(
-        graph.node("create"),
-        Ok(UiNode::Button {{ label, .. }}) if label == "graph-create"
+        graph.node("graph-introduction"),
+        Ok(UiNode::Text {{ text: ui::UiTextSource::Static {{ value }}, .. }})
+            if value.contains("read-only screen")
     ));
     assert!(!graph.can_undo(), "continuous typing created one undo step");
     assert!(graph.redo().expect("the undone edit can be reapplied"));
@@ -7356,14 +7453,14 @@ fn initial_accessibility_app_test(crate_name: &str) -> String {
     format!(
         r#"
 #[test]
-fn initial_accessibility_contract_is_clean() {{
+fn initial_native_app_contract_is_certified() {{
     let app = ui::headless::Driver::new(
         ui::State::new(),
         {crate_name}::app_root(),
         (800, 600),
     );
-    let audit = app.accessibility_audit();
-    assert!(audit.is_clean(), "{{:#?}}", audit.issues);
+    let audit = app.native_app_audit();
+    assert!(audit.is_certified(), "{{audit:#?}}");
 }}
 "#
     )
@@ -7380,6 +7477,7 @@ fn document_fields_are_synchronized_and_undoable() {{
         {crate_name}::app_root(),
         (800, 600),
     );
+    {crate_name}::register_actions(app.action_registry_mut());
 
     app.perform_named(
         "document-title-input",
@@ -7423,6 +7521,7 @@ fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
         {crate_name}::app_root(),
         (1000, 640),
     );
+    {crate_name}::register_actions(app.action_registry_mut());
     let targets = app.targets();
     for target in [
         "workspace-selected-item",
@@ -7569,7 +7668,6 @@ fn app_exposes_an_accessible_tree() {{
     assert!(desktop.state.selected);
     assert!(!design.state.selected);
     assert!(app.inspection_json().expect("widget inspection").contains("more-4"));
-    assert!(app.dump_json().contains("tree-row-action-requested"));
 }}
 "#
     )
@@ -7577,28 +7675,47 @@ fn app_exposes_an_accessible_tree() {{
 
 fn async_app_test(crate_name: &str) -> String {
     format!(
-        r#"use std::time::Duration;
-use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
+        r#"use std::time::{{Duration, Instant}};
+use ui::automerge::{{AutoCommit, ObjId}};
+use ui::qos_actions::{{InvocationId, InvocationUpdate, OperationKind}};
+use ui::widget::{{ControlBindingKind, ResourceOperationStart, Widget}};
 
 #[test]
 fn app_starts_and_dispatches_typed_background_work() {{
-    let mut app = ui::headless::Driver::new(
-        ui::State::new(),
-        {crate_name}::app_root(),
-        (800, 500),
+    let mut root = {crate_name}::app_root();
+    assert!(root.control_action_bindings().iter().any(|binding| matches!(
+        &binding.kind,
+        ControlBindingKind::Action(address)
+            if address.resource == "generated.background-task:root"
+                && address.action == "run"
+    )));
+    let document = AutoCommit::new();
+    let invocation = InvocationId::new();
+    assert_eq!(
+        root.start_resource_operation(
+            invocation,
+            OperationKind::Effect,
+            ui::widget::resource_actions::OPERATION_TYPE,
+            b"null",
+            &document,
+            &ObjId::Root,
+        ).expect("background operation starts"),
+        Some(ResourceOperationStart::Accepted),
     );
-
-    let initial = app.inspection_json().expect("semantic snapshot");
-    assert!(initial.contains("Start a background task without polling"), "{{initial}}");
-    app.perform_named("run-task", &Action::Activate)
-        .expect("the generated task remains addressable");
-    app.expect(
-        &SemanticExpectation::named("task-result")
-            .role(Role::StaticText)
-            .name_contains("Found")
-            .within(Duration::from_secs(1)),
-    )
-    .expect("worker result arrives and its semantics match");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {{
+        if let Some(update) = root.poll_resource_operation(
+            invocation,
+            false,
+            &document,
+            &ObjId::Root,
+        ) {{
+            assert!(matches!(update, InvocationUpdate::Succeeded {{ .. }}));
+            break;
+        }}
+        assert!(Instant::now() < deadline, "background operation timed out");
+        std::thread::yield_now();
+    }}
 }}
 "#
     )
@@ -7643,7 +7760,6 @@ fn app_exposes_a_sparse_interactive_virtual_list() {{
     let first_height = semantics.children[0].bounds.expect("first row bounds").to_rect().height();
     let second_height = semantics.children[1].bounds.expect("second row bounds").to_rect().height();
     assert!((first_height - second_height).abs() > 1.0, "delegate measurements drive variable rows");
-    assert!(app.dump_json().contains("open-requested"));
 }}
 "#
     )
@@ -7702,34 +7818,14 @@ fn graph_document(spec: &AppSpec) -> Result<String> {
                 role: qos_ui_graph::UiTextRole::Title,
                 size: None,
             },
-            qos_ui_graph::UiNode::TextInput {
-                id: "name-input".into(),
-                label: Some("graph-project-name".into()),
-                accessible_name: String::new(),
-                placeholder: "graph-project-name".into(),
-                value_path: Some("name".into()),
-                initial_value: String::new(),
-                multiline: false,
-                disabled: false,
-            },
             qos_ui_graph::UiNode::Text {
-                id: "name-preview".into(),
-                text: qos_ui_graph::UiTextSource::Document {
-                    path: "name".into(),
+                id: "graph-introduction".into(),
+                text: qos_ui_graph::UiTextSource::Static {
+                    value: "This read-only screen remains live-editable; native controls below publish actions."
+                        .into(),
                 },
                 role: qos_ui_graph::UiTextRole::Body,
                 size: None,
-            },
-            qos_ui_graph::UiNode::Button {
-                id: "create".into(),
-                label: "graph-create".into(),
-                accessible_name: None,
-                tooltip: Some("graph-create-tooltip".into()),
-                on_click_path: Some("create-requested".into()),
-                click_value: Some("yes".into()),
-                navigate: None,
-                enabled: true,
-                style: qos_ui_graph::UiButtonStyle::Primary,
             },
         ],
         gap: Some(8.0),
@@ -7752,8 +7848,35 @@ fn app_readme(spec: &AppSpec) -> String {
         out,
         "Every meaningful command is published as a stable `Resource`/`ActionSpec`. Keep the UI callback and external operation handler routed through the same domain function; `qos-dev doctor` rejects apps that remove this surface.\n"
     );
+    let _ = writeln!(
+        out,
+        "From the parent directory, scaffold and launch this template in one command:"
+    );
+    let _ = writeln!(out, "\n```bash");
+    let _ = writeln!(
+        out,
+        "qos-dev new {} --template {} --dev",
+        spec.package_name,
+        spec.template.name()
+    );
+    let _ = writeln!(out, "```");
+    let (resource, action, arguments) = readme_action_example(spec.template);
+    let _ = writeln!(
+        out,
+        "\nAgents, scripts, and search invoke the same address as the visible control. Discover the live catalogue, then submit an invocation shaped like:\n"
+    );
+    let _ = writeln!(out, "```json");
+    let _ = writeln!(
+        out,
+        "{{\"resource\":{resource:?},\"action\":{action:?},\"arguments\":{arguments}}}"
+    );
+    let _ = writeln!(out, "```");
+    let _ = writeln!(
+        out,
+        "\nValidate the native SDK, action surface, scenarios, and package metadata with one command:\n"
+    );
     let _ = writeln!(out, "```bash");
-    let _ = writeln!(out, "qos-dev check");
+    let _ = writeln!(out, "qos-dev check --fix");
     let _ = writeln!(out, "qos-dev test");
     let _ = writeln!(out, "qos-dev dev");
     let _ = writeln!(out, "qos-dev run");
@@ -7827,6 +7950,36 @@ fn app_readme(spec: &AppSpec) -> String {
     );
     let _ = writeln!(out, "\nApp id: `{}`", spec.app_id);
     out
+}
+
+fn readme_action_example(template: Template) -> (&'static str, &'static str, &'static str) {
+    match template {
+        Template::Starter => (
+            "generated.form:root",
+            "update-profile",
+            r#"{"name":"Ada","updates":true,"refresh":15,"volume":0.8,"region":"us"}"#,
+        ),
+        Template::Data => ("generated.table:root", "open", r#"{"id":42}"#),
+        Template::List => ("generated.activity-list:root", "open", r#"{"id":42}"#),
+        Template::Tree => ("generated.tree:root", "open", r#"{"id":42}"#),
+        Template::Graph => (
+            "generated.graph-project:root",
+            "create",
+            r#"{"name":"Launch plan"}"#,
+        ),
+        Template::Async => ("generated.background-task:root", "run", "{}"),
+        Template::Document => (
+            "generated.document:root",
+            "set-content",
+            r#"{"title":"Plan","body":"Ship it"}"#,
+        ),
+        Template::Qr => (
+            "generated.qr-code:root",
+            "set-payload",
+            r#"{"payload":"https://example.com"}"#,
+        ),
+        Template::Workspace => ("generated.workspace-item:root", "share", r#"{"id":42}"#),
+    }
 }
 
 #[cfg(test)]
@@ -10231,6 +10384,13 @@ mod tests {
             "[package]\nname = \"ui\"\nversion = \"0.1.0\"\n",
         )
         .unwrap();
+        let sdk = temp.path().join("crates/app/qos-app");
+        std::fs::create_dir_all(&sdk).unwrap();
+        std::fs::write(
+            sdk.join("Cargo.toml"),
+            "[package]\nname = \"qos-app\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
         let destination = temp.path().join("notes");
         let mut req = request(destination.clone());
         req.name = None;
@@ -10252,7 +10412,10 @@ mod tests {
             toolkit.canonicalize().unwrap().display()
         )));
         let manifest = std::fs::read_to_string(destination.join("Cargo.toml")).unwrap();
-        assert!(manifest.contains("path = \"../toolkit-ui\""), "{manifest}");
+        assert!(
+            manifest.contains("path = \"../crates/app/qos-app\""),
+            "{manifest}"
+        );
     }
 
     #[test]
@@ -10282,7 +10445,11 @@ mod tests {
         );
         assert!(transcript.contains(&format!("Toolkit:     {}", discovered.display())));
         let manifest = std::fs::read_to_string(destination.join("Cargo.toml")).unwrap();
-        let relative = relative_path(&destination, &discovered);
+        let sdk = discovered
+            .parent()
+            .expect("toolkit checkout root")
+            .join("crates/app/qos-app");
+        let relative = relative_path(&destination, &sdk);
         assert!(
             manifest.contains(&format!("path = {:?}", relative.display().to_string())),
             "{manifest}"
@@ -10476,6 +10643,24 @@ mod tests {
         let summary = report.summary();
         assert!(summary.contains("missing dependency `ui`"));
         assert!(summary.contains("Not ready"));
+    }
+
+    #[test]
+    fn doctor_accepts_registered_document_actions_without_widget_operation_glue() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir(temp.path().join("src")).expect("source directory");
+        std::fs::write(
+            temp.path().join("src/lib.rs"),
+            r#"
+                fn resources() {
+                    let _ = ActionSpec::immediate("clear", "Clear", "doc.action", &());
+                }
+            "#,
+        )
+        .expect("document-only resource source");
+        let mut checks = Vec::new();
+        check_resource_action_surface(temp.path(), &mut checks);
+        assert_eq!(checks[0].status, DoctorStatus::Pass, "{checks:#?}");
     }
 
     #[test]
@@ -10757,7 +10942,7 @@ mod tests {
         assert!(source.contains("TableModelChange::RowsChanged"));
         assert!(source.contains("completion.complete(rows)"));
         assert!(source.contains("with_widget"));
-        assert!(source.contains("open-requested"));
+        assert!(source.contains("ActionBinding::static_json_for"));
         assert!(source.contains("pub id: u64"));
         let test = app_test(&spec);
         assert!(test.contains("Role::Table"));
@@ -10904,10 +11089,10 @@ mod tests {
             .find(|(path, _)| path == Path::new("ui/main.json"))
             .expect("graph template emits source");
         let document = qos_ui_graph::UiDocument::from_json(&graph.1).unwrap();
-        assert_eq!(document.nodes().len(), 5);
+        assert_eq!(document.nodes().len(), 3);
         assert!(matches!(
-            document.node("create"),
-            Some(qos_ui_graph::UiNode::Button { .. })
+            document.node("graph-introduction"),
+            Some(qos_ui_graph::UiNode::Text { .. })
         ));
         let registry = files
             .iter()
@@ -10925,6 +11110,7 @@ mod tests {
         assert!(app_lib(&spec).contains("pub mod screens;"));
         assert!(app_lib(&spec).contains("screens::router_with("));
         assert!(app_lib(&spec).contains("components::ui_graph_context()"));
+        assert!(app_lib(&spec).contains("ActionBinding::new"));
         assert!(app_test(&spec).contains("serialized_screen_is_interactive"));
         assert!(app_readme(&spec).contains("qos-dev ui tree"));
         assert!(app_readme(&spec).contains("qos-dev ui set"));
@@ -11004,8 +11190,8 @@ mod tests {
         };
         let source = app_lib(&spec);
         assert!(source.contains("LatestTask::new(LoadState::Idle)"));
-        assert!(source.contains("run_task.begin(LoadState::Loading)"));
-        assert!(source.contains("completion.complete(result)"));
+        assert!(source.contains("task.begin(LoadState::Loading)"));
+        assert!(source.contains("completion.complete(state)"));
         assert!(source.contains("cancel_task.cancel(LoadState::Idle)"));
         assert!(source.contains("Button::new(\"cancel-task\""));
         assert!(source.contains("std::thread::spawn"));
@@ -11014,9 +11200,9 @@ mod tests {
         assert!(source.contains("with_id(\"task-result\")"));
         let test = app_test(&spec);
         assert!(test.contains("app_starts_and_dispatches_typed_background_work"));
-        assert!(test.contains("run-task"));
-        assert!(test.contains("SemanticExpectation::named(\"task-result\")"));
-        assert!(test.contains("within(Duration::from_secs(1))"));
+        assert!(test.contains("generated.background-task:root"));
+        assert!(test.contains("ResourceOperationStart::Accepted"));
+        assert!(test.contains("InvocationUpdate::Succeeded"));
         let actions = headless_actions(&spec);
         assert!(actions.contains("\"action\": \"activate\""));
         assert!(actions.contains("\"expect\""));
@@ -11056,7 +11242,9 @@ mod tests {
                 template: Template::Starter,
             };
             let readme = app_readme(&spec);
-            assert!(readme.contains("qos-dev check\n"));
+            assert!(readme.contains("qos-dev check --fix\n"));
+            assert!(readme.contains("qos-dev new notes --template starter --dev"));
+            assert!(readme.contains("\"resource\":\"generated.form:root\""));
             assert!(readme.contains("qos-dev test\n"));
             assert!(readme.contains("qos-dev dev\n"));
             assert!(readme.contains("qos-dev run\n"));
@@ -11112,8 +11300,8 @@ mod tests {
             syn::parse_file(&app_lib(&spec)).expect("generated library is valid Rust syntax");
             syn::parse_file(&app_main(&spec)).expect("generated binary is valid Rust syntax");
             let generated_test = app_test(&spec);
-            assert!(generated_test.contains("initial_accessibility_contract_is_clean"));
-            assert!(generated_test.contains("accessibility_audit"));
+            assert!(generated_test.contains("initial_native_app_contract_is_certified"));
+            assert!(generated_test.contains("native_app_audit"));
             syn::parse_file(&generated_test).expect("generated test is valid Rust syntax");
             let rendered = render(&spec).expect("render complete app");
             let locale_registry = rendered
@@ -11468,6 +11656,13 @@ mod tests {
         assert_eq!(roots[0], destination.canonicalize().unwrap());
         assert_eq!(
             roots[1],
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../app/qos-app")
+                .canonicalize()
+                .unwrap()
+        );
+        assert_eq!(
+            roots[2],
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../../ui")
                 .canonicalize()

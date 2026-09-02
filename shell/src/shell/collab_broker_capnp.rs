@@ -304,6 +304,11 @@ struct PendingInvocation {
     retryable_on_disconnect: bool,
     execution: qos_actions::ExecutionMode,
     result: qos_actions::ResultSpec,
+    /// Admission/progress heartbeat. A silent application must not leave a
+    /// broker-owned job in `Accepted` forever.
+    last_activity: std::time::Instant,
+    /// Starts the shorter acknowledgement deadline for cooperative cancel.
+    cancellation_requested_at: Option<std::time::Instant>,
 }
 
 struct ConfirmationGrant {
@@ -393,6 +398,81 @@ pub struct CapnpBrokerState {
 
 impl CapnpBrokerState {
     const MAX_RETAINED_INVOCATIONS: usize = 256;
+    const INVOCATION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+    const CANCELLATION_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+    fn expire_stale_invocations(&self) {
+        self.expire_stale_invocations_at(
+            std::time::Instant::now(),
+            Self::INVOCATION_IDLE_TIMEOUT,
+            Self::CANCELLATION_GRACE,
+        );
+    }
+
+    fn expire_stale_invocations_at(
+        &self,
+        now: std::time::Instant,
+        idle_timeout: std::time::Duration,
+        cancellation_grace: std::time::Duration,
+    ) {
+        let expired = {
+            let Ok(mut pending) = self.pending_invocations.lock() else {
+                return;
+            };
+            let ids = pending
+                .iter()
+                .filter_map(|(id, invocation)| {
+                    let cancellation_expired =
+                        invocation
+                            .cancellation_requested_at
+                            .is_some_and(|requested| {
+                                now.saturating_duration_since(requested) >= cancellation_grace
+                            });
+                    let idle_expired =
+                        now.saturating_duration_since(invocation.last_activity) >= idle_timeout;
+                    (cancellation_expired || idle_expired).then_some((*id, cancellation_expired))
+                })
+                .collect::<Vec<_>>();
+            ids.into_iter()
+                .filter_map(|(id, cancellation_expired)| {
+                    pending
+                        .remove(&id)
+                        .map(|invocation| (id, cancellation_expired, invocation))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (id, cancellation_expired, pending) in expired {
+            let (code, message) = if cancellation_expired {
+                (
+                    "action_cancellation_timeout",
+                    "application did not acknowledge cancellation before the deadline",
+                )
+            } else {
+                (
+                    "action_timeout",
+                    "application stopped reporting action progress before the deadline",
+                )
+            };
+            let completion = InvocationCompletion {
+                code: code.into(),
+                message: message.into(),
+            };
+            let update = qos_actions::InvocationUpdate::Failed {
+                invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
+                error: qos_actions::ActionFailure {
+                    code: completion.code.clone(),
+                    message: completion.message.clone(),
+                    details: None,
+                    retryable: pending.retryable_on_disconnect,
+                },
+            };
+            self.record_completion(id, pending.actor.clone(), update);
+            if let Ok(mut requests) = self.cancellation_requests.lock() {
+                requests.remove(&id);
+            }
+            let _ = pending.tx.send(completion);
+        }
+    }
 
     fn record_completion(&self, id: u64, actor: String, update: qos_actions::InvocationUpdate) {
         if let Ok(mut completed) = self.completed_invocations.lock() {
@@ -858,6 +938,8 @@ impl CapnpBrokerState {
                     ),
                     execution: offered.1.contract.execution.clone(),
                     result: offered.1.contract.result.clone(),
+                    last_activity: std::time::Instant::now(),
+                    cancellation_requested_at: None,
                 },
             );
         if sender
@@ -880,6 +962,7 @@ impl CapnpBrokerState {
     }
 
     pub fn invocation_status(&self, id: u64) -> Option<qos_actions::InvocationUpdate> {
+        self.expire_stale_invocations();
         self.pending_invocations
             .lock()
             .ok()
@@ -893,6 +976,7 @@ impl CapnpBrokerState {
     }
 
     pub fn invocation_statuses(&self, actor: &str) -> Vec<(u64, qos_actions::InvocationUpdate)> {
+        self.expire_stale_invocations();
         let mut jobs = self
             .pending_invocations
             .lock()
@@ -922,7 +1006,8 @@ impl CapnpBrokerState {
     ///
     /// Returns an error when the invocation is unknown, foreign, or non-cancellable.
     pub fn request_cancellation(&self, id: u64, actor: &str) -> Result<(), String> {
-        let pending = self
+        self.expire_stale_invocations();
+        let mut pending = self
             .pending_invocations
             .lock()
             .map_err(|_| "the invocation registry is unavailable".to_string())?;
@@ -935,6 +1020,11 @@ impl CapnpBrokerState {
         if !job.cancellable {
             return Err("the action did not declare cooperative cancellation".into());
         }
+        let job = pending
+            .get_mut(&id)
+            .ok_or_else(|| "the invocation is not running".to_string())?;
+        job.cancellation_requested_at
+            .get_or_insert_with(std::time::Instant::now);
         drop(pending);
         self.cancellation_requests
             .lock()
@@ -944,6 +1034,7 @@ impl CapnpBrokerState {
     }
 
     pub fn can_cancel(&self, id: u64, actor: &str) -> bool {
+        self.expire_stale_invocations();
         self.pending_invocations
             .lock()
             .ok()
@@ -1887,6 +1978,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .get_mut(&id)
                 .filter(|pending| pending.peer_id == peer_id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
+            pending.last_activity = std::time::Instant::now();
             if matches!(&update, qos_actions::InvocationUpdate::Accepted { .. }) {
                 return Err(capnp::Error::failed(
                     "invocation acceptance is owned by the broker".into(),
@@ -3077,7 +3169,14 @@ pub fn spawn(
                     }
                     let stream = tokio::select! {
                         biased;
-                        () = tokio::time::sleep(Duration::from_millis(100)) => continue,
+                        () = tokio::time::sleep(Duration::from_millis(100)) => {
+                            // This cadence is also the broker's lifecycle
+                            // watchdog. Expiration must not depend on a caller
+                            // polling status: completion waiters deserve a
+                            // terminal answer even after an app goes silent.
+                            state.expire_stale_invocations();
+                            continue;
+                        },
                         conn = listener.accept() => conn,
                     };
                     let (stream, _) = match stream {
@@ -3792,6 +3891,49 @@ mod tests {
                 .lock()
                 .expect("cancellation registry")
                 .contains(&refresh.id)
+        );
+        let now = std::time::Instant::now();
+        {
+            let mut pending = state.pending_invocations.lock().expect("pending");
+            pending
+                .get_mut(&refresh.id)
+                .expect("refresh remains pending")
+                .cancellation_requested_at = Some(now - std::time::Duration::from_secs(2));
+            pending
+                .get_mut(&erased.id)
+                .expect("erase remains pending")
+                .last_activity = now - std::time::Duration::from_secs(2);
+        }
+        state.expire_stale_invocations_at(
+            now,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+        );
+        assert!(matches!(
+            state.invocation_status(refresh.id),
+            Some(qos_actions::InvocationUpdate::Failed { error, .. })
+                if error.code == "action_cancellation_timeout"
+        ));
+        assert_eq!(
+            refresh
+                .completion
+                .recv()
+                .expect("cancel timeout completion")
+                .code,
+            "action_cancellation_timeout"
+        );
+        assert!(matches!(
+            state.invocation_status(erased.id),
+            Some(qos_actions::InvocationUpdate::Failed { error, .. })
+                if error.code == "action_timeout"
+        ));
+        assert_eq!(
+            erased
+                .completion
+                .recv()
+                .expect("idle timeout completion")
+                .code,
+            "action_timeout"
         );
         assert!(
             state
