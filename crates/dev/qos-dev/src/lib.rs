@@ -347,6 +347,15 @@ pub struct AppQualityPlan {
     pub test: CargoPlan,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AppFormatMode {
+    /// Reject formatting drift without changing source.
+    #[default]
+    Check,
+    /// Apply rustfmt to the app package before the remaining checks.
+    Apply,
+}
+
 /// Resolved native UI-builder invocation. The heavy graphical toolkit lives in
 /// the builder process, so ordinary `qos-dev` commands stay quick to compile.
 #[derive(Debug, PartialEq, Eq)]
@@ -4170,14 +4179,19 @@ pub fn plan_app_task(start: &Path, task: AppTask, forwarded: &[OsString]) -> Res
 }
 
 /// Resolve an app and construct its package-scoped format, lint, and test
-/// commands. Clippy checks every app target with warnings denied while
+/// commands. `format_mode` controls whether formatting drift is rejected or
+/// repaired. Clippy checks every app target with warnings denied while
 /// excluding dependency lint debt.
 ///
 /// # Errors
 ///
 /// Returns an error when no ready app can be resolved or its Cargo package
 /// name cannot be read.
-pub fn plan_app_quality(start: &Path, forwarded: &[OsString]) -> Result<AppQualityPlan> {
+pub fn plan_app_quality(
+    start: &Path,
+    forwarded: &[OsString],
+    format_mode: AppFormatMode,
+) -> Result<AppQualityPlan> {
     let app_dir = resolve_app_dir(start)?;
     let report = doctor_resolved_app(app_dir.clone());
     if !report.is_ready() {
@@ -4199,8 +4213,10 @@ pub fn plan_app_quality(start: &Path, forwarded: &[OsString]) -> Result<AppQuali
         manifest.clone().into_os_string(),
         OsString::from("--package"),
         OsString::from(&package),
-        OsString::from("--check"),
     ];
+    if format_mode == AppFormatMode::Check {
+        format.args.push(OsString::from("--check"));
+    }
 
     let mut clippy = base();
     clippy.args = vec![
@@ -11168,8 +11184,12 @@ mod tests {
         create_app(request(destination.clone())).expect("create app");
         let forwarded = [OsString::from("--nocapture")];
 
-        let plan =
-            plan_app_quality(&destination.join("src/lib.rs"), &forwarded).expect("quality plan");
+        let plan = plan_app_quality(
+            &destination.join("src/lib.rs"),
+            &forwarded,
+            AppFormatMode::Check,
+        )
+        .expect("quality plan");
         let manifest = destination.join("Cargo.toml").into_os_string();
         assert_eq!(
             plan.format.args,
@@ -11207,6 +11227,18 @@ mod tests {
                 OsString::from("reading-list"),
                 OsString::from("--"),
                 OsString::from("--nocapture"),
+            ]
+        );
+
+        let fix = plan_app_quality(&destination, &[], AppFormatMode::Apply).expect("fix plan");
+        assert_eq!(
+            fix.format.args,
+            [
+                OsString::from("fmt"),
+                OsString::from("--manifest-path"),
+                destination.join("Cargo.toml").into_os_string(),
+                OsString::from("--package"),
+                OsString::from("reading-list"),
             ]
         );
     }
