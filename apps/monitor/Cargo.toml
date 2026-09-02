@@ -5,6 +5,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The app uses the protocol types through ui's canonical re-export.
+[package.metadata.cargo-machete]
+ignored = ["qos-actions"]
+
 [lib]
 name = "monitor"
 path = "src/lib.rs"
