@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::Error as _};
 use thiserror::Error;
 
 use crate::shell::state::{RoomId, TileContent, WorkspaceTree};
@@ -150,7 +150,9 @@ impl LaunchIntent {
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+// Externally tagged so the same validated representation works with both
+// human-readable JSON and non-self-describing Postcard checkpoints.
+#[serde(rename_all = "snake_case")]
 enum LaunchIntentWire {
     App {
         app_id: String,
@@ -444,7 +446,8 @@ impl DeviceContinuationSnapshot {
                             }
                         };
                         let Some(launch) = launch else { continue };
-                        let (Ok(strip), Ok(group), Ok(tab)) = (
+                        let app_instance_id = AppInstanceId(tab.id);
+                        let (Ok(strip), Ok(group), Ok(tab_index)) = (
                             u32::try_from(strip_index),
                             u32::try_from(group_index),
                             u32::try_from(tab_index),
@@ -452,8 +455,12 @@ impl DeviceContinuationSnapshot {
                             continue;
                         };
                         apps.push(AppInstanceState::new(
-                            AppInstanceId(tab.id),
-                            TabPlacement { strip, group, tab },
+                            app_instance_id,
+                            TabPlacement {
+                                strip,
+                                group,
+                                tab: tab_index,
+                            },
                             launch,
                             None,
                             stamp.clone(),
@@ -667,6 +674,8 @@ pub enum ContinuityError {
     UnsupportedSchema(u16),
     #[error("snapshot stamp belongs to another device")]
     SnapshotStampDeviceMismatch,
+    #[error("snapshot map key does not match the embedded device id")]
+    SnapshotMapDeviceMismatch,
     #[error("app state stamp belongs to another device")]
     CrossDeviceAppStamp,
     #[error("workspace room is nil or appears more than once")]
@@ -976,7 +985,10 @@ mod tests {
         let report = DeviceContinuationSnapshot::capture(&tree, device("laptop-01"), 5);
         assert_eq!(report.redacted_foreign_tabs, 1);
         assert_eq!(report.snapshot.workspaces[0].apps.len(), 1);
-        assert_eq!(report.snapshot.focus.unwrap().app, Some(AppInstanceId(11)));
+        assert_eq!(
+            report.snapshot.focus.as_ref().unwrap().app,
+            Some(AppInstanceId(11))
+        );
         let encoded = serde_json::to_string(&report.snapshot).unwrap();
         assert!(!encoded.contains("feed_beef"));
         assert!(!encoded.contains("/home/ada"));
