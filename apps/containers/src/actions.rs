@@ -316,7 +316,7 @@ mod tests {
         assert_eq!(resources.len(), 1, "one container-engine root");
         let engine = &resources[0];
         assert_eq!(engine.kind, "containers.engine");
-        let container = engine
+        let actions: Vec<_> = engine
             .children
             .iter()
             .flat_map(|resource| resource.actions.iter())
