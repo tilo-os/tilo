@@ -85,7 +85,7 @@ pub fn app_root() -> Box<dyn Widget> {
         |_| {
             let (sender, receiver) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                let result = count_entries().map(|_| Default::default());
+                let result = count_entries().map(|_| qos_actions::ActionOutput::default());
                 let _ = sender.send(result);
             });
             Ok(receiver)
