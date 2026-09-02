@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { path = "../../ui" }
+ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 # Shared streaming + playback layer. The watch page's video surface is a
 # `ui::widget::VideoPlayer` driven by a `media::MediaEngine`, so real decode +
 # audio out land through the same engine the local video player and the editor
