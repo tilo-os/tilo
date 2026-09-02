@@ -17,7 +17,7 @@ path = "src/main.rs"
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
-ui = { path = "../../ui" }
+ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 # The shared multi-account store + encrypted secret vault. Calendar reads its
 # CalDAV accounts from here (Settings owns the write lifecycle); credentials
 # are sealed in the vault, never in the plaintext store. Reading the one
