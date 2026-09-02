@@ -1,10 +1,42 @@
+use serde::{Deserialize, Serialize};
 use ui::LocalState;
-use ui::qos_actions;
+use ui::automerge::transaction::Transactable;
+use ui::qos_actions::{self, ActionError, ActionRegistry, Doc, ExecutionLocus};
 use ui::tokens::TextRole;
 use ui::widget::{
     AppShell, Button, ModelView, NarrowScreen, Text, TextInput, TreeNode, TreeView, Widget,
     labeled_field,
 };
+
+const WORKSPACE_ACTION_TYPE: &str = "generated.workspace.action";
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum WorkspaceAction {
+    SetTitle { id: u64, value: String },
+    SetNotes { id: u64, value: String },
+}
+
+impl qos_actions::Action for WorkspaceAction {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        match self {
+            Self::SetTitle { id, value } => {
+                doc.put(ui::automerge::ROOT, format!("workspace-item-{id}-title"), value)?;
+            }
+            Self::SetNotes { id, value } => {
+                doc.put(ui::automerge::ROOT, format!("workspace-item-{id}-notes"), value)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn locus(&self) -> ExecutionLocus {
+        ExecutionLocus::ClientLocal
+    }
+}
+
+pub fn register_actions(registry: &mut ActionRegistry) {
+    registry.register::<WorkspaceAction>(WORKSPACE_ACTION_TYPE);
+}
 
 fn item_label(id: u64) -> String {
     let message = match id {
@@ -33,6 +65,40 @@ fn item_resource() -> qos_actions::Resource {
             resource_kind: "generated.workspace-item".into(),
         };
     }
+    for (id, label, field) in [
+        ("set-title", "Set item title", "title"),
+        ("set-notes", "Set item notes", "notes"),
+    ] {
+        resource = resource.with_action(qos_actions::ActionSpec::typed(
+            id,
+            label,
+            "Enter the new value",
+            ExecutionLocus::ClientLocal,
+            vec![
+                qos_actions::ActionParam::required_owned(
+                    "id",
+                    qos_actions::ParamType::Integer,
+                    "Stable item id",
+                ),
+                qos_actions::ActionParam::required_owned(
+                    "value",
+                    qos_actions::ParamType::Text,
+                    "Field value",
+                ),
+            ],
+            move |args| {
+                let id = args.integer("id").unwrap_or_default().try_into().unwrap_or_default();
+                let value = args.text("value").unwrap_or_default().to_owned();
+                let action = if field == "title" {
+                    WorkspaceAction::SetTitle { id, value }
+                } else {
+                    WorkspaceAction::SetNotes { id, value }
+                };
+                qos_actions::EncodedAction::encode(WORKSPACE_ACTION_TYPE, &action)
+                    .expect("generated workspace field action is serializable")
+            },
+        ));
+    }
     resource
 }
 
@@ -50,14 +116,33 @@ fn share_item(id: u64) -> qos_actions::ActionOutput {
 fn detail_pane(item_id: u64) -> Box<dyn Widget> {
     let title_path = format!("workspace-item-{item_id}-title");
     let notes_path = format!("workspace-item-{item_id}-notes");
+    let resource = item_resource();
+    let field_binding = |action_id: &str| {
+        qos_actions::ActionBinding::new(
+            &resource,
+            resource
+                .actions
+                .iter()
+                .find(|action| action.id == action_id)
+                .expect("generated workspace resource exports its field action"),
+            move |value| {
+                serde_json::Map::from_iter([
+                    ("id".into(), serde_json::json!(item_id)),
+                    ("value".into(), serde_json::json!(value)),
+                ])
+            },
+        )
+        .expect("workspace field produces valid action arguments")
+    };
     let title = TextInput::from_document_string(&title_path)
         .with_id("workspace-title-input")
-        .with_placeholder("workspace-title-placeholder");
+        .with_placeholder("workspace-title-placeholder")
+        .on_action(field_binding("set-title"));
     let notes = TextInput::from_document_string(&notes_path)
         .with_id("workspace-notes-input")
         .with_placeholder("workspace-notes-placeholder")
-        .multiline(true);
-    let resource = item_resource();
+        .multiline(true)
+        .on_action(field_binding("set-notes"));
     let share_binding = qos_actions::ActionBinding::static_json_for(
         &resource,
         "share",
