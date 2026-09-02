@@ -334,6 +334,10 @@ struct CheckArgs {
     #[arg(long)]
     no_scenarios: bool,
 
+    /// Apply rustfmt to the app package before running the remaining strict checks.
+    #[arg(long)]
+    fix: bool,
+
     /// Arguments forwarded to the Cargo test harness. Write them after `--`.
     #[arg(last = true, allow_hyphen_values = true)]
     forwarded: Vec<OsString>,
@@ -1002,8 +1006,17 @@ fn run_check(args: CheckArgs) -> Result<()> {
         anyhow::bail!("app checks failed");
     }
 
-    let quality = qos_dev::plan_app_quality(&path, &args.forwarded)?;
-    println!("[check] Rust formatting");
+    let format_mode = if args.fix {
+        qos_dev::AppFormatMode::Apply
+    } else {
+        qos_dev::AppFormatMode::Check
+    };
+    let quality = qos_dev::plan_app_quality(&path, &args.forwarded, format_mode)?;
+    if args.fix {
+        println!("[check] Rust formatting (applying fixes)");
+    } else {
+        println!("[check] Rust formatting");
+    }
     quality.format.execute()?;
     println!("[check] app-local Clippy");
     quality.clippy.execute()?;
@@ -1523,6 +1536,7 @@ mod tests {
             "1280x720",
             "--artifacts",
             "target/check",
+            "--fix",
             "--",
             "--nocapture",
         ])
@@ -1534,6 +1548,7 @@ mod tests {
         assert_eq!(args.viewport, Some((1280, 720)));
         assert_eq!(args.artifacts, Some(PathBuf::from("target/check")));
         assert!(!args.no_scenarios);
+        assert!(args.fix);
         assert_eq!(args.forwarded, [OsString::from("--nocapture")]);
     }
 
