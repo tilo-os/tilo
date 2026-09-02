@@ -1620,7 +1620,13 @@ impl<T, M: TreeModel> TreeView<T, M> {
             return false;
         }
         let dy = match delta {
-            MouseScrollDelta::LineDelta(_, y) => self.momentum.push(f64::from(*y) * -WHEEL_LINE_PX),
+            MouseScrollDelta::LineDelta(_, y) if !self.reduce_motion => {
+                self.momentum.push(f64::from(*y) * -WHEEL_LINE_PX)
+            }
+            MouseScrollDelta::LineDelta(_, y) => {
+                self.momentum.stop();
+                f64::from(*y) * -WHEEL_LINE_PX
+            }
             MouseScrollDelta::PixelDelta(position) => {
                 self.momentum.stop();
                 -position.y
@@ -2454,8 +2460,12 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             } if self.drag_scroll.is_tracking() => {
                 if let Some(drag) = self.drag_scroll.finish(Instant::now()) {
                     if drag.dragged {
-                        self.momentum.fling(drag.velocity);
-                        self.last_tick = Some(Instant::now());
+                        if self.reduce_motion {
+                            self.momentum.stop();
+                        } else {
+                            self.momentum.fling(drag.velocity);
+                            self.last_tick = Some(Instant::now());
+                        }
                     } else {
                         let toggle =
                             modifiers.state().control_key() || modifiers.state().super_key();
@@ -4570,6 +4580,31 @@ mod tests {
                 .opacity,
             1.0
         );
+    }
+
+    #[test]
+    fn reduced_motion_keeps_direct_scroll_without_wheel_or_drag_decay() {
+        let children = (2_u64..102)
+            .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
+            .collect();
+        let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
+        view.set_expanded(1, true);
+        view.set_viewport(100.0, 22.0);
+        view.reduce_motion = true;
+
+        assert!(view.on_wheel(&MouseScrollDelta::LineDelta(0.0, -1.0)));
+        assert_eq!(view.scroll_y(), 60.0_f32);
+        assert!(!view.momentum.is_active());
+
+        let now = Instant::now();
+        let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
+        let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
+        view.drag_scroll
+            .begin(50.0, f64::from(view.scroll_y()), started);
+        assert!(view.drag_scroll.update(10.0, moved).is_some());
+        dispatch(&mut view, &mouse_release());
+        assert!(!view.momentum.is_active());
+        assert!(!view.needs_animation_frame());
     }
 
     #[test]
