@@ -620,18 +620,20 @@ impl Widget for Slider {
             .as_ref()
             .map(|n| crate::i18n!(n))
             .filter(|n| !n.is_empty());
-        Some(
-            AccessNode::new(Role::Slider)
-                .with_semantic_key(&self.semantic_id)
-                .with_optional_name(name)
-                .with_value(format!("{pct}%"))
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    disabled: !self.is_enabled(),
-                    ..Default::default()
-                }),
-        )
+        let mut node = AccessNode::new(Role::Slider)
+            .with_semantic_key(&self.semantic_id)
+            .with_optional_name(name)
+            .with_value(format!("{pct}%"))
+            .with_state(AccessState {
+                focusable: self.is_focusable(),
+                focused: self.is_focused(),
+                disabled: !self.is_enabled(),
+                ..Default::default()
+            });
+        if self.action.is_none() && self.on_change.is_none() {
+            node = node.with_action_target(self.test_id().unwrap_or("slider"));
+        }
+        Some(node)
     }
 
     /// Accessibility: an AT can step the slider with
@@ -715,15 +717,18 @@ impl Widget for Slider {
         } else if !self.on_change_path.is_empty() {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyDocumentPath(self.on_change_path.clone()),
+                kind: ControlBindingKind::CollaborativeDocument(self.on_change_path.clone()),
             }]
-        } else if self.on_change.is_some() || self.local_state.is_some() {
+        } else if self.on_change.is_some() {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
                 kind: ControlBindingKind::LegacyCallback,
             }]
         } else {
-            Vec::new()
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
+            }]
         }
     }
 

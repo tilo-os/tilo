@@ -932,17 +932,15 @@ mod tests {
             "one source of truth for theme"
         );
 
-        // The typed action contract rejects an unrecognised choice before its
-        // builder runs, so invalid palette input cannot silently masquerade as
-        // a successful write of the current value.
-        let from_typo = prompted_encode(theme, "not-a-theme");
-        assert_eq!(
-            from_typo.type_id,
-            qos_actions::resource::INVALID_ARGUMENTS_TYPE
-        );
-        assert!(
-            String::from_utf8_lossy(&from_typo.payload).contains("must be one of"),
-            "the refusal explains the declared choices"
-        );
+        // The shared typed door rejects an unrecognised choice before the
+        // application's builder can write junk or silently reinterpret it.
+        let typo = serde_json::Map::from_iter([(
+            "choice".to_owned(),
+            serde_json::Value::String("not-a-theme".to_owned()),
+        )]);
+        let error = theme
+            .build_json(&typo)
+            .expect_err("unknown theme is invalid");
+        assert!(error.to_string().contains("must be one of"), "{error}");
     }
 }

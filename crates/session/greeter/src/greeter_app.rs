@@ -1415,8 +1415,9 @@ mod tests {
     /// How a widget identifies itself in a tree dump: its `test_id` when it
     /// has one, otherwise its type name.
     ///
-    /// Toolkit controls expose stable ids through `test_id`, so tree tests do
-    /// not break when visible copy is localized or changes with app state.
+    /// Controls expose stable semantic ids here. Visible labels remain in
+    /// their accessibility nodes, but are deliberately not the automation
+    /// address: labels may be localized or change with application state.
     fn ident(w: &dyn Widget) -> String {
         w.test_id()
             .map_or_else(|| w.name().to_string(), str::to_string)
@@ -1431,6 +1432,15 @@ mod tests {
             }
             collect_focusables(child, out);
         }
+    }
+
+    fn accessible_name_for(w: &dyn Widget, id: &str) -> Option<String> {
+        if w.test_id() == Some(id) {
+            return w.accessibility().and_then(|node| node.name);
+        }
+        w.children()
+            .into_iter()
+            .find_map(|child| accessible_name_for(child, id))
     }
 
     /// The card's focusable widgets, identified by stable id, in tab order.
@@ -2151,6 +2161,11 @@ mod tests {
             assert!(
                 f.contains(&"greeter.login".to_string()),
                 "{scenario:?} lost the primary action, got {f:?}"
+            );
+            assert_eq!(
+                accessible_name_for(card.as_ref(), "greeter.login").as_deref(),
+                Some(app.login_label()),
+                "{scenario:?} must keep the state-specific visible label on the stable action"
             );
         }
     }

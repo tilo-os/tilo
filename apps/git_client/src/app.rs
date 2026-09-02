@@ -284,13 +284,19 @@ impl GitClientApp {
             flap.snap(true);
         }
         let commit_input = TextInput::local()
+            .with_id("git.commit-message")
+            .with_accessible_name("Commit message")
             .with_placeholder("Summary of changes…")
             .with_font_size(13.0);
         let branch_input = TextInput::local()
+            .with_id("git.branch-name")
+            .with_accessible_name("New branch name")
             .with_kind(TextInputKind::Name)
             .with_placeholder("new branch name…")
             .with_font_size(12.5);
         let open_input = TextInput::local()
+            .with_id("git.repository-path")
+            .with_accessible_name("Repository path")
             .with_kind(TextInputKind::Path)
             .with_placeholder("/path/to/repository")
             .with_font_size(14.0)

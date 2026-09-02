@@ -7,9 +7,9 @@
 //! still there afterwards, so this drives the two at once and asserts on
 //! the *peer's* replica — the copy a person would be looking at.
 //!
-//! The interleave is real rather than arranged: the peer types the instant
-//! it sees the agent's first change, which lands in the middle of the
-//! agent's own sequence of edits, while the agent is between actions.
+//! The interleave is real rather than arranged: the peer types after applying
+//! the app-hosted document action but before reporting that invocation's
+//! terminal success to the agent.
 
 #![allow(
     clippy::unwrap_used,
@@ -36,9 +36,8 @@ use typed_peer::{TypedPeer, document_mutation};
 const APP: &str = "dev.qos.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
 
-/// What the person types while the agent is working, appended to the
-/// heading a character at a time.
-const TYPED: &str = " (final)";
+/// What the person types while the agent's app action is still in flight.
+const TYPED: &str = "!";
 
 fn seed_document() -> AutoCommit {
     let mut doc = AutoCommit::new();
@@ -62,7 +61,7 @@ fn seed_document() -> AutoCommit {
             after = b;
         }
         let p = dm.insert_block(Some(&after), "paragraph");
-        dm.splice_text(&p, 0, 0, "Scribe: turn the bullets into a table");
+        dm.splice_text(&p, 0, 0, "Scribe: insert a table");
     }
     doc.commit();
     doc
@@ -122,20 +121,54 @@ fn granted(name: &str) -> ui::permissions::PermissionContext {
     )
 }
 
-/// Drive the peer: answer the agent's Arrived with a snapshot, and for
-/// every agent change also type the next character of [`TYPED`] into the
-/// heading — the person and the agent land through the same peer,
-/// interleaved by whichever change the agent makes next. Returns how many
-/// characters were typed and whether the agent's table has landed.
+/// The live resource tree the Word Processor itself publishes for this
+/// document. The table anchor is the final bullet, matching where a person
+/// would leave the caret after entering the list.
+fn word_processor_resources(doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    let b = blocks(doc);
+    let anchor = b
+        .iter()
+        .rev()
+        .find(|block| block.kind == "list_item")
+        .or_else(|| b.last())
+        .map(|block| block.id.clone())
+        .unwrap_or_default();
+    word_processor::actions::provide_resources(
+        &word_processor::actions::WpResourceCtx {
+            caret_block: anchor.clone(),
+            caret_offset: 0,
+            target_blocks: (!anchor.is_empty()).then_some(anchor).into_iter().collect(),
+        },
+        doc,
+    )
+}
+
+fn publish_word_processor_actions(peer: &mut TypedPeer, doc: &AutoCommit) {
+    let resources = word_processor_resources(doc);
+    let actions = typed_peer::exported_actions(&resources);
+    assert!(
+        actions.iter().any(|action| {
+            action.resource == "word-processor.document" && action.action == "insert-table"
+        }),
+        "the production Word Processor surface must export insert-table"
+    );
+    typed_peer::publish_actions(peer, APP, &resources);
+}
+
+/// Drive the peer as a real Word Processor host: publish its resource/action
+/// tree, resolve broker invocations through its action registry, and answer
+/// collaboration traffic. The person types after each agent-authored change,
+/// so the app action and acknowledgement edit are genuinely interleaved.
 fn drive_peer_and_type(
     peer: &mut TypedPeer,
     replica: &mut AutoCommit,
     head: &str,
-) -> (usize, bool) {
+) -> (usize, bool, String) {
     peer.set_read_timeout(Some(Duration::from_millis(200)));
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut typed = 0usize;
     let mut table_done = false;
+    let mut invocation_actor = None;
     while Instant::now() < deadline && !(table_done && typed == TYPED.chars().count()) {
         let Some(event) = peer.recv().unwrap() else {
             continue;
@@ -145,10 +178,45 @@ fn drive_peer_and_type(
                 payload: PresencePayload::Arrived,
                 ..
             } => {
+                publish_word_processor_actions(peer, replica);
                 let snap = CollabRequest::DocumentSnapshot {
                     data: replica.save(),
                 };
                 peer.send(&snap).unwrap();
+            }
+            CollabEvent::Invocation {
+                id,
+                resource,
+                action,
+                argument,
+                actor,
+            } => {
+                invocation_actor = Some(actor.clone());
+                let resources = word_processor_resources(replica);
+                let update = typed_peer::service_document_invocation(
+                    peer,
+                    replica,
+                    &resources,
+                    word_processor::actions::register,
+                    id,
+                    resource,
+                    action,
+                    argument.as_deref(),
+                    &actor,
+                );
+
+                // Land a human edit while the broker invocation is still in
+                // flight. Only after that change is on the wire does the app
+                // host report terminal success to the agent.
+                if let Some(ch) = TYPED.chars().nth(typed) {
+                    let delta = type_one(replica, head, &ch.to_string());
+                    peer.send(&CollabRequest::DocumentIncremental { data: delta })
+                        .unwrap();
+                    typed += 1;
+                }
+                peer.send(&CollabRequest::UpdateInvocation { id, update })
+                    .unwrap();
+                table_done = blocks(replica).iter().any(|block| block.kind == "cell");
             }
             event @ CollabEvent::Document { .. } => {
                 let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
@@ -168,20 +236,20 @@ fn drive_peer_and_type(
                     typed += 1;
                 }
 
-                let b = blocks(replica);
-                table_done = b.iter().any(|x| x.kind == "cell")
-                    && !b.iter().any(|x| x.kind == "list_item")
-                    && !b.iter().any(|x| x.text.starts_with("Scribe:"));
+                table_done = blocks(replica).iter().any(|block| block.kind == "cell");
             }
             _ => {}
         }
     }
-    (typed, table_done)
+    (
+        typed,
+        table_done,
+        invocation_actor.expect("the broker delivered the Word Processor invocation"),
+    )
 }
 
-/// Assert the agent's table landed and survived the person typing through
-/// it. Returns the blocks as `(kind, text)` pairs for later failure
-/// messages.
+/// Assert the production insert-table action landed and survived the person
+/// typing during the invocation. Returns block summaries for later failures.
 fn assert_agent_table(replica: &AutoCommit, table_done: bool) -> Vec<(String, String)> {
     let b = blocks(replica);
     let shown: Vec<(String, String)> = b.iter().map(|x| (x.kind.clone(), x.text.clone())).collect();
@@ -203,9 +271,13 @@ fn assert_agent_table(replica: &AutoCommit, table_done: bool) -> Vec<(String, St
         .collect();
     cells.sort();
     assert_eq!(
-        cells.iter().map(|c| c.2.as_str()).collect::<Vec<_>>(),
-        ["Venue", "The Hall", "Date", "3 Sep", "Budget", "1200"],
-        "the agent's table survived the person typing through it"
+        cells.len(),
+        4,
+        "insert-table must create its declared 2x2 table"
+    );
+    assert!(
+        cells.iter().all(|cell| cell.2.is_empty()),
+        "insert-table unexpectedly invented cell content: {cells:?}"
     );
     shown
 }
@@ -213,16 +285,14 @@ fn assert_agent_table(replica: &AutoCommit, table_done: bool) -> Vec<(String, St
 /// Assert every character the person typed, in order, landed in the
 /// heading — not a subset that happened to miss a collision.
 fn assert_person_typed(replica: &AutoCommit, typed: usize, shown: &[(String, String)]) {
-    // The count is asserted before the text: one keystroke per change the
-    // agent made, so reaching the whole word is also the proof that the
-    // two were genuinely interleaved and not merely both present. A pass
-    // with `typed` at 1 would mean the agent did all its work in a single
-    // change and nothing was ever concurrent.
+    // The count is asserted before the text: the keystroke is sent before
+    // the app host reports terminal success for the agent's invocation, so
+    // seeing all of it proves the human edit occurred during that lifecycle.
     assert_eq!(
         typed,
         TYPED.chars().count(),
-        "the person did not get to type through the agent's whole run, so \
-         this proves less than it looks: {typed} of {} characters",
+        "the person did not type while the app action was in flight: \
+         {typed} of {} characters",
         TYPED.chars().count()
     );
     let b = blocks(replica);
@@ -243,15 +313,17 @@ fn assert_person_typed(replica: &AutoCommit, typed: usize, shown: &[(String, Str
 /// Assert both authors are in the history — each change attributed to
 /// whoever made it, per change rather than per document — and that every
 /// change carries a hash.
-fn assert_attribution(replica: &mut AutoCommit, typed: usize) {
+fn assert_attribution(replica: &mut AutoCommit, typed: usize, invocation_actor: &str) {
     // Both authors are in the history, so the strip attributes each edit
     // to whoever made it rather than folding them into one.
     let versions = qdoc::history::versions(replica);
     let actors: std::collections::HashSet<String> =
         versions.iter().map(|v| v.actor_hex.clone()).collect();
+    let action_actor = hex::encode(invocation_actor);
     assert!(
-        actors.contains(&hex::encode("Scribe")),
-        "the agent's edits are not attributed to it: {actors:?}"
+        actors.contains(&action_actor),
+        "the app action is not attributed to the broker-authenticated agent actor \
+         {invocation_actor}: {actors:?}"
     );
     assert!(
         actors.contains(&hex::encode("quinten")),
@@ -270,14 +342,14 @@ fn assert_attribution(replica: &mut AutoCommit, typed: usize) {
     // attribute an edit from what it already has.
     let scribe = versions
         .iter()
-        .filter(|v| v.actor_hex == hex::encode("Scribe"))
+        .filter(|v| v.actor_hex == action_actor)
         .count();
     let human = versions
         .iter()
         .filter(|v| v.actor_hex == hex::encode("quinten"))
         .count();
     assert!(
-        scribe > 1 && human >= typed,
+        scribe >= 1 && human >= typed,
         "per-change attribution is missing: {scribe} change(s) from the agent \
          and {human} from the person, out of {} total",
         versions.len()
@@ -342,7 +414,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
             .expect("agent session")
     });
 
-    let (typed, table_done) = drive_peer_and_type(&mut peer, &mut replica, &head);
+    let (typed, table_done, invocation_actor) = drive_peer_and_type(&mut peer, &mut replica, &head);
 
     // Give the person's last keystrokes a moment to reach the agent, so a
     // pass here is not just a race the agent happened to win.
@@ -354,5 +426,5 @@ fn a_person_typing_and_the_agent_working_both_land() {
 
     let shown = assert_agent_table(&replica, table_done);
     assert_person_typed(&replica, typed, &shown);
-    assert_attribution(&mut replica, typed);
+    assert_attribution(&mut replica, typed, &invocation_actor);
 }

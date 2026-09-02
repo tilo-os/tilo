@@ -815,6 +815,7 @@ impl Widget for MainPanel {
             AccessNode::new(Role::Button)
                 .with_name("New note")
                 .with_description("Create the first note in this workspace")
+                .with_action_target("notes.first_note")
                 .with_state(AccessState {
                     focusable: true,
                     focused: self.empty_action_focused,

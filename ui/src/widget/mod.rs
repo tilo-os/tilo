@@ -34,6 +34,16 @@ pub enum ResourceOperationStart {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlBindingKind {
     Action(qos_actions::ActionAddress),
+    /// A framework-owned CRDT edit stream. The host supplies authorship,
+    /// collaboration, history boundaries, undo, and permissions directly;
+    /// this avoids turning every keystroke or slider tick into a heavyweight
+    /// discrete action while retaining the same platform guarantees.
+    CollaborativeDocument(String),
+    /// An explicitly declared stable accessibility operation. The host
+    /// projects the semantic verb into the resource catalogue and routes it
+    /// through the normal action door; useful for custom-painted controls and
+    /// process-local editing state that does not belong in document history.
+    SemanticAction(String),
     LegacyDocumentPath(String),
     LegacyCallback,
 }
@@ -42,6 +52,89 @@ pub enum ControlBindingKind {
 pub struct ControlBindingMetadata {
     pub control_id: String,
     pub kind: ControlBindingKind,
+}
+
+impl ControlBindingMetadata {
+    /// Declare that a custom control's stable semantic target is its native
+    /// action route. The host publishes supported accessibility verbs through
+    /// the resource/action door, so no parallel callback registry is needed.
+    pub fn semantic(control_id: impl Into<String>) -> Self {
+        let control_id = control_id.into();
+        Self {
+            kind: ControlBindingKind::SemanticAction(control_id.clone()),
+            control_id,
+        }
+    }
+}
+
+/// Derive native semantic-action provenance for actionable synthetic nodes in
+/// a custom widget's accessibility tree. This is the intended low-level escape
+/// hatch: authors draw anything they want, provide stable semantic targets,
+/// and opt those targets into the shared action route with one method call.
+pub fn semantic_action_bindings(
+    semantics: Option<crate::a11y::AccessNode>,
+) -> Vec<ControlBindingMetadata> {
+    fn is_effect_role(role: crate::a11y::Role) -> bool {
+        use crate::a11y::Role;
+        matches!(
+            role,
+            Role::Button
+                | Role::ToggleButton
+                | Role::Checkbox
+                | Role::RadioButton
+                | Role::Switch
+                | Role::ComboBox
+                | Role::Slider
+                | Role::SpinButton
+                | Role::TextInput
+                | Role::MultilineTextInput
+        )
+    }
+
+    fn visit(node: &crate::a11y::AccessNode, out: &mut Vec<ControlBindingMetadata>) {
+        if is_effect_role(node.role)
+            && let Some(target) = &node.action_target
+        {
+            out.push(ControlBindingMetadata::semantic(target.clone()));
+        }
+        for child in &node.children {
+            visit(child, out);
+        }
+    }
+
+    let mut bindings = Vec::new();
+    if let Some(semantics) = semantics {
+        visit(&semantics, &mut bindings);
+    }
+    bindings
+}
+
+/// Collect resources from every retained widget without requiring container
+/// authors to remember to forward their children's declarations. Resource
+/// ownership stays local to the widget that implements it; composition is a
+/// host property, like action-binding and accessibility traversal.
+pub(crate) fn collect_widget_resources(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    resources: &mut Vec<qos_actions::Resource>,
+) {
+    resources.extend(widget.resources(doc));
+    for child in widget.children() {
+        collect_widget_resources(child, doc, resources);
+    }
+}
+
+/// Last-resort accessible label for controls whose constructor already
+/// requires a stable id. Explicit localized names remain preferable, but a
+/// standard control should never become silent merely because an author did
+/// not repeat the same short label twice.
+pub(crate) fn humanize_control_id(id: &str) -> String {
+    let tail = id.rsplit('.').next().unwrap_or(id);
+    let words = tail.replace(['_', '-'], " ");
+    let mut chars = words.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 /// A reusable action-intent queue for controls, including custom widgets.
@@ -62,6 +155,12 @@ impl<I> ActionEmitter<I> {
         }
     }
 
+    /// Queues the typed invocation when the action is currently available.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `input` cannot be encoded against the action's
+    /// declared parameter contract.
     pub fn emit(&mut self, input: I) -> Result<(), qos_actions::ActionBindingError> {
         if self.available {
             self.pending.push_back(self.binding.invoke(input)?);
@@ -557,14 +656,42 @@ pub trait Widget {
     /// Handle an action addressed to a synthetic accessibility child created
     /// by this widget. `target` is the opaque stable value supplied through
     /// [`AccessNode::with_action_target`](crate::a11y::AccessNode::with_action_target).
+    ///
+    /// Custom canvases using
+    /// [`AccessNode::with_keyed_action_routes`](crate::a11y::AccessNode::with_keyed_action_routes)
+    /// do not need to override this method: the default decodes the published
+    /// semantic target and forwards it to [`Widget::perform_action_at`].
     fn perform_semantic_action(
         &mut self,
-        _target: &str,
-        _action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
     ) -> bool {
-        false
+        // `AccessNode::with_keyed_action_routes` publishes a custom-painted
+        // control through the same semantic target that search and agents
+        // consume. Decode that target here, at the Widget boundary, so the
+        // app author implements `perform_action_at` once and gets every input
+        // route promised by the adapter. Explicit semantic targets keep using
+        // their widget-specific implementations because they do not carry
+        // this reserved prefix.
+        let Some((_, encoded_path)) = target
+            .strip_prefix("qos.key-action:")
+            .and_then(|target| target.rsplit_once(':'))
+        else {
+            return false;
+        };
+        let Ok(key_path) = encoded_path
+            .split('/')
+            .map(str::parse::<u64>)
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return false;
+        };
+        if key_path.is_empty() {
+            return false;
+        }
+        self.perform_action_at(action, &key_path, state, path)
     }
 
     /// A disabled (`false`) widget is excluded from focus traversal, must
@@ -626,10 +753,13 @@ pub trait Widget {
     /// Custom widgets that own an [`ActionEmitter`] should prepend its
     /// [`metadata`](ActionEmitter::metadata) to their descendants' inventory.
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        self.children()
-            .iter()
-            .flat_map(|child| child.control_action_bindings())
-            .collect()
+        let mut bindings = semantic_action_bindings(self.accessibility());
+        bindings.extend(
+            self.children()
+                .iter()
+                .flat_map(|child| child.control_action_bindings()),
+        );
+        bindings
     }
     /// Push the fresh local permission-filtered action surface into every
     /// retained control. Custom widgets should refresh their own emitter and
