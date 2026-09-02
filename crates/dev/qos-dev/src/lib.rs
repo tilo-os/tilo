@@ -160,6 +160,8 @@ pub struct NewAppRequest {
     /// for deterministic non-interactive use.
     pub template: Option<Template>,
     pub directory: Option<PathBuf>,
+    /// Explicit toolkit crate. `None` discovers `QOS_UI_PATH`, a surrounding
+    /// checkout, the running executable's checkout, or the build checkout.
     pub ui_path: Option<PathBuf>,
     pub dry_run: bool,
 }
@@ -6085,11 +6087,18 @@ fn create_app_interactive_from(
     }
     let repo = find_repo_root(current_dir);
     if request.ui_path.is_none() && repo.is_none() && interactive {
-        let value = prompt_validated(input, output, "Toolkit ui path", None, |value| {
-            resolve_ui_dir(current_dir, None, Some(Path::new(value)))
-                .map(|_| ())
-                .context("invalid toolkit path")
-        })?;
+        let discovered = discover_ui_dir(current_dir, None).map(|path| path.display().to_string());
+        let value = prompt_validated(
+            input,
+            output,
+            "Toolkit ui path",
+            discovered.as_deref(),
+            |value| {
+                resolve_ui_dir(current_dir, None, Some(Path::new(value)))
+                    .map(|_| ())
+                    .context("invalid toolkit path")
+            },
+        )?;
         request.ui_path = Some(PathBuf::from(value));
     }
     let ui_dir = resolve_ui_dir(current_dir, repo.as_deref(), request.ui_path.as_deref())?;
@@ -6651,13 +6660,43 @@ fn find_repo_root(start: &Path) -> Option<PathBuf> {
     })
 }
 
+fn ui_dir_from_ancestor(start: &Path) -> Option<PathBuf> {
+    start.ancestors().find_map(|root| {
+        let ui = root.join("ui");
+        ui.join("Cargo.toml").is_file().then_some(ui)
+    })
+}
+
+/// Locate the toolkit for a standalone scaffold without requiring users to
+/// know the source checkout layout.
+fn discover_ui_dir(current_dir: &Path, repo: Option<&Path>) -> Option<PathBuf> {
+    if let Some(configured) = std::env::var_os("QOS_UI_PATH") {
+        let configured = PathBuf::from(configured);
+        let candidate = if configured.is_absolute() {
+            configured
+        } else {
+            current_dir.join(configured)
+        };
+        return Some(candidate);
+    }
+    if let Some(root) = repo {
+        return Some(root.join("ui"));
+    }
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(ui) = ui_dir_from_ancestor(&executable)
+    {
+        return Some(ui);
+    }
+    ui_dir_from_ancestor(Path::new(env!("CARGO_MANIFEST_DIR")))
+}
+
 fn resolve_ui_dir(
     current_dir: &Path,
     repo: Option<&Path>,
     requested: Option<&Path>,
 ) -> Result<PathBuf> {
     let candidate = requested.map_or_else(
-        || repo.map(|root| root.join("ui")),
+        || discover_ui_dir(current_dir, repo),
         |path| {
             Some(if path.is_absolute() {
                 path.to_path_buf()
@@ -6667,7 +6706,9 @@ fn resolve_ui_dir(
         },
     );
     let Some(candidate) = candidate else {
-        bail!("outside a qOS checkout; pass `--ui-path /path/to/quickdesktop/ui`");
+        bail!(
+            "could not locate the qOS UI toolkit; run inside a qOS checkout, set QOS_UI_PATH, or pass `--ui-path /path/to/quickdesktop/ui`"
+        );
     };
     if !candidate.join("Cargo.toml").is_file() {
         bail!(
@@ -9960,7 +10001,7 @@ mod tests {
 
         assert_eq!(outcome.destination, destination);
         let transcript = String::from_utf8(output).unwrap();
-        assert!(transcript.contains("Toolkit ui path:"));
+        assert!(transcript.contains("Toolkit ui path ["));
         assert!(transcript.contains("invalid toolkit path"));
         assert!(transcript.contains(&format!(
             "Toolkit:     {}",
@@ -9968,6 +10009,68 @@ mod tests {
         )));
         let manifest = std::fs::read_to_string(destination.join("Cargo.toml")).unwrap();
         assert!(manifest.contains("path = \"../toolkit-ui\""), "{manifest}");
+    }
+
+    #[test]
+    fn standalone_wizard_accepts_the_discovered_toolkit_default() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("notes");
+        let discovered = discover_ui_dir(temp.path(), None)
+            .expect("qos-dev source toolkit")
+            .canonicalize()
+            .unwrap();
+        let mut req = request(destination.clone());
+        req.name = None;
+        req.title = None;
+        req.app_id = None;
+        req.template = None;
+        let mut input = std::io::Cursor::new(b"notes\n\n\n1\n\n\n".to_vec());
+        let mut output = Vec::new();
+
+        let outcome =
+            create_app_interactive_from(temp.path(), req, &mut input, &mut output, true).unwrap();
+
+        assert_eq!(outcome.destination, destination);
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(
+            transcript.contains(&format!("Toolkit ui path [{}]:", discovered.display())),
+            "{transcript}"
+        );
+        assert!(transcript.contains(&format!("Toolkit:     {}", discovered.display())));
+        let manifest = std::fs::read_to_string(destination.join("Cargo.toml")).unwrap();
+        let relative = relative_path(&destination, &discovered);
+        assert!(
+            manifest.contains(&format!("path = {:?}", relative.display().to_string())),
+            "{manifest}"
+        );
+    }
+
+    #[test]
+    fn standalone_noninteractive_creation_discovers_the_toolkit() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("scripted-app");
+        let mut req = request(destination.clone());
+        req.name = Some("scripted-app".into());
+        req.ui_path = None;
+
+        let outcome = create_app_from(temp.path(), req).expect("standalone scaffold");
+
+        assert_eq!(outcome.destination, destination);
+        assert!(destination.join("Cargo.toml").is_file());
+        assert!(doctor_app(&destination).unwrap().is_ready());
+    }
+
+    #[test]
+    fn toolkit_discovery_follows_the_qos_dev_executable_ancestry() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let ui = temp.path().join("ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(ui.join("Cargo.toml"), "[workspace]\n").unwrap();
+
+        assert_eq!(
+            ui_dir_from_ancestor(&temp.path().join("target/debug/qos-dev")),
+            Some(ui)
+        );
     }
 
     #[test]
@@ -10755,10 +10858,13 @@ mod tests {
     }
 
     #[test]
-    fn ui_path_is_explicit_outside_a_checkout() {
+    fn standalone_ui_path_is_discovered_and_can_be_overridden() {
         let temp = tempfile::tempdir().expect("temp dir");
-        let error = resolve_ui_dir(temp.path(), None, None).unwrap_err();
-        assert!(error.to_string().contains("--ui-path"));
+        let discovered = resolve_ui_dir(temp.path(), None, None).expect("discovered toolkit");
+        assert!(discovered.join("Cargo.toml").is_file());
+
+        let error = resolve_ui_dir(temp.path(), None, Some(Path::new("missing-ui"))).unwrap_err();
+        assert!(error.to_string().contains("does not contain Cargo.toml"));
 
         let ui = temp.path().join("toolkit-ui");
         std::fs::create_dir(&ui).expect("ui dir");
