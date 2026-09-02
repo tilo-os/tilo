@@ -1313,6 +1313,10 @@ impl MailApp {
 
     // ---- engine drain -----------------------------------------------------
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the engine drain is one ordered lifecycle reducer over every EngineEvent variant; splitting it would scatter the shared settlement and dirty-state transitions"
+    )]
     fn drain_engine(&mut self, doc: &mut AutoCommit) {
         let Some(h) = &self.engine else { return };
         let mut events = Vec::new();
@@ -2623,23 +2627,25 @@ impl Widget for MailApp {
     ) -> NodeId {
         // `Widget::build_layout` returns a bare `NodeId`, so the retained
         // first-run child and its full-size parent are inserted together.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_with_children on a fresh tree with valid nodes cannot fail; Widget::build_layout's Result-free signature is shared by every implementor and out of this crate's scope to change"
-        )]
         let first_run_node = self.first_run.build_layout(taffy, theme, node_map);
-        let node = taffy
-            .new_with_children(
-                Style {
-                    size: TSize {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[first_run_node],
-            )
-            .unwrap();
+        let style = Style {
+            size: TSize {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        let node = match taffy.new_with_children(style, &[first_run_node]) {
+            Ok(node) => node,
+            Err(error) => {
+                // Keep the valid retained child as the root for this frame. The
+                // onboarding surface remains usable and the next rebuild may
+                // retry, instead of aborting the whole Mail process.
+                tracing::error!(%error, "mail: failed to create root layout node");
+                self.first_run_node = Some(first_run_node);
+                return first_run_node;
+            }
+        };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.first_run_node = Some(first_run_node);
         node
@@ -2716,6 +2722,10 @@ impl Widget for MailApp {
         self.draw_status(scene, t, tr, theme);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "this is the widget's ordered modal event-routing lifecycle; splitting it would obscure the precedence between compose, onboarding, overlays, navigation, and global shortcuts"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
