@@ -1,0 +1,33 @@
+# CRDT/store-and-forward deployment for a user-owned qOS relay.
+#
+# Copy relay.toml.example to relay.toml, provide the enrolled host identity
+# under ./identity, then run `podman compose up -d` (or Docker Compose).
+# See README.md for the required identity artifacts and deliberate limits.
+services:
+  qos-relay:
+    image: ${QOS_RELAY_IMAGE:-code.podesta.ai/qos/qos-relay:latest}
+    command: ["--config", "/etc/qos/relay.toml", "run"]
+    restart: unless-stopped
+    ports:
+      # Keep this aligned with `iroh_listen` in relay.toml.
+      - "${QOS_RELAY_PORT:-4433}:4433/udp"
+    volumes:
+      # The config has no secret material and may remain read-only.
+      - ./relay.toml:/etc/qos/relay.toml:ro,Z
+      # A pre-enrolled, host-capable device identity. Never put a user-root
+      # private key in this directory or image.
+      - ./identity:/var/lib/qos:ro,Z
+      # CRDT snapshots, offline pending queues, metrics, and the stable Iroh
+      # endpoint secret. Back this volume up as relay state.
+      - qos-relay-state:/var/lib/qos-relay:Z
+    healthcheck:
+      # Written only after the daemon has started and its periodic metrics
+      # task is live. It is not a claim that an external peer can reach us.
+      test: ["CMD-SHELL", "test -s /var/lib/qos-relay/metrics.json"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+
+volumes:
+  qos-relay-state:
