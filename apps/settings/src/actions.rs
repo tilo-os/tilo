@@ -933,12 +933,17 @@ mod tests {
             "one source of truth for theme"
         );
 
-        // An unrecognised choice keeps the current value rather than writing junk.
+        // The typed action contract rejects an unrecognised choice before its
+        // builder runs, so invalid palette input cannot silently masquerade as
+        // a successful write of the current value.
         let from_typo = prompted_encode(theme, "not-a-theme");
         assert_eq!(
-            from_typo.payload,
-            encode(&set_text_action(panes::appearance::THEME_KEY, "Dark")).payload,
-            "a typo falls back to the current theme"
+            from_typo.type_id,
+            qos_actions::resource::INVALID_ARGUMENTS_TYPE
+        );
+        assert!(
+            String::from_utf8_lossy(&from_typo.payload).contains("must be one of"),
+            "the refusal explains the declared choices"
         );
     }
 }
