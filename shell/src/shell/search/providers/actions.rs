@@ -750,6 +750,9 @@ impl SearchProvider for ActionsProvider {
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Action]
     }
+    fn available_in_active_app_scope(&self) -> bool {
+        true
+    }
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         if !ctx.wanted.contains(&ResourceKind::Action) {
             return Vec::new();
