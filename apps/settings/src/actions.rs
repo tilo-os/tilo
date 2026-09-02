@@ -933,12 +933,15 @@ mod tests {
             "one source of truth for theme"
         );
 
-        // An unrecognised choice keeps the current value rather than writing junk.
-        let from_typo = prompted_encode(theme, "not-a-theme");
-        assert_eq!(
-            from_typo.payload,
-            encode(&set_text_action(panes::appearance::THEME_KEY, "Dark")).payload,
-            "a typo falls back to the current theme"
-        );
+        // The shared typed door rejects an unrecognised choice before the
+        // application's builder can write junk or silently reinterpret it.
+        let typo = serde_json::Map::from_iter([(
+            "choice".to_owned(),
+            serde_json::Value::String("not-a-theme".to_owned()),
+        )]);
+        let error = theme
+            .build_json(&typo)
+            .expect_err("unknown theme is invalid");
+        assert!(error.to_string().contains("must be one of"), "{error}");
     }
 }
