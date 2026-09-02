@@ -1,5 +1,4 @@
-/// Generated resource/action host shared by every qOS application template.
-
+// Generated resource/action host shared by every qOS application template.
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
@@ -12,10 +11,20 @@ use ui::qos_actions::{
 };
 use ui::taffy::{NodeId, TaffyTree};
 use ui::vello::Scene;
-use ui::widget::{ResourceOperationStart, Widget};
+use ui::widget::{ResourceOperationStart, TaffyTreeExt, Widget};
 
 pub const OPERATION_TYPE: &str = "generated.app.operation";
 
+/// Build one launchable generated resource with a unit operation.
+///
+/// # Panics
+///
+/// Panics only if serializing Rust's unit value fails, which the JSON encoder
+/// represents unconditionally as `null`.
+#[expect(
+    clippy::expect_used,
+    reason = "serializing the unit operation payload is infallible"
+)]
 pub fn resource(
     kind: &str,
     label: &str,
@@ -48,6 +57,16 @@ pub fn resource(
     Resource::new(format!("{kind}:root"), kind, label).with_action(action)
 }
 
+/// Build one launchable generated resource whose arguments are schema-bound.
+///
+/// # Panics
+///
+/// Panics only if the already-validated JSON argument object cannot be encoded
+/// as JSON again.
+#[expect(
+    clippy::expect_used,
+    reason = "the bound arguments are already a serde_json value"
+)]
 pub fn typed_resource(
     kind: &str,
     label: &str,
@@ -131,18 +150,16 @@ impl Widget for ResourceActionApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.root.build_layout(taffy, theme, node_map);
-        let node = taffy
-            .new_with_children(
-                ui::taffy::Style {
-                    size: ui::taffy::Size {
-                        width: ui::taffy::style_helpers::percent(1.0_f32),
-                        height: ui::taffy::style_helpers::percent(1.0_f32),
-                    },
-                    ..Default::default()
+        let node = taffy.parent_node(
+            ui::taffy::Style {
+                size: ui::taffy::Size {
+                    width: ui::taffy::style_helpers::percent(1.0_f32),
+                    height: ui::taffy::style_helpers::percent(1.0_f32),
                 },
-                &[child],
-            )
-            .expect("generated resource host layout is valid");
+                ..Default::default()
+            },
+            &[child],
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -297,9 +314,9 @@ impl Widget for ResourceActionApp {
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         if kind == OperationKind::Document || type_id != OPERATION_TYPE {
-            return self.root.start_resource_operation(
-                invocation, kind, type_id, payload, doc, path,
-            );
+            return self
+                .root
+                .start_resource_operation(invocation, kind, type_id, payload, doc, path);
         }
         match &mut self.runner {
             Runner::Immediate(run) => run(payload)
@@ -339,7 +356,7 @@ impl Widget for ResourceActionApp {
         })
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ResourceActionApp"
     }
 
