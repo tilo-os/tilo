@@ -11,13 +11,15 @@
 //! `focusable_order` and its caret survives the per-keystroke filter
 //! rebuild.
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -25,8 +27,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use crate::widget::{Button, TaffyTreeExt, Widget};
 use crate::{LocalState, local_state::LocalBinding};
 
 type Element = Box<dyn Widget>;
@@ -44,9 +45,6 @@ const CTRL_H: f64 = 34.0;
 const SEARCH_BAND_H: f64 = PAD + CTRL_H + PAD;
 const BACK_BTN: f64 = 34.0;
 const BACK_BAND_H: f64 = PAD + BACK_BTN + PAD;
-/// Arrow-left glyph for the narrow content screen's back affordance.
-const BACK_GLYPH: &str = "\u{f004d}";
-const BACK_GLYPH_SIZE: f32 = 20.0;
 
 /// How the shell resolves at the current width — decided purely by whether the
 /// sidebar fits beside the content.
@@ -85,6 +83,7 @@ pub enum NarrowScreen {
 /// `children()` agree on build order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Slot {
+    Back,
     Search,
     Nav,
     Content,
@@ -94,6 +93,8 @@ pub struct AppShell {
     nav: Element,
     content: Element,
     search: Option<Element>,
+    back: Button,
+    back_requested: Rc<Cell<bool>>,
     test_id: Option<String>,
     back_accessible_name: String,
     narrow_screen_binding: Option<LocalBinding<NarrowScreen>>,
@@ -128,18 +129,20 @@ pub struct AppShell {
     /// The order the child nodes were built in, mirrored by `children()`.
     slots: Vec<Slot>,
 
-    back_hover: bool,
-    back_press: bool,
     last_cursor: Point,
 }
 
 impl AppShell {
     /// Add a search field with [`AppShell::with_search`].
     pub fn new(nav: Element, content: Element) -> Self {
+        let back_requested = Rc::new(Cell::new(false));
+        let back = Self::back_button("app-shell-back", "Back", &back_requested);
         Self {
             nav,
             content,
             search: None,
+            back,
+            back_requested,
             test_id: None,
             back_accessible_name: String::from("Back"),
             narrow_screen_binding: None,
@@ -156,10 +159,26 @@ impl AppShell {
             content_area_rect: Rect::ZERO,
             back_rect: Rect::ZERO,
             slots: Vec::new(),
-            back_hover: false,
-            back_press: false,
             last_cursor: Point::ZERO,
         }
+    }
+
+    fn back_button(id: &str, name: &str, requested: &Rc<Cell<bool>>) -> Button {
+        let requested = Rc::clone(requested);
+        Button::new(id, "", None)
+            .with_icon(crate::icons::Icon::ArrowLeft)
+            .with_accessible_name(name)
+            .with_size(34.0, 34.0)
+            .ghost()
+            .on_click(move || requested.set(true))
+    }
+
+    fn rebuild_back_button(&mut self) {
+        let id = self
+            .test_id
+            .as_deref()
+            .map_or_else(|| String::from("app-shell-back"), |id| format!("{id}-back"));
+        self.back = Self::back_button(&id, &self.back_accessible_name, &self.back_requested);
     }
 
     /// Pinned at the top of the sidebar (or the narrow list screen); stays
@@ -174,6 +193,7 @@ impl AppShell {
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.test_id = Some(id.into());
+        self.rebuild_back_button();
         self
     }
 
@@ -181,6 +201,7 @@ impl AppShell {
     #[must_use]
     pub fn with_back_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.back_accessible_name = name.into();
+        self.rebuild_back_button();
         self
     }
 
@@ -367,6 +388,18 @@ impl AppShell {
         let mut s = base.clone();
         s.position = taffy::Position::Absolute;
         match slot {
+            Slot::Back => {
+                s.inset = taffy::Rect {
+                    left: length(PAD as f32),
+                    right: auto(),
+                    top: length(PAD as f32),
+                    bottom: auto(),
+                };
+                s.size = taffy::Size {
+                    width: length(BACK_BTN as f32),
+                    height: length(BACK_BTN as f32),
+                };
+            }
             Slot::Content => {
                 let (left, top) = if self.layout == ShellLayout::Wide {
                     (length(sw as f32), length(0.0_f32))
@@ -429,42 +462,6 @@ impl AppShell {
             }
         }
         s
-    }
-
-    fn draw_back(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let radius = f64::from(theme.tokens.radii.md);
-        if self.back_press {
-            let pill = RoundedRect::from_rect(self.back_rect, radius);
-            scene.fill(Fill::NonZero, transform, theme.bg_active, None, &pill);
-        } else if self.back_hover {
-            let pill = RoundedRect::from_rect(self.back_rect, radius);
-            scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &pill);
-        }
-        let (gw, _gh) = tr.measure(BACK_GLYPH, BACK_GLYPH_SIZE, None);
-        let gx = self.back_rect.x0 + (self.back_rect.width() - f64::from(gw)) / 2.0;
-        let line_box = f64::from(BACK_GLYPH_SIZE) * 1.25;
-        let gy = self.back_rect.y0 + (self.back_rect.height() - line_box) / 2.0;
-        // Affine composition: pure `f64` matrix multiply, cannot panic regardless
-        // of operand magnitude.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine composition is float matrix math and cannot panic"
-        )]
-        let text_transform = transform * Affine::translate((gx, gy));
-        tr.draw_text(
-            scene,
-            BACK_GLYPH,
-            BACK_GLYPH_SIZE,
-            theme.text_primary,
-            text_transform,
-            None,
-        );
     }
 
     /// Shared by `draw` and `draw_with_presence`; `permissions` selects the
@@ -554,7 +551,15 @@ impl AppShell {
                 None,
                 &Line::new(Point::new(self.rect.x0, y), Point::new(self.rect.x1, y)),
             );
-            self.draw_back(scene, transform, tr, theme);
+            paint_child(
+                &mut self.back,
+                scene,
+                transform,
+                tr,
+                theme,
+                presence,
+                permissions,
+            );
         }
     }
 }
@@ -579,6 +584,9 @@ fn paint_child(
 
 impl Widget for AppShell {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        if self.back_requested.replace(false) {
+            self.back();
+        }
         let next_screen = self
             .narrow_screen_binding
             .as_mut()
@@ -589,6 +597,7 @@ impl Widget for AppShell {
         if let Some(search) = &mut self.search {
             search.sync(state, path);
         }
+        self.back.sync(state, path);
         self.nav.sync(state, path);
         self.content.sync(state, path);
     }
@@ -607,6 +616,13 @@ impl Widget for AppShell {
         self.slots.clear();
         let mut child_nodes: Vec<NodeId> = Vec::new();
 
+        if self.layout == ShellLayout::Narrow && self.narrow_screen == NarrowScreen::Content {
+            let node = self.back.build_layout(taffy, theme, node_map);
+            let base = taffy.style(node).cloned().unwrap_or_default();
+            let _ = taffy.set_style(node, self.slot_style(Slot::Back, &base));
+            self.slots.push(Slot::Back);
+            child_nodes.push(node);
+        }
         if self.sidebar_shown() {
             if let Some(search) = &mut self.search {
                 let node = search.build_layout(taffy, theme, node_map);
@@ -673,6 +689,7 @@ impl Widget for AppShell {
         let child_origin = Point::new(self.rect.x0, self.rect.y0);
         for (slot, &child_node) in self.slots.iter().zip(child_nodes.iter()) {
             let w: &mut dyn Widget = match slot {
+                Slot::Back => &mut self.back,
                 Slot::Search => match &mut self.search {
                     Some(s) => s.as_mut(),
                     None => continue,
@@ -729,11 +746,6 @@ impl Widget for AppShell {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
-                let hover =
-                    self.back_rect.width() > 0.0 && self.back_rect.contains(self.last_cursor);
-                if hover != self.back_hover {
-                    self.back_hover = hover;
-                }
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -755,11 +767,6 @@ impl Widget for AppShell {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.back_rect.width() > 0.0 && self.back_rect.contains(self.last_cursor) {
-                    self.back_press = true;
-                    *handled = true;
-                    return;
-                }
                 // Record which surface the user engaged so a later collapse
                 // keeps them there. Not consumed — the press still routes to
                 // the child under it.
@@ -771,19 +778,6 @@ impl Widget for AppShell {
                     && self.sidebar_panel_rect.contains(self.last_cursor)
                 {
                     self.set_narrow_screen(NarrowScreen::List, true);
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } if self.back_press => {
-                let on_back = self.back_rect.contains(self.last_cursor);
-                self.back_press = false;
-                if on_back {
-                    self.back();
-                    *handled = true;
-                    return;
                 }
             }
             _ => {}
@@ -802,12 +796,13 @@ impl Widget for AppShell {
         for (slot, &n) in self.slots.iter().zip(child_nodes.iter()) {
             pairs.push((*slot, n));
         }
-        for want in [Slot::Search, Slot::Content, Slot::Nav] {
+        for want in [Slot::Back, Slot::Search, Slot::Content, Slot::Nav] {
             if *handled {
                 break;
             }
             if let Some(&(_, n)) = pairs.iter().find(|(s, _)| *s == want) {
                 let w: &mut dyn Widget = match want {
+                    Slot::Back => &mut self.back,
                     Slot::Search => match &mut self.search {
                         Some(s) => s.as_mut(),
                         None => continue,
@@ -826,6 +821,10 @@ impl Widget for AppShell {
                     n,
                     taffy,
                 );
+                if self.back_requested.replace(false) {
+                    self.back();
+                    *handled = true;
+                }
             }
         }
     }
@@ -834,6 +833,7 @@ impl Widget for AppShell {
         let mut out: Vec<&dyn Widget> = Vec::new();
         for slot in &self.slots {
             match slot {
+                Slot::Back => out.push(&self.back),
                 Slot::Search => {
                     if let Some(s) = &self.search {
                         out.push(s.as_ref());
@@ -849,11 +849,17 @@ impl Widget for AppShell {
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         // Borrow each field at most once, in slot order.
         let mut search = self.search.as_mut();
+        let mut back = Some(&mut self.back);
         let mut nav = Some(&mut self.nav);
         let mut content = Some(&mut self.content);
         let mut out: Vec<&mut (dyn Widget + '_)> = Vec::new();
         for slot in &self.slots {
             match slot {
+                Slot::Back => {
+                    if let Some(b) = back.take() {
+                        out.push(b);
+                    }
+                }
                 Slot::Search => {
                     if let Some(s) = search.take() {
                         out.push(s.as_mut());
@@ -882,52 +888,28 @@ impl Widget for AppShell {
         self.test_id.as_deref()
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-
-        if self.layout != ShellLayout::Narrow
-            || self.narrow_screen != NarrowScreen::Content
-            || self.back_rect.width() <= 0.0
-        {
-            return None;
-        }
-        let back = AccessNode::new(Role::Button)
-            .with_action_target("back")
-            .with_name(crate::i18n::I18nManager::lookup_plain(
-                &self.back_accessible_name,
-            ))
-            .with_state(AccessState::new().focusable(true))
-            .with_bounds(self.back_rect);
-        Some(AccessNode::new(Role::Group).with_children(vec![back]))
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-    ) -> bool {
-        target == "back" && matches!(action, crate::a11y::Action::Activate) && self.back()
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
 
     fn take_structure_dirty(&mut self) -> bool {
+        if self.back_requested.replace(false) {
+            self.back();
+        }
         let own = std::mem::take(&mut self.pending_rebuild);
+        let back = self.back.take_structure_dirty();
         let search = self
             .search
             .as_mut()
             .is_some_and(|s| s.take_structure_dirty());
         let nav = self.nav.take_structure_dirty();
         let content = self.content.take_structure_dirty();
-        own || search || nav || content
+        own || back || search || nav || content
     }
 
     fn needs_animation_frame(&self) -> bool {
         self.content.needs_animation_frame()
+            || self.back.needs_animation_frame()
             || self.nav.needs_animation_frame()
             || self
                 .search
@@ -937,12 +919,14 @@ impl Widget for AppShell {
 
     fn needs_idle_sync(&self) -> bool {
         self.content.needs_idle_sync()
+            || self.back.needs_idle_sync()
             || self.nav.needs_idle_sync()
             || self.search.as_ref().is_some_and(|s| s.needs_idle_sync())
     }
 
     fn layout_needs_measure(&self) -> bool {
         self.content.layout_needs_measure()
+            || self.back.layout_needs_measure()
             || self.nav.layout_needs_measure()
             || self
                 .search
@@ -1080,8 +1064,8 @@ mod tests {
         let names: Vec<&str> = s.children().iter().map(|c| c.name()).collect();
         assert_eq!(
             names,
-            vec!["Text"],
-            "content screen composes only the content"
+            vec!["Button", "Text"],
+            "content screen composes the standard Back control before content"
         );
     }
 
@@ -1157,8 +1141,8 @@ mod tests {
         let names: Vec<&str> = s.children().iter().map(|c| c.name()).collect();
         assert_eq!(
             names,
-            vec!["Text"],
-            "content screen composes only the content"
+            vec!["Button", "Text"],
+            "content screen composes the standard Back control before content"
         );
     }
 
@@ -1179,27 +1163,26 @@ mod tests {
         assert!(shell.take_structure_dirty());
         lay(&mut shell, 460.0, 820.0);
 
-        let semantics = shell.accessibility().expect("compact shell semantics");
-        let back = semantics.children.first().expect("synthetic Back button");
+        assert_eq!(shell.back.test_id(), Some("settings-shell-back"));
+        let back = shell.back.accessibility().expect("retained Back button");
         assert_eq!(back.role, crate::a11y::Role::Button);
         assert_eq!(back.name.as_deref(), Some("Go back"));
-        assert_eq!(back.action_target.as_deref(), Some("back"));
-        assert!(back.bounds.is_some());
-        assert!(shell.perform_semantic_action(
-            "back",
+        assert!(shell.back.perform_action(
             &crate::a11y::Action::Activate,
             &mut document,
             &automerge::ROOT,
         ));
-        assert_eq!(screen.with(Clone::clone), NarrowScreen::List);
         assert!(shell.take_structure_dirty());
+        assert_eq!(screen.with(Clone::clone), NarrowScreen::List);
     }
 
     /// Narrow: the back arrow is the way from the content screen back to the
     /// list, preserving the selection.
     #[test]
     fn back_from_content_returns_to_the_list() {
-        let mut s = shell().with_narrow_screen(NarrowScreen::Content);
+        let mut s = shell()
+            .with_narrow_screen(NarrowScreen::Content)
+            .with_width_hint(460.0);
         lay(&mut s, 460.0, 820.0);
         assert_eq!(
             s.narrow_screen(),
@@ -1213,14 +1196,14 @@ mod tests {
             f64::midpoint(s.back_rect().y0, s.back_rect().y1),
         );
         click(&mut s, mid);
+        assert!(
+            s.take_structure_dirty(),
+            "the retained Back activation requests a rebuild"
+        );
         assert_eq!(
             s.narrow_screen(),
             NarrowScreen::List,
             "back returns to the list screen"
-        );
-        assert!(
-            s.take_structure_dirty(),
-            "the back navigation requests a rebuild"
         );
         lay(&mut s, 460.0, 820.0);
         assert!(s.sidebar_open(), "the list screen is shown again");
@@ -1271,8 +1254,8 @@ mod tests {
         lay(&mut s, 460.0, 820.0);
         assert_eq!(
             s.children().len(),
-            1,
-            "narrow collapse composes only the content"
+            2,
+            "narrow collapse composes Back + content"
         );
         assert!(s.back(), "back moves to the list screen");
         lay(&mut s, 460.0, 820.0);
