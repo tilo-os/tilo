@@ -272,6 +272,43 @@ pub(crate) enum Hit {
     Dismiss, // click on a scrim closes the top-most popover
 }
 
+impl Hit {
+    fn semantic_id(&self) -> String {
+        match self {
+            Self::Inbox => "chat.inbox".into(),
+            Self::CurrentContext => "chat.current-context".into(),
+            Self::Channel(id) => format!("chat.channel:{id}"),
+            Self::VoiceChannel(id) => format!("chat.voice-channel:{id}"),
+            Self::CategoryToggle(id) => format!("chat.category-toggle:{id}"),
+            Self::AddChannel {
+                workspace,
+                category,
+            } => format!("chat.add-channel:{workspace}:{category}"),
+            Self::AddCategory(id) => format!("chat.add-category:{id}"),
+            Self::FocusMain => "chat.composer".into(),
+            Self::FocusThread => "chat.thread-composer".into(),
+            Self::Send => "chat.send".into(),
+            Self::Attach => "chat.attach".into(),
+            Self::StartCall => "chat.start-call".into(),
+            Self::ToggleLeftFlap => "chat.toggle-navigation".into(),
+            Self::ToggleRightFlap => "chat.toggle-details".into(),
+            Self::OpenThread(id) => format!("chat.open-thread:{id}"),
+            Self::CloseThread => "chat.close-thread".into(),
+            Self::AddReaction { msg, .. } => format!("chat.add-reaction:{msg}"),
+            Self::EditHistory { msg, .. } => format!("chat.edit-history:{msg}"),
+            Self::EditSave => "chat.edit-save".into(),
+            Self::EditCancel => "chat.edit-cancel".into(),
+            Self::CallMute => "chat.call-mute".into(),
+            Self::CallDeafen => "chat.call-deafen".into(),
+            Self::CallAudioOnly => "chat.call-audio-only".into(),
+            Self::CallShareScreen => "chat.call-share-screen".into(),
+            Self::CallExpand => "chat.call-expand".into(),
+            Self::CallLeave => "chat.call-leave".into(),
+            other => format!("chat.control:{other:?}"),
+        }
+    }
+}
+
 /// One sampled motion value owns the call huddle's participant reveal. The
 /// panel silhouette, controls, hit regions, compositor presentation and native
 /// window allocation all read this same value, so a content-driven resize can
@@ -2604,7 +2641,7 @@ impl Widget for ChatApp {
             .semantic_hits()
             .into_iter()
             .enumerate()
-            .map(|(index, (rect, _hit, name, role, selected))| {
+            .map(|(index, (rect, hit, name, role, selected))| {
                 let mut state = AccessState::new()
                     .focusable(true)
                     .focused(self.keyboard_target == Some(index));
@@ -2619,6 +2656,7 @@ impl Widget for ChatApp {
                     .with_state(state)
                     .with_bounds(rect)
                     .with_key(index as u64)
+                    .with_action_target(hit.semantic_id())
             })
             .collect();
 

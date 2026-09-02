@@ -296,9 +296,10 @@ pub fn encode(
 ///
 /// # Errors
 ///
-/// Returns [`DoorError::Unknown`] if `address` names no resource/action in
-/// `resources`, or [`DoorError::InvalidArguments`] if `arguments` do not match
-/// the action's declared schema.
+/// Returns [`DoorError::Unknown`] when the address is not published,
+/// [`DoorError::Unavailable`] when policy currently disables it, or
+/// [`DoorError::InvalidArguments`] when the object violates its parameter
+/// contract.
 pub fn encode_json(
     resources: &[Resource],
     address: &ActionAddress,
@@ -459,9 +460,8 @@ fn invoke_with_context_consent(
 ///
 /// # Errors
 ///
-/// Returns the errors documented by [`encode_json`],
-/// [`DoorError::UnregisteredType`] if `registry` has no decoder for the encoded
-/// action's type, or [`DoorError::Failed`] if dispatch fails once decoded.
+/// Returns address, availability, confirmation, argument, registry, dispatch,
+/// and result-contract errors encountered while invoking the action.
 pub fn invoke_json(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -483,6 +483,13 @@ pub fn invoke_json(
 ///
 /// Returns the same errors as [`invoke_json`].
 #[allow(clippy::too_many_arguments)]
+/// Typed-argument invocation after an outer policy boundary has completed the
+/// action contract's confirmation step.
+///
+/// # Errors
+///
+/// Returns the same errors as [`invoke_json`], except confirmation has already
+/// been granted by the caller.
 pub fn invoke_json_confirmed(
     doc: &mut crate::action::Doc,
     resources: &[Resource],

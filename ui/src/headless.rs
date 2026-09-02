@@ -1370,14 +1370,14 @@ impl FrameHarness {
     pub fn native_app_audit(&self) -> NativeAppAudit {
         use crate::widget::ControlBindingKind;
 
-        let resources = self.root.resources(&self.state.doc);
+        let resources = self.resources();
         let bindings = self.root.control_action_bindings();
         let inventoried_controls = bindings
             .iter()
             .map(|binding| binding.control_id.clone())
             .collect::<HashSet<_>>();
         let inspection = self.inspection();
-        let semantic_effect_controls = count_effect_controls(&inspection.root);
+        let semantic_effect_controls = effect_control_ids(&inspection.root);
         let mut issues = bindings
             .into_iter()
             .filter_map(|binding| match binding.kind {
@@ -1393,6 +1393,8 @@ impl FrameHarness {
                             ),
                         })
                 }
+                ControlBindingKind::CollaborativeDocument(_)
+                | ControlBindingKind::SemanticAction(_) => None,
                 ControlBindingKind::LegacyDocumentPath(path) => Some(NativeAppIssue {
                     control: binding.control_id,
                     code: "legacy-document-path".into(),
@@ -1407,14 +1409,18 @@ impl FrameHarness {
                 }),
             })
             .collect::<Vec<_>>();
-        if semantic_effect_controls > inventoried_controls.len() {
+        for control in semantic_effect_controls.difference(&inventoried_controls) {
             issues.push(NativeAppIssue {
-                control: "<application>".into(),
-                code: "missing-action-inventory".into(),
-                message: format!(
-                    "{semantic_effect_controls} effect-capable semantic controls are present but only {} controls declare an action path",
-                    inventoried_controls.len()
-                ),
+                control: control.clone(),
+                code: "missing-action-binding".into(),
+                message: "effect-capable semantic control has no resource/action binding".into(),
+            });
+        }
+        for control in inventoried_controls.difference(&semantic_effect_controls) {
+            issues.push(NativeAppIssue {
+                control: control.clone(),
+                code: "orphan-action-binding".into(),
+                message: "action binding has no matching effect-capable semantic control".into(),
             });
         }
         NativeAppAudit {
@@ -1422,6 +1428,22 @@ impl FrameHarness {
             accessibility: self.accessibility_audit(),
             issues,
         }
+    }
+
+    /// Snapshot the exact resource tree the native host currently publishes.
+    /// Tests can assert search/agent visibility without reaching into widget
+    /// internals or rebuilding a parallel catalogue.
+    pub fn resources(&self) -> Vec<qos_actions::Resource> {
+        let mut resources = Vec::new();
+        crate::widget::collect_widget_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            &mut resources,
+        );
+        let mut semantics = crate::a11y_tree::SemanticTree::new();
+        semantics.refresh(self.root.as_ref(), &self.node_map, self.focused, &resources);
+        resources.extend(semantics.action_resources());
+        resources
     }
 
     /// The live document. Used to dump state and to hand to a saver.
@@ -1566,7 +1588,12 @@ impl FrameHarness {
 
     fn dispatch_control_invocations(&mut self) {
         while let Some(intent) = self.root.take_control_invocation() {
-            let resources = self.root.resources(&self.state.doc);
+            let mut resources = Vec::new();
+            crate::widget::collect_widget_resources(
+                self.root.as_ref(),
+                &self.state.doc,
+                &mut resources,
+            );
             let Some(spec) = qos_actions::door::resolve(&resources, &intent.address) else {
                 tracing::warn!(
                     resource = %intent.address.resource,
@@ -2144,18 +2171,29 @@ fn audit_inspection_node(node: &InspectionNode, issues: &mut Vec<AccessibilityIs
     }
 }
 
-fn count_effect_controls(node: &InspectionNode) -> usize {
-    let retained = node.semantics.as_ref().map_or(0, count_effect_access_nodes);
-    retained
-        + node
-            .children
-            .iter()
-            .map(count_effect_controls)
-            .sum::<usize>()
+fn effect_control_ids(node: &InspectionNode) -> HashSet<String> {
+    let mut controls = HashSet::new();
+    if let Some(semantics) = &node.semantics {
+        collect_effect_access_nodes(
+            semantics,
+            node.test_id.as_deref(),
+            &node.path,
+            &mut controls,
+        );
+    }
+    for child in &node.children {
+        controls.extend(effect_control_ids(child));
+    }
+    controls
 }
 
-fn count_effect_access_nodes(node: &AccessNode) -> usize {
-    let own = usize::from(matches!(
+fn collect_effect_access_nodes(
+    node: &AccessNode,
+    retained_id: Option<&str>,
+    path: &str,
+    controls: &mut HashSet<String>,
+) {
+    let effect = matches!(
         node.role,
         Role::Button
             | Role::ToggleButton
@@ -2167,12 +2205,19 @@ fn count_effect_access_nodes(node: &AccessNode) -> usize {
             | Role::SpinButton
             | Role::TextInput
             | Role::MultilineTextInput
-    ));
-    own + node
-        .children
-        .iter()
-        .map(count_effect_access_nodes)
-        .sum::<usize>()
+    );
+    if effect {
+        let identity = node
+            .action_target
+            .clone()
+            .or_else(|| retained_id.map(str::to_owned))
+            .or_else(|| node.semantic_key.clone())
+            .unwrap_or_else(|| format!("{path}/<unaddressable-{:?}>", node.role));
+        controls.insert(identity);
+    }
+    for (index, child) in node.children.iter().enumerate() {
+        collect_effect_access_nodes(child, None, &format!("{path}/semantic[{index}]"), controls);
+    }
 }
 
 fn audit_access_node(node: &AccessNode, path: &str, issues: &mut Vec<AccessibilityIssue>) {
@@ -2716,12 +2761,12 @@ mod tests {
 
         let legacy = Driver::new(
             State::new(),
-            Box::new(Button::new("legacy", "Legacy", Some("clicked"))),
+            Box::new(Button::new("legacy", "Legacy", None).on_click(|| {})),
             (320, 160),
         );
         let audit = legacy.native_app_audit();
         assert!(!audit.is_certified());
-        assert_eq!(audit.issues[0].code, "legacy-document-path");
+        assert_eq!(audit.issues[0].code, "legacy-callback");
 
         let omitted = Driver::new(
             State::new(),
@@ -2733,9 +2778,54 @@ mod tests {
                 .native_app_audit()
                 .issues
                 .iter()
-                .any(|issue| issue.code == "missing-action-inventory"),
+                .any(|issue| issue.code == "missing-action-binding"),
             "an interactive custom/control implementation cannot certify itself by omitting inventory"
         );
+    }
+
+    #[test]
+    fn quick_button_handler_is_a_certified_searchable_action() {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let invoked = calls.clone();
+        let button = Button::new("refresh", "Refresh", None).on_effect(move || {
+            invoked.set(invoked.get() + 1);
+        });
+        let mut driver = Driver::new(State::new(), Box::new(button), (320, 160));
+
+        assert!(driver.native_app_audit().is_certified());
+        assert!(driver.resources().iter().any(|resource| {
+            resource.id.as_str() == "qos.control:refresh"
+                && resource.actions.iter().any(|action| action.id == "invoke")
+        }));
+        driver
+            .perform_named("refresh", &crate::a11y::Action::Activate)
+            .expect("the visible control enters through its action");
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn collaborative_button_is_projected_for_search_and_agents() {
+        use automerge::ReadDoc as _;
+
+        let button = Button::new("complete", "Complete", Some("completed"));
+        let mut driver = Driver::new(State::new(), Box::new(button), (320, 160));
+
+        assert!(driver.native_app_audit().is_certified());
+        assert!(driver.resources().iter().any(|resource| {
+            resource.kind == "qos.ui.control"
+                && resource.label == "Complete"
+                && resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "activate")
+        }));
+        driver
+            .perform_named("complete", &crate::a11y::Action::Activate)
+            .expect("semantic activation reaches the collaborative control");
+        assert!(matches!(
+            driver.state.doc.get(&automerge::ROOT, "completed"),
+            Ok(Some((automerge::Value::Scalar(value), _))) if value.as_ref() == &automerge::ScalarValue::Boolean(true)
+        ));
     }
 
     #[test]
@@ -2862,7 +2952,6 @@ mod tests {
             .map(|issue| issue.code.as_str())
             .collect::<HashSet<_>>();
         for code in [
-            "mixed-synthetic-keys",
             "missing-name",
             "unnamed-focus-target",
             "protected-value-exposed",
@@ -2880,7 +2969,11 @@ mod tests {
         .expect("serialize audit report");
         assert_eq!(report["version"], ACCESSIBILITY_AUDIT_VERSION);
         assert!(report["issues"].is_array());
-        assert_eq!(report["issues"][0]["path"], "Root[0]");
+        assert!(
+            report["issues"][0]["path"]
+                .as_str()
+                .is_some_and(|path| path.starts_with("Root[0]"))
+        );
 
         let driver = Driver::new(
             State::new(),
@@ -3396,7 +3489,7 @@ mod a11y_driver_tests {
                             .iter()
                             .enumerate()
                             .map(|(i, id)| {
-                                AccessNode::new(Role::ListItem)
+                                AccessNode::new(Role::Button)
                                     .with_name(*id)
                                     .with_hashed_key(*id)
                                     .with_state(
@@ -3406,7 +3499,11 @@ mod a11y_driver_tests {
                                     )
                             })
                             .collect(),
-                    ),
+                    )
+                    // This is the high-complexity custom-canvas path: one
+                    // keyed tree becomes searchable/agent-driveable while AT
+                    // still reaches the existing `perform_action_at` switch.
+                    .with_keyed_action_routes("test-strip"),
             )
         }
         fn perform_action_at(

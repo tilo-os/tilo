@@ -34,6 +34,8 @@ pub struct LaunchArgs {
     pub viewport: Option<(u32, u32)>,
     pub scenario: Option<String>,
     pub headless: Option<headless::Spec>,
+    /// Lay out the production root and print its qOS-native certification.
+    pub native_audit: bool,
     pub pseudo_locale: bool,
     pub text_scale: Option<f32>,
     extras: Vec<String>,
@@ -457,6 +459,22 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         std::process::exit(headless::run(headless, spec.live_root(&args)?, spec.app_id));
     }
 
+    if args.native_audit {
+        let harness = FrameHarness::new(State::new(), spec.live_root(&args)?, DEFAULT_VIEWPORT);
+        let audit = harness.native_app_audit();
+        let report = serde_json::to_string_pretty(&audit).map_err(|error| {
+            LaunchError::Operation(format!("could not serialize native audit: {error}"))
+        })?;
+        println!("{report}");
+        if !audit.is_certified() {
+            return Err(LaunchError::Operation(format!(
+                "{} does not satisfy the qOS-native application contract",
+                spec.app_id
+            )));
+        }
+        return Ok(());
+    }
+
     if let Some(handler) = spec.live_handler {
         return handler(&args);
     }
@@ -541,6 +559,7 @@ fn parse_args_extended(
         viewport: None,
         scenario: None,
         headless: None,
+        native_audit: false,
         pseudo_locale: false,
         text_scale: None,
         extras: Vec::new(),
@@ -587,6 +606,12 @@ fn parse_args_extended(
                     .map_err(|error| LaunchError::Scenario(format!("{flag}: {error}")))?;
                 set_once(&mut parsed.headless, value, flag)?;
             }
+            "--native-audit" if inline.is_none() => {
+                if parsed.native_audit {
+                    return Err(LaunchError::Duplicate(flag.to_owned()));
+                }
+                parsed.native_audit = true;
+            }
             extra
                 if (allowed_flags.contains(&extra) || allowed_live_flags.contains(&extra))
                     && inline.is_none() =>
@@ -614,7 +639,8 @@ fn parse_args_extended(
     }
     let mode_count = usize::from(parsed.shots.is_some())
         .saturating_add(usize::from(parsed.responsive_matrix.is_some()))
-        .saturating_add(usize::from(parsed.headless.is_some()));
+        .saturating_add(usize::from(parsed.headless.is_some()))
+        .saturating_add(usize::from(parsed.native_audit));
     if mode_count > 1 {
         return Err(LaunchError::ConflictingModes);
     }
@@ -789,6 +815,30 @@ mod tests {
         let spec = parsed.headless.expect("headless spec");
         assert_eq!(spec.viewport, Some((800, 600)));
         assert_eq!(spec.actions.len(), 1);
+    }
+
+    #[test]
+    fn parses_native_audit_as_an_exclusive_common_mode() {
+        let parsed = parse_args(&strings(&["app", "--native-audit"]), &[], &[]).unwrap();
+        assert!(parsed.native_audit);
+
+        assert_eq!(
+            parse_args(
+                &strings(&["app", "--native-audit", "--headless-drive", "{}"]),
+                &[],
+                &[],
+            )
+            .unwrap_err(),
+            LaunchError::ConflictingModes
+        );
+        assert!(matches!(
+            parse_args(
+                &strings(&["app", "--native-audit", "--native-audit"]),
+                &[],
+                &[]
+            ),
+            Err(LaunchError::Duplicate(_))
+        ));
     }
 
     #[test]

@@ -22,7 +22,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 use ui::PathSegment;
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionSpec, OperationKind, PermissionRequirement, Resource, RetryPolicy};
+use ui::qos_actions::{
+    ActionSpec, OperationKind, PermissionRequirement, Resource, RetryPolicy, flatten,
+};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
@@ -229,6 +231,10 @@ pub struct ContainersApp {
     pub(crate) palette: CommandPalette,
     /// Whether the app-scoped palette overlay is currently open.
     pub(crate) palette_open: bool,
+    /// Selection requested through the resource/action door. Applied during
+    /// `sync`, where the framework deliberately provides mutable document
+    /// access for collaborative view state.
+    pending_resource_selection: Option<String>,
     /// Collapsible sidebar reveal kernel (the shared `ui` flap animation).
     pub(crate) sidebar_flap: FlapState,
     /// Wall-clock anchor for advancing the sidebar slide from the draw path.
@@ -303,6 +309,7 @@ impl ContainersApp {
                 .with_placeholder("Search containers…"),
             palette: CommandPalette::commands(),
             palette_open: false,
+            pending_resource_selection: None,
             sidebar_flap: FlapState::open_when_docked(),
             sidebar_tick: None,
             toast: None,
@@ -663,22 +670,41 @@ impl ContainersApp {
     /// selects that container — the same "find and jump to" the old inline
     /// search bar did, but through the shared search surface.
     pub(crate) fn open_container_palette(&mut self) {
-        let entries: Vec<CommandEntry> = self
-            .engine
-            .containers
-            .iter()
-            .map(|ct| {
-                CommandEntry::new(ct.id.clone(), ct.name.clone()).description(format!(
-                    "{} · {}",
-                    ct.status.label(),
-                    ct.image
-                ))
-            })
+        let resources = self.resources(&AutoCommit::new());
+        let entries: Vec<CommandEntry> = flatten(&resources)
+            .into_iter()
+            .filter(|action| action.action.id == "select")
+            .map(|action| CommandEntry::from_flat_action(&action))
             .collect();
         self.palette.set_entries(entries);
         self.palette.open();
         self.palette_open = true;
         self.structure_dirty = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dispatch_palette_invocation_for_test(&mut self, doc: &mut AutoCommit) {
+        let intent = self
+            .take_control_invocation()
+            .expect("palette emitted a resource action");
+        let resources = self.resources(doc);
+        let spec = ui::qos_actions::door::resolve(&resources, &intent.address)
+            .expect("palette address resolves");
+        let kind = spec.kind;
+        let encoded = spec
+            .build_json(&intent.arguments)
+            .expect("valid palette arguments");
+        assert!(
+            self.invoke_resource_operation(
+                kind,
+                &encoded.type_id,
+                &encoded.payload,
+                doc,
+                &automerge::ROOT,
+            )
+            .expect("resource operation")
+        );
+        self.sync(doc, &automerge::ROOT);
     }
 
     /// Forward a pointer event to the header search launcher. The launcher
@@ -993,6 +1019,16 @@ impl Widget for ContainersApp {
                 "containers.container",
                 container.name.clone(),
             );
+            let selection = vec!["select".to_string(), container.id.clone()];
+            if let Ok(spec) = ActionSpec::operation(
+                "select",
+                format!("Open {}", container.name),
+                OperationKind::View,
+                "containers.container",
+                &selection,
+            ) {
+                resource.actions.push(spec);
+            }
             let verbs: &[(&str, &str)] = if container.status.is_running() {
                 &[
                     ("stop", "Stop"),
@@ -1094,9 +1130,6 @@ impl Widget for ContainersApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != OperationKind::Effect {
-            return Ok(false);
-        }
         let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         let Some(verb) = args.first().map(String::as_str) else {
             return Err("missing operation".into());
@@ -1104,6 +1137,13 @@ impl Widget for ContainersApp {
         let Some(target) = args.get(1).map(String::as_str) else {
             return Err("missing target".into());
         };
+        if kind == OperationKind::View && type_id == "containers.container" && verb == "select" {
+            self.pending_resource_selection = Some(target.to_string());
+            return Ok(true);
+        }
+        if kind != OperationKind::Effect {
+            return Ok(false);
+        }
         if !self.live {
             return Err("container engine actions are unavailable in demo mode".into());
         }
@@ -1144,6 +1184,9 @@ impl Widget for ContainersApp {
     }
 
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+        if let Some(target) = self.pending_resource_selection.take() {
+            ViewDoc::set_selected(doc, Some(&target));
+        }
         self.drain_bg(doc);
         // Seed a representative selection on the very first sync of a demo /
         // shots session so the detail view is populated out of the box.
@@ -1434,10 +1477,6 @@ impl Widget for ContainersApp {
                     dummy_node,
                     &dummy_taffy,
                 );
-                if let Some(outcome) = self.palette.take_outcome() {
-                    ViewDoc::set_selected(doc, Some(&outcome.id));
-                    self.palette.close();
-                }
                 if !self.palette.is_open() {
                     self.palette_open = false;
                 }
@@ -1574,6 +1613,18 @@ impl Widget for ContainersApp {
 
     fn name(&self) -> &'static str {
         "ContainersApp"
+    }
+
+    fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
+        self.palette.take_control_invocation()
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        if self.palette_open {
+            self.palette.control_action_bindings()
+        } else {
+            Vec::new()
+        }
     }
 
     fn get_rect(&self) -> Rect {
@@ -1843,7 +1894,7 @@ mod palette_launcher_tests {
             app.engine
                 .containers
                 .iter()
-                .all(|c| rows.iter().any(|r| r == &c.name)),
+                .all(|c| rows.iter().any(|r| r.contains(&c.name))),
             "every container is reachable through the shared palette"
         );
     }
@@ -1874,6 +1925,7 @@ mod palette_launcher_tests {
             node,
             &taffy,
         );
+        app.dispatch_palette_invocation_for_test(&mut doc);
 
         assert!(!app.palette_open, "Enter closes the palette");
         assert_eq!(

@@ -38,16 +38,18 @@
 #[cfg(feature = "decode")]
 use std::path::PathBuf;
 
+#[cfg(feature = "decode")]
+use gstreamer::prelude::*;
+
 /// Frames per second of the fixture clip.
 #[cfg(feature = "decode")]
 pub const FIXTURE_FPS: f64 = 30.0;
 
-/// Dimensions of the compact tracked fixture.
+/// Encoded picture dimensions exercised by the hardware/native-frame tests.
 #[cfg(feature = "decode")]
-pub const FIXTURE_WIDTH: u32 = 320;
-
+pub const FIXTURE_WIDTH: u32 = 1_920;
 #[cfg(feature = "decode")]
-pub const FIXTURE_HEIGHT: u32 = 180;
+pub const FIXTURE_HEIGHT: u32 = 1_080;
 
 /// One frame interval, milliseconds. A seek that lands within this of its
 /// target landed on the right picture.
@@ -65,15 +67,126 @@ pub const FRAME_MS: u64 = 33;
 #[cfg(feature = "decode")]
 pub const FIXTURE_GOP_MS: u64 = 8_333;
 
-/// The fixture clip: tracked 320x180 H.264/AAC in MP4, 30fps, 48s, 1440
-/// frames. `fixtures/generate-h264-aac.sh` reproduces its codec and timeline
-/// contract without relying on developer-local demo artifacts.
+/// Exactly 250 pictures separate keyframes at 30 fps.
+#[cfg(feature = "decode")]
+pub const FIXTURE_GOP_FRAMES: u32 = 250;
+
+/// Number of pictures in the generated fixture.
+#[cfg(feature = "decode")]
+pub const FIXTURE_FRAMES: u32 = 1_717;
+
+/// The fixture clip: 1080p H.264 in MP4, 30fps, 57.2s, 1717 frames.
+///
+/// The clip is generated from an in-process `GStreamer` graph instead of living
+/// in a developer's untracked artifact directory.  Its filename includes the
+/// complete stream contract, so changing a dimension, cadence, frame count or
+/// GOP necessarily creates a new cache entry rather than silently reusing an
+/// incompatible file.
 #[cfg(feature = "decode")]
 pub fn fixture_path() -> PathBuf {
-    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/h264-aac-48s.mp4");
-    // Resolve the `..` segments: a `file://` URI keeps them verbatim and not
-    // every source element normalises them.
-    p.canonicalize().unwrap_or(p)
+    static FIXTURE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    FIXTURE.get_or_init(generate_fixture).clone()
+}
+
+/// Encode the exact seek/decode fixture once into the host's temporary cache.
+///
+/// Cargo launches each integration-test file as a separate process.  A stable
+/// cache path lets all of those binaries share one encoding, while a
+/// process-specific staging file makes publication atomic if they start at the
+/// same time.  The source scrolls a detailed SMPTE image on every frame: it is
+/// cheap to encode but guarantees that two correctly sought pictures differ.
+#[cfg(feature = "decode")]
+#[allow(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "failure to construct the real encoded test subject must fail the decode test loudly"
+)]
+fn generate_fixture() -> PathBuf {
+    const CACHE_FILE: &str = "h264-smpte-scroll-1920x1080-30fps-1717frames-gop250-v1.mp4";
+
+    let cache = std::env::temp_dir().join("qos-media-test-fixtures");
+    std::fs::create_dir_all(&cache).expect("create media fixture cache directory");
+    let published = cache.join(CACHE_FILE);
+    if fixture_is_ready(&published) {
+        return published;
+    }
+
+    gstreamer::init().expect("initialize GStreamer for generated media fixture");
+    assert!(
+        gstreamer::ElementFactory::find("openh264enc").is_some(),
+        "the decode-test stack must provide openh264enc so its H.264 subject can be generated"
+    );
+
+    let staging = cache.join(format!("{CACHE_FILE}.{}.part", std::process::id()));
+    std::fs::remove_file(&staging).ok();
+    let description = format!(
+        "videotestsrc pattern=smpte horizontal-speed=8 num-buffers={FIXTURE_FRAMES} ! \
+         video/x-raw,format=I420,width={FIXTURE_WIDTH},height={FIXTURE_HEIGHT},\
+         framerate={FIXTURE_FPS}/1 ! \
+         openh264enc complexity=low gop-size={FIXTURE_GOP_FRAMES} scene-change-detection=false \
+         enable-frame-skip=false ! h264parse ! mp4mux ! \
+         filesink name=fixture_sink"
+    );
+    let pipeline = gstreamer::parse::launch(&description)
+        .expect("construct generated media fixture pipeline")
+        .downcast::<gstreamer::Pipeline>()
+        .expect("fixture graph is a pipeline");
+    pipeline
+        .by_name("fixture_sink")
+        .expect("generated fixture filesink")
+        .set_property("location", staging.to_string_lossy().as_ref());
+    pipeline
+        .set_state(gstreamer::State::Playing)
+        .expect("start generated media fixture encoder");
+
+    let bus = pipeline.bus().expect("generated fixture pipeline bus");
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(120))
+        .expect("fixture deadline is representable");
+    let mut reached_eos = false;
+    while std::time::Instant::now() < deadline {
+        let Some(message) = bus.timed_pop(gstreamer::ClockTime::from_mseconds(500)) else {
+            continue;
+        };
+        match message.view() {
+            gstreamer::MessageView::Eos(_) => {
+                reached_eos = true;
+                break;
+            }
+            gstreamer::MessageView::Error(error) => panic!(
+                "generated media fixture failed in {}: {} ({:?})",
+                error.src().map_or_else(
+                    || "unknown element".into(),
+                    gstreamer::prelude::GstObjectExt::path_string
+                ),
+                error.error(),
+                error.debug(),
+            ),
+            _ => {}
+        }
+    }
+    let _ = pipeline.set_state(gstreamer::State::Null);
+    assert!(reached_eos, "generated media fixture timed out before EOS");
+    assert!(
+        fixture_is_ready(&staging),
+        "generated fixture is not a real encoded MP4: {}",
+        staging.display()
+    );
+
+    if let Err(error) = std::fs::rename(&staging, &published) {
+        assert!(
+            fixture_is_ready(&published),
+            "publish generated media fixture {}: {error}",
+            published.display()
+        );
+        std::fs::remove_file(&staging).ok();
+    }
+    published
+}
+
+#[cfg(feature = "decode")]
+fn fixture_is_ready(path: &std::path::Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > 512)
 }
 
 /// The fixture, failing loudly if it is not there. A decode test with no clip
@@ -130,9 +243,10 @@ pub fn has_hardware_h264() -> bool {
 
 /// The presentation timestamp of the fixture's **first** decoded picture.
 ///
-/// Container edit lists and decoder preroll can give a track a small non-zero
-/// first PTS. Measure it rather than assuming zero, so the seek tests calibrate
-/// against the stream's own timebase without masking genuine drift.
+/// Measured from the encoded stream rather than assumed to be zero, so the seek
+/// tests remain about drift instead of a muxer's choice of edit-list/timebase
+/// representation.  The small upper bound prevents this calibration from ever
+/// masking a real seek error.
 #[cfg(feature = "decode")]
 pub fn stream_pts_base_ms(engine: &mut media::MediaEngine) -> u64 {
     let first = decode_frame_at(engine, 0, "stream timebase probe");

@@ -6,9 +6,8 @@ describe its operations with ``ActionSpec``. The headless agent is the one
 application-model consumer: it surveys peer resources and invokes their action
 descriptors. This cheap source-boundary check makes a new bespoke command bus or
 an app with no OS-visible surface fail presubmit instead of silently forking the
-platform again. It is intentionally a ratchet, not a claim that source
-inspection can prove full UI/action parity: known raw callback and
-private-palette debt is recorded in an explicit, reduce-only baseline.
+platform again. Source rules are a zero-tolerance boundary check; the runtime
+``--native-audit`` proves the live accessibility/resource/control inventory.
 """
 
 from __future__ import annotations
@@ -63,6 +62,14 @@ RATCHETS = {
     "bespoke_command_entry": (
         re.compile(r"\bCommandEntry\s*::\s*new\s*\("),
         "new private command-palette entry; publish and invoke an ActionSpec instead",
+    ),
+    "private_palette_argument": (
+        re.compile(r"\.open_argument\s*\("),
+        "private command-palette argument route; use open_action_argument with a published ActionSpec",
+    ),
+    "private_palette_outcome": (
+        re.compile(r"\bCommandOutcome\b"),
+        "private command-palette outcome; drain the shared ControlInvocation route instead",
     ),
 }
 

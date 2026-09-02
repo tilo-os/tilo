@@ -112,8 +112,10 @@ impl Customizer {
     pub fn new() -> Self {
         Self {
             color_picker: ColorPicker::new(Color::from_rgb8(99, 102, 241)),
-            radius_slider: Slider::new("radius_slider", KEY_ED_RADIUS),
-            spacing_slider: Slider::new("spacing_slider", KEY_ED_SPACING),
+            radius_slider: Slider::new("radius_slider", KEY_ED_RADIUS)
+                .with_accessible_name("Corner radius"),
+            spacing_slider: Slider::new("spacing_slider", KEY_ED_SPACING)
+                .with_accessible_name("Interface spacing"),
             font_dropdown: Dropdown::new(
                 FONTS.iter().map(std::string::ToString::to_string).collect(),
                 KEY_ED_FONT,

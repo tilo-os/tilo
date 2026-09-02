@@ -23,8 +23,12 @@ use std::path::Path;
 use std::time::Duration;
 
 use ed25519_dalek::{Signer as _, SigningKey};
+use qos_actions::{ActionAddress, ActionRegistry, LocalTransport, Resource};
 use qos_agent::wire::Link;
-use ui::collaboration::{CertifiedEndpointIdentity, CollabEvent, CollabRequest, DocumentMutation};
+use ui::collaboration::{
+    CertifiedEndpointIdentity, CollabEvent, CollabRequest, DocumentMutation, ExportedAction,
+    ExportedInput,
+};
 
 const TEST_ROOM: uuid::Uuid = uuid::Uuid::from_u128(0x6f2a_5fce_f612_46ac_9228_f6a3_ace4_9a11);
 const ROOT_KEY: [u8; 32] = [91; 32];
@@ -166,6 +170,132 @@ pub fn recv(peer: &mut TypedPeer) -> Option<CollabEvent> {
 
 pub fn document_mutation(event: &CollabEvent) -> Option<DocumentMutation> {
     event.document_mutation()?.ok()
+}
+
+/// Serialize the same resource descriptors the toolkit publishes for a
+/// windowed application.
+///
+/// # Panics
+///
+/// Panics if a production action descriptor cannot be serialized for the
+/// broker wire, which is an invalid test fixture.
+pub fn exported_actions(resources: &[Resource]) -> Vec<ExportedAction> {
+    qos_actions::door::survey(resources)
+        .into_iter()
+        .map(|descriptor| ExportedAction {
+            resource: descriptor.address.resource,
+            action: descriptor.address.action,
+            resource_kind: descriptor.resource_kind,
+            resource_label: descriptor.resource_label,
+            action_label: descriptor.action_label,
+            description: descriptor.description,
+            operation_kind: descriptor.kind.as_str().to_string(),
+            params_json: serde_json::to_string(&descriptor.params).unwrap(),
+            contract_json: serde_json::to_string(&descriptor.contract).unwrap(),
+            input: match descriptor.input {
+                qos_actions::InputSpec::None => ExportedInput::None,
+                qos_actions::InputSpec::Text {
+                    prompt,
+                    placeholder,
+                    collects,
+                } => ExportedInput::Text {
+                    prompt,
+                    placeholder,
+                    wants_content: collects == qos_actions::Collects::Content,
+                },
+            },
+        })
+        .collect()
+}
+
+/// Replace this peer's broker catalogue with a production resource tree.
+///
+/// # Panics
+///
+/// Panics if the typed test peer cannot publish to its collaboration broker.
+pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource]) {
+    peer.send(&CollabRequest::PublishActions {
+        app_id: app_id.to_string(),
+        actions: exported_actions(resources),
+    })
+    .unwrap();
+}
+
+/// Resolve and execute a document invocation through an application's real
+/// action registry, broadcasting the resulting CRDT delta like the toolkit
+/// host. The caller owns when to send the returned terminal update, allowing
+/// concurrency tests to interleave another participant first.
+///
+/// # Panics
+///
+/// Panics if a successful document action produces no CRDT delta or that
+/// delta cannot be sent through the typed test peer.
+#[allow(clippy::too_many_arguments)]
+pub fn service_document_invocation(
+    peer: &mut TypedPeer,
+    replica: &mut automerge::AutoCommit,
+    resources: &[Resource],
+    register: fn(&mut ActionRegistry),
+    id: u64,
+    resource: String,
+    action: String,
+    argument: Option<&str>,
+    actor: &str,
+) -> qos_actions::InvocationUpdate {
+    let address = ActionAddress::new(resource, action);
+    let mut registry = ActionRegistry::new();
+    register(&mut registry);
+    let mut transport = LocalTransport::new();
+    let before = replica.get_heads();
+    let result = if let Some(json) =
+        argument.and_then(|value| value.strip_prefix(qos_actions::ARGUMENTS_JSON_PREFIX))
+    {
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+            .map_err(|error| qos_actions::DoorError::InvalidArguments(error.to_string()))
+            .and_then(|arguments| {
+                qos_actions::door::invoke_json_confirmed(
+                    replica,
+                    resources,
+                    &address,
+                    &arguments,
+                    actor.as_bytes(),
+                    &registry,
+                    &mut transport,
+                )
+            })
+    } else {
+        qos_actions::door::invoke_confirmed(
+            replica,
+            resources,
+            &address,
+            argument,
+            actor.as_bytes(),
+            &registry,
+            &mut transport,
+        )
+    };
+    let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+    match result {
+        Ok(_) => {
+            let delta = replica.save_after(&before);
+            assert!(!delta.is_empty(), "the invoked document action was a no-op");
+            peer.send(&CollabRequest::DocumentIncremental { data: delta })
+                .unwrap();
+            qos_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: qos_actions::ActionOutput::default(),
+            }
+        }
+        Err(error) => qos_actions::InvocationUpdate::Failed {
+            invocation,
+            error: qos_actions::ActionFailure {
+                code: "qos.test_app_host".into(),
+                message: error.to_string(),
+                details: None,
+                retryable: false,
+            },
+        },
+    }
 }
 
 /// # Panics
