@@ -125,6 +125,7 @@ pub struct ImagerApp {
     // ---- transient job / portal plumbing (not in the doc) ----
     job_rx: Option<std::sync::mpsc::Receiver<Progress>>,
     portal_rx: Option<PortalChannel>,
+    release_rx: Option<std::sync::mpsc::Receiver<Result<Source, String>>>,
     show_internal: bool,
     /// The user has explicitly acknowledged that selecting the **system** disk
     /// (the one the running OS boots from) will destroy it. A system disk can
@@ -181,6 +182,7 @@ impl ImagerApp {
             step: Step::Source,
             job_rx: None,
             portal_rx: None,
+            release_rx: None,
             show_internal: false,
             system_ack: false,
             export_dialog: ExportDialog::new(),
@@ -2716,6 +2718,50 @@ impl ImagerApp {
         self.dirty = true;
     }
 
+    fn download_release(&mut self, state: &mut AutoCommit, release: QosRelease) {
+        if self.release_rx.is_some() {
+            self.set_status(state, "A qOS installer download is already in progress.");
+            return;
+        }
+        self.set_status(
+            state,
+            &format!("Downloading and verifying qOS {}…", release.version),
+        );
+        self.release_rx = Some(crate::release::spawn_download(release));
+        self.dirty = true;
+    }
+
+    fn drain_release(&mut self, state: &mut AutoCommit) {
+        let Some(rx) = &self.release_rx else { return };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("The qOS installer download stopped unexpectedly.".into())
+            }
+        };
+        self.release_rx = None;
+        match result {
+            Ok(source) => {
+                if let Some(release) = self
+                    .releases
+                    .iter_mut()
+                    .find(|release| source.name == format!("{} {}", release.name, release.version))
+                {
+                    release.local_path.clone_from(&source.path);
+                }
+                ImagerDoc::set_releases(state, &self.releases);
+                self.select_source(state, &source);
+                self.set_status(
+                    state,
+                    "qOS installer downloaded and cryptographically verified.",
+                );
+            }
+            Err(error) => self.set_status(state, &error),
+        }
+        self.dirty = true;
+    }
+
     fn select_target(&mut self, state: &mut AutoCommit, idx: usize) {
         let Some(drive) = self.targets.get(idx) else {
             return;
@@ -2823,7 +2869,9 @@ impl ImagerApp {
                         Ok(())
                     }
                 }
-                crate::actions::ImagerOperation::Write { .. } => unreachable!(),
+                crate::actions::ImagerOperation::Write { .. } => {
+                    Err("Invalid image-write operation dispatch".into())
+                }
             };
         };
         let (Some(src), Some(tgt)) = (self.source.clone(), self.target().cloned()) else {
@@ -2985,12 +3033,12 @@ impl ImagerApp {
         match hit {
             Hit::PickFile => self.open_file_picker(state),
             Hit::Release(i) => {
-                if let Some(src) = self
-                    .releases
-                    .get(i)
-                    .map(super::model::QosRelease::to_source)
-                {
-                    self.select_source(state, &src);
+                if let Some(release) = self.releases.get(i).cloned() {
+                    if release.url.is_empty() {
+                        self.select_source(state, &release.to_source());
+                    } else {
+                        self.download_release(state, release);
+                    }
                 }
             }
             Hit::Recent(i) => {
@@ -3066,8 +3114,16 @@ impl Widget for ImagerApp {
             self.seeded = true;
         }
 
+        if live_probe_enabled() && ImagerDoc::releases(state).is_empty() {
+            match crate::release::bundled_releases() {
+                Ok(releases) => ImagerDoc::set_releases(state, &releases),
+                Err(error) => ImagerDoc::set_status(state, &error),
+            }
+        }
+
         // Fold in any async work before reading the doc back.
         self.drain_portal(state);
+        self.drain_release(state);
         self.drain_job(state);
 
         self.targets = ImagerDoc::targets(state);
@@ -3301,14 +3357,12 @@ impl Widget for ImagerApp {
             crate::write::allow_write(),
         );
         job.actions.push(
-            qos_actions::ActionSpec::operation(
+            crate::actions::operation_spec(
                 "export-config",
                 "Export headless configuration",
                 qos_actions::OperationKind::View,
-                crate::actions::IMAGER_OPERATION_TYPE,
-                &crate::actions::ImagerOperation::ExportConfig,
+                crate::actions::ImagerOperation::ExportConfig,
             )
-            .expect("imager operation payload is serializable")
             .with_contract(qos_actions::ActionContract {
                 availability: if available {
                     qos_actions::Availability::Available
@@ -3333,11 +3387,11 @@ impl Widget for ImagerApp {
         &mut self,
         kind: qos_actions::OperationKind,
         type_id: &str,
-        _payload: &[u8],
-        _doc: &AutoCommit,
+        payload: &[u8],
+        doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, _payload)? else {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
         let expected_kind = match operation {
@@ -3348,7 +3402,7 @@ impl Widget for ImagerApp {
         if kind != expected_kind {
             return Err("Imager operation kind does not match its contract".into());
         }
-        let mut local_doc = _doc.clone();
+        let mut local_doc = doc.clone();
         self.perform_operation(&operation, &mut local_doc)?;
         Ok(true)
     }

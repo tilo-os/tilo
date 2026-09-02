@@ -41,6 +41,7 @@ PY
 uploaded=0
 while IFS= read -r -d '' artifact; do
   name="$(basename "$artifact")"
+  case "$name" in catalog-x86_64.json|catalog-aarch64.json) continue ;; esac
   curl --fail --silent --show-error -H "$auth" \
     -F "attachment=@$artifact" \
     "$api/releases/$release_id/assets?name=$name" >/dev/null

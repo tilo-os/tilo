@@ -7,7 +7,7 @@ ConditionPathExists=/usr/bin/qos-rollback
 # authorisation is useful only when it is durably recorded on the installed,
 # encrypted root; doing this from the live medium strands the secret there and
 # makes the installed system unable to administer its own lockout policy.
-ConditionKernelCommandLine=!qos.installer
+ConditionKernelCommandLine=!qos.install
 # Once the authorisation has been recorded there is nothing left to do.
 ConditionPathExists=!/var/lib/qos/rollback/lockout-auth
 

@@ -69,6 +69,7 @@ pub mod doc;
 mod export_dialog;
 pub mod model;
 pub mod probe;
+pub mod release;
 pub mod write;
 
 pub use app::ImagerApp;

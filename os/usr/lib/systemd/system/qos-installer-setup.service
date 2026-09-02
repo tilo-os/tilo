@@ -1,9 +1,9 @@
 [Unit]
 Description=qOS installer live-medium setup (privileged-backend sudoers + SELinux module)
-# ONLY on the installer live medium — the kernel cmdline carries qos.installer.
+# ONLY on the installer live medium — the kernel cmdline carries qos.install.
 # The INSTALLED system never has this arg, so this unit never fires there and
 # the passwordless sudoers rule is never present on installed machines.
-ConditionKernelCommandLine=qos.installer
+ConditionKernelCommandLine=qos.install
 After=local-fs.target
 # In place before the greeter starts the installer UI.
 Before=greetd.service

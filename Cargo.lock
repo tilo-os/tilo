@@ -6664,6 +6664,7 @@ dependencies = [
  "automerge",
  "qos-actions",
  "qos-app",
+ "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -6672,6 +6673,7 @@ dependencies = [
  "tempfile",
  "vello",
  "winit",
+ "zstd",
 ]
 
 [[package]]

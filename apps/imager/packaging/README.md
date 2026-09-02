@@ -12,6 +12,13 @@ Release hosts produce this matrix (architecture is part of every filename):
 | Windows x86-64 | signed standalone EXE, modern Inno Setup EXE, portable zip | WinGet manifest |
 | macOS x86-64 + Apple silicon | signed/notarized DMG and app zip | Homebrew cask |
 
+The protected tag workflow also builds the live installer on native x86-64 and
+ARM64 runners, converts the tested qcow2 to `qos-installer-linux-ARCH.img.zst`,
+and publishes a digest-bound catalog. The catalog is embedded into every signed
+Imager package. Selecting its qOS release downloads the compressed image into a
+per-user cache and verifies both the transport SHA-256 and expanded-image
+SHA-256/size before the raw image is offered to the writer.
+
 Flatpak is deliberately not offered. A sandboxed application cannot safely gain
 raw block-device access without a separately installed, narrowly scoped host
 helper, and elevating a second copy of the whole Flatpak application would both

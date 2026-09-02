@@ -165,8 +165,7 @@ fn secure_boot_enabled() -> bool {
 
 fn kernel_lockdown_active() -> bool {
     std::fs::read_to_string("/sys/kernel/security/lockdown")
-        .map(|state| state.contains("[integrity]") || state.contains("[confidentiality]"))
-        .unwrap_or(false)
+        .is_ok_and(|state| state.contains("[integrity]") || state.contains("[confidentiality]"))
 }
 
 /// Does this installer image prove that the target it writes will retain the
@@ -183,22 +182,32 @@ fn target_verified_boot_ready() -> bool {
 
 /// Explanation shown under the encryption chooser, reflecting the choice and
 /// what this machine's hardware can actually do.
-fn encrypt_description(
-    tpm2: bool,
-    secure_boot: bool,
-    kernel_lockdown: bool,
-    target_verified_boot: bool,
-) -> &'static str {
-    if tpm2 && secure_boot && kernel_lockdown && target_verified_boot {
-        "qOS always encrypts the disk with LUKS2. At startup, one PIN unlocks a key sealed to this computer's TPM2 chip. A recovery key is shown once during install in case the TPM is reset or fails."
-    } else if tpm2 && secure_boot && kernel_lockdown {
-        "qOS always encrypts the disk with LUKS2. This installer cannot yet prove that the installed target preserves verified boot, so it uses one strong startup passphrase instead of an unsafe short PIN."
-    } else if tpm2 && secure_boot {
-        "qOS always encrypts the disk with LUKS2. Secure Boot is active but kernel lockdown is not, so qOS cannot treat this boot as verified and uses a strong disk passphrase instead."
-    } else if tpm2 {
-        "qOS always encrypts the disk with LUKS2. TPM2 short-PIN protection requires verified boot, but Secure Boot is not active, so this installation uses a strong disk passphrase instead."
-    } else {
-        "qOS always encrypts the disk with LUKS2. This computer has no TPM2 chip, so you will enter a disk passphrase at startup. A recovery key is shown once during install as a backup."
+#[derive(Clone, Copy)]
+enum VerifiedBootState {
+    NoTpm,
+    SecureBootInactive,
+    KernelLockdownInactive,
+    TargetUnverified,
+    TargetVerified,
+}
+
+fn encrypt_description(state: VerifiedBootState) -> &'static str {
+    match state {
+        VerifiedBootState::TargetVerified => {
+            "qOS always encrypts the disk with LUKS2. At startup, one PIN unlocks a key sealed to this computer's TPM2 chip. A recovery key is shown once during install in case the TPM is reset or fails."
+        }
+        VerifiedBootState::TargetUnverified => {
+            "qOS always encrypts the disk with LUKS2. This installer cannot yet prove that the installed target preserves verified boot, so it uses one strong startup passphrase instead of an unsafe short PIN."
+        }
+        VerifiedBootState::KernelLockdownInactive => {
+            "qOS always encrypts the disk with LUKS2. Secure Boot is active but kernel lockdown is not, so qOS cannot treat this boot as verified and uses a strong disk passphrase instead."
+        }
+        VerifiedBootState::SecureBootInactive => {
+            "qOS always encrypts the disk with LUKS2. TPM2 short-PIN protection requires verified boot, but Secure Boot is not active, so this installation uses a strong disk passphrase instead."
+        }
+        VerifiedBootState::NoTpm => {
+            "qOS always encrypts the disk with LUKS2. This computer has no TPM2 chip, so you will enter a disk passphrase at startup. A recovery key is shown once during install as a backup."
+        }
     }
 }
 
@@ -917,6 +926,20 @@ impl InstallerApp {
         self.tpm2 && self.secure_boot && self.kernel_lockdown && self.target_verified_boot
     }
 
+    fn verified_boot_state(&self) -> VerifiedBootState {
+        if !self.tpm2 {
+            VerifiedBootState::NoTpm
+        } else if !self.secure_boot {
+            VerifiedBootState::SecureBootInactive
+        } else if !self.kernel_lockdown {
+            VerifiedBootState::KernelLockdownInactive
+        } else if !self.target_verified_boot {
+            VerifiedBootState::TargetUnverified
+        } else {
+            VerifiedBootState::TargetVerified
+        }
+    }
+
     /// May the install start, as far as encryption is concerned? Native qOS
     /// always requires both a reproducible recovery factor and a startup
     /// secret: a TPM2-bound PIN where supported, otherwise a disk passphrase.
@@ -1617,14 +1640,9 @@ impl InstallerApp {
                 .with_color(theme.status_success),
         ));
         children.push(Box::new(
-            Text::new(encrypt_description(
-                self.tpm2,
-                self.secure_boot,
-                self.kernel_lockdown,
-                self.target_verified_boot,
-            ))
-            .with_size(sm)
-            .with_color(dim),
+            Text::new(encrypt_description(self.verified_boot_state()))
+                .with_size(sm)
+                .with_color(dim),
         ));
 
         children.push(Box::new(Text::new("Security key").with_size(base)));
@@ -2859,7 +2877,8 @@ mod tests {
         *app.password.lock().unwrap() = "correct horse".to_string();
         assert!(app.encryption_ready());
         assert!(
-            encrypt_description(true, false, false, false).contains("Secure Boot is not active")
+            encrypt_description(VerifiedBootState::SecureBootInactive)
+                .contains("Secure Boot is not active")
         );
     }
 
@@ -2875,7 +2894,10 @@ mod tests {
         assert!(!app.encryption_ready());
         *app.password.lock().unwrap() = "correct horse".to_string();
         assert!(app.encryption_ready());
-        assert!(encrypt_description(true, true, false, false).contains("kernel lockdown is not"));
+        assert!(
+            encrypt_description(VerifiedBootState::KernelLockdownInactive)
+                .contains("kernel lockdown is not")
+        );
     }
 
     #[test]
@@ -2895,7 +2917,7 @@ mod tests {
         *app.password.lock().unwrap() = "correct horse".to_string();
         assert!(app.encryption_ready());
         assert!(
-            encrypt_description(true, true, true, false)
+            encrypt_description(VerifiedBootState::TargetUnverified)
                 .contains("cannot yet prove that the installed target")
         );
     }
@@ -2915,11 +2937,12 @@ mod tests {
         assert_eq!(app.encryption_summary(), "On (LUKS — recovery key)");
 
         assert!(
-            encrypt_description(false, false, false, false).contains("no TPM2 chip"),
+            encrypt_description(VerifiedBootState::NoTpm).contains("no TPM2 chip"),
             "the chooser has to say the machine cannot unlock itself"
         );
         assert!(
-            !encrypt_description(true, true, true, true).contains("Requires a TPM2 device"),
+            !encrypt_description(VerifiedBootState::TargetVerified)
+                .contains("Requires a TPM2 device"),
             "encryption no longer requires a TPM, and the copy must not claim it does"
         );
     }

@@ -87,6 +87,11 @@ impl MediaProfile {
 }
 
 /// Load and validate a profile extracted from the live medium.
+///
+/// # Errors
+///
+/// Returns an error when the profile cannot be read, exceeds the size limit,
+/// contains malformed JSON, or fails validation.
 pub fn load_from(path: &Path) -> Result<Option<MediaProfile>, String> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -102,6 +107,11 @@ pub fn load_from(path: &Path) -> Result<Option<MediaProfile>, String> {
         .map(Some)
 }
 
+/// Load and validate the profile extracted at [`PROFILE_PATH`].
+///
+/// # Errors
+///
+/// Returns the same read, size, parse, or validation errors as [`load_from`].
 pub fn load() -> Result<Option<MediaProfile>, String> {
     load_from(Path::new(PROFILE_PATH))
 }

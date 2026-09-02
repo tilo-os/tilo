@@ -1,5 +1,6 @@
 [Unit]
 Description=Reap expired qOS Windows egress leases
+ConditionKernelCommandLine=!qos.install
 
 [Timer]
 OnBootSec=30s

@@ -421,6 +421,11 @@ RUN --mount=type=cache,target=/build/.cargo-home \
            case " ${THIN_EXCLUDES} " in *" $p "*) continue ;; esac; \
            [ -z "$b" ] || cp "target/thin-app/$b" /out/thin-apps/; \
        done \
+    # Files is also a privileged, directly-invoked system recovery surface.
+    # Package that exact standalone binary so the launcher and /usr/bin route
+    # cannot drift and headless recovery does not depend on runtime-bundle
+    # loader setup. Other ordinary apps keep the smaller shared-runtime build.
+    && cp /out/file-explorer /out/thin-apps/file-explorer \
     && cp target/thin-app/libruntime_dylib.so /out/ \
     && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
     && [ -n "${LIBSTD}" ] \
@@ -1007,6 +1012,11 @@ COPY os/etc/profile.d/qos-apps.sh /etc/profile.d/qos-apps.sh
 
 # FUSE mount service
 COPY os/usr/lib/systemd/system/fs.service /usr/lib/systemd/system/fs.service
+# A measured installer UKI must not try to persist its transient TPM identity
+# to the read-only live ESP. These conditions stop both systemd setup phases
+# only while the sealed command line carries qos.install.
+COPY os/usr/lib/systemd/system/systemd-tpm2-setup.service.d/10-qos-live-installer.conf /usr/lib/systemd/system/systemd-tpm2-setup.service.d/10-qos-live-installer.conf
+COPY os/usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-qos-live-installer.conf /usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-qos-live-installer.conf
 # The capability list that mount enforces. Shipped read-only under /usr;
 # tmpfiles.d copies it to /var/lib/qos on first boot, where it can be
 # edited and survives image updates. See fs.service for why the subject

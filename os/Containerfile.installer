@@ -17,11 +17,11 @@ ARG QOS_INSTALLER_DEV_SSH=0
 # final paths and modes before Podman sees the context.
 COPY rootfs/ /
 
-# `qos.installer=1` — the one thing that distinguishes the live medium from a
+# `qos.install` — the one thing that distinguishes the live medium from a
 # normal install:
 #   * qos-session-select sees it and launches the installer, not the greeter.
 #   * qos-install refuses to run without it (a safety guard).
-#   * qos-installer-setup.service (ConditionKernelCommandLine=qos.installer)
+#   * qos-installer-setup.service (ConditionKernelCommandLine=qos.install)
 #     drops in the passwordless sudoers rule only here.
 # qos-install explicitly deletes this argument from the target deployment, so
 # the installed system boots the normal greeter rather than re-entering setup.
@@ -37,12 +37,19 @@ COPY rootfs/ /
 # login surface from release media, and validate the result in one final layer.
 # A developer can opt in to SSH only for a local diagnostic image paired with
 # the explicit non-default password required by build-custom-installer.sh.
-RUN printf 'kargs = ["qos.installer=1"]\n' \
+RUN printf 'kargs = ["qos.install"]\n' \
       > /usr/lib/bootc/kargs.d/50-installer.toml \
+    # Keep qos.mode=normal: qos-deployment derives the equal-width repair UKI
+    # from it. Error-only kernel/udev logging and Plymouth already keep boot
+    # clean. Dropping only the redundant explicit systemd default and using a
+    # compact live marker reserves enough measured .cmdline space for target
+    # UUIDs without giving up the quiet splash.
+    && /usr/libexec/qos-uki-cmdline remove systemd.show_status \
     && /usr/libexec/qos-uki-cmdline append qos.root=0000000000000000000000000000000000000 \
     && /usr/libexec/qos-uki-cmdline append qos.luks=000000000000000000000000000000000000000000000 \
-    && /usr/libexec/qos-uki-cmdline replace qos.mode=normal qos.installer=1 \
-    && /usr/libexec/qos-uki-cmdline show | grep -qw qos.installer=1 \
+    && /usr/libexec/qos-uki-cmdline append qos.install \
+    && /usr/libexec/qos-uki-cmdline show | grep -qw qos.mode=normal \
+    && /usr/libexec/qos-uki-cmdline show | grep -qw qos.install \
     && systemctl enable qos-firstboot-user.service qos-installer-setup.service \
     && if [ "$QOS_INSTALLER_DEV_SSH" = 1 ]; then \
          systemctl unmask sshd.service && systemctl enable sshd.service; \

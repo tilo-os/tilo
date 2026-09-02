@@ -27,6 +27,13 @@ GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone \
   "$GITHUB_SERVER_URL/qos/website.git" "$work/site"
 manifest="$work/site/src/data/imager-release.json"
 test -f "$manifest"
+current_tag="$(jq -er '.tag' "$manifest")"
+current_version="${current_tag#imager-v}"
+if [[ "$current_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+   && [ "$(printf '%s\n%s\n' "$current_version" "$version" | sort -V | tail -1)" != "$version" ]; then
+  printf 'refusing to replace newer landing-page release %s with %s\n' "$current_version" "$version" >&2
+  exit 1
+fi
 jq --arg tag "$GITHUB_REF_NAME" '.tag = $tag' "$manifest" >"$manifest.next"
 mv "$manifest.next" "$manifest"
 

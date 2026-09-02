@@ -9,6 +9,8 @@ ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
 bash -n "$repo/apps/imager/packaging/package-host.sh" \
+  "$repo/apps/imager/packaging/package-install-medium.sh" \
+  "$repo/apps/imager/packaging/build-release-catalog.sh" \
   "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
   "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   "$repo/apps/imager/packaging/publish-site-release.sh" \
@@ -42,6 +44,8 @@ grep -Fq 'AppImage.asc' "$workflow" \
 
 grep -Fq 'qos/homebrew-qos' "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   && grep -Fq 'microsoft/winget-pkgs/pulls' "$repo/apps/imager/packaging/publish-winget.sh" \
+  && grep -Fq -- '--retry 6 --retry-all-errors --retry-max-time 180' "$repo/apps/imager/packaging/publish-winget.sh" \
+  && grep -Fq 'state=open&base=master&head=' "$repo/apps/imager/packaging/publish-winget.sh" \
   && grep -Fq '"$CREDENTIAL_BROKER" homebrew "$token_file"' "$workflow" \
   && grep -Fq '"$CREDENTIAL_BROKER" winget "$token_file"' "$workflow" \
   && grep -Fq 'ALLOW_STATIC_BOOTSTRAP' "$workflow" \
@@ -52,5 +56,18 @@ grep -Fq 'site-downloads:' "$workflow" \
   && grep -Fq 'test:release' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && ok 'landing-page manifest advances only through the gated release workflow' \
   || bad 'landing-page release publication is not wired'
+
+grep -Fq 'qos-installer-medium-${{ matrix.arch }}' "$workflow" \
+  && grep -Fq 'qos-installer-catalog-v1.json' "$workflow" \
+  && grep -Fq 'image_sha256' "$repo/apps/imager/src/release.rs" \
+  && grep -Fq 'archive_sha256' "$repo/apps/imager/src/release.rs" \
+  && ok 'native live media is catalogued and verified before writing' \
+  || bad 'end-user install medium publication or verification is missing'
+
+grep -Fq 'group: release-imager-promotion' "$workflow" \
+  && grep -Fq 'refusing to replace newer Homebrew release' "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
+  && grep -Fq 'refusing to replace newer landing-page release' "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && ok 'release promotion is serialized and monotonic' \
+  || bad 'an older release can overwrite a newer promoted release'
 
 exit "$fail"
