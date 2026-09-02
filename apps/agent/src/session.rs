@@ -811,7 +811,7 @@ impl Session {
                 }
                 if let Some(error) = invalid {
                     (
-                        Plan::from_floor(asked, offers),
+                        Plan::from_surface(asked, offers),
                         Route::Keywords(crate::model::Fallback::OutOfCatalogue(error)),
                     )
                 } else {
@@ -821,7 +821,7 @@ impl Session {
                     (Plan { steps }, Route::Model { why: answer.why })
                 }
             }
-            Err(route) => (Plan::from_floor(asked, offers), route),
+            Err(route) => (Plan::from_surface(asked, offers), route),
         };
         tracing::info!(
             block = %ins_id,
