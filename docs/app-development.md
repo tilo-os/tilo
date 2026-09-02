@@ -36,6 +36,47 @@ or test harness:
 qos-dev test -- --nocapture
 ```
 
+## The qOS-native contract
+
+Generated applications depend on `qos-app` (normally under the concise Rust
+name `ui`), not directly on the lower-level renderer. This is not a reduced
+widget set: `qos-app` re-exports the complete layout, retained-widget, canvas,
+custom-painting, native-view and GPU surface API. The boundary exists so the
+tooling can prove that an application entered through the qOS runtime without
+taking presentation freedom away.
+
+An interactive control binds to the same action that search, scripts and
+agents see:
+
+```rust
+let resource = document_resource(&model);
+let save = ui::qos_actions::ActionBinding::unit_for(&resource, "save")?;
+let button = ui::Button::new("save", "Save", None).on_action(save);
+```
+
+The control emits an inert typed intent. The app host re-resolves it against
+the current resource tree, applies current permissions and confirmation
+policy, and dispatches through the ordinary action door. Document actions use
+the shared collaboration and undo-history executor; effects and background
+jobs use the same observable lifecycle as remote callers. There is no second
+callback whose behavior can drift from the exported operation.
+
+Custom rendering follows the same contract without being forced into a stock
+widget. A custom `Widget` owns an `ActionEmitter<T>`, drains it through
+`take_control_invocation`, inventories it through `control_action_bindings`,
+and describes its retained or synthetic accessibility nodes. Those semantics
+are automatically projected into the searchable, agent-operable resource
+tree. This is the deliberate escape hatch: specify more semantics, retain all
+rendering control.
+
+Every scaffold includes a strict `Driver::native_app_audit()` assertion. It
+checks the actual laid-out accessibility tree and resolves the actual control
+inventory against the live resource tree. Legacy callbacks, direct button
+document paths, stale bindings, unnamed/invalid semantics, and focusable
+widgets hidden from accessibility make certification fail. The workspace
+checker separately rejects direct core-UI dependencies and ratchets existing
+legacy escape hatches downward, so new code cannot silently bypass the model.
+
 Every app using the shared `LaunchSpec` runner also gets a standard responsive
 acceptance capture without app-specific argument parsing:
 

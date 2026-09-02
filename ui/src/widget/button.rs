@@ -4,6 +4,7 @@ use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
+use crate::widget::ActionEmitter;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
@@ -50,6 +51,9 @@ pub struct Button {
     /// `on_click_path` CRDT mutation, for app code that isn't modelling
     /// its control flow in the CRDT (e.g. the file explorer's command sink).
     on_click: Option<Box<dyn FnMut()>>,
+    /// An advertised action intent. While present it is the exclusive
+    /// activation path; raw document writes and callbacks are suppressed.
+    action: Option<ActionEmitter<()>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     /// When `false`: skipped by focus, rejects input, renders dimmed.
@@ -70,6 +74,9 @@ pub struct Button {
 }
 
 impl Button {
+    fn effectively_enabled(&self) -> bool {
+        self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
+    }
     pub fn new(id: &str, label: &str, on_click_path: Option<&str>) -> Self {
         Self {
             id: id.to_string(),
@@ -87,6 +94,7 @@ impl Button {
             click_value: None,
             fit_content: false,
             on_click: None,
+            action: None,
             presence_path: Vec::new(),
             permission_scope: None,
             enabled: true,
@@ -120,6 +128,18 @@ impl Button {
     #[must_use]
     pub fn on_click<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_click = Some(Box::new(f));
+        self
+    }
+
+    /// Route pointer, keyboard and accessibility activation through an
+    /// exported resource action. The host resolves policy against the fresh
+    /// resource tree before dispatch.
+    #[must_use]
+    pub fn on_action(mut self, binding: qos_actions::ActionBinding<()>) -> Self {
+        self.action = Some(ActionEmitter::new(binding));
+        self.on_click_path = None;
+        self.click_value = None;
+        self.on_click = None;
         self
     }
 
@@ -669,7 +689,7 @@ impl Button {
         inner: Affine,
         theme: &Theme,
     ) {
-        if self.enabled {
+        if self.effectively_enabled() {
             out_scene.append(&self.cached, Some(inner));
         } else {
             let clip = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
@@ -874,7 +894,7 @@ impl Widget for Button {
         _taffy: &TaffyTree<()>,
     ) {
         // Reject all input without setting `handled`.
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return;
         }
         match event {
@@ -953,7 +973,45 @@ impl Widget for Button {
         self.is_focused
     }
     fn is_enabled(&self) -> bool {
-        self.enabled
+        self.effectively_enabled()
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            let before = action.is_available();
+            action.refresh_availability(allowed);
+            if before != action.is_available() {
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        use crate::widget::{ControlBindingKind, ControlBindingMetadata};
+        if let Some(action) = &self.action {
+            return vec![action.metadata(self.id.clone())];
+        }
+        let mut bindings = Vec::new();
+        if let Some(path) = &self.on_click_path {
+            bindings.push(ControlBindingMetadata {
+                control_id: self.id.clone(),
+                kind: ControlBindingKind::LegacyDocumentPath(path.clone()),
+            });
+        }
+        if self.on_click.is_some() {
+            bindings.push(ControlBindingMetadata {
+                control_id: self.id.clone(),
+                kind: ControlBindingKind::LegacyCallback,
+            });
+        }
+        bindings
     }
 
     /// Enter, Space, or an AccessKit `Activate` performs the same CRDT
@@ -965,7 +1023,7 @@ impl Widget for Button {
         root: &ObjId,
     ) -> bool {
         use crate::a11y::Action;
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return false;
         }
         match action {
@@ -1057,6 +1115,12 @@ impl Widget for Button {
 
 impl Button {
     fn activate(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if let Some(action) = &mut self.action {
+            if let Err(error) = action.emit(()) {
+                tracing::warn!(%error, button = %self.id, "action-bound control refused its arguments");
+            }
+            return;
+        }
         if let Some(path) = &self.on_click_path {
             if let Some(value) = &self.click_value {
                 let _ = state.put(root, path.as_str(), value.as_str());
@@ -1088,6 +1152,8 @@ impl Button {
 mod tests {
     use super::*;
     use crate::widget::Widget;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn button_test_id_is_stable_constructor_id() {
@@ -1097,6 +1163,93 @@ mod tests {
             Widget::accessibility(&b).unwrap().name.as_deref(),
             Some("Save")
         );
+    }
+
+    #[test]
+    fn action_mode_suppresses_raw_mutation_and_callback() {
+        let resource = qos_actions::Resource::new("doc:1", "doc", "Document").with_action(
+            qos_actions::ActionSpec::operation(
+                "save",
+                "Save",
+                qos_actions::OperationKind::Effect,
+                "test.save",
+                &(),
+            )
+            .unwrap(),
+        );
+        let binding = qos_actions::ActionBinding::unit_for(&resource, "save").unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls = calls.clone();
+        let mut button = Button::new("save", "Save", Some("legacy"))
+            .on_action(binding)
+            // Builder order cannot accidentally restore an imperative path.
+            .on_click(move || {
+                callback_calls.fetch_add(1, Ordering::SeqCst);
+            });
+        let mut doc = AutoCommit::new();
+        button.activate(&mut doc, &automerge::ROOT);
+        assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let intent = button.take_control_invocation().expect("one intent");
+        assert_eq!(
+            intent.address,
+            qos_actions::ActionAddress::new("doc:1", "save")
+        );
+        assert!(intent.arguments.is_empty());
+        assert_eq!(button.control_action_bindings().len(), 1);
+    }
+
+    #[test]
+    fn action_availability_revokes_and_restores_without_overriding_authored_state() {
+        let resource = qos_actions::Resource::new("doc:1", "doc", "Document").with_action(
+            qos_actions::ActionSpec::operation(
+                "save",
+                "Save",
+                qos_actions::OperationKind::Effect,
+                "test.save",
+                &(),
+            )
+            .unwrap(),
+        );
+        let binding = qos_actions::ActionBinding::unit_for(&resource, "save").unwrap();
+        let mut button = Button::new("save", "Save", None).on_action(binding);
+        button.activate(&mut AutoCommit::new(), &automerge::ROOT);
+        Widget::refresh_control_action_availability(&mut button, &std::collections::HashSet::new());
+        assert!(!Widget::is_enabled(&button));
+        assert!(
+            Widget::take_control_invocation(&mut button).is_none(),
+            "revocation drops queued authority"
+        );
+        Widget::refresh_control_action_availability(
+            &mut button,
+            &std::collections::HashSet::from([qos_actions::ActionAddress::new("doc:1", "save")]),
+        );
+        assert!(Widget::is_enabled(&button));
+
+        button.set_enabled(false);
+        Widget::refresh_control_action_availability(&mut button, &std::collections::HashSet::new());
+        Widget::refresh_control_action_availability(
+            &mut button,
+            &std::collections::HashSet::from([qos_actions::ActionAddress::new("doc:1", "save")]),
+        );
+        assert!(
+            !Widget::is_enabled(&button),
+            "permission restore cannot override app-authored disabled state"
+        );
+    }
+
+    #[test]
+    fn legacy_button_paths_are_explicit_in_inventory() {
+        let button = Button::new("legacy", "Legacy", Some("flag")).on_click(|| {});
+        let bindings = button.control_action_bindings();
+        assert!(bindings.iter().any(|entry| matches!(
+            entry.kind,
+            crate::widget::ControlBindingKind::LegacyDocumentPath(_)
+        )));
+        assert!(bindings.iter().any(|entry| matches!(
+            entry.kind,
+            crate::widget::ControlBindingKind::LegacyCallback
+        )));
     }
 
     #[test]

@@ -18,7 +18,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { path = "../../ui", features = ["portal"] }
+ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
 automerge.workspace = true
 # The qOS ACTION model: the reader's `actions` module exports its markup-store
 # operations as replayable actions the host's Ctrl+K palette dispatches.

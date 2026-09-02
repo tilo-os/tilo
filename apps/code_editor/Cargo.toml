@@ -23,7 +23,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # app is confined to. An app never draws its own picker (HIG §5), and the
 # portal is where the sandbox's file-access grant is made — so it is the only
 # way in, not merely the tidy one.
-ui = { path = "../../ui", features = ["portal"] }
+ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
 # The qOS resource + action model: the serializable, replayable buffer-creation
 # action Code exports, plus the Resource tree it publishes to Ctrl+K.
 qos-actions = { path = "../../crates/collab/actions" }

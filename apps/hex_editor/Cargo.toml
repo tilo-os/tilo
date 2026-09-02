@@ -18,7 +18,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { path = "../../ui", features = ["portal"] }
+ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
 # The qOS ACTION model: every buffer mutation (insert / delete / overwrite of
 # bytes) is a replayable action the shell's Ctrl+K palette dispatches, so a
 # keystroke and a palette row build the identical action and share one undo

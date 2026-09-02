@@ -11,6 +11,7 @@ use winit::event::WindowEvent;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::time::Instant;
 
 /// Shared disabled-state opacity: wrap draw output in
@@ -27,6 +28,141 @@ pub const DISABLED_ALPHA: f32 = 0.45;
 pub enum ResourceOperationStart {
     Completed(qos_actions::ActionOutput),
     Accepted,
+}
+
+/// Machine-readable classification of a control's activation path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ControlBindingKind {
+    Action(qos_actions::ActionAddress),
+    LegacyDocumentPath(String),
+    LegacyCallback,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ControlBindingMetadata {
+    pub control_id: String,
+    pub kind: ControlBindingKind,
+}
+
+/// A reusable action-intent queue for controls, including custom widgets.
+/// Widgets call [`emit`](Self::emit) from any interaction path and expose the
+/// queue through [`Widget::take_control_invocation`].
+pub struct ActionEmitter<I> {
+    binding: qos_actions::ActionBinding<I>,
+    pending: VecDeque<qos_actions::ControlInvocation>,
+    available: bool,
+}
+
+impl<I> ActionEmitter<I> {
+    pub fn new(binding: qos_actions::ActionBinding<I>) -> Self {
+        Self {
+            binding,
+            pending: VecDeque::new(),
+            available: true,
+        }
+    }
+
+    pub fn emit(&mut self, input: I) -> Result<(), qos_actions::ActionBindingError> {
+        if self.available {
+            self.pending.push_back(self.binding.invoke(input)?);
+        }
+        Ok(())
+    }
+
+    pub fn take(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.pending.pop_front()
+    }
+
+    pub fn binding(&self) -> &qos_actions::ActionBinding<I> {
+        &self.binding
+    }
+
+    /// Refresh whether the bound action is in the host's current,
+    /// permission-filtered resource surface.
+    pub fn refresh_availability(&mut self, allowed: &HashSet<qos_actions::ActionAddress>) {
+        self.available = allowed.contains(self.binding.address());
+        if !self.available {
+            self.pending.clear();
+        }
+    }
+
+    pub fn is_available(&self) -> bool {
+        self.available
+    }
+
+    /// Inventory entry for a custom control using this emitter.
+    pub fn metadata(&self, control_id: impl Into<String>) -> ControlBindingMetadata {
+        ControlBindingMetadata {
+            control_id: control_id.into(),
+            kind: ControlBindingKind::Action(self.binding.address().clone()),
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_bool_action_binding() -> qos_actions::ActionBinding<bool> {
+    use qos_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource};
+    let spec = ActionSpec::typed_operation(
+        "set",
+        "Set",
+        "value",
+        OperationKind::Effect,
+        "test.set_bool",
+        vec![ActionParam::required("value", ParamType::Boolean, "Value")],
+        |args| EncodedAction::encode_operation("test.set_bool", &args.boolean("value")).unwrap(),
+    );
+    let resource = Resource::new("test:control", "test", "Test").with_action(spec.clone());
+    qos_actions::ActionBinding::new(&resource, &spec, |value| {
+        serde_json::json!({"value": value})
+            .as_object()
+            .unwrap()
+            .clone()
+    })
+    .unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn test_string_action_binding() -> qos_actions::ActionBinding<String> {
+    use qos_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource};
+    let spec = ActionSpec::typed_operation(
+        "set",
+        "Set",
+        "value",
+        OperationKind::Effect,
+        "test.set_string",
+        vec![ActionParam::required("value", ParamType::Text, "Value")],
+        |args| EncodedAction::encode_operation("test.set_string", &args.text("value")).unwrap(),
+    );
+    let resource = Resource::new("test:control", "test", "Test").with_action(spec.clone());
+    qos_actions::ActionBinding::new(&resource, &spec, |value| {
+        serde_json::json!({"value": value})
+            .as_object()
+            .unwrap()
+            .clone()
+    })
+    .unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn test_number_action_binding() -> qos_actions::ActionBinding<f64> {
+    use qos_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource};
+    let spec = ActionSpec::typed_operation(
+        "set",
+        "Set",
+        "value",
+        OperationKind::Effect,
+        "test.set_number",
+        vec![ActionParam::required("value", ParamType::Number, "Value")],
+        |args| EncodedAction::encode_operation("test.set_number", &args.number("value")).unwrap(),
+    );
+    let resource = Resource::new("test:control", "test", "Test").with_action(spec.clone());
+    qos_actions::ActionBinding::new(&resource, &spec, |value| {
+        serde_json::json!({"value": value})
+            .as_object()
+            .unwrap()
+            .clone()
+    })
+    .unwrap()
 }
 
 pub trait Widget {
@@ -477,6 +613,34 @@ pub trait Widget {
         self.children_mut()
             .into_iter()
             .find_map(Widget::take_commit_context)
+    }
+    /// Drain one queued action-bound control intent from this subtree.
+    /// Custom-painted widgets can own an [`ActionEmitter`] and override this
+    /// method; they do not need to use the toolkit's [`Button`].
+    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.children_mut()
+            .into_iter()
+            .find_map(Widget::take_control_invocation)
+    }
+    /// Recursively inventory action-native and explicitly legacy controls.
+    /// Custom widgets that own an [`ActionEmitter`] should prepend its
+    /// [`metadata`](ActionEmitter::metadata) to their descendants' inventory.
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        self.children()
+            .iter()
+            .flat_map(|child| child.control_action_bindings())
+            .collect()
+    }
+    /// Push the fresh local permission-filtered action surface into every
+    /// retained control. Custom widgets should refresh their own emitter and
+    /// then recurse into children.
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &HashSet<qos_actions::ActionAddress>,
+    ) {
+        for child in self.children_mut() {
+            child.refresh_control_action_availability(allowed);
+        }
     }
     fn on_commit(&mut self) {
         for child in self.children_mut() {

@@ -4,6 +4,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -38,6 +39,7 @@ pub struct Slider {
     on_change_path: String,
     local_state: Option<crate::local_state::LocalBinding<f64>>,
     on_change: Option<Box<dyn FnMut(f64)>>,
+    action: Option<ActionEmitter<f64>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     /// When `false` the slider is disabled: skipped by focus, rejects
@@ -65,6 +67,9 @@ pub struct Slider {
 }
 
 impl Slider {
+    fn effectively_enabled(&self) -> bool {
+        self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
+    }
     pub fn new(id: &str, on_change_path: &str) -> Self {
         Self {
             semantic_id: id.to_string(),
@@ -76,6 +81,7 @@ impl Slider {
             on_change_path: on_change_path.to_string(),
             local_state: None,
             on_change: None,
+            action: None,
             presence_path: Vec::new(),
             permission_scope: None,
             enabled: true,
@@ -106,7 +112,17 @@ impl Slider {
     /// callback.
     #[must_use]
     pub fn on_change(mut self, callback: impl FnMut(f64) + 'static) -> Self {
-        self.on_change = Some(Box::new(callback));
+        if self.action.is_none() {
+            self.on_change = Some(Box::new(callback));
+        }
+        self
+    }
+
+    /// Route all pointer and accessibility value changes through an action.
+    #[must_use]
+    pub fn on_action(mut self, binding: qos_actions::ActionBinding<f64>) -> Self {
+        self.action = Some(ActionEmitter::new(binding));
+        self.on_change = None;
         self
     }
 
@@ -119,7 +135,9 @@ impl Slider {
     /// model without invoking [`Self::on_change`].
     pub fn set_value(&mut self, value: f64) {
         self.value = value.clamp(0.0, 1.0);
-        self.publish_local_state();
+        if self.action.is_none() {
+            self.publish_local_state();
+        }
     }
 
     fn publish_local_state(&mut self) {
@@ -210,7 +228,9 @@ impl Slider {
             return false;
         }
         self.value = new_value;
-        if self.local_state.is_some() {
+        if let Some(action) = &mut self.action {
+            let _ = action.emit(self.value);
+        } else if self.local_state.is_some() {
             self.publish_local_state();
         } else {
             let _ = state.put(
@@ -219,7 +239,9 @@ impl Slider {
                 automerge::ScalarValue::F64(self.value),
             );
         }
-        if let Some(callback) = self.on_change.as_mut() {
+        if self.action.is_none()
+            && let Some(callback) = self.on_change.as_mut()
+        {
             callback(self.value);
         }
         true
@@ -489,7 +511,7 @@ impl Widget for Slider {
                 .hovered(self.is_hovered)
                 .dragging(self.is_dragging)
                 .focused(self.is_focused)
-                .disabled(!self.enabled),
+                .disabled(!self.effectively_enabled()),
         );
     }
 
@@ -506,7 +528,7 @@ impl Widget for Slider {
         _taffy: &TaffyTree<()>,
     ) {
         // Disabled: reject all input — no drag, no value change, no hover.
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return;
         }
         match event {
@@ -581,7 +603,7 @@ impl Widget for Slider {
         self.is_focused
     }
     fn is_enabled(&self) -> bool {
-        self.enabled
+        self.effectively_enabled()
     }
 
     #[allow(
@@ -630,7 +652,7 @@ impl Widget for Slider {
     ) -> bool {
         use crate::a11y::Action;
         const STEP: f64 = 0.05;
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return false;
         }
         match action {
@@ -671,6 +693,38 @@ impl Widget for Slider {
 
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
+    }
+
+    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+    }
+
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let control_id = self.test_id().unwrap_or("slider");
+        if let Some(action) = &self.action {
+            vec![action.metadata(control_id)]
+        } else if !self.on_change_path.is_empty() {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::LegacyDocumentPath(self.on_change_path.clone()),
+            }]
+        } else if self.on_change.is_some() || self.local_state.is_some() {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::LegacyCallback,
+            }]
+        } else {
+            Vec::new()
+        }
     }
 
     fn draw_with_presence(
@@ -1009,5 +1063,36 @@ mod tests {
 
         assert!(!s.is_dragging, "disabled slider must not start a drag");
         assert_eq!(s.value, before, "disabled slider must not change its value");
+    }
+
+    #[test]
+    fn action_binding_owns_accessibility_value_changes() {
+        let mut slider = Slider::new("native", "legacy")
+            .on_change(|_| panic!("legacy callback must be suppressed"))
+            .on_action(crate::widget::test_number_action_binding());
+        let mut doc = AutoCommit::new();
+        Widget::refresh_control_action_availability(&mut slider, &std::collections::HashSet::new());
+        assert!(!Widget::is_enabled(&slider));
+        Widget::refresh_control_action_availability(
+            &mut slider,
+            &std::collections::HashSet::from([qos_actions::ActionAddress::new(
+                "test:control",
+                "set",
+            )]),
+        );
+        assert!(Widget::is_enabled(&slider));
+        assert!(Widget::perform_action(
+            &mut slider,
+            &crate::a11y::Action::SetValue("80%".into()),
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
+        assert_eq!(
+            Widget::take_control_invocation(&mut slider)
+                .unwrap()
+                .arguments["value"],
+            0.8
+        );
     }
 }

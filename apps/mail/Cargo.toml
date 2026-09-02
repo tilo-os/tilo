@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { path = "../../ui" }
+ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 # The qOS resource + action model: Mail's collaborative-doc mutations (flags,
 # labels, local folders, drafts) are exported as replayable actions and a Ctrl+K
 # resource tree. See `src/actions.rs`.

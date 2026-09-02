@@ -1,0 +1,18 @@
+{
+  "description": "Repository-local Codex automation.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/watch_ci.py\"",
+            "async": true,
+            "timeout": 1800
+          }
+        ]
+      }
+    ]
+  }
+}
