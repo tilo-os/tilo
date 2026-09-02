@@ -46,6 +46,9 @@ pub struct Toggle {
 }
 
 impl Toggle {
+    fn effectively_enabled(&self) -> bool {
+        self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
+    }
     pub fn new(id: &str, on_toggle_path: &str) -> Self {
         Self {
             _id: id.to_string(),
@@ -459,7 +462,7 @@ impl Widget for Toggle {
         _presence: &crate::presence::PresenceCtx,
     ) {
         let visual = Rect::from_center_size(self.rect.center(), (44.0, 24.0));
-        let disabled = !self.enabled;
+        let disabled = !self.effectively_enabled();
         if disabled {
             let clip = RoundedRect::from_rect(visual, f64::from(theme.tokens.radii.full));
             scene.push_layer(
@@ -529,7 +532,7 @@ impl Widget for Toggle {
         node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return;
         }
         match event {
@@ -576,7 +579,7 @@ impl Widget for Toggle {
         self.is_focused
     }
     fn is_enabled(&self) -> bool {
-        self.enabled
+        self.effectively_enabled()
     }
 
     /// AT/keyboard activation (Enter/Space route to `Activate`/`ToggleCheck`
@@ -588,7 +591,7 @@ impl Widget for Toggle {
         path: &ObjId,
     ) -> bool {
         use crate::a11y::Action;
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return false;
         }
         match action {
@@ -628,6 +631,15 @@ impl Widget for Toggle {
 
     fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
     }
 
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
@@ -932,6 +944,16 @@ mod tests {
             .on_change(|_| panic!("legacy callback must be suppressed"))
             .on_action(crate::widget::test_bool_action_binding());
         let mut doc = AutoCommit::new();
+        Widget::refresh_control_action_availability(&mut toggle, &std::collections::HashSet::new());
+        assert!(!Widget::is_enabled(&toggle));
+        Widget::refresh_control_action_availability(
+            &mut toggle,
+            &std::collections::HashSet::from([qos_actions::ActionAddress::new(
+                "test:control",
+                "set",
+            )]),
+        );
+        assert!(Widget::is_enabled(&toggle));
         assert!(Widget::perform_action(
             &mut toggle,
             &crate::a11y::Action::ToggleCheck,

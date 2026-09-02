@@ -105,6 +105,9 @@ pub struct Checkbox {
 }
 
 impl Checkbox {
+    fn effectively_enabled(&self) -> bool {
+        self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
+    }
     pub fn new(id: &str, on_toggle_path: &str) -> Self {
         Self {
             _id: id.to_string(),
@@ -402,7 +405,7 @@ impl Widget for Checkbox {
             &CheckboxFace::new(visual, self.is_checked)
                 .hovered(self.is_hovered)
                 .focused(self.is_focused)
-                .disabled(!self.enabled),
+                .disabled(!self.effectively_enabled()),
         );
     }
 
@@ -419,7 +422,7 @@ impl Widget for Checkbox {
         _taffy: &TaffyTree<()>,
     ) {
         // Disabled: reject all input — no toggle, no hover feedback.
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return;
         }
         match event {
@@ -466,7 +469,7 @@ impl Widget for Checkbox {
         self.is_focused
     }
     fn is_enabled(&self) -> bool {
-        self.enabled
+        self.effectively_enabled()
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -505,7 +508,7 @@ impl Widget for Checkbox {
         path: &ObjId,
     ) -> bool {
         use crate::a11y::Action;
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return false;
         }
         match action {
@@ -533,6 +536,15 @@ impl Widget for Checkbox {
 
     fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
     }
 
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
@@ -839,6 +851,25 @@ mod tests {
             .on_change(|_| panic!("legacy callback must be suppressed"))
             .on_action(crate::widget::test_bool_action_binding());
         let mut doc = AutoCommit::new();
+        Widget::refresh_control_action_availability(
+            &mut checkbox,
+            &std::collections::HashSet::new(),
+        );
+        assert!(!Widget::is_enabled(&checkbox));
+        assert!(!Widget::perform_action(
+            &mut checkbox,
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        Widget::refresh_control_action_availability(
+            &mut checkbox,
+            &std::collections::HashSet::from([qos_actions::ActionAddress::new(
+                "test:control",
+                "set",
+            )]),
+        );
+        assert!(Widget::is_enabled(&checkbox));
         assert!(Widget::perform_action(
             &mut checkbox,
             &crate::a11y::Action::Activate,
