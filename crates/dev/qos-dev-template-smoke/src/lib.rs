@@ -555,16 +555,16 @@ mod tests {
 
         let mut compact =
             ui::headless::Driver::new(ui::State::new(), super::workspace::app_root(), (460, 820));
+        compact.relayout();
         compact
             .expect(
-                &SemanticExpectation::named("workspace-shell")
-                    .semantic_target("back")
+                &SemanticExpectation::named("workspace-shell-back")
                     .role(Role::Button)
                     .name("Back"),
             )
             .expect("compact detail exposes accessible Back");
         compact
-            .perform_semantic_named("workspace-shell", Some("back"), &Action::Activate)
+            .perform_named("workspace-shell-back", &Action::Activate)
             .expect("return to compact navigation");
         compact
             .expect(&SemanticExpectation::named("workspace-tree").role(Role::Tree))
