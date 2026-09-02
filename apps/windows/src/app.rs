@@ -1,8 +1,6 @@
 //! Immediate-mode `QuickUI` surface for compatibility routing.
 use crate::actions;
-use crate::appliance_owner::{
-    ApplianceOwnerClient, EgressPurpose, LicenseState, LifecycleAction,
-};
+use crate::appliance_owner::{ApplianceOwnerClient, EgressPurpose, LicenseState, LifecycleAction};
 use crate::model::{Catalogue, Route};
 use crate::provider::{CompatibilityProvider, EmptyProvider, LiveProvider, SampleProvider};
 use crate::strings;
