@@ -163,19 +163,12 @@ fn run(
     (replica, acted)
 }
 
-/// **The core claim of discovery.** An operation nowhere written down in
-/// this crate — word-processor's own "delete image" — is found, performed,
-/// and attributed to the agent's own actor, exactly as a catalogue action
-/// is.
-///
-/// It also proves the re-entrancy guard: the instruction names the same
-/// operation twice around an unrelated step, and dispatching it a second
-/// time would find nothing left to delete and refuse — which would leave
-/// the instruction paragraph standing with a refusal on it instead of being
-/// answered in full. `dispatched_this_turn` is what keeps the second
-/// mention from being dispatched at all.
+/// A discovered destructive operation remains fail-closed when the planner
+/// supplies no explicit confirmation metadata. The whole sequence is refused
+/// before its harmless title step runs, so confirmation cannot be bypassed by
+/// surrounding a destructive operation with ordinary edits.
 #[test]
-fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
+fn a_discovered_destructive_operation_requires_explicit_confirmation() {
     let _serial = TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -201,13 +194,9 @@ fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
         },
         replica,
         |doc| {
-            let b = blocks(doc);
-            let title_done = b
+            blocks(doc)
                 .iter()
-                .any(|x| x.kind == "heading" && x.text == "Launch plan");
-            let image_gone = !b.iter().any(|x| x.kind == "image");
-            let answered = !b.iter().any(|x| x.text.starts_with("Scribe:"));
-            title_done && image_gone && answered
+                .any(|block| block.text.starts_with("Scribe: I can't"))
         },
         Duration::from_secs(15),
     );
@@ -220,21 +209,21 @@ fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
     let b = blocks(&replica);
     assert!(
         b.iter()
-            .any(|x| x.kind == "heading" && x.text == "Launch plan"),
-        "{shown:?}"
+            .any(|x| x.kind == "paragraph" && x.text == "Launch plan"),
+        "the harmless title step must not partially run: {shown:?}"
     );
     assert!(
-        !b.iter().any(|x| x.kind == "image"),
-        "the image was not deleted: {shown:?}"
+        b.iter().any(|x| x.kind == "image"),
+        "the image must remain without explicit confirmation: {shown:?}"
     );
-    assert!(
-        !b.iter().any(|x| x.text.starts_with("Scribe:")),
-        "the instruction was left holding a refusal instead of being answered in full \
-         — the second mention of the same operation was dispatched again rather than \
-         skipped: {shown:?}"
-    );
+    let reply = b
+        .iter()
+        .find(|x| x.text.starts_with("Scribe: I can't"))
+        .unwrap_or_else(|| panic!("no refusal was written: {shown:?}"));
+    assert!(reply.text.contains("confirm: true"), "{}", reply.text);
+    assert!(!reply.text.contains('#'), "{}", reply.text);
 
-    // Discovered, and attributed exactly like a catalogue action.
+    // The refusal itself is still an attributed agent-authored document edit.
     let genesis = qdoc::model::schema_genesis_actor_hex();
     let seed = hex::encode("quinten");
     let actors: std::collections::HashSet<String> = qdoc::history::versions(&mut replica)
