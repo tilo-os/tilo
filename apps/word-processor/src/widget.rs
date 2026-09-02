@@ -13865,7 +13865,7 @@ mod tests {
         let trait_root = Widget::accessibility(&wp).expect("editor exposes a document node");
         assert_eq!(
             trait_root,
-            wp.accessibility_tree().node,
+            wp.accessibility_tree().node.with_name("Document editor"),
             "Widget::accessibility() returns the tree root"
         );
     }
