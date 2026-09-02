@@ -11,6 +11,7 @@ use winit::event::WindowEvent;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::time::Instant;
 
 /// Shared disabled-state opacity: wrap draw output in
@@ -27,6 +28,58 @@ pub const DISABLED_ALPHA: f32 = 0.45;
 pub enum ResourceOperationStart {
     Completed(qos_actions::ActionOutput),
     Accepted,
+}
+
+/// Machine-readable classification of a control's activation path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ControlBindingKind {
+    Action(qos_actions::ActionAddress),
+    LegacyDocumentPath(String),
+    LegacyCallback,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ControlBindingMetadata {
+    pub control_id: String,
+    pub kind: ControlBindingKind,
+}
+
+/// A reusable action-intent queue for controls, including custom widgets.
+/// Widgets call [`emit`](Self::emit) from any interaction path and expose the
+/// queue through [`Widget::take_control_invocation`].
+pub struct ActionEmitter<I> {
+    binding: qos_actions::ActionBinding<I>,
+    pending: VecDeque<qos_actions::ControlInvocation>,
+}
+
+impl<I> ActionEmitter<I> {
+    pub fn new(binding: qos_actions::ActionBinding<I>) -> Self {
+        Self {
+            binding,
+            pending: VecDeque::new(),
+        }
+    }
+
+    pub fn emit(&mut self, input: I) -> Result<(), qos_actions::ActionBindingError> {
+        self.pending.push_back(self.binding.invoke(input)?);
+        Ok(())
+    }
+
+    pub fn take(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.pending.pop_front()
+    }
+
+    pub fn binding(&self) -> &qos_actions::ActionBinding<I> {
+        &self.binding
+    }
+
+    /// Inventory entry for a custom control using this emitter.
+    pub fn metadata(&self, control_id: impl Into<String>) -> ControlBindingMetadata {
+        ControlBindingMetadata {
+            control_id: control_id.into(),
+            kind: ControlBindingKind::Action(self.binding.address().clone()),
+        }
+    }
 }
 
 pub trait Widget {
@@ -477,6 +530,23 @@ pub trait Widget {
         self.children_mut()
             .into_iter()
             .find_map(Widget::take_commit_context)
+    }
+    /// Drain one queued action-bound control intent from this subtree.
+    /// Custom-painted widgets can own an [`ActionEmitter`] and override this
+    /// method; they do not need to use the toolkit's [`Button`].
+    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.children_mut()
+            .into_iter()
+            .find_map(Widget::take_control_invocation)
+    }
+    /// Recursively inventory action-native and explicitly legacy controls.
+    /// Custom widgets that own an [`ActionEmitter`] should prepend its
+    /// [`metadata`](ActionEmitter::metadata) to their descendants' inventory.
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        self.children()
+            .iter()
+            .flat_map(|child| child.control_action_bindings())
+            .collect()
     }
     fn on_commit(&mut self) {
         for child in self.children_mut() {
