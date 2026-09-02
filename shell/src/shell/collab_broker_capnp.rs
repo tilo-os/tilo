@@ -34,8 +34,9 @@ use collab_types::{
     validate_admitted_inbound_op,
 };
 use runtime_collab::raw::{
-    OpKind, action_input, channel_handle, collab_service, context_stream, invocation_stream,
-    presence_event, presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
+    OpKind, action_catalogue_stream, action_input, channel_handle, collab_service, context_stream,
+    invocation_stream, presence_event, presence_handle, presence_payload, presence_stream,
+    scrollback_batch, stream,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
@@ -255,6 +256,7 @@ pub struct PublishedAction {
     pub description: Option<String>,
     pub operation_kind: qos_actions::OperationKind,
     pub params: Vec<qos_actions::ActionParam>,
+    pub contract: qos_actions::ActionContract,
     pub input: PublishedInput,
 }
 
@@ -265,6 +267,10 @@ pub struct PublishedSurface {
     pub app_id: String,
     pub route: CrdtRoute,
     pub actions: Vec<PublishedAction>,
+    /// False for a permission-filterable catalogue retained after the app
+    /// closes. Only actions that explicitly opted into launchable/durable
+    /// discovery are ever retained this way.
+    pub live: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -283,9 +289,46 @@ pub struct InvocationCompletion {
     pub message: String,
 }
 
+pub struct InvocationJob {
+    pub id: u64,
+    pub completion: std::sync::mpsc::Receiver<InvocationCompletion>,
+}
+
 struct PendingInvocation {
     peer_id: u64,
     tx: std::sync::mpsc::Sender<InvocationCompletion>,
+    update: qos_actions::InvocationUpdate,
+    last_sequence: u64,
+    actor: String,
+    cancellable: bool,
+    retryable_on_disconnect: bool,
+    execution: qos_actions::ExecutionMode,
+    result: qos_actions::ResultSpec,
+}
+
+struct ConfirmationGrant {
+    peer_id: u64,
+    resource: String,
+    action: String,
+    /// Binds the exact arguments without retaining secrets or other raw user
+    /// input in the grant registry.
+    argument_digest: [u8; 32],
+    actor: String,
+    expires: std::time::Instant,
+}
+
+fn argument_digest(argument: Option<&str>) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    match argument {
+        Some(value) => {
+            hasher.update(b"some\0");
+            hasher.update(value.as_bytes());
+        }
+        None => {
+            hasher.update(b"none\0");
+        }
+    }
+    *hasher.finalize().as_bytes()
 }
 
 /// One subscription onto the broker fanout. Slot-indexed inside a
@@ -333,13 +376,35 @@ pub struct CapnpBrokerState {
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
     /// Latest complete action surface per live connection.
     surfaces: Mutex<HashMap<u64, PublishedSurface>>,
+    /// Last safe launchable/durable projection per app and workspace. This is
+    /// session catalogue state, never an executable capability by itself.
+    archived_surfaces: Mutex<HashMap<(String, String, String), PublishedSurface>>,
     /// Directed invocation stream registered by each application connection.
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
+    action_catalogue_subscribers:
+        Mutex<HashMap<u64, (String, String, mpsc::UnboundedSender<String>)>>,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
+    completed_invocations: Mutex<HashMap<u64, (String, qos_actions::InvocationUpdate)>>,
+    confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
+    cancellation_requests: Mutex<std::collections::HashSet<u64>>,
     invocation_id: AtomicU64,
 }
 
 impl CapnpBrokerState {
+    const MAX_RETAINED_INVOCATIONS: usize = 256;
+
+    fn record_completion(&self, id: u64, actor: String, update: qos_actions::InvocationUpdate) {
+        if let Ok(mut completed) = self.completed_invocations.lock() {
+            completed.insert(id, (actor, update));
+            while completed.len() > Self::MAX_RETAINED_INVOCATIONS {
+                let Some(oldest) = completed.keys().min().copied() else {
+                    break;
+                };
+                completed.remove(&oldest);
+            }
+        }
+    }
+
     /// So tests can register channel state before pushing signed
     /// envelopes through the capnp path.
     pub fn broker_channels(&self) -> Arc<Mutex<BrokerChannels>> {
@@ -361,18 +426,201 @@ impl CapnpBrokerState {
             membership,
             trusted_devices,
             surfaces: Mutex::new(HashMap::new()),
+            archived_surfaces: Mutex::new(HashMap::new()),
             invocation_subscribers: Mutex::new(HashMap::new()),
+            action_catalogue_subscribers: Mutex::new(HashMap::new()),
             pending_invocations: Mutex::new(HashMap::new()),
+            completed_invocations: Mutex::new(HashMap::new()),
+            confirmation_grants: Mutex::new(HashMap::new()),
+            cancellation_requests: Mutex::new(std::collections::HashSet::new()),
             invocation_id: AtomicU64::new(1),
         })
     }
 
     /// Snapshot every action surface currently published by a connected app.
     pub fn published_surfaces(&self) -> Vec<PublishedSurface> {
-        self.surfaces
+        let live = self
+            .surfaces
             .lock()
-            .map(|surfaces| surfaces.values().cloned().collect())
-            .unwrap_or_default()
+            .map(|surfaces| surfaces.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let live_keys = live
+            .iter()
+            .map(|surface| {
+                (
+                    surface.app_id.clone(),
+                    surface.route.cluster_id.clone(),
+                    surface.route.record_id.clone(),
+                )
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let mut result = live;
+        if let Ok(archived) = self.archived_surfaces.lock() {
+            result.extend(
+                archived
+                    .iter()
+                    .filter(|(key, _)| !live_keys.contains(*key))
+                    .map(|(_, surface)| surface.clone()),
+            );
+        }
+        result
+    }
+
+    fn action_catalogue_json(&self, cluster_id: &str, actor: &str) -> Result<String, String> {
+        let membership = self
+            .membership
+            .as_ref()
+            .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
+        let tree = membership.read();
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == cluster_id)
+            .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
+        let caller = workspace.actor_for_person(&actor.to_string());
+        let live_apps = self
+            .published_surfaces()
+            .into_iter()
+            .filter(|surface| surface.live && surface.route.cluster_id == cluster_id)
+            .map(|surface| surface.app_id)
+            .collect::<std::collections::HashSet<_>>();
+        let mut surfaces = self
+            .published_surfaces()
+            .into_iter()
+            .filter(|surface| surface.live && surface.route.cluster_id == cluster_id)
+            .filter_map(|surface| {
+                let actions = surface
+                    .actions
+                    .into_iter()
+                    .filter(|action| {
+                        let Some(verb) = (match action.contract.permission {
+                            qos_actions::PermissionRequirement::None => None,
+                            qos_actions::PermissionRequirement::Read => Some(Verb::Read),
+                            qos_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+                            qos_actions::PermissionRequirement::Write => Some(Verb::Write),
+                            qos_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+                            qos_actions::PermissionRequirement::Admin => Some(Verb::Admin),
+                        }) else {
+                            return true;
+                        };
+                        workspace.decide(
+                            &caller,
+                            &ResourceRef::Action {
+                                app: surface.app_id.clone(),
+                                action: action.action.clone(),
+                            },
+                            verb,
+                        ) == CapDecision::Allow
+                    })
+                    .map(|action| {
+                        let input = match action.input {
+                            PublishedInput::None => serde_json::json!({"kind": "none"}),
+                            PublishedInput::Text {
+                                prompt,
+                                placeholder,
+                                wants_content,
+                            } => serde_json::json!({
+                                "kind": "text",
+                                "prompt": prompt,
+                                "placeholder": placeholder,
+                                "wants_content": wants_content,
+                            }),
+                        };
+                        serde_json::json!({
+                            "resource": action.resource,
+                            "action": action.action,
+                            "resource_kind": action.resource_kind,
+                            "resource_label": action.resource_label,
+                            "action_label": action.action_label,
+                            "description": action.description,
+                            "operation_kind": action.operation_kind,
+                            "params": action.params,
+                            "contract": action.contract,
+                            "input": input,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                (!actions.is_empty()).then(|| {
+                    serde_json::json!({
+                        "peer_id": surface.peer_id,
+                        "app_id": surface.app_id,
+                        "cluster_id": surface.route.cluster_id,
+                        "record_id": surface.route.record_id,
+                        "live": surface.live,
+                        "actions": actions,
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        for app in crate::shell::launcher::gui_apps()
+            .into_iter()
+            .filter(|app| !live_apps.contains(&app.package_id))
+            .filter(|app| {
+                workspace.decide(
+                    &caller,
+                    &ResourceRef::App(app.package_id.clone()),
+                    Verb::Write,
+                ) == CapDecision::Allow
+            })
+        {
+            let package_id = app.package_id;
+            let display_name = app.display_name;
+            surfaces.push(serde_json::json!({
+                "peer_id": 0,
+                "app_id": package_id,
+                "cluster_id": cluster_id,
+                "record_id": "",
+                "live": true,
+                "actions": [{
+                    "resource": format!("app.{package_id}"),
+                    "action": "open",
+                    "resource_kind": "applications.app",
+                    "resource_label": display_name,
+                    "action_label": format!("Open {display_name}"),
+                    "description": "Launch this application into the current workspace",
+                    "operation_kind": qos_actions::OperationKind::Effect,
+                    "params": [],
+                    "contract": qos_actions::ActionContract::default(),
+                    "input": {"kind": "none"},
+                }],
+            }));
+        }
+        serde_json::to_string(&serde_json::json!({
+            "version": 1,
+            "surfaces": surfaces,
+        }))
+        .map_err(|error| error.to_string())
+    }
+
+    fn publish_action_catalogue(&self) {
+        let subscribers = self
+            .action_catalogue_subscribers
+            .lock()
+            .map(|subscribers| {
+                subscribers
+                    .iter()
+                    .map(|(peer, (cluster, actor, tx))| {
+                        (*peer, cluster.clone(), actor.clone(), tx.clone())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut disconnected = Vec::new();
+        for (peer, cluster, actor, tx) in subscribers {
+            let delivered = self
+                .action_catalogue_json(&cluster, &actor)
+                .is_ok_and(|snapshot| tx.send(snapshot).is_ok());
+            if !delivered {
+                disconnected.push(peer);
+            }
+        }
+        if !disconnected.is_empty()
+            && let Ok(mut subscribers) = self.action_catalogue_subscribers.lock()
+        {
+            for peer in disconnected {
+                subscribers.remove(&peer);
+            }
+        }
     }
 
     /// Address one operation back to the exact connection that published it.
@@ -391,6 +639,83 @@ impl CapnpBrokerState {
         argument: Option<&str>,
         actor: &str,
     ) -> Result<std::sync::mpsc::Receiver<InvocationCompletion>, String> {
+        self.start_invocation(peer_id, resource, action, argument, actor)
+            .map(|job| job.completion)
+    }
+
+    pub fn start_invocation(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        actor: &str,
+    ) -> Result<InvocationJob, String> {
+        self.start_invocation_confirmed(peer_id, resource, action, argument, actor, None)
+    }
+
+    pub fn prepare_confirmation(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        actor: &str,
+        phrase: Option<&str>,
+    ) -> Result<String, String> {
+        let offered =
+            self.surfaces
+                .lock()
+                .ok()
+                .and_then(|surfaces| surfaces.get(&peer_id).cloned())
+                .and_then(|surface| {
+                    surface.actions.into_iter().find(|candidate| {
+                        candidate.resource == resource && candidate.action == action
+                    })
+                })
+                .ok_or_else(|| "the application no longer publishes that action".to_string())?;
+        match &offered.contract.confirmation {
+            qos_actions::ConfirmationPolicy::None => {
+                return Err("the action does not require confirmation".into());
+            }
+            qos_actions::ConfirmationPolicy::Confirm => {}
+            qos_actions::ConfirmationPolicy::Phrase { phrase: expected } => {
+                if phrase != Some(expected.as_str()) {
+                    return Err("the confirmation phrase did not match".into());
+                }
+            }
+        }
+        let token = uuid::Uuid::new_v4().to_string();
+        let mut grants = self
+            .confirmation_grants
+            .lock()
+            .map_err(|_| "the confirmation registry is unavailable".to_string())?;
+        let now = std::time::Instant::now();
+        grants.retain(|_, grant| grant.expires >= now);
+        grants.insert(
+            token.clone(),
+            ConfirmationGrant {
+                peer_id,
+                resource: resource.to_string(),
+                action: action.to_string(),
+                argument_digest: argument_digest(argument),
+                actor: actor.to_string(),
+                expires: std::time::Instant::now() + std::time::Duration::from_secs(60),
+            },
+        );
+        Ok(token)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_invocation_confirmed(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        actor: &str,
+        confirmation_token: Option<&str>,
+    ) -> Result<InvocationJob, String> {
         let offered = self
             .surfaces
             .lock()
@@ -429,21 +754,83 @@ impl CapnpBrokerState {
             app: offered.0.app_id.clone(),
             action: action.to_string(),
         };
-        let verb = if offered.1.operation_kind == qos_actions::OperationKind::View {
-            Verb::Read
-        } else {
-            Verb::Write
+        if let qos_actions::Availability::Unavailable { reason, .. } =
+            &offered.1.contract.availability
+        {
+            return Err(format!("the application action is unavailable: {reason}"));
+        }
+        let verb = match offered.1.contract.permission {
+            qos_actions::PermissionRequirement::None => None,
+            qos_actions::PermissionRequirement::Read => Some(Verb::Read),
+            qos_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+            qos_actions::PermissionRequirement::Write => Some(Verb::Write),
+            qos_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+            qos_actions::PermissionRequirement::Admin => Some(Verb::Admin),
         };
-        if workspace.decide(&caller, &target, verb) != CapDecision::Allow {
+        if verb.is_some_and(|verb| workspace.decide(&caller, &target, verb) != CapDecision::Allow) {
             return Err("the caller is not allowed to invoke that application action".into());
         }
         drop(tree);
+        if !matches!(
+            offered.1.contract.confirmation,
+            qos_actions::ConfirmationPolicy::None
+        ) {
+            let token = confirmation_token.ok_or_else(|| {
+                "action_confirmation_required: request and present a one-use confirmation token"
+                    .to_string()
+            })?;
+            let grant = self
+                .confirmation_grants
+                .lock()
+                .map_err(|_| "the confirmation registry is unavailable".to_string())?
+                .remove(token)
+                .ok_or_else(|| "the confirmation token is unknown or already used".to_string())?;
+            if grant.expires < std::time::Instant::now()
+                || grant.peer_id != peer_id
+                || grant.resource != resource
+                || grant.action != action
+                || grant.argument_digest != argument_digest(argument)
+                || grant.actor != actor
+            {
+                return Err(
+                    "the confirmation token is expired or does not match this invocation".into(),
+                );
+            }
+        }
         let id = self.invocation_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = std::sync::mpsc::channel();
         self.pending_invocations
             .lock()
             .map_err(|_| "the invocation registry is unavailable".to_string())?
-            .insert(id, PendingInvocation { peer_id, tx });
+            .insert(
+                id,
+                PendingInvocation {
+                    peer_id,
+                    tx,
+                    update: qos_actions::InvocationUpdate::Accepted {
+                        invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(
+                            id,
+                        ))),
+                    },
+                    last_sequence: 0,
+                    actor: actor.to_string(),
+                    cancellable: matches!(
+                        offered.1.contract.execution,
+                        qos_actions::ExecutionMode::Background { cancellable: true }
+                            | qos_actions::ExecutionMode::Streaming {
+                                cancellable: true,
+                                ..
+                            }
+                    ),
+                    retryable_on_disconnect: matches!(
+                        offered.1.contract.retry,
+                        qos_actions::RetryPolicy::Idempotent
+                            | qos_actions::RetryPolicy::RetryWithInvocationId
+                    ),
+                    execution: offered.1.contract.execution.clone(),
+                    result: offered.1.contract.result.clone(),
+                },
+            );
         if sender
             .send(InvocationEnvelope {
                 id,
@@ -460,7 +847,75 @@ impl CapnpBrokerState {
                 .map(|mut pending| pending.remove(&id));
             return Err("the application invocation stream closed".into());
         }
-        Ok(rx)
+        Ok(InvocationJob { id, completion: rx })
+    }
+
+    pub fn invocation_status(&self, id: u64) -> Option<qos_actions::InvocationUpdate> {
+        self.pending_invocations
+            .lock()
+            .ok()
+            .and_then(|pending| pending.get(&id).map(|job| job.update.clone()))
+            .or_else(|| {
+                self.completed_invocations
+                    .lock()
+                    .ok()
+                    .and_then(|jobs| jobs.get(&id).map(|(_, update)| update.clone()))
+            })
+    }
+
+    pub fn invocation_statuses(&self, actor: &str) -> Vec<(u64, qos_actions::InvocationUpdate)> {
+        let mut jobs = self
+            .pending_invocations
+            .lock()
+            .map(|pending| {
+                pending
+                    .iter()
+                    .filter(|(_, job)| job.actor == actor)
+                    .map(|(id, job)| (*id, job.update.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if let Ok(completed) = self.completed_invocations.lock() {
+            jobs.extend(completed.iter().filter_map(|(id, (owner, update))| {
+                (owner == actor).then(|| (*id, update.clone()))
+            }));
+        }
+        jobs.sort_by_key(|(id, _)| *id);
+        jobs
+    }
+
+    pub fn request_cancellation(&self, id: u64, actor: &str) -> Result<(), String> {
+        let pending = self
+            .pending_invocations
+            .lock()
+            .map_err(|_| "the invocation registry is unavailable".to_string())?;
+        let job = pending
+            .get(&id)
+            .ok_or_else(|| "the invocation is not running".to_string())?;
+        if job.actor != actor {
+            return Err("only the invocation owner may cancel it".into());
+        }
+        if !job.cancellable {
+            return Err("the action did not declare cooperative cancellation".into());
+        }
+        drop(pending);
+        self.cancellation_requests
+            .lock()
+            .map_err(|_| "the cancellation registry is unavailable".to_string())?
+            .insert(id);
+        Ok(())
+    }
+
+    pub fn can_cancel(&self, id: u64, actor: &str) -> bool {
+        self.pending_invocations
+            .lock()
+            .ok()
+            .and_then(|pending| {
+                pending
+                    .get(&id)
+                    .map(|job| job.cancellable && job.actor == actor)
+            })
+            .unwrap_or(false)
     }
 
     fn remove_connection(&self, peer_id: u64) {
@@ -470,6 +925,9 @@ impl CapnpBrokerState {
         if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
             subscribers.remove(&peer_id);
         }
+        if let Ok(mut subscribers) = self.action_catalogue_subscribers.lock() {
+            subscribers.remove(&peer_id);
+        }
         if let Ok(mut pending) = self.pending_invocations.lock() {
             let ids = pending
                 .iter()
@@ -477,13 +935,30 @@ impl CapnpBrokerState {
                 .collect::<Vec<_>>();
             for id in ids {
                 if let Some(invocation) = pending.remove(&id) {
-                    let _ = invocation.tx.send(InvocationCompletion {
+                    let completion = InvocationCompletion {
                         code: "action_failed".into(),
                         message: "application disconnected before completing the action".into(),
-                    });
+                    };
+                    let update = qos_actions::InvocationUpdate::Failed {
+                        invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(
+                            id,
+                        ))),
+                        error: qos_actions::ActionFailure {
+                            code: completion.code.clone(),
+                            message: completion.message.clone(),
+                            details: None,
+                            retryable: invocation.retryable_on_disconnect,
+                        },
+                    };
+                    self.record_completion(id, invocation.actor.clone(), update);
+                    if let Ok(mut requests) = self.cancellation_requests.lock() {
+                        requests.remove(&id);
+                    }
+                    let _ = invocation.tx.send(completion);
                 }
             }
         }
+        self.publish_action_catalogue();
     }
 
     /// `joinChannel(channelId, identity)` carries no announced handle,
@@ -640,10 +1115,16 @@ impl CapnpBrokerState {
                     "capnp fanout: no action stream yet, action dropped"
                 );
             }
-            CollabEvent::ScrollbackBatch { .. } | CollabEvent::Invocation { .. } => {
+            CollabEvent::ScrollbackBatch { .. } => {
                 // Per-request in the capnp schema, not a stream; apps
-                // wanting late history repeat `fetchScrollbackFor`; invocations
-                // are point-to-point and never enter fanout.
+                // wanting late history repeat `fetchScrollbackFor`.
+            }
+            CollabEvent::Invocation { .. }
+            | CollabEvent::InvocationCancellation { .. }
+            | CollabEvent::ActionCatalogue { .. }
+            | CollabEvent::PublishedInvocationResult { .. } => {
+                // Invocation delivery and cooperative cancellation are
+                // point-to-point and never enter route fanout.
             }
         }
     }
@@ -1147,22 +1628,92 @@ impl channel_handle::Server for CapnpChannelHandle {
                             })?
                         }
                     },
+                    contract: {
+                        let json = row.get_contract_json()?.to_str()?;
+                        if json.is_empty() {
+                            match row.get_operation_kind()?.to_str()? {
+                                "view" => qos_actions::ActionContract::view(),
+                                _ => qos_actions::ActionContract::default(),
+                            }
+                        } else {
+                            serde_json::from_str(json).map_err(|error| {
+                                capnp::Error::failed(format!(
+                                    "invalid exported action contract: {error}"
+                                ))
+                            })?
+                        }
+                    },
                     input,
                 });
+                let published = actions.last().expect("published action was just appended");
+                if published.resource_kind.trim().is_empty()
+                    || published.resource_label.trim().is_empty()
+                    || published.action_label.trim().is_empty()
+                {
+                    return Err(capnp::Error::failed(
+                        "exported actions require non-empty kind and labels".into(),
+                    ));
+                }
+                if let Some(reason) = published.contract.validate_declaration().into_iter().next() {
+                    return Err(capnp::Error::failed(format!(
+                        "invalid exported action contract: {reason}"
+                    )));
+                }
+                let mut parameter_names = std::collections::HashSet::new();
+                for parameter in &published.params {
+                    if !parameter_names.insert(parameter.name.as_ref()) {
+                        return Err(capnp::Error::failed(
+                            "exported action parameter names must be unique".into(),
+                        ));
+                    }
+                    if let Some(reason) = parameter.validate_declaration().into_iter().next() {
+                        return Err(capnp::Error::failed(format!(
+                            "invalid exported action parameter `{}`: {reason}",
+                            parameter.name
+                        )));
+                    }
+                }
+            }
+            let surface = PublishedSurface {
+                peer_id,
+                app_id,
+                route,
+                actions,
+                live: true,
+            };
+            let archived_actions = surface
+                .actions
+                .iter()
+                .filter(|action| {
+                    !matches!(action.contract.discovery, qos_actions::DiscoveryScope::Live)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let archive_key = (
+                surface.app_id.clone(),
+                surface.route.cluster_id.clone(),
+                surface.route.record_id.clone(),
+            );
+            if let Ok(mut archived) = state.archived_surfaces.lock() {
+                if archived_actions.is_empty() {
+                    archived.remove(&archive_key);
+                } else {
+                    archived.insert(
+                        archive_key,
+                        PublishedSurface {
+                            actions: archived_actions,
+                            live: false,
+                            ..surface.clone()
+                        },
+                    );
+                }
             }
             state
                 .surfaces
                 .lock()
                 .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
-                .insert(
-                    peer_id,
-                    PublishedSurface {
-                        peer_id,
-                        app_id,
-                        route,
-                        actions,
-                    },
-                );
+                .insert(peer_id, surface);
+            state.publish_action_catalogue();
             Ok(())
         })
     }
@@ -1207,6 +1758,11 @@ impl channel_handle::Server for CapnpChannelHandle {
                 code: request.get_code()?.to_str()?.to_owned(),
                 message: request.get_message()?.to_str()?.to_owned(),
             };
+            if !completion.code.is_empty() && completion.message.trim().is_empty() {
+                return Err(capnp::Error::failed(
+                    "failed invocation completion requires a message".into(),
+                ));
+            }
             let mut registry = state
                 .pending_invocations
                 .lock()
@@ -1216,13 +1772,569 @@ impl channel_handle::Server for CapnpChannelHandle {
                     "an application may complete only its own invocation".into(),
                 ));
             }
+            if completion.code.is_empty() {
+                registry
+                    .get(&id)
+                    .expect("owned pending invocation was just checked")
+                    .result
+                    .validate(&qos_actions::ActionOutput::default())
+                    .map_err(|error| {
+                        capnp::Error::failed(format!(
+                            "legacy completion violated its published result contract: {error}"
+                        ))
+                    })?;
+            }
             let pending = registry
                 .remove(&id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
+            let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+            let update = if completion.code.is_empty() {
+                qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput::default(),
+                }
+            } else {
+                qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: completion.code.clone(),
+                        message: completion.message.clone(),
+                        details: None,
+                        retryable: false,
+                    },
+                }
+            };
             drop(registry);
+            state.record_completion(id, pending.actor.clone(), update);
+            if let Ok(mut requests) = state.cancellation_requests.lock() {
+                requests.remove(&id);
+            }
             let _ = pending.tx.send(completion);
             Ok(())
         })
+    }
+
+    fn update_invocation(
+        self: Rc<Self>,
+        params: channel_handle::UpdateInvocationParams,
+        _results: channel_handle::UpdateInvocationResults,
+    ) -> Promise<(), capnp::Error> {
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        Promise::from_future(async move {
+            let request = params.get()?;
+            let id = request.get_id();
+            let json = request.get_update_json()?.to_str()?;
+            let update: qos_actions::InvocationUpdate =
+                serde_json::from_str(json).map_err(|error| {
+                    capnp::Error::failed(format!("invalid invocation update: {error}"))
+                })?;
+            let expected = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+            if update.invocation() != expected {
+                return Err(capnp::Error::failed(
+                    "invocation update identity mismatch".into(),
+                ));
+            }
+            let mut registry = state
+                .pending_invocations
+                .lock()
+                .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?;
+            let pending = registry
+                .get_mut(&id)
+                .filter(|pending| pending.peer_id == peer_id)
+                .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
+            if matches!(&update, qos_actions::InvocationUpdate::Accepted { .. }) {
+                return Err(capnp::Error::failed(
+                    "invocation acceptance is owned by the broker".into(),
+                ));
+            }
+            if let qos_actions::InvocationUpdate::Progress {
+                sequence,
+                phase,
+                completed,
+                total,
+                ..
+            } = &update
+            {
+                if matches!(pending.execution, qos_actions::ExecutionMode::Immediate) {
+                    return Err(capnp::Error::failed(
+                        "immediate action reported background progress".into(),
+                    ));
+                }
+                if *sequence <= pending.last_sequence {
+                    return Err(capnp::Error::failed(
+                        "invocation progress must be monotonic".into(),
+                    ));
+                }
+                if phase.trim().is_empty() {
+                    return Err(capnp::Error::failed(
+                        "invocation progress phase must be non-empty".into(),
+                    ));
+                }
+                if completed
+                    .zip(*total)
+                    .is_some_and(|(completed, total)| completed > total)
+                {
+                    return Err(capnp::Error::failed(
+                        "invocation progress cannot exceed its total".into(),
+                    ));
+                }
+                pending.last_sequence = *sequence;
+            }
+            if let qos_actions::InvocationUpdate::Item {
+                sequence, value, ..
+            } = &update
+            {
+                let qos_actions::ExecutionMode::Streaming { item_schema, .. } = &pending.execution
+                else {
+                    return Err(capnp::Error::failed(
+                        "non-streaming action reported a streamed item".into(),
+                    ));
+                };
+                if *sequence <= pending.last_sequence {
+                    return Err(capnp::Error::failed(
+                        "invocation stream sequence must be monotonic".into(),
+                    ));
+                }
+                qos_actions::validate_json_schema(value, item_schema).map_err(|error| {
+                    capnp::Error::failed(format!(
+                        "streamed item violated its published contract: {error}"
+                    ))
+                })?;
+                pending.last_sequence = *sequence;
+            }
+            if let qos_actions::InvocationUpdate::Succeeded { output, .. } = &update {
+                pending.result.validate(output).map_err(|error| {
+                    capnp::Error::failed(format!(
+                        "invocation result violated its published contract: {error}"
+                    ))
+                })?;
+            }
+            if let qos_actions::InvocationUpdate::Failed { error, .. } = &update {
+                if error.code.trim().is_empty() || error.message.trim().is_empty() {
+                    return Err(capnp::Error::failed(
+                        "invocation failure requires a code and message".into(),
+                    ));
+                }
+                if error.retryable && !pending.retryable_on_disconnect {
+                    return Err(capnp::Error::failed(
+                        "at-most-once action cannot advertise a retryable failure".into(),
+                    ));
+                }
+            }
+            if matches!(&update, qos_actions::InvocationUpdate::Cancelled { .. })
+                && !pending.cancellable
+            {
+                return Err(capnp::Error::failed(
+                    "non-cancellable action reported cancellation".into(),
+                ));
+            }
+            pending.update = update.clone();
+            if update.is_terminal() {
+                let pending = registry
+                    .remove(&id)
+                    .expect("pending invocation was just resolved");
+                drop(registry);
+                let completion = match &update {
+                    qos_actions::InvocationUpdate::Succeeded { .. } => InvocationCompletion {
+                        code: String::new(),
+                        message: String::new(),
+                    },
+                    qos_actions::InvocationUpdate::Failed { error, .. } => InvocationCompletion {
+                        code: error.code.clone(),
+                        message: error.message.clone(),
+                    },
+                    qos_actions::InvocationUpdate::Cancelled { message, .. } => {
+                        InvocationCompletion {
+                            code: "action_cancelled".into(),
+                            message: message.clone().unwrap_or_default(),
+                        }
+                    }
+                    _ => unreachable!("terminal update checked above"),
+                };
+                state.record_completion(id, pending.actor.clone(), update);
+                if let Ok(mut requests) = state.cancellation_requests.lock() {
+                    requests.remove(&id);
+                }
+                let _ = pending.tx.send(completion);
+            }
+            Ok(())
+        })
+    }
+
+    fn invocation_cancellation(
+        self: Rc<Self>,
+        params: channel_handle::InvocationCancellationParams,
+        mut results: channel_handle::InvocationCancellationResults,
+    ) -> Promise<(), capnp::Error> {
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let id = request.get_id();
+        let owns = self
+            .state
+            .pending_invocations
+            .lock()
+            .ok()
+            .and_then(|pending| pending.get(&id).map(|job| job.peer_id == self.peer_id))
+            .unwrap_or(false);
+        if !owns {
+            return Promise::err(capnp::Error::failed("unknown invocation id".into()));
+        }
+        let cancelled = self
+            .state
+            .cancellation_requests
+            .lock()
+            .map(|requests| requests.contains(&id))
+            .unwrap_or(false);
+        results.get().set_cancelled(cancelled);
+        Promise::ok(())
+    }
+
+    fn action_catalogue(
+        self: Rc<Self>,
+        _params: channel_handle::ActionCatalogueParams,
+        mut results: channel_handle::ActionCatalogueResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        match self.state.action_catalogue_json(
+            &self.route().cluster_id,
+            &self.verified_identity.principal_id,
+        ) {
+            Ok(snapshot) => {
+                results.get().set_catalogue_json(&snapshot);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(capnp::Error::failed(error)),
+        }
+    }
+
+    fn subscribe_action_catalogue(
+        self: Rc<Self>,
+        _params: channel_handle::SubscribeActionCatalogueParams,
+        mut results: channel_handle::SubscribeActionCatalogueResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let cluster = self.route().cluster_id;
+        let actor = self.verified_identity.principal_id.clone();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let initial = match self.state.action_catalogue_json(&cluster, &actor) {
+            Ok(snapshot) => snapshot,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
+        if tx.send(initial).is_err() {
+            return Promise::err(capnp::Error::disconnected(
+                "action catalogue stream closed".into(),
+            ));
+        }
+        if let Ok(mut subscribers) = self.state.action_catalogue_subscribers.lock() {
+            subscribers.insert(self.peer_id, (cluster, actor, tx));
+        } else {
+            return Promise::err(capnp::Error::failed(
+                "action catalogue subscriber registry unavailable".into(),
+            ));
+        }
+        let client: action_catalogue_stream::Client =
+            capnp_rpc::new_client(ActionCatalogueStreamServer {
+                rx: Rc::new(AsyncMutex::new(rx)),
+            });
+        results.get().set_stream(client);
+        Promise::ok(())
+    }
+
+    fn invoke_published_action(
+        self: Rc<Self>,
+        params: channel_handle::InvokePublishedActionParams,
+        mut results: channel_handle::InvokePublishedActionResults,
+    ) -> Promise<(), capnp::Error> {
+        let current = match self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            Ok(current) => current,
+            Err(error) => return Promise::err(error),
+        };
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let peer_id = request.get_peer_id();
+        let resource = match request.get_resource().and_then(|s| {
+            s.to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value.to_owned(),
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        let action = match request.get_action().and_then(|s| {
+            s.to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value.to_owned(),
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        let argument = if request.get_has_argument() {
+            match request.get_argument().and_then(|s| {
+                s.to_str()
+                    .map_err(|error| capnp::Error::failed(error.to_string()))
+            }) {
+                Ok(value) => Some(value.to_owned()),
+                Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+            }
+        } else {
+            None
+        };
+        let confirmation = match request.get_confirmation_json().and_then(|s| {
+            s.to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok("") => serde_json::Value::Object(serde_json::Map::new()),
+            Ok(value) => match serde_json::from_str::<serde_json::Value>(value) {
+                Ok(value) => value,
+                Err(error) => {
+                    return Promise::err(capnp::Error::failed(format!(
+                        "invalid confirmation evidence: {error}"
+                    )));
+                }
+            },
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        let state = self.state.clone();
+        let cluster = self.route().cluster_id;
+        Promise::from_future(async move {
+            let offered = state
+                .surfaces
+                .lock()
+                .ok()
+                .and_then(|surfaces| surfaces.get(&peer_id).cloned())
+                .filter(|surface| surface.route.cluster_id == cluster)
+                .and_then(|surface| {
+                    surface.actions.into_iter().find(|candidate| {
+                        candidate.resource == resource && candidate.action == action
+                    })
+                })
+                .ok_or_else(|| capnp::Error::failed("unknown application action".into()))?;
+            let actor = current.principal_id;
+            let phrase = confirmation
+                .get("confirmation_phrase")
+                .and_then(serde_json::Value::as_str);
+            let job = match &offered.contract.confirmation {
+                qos_actions::ConfirmationPolicy::None => {
+                    state.start_invocation(peer_id, &resource, &action, argument.as_deref(), &actor)
+                }
+                qos_actions::ConfirmationPolicy::Confirm => {
+                    if confirmation
+                        .get("confirm")
+                        .and_then(serde_json::Value::as_bool)
+                        != Some(true)
+                    {
+                        return Err(capnp::Error::failed(
+                            "explicit confirmation is required".into(),
+                        ));
+                    }
+                    let token = state
+                        .prepare_confirmation(
+                            peer_id,
+                            &resource,
+                            &action,
+                            argument.as_deref(),
+                            &actor,
+                            None,
+                        )
+                        .map_err(capnp::Error::failed)?;
+                    state.start_invocation_confirmed(
+                        peer_id,
+                        &resource,
+                        &action,
+                        argument.as_deref(),
+                        &actor,
+                        Some(&token),
+                    )
+                }
+                qos_actions::ConfirmationPolicy::Phrase { .. } => {
+                    let token = state
+                        .prepare_confirmation(
+                            peer_id,
+                            &resource,
+                            &action,
+                            argument.as_deref(),
+                            &actor,
+                            phrase,
+                        )
+                        .map_err(capnp::Error::failed)?;
+                    state.start_invocation_confirmed(
+                        peer_id,
+                        &resource,
+                        &action,
+                        argument.as_deref(),
+                        &actor,
+                        Some(&token),
+                    )
+                }
+            }
+            .map_err(capnp::Error::failed)?;
+            let update = state.invocation_status(job.id).ok_or_else(|| {
+                capnp::Error::failed("accepted invocation has no broker state".into())
+            })?;
+            let update_json = serde_json::to_string(&update)
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            results.get().set_id(job.id);
+            results.get().set_update_json(&update_json);
+            drop(job.completion);
+            Ok(())
+        })
+    }
+
+    fn published_invocation_status(
+        self: Rc<Self>,
+        params: channel_handle::PublishedInvocationStatusParams,
+        mut results: channel_handle::PublishedInvocationStatusResults,
+    ) -> Promise<(), capnp::Error> {
+        let current = match self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            Ok(current) => current,
+            Err(error) => return Promise::err(error),
+        };
+        let id = match params.get() {
+            Ok(request) => request.get_id(),
+            Err(error) => return Promise::err(error),
+        };
+        let update = self
+            .state
+            .invocation_statuses(&current.principal_id)
+            .into_iter()
+            .find_map(|(candidate, update)| (candidate == id).then_some(update));
+        let mut result = results.get();
+        result.set_found(update.is_some());
+        if let Some(update) = update {
+            match serde_json::to_string(&update) {
+                Ok(json) => result.set_update_json(&json),
+                Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+            }
+        }
+        Promise::ok(())
+    }
+
+    fn cancel_published_invocation(
+        self: Rc<Self>,
+        params: channel_handle::CancelPublishedInvocationParams,
+        mut results: channel_handle::CancelPublishedInvocationResults,
+    ) -> Promise<(), capnp::Error> {
+        let current = match self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            Ok(current) => current,
+            Err(error) => return Promise::err(error),
+        };
+        let id = match params.get() {
+            Ok(request) => request.get_id(),
+            Err(error) => return Promise::err(error),
+        };
+        if let Err(error) = self.state.request_cancellation(id, &current.principal_id) {
+            return Promise::err(capnp::Error::failed(error));
+        }
+        let update = match self.state.invocation_status(id) {
+            Some(update) => update,
+            None => return Promise::err(capnp::Error::failed("unknown invocation id".into())),
+        };
+        match serde_json::to_string(&update) {
+            Ok(json) => {
+                results.get().set_update_json(&json);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(capnp::Error::failed(error.to_string())),
+        }
+    }
+
+    fn launch_published_application(
+        self: Rc<Self>,
+        params: channel_handle::LaunchPublishedApplicationParams,
+        mut results: channel_handle::LaunchPublishedApplicationResults,
+    ) -> Promise<(), capnp::Error> {
+        let current = match self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            Ok(current) => current,
+            Err(error) => return Promise::err(error),
+        };
+        let app_id = match params.get().and_then(|request| request.get_app_id()) {
+            Ok(value) => match value.to_str() {
+                Ok(value) => value.to_owned(),
+                Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+            },
+            Err(error) => return Promise::err(error),
+        };
+        let membership = match self.state.membership.as_ref() {
+            Some(membership) => membership,
+            None => {
+                return Promise::err(capnp::Error::failed(
+                    "the action broker has no workspace authority".into(),
+                ));
+            }
+        };
+        let workspace = {
+            let tree = membership.read();
+            let Some(workspace) = tree
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room.to_string() == self.route().cluster_id)
+            else {
+                return Promise::err(capnp::Error::failed(
+                    "the application workspace is no longer hosted".into(),
+                ));
+            };
+            let caller = workspace.actor_for_person(&current.principal_id);
+            if workspace.decide(&caller, &ResourceRef::App(app_id.clone()), Verb::Write)
+                != CapDecision::Allow
+            {
+                return Promise::err(capnp::Error::failed(
+                    "the caller is not allowed to launch that application".into(),
+                ));
+            }
+            workspace.clone()
+        };
+        let id = self.state.invocation_id.fetch_add(1, Ordering::Relaxed);
+        let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let update = match crate::shell::launcher::launch_in_workspace(&app_id, &workspace) {
+            Ok(_) => qos_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: qos_actions::ActionOutput::default(),
+            },
+            Err(error) => qos_actions::InvocationUpdate::Failed {
+                invocation,
+                error: qos_actions::ActionFailure {
+                    code: "launch_failed".into(),
+                    message: error.to_string(),
+                    details: None,
+                    retryable: false,
+                },
+            },
+        };
+        self.state
+            .record_completion(id, current.principal_id, update.clone());
+        match serde_json::to_string(&update) {
+            Ok(json) => {
+                results.get().set_id(id);
+                results.get().set_update_json(&json);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(capnp::Error::failed(error.to_string())),
+        }
     }
 }
 
@@ -1649,6 +2761,29 @@ struct PresenceStreamServer {
 
 struct InvocationStreamServer {
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<InvocationEnvelope>>>,
+}
+
+struct ActionCatalogueStreamServer {
+    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<String>>>,
+}
+
+impl action_catalogue_stream::Server for ActionCatalogueStreamServer {
+    fn read(
+        self: Rc<Self>,
+        _params: action_catalogue_stream::ReadParams,
+        mut results: action_catalogue_stream::ReadResults,
+    ) -> Promise<(), capnp::Error> {
+        let rx = self.rx.clone();
+        Promise::from_future(async move {
+            let mut guard = rx.lock().await;
+            let snapshot = guard.recv().await.ok_or_else(|| {
+                capnp::Error::disconnected("action catalogue stream closed".into())
+            })?;
+            drop(guard);
+            results.get().set_catalogue_json(&snapshot);
+            Ok(())
+        })
+    }
 }
 
 impl invocation_stream::Server for InvocationStreamServer {
@@ -2472,17 +3607,53 @@ mod tests {
                 peer_id: 7,
                 app_id: "dev.qos.files".into(),
                 route,
-                actions: vec![PublishedAction {
-                    resource: "files.entry:/tmp/report".into(),
-                    action: "reveal".into(),
-                    resource_kind: "files.entry".into(),
-                    resource_label: "report".into(),
-                    action_label: "Reveal".into(),
-                    description: None,
-                    operation_kind: qos_actions::OperationKind::View,
-                    params: Vec::new(),
-                    input: PublishedInput::None,
-                }],
+                actions: vec![
+                    PublishedAction {
+                        resource: "files.entry:/tmp/report".into(),
+                        action: "reveal".into(),
+                        resource_kind: "files.entry".into(),
+                        resource_label: "report".into(),
+                        action_label: "Reveal".into(),
+                        description: None,
+                        operation_kind: qos_actions::OperationKind::View,
+                        params: Vec::new(),
+                        contract: qos_actions::ActionContract::view(),
+                        input: PublishedInput::None,
+                    },
+                    PublishedAction {
+                        resource: "files.entry:/tmp/report".into(),
+                        action: "erase".into(),
+                        resource_kind: "files.entry".into(),
+                        resource_label: "report".into(),
+                        action_label: "Erase".into(),
+                        description: None,
+                        operation_kind: qos_actions::OperationKind::Effect,
+                        params: Vec::new(),
+                        contract: qos_actions::ActionContract {
+                            risk: qos_actions::RiskLevel::Destructive,
+                            confirmation: qos_actions::ConfirmationPolicy::Confirm,
+                            ..qos_actions::ActionContract::default()
+                        },
+                        input: PublishedInput::None,
+                    },
+                    PublishedAction {
+                        resource: "files.entry:/tmp/report".into(),
+                        action: "refresh".into(),
+                        resource_kind: "files.entry".into(),
+                        resource_label: "report".into(),
+                        action_label: "Refresh".into(),
+                        description: None,
+                        operation_kind: qos_actions::OperationKind::Effect,
+                        params: Vec::new(),
+                        contract: qos_actions::ActionContract {
+                            execution: qos_actions::ExecutionMode::Background { cancellable: true },
+                            result: qos_actions::ResultSpec::Job,
+                            ..qos_actions::ActionContract::default()
+                        },
+                        input: PublishedInput::None,
+                    },
+                ],
+                live: true,
             },
         );
         let (tx, mut invocations) = mpsc::unbounded_channel();
@@ -2492,11 +3663,83 @@ mod tests {
             .expect("subscribers")
             .insert(7, tx);
 
+        let action_cluster = state
+            .surfaces
+            .lock()
+            .expect("surfaces")
+            .get(&7)
+            .expect("surface")
+            .route
+            .cluster_id
+            .clone();
+        let owner_catalogue = state
+            .action_catalogue_json(&action_cluster, "owner")
+            .expect("owner catalogue");
+        assert!(owner_catalogue.contains("files.entry:/tmp/report"));
+        let denied_catalogue = state
+            .action_catalogue_json(&action_cluster, "stranger")
+            .expect("filtered catalogue");
+        assert!(
+            !denied_catalogue.contains("files.entry:/tmp/report"),
+            "denied actions must be absent from discovery, not merely refused later"
+        );
+
         let completion = state
             .invoke(7, "files.entry:/tmp/report", "reveal", None, "owner")
             .expect("owner can invoke current offer");
         let invocation = invocations.try_recv().expect("directed invocation");
         assert_eq!(invocation.resource, "files.entry:/tmp/report");
+        assert!(
+            state
+                .start_invocation(7, "files.entry:/tmp/report", "erase", None, "owner")
+                .is_err(),
+            "a consequential action cannot bypass the confirmation protocol"
+        );
+        let token = state
+            .prepare_confirmation(7, "files.entry:/tmp/report", "erase", None, "owner", None)
+            .expect("confirmation grant");
+        let erased = state
+            .start_invocation_confirmed(
+                7,
+                "files.entry:/tmp/report",
+                "erase",
+                None,
+                "owner",
+                Some(&token),
+            )
+            .expect("matching one-use grant");
+        assert!(
+            state
+                .start_invocation_confirmed(
+                    7,
+                    "files.entry:/tmp/report",
+                    "erase",
+                    None,
+                    "owner",
+                    Some(&token),
+                )
+                .is_err(),
+            "confirmation grants are single use"
+        );
+        let erase_invocation = invocations.try_recv().expect("confirmed invocation");
+        assert_eq!(erase_invocation.id, erased.id);
+
+        let refresh = state
+            .start_invocation(7, "files.entry:/tmp/report", "refresh", None, "owner")
+            .expect("cancellable job");
+        let refresh_invocation = invocations.try_recv().expect("job invocation");
+        assert_eq!(refresh_invocation.id, refresh.id);
+        assert!(state.request_cancellation(refresh.id, "stranger").is_err());
+        state
+            .request_cancellation(refresh.id, "owner")
+            .expect("owner can request cooperative cancellation");
+        assert!(
+            state
+                .cancellation_requests
+                .lock()
+                .expect("cancellation registry")
+                .contains(&refresh.id)
+        );
         assert!(
             state
                 .invoke(7, "files.entry:/tmp/report", "gone", None, "owner")
@@ -2528,6 +3771,59 @@ mod tests {
                 code: String::new(),
                 message: String::new(),
             }
+        );
+
+        let launchable = PublishedSurface {
+            peer_id: 99,
+            app_id: "dev.qos.files".into(),
+            route: CrdtRoute::app(
+                "dev.qos.files",
+                state
+                    .surfaces
+                    .lock()
+                    .expect("surfaces")
+                    .get(&7)
+                    .expect("live surface")
+                    .route
+                    .cluster_id
+                    .clone(),
+            ),
+            actions: vec![PublishedAction {
+                resource: "files.app".into(),
+                action: "new-window".into(),
+                resource_kind: "files.app".into(),
+                resource_label: "Files".into(),
+                action_label: "New window".into(),
+                description: None,
+                operation_kind: qos_actions::OperationKind::View,
+                params: Vec::new(),
+                contract: qos_actions::ActionContract {
+                    discovery: qos_actions::DiscoveryScope::Launchable,
+                    ..qos_actions::ActionContract::view()
+                },
+                input: PublishedInput::None,
+            }],
+            live: false,
+        };
+        state.archived_surfaces.lock().expect("archive").insert(
+            (
+                launchable.app_id.clone(),
+                launchable.route.cluster_id.clone(),
+                launchable.route.record_id.clone(),
+            ),
+            launchable,
+        );
+        state.surfaces.lock().expect("surfaces").remove(&7);
+        let archived = state.published_surfaces();
+        assert_eq!(archived.len(), 1);
+        assert!(!archived[0].live);
+        assert_eq!(archived[0].actions[0].action, "new-window");
+        assert!(
+            !state
+                .action_catalogue_json(&archived[0].route.cluster_id, "owner")
+                .expect("live-only direct catalogue")
+                .contains("new-window"),
+            "archived launchable descriptors are not directly invokable through this protocol"
         );
     }
 }

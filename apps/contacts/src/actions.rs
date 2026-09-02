@@ -37,8 +37,9 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
+    ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::ContactsDoc;
@@ -46,6 +47,105 @@ use crate::model::{Address, Birthday, Contact, ContactId, Labeled};
 
 /// Registry `type_id` for every contacts action.
 pub const CONTACTS_ACTION_TYPE: &str = "contacts.action";
+pub const CONTACTS_OPERATION_TYPE: &str = "contacts.operation";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContactsOperation {
+    Open { id: String },
+    ImportVcard { path: Option<String> },
+    ExportAllVcard { path: Option<String> },
+}
+
+#[cfg(test)]
+mod file_action_tests {
+    use super::*;
+    #[test]
+    fn path_argument_binds_into_background_import() {
+        let spec = file_operation("import-vcard", "Import vCard", false);
+        let encoded = spec
+            .build_json(
+                serde_json::json!({"path":"/tmp/a.vcf"})
+                    .as_object()
+                    .unwrap(),
+            )
+            .unwrap();
+        let decoded: ContactsOperation = serde_json::from_slice(&encoded.payload).unwrap();
+        assert_eq!(
+            decoded,
+            ContactsOperation::ImportVcard {
+                path: Some("/tmp/a.vcf".into())
+            }
+        );
+        assert!(matches!(
+            spec.contract.execution,
+            ExecutionMode::Background { .. }
+        ));
+        assert_eq!(spec.contract.result, ResultSpec::Job);
+    }
+}
+
+fn contact_operation(
+    id: &str,
+    label: &str,
+    kind: OperationKind,
+    operation: ContactsOperation,
+) -> ActionSpec {
+    let spec = ActionSpec::operation(id, label, kind, CONTACTS_OPERATION_TYPE, &operation)
+        .expect("ContactsOperation is always serializable");
+    match operation {
+        ContactsOperation::Open { .. } => spec.retry_policy(RetryPolicy::Idempotent),
+        // These invocations synchronously enqueue a host-portal request and
+        // return. The app has no durable job handle or cancellation channel,
+        // so advertising a cancellable background lifecycle would be false.
+        ContactsOperation::ImportVcard { .. } => spec,
+        ContactsOperation::ExportAllVcard { .. } => spec.destructive(),
+    }
+}
+
+fn file_operation(id: &str, label: &str, export: bool) -> ActionSpec {
+    ActionSpec::typed_operation(
+        id,
+        label,
+        "optional absolute path",
+        OperationKind::Effect,
+        CONTACTS_OPERATION_TYPE,
+        vec![ActionParam::optional(
+            "path",
+            ParamType::Text,
+            "vCard path; omit to use the system picker",
+        )],
+        move |args: &ActionArgs| {
+            let path = args
+                .text("path")
+                .filter(|p| !p.trim().is_empty())
+                .map(str::to_string);
+            let operation = if export {
+                ContactsOperation::ExportAllVcard { path }
+            } else {
+                ContactsOperation::ImportVcard { path }
+            };
+            EncodedAction {
+                type_id: CONTACTS_OPERATION_TYPE.into(),
+                payload: serde_json::to_vec(&operation).expect("ContactsOperation serializes"),
+            }
+        },
+    )
+    .with_contract(ActionContract {
+        risk: if export {
+            qos_actions::RiskLevel::Destructive
+        } else {
+            qos_actions::RiskLevel::Low
+        },
+        confirmation: if export {
+            qos_actions::ConfirmationPolicy::Confirm
+        } else {
+            qos_actions::ConfirmationPolicy::None
+        },
+        execution: ExecutionMode::Background { cancellable: true },
+        result: ResultSpec::Job,
+        ..ActionContract::default()
+    })
+}
 
 /// A serializable snapshot of a contact's fields, in exactly the representation
 /// the document stores (id and birthday as strings, the repeated rows as the
@@ -254,6 +354,8 @@ pub fn set_favorite_action(id: impl Into<String>, favorite: bool) -> ContactsAct
 #[derive(Debug, Clone)]
 pub struct ContactsResourceCtx {
     pub contacts: Vec<Contact>,
+    pub import_busy: bool,
+    pub export_busy: bool,
 }
 
 /// Split a typed full name into first / rest-as-last, so a palette "New
@@ -283,6 +385,18 @@ fn immediate_spec(id: &str, label: &str, action: &ContactsAction) -> ActionSpec 
 /// on-screen affordance dispatches.
 pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("contacts.book", "contacts.book", "Contacts");
+    let mut import = file_operation("import-vcard", "Import vCard", false);
+    if ctx.import_busy {
+        import = import.unavailable("already_running", "A contact import is already in progress");
+    }
+    root = root.with_action(import);
+    let mut export = file_operation("export-all-vcard", "Export all contacts", true);
+    if ctx.contacts.is_empty() {
+        export = export.unavailable("book_empty", "There are no contacts to export");
+    } else if ctx.export_busy {
+        export = export.unavailable("already_running", "A contact export is already in progress");
+    }
+    root = root.with_action(export);
 
     // Book-level: create a contact from a typed name. The uuid is minted once
     // when the argument is committed, then baked into the envelope, so replay
@@ -309,6 +423,12 @@ pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Re
             "contacts.contact",
             contact.display_name(),
         );
+        child = child.with_action(contact_operation(
+            "open",
+            "Open contact",
+            OperationKind::View,
+            ContactsOperation::Open { id: id.clone() },
+        ));
 
         // Rename — a prompted action carrying the rest of the record unchanged.
         let base = contact.clone();
@@ -359,11 +479,14 @@ pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Re
         ));
 
         // Delete.
-        child = child.with_action(immediate_spec(
-            "delete",
-            "Delete contact",
-            &delete_contact_action(id.clone()),
-        ));
+        child = child.with_action(
+            immediate_spec(
+                "delete",
+                "Delete contact",
+                &delete_contact_action(id.clone()),
+            )
+            .destructive(),
+        );
 
         root = root.with_child(child);
     }

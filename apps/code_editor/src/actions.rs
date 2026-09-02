@@ -44,8 +44,9 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, ResourceProvider,
+    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
+    ResultSpec, RetryPolicy,
 };
 
 use crate::doc::EditorDoc;
@@ -57,7 +58,9 @@ pub const CODE_EDITOR_OPERATION_TYPE: &str = "code_editor.operation";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CodeEditorOperation {
     Open { node: u64 },
-    Save { node: u64 },
+    OpenFile { path: Option<String> },
+    OpenFolder { path: Option<String> },
+    Save { node: u64, path: Option<String> },
 }
 
 fn file_operation(
@@ -66,8 +69,15 @@ fn file_operation(
     kind: OperationKind,
     operation: CodeEditorOperation,
 ) -> ActionSpec {
-    ActionSpec::operation(id, label, kind, CODE_EDITOR_OPERATION_TYPE, &operation)
-        .expect("CodeEditorOperation is always serializable")
+    let spec = ActionSpec::operation(id, label, kind, CODE_EDITOR_OPERATION_TYPE, &operation)
+        .expect("CodeEditorOperation is always serializable");
+    match operation {
+        CodeEditorOperation::Open { .. } => spec.retry_policy(RetryPolicy::Idempotent),
+        CodeEditorOperation::OpenFile { .. } | CodeEditorOperation::OpenFolder { .. } => spec
+            .execution(ExecutionMode::Background { cancellable: true })
+            .returns(ResultSpec::Job),
+        CodeEditorOperation::Save { .. } => spec.destructive(),
+    }
 }
 
 /// Every collaborative operation Code exports on the shared document.
@@ -202,6 +212,48 @@ pub fn provide_resources(ctx: &CodeEditorResourceCtx, _doc: &AutoCommit) -> Vec<
         ctx.project_name.clone()
     };
     let mut project = Resource::new("code_editor.project", "code_editor.project", label);
+    for (id, label, folder) in [
+        ("open-file", "Open file", false),
+        ("open-folder", "Open project folder", true),
+    ] {
+        project = project.with_action(
+            ActionSpec::typed_operation(
+                id,
+                label,
+                "path (omit to use the system file picker)",
+                OperationKind::Effect,
+                CODE_EDITOR_OPERATION_TYPE,
+                vec![ActionParam::optional(
+                    "path",
+                    ParamType::Text,
+                    "filesystem path",
+                )],
+                move |args: &ActionArgs| {
+                    EncodedAction::encode_operation(
+                        CODE_EDITOR_OPERATION_TYPE,
+                        &if folder {
+                            CodeEditorOperation::OpenFolder {
+                                path: args
+                                    .text("path")
+                                    .filter(|p| !p.is_empty())
+                                    .map(str::to_owned),
+                            }
+                        } else {
+                            CodeEditorOperation::OpenFile {
+                                path: args
+                                    .text("path")
+                                    .filter(|p| !p.is_empty())
+                                    .map(str::to_owned),
+                            }
+                        },
+                    )
+                    .expect("CodeEditorOperation is always serializable")
+                },
+            )
+            .execution(ExecutionMode::Background { cancellable: true })
+            .returns(ResultSpec::Job),
+        );
+    }
 
     // Project-level: create a new (untitled) buffer. Immediate, not prompted —
     // the file's *name* lives only in the in-memory model, so a pure-document
@@ -236,14 +288,37 @@ pub fn provide_resources(ctx: &CodeEditorResourceCtx, _doc: &AutoCommit) -> Vec<
             OperationKind::View,
             CodeEditorOperation::Open { node: f.node },
         ));
-        if f.can_save {
-            file = file.with_action(file_operation(
+        let node = f.node;
+        file = file.with_action(
+            ActionSpec::typed_operation(
                 "save",
                 "Save file",
+                "path (omit to save in place)",
                 OperationKind::Effect,
-                CodeEditorOperation::Save { node: f.node },
-            ));
-        }
+                CODE_EDITOR_OPERATION_TYPE,
+                vec![ActionParam::optional(
+                    "path",
+                    ParamType::Text,
+                    "save destination",
+                )],
+                move |args: &ActionArgs| {
+                    EncodedAction::encode_operation(
+                        CODE_EDITOR_OPERATION_TYPE,
+                        &CodeEditorOperation::Save {
+                            node,
+                            path: args
+                                .text("path")
+                                .filter(|p| !p.is_empty())
+                                .map(str::to_owned),
+                        },
+                    )
+                    .expect("CodeEditorOperation is always serializable")
+                },
+            )
+            .destructive()
+            .execution(ExecutionMode::Background { cancellable: true })
+            .returns(ResultSpec::Job),
+        );
         project = project.with_child(file);
     }
 
@@ -265,6 +340,44 @@ mod tests {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
+    }
+
+    #[test]
+    fn file_io_has_typed_paths_and_background_job_contracts() {
+        let ctx = CodeEditorResourceCtx {
+            project_name: "demo".into(),
+            next_id: 2,
+            open_files: vec![OpenFileRef {
+                node: 1,
+                name: "x.rs".into(),
+                can_save: false,
+            }],
+        };
+        let resources = provide_resources(&ctx, &AutoCommit::new());
+        for spec in resources[0]
+            .actions
+            .iter()
+            .filter(|a| a.id.starts_with("open-"))
+            .chain(
+                resources[0].children[0]
+                    .actions
+                    .iter()
+                    .filter(|a| a.id == "save"),
+            )
+        {
+            assert_eq!(spec.params()[0].name, "path");
+            assert!(matches!(
+                spec.contract.execution,
+                ExecutionMode::Background { cancellable: true }
+            ));
+            assert_eq!(spec.contract.result, ResultSpec::Job);
+            if spec.id == "save" {
+                assert!(!matches!(
+                    spec.contract.confirmation,
+                    qos_actions::ConfirmationPolicy::None
+                ));
+            }
+        }
     }
 
     /// Dispatch an action through the executor, as the on-screen affordance path
@@ -351,9 +464,11 @@ mod tests {
         );
         assert_eq!(file_actions[0].kind, OperationKind::View);
         assert_eq!(file_actions[1].kind, OperationKind::Effect);
-        for action in file_actions {
-            assert_eq!(immediate_encode(action).type_id, CODE_EDITOR_OPERATION_TYPE);
-        }
+        assert_eq!(
+            immediate_encode(&file_actions[0]).type_id,
+            CODE_EDITOR_OPERATION_TYPE
+        );
+        assert_eq!(file_actions[1].params()[0].name, "path");
 
         // The one palette surfaces the tree's actions as rows.
         let mut palette = ui::ActionPalette::new();

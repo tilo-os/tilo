@@ -530,6 +530,10 @@ pub struct ShellOverlayHost {
     /// Backs the current palette entries, indexed in lock-step with
     /// `palette.entries` so Enter/click resolves by ordinal.
     search_results: Vec<crate::shell::search::SearchResult>,
+    /// Parameterized result awaiting a JSON argument object in the palette's
+    /// query field. Keeping the inert result (not a pre-bound callback) lets
+    /// Enter perform the same strict `ActionArgs::bind_json` as scripts.
+    pending_palette_action: Option<crate::shell::search::SearchResult>,
     /// `palette.query()` after the last fan-out; refresh is
     /// short-circuited when this still matches.
     last_search_query: String,
@@ -1298,6 +1302,7 @@ impl ShellOverlayHost {
             palette_visible: false,
             search_registry,
             search_results: Vec::new(),
+            pending_palette_action: None,
             last_search_query: String::new(),
             active_kind_filter: Vec::new(),
             search_chip_rects: Vec::new(),
@@ -3053,6 +3058,8 @@ impl ShellOverlayHost {
         if self.palette_visible {
             return;
         }
+        self.pending_palette_action = None;
+        self.palette.set_query_placeholder("Search…");
         self.active_kind_filter.clear();
         let Some(chrome) = self.chrome.clone() else {
             return;
@@ -4363,6 +4370,43 @@ impl ShellOverlayHost {
     /// (`result:N`) or the legacy chrome-command dispatcher (`peer:*`,
     /// a bridge until peer commands get their own provider).
     fn activate_selected_result(&mut self, doc: &mut automerge::AutoCommit, root: &ObjId) {
+        if let Some(result) = self.pending_palette_action.take() {
+            let parsed = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
+                self.palette.query(),
+            );
+            let outcome = parsed
+                .map_err(|error| {
+                    crate::shell::search::action_api::ActionError::Refused(format!(
+                        "arguments must be a JSON object: {error}"
+                    ))
+                })
+                .and_then(|arguments| {
+                    let Some(chrome) = self.chrome.clone() else {
+                        return Err(crate::shell::search::action_api::ActionError::Refused(
+                            "search has no active desktop".into(),
+                        ));
+                    };
+                    let bound = crate::shell::search::action_api::ActionArgs::bind_json(
+                        &result.params,
+                        &arguments,
+                    )
+                    .map_err(crate::shell::search::action_api::ActionError::Arguments)?;
+                    (result.on_open)(doc, root, &chrome, &bound)
+                });
+            if let Err(error) = outcome {
+                if let Some(chrome) = self.chrome.clone() {
+                    chrome.borrow_mut().push_warning_notification(
+                        format!("Can't run “{}”", result.title),
+                        error.to_string(),
+                    );
+                }
+                // Preserve the step and input so the caller can correct it.
+                self.pending_palette_action = Some(result);
+                return;
+            }
+            self.palette_visible = false;
+            return;
+        }
         let Some(id) = self
             .palette
             .selected_id()
@@ -4375,9 +4419,21 @@ impl ShellOverlayHost {
             && let Some(result) = self.search_results.get(idx).cloned()
         {
             if let Some(chrome) = self.chrome.clone() {
-                // No argument-collection step yet, so a
-                // parameterised row refuses visibly rather than
-                // doing nothing.
+                if !result.params.is_empty() {
+                    let names = result
+                        .params
+                        .iter()
+                        .map(|parameter| parameter.name.as_ref())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.pending_palette_action = Some(result);
+                    self.palette.set_entries(Vec::new());
+                    self.palette.set_query("");
+                    self.palette
+                        .set_query_placeholder(format!("JSON arguments: {{{names}}}"));
+                    self.palette_layout_dirty = true;
+                    return;
+                }
                 let args = crate::shell::search::action_api::ActionArgs::none();
                 if let Err(err) = (result.on_open)(doc, root, &chrome, &args) {
                     chrome.borrow_mut().push_warning_notification(
@@ -7506,7 +7562,7 @@ impl ShellOverlayHost {
                 taffy,
             );
             // Recompute results when a character/backspace changes the query.
-            if self.palette.query() != query_before {
+            if self.palette.query() != query_before && self.pending_palette_action.is_none() {
                 self.refresh_search_results(state, path);
             }
             if *handled {

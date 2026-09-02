@@ -67,6 +67,7 @@ struct PublishedAction {
     description: String,
     operation_kind: String,
     params_json: String,
+    contract_json: String,
     input: PublishedInput,
 }
 
@@ -286,6 +287,7 @@ impl channel_handle::Server for FakeChannel {
                     description: a.get_description()?.to_str()?.to_owned(),
                     operation_kind: a.get_operation_kind()?.to_str()?.to_owned(),
                     params_json: a.get_params_json()?.to_str()?.to_owned(),
+                    contract_json: a.get_contract_json()?.to_str()?.to_owned(),
                     input,
                 });
             }
@@ -536,6 +538,7 @@ async fn publish_actions_round_trips_both_input_shapes() {
                             description: None,
                             operation_kind: "effect".into(),
                             params_json: "[]".into(),
+                            contract_json: r#"{"permission":"write"}"#.into(),
                             input: ExportedInput::None,
                         },
                         ExportedAction {
@@ -547,6 +550,7 @@ async fn publish_actions_round_trips_both_input_shapes() {
                             description: Some("Place an image at the caret".into()),
                             operation_kind: "document".into(),
                             params_json: "[]".into(),
+                            contract_json: r#"{"permission":"write"}"#.into(),
                             input: ExportedInput::Text {
                                 prompt: "Which image?".into(),
                                 placeholder: "content hash".into(),
@@ -570,6 +574,7 @@ async fn publish_actions_round_trips_both_input_shapes() {
             assert_eq!(rows[0].description, "");
             assert_eq!(rows[0].operation_kind, "effect");
             assert_eq!(rows[0].params_json, "[]");
+            assert_eq!(rows[0].contract_json, r#"{"permission":"write"}"#);
             assert_eq!(rows[0].input, PublishedInput::None);
 
             assert_eq!(rows[1].action, "insert-image");
