@@ -1152,7 +1152,7 @@ fn the_encoded_sources_audio_survives_mp4_and_webm_export() {
                 output.display()
             );
         });
-        assert_eq!(rate, FIXTURE_RATE as i32);
+        assert_eq!(rate, FIXTURE_RATE.cast_signed());
         assert_eq!(channels, 2);
         assert!(
             (decoded.secs() - FIXTURE_SECS).abs() < 0.15,
