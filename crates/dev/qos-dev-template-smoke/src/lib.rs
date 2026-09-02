@@ -44,7 +44,23 @@ document-preview-heading = Live preview\n\
 qr-title = QR code generator\n\
 qr-input-label = Content\n\
 qr-input-placeholder = Type text or a link\n\
-qr-output-alt = QR code for { $payload }\n";
+qr-output-alt = QR code for { $payload }\n\
+workspace-root = Workspace\n\
+workspace-projects = Projects\n\
+workspace-archive = Archive\n\
+workspace-desktop-app = Desktop app\n\
+workspace-design-system = Design system\n\
+workspace-first-prototype = First prototype\n\
+workspace-unknown-item = Selected item\n\
+workspace-tree-name = Workspace items\n\
+workspace-navigation-heading = Projects\n\
+workspace-title-label = Title\n\
+workspace-title-placeholder = Untitled item\n\
+workspace-notes-label = Notes\n\
+workspace-notes-placeholder = Add project notes…\n\
+workspace-preview-heading = Live preview\n\
+workspace-back = Back\n\
+workspace-share = Share\n";
 
     pub const IDS: &[&str] = &["de-DE", "en-US"];
 
@@ -88,6 +104,10 @@ pub mod document {
 
 pub mod qr {
     include!("../../qos-dev/templates/qr.rs");
+}
+
+pub mod workspace {
+    include!("../../qos-dev/templates/workspace.rs");
 }
 
 pub mod generated_form_component {
@@ -270,13 +290,17 @@ pub mod components {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use ui::a11y::{Action, Role};
+    use ui::automerge::{AutoCommit, ObjId};
     use ui::headless::SemanticExpectation;
+    use ui::qos_actions::{InvocationId, InvocationUpdate, OperationKind};
 
     #[test]
     fn every_generated_template_has_a_clean_initial_accessibility_audit() {
         type TemplateCase = (&'static str, Box<dyn ui::widget::Widget>, (u32, u32));
-        let templates: [TemplateCase; 8] = [
+        let templates: [TemplateCase; 9] = [
             ("starter", super::starter::app_root(), (800, 500)),
             ("data", super::data::app_root(), (800, 500)),
             ("list", super::list::app_root(), (800, 500)),
@@ -285,11 +309,72 @@ mod tests {
             ("async", super::async_task::app_root(), (800, 500)),
             ("document", super::document::app_root(), (800, 600)),
             ("qr", super::qr::app_root(), (800, 600)),
+            ("workspace", super::workspace::app_root(), (1000, 640)),
         ];
         for (name, root, viewport) in templates {
             let driver = ui::headless::Driver::new(ui::State::new(), root, viewport);
             let audit = driver.accessibility_audit();
             assert!(audit.is_clean(), "{name}: {:#?}", audit.issues);
+        }
+    }
+
+    #[test]
+    fn every_generated_template_publishes_an_invocable_resource_action() {
+        let mut templates: [(Box<dyn ui::widget::Widget>, &[u8]); 8] = [
+            (super::starter::app_root(), br#"{"name":"Ada","updates":true,"refresh":30.0,"volume":0.5,"region":"Europe/Berlin"}"#),
+            (super::data::app_root(), br#"{"id":3}"#),
+            (super::list::app_root(), br#"{"id":3}"#),
+            (super::tree::app_root(), br#"{"id":3}"#),
+            (super::graph::app_root(), br#"{"name":"Atlas"}"#),
+            (super::document::app_root(), b"null"),
+            (super::qr::app_root(), br#"{"payload":"https://qos.dev"}"#),
+            (super::workspace::app_root(), br#"{"id":4}"#),
+        ];
+        let doc = AutoCommit::new();
+        for (root, payload) in &mut templates {
+            let resources = root.resources(&doc);
+            assert_eq!(resources.len(), 1);
+            assert!(!resources[0].actions.is_empty());
+            let result = root
+                .invoke_resource_operation_v2(
+                    OperationKind::Effect,
+                    ui::widget::resource_actions::OPERATION_TYPE,
+                    payload,
+                    &doc,
+                    &ObjId::Root,
+                )
+                .expect("generated operation succeeds");
+            assert!(result.is_some(), "published operation has a live handler");
+        }
+    }
+
+    #[test]
+    fn generated_async_action_is_accepted_before_terminal_completion() {
+        let mut root = super::async_task::app_root();
+        let doc = AutoCommit::new();
+        let invocation = InvocationId::new();
+        let started = root
+            .start_resource_operation(
+                invocation,
+                OperationKind::Effect,
+                ui::widget::resource_actions::OPERATION_TYPE,
+                b"null",
+                &doc,
+                &ObjId::Root,
+            )
+            .expect("background operation starts");
+        assert_eq!(started, Some(ui::widget::ResourceOperationStart::Accepted));
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(update) =
+                root.poll_resource_operation(invocation, false, &doc, &ObjId::Root)
+            {
+                assert!(matches!(update, InvocationUpdate::Succeeded { .. }));
+                break;
+            }
+            assert!(Instant::now() < deadline, "background operation timed out");
+            std::thread::yield_now();
         }
     }
 
@@ -399,6 +484,102 @@ mod tests {
         app.relayout();
         let undone = app.inspection_json().expect("undone semantic snapshot");
         assert!(!undone.contains("Project Atlas"), "{undone}");
+    }
+
+    #[test]
+    fn generated_workspace_switches_isolated_durable_detail_views() {
+        let mut app =
+            ui::headless::Driver::new(ui::State::new(), super::workspace::app_root(), (1000, 640));
+        app.expect(
+            &SemanticExpectation::named("workspace-selected-item")
+                .role(Role::Heading { level: 1 })
+                .name("Desktop app"),
+        )
+        .expect("default detail is addressable");
+        let targets = app.targets();
+        for target in [
+            "workspace-selected-item",
+            "workspace-title-input",
+            "workspace-notes-input",
+            "workspace-share",
+        ] {
+            let rect = targets
+                .get(target)
+                .unwrap_or_else(|| panic!("missing {target}"));
+            assert!(
+                rect.width() > 0.0 && rect.height() > 0.0,
+                "{target}: {rect:?}"
+            );
+            assert!(rect.y0 >= 0.0 && rect.y1 <= 640.0, "{target}: {rect:?}");
+        }
+        app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
+            .expect("select design system");
+        app.expect(
+            &SemanticExpectation::named("workspace-selected-item")
+                .role(Role::Heading { level: 1 })
+                .name("Design system"),
+        )
+        .expect("detail follows master selection");
+        app.perform_named(
+            "workspace-title-input",
+            &Action::SetValue("Design tokens".into()),
+        )
+        .expect("edit the selected item");
+        app.expect(
+            &SemanticExpectation::named("workspace-title-preview")
+                .role(Role::Heading { level: 2 })
+                .name("Design tokens"),
+        )
+        .expect("bound preview follows input");
+
+        app.perform_semantic_named("workspace-tree", Some("node:3"), &Action::Activate)
+            .expect("switch item");
+        app.expect(
+            &SemanticExpectation::named("workspace-title-input")
+                .role(Role::TextInput)
+                .value(""),
+        )
+        .expect("the second item's binding is isolated");
+        app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
+            .expect("return to first item");
+        app.expect(
+            &SemanticExpectation::named("workspace-title-input")
+                .role(Role::TextInput)
+                .value("Design tokens"),
+        )
+        .expect("the original detail remains synchronized");
+        assert!(app.dump_json().contains("workspace-item-4-title"));
+
+        let mut compact =
+            ui::headless::Driver::new(ui::State::new(), super::workspace::app_root(), (460, 820));
+        compact
+            .expect(
+                &SemanticExpectation::named("workspace-shell-back")
+                    .role(Role::Button)
+                    .name("Back"),
+            )
+            .expect("compact detail exposes accessible Back");
+        compact
+            .perform_named("workspace-shell-back", &Action::Activate)
+            .expect("return to compact navigation");
+        compact
+            .expect(&SemanticExpectation::named("workspace-tree").role(Role::Tree))
+            .expect("compact navigation uses the full-width tree pane");
+        compact
+            .perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
+            .expect("choose a compact navigation row");
+        compact
+            .expect(
+                &SemanticExpectation::named("workspace-selected-item")
+                    .role(Role::Heading { level: 1 })
+                    .name("Design system"),
+            )
+            .expect("compact selection navigates to full-width detail");
+        let issues = compact.accessibility_audit();
+        assert!(
+            issues.issues.is_empty(),
+            "compact workspace audit: {issues:#?}"
+        );
     }
 
     #[test]

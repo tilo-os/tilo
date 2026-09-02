@@ -88,6 +88,8 @@ pub struct PlayerApp {
     last_cursor: Point,
     /// A file-open portal request in flight, drained each `sync`.
     portal_rx: Option<PortalChannel>,
+    resource_invocation: Option<qos_actions::InvocationId>,
+    resource_result: Option<qos_actions::InvocationUpdate>,
     /// Collaborative playback state (host/follower). `None` for a local-only
     /// session or the headless `--shots` path.
     collab: Option<CollabPlayback>,
@@ -109,6 +111,8 @@ impl PlayerApp {
             open_button_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             portal_rx: None,
+            resource_invocation: None,
+            resource_result: None,
             collab: None,
             manager: None,
             dirty: true,
@@ -253,8 +257,10 @@ impl PlayerApp {
     fn perform_resource_operation(&mut self, operation: crate::actions::PlayerOperation) {
         use crate::actions::PlayerOperation;
         match operation {
-            PlayerOperation::OpenPicker => self.trigger_open(),
-            PlayerOperation::OpenPath(path) => self.open_path(Path::new(&path)),
+            PlayerOperation::Open { path: None } => self.trigger_open(),
+            PlayerOperation::Open { path: Some(path) } => {
+                let _ = self.open_path(Path::new(&path));
+            }
             PlayerOperation::TogglePlayback => self.player.toggle_play(),
             PlayerOperation::ToggleMute => self.player.toggle_mute(),
             PlayerOperation::SeekSeconds(seconds) => {
@@ -267,23 +273,61 @@ impl PlayerApp {
     /// Drain a pending portal outcome, opening the chosen file.
     fn drain_portal(&mut self) {
         let mut clear = false;
-        let mut chosen: Option<PathBuf> = None;
+        let mut outcome: Option<Result<PathBuf, Option<String>>> = None;
         if let Some(rx) = self.portal_rx.as_ref() {
             match rx.try_recv() {
                 Ok(PortalOutcome::Opened(p)) => {
-                    chosen = Some(p);
+                    outcome = Some(Ok(p));
                     clear = true;
                 }
-                Ok(PortalOutcome::Cancelled | PortalOutcome::Failed(_))
-                | Err(std::sync::mpsc::TryRecvError::Disconnected) => clear = true,
+                Ok(PortalOutcome::Cancelled) => {
+                    outcome = Some(Err(None));
+                    clear = true;
+                }
+                Ok(PortalOutcome::Failed(error)) => {
+                    outcome = Some(Err(Some(error)));
+                    clear = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    outcome = Some(Err(Some("video picker disconnected".into())));
+                    clear = true;
+                }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
         if clear {
             self.portal_rx = None;
         }
-        if let Some(p) = chosen {
-            self.open_path(&p);
+        if let Some(outcome) = outcome {
+            let result = match outcome {
+                Ok(path) => {
+                    self.open_path(&path);
+                    Ok(true)
+                }
+                Err(None) => Ok(false),
+                Err(Some(e)) => Err(e),
+            };
+            if let Some(invocation) = self.resource_invocation.take() {
+                self.resource_result = Some(match result {
+                    Ok(true) => qos_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: qos_actions::ActionOutput::default(),
+                    },
+                    Ok(false) => qos_actions::InvocationUpdate::Cancelled {
+                        invocation,
+                        message: Some("video selection was cancelled".into()),
+                    },
+                    Err(message) => qos_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: qos_actions::ActionFailure {
+                            code: "video_player.open_failed".into(),
+                            message,
+                            details: None,
+                            retryable: false,
+                        },
+                    },
+                });
+            }
         }
     }
 
@@ -400,6 +444,10 @@ impl Default for PlayerApp {
 }
 
 impl Widget for PlayerApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::OPERATION_TYPE]
+    }
+
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         crate::actions::resources(&self.title, self.player.latest_frame().is_some(), doc)
     }
@@ -418,8 +466,60 @@ impl Widget for PlayerApp {
         let Some(operation) = crate::actions::decode(type_id, payload)? else {
             return Ok(false);
         };
-        self.perform_resource_operation(operation);
+        if let crate::actions::PlayerOperation::Open { path: Some(path) } = &operation {
+            if !Path::new(path).is_file() {
+                return Err(format!("video does not exist: {path}"));
+            }
+            self.open_path(Path::new(path));
+        } else {
+            self.perform_resource_operation(operation);
+        }
         Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let operation = crate::actions::decode(type_id, payload)?;
+        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        if matches!(
+            operation,
+            Some(crate::actions::PlayerOperation::Open { path: None })
+        ) {
+            self.resource_invocation = Some(invocation);
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                qos_actions::ActionOutput::default(),
+            )))
+        }
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        self.drain_portal();
+        if self
+            .resource_result
+            .as_ref()
+            .is_some_and(|u| u.invocation() == invocation)
+        {
+            self.resource_result.take()
+        } else {
+            None
+        }
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -520,7 +620,9 @@ impl Widget for PlayerApp {
             // Only intercept the Open pill while the overlay is actually shown;
             // during immersive playback that corner is just video.
             if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
-                self.perform_resource_operation(crate::actions::PlayerOperation::OpenPicker);
+                self.perform_resource_operation(crate::actions::PlayerOperation::Open {
+                    path: None,
+                });
                 *handled = true;
                 return;
             }

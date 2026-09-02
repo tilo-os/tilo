@@ -871,7 +871,9 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
 mod tests {
     use super::*;
     use iroh::endpoint::presets;
-    use qos_relay::{Relay, RelayConfig, WorkspaceBinding, daemon::RelayIdentity};
+    use qos_relay::{
+        Relay, RelayConfig, ReplicationIntent, WorkspaceBinding, daemon::RelayIdentity,
+    };
     use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     use tokio::time::timeout;
 
@@ -1143,7 +1145,11 @@ mod tests {
         let state = tempfile::tempdir().unwrap();
         let config = RelayConfig {
             state_root: state.path().to_path_buf(),
-            workspaces: vec![WorkspaceBinding { id: 42, pin: true }],
+            workspaces: vec![WorkspaceBinding {
+                id: 42,
+                pin: true,
+                replication: ReplicationIntent::FullWorkspace,
+            }],
             ..RelayConfig::default()
         };
         let relay = Relay::start(

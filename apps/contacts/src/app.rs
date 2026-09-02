@@ -517,6 +517,9 @@ pub struct ContactsApp {
     /// The contacts + vCard version parked while the export Save dialog is up,
     /// written to the chosen destination when the portal returns a path.
     pending_export: Option<(Vec<ContactId>, VCardVersion)>,
+    resource_file: Option<(bool, PathBuf)>,
+    resource_invocation: Option<qos_actions::InvocationId>,
+    completed_resource_invocation: Option<qos_actions::InvocationUpdate>,
 
     /// Framework-owned action dispatch: every on-screen affordance routes its
     /// [`ContactsAction`](crate::actions::ContactsAction) through here so it
@@ -604,6 +607,9 @@ impl ContactsApp {
             import_rx: None,
             export_rx: None,
             pending_export: None,
+            resource_file: None,
+            resource_invocation: None,
+            completed_resource_invocation: None,
             actions: ui::ActionHost::new(),
             model_heads: Vec::new(),
         }
@@ -839,6 +845,8 @@ impl ContactsApp {
     pub(crate) fn contacts_resource_ctx(&self) -> crate::actions::ContactsResourceCtx {
         crate::actions::ContactsResourceCtx {
             contacts: self.store.contacts.clone(),
+            import_busy: self.import_rx.is_some(),
+            export_busy: self.export_rx.is_some(),
         }
     }
 
@@ -1034,6 +1042,33 @@ impl ContactsApp {
         self.import_rx.is_some() || self.export_rx.is_some()
     }
 
+    fn finish_resource_file(&mut self, success: bool, error: Option<String>) {
+        let Some(invocation) = self.resource_invocation.take() else {
+            return;
+        };
+        self.completed_resource_invocation = Some(if success {
+            qos_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: qos_actions::ActionOutput::default(),
+            }
+        } else if let Some(message) = error {
+            qos_actions::InvocationUpdate::Failed {
+                invocation,
+                error: qos_actions::ActionFailure {
+                    code: "contacts.file_failed".into(),
+                    message,
+                    details: None,
+                    retryable: false,
+                },
+            }
+        } else {
+            qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("file selection cancelled".into()),
+            }
+        });
+    }
+
     /// Drain any in-flight import/export portal request. Called once per frame
     /// from [`Widget::sync`]; a `try_recv` never blocks the UI thread. When an
     /// outcome arrives the receiver is dropped (idle again).
@@ -1042,15 +1077,21 @@ impl ContactsApp {
             match rx.try_recv() {
                 Ok(ImportOutcome::Selected(paths)) => {
                     self.import_rx = None;
-                    self.import_paths(doc, &paths);
+                    let imported = self.import_paths(doc, &paths);
+                    self.finish_resource_file(
+                        imported > 0,
+                        (imported == 0).then(|| "no contacts were imported".into()),
+                    );
                 }
                 Ok(ImportOutcome::Cancelled) => {
                     // A dismissed picker is a silent no-op — nothing to say.
                     self.import_rx = None;
+                    self.finish_resource_file(false, None);
                 }
                 Ok(ImportOutcome::Failed(reason)) => {
                     self.import_rx = None;
                     self.show_toast(format!("Import unavailable: {reason}"));
+                    self.finish_resource_file(false, Some(reason));
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -1064,16 +1105,22 @@ impl ContactsApp {
                     self.export_rx = None;
                     if let Some((ids, version)) = self.pending_export.take() {
                         self.write_export(&ids, version, &path);
+                        self.finish_resource_file(
+                            path.is_file(),
+                            (!path.is_file()).then(|| "vCard export was not written".into()),
+                        );
                     }
                 }
                 Ok(ExportOutcome::Cancelled) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.export_rx = None;
                     self.pending_export = None;
+                    self.finish_resource_file(false, None);
                 }
                 Ok(ExportOutcome::Failed(reason)) => {
                     self.export_rx = None;
                     self.pending_export = None;
                     self.show_toast(format!("Export unavailable: {reason}"));
+                    self.finish_resource_file(false, Some(reason));
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
@@ -3359,7 +3406,32 @@ fn draw_chevron(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme, left: b
 // =====================================================================
 
 impl Widget for ContactsApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::CONTACTS_OPERATION_TYPE]
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        if let Some((export, file)) = self.resource_file.take() {
+            if export {
+                let ids = self
+                    .store
+                    .contacts
+                    .iter()
+                    .map(|contact| contact.id)
+                    .collect::<Vec<_>>();
+                self.write_export(&ids, crate::vcard::VCardVersion::V4, &file);
+                self.finish_resource_file(
+                    file.is_file(),
+                    (!file.is_file()).then(|| "vCard export was not written".into()),
+                );
+            } else {
+                let imported = self.import_paths(state, &[file]);
+                self.finish_resource_file(
+                    imported > 0,
+                    (imported == 0).then(|| "no contacts were imported".into()),
+                );
+            }
+        }
         // Drain any in-flight file-chooser portal request first, so a chosen
         // import/export lands in the book before this frame lays out.
         self.drain_portal(state);
@@ -3573,6 +3645,145 @@ impl Widget for ContactsApp {
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
         self.actions.take_committed()
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if type_id != crate::actions::CONTACTS_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let operation: crate::actions::ContactsOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        match (kind, operation) {
+            (qos_actions::OperationKind::View, crate::actions::ContactsOperation::Open { id }) => {
+                let id =
+                    uuid::Uuid::parse_str(&id).map_err(|_| "invalid contact id".to_string())?;
+                if self.store.get(id).is_none() {
+                    return Err("contact no longer exists".into());
+                }
+                self.reveal_contact(id);
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::ImportVcard { .. },
+            ) => {
+                if self.import_rx.is_some() {
+                    return Err("a contact import is already in progress".into());
+                }
+                self.request_import();
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::ExportAllVcard { .. },
+            ) => {
+                if self.export_rx.is_some() {
+                    return Err("a contact export is already in progress".into());
+                }
+                let ids = self
+                    .store
+                    .contacts
+                    .iter()
+                    .map(|contact| contact.id)
+                    .collect();
+                if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
+                    return Err("there are no contacts to export".into());
+                }
+            }
+            _ => return Err("operation kind does not match Contacts operation".into()),
+        }
+        Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if type_id != crate::actions::CONTACTS_OPERATION_TYPE {
+            return Ok(None);
+        }
+        let operation: crate::actions::ContactsOperation =
+            serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+        match operation {
+            crate::actions::ContactsOperation::ImportVcard { path: file } => {
+                if self.resource_invocation.is_some() {
+                    return Err("another contact file operation is running".into());
+                }
+                self.resource_invocation = Some(invocation);
+                if let Some(file) = file {
+                    self.resource_file = Some((false, file.into()));
+                } else {
+                    self.request_import();
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            crate::actions::ContactsOperation::ExportAllVcard { path: file } => {
+                if self.store.contacts.is_empty() {
+                    return Err("there are no contacts to export".into());
+                }
+                if self.resource_invocation.is_some() {
+                    return Err("another contact file operation is running".into());
+                }
+                self.resource_invocation = Some(invocation);
+                if let Some(file) = file {
+                    self.resource_file = Some((true, file.into()));
+                } else {
+                    let ids = self.store.contacts.iter().map(|c| c.id).collect();
+                    if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
+                        self.resource_invocation = None;
+                        return Err("contact export could not be started".into());
+                    }
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            _ => self
+                .invoke_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            qos_actions::ActionOutput::default(),
+                        )
+                    })
+                }),
+        }
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if cancellation_requested && self.resource_invocation == Some(invocation) {
+            self.resource_invocation = None;
+            self.resource_file = None;
+            self.import_rx = None;
+            self.export_rx = None;
+            self.pending_export = None;
+            return Some(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("contact file operation cancelled".into()),
+            });
+        }
+        if self
+            .completed_resource_invocation
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            return self.completed_resource_invocation.take();
+        }
+        None
     }
 
     /// Fold the address book into the unified Ctrl+K palette: a snapshot

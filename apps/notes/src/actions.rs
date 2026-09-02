@@ -35,8 +35,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+    OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
 use crate::doc::NotesDoc;
@@ -45,6 +45,21 @@ use crate::num;
 
 /// Registry `type_id` for every Notes action.
 pub const NOTES_ACTION_TYPE: &str = "notes.action";
+pub const NOTES_OPERATION_TYPE: &str = "notes.operation";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NotesOperation {
+    OpenPage { page: PageId },
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<NotesOperation>, String> {
+    if type_id != NOTES_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
 
 /// A serializable snapshot of a page's metadata, in exactly the representation
 /// the document stores (ids as strings, an absent parent as `""`). Carrying the
@@ -282,7 +297,14 @@ fn page_label(m: &PageMeta) -> String {
     reason = "wraps encode(), which cannot fail for NotesAction — see its doc comment"
 )]
 fn immediate_spec(id: &str, label: &str, action: &NotesAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, NOTES_ACTION_TYPE, action).expect("encode notes action")
+    let spec = ActionSpec::immediate(id, label, NOTES_ACTION_TYPE, action)
+        .expect("encode notes action")
+        .reversible();
+    if id.contains("delete") {
+        spec.destructive()
+    } else {
+        spec
+    }
 }
 
 /// The next `order` among `parent`'s children (append position).
@@ -298,6 +320,18 @@ fn next_order(pages: &[PageMeta], parent: Option<PageId>) -> u32 {
 /// Build one page resource and, recursively, its child pages.
 fn page_resource(m: &PageMeta, pages: &[PageMeta]) -> Resource {
     let mut res = Resource::new(format!("notes.page:{}", m.id), "notes.page", page_label(m));
+
+    res = res.with_action(
+        ActionSpec::operation(
+            "open",
+            "Open page",
+            OperationKind::View,
+            NOTES_OPERATION_TYPE,
+            &NotesOperation::OpenPage { page: m.id },
+        )
+        .expect("NotesOperation is always serializable")
+        .retry_policy(RetryPolicy::Idempotent),
+    );
 
     // Rename — a prompted action carrying the rest of the page's metadata
     // unchanged so only the title diff-splices.

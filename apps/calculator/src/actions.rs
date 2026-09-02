@@ -45,8 +45,8 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+    OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 use ui::doc::{put_if_changed, put_text_diffed};
 
@@ -54,6 +54,26 @@ use crate::model::{HistoryEntry, Mode, PlotFn};
 
 /// Registry `type_id` for every calculator action.
 pub const CALCULATOR_ACTION_TYPE: &str = "calculator.action";
+pub const CALCULATOR_OPERATION_TYPE: &str = "calculator.operation";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CalculatorOperation {
+    ShowCalculator,
+    ShowGraph2d,
+    ShowGraph3d,
+}
+
+pub fn decode_operation(
+    type_id: &str,
+    payload: &[u8],
+) -> Result<Option<CalculatorOperation>, String> {
+    if type_id != CALCULATOR_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
 
 /// The most recent evaluated computations kept in the shared history list. The
 /// front is the newest; overflow is dropped from the tail. Mirrors the model's
@@ -358,17 +378,36 @@ fn graph_label(kind: GraphKind, f: &PlotFn) -> String {
     reason = "mirrors encode()'s always-serializable invariant"
 )]
 fn immediate_spec(id: &str, label: &str, action: &CalculatorAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, CALCULATOR_ACTION_TYPE, action)
+    let spec = ActionSpec::immediate(id, label, CALCULATOR_ACTION_TYPE, action)
         .expect("encode calculator action")
+        .reversible();
+    if id.contains("delete") || id.contains("clear") {
+        spec.destructive()
+    } else {
+        spec
+    }
 }
 
 /// Build one graph list's resources (one `calculator.graph` per row).
-fn graph_resources(kind: GraphKind, rows: &[PlotFn]) -> Vec<Resource> {
+fn row_ids(doc: &AutoCommit, key: &str) -> Vec<String> {
+    let Some(list) = list_at(doc, key) else {
+        return Vec::new();
+    };
+    (0..doc.length(&list))
+        .filter_map(|index| row_at(doc, &list, index).map(|row| row.to_string()))
+        .collect()
+}
+
+fn graph_resources(kind: GraphKind, rows: &[PlotFn], stable_ids: &[String]) -> Vec<Resource> {
     rows.iter()
         .enumerate()
-        .map(|(i, f)| {
+        .filter_map(|(i, f)| {
+            // A positional address can silently rebind after a concurrent
+            // insertion/deletion. If the CRDT row identity is unavailable,
+            // fail closed and do not publish an externally invokable target.
+            let stable = stable_ids.get(i)?;
             let mut res = Resource::new(
-                format!("calculator.graph:{}:{}", kind.slug(), i),
+                format!("calculator.graph:{}:{stable}", kind.slug()),
                 "calculator.graph",
                 graph_label(kind, f),
             );
@@ -393,7 +432,7 @@ fn graph_resources(kind: GraphKind, rows: &[PlotFn]) -> Vec<Resource> {
                 "Delete formula",
                 &delete_graph_action(kind, i),
             ));
-            res
+            Some(res)
         })
         .collect()
 }
@@ -402,8 +441,37 @@ fn graph_resources(kind: GraphKind, rows: &[PlotFn]) -> Vec<Resource> {
 /// owns a `calculator.history_entry` per committed computation and a
 /// `calculator.graph` per saved 2D curve / 3D surface. Every document-mutating
 /// operation is exported as the same action its on-screen affordance dispatches.
-pub fn provide_resources(ctx: &CalcResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+pub fn provide_resources(ctx: &CalcResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("calculator.workspace", "calculator.workspace", "Calculator");
+
+    for (id, label, operation) in [
+        (
+            "show-calculator",
+            "Show calculator",
+            CalculatorOperation::ShowCalculator,
+        ),
+        (
+            "show-graph-2d",
+            "Show 2D graph",
+            CalculatorOperation::ShowGraph2d,
+        ),
+        (
+            "show-graph-3d",
+            "Show 3D graph",
+            CalculatorOperation::ShowGraph3d,
+        ),
+    ] {
+        let spec = ActionSpec::operation(
+            id,
+            label,
+            OperationKind::View,
+            CALCULATOR_OPERATION_TYPE,
+            &operation,
+        )
+        .expect("CalculatorOperation is always serializable")
+        .retry_policy(RetryPolicy::Idempotent);
+        root = root.with_action(spec);
+    }
 
     // Workspace-level: add a graph formula (prompted). Offer the kind matching
     // the current mode first; both remain reachable so Ctrl+K can add to either.
@@ -436,10 +504,14 @@ pub fn provide_resources(ctx: &CalcResourceCtx, _doc: &AutoCommit) -> Vec<Resour
     }
 
     // History entries → one resource each, deletable.
+    let history_ids = row_ids(doc, "history");
     for (i, e) in ctx.history.iter().enumerate() {
+        let Some(stable) = history_ids.get(i) else {
+            continue;
+        };
         root = root.with_child(
             Resource::new(
-                format!("calculator.history_entry:{i}"),
+                format!("calculator.history_entry:{stable}"),
                 "calculator.history_entry",
                 history_label(e),
             )
@@ -452,10 +524,12 @@ pub fn provide_resources(ctx: &CalcResourceCtx, _doc: &AutoCommit) -> Vec<Resour
     }
 
     // Saved graph formulas → 2D curves then 3D surfaces.
-    for child in graph_resources(GraphKind::Curve2d, &ctx.funcs) {
+    let function_ids = row_ids(doc, GraphKind::Curve2d.doc_key());
+    for child in graph_resources(GraphKind::Curve2d, &ctx.funcs, &function_ids) {
         root = root.with_child(child);
     }
-    for child in graph_resources(GraphKind::Surface3d, &ctx.surfaces) {
+    let surface_ids = row_ids(doc, GraphKind::Surface3d.doc_key());
+    for child in graph_resources(GraphKind::Surface3d, &ctx.surfaces, &surface_ids) {
         root = root.with_child(child);
     }
 
@@ -813,9 +887,24 @@ mod tests {
         }
     }
 
+    fn doc_for_ctx() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        // History is inserted at the front, so author it in reverse display order.
+        dispatch(&mut doc, &commit_history_action("sqrt(2)", "1.41"));
+        dispatch(&mut doc, &commit_history_action("2^10", "1024"));
+        dispatch(&mut doc, &add_graph_action(GraphKind::Curve2d, "sin(x)"));
+        dispatch(&mut doc, &add_graph_action(GraphKind::Curve2d, "x^2"));
+        dispatch(
+            &mut doc,
+            &toggle_graph_visible_action(GraphKind::Curve2d, 1),
+        );
+        dispatch(&mut doc, &add_graph_action(GraphKind::Surface3d, "x*y"));
+        doc
+    }
+
     #[test]
     fn ctrl_k_publishes_workspace_history_and_graph_tree() {
-        let doc = AutoCommit::new();
+        let doc = doc_for_ctx();
         let resources = provide_resources(&ctx(), &doc);
         assert_eq!(resources.len(), 1, "one workspace root");
         let ws = &resources[0];
@@ -858,6 +947,8 @@ mod tests {
             labels.iter().any(|l| l.contains("Clear history")),
             "{labels:?}"
         );
+        palette.set_query("Delete formula");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Delete formula")),
             "{labels:?}"
@@ -868,7 +959,7 @@ mod tests {
     /// builders the on-screen affordances call.
     #[test]
     fn palette_and_builder_encode_identically() {
-        let doc = AutoCommit::new();
+        let doc = doc_for_ctx();
         let resources = provide_resources(&ctx(), &doc);
         let ws = &resources[0];
 
@@ -922,6 +1013,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn resource_addresses_follow_crdt_rows_after_a_positional_delete() {
+        let mut doc = doc_for_ctx();
+        let mut context = ctx();
+        let before = provide_resources(&context, &doc);
+        let history_before: Vec<String> = before[0]
+            .children
+            .iter()
+            .filter(|resource| resource.kind == "calculator.history_entry")
+            .map(|resource| resource.id.0.clone())
+            .collect();
+
+        dispatch(&mut doc, &delete_history_entry_action(0));
+        context.history.remove(0);
+        let after = provide_resources(&context, &doc);
+        let remaining = after[0]
+            .children
+            .iter()
+            .find(|resource| resource.kind == "calculator.history_entry")
+            .expect("the second history row remains");
+        assert_eq!(remaining.id.0, history_before[1]);
+    }
+
     /// The retained accessibility tree surfaces the calculator's operable
     /// resources as stable nodes, and a node's exposed affordance is the
     /// byte-identical `EncodedAction` the on-screen control dispatches. (The
@@ -929,7 +1043,7 @@ mod tests {
     /// the resource + action model, not per-key widgets.)
     #[test]
     fn a11y_tree_surfaces_history_delete_as_the_affordance_action() {
-        let resources = provide_resources(&ctx(), &AutoCommit::new());
+        let resources = provide_resources(&ctx(), &doc_for_ctx());
 
         // An inert root; the operable nodes come from the published resources.
         // `HashMap::new()`'s type is inferred from `refresh`'s signature.

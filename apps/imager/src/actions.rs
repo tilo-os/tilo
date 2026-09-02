@@ -54,8 +54,10 @@
 use automerge::AutoCommit;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
+    ConfirmationPolicy, DiscoveryScope, Doc, EncodedAction, ExecutionLocus, ExecutionMode,
+    OperationKind, ParamType, PermissionRequirement, Resource, ResourceProvider, ResultSpec,
+    RetryPolicy, RiskLevel,
 };
 
 use crate::doc::ImagerDoc;
@@ -63,6 +65,164 @@ use crate::model::{InstallMode, InstallProfile};
 
 /// Registry `type_id` for every imager action.
 pub const IMAGER_ACTION_TYPE: &str = "imager.action";
+pub const IMAGER_OPERATION_TYPE: &str = "imager.operation";
+
+/// App-owned operations. These are deliberately separate from replayable
+/// profile edits: media I/O and job inspection are local side effects.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ImagerOperation {
+    Write {
+        device: String,
+        confirmation: String,
+    },
+    Verify,
+    Cancel,
+    Status,
+    ExportConfig,
+}
+
+pub fn encode_operation(operation: &ImagerOperation) -> EncodedAction {
+    EncodedAction::encode_operation(IMAGER_OPERATION_TYPE, operation).unwrap_or_else(|_| {
+        EncodedAction {
+            type_id: IMAGER_OPERATION_TYPE.to_string(),
+            payload: Vec::new(),
+        }
+    })
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<ImagerOperation>, String> {
+    if type_id != IMAGER_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+/// Build the live operational surface for the selected write plan.
+pub fn operation_resource(
+    device: Option<&str>,
+    plan_complete: bool,
+    job_active: bool,
+    write_allowed: bool,
+) -> Resource {
+    let device = device.unwrap_or("").to_string();
+    let expected = device.clone();
+    let write = ActionSpec::typed_operation(
+        "write",
+        "Erase drive and write image",
+        "Type the exact device name",
+        OperationKind::Effect,
+        IMAGER_OPERATION_TYPE,
+        vec![ActionParam::required_owned(
+            "confirmation",
+            ParamType::Text,
+            "Exact target device name shown by Imager",
+        )],
+        move |args: &ActionArgs| {
+            encode_operation(&ImagerOperation::Write {
+                device: expected.clone(),
+                confirmation: args.text("confirmation").unwrap_or("").to_string(),
+            })
+        },
+    )
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Admin,
+        risk: RiskLevel::Destructive,
+        confirmation: ConfirmationPolicy::Phrase {
+            phrase: device.clone(),
+        },
+        retry: RetryPolicy::AtMostOnce,
+        // The handler starts the app-owned worker and returns. Progress is
+        // queried through the separate status operation, not a protocol job.
+        execution: ExecutionMode::Immediate,
+        result: ResultSpec::None,
+        tags: vec!["storage".into(), "raw-device".into()],
+        ..ActionContract::default()
+    });
+
+    let write = if !write_allowed {
+        write.unavailable(
+            "write_backend_disabled",
+            "Raw-device writing is disabled; enable the privileged Imager backend first",
+        )
+    } else if job_active {
+        write.unavailable("write_in_progress", "An image write is already in progress")
+    } else if !plan_complete {
+        write.unavailable(
+            "incomplete_plan",
+            "Select an image source and target drive before writing",
+        )
+    } else {
+        write
+    };
+
+    let verify = ActionSpec::operation(
+        "verify",
+        "Verify written image",
+        OperationKind::Effect,
+        IMAGER_OPERATION_TYPE,
+        &ImagerOperation::Verify,
+    )
+    .expect("ImagerOperation is always serializable")
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Admin,
+        retry: RetryPolicy::Idempotent,
+        tags: vec!["storage".into(), "verification".into()],
+        ..ActionContract::default()
+    })
+    .unavailable(
+        "verify_is_write_phase",
+        "Read-back verification runs automatically after every successful write",
+    );
+
+    let cancel = ActionSpec::operation(
+        "cancel",
+        "Cancel image write",
+        OperationKind::Effect,
+        IMAGER_OPERATION_TYPE,
+        &ImagerOperation::Cancel,
+    )
+    .expect("ImagerOperation is always serializable")
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Admin,
+        retry: RetryPolicy::Idempotent,
+        tags: vec!["storage".into(), "job".into()],
+        ..ActionContract::default()
+    });
+    let cancel = if job_active {
+        cancel.unavailable(
+            "cancel_not_cooperative",
+            "The raw-device writer cannot yet stop safely between write chunks",
+        )
+    } else {
+        cancel.unavailable("no_active_write", "No image write is currently running")
+    };
+
+    let status = ActionSpec::operation(
+        "status",
+        "Show image-write status",
+        OperationKind::View,
+        IMAGER_OPERATION_TYPE,
+        &ImagerOperation::Status,
+    )
+    .expect("ImagerOperation is always serializable")
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Read,
+        retry: RetryPolicy::Idempotent,
+        discovery: DiscoveryScope::Launchable,
+        result: ResultSpec::Json {
+            schema: serde_json::json!({ "type": "object" }),
+        },
+        ..ActionContract::view()
+    });
+
+    Resource::new("imager.write-plan", "imager.write-plan", "Image write plan")
+        .with_action(write)
+        .with_action(verify)
+        .with_action(cancel)
+        .with_action(status)
+}
 
 /// Every collaborative operation the imager exports on the shared document.
 ///
@@ -176,6 +336,16 @@ fn immediate_spec(id: &str, label: &str, action: &ImagerAction) -> ActionSpec {
         .unwrap_or_else(|_| {
             ActionSpec::immediate_encoded(id, label.to_string(), action.locus(), encode(action))
         })
+        .with_contract(profile_contract())
+}
+
+fn profile_contract() -> ActionContract {
+    ActionContract {
+        retry: RetryPolicy::Idempotent,
+        reversible: true,
+        tags: vec!["configuration".into(), "image-profile".into()],
+        ..ActionContract::default()
+    }
 }
 
 /// Add the identity/region prompted fields — hostname, full name, username,
@@ -184,66 +354,81 @@ fn immediate_spec(id: &str, label: &str, action: &ImagerAction) -> ActionSpec {
 /// only on the shape of [`ImagerAction`]. The password is intentionally
 /// absent: a secret must never be echoed through a palette prompt.
 fn with_identity_fields(mut res: Resource) -> Resource {
-    res = res.with_action(ActionSpec::prompted(
-        "hostname",
-        "Set hostname",
-        "Hostname",
-        "qos",
-        ExecutionLocus::ClientLocal,
-        |text| {
-            encode(&ImagerAction::SetHostname {
-                value: text.to_string(),
-            })
-        },
-    ));
-    res = res.with_action(ActionSpec::prompted(
-        "full-name",
-        "Set full name",
-        "Full name",
-        "qOS User",
-        ExecutionLocus::ClientLocal,
-        |text| {
-            encode(&ImagerAction::SetFullName {
-                value: text.to_string(),
-            })
-        },
-    ));
-    res = res.with_action(ActionSpec::prompted(
-        "username",
-        "Set username",
-        "Username",
-        "quser",
-        ExecutionLocus::ClientLocal,
-        |text| {
-            encode(&ImagerAction::SetUsername {
-                value: text.to_string(),
-            })
-        },
-    ));
-    res = res.with_action(ActionSpec::prompted(
-        "timezone",
-        "Set timezone",
-        "Timezone",
-        "UTC",
-        ExecutionLocus::ClientLocal,
-        |text| {
-            encode(&ImagerAction::SetTimezone {
-                value: text.to_string(),
-            })
-        },
-    ));
-    res = res.with_action(ActionSpec::prompted(
-        "keyboard",
-        "Set keyboard layout",
-        "Keyboard",
-        "us",
-        ExecutionLocus::ClientLocal,
-        |text| {
-            encode(&ImagerAction::SetKeyboard {
-                value: text.to_string(),
-            })
-        },
-    ));
+    res = res.with_action(
+        ActionSpec::prompted(
+            "hostname",
+            "Set hostname",
+            "Hostname",
+            "qos",
+            ExecutionLocus::ClientLocal,
+            |text| {
+                encode(&ImagerAction::SetHostname {
+                    value: text.to_string(),
+                })
+            },
+        )
+        .with_contract(profile_contract()),
+    );
+    res = res.with_action(
+        ActionSpec::prompted(
+            "full-name",
+            "Set full name",
+            "Full name",
+            "qOS User",
+            ExecutionLocus::ClientLocal,
+            |text| {
+                encode(&ImagerAction::SetFullName {
+                    value: text.to_string(),
+                })
+            },
+        )
+        .with_contract(profile_contract()),
+    );
+    res = res.with_action(
+        ActionSpec::prompted(
+            "username",
+            "Set username",
+            "Username",
+            "quser",
+            ExecutionLocus::ClientLocal,
+            |text| {
+                encode(&ImagerAction::SetUsername {
+                    value: text.to_string(),
+                })
+            },
+        )
+        .with_contract(profile_contract()),
+    );
+    res = res.with_action(
+        ActionSpec::prompted(
+            "timezone",
+            "Set timezone",
+            "Timezone",
+            "UTC",
+            ExecutionLocus::ClientLocal,
+            |text| {
+                encode(&ImagerAction::SetTimezone {
+                    value: text.to_string(),
+                })
+            },
+        )
+        .with_contract(profile_contract()),
+    );
+    res = res.with_action(
+        ActionSpec::prompted(
+            "keyboard",
+            "Set keyboard layout",
+            "Keyboard",
+            "us",
+            ExecutionLocus::ClientLocal,
+            |text| {
+                encode(&ImagerAction::SetKeyboard {
+                    value: text.to_string(),
+                })
+            },
+        )
+        .with_contract(profile_contract()),
+    );
     res
 }
 
@@ -465,6 +650,13 @@ mod tests {
     #[test]
     fn ctrl_k_publishes_the_customization_and_profile_actions() {
         let resources = provide_resources("qOS 1.0", &InstallProfile::default());
+        assert!(
+            resources[0]
+                .actions
+                .iter()
+                .all(|action| action.contract.reversible
+                    && action.contract.retry == RetryPolicy::Idempotent)
+        );
         assert_eq!(resources.len(), 1, "one customization root");
         let root = &resources[0];
         assert_eq!(root.kind, "imager.customization");
@@ -500,6 +692,75 @@ mod tests {
             "{labels:?}"
         );
         assert!(labels.iter().any(|l| l.contains("hostname")), "{labels:?}");
+    }
+
+    #[test]
+    fn write_operation_requires_typed_device_admin_and_destructive_confirmation() {
+        let resource = operation_resource(Some("/dev/sdz"), true, false, true);
+        let write = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "write")
+            .unwrap();
+        assert!(write.contract.availability.is_available());
+        assert_eq!(write.contract.permission, PermissionRequirement::Admin);
+        assert_eq!(write.contract.risk, RiskLevel::Destructive);
+        assert_eq!(
+            write.contract.confirmation,
+            ConfirmationPolicy::Phrase {
+                phrase: "/dev/sdz".into()
+            }
+        );
+        assert_eq!(write.params().len(), 1);
+        assert_eq!(write.params()[0].name.as_ref(), "confirmation");
+        let encoded = write
+            .build_args([(
+                "confirmation".to_string(),
+                qos_actions::ArgValue::Text("/dev/sdz".into()),
+            )])
+            .unwrap();
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(ImagerOperation::Write {
+                device: "/dev/sdz".into(),
+                confirmation: "/dev/sdz".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn write_operation_is_unavailable_when_the_real_backend_is_disabled() {
+        let resource = operation_resource(Some("/dev/sdz"), true, false, false);
+        let write = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "write")
+            .unwrap();
+        assert!(!write.contract.availability.is_available());
+        assert!(matches!(
+            &write.contract.availability,
+            qos_actions::Availability::Unavailable { code, .. }
+                if code == "write_backend_disabled"
+        ));
+    }
+
+    #[test]
+    fn unsupported_verify_and_cancel_are_explicitly_unavailable() {
+        let resource = operation_resource(Some("/dev/sdz"), true, true, true);
+        for id in ["verify", "cancel"] {
+            let action = resource
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap();
+            assert!(!action.contract.availability.is_available(), "{id}");
+        }
+        let status = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "status")
+            .unwrap();
+        assert_eq!(status.contract.discovery, DiscoveryScope::Launchable);
     }
 
     /// A plain ISO (or no source) has no profile to customize, so the app

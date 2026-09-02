@@ -286,20 +286,18 @@ mod tests {
         );
     }
 
-    /// The honest steady state: the file explorer's production `Widget` impl
-    /// fabricates no action or resource surface. `Widget::resources` is empty
-    /// (nothing to publish to Ctrl+K) and no action host records an undo
-    /// boundary, because no action is ever dispatched.
+    /// Filesystem operations are exported as local resource operations, not
+    /// replayable CRDT actions. Publishing them must not fabricate an action
+    /// host undo boundary.
     #[test]
-    fn exports_no_actions_and_no_resource_tree() {
+    fn exports_local_resources_without_crdt_actions() {
         let mut w = FileExplorerWidget::new();
         let mut doc = AutoCommit::new();
         w.sync(&mut doc, &ROOT);
 
-        assert!(
-            Widget::resources(&w, &doc).is_empty(),
-            "the file explorer publishes no Ctrl+K resource tree — its only shared state is native text",
-        );
+        let resources = Widget::resources(&w, &doc);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].kind, "files.folder");
         assert!(
             w.take_committed_action().is_none(),
             "no action is dispatched, so no action-host undo boundary is recorded",

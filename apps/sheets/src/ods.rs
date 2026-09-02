@@ -15,7 +15,7 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::Path;
 
-use crate::model::{CellFormat, addr_to_a1};
+use crate::model::{CellFormat, Currency, addr_to_a1};
 use crate::xlsx::{ImportedCell, SheetTable};
 
 /// Read every sheet of an `.ods` document into tables (via calamine).
@@ -104,7 +104,21 @@ fn content_xml(tables: &[SheetTable]) -> String {
 }
 
 /// A handful of named data styles for the formatted numeric kinds.
-const NUMBER_STYLES: &str = r#"<number:currency-style style:name="ceUSD"><number:currency-symbol>$</number:currency-symbol><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/></number:currency-style><number:percentage-style style:name="cePct"><number:number number:decimal-places="2" number:min-integer-digits="1"/><number:text>%</number:text></number:percentage-style><number:date-style style:name="ceDate"><number:year number:style="long"/><number:text>-</number:text><number:month number:style="long"/><number:text>-</number:text><number:day number:style="long"/></number:date-style><style:style style:name="coCur" style:family="table-cell" style:data-style-name="ceUSD"/><style:style style:name="coPct" style:family="table-cell" style:data-style-name="cePct"/><style:style style:name="coDate" style:family="table-cell" style:data-style-name="ceDate"/>"#;
+const NUMBER_STYLES: &str = r#"<number:currency-style style:name="ceUSD"><number:currency-symbol>$</number:currency-symbol><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/></number:currency-style><number:currency-style style:name="ceEUR"><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/><number:text> </number:text><number:currency-symbol>€</number:currency-symbol></number:currency-style><number:currency-style style:name="ceGBP"><number:currency-symbol>£</number:currency-symbol><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/></number:currency-style><number:currency-style style:name="ceJPY"><number:currency-symbol>¥</number:currency-symbol><number:number number:decimal-places="0" number:min-integer-digits="1" number:grouping="true"/></number:currency-style><number:currency-style style:name="ceCNY"><number:currency-symbol>¥</number:currency-symbol><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/></number:currency-style><number:currency-style style:name="ceCHF"><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/><number:text> CHF</number:text></number:currency-style><number:currency-style style:name="ceINR"><number:currency-symbol>₹</number:currency-symbol><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/></number:currency-style><number:currency-style style:name="ceCAD"><number:currency-symbol>$</number:currency-symbol><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/></number:currency-style><number:currency-style style:name="ceAUD"><number:currency-symbol>$</number:currency-symbol><number:number number:decimal-places="2" number:min-integer-digits="1" number:grouping="true"/></number:currency-style><number:percentage-style style:name="cePct"><number:number number:decimal-places="2" number:min-integer-digits="1"/><number:text>%</number:text></number:percentage-style><number:date-style style:name="ceDate"><number:year number:style="long"/><number:text>-</number:text><number:month number:style="long"/><number:text>-</number:text><number:day number:style="long"/></number:date-style><style:style style:name="coUSD" style:family="table-cell" style:data-style-name="ceUSD"/><style:style style:name="coEUR" style:family="table-cell" style:data-style-name="ceEUR"/><style:style style:name="coGBP" style:family="table-cell" style:data-style-name="ceGBP"/><style:style style:name="coJPY" style:family="table-cell" style:data-style-name="ceJPY"/><style:style style:name="coCNY" style:family="table-cell" style:data-style-name="ceCNY"/><style:style style:name="coCHF" style:family="table-cell" style:data-style-name="ceCHF"/><style:style style:name="coINR" style:family="table-cell" style:data-style-name="ceINR"/><style:style style:name="coCAD" style:family="table-cell" style:data-style-name="ceCAD"/><style:style style:name="coAUD" style:family="table-cell" style:data-style-name="ceAUD"/><style:style style:name="coPct" style:family="table-cell" style:data-style-name="cePct"/><style:style style:name="coDate" style:family="table-cell" style:data-style-name="ceDate"/>"#;
+
+fn currency_cell_style(currency: Currency) -> &'static str {
+    match currency {
+        Currency::USD => "coUSD",
+        Currency::EUR => "coEUR",
+        Currency::GBP => "coGBP",
+        Currency::JPY => "coJPY",
+        Currency::CNY => "coCNY",
+        Currency::CHF => "coCHF",
+        Currency::INR => "coINR",
+        Currency::CAD => "coCAD",
+        Currency::AUD => "coAUD",
+    }
+}
 
 /// Emit one `<table:table-cell>` (or an empty one). A cell holding a formula
 /// carries a `table:formula` attribute (ODF `of:=…` form) alongside its cached
@@ -124,10 +138,12 @@ fn cell_xml(cell: Option<&ImportedCell>) -> String {
     // as numbers; we also attach a cell style for currency/percent/date.
     if let Ok(n) = cell.raw.parse::<f64>() {
         let style_attr = match cell.format {
-            CellFormat::Currency(_) => r#" table:style-name="coCur""#,
-            CellFormat::Percent => r#" table:style-name="coPct""#,
-            CellFormat::Date(_) => r#" table:style-name="coDate""#,
-            _ => "",
+            CellFormat::Currency(currency) => {
+                format!(r#" table:style-name="{}""#, currency_cell_style(currency))
+            }
+            CellFormat::Percent => r#" table:style-name="coPct""#.to_string(),
+            CellFormat::Date(_) => r#" table:style-name="coDate""#.to_string(),
+            _ => String::new(),
         };
         let value_type = match cell.format {
             CellFormat::Currency(_) => "currency",
@@ -264,6 +280,29 @@ mod tests {
         let rate = back[0].rows[2][1].as_ref().unwrap();
         assert!((rate.raw.parse::<f64>().unwrap() - 0.21).abs() < 1e-9);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ods_export_uses_the_cells_actual_currency_style() {
+        for (currency, style) in [
+            (Currency::USD, "coUSD"),
+            (Currency::EUR, "coEUR"),
+            (Currency::GBP, "coGBP"),
+            (Currency::JPY, "coJPY"),
+            (Currency::CNY, "coCNY"),
+            (Currency::CHF, "coCHF"),
+            (Currency::INR, "coINR"),
+            (Currency::CAD, "coCAD"),
+            (Currency::AUD, "coAUD"),
+        ] {
+            let xml = cell_xml(Some(&cell("12.5", CellFormat::Currency(currency))));
+            assert!(
+                xml.contains(&format!(r#"table:style-name="{style}""#)),
+                "{currency:?} used the wrong ODF style: {xml}"
+            );
+        }
+        assert!(NUMBER_STYLES.contains("<number:currency-symbol>€</number:currency-symbol>"));
+        assert!(NUMBER_STYLES.contains("<number:currency-symbol>₹</number:currency-symbol>"));
     }
 
     /// Formulas written into `.ods` (as `table:formula`) come back with their

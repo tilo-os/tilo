@@ -1364,7 +1364,7 @@ impl GitClientApp {
         let bg = if armed {
             c.semantic.danger
         } else {
-            c.surface_white_10
+            c.lift(0.72)
         };
         let fg = if armed {
             Color::WHITE
@@ -1594,7 +1594,7 @@ impl GitClientApp {
             if enabled {
                 theme.accent_primary
             } else {
-                c.surface_white_10
+                c.lift(0.72)
             },
         );
         let fg = if enabled { Color::WHITE } else { c.neutral[5] };
@@ -1752,7 +1752,7 @@ impl GitClientApp {
             if enabled {
                 theme.accent_primary
             } else {
-                c.surface_white_10
+                c.lift(0.72)
             },
         );
         let fg = if enabled { Color::WHITE } else { c.neutral[5] };
@@ -2188,6 +2188,10 @@ fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
 }
 
 impl Widget for GitClientApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::GIT_CLIENT_OPERATION_TYPE]
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if self.settings_seeded {
             // Adopt document changes: remote collaborators, and this app's own
@@ -2405,6 +2409,59 @@ impl Widget for GitClientApp {
     /// it — the same path a Ctrl+K palette dispatch takes.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if type_id != crate::actions::GIT_CLIENT_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let operation: crate::actions::GitClientOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        match (kind, operation) {
+            (qos_actions::OperationKind::View, crate::actions::GitClientOperation::ShowChanges) => {
+                self.switch_screen(Screen::Changes);
+            }
+            (qos_actions::OperationKind::View, crate::actions::GitClientOperation::ShowHistory) => {
+                self.switch_screen(Screen::History);
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::GitClientOperation::ShowBranches,
+            ) => {
+                self.switch_screen(Screen::Panels);
+            }
+            (qos_actions::OperationKind::Effect, crate::actions::GitClientOperation::StageAll) => {
+                self.stage_all();
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::GitClientOperation::UnstageAll,
+            ) => {
+                self.unstage_all();
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::GitClientOperation::Commit { message },
+            ) => {
+                if self.model.staged.is_empty() {
+                    return Err("there are no staged changes to commit".into());
+                }
+                if message.trim().is_empty() {
+                    return Err("commit message cannot be empty".into());
+                }
+                self.commit_input.set_text(&message);
+                self.do_commit();
+            }
+            _ => return Err("operation kind does not match Git operation".into()),
+        }
+        Ok(true)
     }
 
     fn needs_animation_frame(&self) -> bool {

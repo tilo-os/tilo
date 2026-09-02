@@ -42,6 +42,7 @@ taffy.workspace = true
 anyhow.workspace = true
 # OSC 52 clipboard writes carry base64-encoded payloads.
 base64.workspace = true
+qdoc = { path = "../../crates/doc/qdoc" }
 
 [dev-dependencies]
 # Serialises the tests that touch the shared system clipboard / primary

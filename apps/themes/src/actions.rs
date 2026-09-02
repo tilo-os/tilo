@@ -32,8 +32,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
+    ConfirmationPolicy, DiscoveryScope, Doc, EncodedAction, ExecutionLocus, OperationKind,
+    ParamType, Resource, ResourceProvider, RetryPolicy, RiskLevel,
 };
 
 use crate::doc;
@@ -245,7 +246,18 @@ pub fn rename_spec(current: &ThemeSpec, name: &str) -> ThemeSpec {
     reason = "ThemesAction's fields are always JSON-serializable; see encode's doc comment"
 )]
 fn immediate_spec(id: &str, label: &str, action: &ThemesAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, THEMES_ACTION_TYPE, action).expect("encode themes action")
+    ActionSpec::immediate(id, label, THEMES_ACTION_TYPE, action)
+        .expect("encode themes action")
+        .with_contract(theme_contract())
+}
+
+fn theme_contract() -> ActionContract {
+    ActionContract {
+        retry: RetryPolicy::Idempotent,
+        reversible: true,
+        tags: vec!["appearance".into(), "theme".into()],
+        ..ActionContract::default()
+    }
 }
 
 /// Build the resource tree Themes currently has open: the theme library (with a
@@ -262,24 +274,28 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     // once when the name argument is committed, then baked into the envelope, so
     // replay stays deterministic.
     let next_order = max_order(&catalog) + 1;
-    root = root.with_action(ActionSpec::prompted(
-        "new-theme",
-        "New theme",
-        "Name",
-        "theme name…",
-        ExecutionLocus::ClientLocal,
-        move |name: &str| {
-            let name = {
-                let n = name.trim();
-                if n.is_empty() { "New theme" } else { n }
-            };
-            encode(&upsert_custom_theme_action(&new_theme_spec(
-                &Uuid::new_v4().to_string(),
-                name,
-                next_order,
-            )))
-        },
-    ));
+    root = root.with_action(
+        ActionSpec::typed(
+            "new-theme",
+            "New theme",
+            "theme name…",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required("name", ParamType::Text, "Theme name")],
+            move |args| {
+                let name = args.text("name").unwrap_or_default();
+                let name = {
+                    let n = name.trim();
+                    if n.is_empty() { "New theme" } else { n }
+                };
+                encode(&upsert_custom_theme_action(&new_theme_spec(
+                    &Uuid::new_v4().to_string(),
+                    name,
+                    next_order,
+                )))
+            },
+        )
+        .with_contract(theme_contract()),
+    );
 
     for spec in &catalog {
         let mut child = Resource::new(
@@ -289,11 +305,24 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
         );
 
         // Every theme can become the active OS theme.
-        child = child.with_action(immediate_spec(
-            "apply",
-            "Apply as system theme",
-            &set_active_theme_action(spec.id.clone()),
-        ));
+        child = child.with_action(
+            ActionSpec::operation(
+                "apply",
+                "Apply as system theme",
+                OperationKind::Effect,
+                "themes.apply",
+                &spec.id,
+            )
+            .expect("theme id is serializable")
+            .with_contract(ActionContract {
+                discovery: DiscoveryScope::Launchable,
+                retry: RetryPolicy::Idempotent,
+                execution: qos_actions::ExecutionMode::Background { cancellable: true },
+                result: qos_actions::ResultSpec::Job,
+                tags: vec!["appearance".into(), "theme".into()],
+                ..ActionContract::default()
+            }),
+        );
 
         // Every theme can be duplicated into a new editable copy. The copy's uuid
         // is minted at authoring time so replay is deterministic.
@@ -309,40 +338,73 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
         ));
 
         if !spec.builtin {
+            child = child.with_action(
+                immediate_spec(
+                    "reset",
+                    "Reset theme",
+                    &upsert_custom_theme_action(&reset_spec(spec)),
+                )
+                .with_contract(ActionContract {
+                    confirmation: ConfirmationPolicy::Confirm,
+                    ..theme_contract()
+                }),
+            );
             // Rename — a prompted action carrying the rest of the theme unchanged.
             let base = spec.clone();
-            child = child.with_action(ActionSpec::prompted(
-                "edit",
-                "Rename theme",
-                "Name",
-                "theme name…",
-                ExecutionLocus::ClientLocal,
-                move |name: &str| encode(&upsert_custom_theme_action(&rename_spec(&base, name))),
-            ));
+            child = child.with_action(
+                ActionSpec::typed(
+                    "edit",
+                    "Rename theme",
+                    "theme name…",
+                    ExecutionLocus::ClientLocal,
+                    vec![ActionParam::required("name", ParamType::Text, "Theme name")],
+                    move |args| {
+                        encode(&upsert_custom_theme_action(&rename_spec(
+                            &base,
+                            args.text("name").unwrap_or_default(),
+                        )))
+                    },
+                )
+                .with_contract(theme_contract()),
+            );
             // Set the accent colour — a prompted colour edit (the committed form
             // of a picker drag), taking a hex string.
             let base = spec.clone();
-            child = child.with_action(ActionSpec::prompted(
-                "set-accent",
-                "Set accent colour",
-                "Colour",
-                "#RRGGBB",
-                ExecutionLocus::ClientLocal,
-                move |hex: &str| {
-                    let rgb = crate::model::parse_hex(hex).unwrap_or(base.accent);
-                    encode(&upsert_custom_theme_action(&recolor_spec(
-                        &base,
-                        TokenId::Accent,
-                        rgb,
-                    )))
-                },
-            ));
+            child = child.with_action(
+                ActionSpec::typed(
+                    "set-accent",
+                    "Set accent colour",
+                    "#RRGGBB",
+                    ExecutionLocus::ClientLocal,
+                    vec![
+                        ActionParam::required("colour", ParamType::Text, "Hex RGB colour")
+                            .with_schema(serde_json::json!({ "pattern": "^#[0-9A-Fa-f]{6}$" })),
+                    ],
+                    move |args| {
+                        let hex = args.text("colour").unwrap_or_default();
+                        let rgb = crate::model::parse_hex(hex).unwrap_or(base.accent);
+                        encode(&upsert_custom_theme_action(&recolor_spec(
+                            &base,
+                            TokenId::Accent,
+                            rgb,
+                        )))
+                    },
+                )
+                .with_contract(theme_contract()),
+            );
             // Delete the custom theme.
-            child = child.with_action(immediate_spec(
-                "delete",
-                "Delete theme",
-                &delete_custom_theme_action(spec.id.clone()),
-            ));
+            child = child.with_action(
+                immediate_spec(
+                    "delete",
+                    "Delete theme",
+                    &delete_custom_theme_action(spec.id.clone()),
+                )
+                .with_contract(ActionContract {
+                    risk: RiskLevel::Destructive,
+                    confirmation: ConfirmationPolicy::Confirm,
+                    ..theme_contract()
+                }),
+            );
         }
 
         root = root.with_child(child);
@@ -441,7 +503,26 @@ mod tests {
         assert!(c_actions.contains(&"apply"), "{c_actions:?}");
         assert!(c_actions.contains(&"edit"), "{c_actions:?}");
         assert!(c_actions.contains(&"set-accent"), "{c_actions:?}");
+        assert!(c_actions.contains(&"reset"), "{c_actions:?}");
         assert!(c_actions.contains(&"delete"), "{c_actions:?}");
+        assert_eq!(
+            custom
+                .actions
+                .iter()
+                .find(|action| action.id == "delete")
+                .expect("delete action")
+                .contract
+                .risk,
+            RiskLevel::Destructive
+        );
+        let apply = custom
+            .actions
+            .iter()
+            .find(|action| action.id == "apply")
+            .expect("apply operation");
+        assert_eq!(apply.kind, OperationKind::Effect);
+        assert_eq!(apply.contract.discovery, DiscoveryScope::Launchable);
+        assert_eq!(apply.contract.result, qos_actions::ResultSpec::None);
 
         // The one palette surfaces the tree's actions as rows.
         let mut palette = ui::ActionPalette::new();
@@ -655,7 +736,8 @@ mod tests {
             "one source of truth for delete"
         );
 
-        // A preset's apply spec == the apply builder.
+        // Applying is an external store effect; the spec carries the stable
+        // theme id to the widget operation handler.
         let builtin = lib
             .children
             .iter()
@@ -663,10 +745,10 @@ mod tests {
             .unwrap();
         let apply_spec = builtin.actions.iter().find(|a| a.id == "apply").unwrap();
         let from_spec = immediate_encode(apply_spec);
-        let from_builder = encode(&set_active_theme_action("qos-blue"));
+        assert_eq!(from_spec.type_id, "themes.apply");
         assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "apply is one source of truth"
+            serde_json::from_slice::<String>(&from_spec.payload).unwrap(),
+            "qos-blue"
         );
 
         // The rename spec == the rename builder for the same name.

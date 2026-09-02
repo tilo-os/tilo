@@ -29,6 +29,7 @@ const GRAPH_APP_TEMPLATE: &str = include_str!("../templates/graph.rs");
 const ASYNC_APP_TEMPLATE: &str = include_str!("../templates/async.rs");
 const DOCUMENT_APP_TEMPLATE: &str = include_str!("../templates/document.rs");
 const QR_APP_TEMPLATE: &str = include_str!("../templates/qr.rs");
+const WORKSPACE_APP_TEMPLATE: &str = include_str!("../templates/workspace.rs");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Template {
@@ -40,6 +41,7 @@ pub enum Template {
     Async,
     Document,
     Qr,
+    Workspace,
 }
 
 impl Template {
@@ -53,6 +55,7 @@ impl Template {
             Self::Async => "async",
             Self::Document => "document",
             Self::Qr => "qr",
+            Self::Workspace => "workspace",
         }
     }
 
@@ -66,6 +69,7 @@ impl Template {
             Self::Async => "Restartable background task with cancellation",
             Self::Document => "Durable synchronized editor with undo",
             Self::Qr => "IME input to accessible generated QR output",
+            Self::Workspace => "Responsive master-detail workspace with durable item editing",
         }
     }
 }
@@ -155,6 +159,8 @@ pub struct NewAppRequest {
     /// for deterministic non-interactive use.
     pub template: Option<Template>,
     pub directory: Option<PathBuf>,
+    /// Explicit toolkit crate. `None` discovers `QOS_UI_PATH`, a surrounding
+    /// checkout, the running executable's checkout, or the build checkout.
     pub ui_path: Option<PathBuf>,
     pub dry_run: bool,
 }
@@ -331,6 +337,23 @@ pub struct CargoPlan {
     pub app_dir: PathBuf,
     pub program: OsString,
     pub args: Vec<OsString>,
+}
+
+/// Package-scoped static checks used by `qos-dev check` before scenarios.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AppQualityPlan {
+    pub format: CargoPlan,
+    pub clippy: CargoPlan,
+    pub test: CargoPlan,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AppFormatMode {
+    /// Reject formatting drift without changing source.
+    #[default]
+    Check,
+    /// Apply rustfmt to the app package before the remaining checks.
+    Apply,
 }
 
 /// Resolved native UI-builder invocation. The heavy graphical toolkit lives in
@@ -800,7 +823,7 @@ pub fn add_app_artifact(request: AddRequest) -> Result<AddOutcome> {
         );
     }
 
-    let (writes, next_command) = match request.artifact {
+    let (mut writes, next_command) = match request.artifact {
         AddArtifact::Screen {
             name,
             title,
@@ -864,6 +887,7 @@ pub fn add_app_artifact(request: AddRequest) -> Result<AddOutcome> {
             (writes, Some("qos-dev dev".into()))
         }
     };
+    format_pending_rust(&mut writes)?;
     let updated = writes
         .iter()
         .filter(|write| write.path.exists())
@@ -939,7 +963,7 @@ fn locale_artifact_writes(app_dir: &Path, locale: &str, force: bool) -> Result<V
     if !locales.iter().any(|locale| locale == "en-US") {
         bail!("generated locale registry is missing its en-US source catalog");
     }
-    let registry_source = locale_registry_source(&locales);
+    let registry_source = rustfmt_source(&locale_registry_source(&locales), &registry_path)?;
     let source_path = app_dir.join("locales/en-US.ftl");
     let source_catalog = std::fs::read_to_string(&source_path)
         .with_context(|| format!("reading source catalog {}", source_path.display()))?;
@@ -1881,6 +1905,54 @@ fn write_batch(writes: &[PendingWrite]) -> Result<()> {
     })
 }
 
+fn format_pending_rust(writes: &mut [PendingWrite]) -> Result<()> {
+    for write in writes {
+        if write
+            .path
+            .extension()
+            .is_some_and(|extension| extension == "rs")
+        {
+            write.source = rustfmt_source(&write.source, &write.path)?;
+        }
+    }
+    Ok(())
+}
+
+fn rustfmt_source(source: &str, path: &Path) -> Result<String> {
+    let rustfmt = std::env::var_os("RUSTFMT").unwrap_or_else(|| OsString::from("rustfmt"));
+    let mut child = ProcessCommand::new(&rustfmt)
+        .args(["--emit", "stdout", "--edition", "2024"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "starting rustfmt for generated Rust {}; install the rustfmt component or set RUSTFMT",
+                path.display()
+            )
+        })?;
+    child
+        .stdin
+        .take()
+        .context("opening rustfmt input")?
+        .write_all(source.as_bytes())
+        .with_context(|| format!("sending generated Rust {} to rustfmt", path.display()))?;
+    let output = child
+        .wait_with_output()
+        .with_context(|| format!("waiting for rustfmt on {}", path.display()))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "rustfmt rejected generated Rust {}: {}",
+            path.display(),
+            detail.trim()
+        );
+    }
+    String::from_utf8(output.stdout)
+        .with_context(|| format!("rustfmt returned non-UTF-8 output for {}", path.display()))
+}
+
 fn write_batch_with(
     writes: &[PendingWrite],
     mut publish: impl FnMut(&PendingWrite) -> Result<()>,
@@ -2713,9 +2785,12 @@ fn tree_component_source(
     type_name: &str,
 ) -> (String, Vec<ScreenMessage>) {
     let accessible_name = ScreenMessage::new(name, "accessible-name", title_from_name(name));
+    let loading = ScreenMessage::new(name, "loading", "Loading…");
+    let load_error = ScreenMessage::new(name, "load-error", "Could not load. Activate to retry");
     let mut source = format!(
         r#"use ui::selection::KeySelection;
-use ui::widget::tree_view::{{NodeId, TreeModel, TreeView}};
+use ui::widget::Text;
+use ui::widget::tree_view::{{NodeId, TreeModel, TreeSlotState, TreeView}};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct {type_name}Config {{
@@ -2756,11 +2831,18 @@ pub fn {module_name}<M: TreeModel>(
         .multi_select(config.multi_select)
         .with_viewport(config.viewport_height, config.estimated_row_height)
         .with_accessible_name(&config.accessible_name)
+        .with_slot_delegate(|_, _, _, state| {{
+            let message = match state {{
+                TreeSlotState::Loading => "{name}-loading",
+                TreeSlotState::Error {{ .. }} => "{name}-load-error",
+            }};
+            Box::new(Text::new(message))
+        }})
 }}
 "#
     );
     source.push_str(&tree_component_test_source(module_name, type_name));
-    (source, vec![accessible_name])
+    (source, vec![accessible_name, loading, load_error])
 }
 
 fn tree_component_test_source(module_name: &str, type_name: &str) -> String {
@@ -3895,14 +3977,33 @@ impl DoctorReport {
 ///
 /// Returns an error when the selected app directory cannot be resolved.
 pub fn doctor_app(start: &Path) -> Result<DoctorReport> {
+    doctor_app_with_capnp_probe(start, probe_capnp_compiler)
+}
+
+fn doctor_app_with_capnp_probe(
+    start: &Path,
+    probe_capnp: impl FnOnce() -> std::result::Result<String, String>,
+) -> Result<DoctorReport> {
     let app_dir = resolve_app_dir(start)?;
-    Ok(doctor_resolved_app(app_dir))
+    Ok(doctor_resolved_app_with_capnp_probe(app_dir, probe_capnp))
 }
 
 fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
+    #[cfg(not(test))]
+    let probe = probe_capnp_compiler;
+    #[cfg(test)]
+    let probe = || Ok("Cap'n Proto version 1.0.2".to_owned());
+    doctor_resolved_app_with_capnp_probe(app_dir, probe)
+}
+
+fn doctor_resolved_app_with_capnp_probe(
+    app_dir: PathBuf,
+    probe_capnp: impl FnOnce() -> std::result::Result<String, String>,
+) -> DoctorReport {
     let mut checks = Vec::new();
     let package_name = check_cargo_manifest(&app_dir, &mut checks);
     let package_id = check_package_manifest(&app_dir, &mut checks);
+    check_capnp_compiler(&mut checks, probe_capnp);
 
     check_source_file(
         &app_dir,
@@ -3918,6 +4019,7 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
         "LaunchSpec::new",
         &mut checks,
     );
+    check_resource_action_surface(&app_dir, &mut checks);
     check_ui_graph_artifacts(&app_dir, &mut checks);
     check_locale_artifacts(&app_dir, &mut checks);
     check_headless_scenarios(&app_dir, &mut checks);
@@ -3931,6 +4033,104 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
     }
 
     DoctorReport { app_dir, checks }
+}
+
+fn probe_capnp_compiler() -> std::result::Result<String, String> {
+    let output = ProcessCommand::new("capnp")
+        .arg("--version")
+        .output()
+        .map_err(|error| format!("could not run `capnp --version`: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let error_detail = if stderr.trim().is_empty() {
+            String::new()
+        } else {
+            format!(": {}", stderr.trim())
+        };
+        return Err(format!(
+            "`capnp --version` exited with {}{}",
+            output.status, error_detail
+        ));
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Ok(if version.is_empty() {
+        "`capnp --version` succeeded".to_owned()
+    } else {
+        version
+    })
+}
+
+fn check_capnp_compiler(
+    checks: &mut Vec<DoctorCheck>,
+    probe_capnp: impl FnOnce() -> std::result::Result<String, String>,
+) {
+    let (status, detail) = match probe_capnp() {
+        Ok(version) => (DoctorStatus::Pass, version),
+        Err(error) => (
+            DoctorStatus::Fail,
+            format!(
+                "{error}; install the Cap'n Proto compiler (`capnp`) or run qos-dev inside the qOS development container"
+            ),
+        ),
+    };
+    checks.push(DoctorCheck {
+        status,
+        label: "Cap'n Proto compiler",
+        detail,
+    });
+}
+
+fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
+    let manifest = std::fs::read_to_string(app_dir.join("Cargo.toml"));
+    let source = std::fs::read_to_string(app_dir.join("src/lib.rs"));
+    let (Ok(manifest), Ok(source)) = (manifest, source) else {
+        return;
+    };
+    let direct_dependency = manifest.lines().any(|line| {
+        line.trim_start().starts_with("qos-actions")
+            && line
+                .split_once('=')
+                .is_some_and(|(_, value)| !value.trim().is_empty())
+    });
+    let toolkit_host = source.contains("ui::widget::resource_actions");
+    let action_api = direct_dependency || source.contains("ui::qos_actions") || toolkit_host;
+    let publishes = source.contains("fn resources(")
+        || source.contains("resource_actions::resource(")
+        || source.contains("resource_actions::typed_resource(")
+        || source.contains("ResourceActionHost");
+    let invokes = source.contains("invoke_resource_operation")
+        || source.contains("start_resource_operation")
+        || source.contains("resource_actions::immediate(")
+        || source.contains("resource_actions::background(");
+    let (status, detail) = if action_api && publishes && invokes {
+        (
+            DoctorStatus::Pass,
+            "resource catalogue and invocation route are present".to_owned(),
+        )
+    } else {
+        let mut missing = Vec::new();
+        if !action_api {
+            missing.push("qOS action API");
+        }
+        if !publishes {
+            missing.push("Widget::resources catalogue");
+        }
+        if !invokes {
+            missing.push("operation invocation handler");
+        }
+        (
+            DoctorStatus::Fail,
+            format!(
+                "missing {}; qOS apps must expose meaningful controls through resources/actions",
+                missing.join(", ")
+            ),
+        )
+    };
+    checks.push(DoctorCheck {
+        status,
+        label: "resource/action surface",
+        detail,
+    });
 }
 
 fn resolve_app_dir(start: &Path) -> Result<PathBuf> {
@@ -3975,6 +4175,80 @@ pub fn plan_app_task(start: &Path, task: AppTask, forwarded: &[OsString]) -> Res
         app_dir,
         program: std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")),
         args,
+    })
+}
+
+/// Resolve an app and construct its package-scoped format, lint, and test
+/// commands. `format_mode` controls whether formatting drift is rejected or
+/// repaired. Clippy checks every app target with warnings denied while
+/// excluding dependency lint debt.
+///
+/// # Errors
+///
+/// Returns an error when no ready app can be resolved or its Cargo package
+/// name cannot be read.
+pub fn plan_app_quality(
+    start: &Path,
+    forwarded: &[OsString],
+    format_mode: AppFormatMode,
+) -> Result<AppQualityPlan> {
+    let app_dir = resolve_app_dir(start)?;
+    let report = doctor_resolved_app(app_dir.clone());
+    if !report.is_ready() {
+        bail!("app preflight failed\n\n{}", report.summary());
+    }
+    let manifest = app_dir.join("Cargo.toml");
+    let package = cargo_package_name(&manifest)?;
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let base = || CargoPlan {
+        app_dir: app_dir.clone(),
+        program: cargo.clone(),
+        args: Vec::new(),
+    };
+
+    let mut format = base();
+    format.args = vec![
+        OsString::from("fmt"),
+        OsString::from("--manifest-path"),
+        manifest.clone().into_os_string(),
+        OsString::from("--package"),
+        OsString::from(&package),
+    ];
+    if format_mode == AppFormatMode::Check {
+        format.args.push(OsString::from("--check"));
+    }
+
+    let mut clippy = base();
+    clippy.args = vec![
+        OsString::from("clippy"),
+        OsString::from("--manifest-path"),
+        manifest.clone().into_os_string(),
+        OsString::from("--package"),
+        OsString::from(&package),
+        OsString::from("--all-targets"),
+        OsString::from("--no-deps"),
+        OsString::from("--"),
+        OsString::from("-D"),
+        OsString::from("warnings"),
+    ];
+
+    let mut test = base();
+    test.args = vec![
+        OsString::from("test"),
+        OsString::from("--manifest-path"),
+        manifest.into_os_string(),
+        OsString::from("--package"),
+        OsString::from(package),
+    ];
+    if !forwarded.is_empty() {
+        test.args.push(OsString::from("--"));
+        test.args.extend_from_slice(forwarded);
+    }
+
+    Ok(AppQualityPlan {
+        format,
+        clippy,
+        test,
     })
 }
 
@@ -4793,6 +5067,20 @@ fn dev_binary_name(manifest: &Path) -> Result<String> {
     package
         .get("default-run")
         .or_else(|| package.get("name"))
+        .and_then(toml::Value::as_str)
+        .map(str::to_owned)
+        .with_context(|| format!("{} has no package name", manifest.display()))
+}
+
+fn cargo_package_name(manifest: &Path) -> Result<String> {
+    let source = std::fs::read_to_string(manifest)
+        .with_context(|| format!("reading {}", manifest.display()))?;
+    let value = source
+        .parse::<toml::Value>()
+        .with_context(|| format!("parsing {}", manifest.display()))?;
+    value
+        .get("package")
+        .and_then(|package| package.get("name"))
         .and_then(toml::Value::as_str)
         .map(str::to_owned)
         .with_context(|| format!("{} has no package name", manifest.display()))
@@ -5812,9 +6100,23 @@ fn check_locale_registry(
     }
     let registered = parse_locale_registry(&registry);
     let result = registered.and_then(|registered| {
-        let expected = locale_registry_source(&registered);
-        if expected != registry {
-            bail!("generated source does not match its locale entries");
+        syn::parse_file(&registry).context("generated locale registry is not valid Rust")?;
+        for (index, locale) in registered.iter().enumerate() {
+            let catalog =
+                format!("const CATALOG_{index}: &str = include_str!(\"../locales/{locale}.ftl\");");
+            if !registry.contains(&catalog) {
+                bail!("registered locale {locale:?} is not embedded as CATALOG_{index}");
+            }
+            let mapping = format!("({locale:?}, CATALOG_{index})");
+            if !registry.contains(&mapping) {
+                bail!("registered locale {locale:?} is absent from the install mapping");
+            }
+        }
+        if !registry.contains("pub const IDS:") {
+            bail!("locale id registry is absent");
+        }
+        if !registry.contains("I18nManager::install_system") {
+            bail!("locale installation is absent");
         }
         for locale in &registered {
             if !catalog_ids.iter().any(|catalog| catalog == locale) {
@@ -5918,22 +6220,30 @@ fn relative_artifact(app_dir: &Path, path: &Path) -> String {
 }
 
 impl CreateOutcome {
+    /// One-line result suitable when another workflow starts immediately.
     #[must_use]
-    pub fn summary(&self) -> String {
+    pub fn headline(&self) -> String {
         let action = if self.dry_run {
             "Would create"
         } else {
             "Created"
         };
-        let destination = shell_display_path(&self.destination);
-        let next = format!(
-            "qos-dev check {destination}\n  qos-dev test {destination}\n  qos-dev dev {destination}\n  qos-dev run {destination}\n  qos-dev scenario run --app {destination}\n  qos-dev shot {destination}\n  qos-dev inspect {destination}\n  qos-dev package {destination}"
-        );
         format!(
-            "{action} {} ({}) in {}\n\nNext:\n  {next}",
+            "{action} {} ({}) in {}",
             self.package_name,
             self.app_id,
             self.destination.display()
+        )
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let destination = shell_display_path(&self.destination);
+        let develop = format!("qos-dev dev {destination}");
+        let verify = format!("qos-dev check {destination}");
+        format!(
+            "{}\n\nStart developing:\n  {develop}\n\nVerify everything:\n  {verify}\n\nRun `qos-dev --help` for testing, scenarios, screenshots, inspection, localization, and packaging.",
+            self.headline()
         )
     }
 }
@@ -6018,11 +6328,18 @@ fn create_app_interactive_from(
     }
     let repo = find_repo_root(current_dir);
     if request.ui_path.is_none() && repo.is_none() && interactive {
-        let value = prompt_validated(input, output, "Toolkit ui path", None, |value| {
-            resolve_ui_dir(current_dir, None, Some(Path::new(value)))
-                .map(|_| ())
-                .context("invalid toolkit path")
-        })?;
+        let discovered = discover_ui_dir(current_dir, None).map(|path| path.display().to_string());
+        let value = prompt_validated(
+            input,
+            output,
+            "Toolkit ui path",
+            discovered.as_deref(),
+            |value| {
+                resolve_ui_dir(current_dir, None, Some(Path::new(value)))
+                    .map(|_| ())
+                    .context("invalid toolkit path")
+            },
+        )?;
         request.ui_path = Some(PathBuf::from(value));
     }
     let ui_dir = resolve_ui_dir(current_dir, repo.as_deref(), request.ui_path.as_deref())?;
@@ -6483,7 +6800,7 @@ fn prompt_component_template(
 fn prompt_template(input: &mut impl io::BufRead, output: &mut impl io::Write) -> Result<Template> {
     writeln!(
         output,
-        "\nStarter template:\n  1) starter   Accessible form and standard lifecycle\n  2) data      Sparse table with retained cell controls\n  3) list      Sparse variable-height retained list\n  4) tree      Professional hierarchy browser\n  5) graph     Serialized UI graph and router\n  6) async     Restartable background task with cancellation\n  7) document  Durable synchronized editor with undo\n  8) qr        IME input to accessible generated QR output"
+        "\nStarter template:\n  1) starter    Accessible form and standard lifecycle\n  2) data       Sparse table with retained cell controls\n  3) list       Sparse variable-height retained list\n  4) tree       Professional hierarchy browser\n  5) graph      Serialized UI graph and router\n  6) async      Restartable background task with cancellation\n  7) document   Durable synchronized editor with undo\n  8) qr         IME input to accessible generated QR output\n  9) workspace  Responsive master-detail app with durable item editing"
     )
     .context("showing template choices")?;
     loop {
@@ -6505,8 +6822,9 @@ fn parse_template(value: &str) -> Result<Template> {
         "6" | "async" | "a" | "task" => Ok(Template::Async),
         "7" | "document" | "doc" | "editor" => Ok(Template::Document),
         "8" | "qr" | "qrcode" | "showcase" => Ok(Template::Qr),
+        "9" | "workspace" | "master-detail" | "professional" => Ok(Template::Workspace),
         _ => bail!(
-            "unknown template {value:?}; choose 1-8 or `starter`, `data`, `list`, `tree`, `graph`, `async`, `document`, or `qr`"
+            "unknown template {value:?}; choose 1-9 or `starter`, `data`, `list`, `tree`, `graph`, `async`, `document`, `qr`, or `workspace`"
         ),
     }
 }
@@ -6583,13 +6901,43 @@ fn find_repo_root(start: &Path) -> Option<PathBuf> {
     })
 }
 
+fn ui_dir_from_ancestor(start: &Path) -> Option<PathBuf> {
+    start.ancestors().find_map(|root| {
+        let ui = root.join("ui");
+        ui.join("Cargo.toml").is_file().then_some(ui)
+    })
+}
+
+/// Locate the toolkit for a standalone scaffold without requiring users to
+/// know the source checkout layout.
+fn discover_ui_dir(current_dir: &Path, repo: Option<&Path>) -> Option<PathBuf> {
+    if let Some(configured) = std::env::var_os("QOS_UI_PATH") {
+        let configured = PathBuf::from(configured);
+        let candidate = if configured.is_absolute() {
+            configured
+        } else {
+            current_dir.join(configured)
+        };
+        return Some(candidate);
+    }
+    if let Some(root) = repo {
+        return Some(root.join("ui"));
+    }
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(ui) = ui_dir_from_ancestor(&executable)
+    {
+        return Some(ui);
+    }
+    ui_dir_from_ancestor(Path::new(env!("CARGO_MANIFEST_DIR")))
+}
+
 fn resolve_ui_dir(
     current_dir: &Path,
     repo: Option<&Path>,
     requested: Option<&Path>,
 ) -> Result<PathBuf> {
     let candidate = requested.map_or_else(
-        || repo.map(|root| root.join("ui")),
+        || discover_ui_dir(current_dir, repo),
         |path| {
             Some(if path.is_absolute() {
                 path.to_path_buf()
@@ -6599,7 +6947,9 @@ fn resolve_ui_dir(
         },
     );
     let Some(candidate) = candidate else {
-        bail!("outside a qOS checkout; pass `--ui-path /path/to/quickdesktop/ui`");
+        bail!(
+            "could not locate the qOS UI toolkit; run inside a qOS checkout, set QOS_UI_PATH, or pass `--ui-path /path/to/quickdesktop/ui`"
+        );
     };
     if !candidate.join("Cargo.toml").is_file() {
         bail!(
@@ -6655,6 +7005,11 @@ fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
             component_registry_source(&[], &BTreeSet::new())?,
         ));
     }
+    for (path, source) in &mut files {
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            *source = rustfmt_source(source, path)?;
+        }
+    }
     Ok(files)
 }
 
@@ -6677,7 +7032,7 @@ fn cargo_toml(spec: &AppSpec) -> String {
     };
     let extras = format!("{lints}{patches}");
     format!(
-        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[dependencies]\nui = {{ path = {ui_path:?} }}\n{lints}",
+        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[dependencies]\nui = {{ path = {ui_path:?} }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n{lints}",
         name = spec.package_name,
         crate_name = spec.crate_name,
         ui_path = spec.ui_path.to_string_lossy(),
@@ -6697,6 +7052,7 @@ fn app_lib(spec: &AppSpec) -> String {
         Template::Async => ASYNC_APP_TEMPLATE.to_owned(),
         Template::Document => DOCUMENT_APP_TEMPLATE.to_owned(),
         Template::Qr => QR_APP_TEMPLATE.to_owned(),
+        Template::Workspace => WORKSPACE_APP_TEMPLATE.to_owned(),
     };
     format!(
         "//! {} application.\n\n{GENERATED_LOCALE_SETUP}\n\n{application}",
@@ -6741,15 +7097,40 @@ document-preview-heading = Live preview\n\
 qr-title = QR code generator\n\
 qr-input-label = Content\n\
 qr-input-placeholder = Type text or a link\n\
-qr-output-alt = QR code for { $payload }\n",
+qr-output-alt = QR code for { $payload }\n\
+workspace-root = Workspace\n\
+workspace-projects = Projects\n\
+workspace-archive = Archive\n\
+workspace-desktop-app = Desktop app\n\
+workspace-design-system = Design system\n\
+workspace-first-prototype = First prototype\n\
+workspace-unknown-item = Selected item\n\
+workspace-tree-name = Workspace items\n\
+workspace-navigation-heading = Projects\n\
+workspace-title-label = Title\n\
+workspace-title-placeholder = Untitled item\n\
+workspace-notes-label = Notes\n\
+workspace-notes-placeholder = Add project notes…\n\
+workspace-preview-heading = Live preview\n\
+workspace-back = Back\n\
+workspace-share = Share\n",
     )
 }
 
 fn app_main(spec: &AppSpec) -> String {
+    let register = if spec.template == Template::Document {
+        format!(
+            "\n            {}::register_actions(app.action_registry_mut());",
+            spec.crate_name
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "//! Standard qOS lifecycle: live window, persistence, and headless driving.\n\nfn main() {{\n    ui::launch::run_or_exit(\n        &ui::launch::LaunchSpec::new({app_id:?}, {crate_name}::app_root).configure_app(|app| {{\n            app.autofocus_first = true;\n            app.autofocus_on_structure_change = true;\n        }}),\n    );\n}}\n",
+        "//! Standard qOS lifecycle: live window, persistence, and headless driving.\n\nfn main() {{\n    ui::launch::run_or_exit(\n        &ui::launch::LaunchSpec::new({app_id:?}, {crate_name}::app_root).configure_app(|app| {{{register}\n            app.autofocus_first = true;\n            app.autofocus_on_structure_change = true;\n        }}),\n    );\n}}\n",
         app_id = spec.app_id,
         crate_name = spec.crate_name,
+        register = register,
     )
 }
 
@@ -6762,7 +7143,6 @@ fn app_test(spec: &AppSpec) -> String {
 fn starter_app_test(crate_name: &str) -> String {
     format!(
         r#"use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
-
 #[test]
 fn app_responds_to_semantic_input() {{
     let mut app = ui::headless::Driver::new(
@@ -6879,6 +7259,7 @@ fn app_exposes_a_virtualized_table() {{
         Template::Async => async_app_test(crate_name),
         Template::Document => document_app_test(crate_name),
         Template::Qr => qr_app_test(crate_name),
+        Template::Workspace => workspace_app_test(crate_name),
     }
 }
 
@@ -7022,6 +7403,118 @@ fn document_fields_are_synchronized_and_undoable() {{
     app.relayout();
     let undone = app.inspection_json().expect("undone semantic snapshot");
     assert!(!undone.contains("Project Atlas"), "{{undone}}");
+}}
+"#
+    )
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the single format template keeps the generated workspace behavior test reviewable as one artifact"
+)]
+fn workspace_app_test(crate_name: &str) -> String {
+    format!(
+        r#"use ui::{{a11y::{{Action, Role}}, headless::SemanticExpectation}};
+
+#[test]
+fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
+    let mut app = ui::headless::Driver::new(
+        ui::State::new(),
+        {crate_name}::app_root(),
+        (1000, 640),
+    );
+    let targets = app.targets();
+    for target in [
+        "workspace-selected-item",
+        "workspace-title-input",
+        "workspace-notes-input",
+        "workspace-share",
+    ] {{
+        let rect = targets.get(target).unwrap_or_else(|| panic!("missing {{target}}"));
+        assert!(rect.width() > 0.0 && rect.height() > 0.0, "{{target}}: {{rect:?}}");
+        assert!(rect.y0 >= 0.0 && rect.y1 <= 640.0, "{{target}}: {{rect:?}}");
+    }}
+    app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
+        .expect("select the design-system project");
+    app.expect(
+        &SemanticExpectation::named("workspace-tree")
+            .semantic_target("node:4")
+            .role(Role::TreeItem)
+            .selected(true),
+    )
+    .expect("master selection semantics match");
+    app.expect(
+        &SemanticExpectation::named("workspace-selected-item")
+            .role(Role::Heading {{ level: 1 }})
+            .name("Design system"),
+    )
+    .expect("detail pane follows the stable selected id");
+    app.perform_named(
+        "workspace-title-input",
+        &Action::SetValue("Design tokens".into()),
+    )
+    .expect("edit the selected project's durable title");
+    app.expect(
+        &SemanticExpectation::named("workspace-title-preview")
+            .role(Role::Heading {{ level: 2 }})
+            .name("Design tokens"),
+    )
+    .expect("the detail preview shares the document binding");
+    app.perform_semantic_named("workspace-tree", Some("node:3"), &Action::Activate)
+        .expect("switch to another project");
+    app.expect(
+        &SemanticExpectation::named("workspace-title-input")
+            .role(Role::TextInput)
+            .value(""),
+    )
+    .expect("each project owns an isolated document path");
+    app.perform_named(
+        "workspace-title-input",
+        &Action::SetValue("Desktop refresh".into()),
+    )
+    .expect("edit the second project");
+    assert!(app.perform_undo(), "detail edits use standard document undo");
+    let snapshot = app.inspection_json().expect("undone workspace snapshot");
+    assert!(!snapshot.contains("Desktop refresh"), "{{snapshot}}");
+    app.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
+        .expect("return to the first project");
+    app.expect(
+        &SemanticExpectation::named("workspace-title-input")
+            .role(Role::TextInput)
+            .value("Design tokens"),
+    )
+    .expect("the first project's persisted view remains synchronized");
+    assert!(app.dump_json().contains("workspace-item-4-title"));
+    let mut compact = ui::headless::Driver::new(
+        ui::State::new(),
+        {crate_name}::app_root(),
+        (460, 820),
+    );
+    compact.expect(
+        &SemanticExpectation::named("workspace-shell-back")
+            .role(Role::Button)
+            .name("Back"),
+    )
+    .expect("compact detail exposes accessible Back");
+    compact.perform_named("workspace-shell-back", &Action::Activate)
+        .expect("return to compact navigation");
+    compact.expect(
+        &SemanticExpectation::named("workspace-tree").role(Role::Tree),
+    )
+    .expect("compact navigation uses the full-width tree pane");
+    compact.perform_semantic_named("workspace-tree", Some("node:4"), &Action::Activate)
+        .expect("choose a compact navigation row");
+    compact.expect(
+        &SemanticExpectation::named("workspace-selected-item")
+            .role(Role::Heading {{ level: 1 }})
+            .name("Design system"),
+    )
+    .expect("compact selection navigates to full-width detail");
+    let issues = compact.accessibility_audit();
+    assert!(
+        issues.issues.is_empty(),
+        "compact workspace audit: {{issues:#?}}"
+    );
 }}
 "#
     )
@@ -7191,6 +7684,9 @@ fn headless_actions(spec: &AppSpec) -> String {
         Template::Qr => String::from(
             "[\n  {\"perform\": {\"target\": \"qr-input\", \"action\": \"set_value\", \"value\": \"你好 Rust GUI\"}},\n  {\"expect\": {\"target\": \"qr-input\", \"role\": \"text_input\", \"value\": \"你好 Rust GUI\"}},\n  {\"expect\": {\"target\": \"qr-output\", \"role\": \"image\", \"name_contains\": \"你好 Rust GUI\"}}\n]\n",
         ),
+        Template::Workspace => String::from(
+            "[\n  {\"perform\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:4\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:4\", \"role\": \"tree_item\", \"selected\": true}},\n  {\"expect\": {\"target\": \"workspace-selected-item\", \"role\": \"heading\", \"name\": \"Design system\"}},\n  {\"perform\": {\"target\": \"workspace-title-input\", \"action\": \"set_value\", \"value\": \"Design tokens\"}},\n  {\"expect\": {\"target\": \"workspace-title-preview\", \"role\": \"heading\", \"name\": \"Design tokens\"}}\n]\n",
+        ),
     }
 }
 
@@ -7252,6 +7748,10 @@ fn app_readme(spec: &AppSpec) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# {}", spec.title);
     let _ = writeln!(out, "\nGenerated by `qos-dev new`.\n");
+    let _ = writeln!(
+        out,
+        "Every meaningful command is published as a stable `Resource`/`ActionSpec`. Keep the UI callback and external operation handler routed through the same domain function; `qos-dev doctor` rejects apps that remove this surface.\n"
+    );
     let _ = writeln!(out, "```bash");
     let _ = writeln!(out, "qos-dev check");
     let _ = writeln!(out, "qos-dev test");
@@ -7315,6 +7815,12 @@ fn app_readme(spec: &AppSpec) -> String {
             "\nThe input writes to one typed `LocalState<String>`. `ModelView::from_state` rebuilds only the generated QR output when that value changes, and the replacement image carries payload-specific alternative text for inspection, tests, and screen readers."
         );
     }
+    if spec.template == Template::Workspace {
+        let _ = writeln!(
+            out,
+            "\nThe workspace starter composes a responsive master-detail shell from ordinary retained widgets. Wide windows show navigation and detail together; compact windows expose an accessible Back action and switch between full-width panes through typed `LocalState<NarrowScreen>`. Stable tree selection changes one `LocalState<u64>` key; `ModelView` replaces only the detail subtree, while its inputs bind directly to per-item document paths. Switching projects therefore needs no synchronization callbacks and preserves independent persisted, collaborative, undoable edits."
+        );
+    }
     let _ = writeln!(
         out,
         "\nUser-facing strings start in `locales/en-US.ftl`. `qos-dev add locale de-DE` creates and registers a complete editable copy of that message contract. After changing the source, `qos-dev locale sync` adds missing units without replacing translations; `qos-dev doctor` reports differences deliberately left for a translator while the toolkit falls back to the source catalog."
@@ -7327,6 +7833,10 @@ fn app_readme(spec: &AppSpec) -> String {
 mod tests {
     use super::*;
 
+    fn doctor_app(start: &Path) -> Result<DoctorReport> {
+        doctor_app_with_capnp_probe(start, || Ok("Cap'n Proto version 1.0.2".to_owned()))
+    }
+
     fn request(dir: PathBuf) -> NewAppRequest {
         NewAppRequest {
             name: Some("reading-list".into()),
@@ -7336,6 +7846,21 @@ mod tests {
             directory: Some(dir),
             ui_path: None,
             dry_run: false,
+        }
+    }
+
+    fn assert_generated_tree_source(source: &str) {
+        syn::parse_file(source).unwrap();
+        for needle in [
+            "pub struct ProjectTreeConfig",
+            "M: TreeModel",
+            "TreeView::from_model(model)",
+            ".with_slot_delegate(",
+            "TreeSlotState::Error",
+            ".with_row_delegate(",
+            ".reorderable()",
+        ] {
+            assert!(source.contains(needle), "missing {needle:?}");
         }
     }
 
@@ -8004,12 +8529,7 @@ mod tests {
         .unwrap();
         let tree_source =
             std::fs::read_to_string(app.join("src/components/project_tree.rs")).unwrap();
-        syn::parse_file(&tree_source).unwrap();
-        assert!(tree_source.contains("pub struct ProjectTreeConfig"));
-        assert!(tree_source.contains("M: TreeModel"));
-        assert!(tree_source.contains("TreeView::from_model(model)"));
-        assert!(tree_source.contains(".with_row_delegate("));
-        assert!(tree_source.contains(".reorderable()"));
+        assert_generated_tree_source(&tree_source);
 
         let registry = std::fs::read_to_string(app.join("src/components/mod.rs")).unwrap();
         assert_eq!(
@@ -8499,6 +9019,10 @@ mod tests {
         assert!(
             catalog.contains("project-tree-accessible-name = { \"Project Tree\" }"),
             "{catalog}"
+        );
+        assert!(catalog.contains("project-tree-loading = { \"Loading…\" }"));
+        assert!(
+            catalog.contains("project-tree-load-error = { \"Could not load. Activate to retry\" }")
         );
 
         add_app_artifact(AddRequest {
@@ -9617,7 +10141,7 @@ mod tests {
         assert!(library.contains("NumberInput::from_state(&refresh_minutes)"));
         assert!(library.contains("Slider::from_state(&volume)"));
         assert!(library.contains("Dropdown::from_state("));
-        assert!(library.contains("labeled_check(\"starter-updates-label\", updates)"));
+        assert!(library.contains("labeled_check(\"starter-updates-label\", updates_widget)"));
         assert!(!library.contains("on_change(name.text_sink())"));
         assert!(!library.contains("with_initial_value(&name.get())"));
         assert!(library.contains("pub mod locales;"));
@@ -9654,7 +10178,7 @@ mod tests {
         req.app_id = None;
         req.template = None;
         let mut input = std::io::Cursor::new(
-            b"Bad Name\nreading-list\n\nbad-id\norg.example.reading-list\n9\n4\n\n".to_vec(),
+            b"Bad Name\nreading-list\n\nbad-id\norg.example.reading-list\n10\n4\n\n".to_vec(),
         );
         let mut output = Vec::new();
 
@@ -9667,7 +10191,7 @@ mod tests {
         assert!(transcript.contains("invalid app id \"bad-id\""));
         assert!(transcript.contains("1) starter"));
         assert!(transcript.contains("5) graph"));
-        assert!(transcript.contains("unknown template \"9\""));
+        assert!(transcript.contains("unknown template \"10\""));
         assert!(transcript.contains("Review:"));
         assert!(transcript.contains("Template:    tree — Professional hierarchy browser"));
         assert!(transcript.contains(&format!("Destination: {}", destination.display())));
@@ -9721,7 +10245,7 @@ mod tests {
 
         assert_eq!(outcome.destination, destination);
         let transcript = String::from_utf8(output).unwrap();
-        assert!(transcript.contains("Toolkit ui path:"));
+        assert!(transcript.contains("Toolkit ui path ["));
         assert!(transcript.contains("invalid toolkit path"));
         assert!(transcript.contains(&format!(
             "Toolkit:     {}",
@@ -9729,6 +10253,68 @@ mod tests {
         )));
         let manifest = std::fs::read_to_string(destination.join("Cargo.toml")).unwrap();
         assert!(manifest.contains("path = \"../toolkit-ui\""), "{manifest}");
+    }
+
+    #[test]
+    fn standalone_wizard_accepts_the_discovered_toolkit_default() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("notes");
+        let discovered = discover_ui_dir(temp.path(), None)
+            .expect("qos-dev source toolkit")
+            .canonicalize()
+            .unwrap();
+        let mut req = request(destination.clone());
+        req.name = None;
+        req.title = None;
+        req.app_id = None;
+        req.template = None;
+        let mut input = std::io::Cursor::new(b"notes\n\n\n1\n\n\n".to_vec());
+        let mut output = Vec::new();
+
+        let outcome =
+            create_app_interactive_from(temp.path(), req, &mut input, &mut output, true).unwrap();
+
+        assert_eq!(outcome.destination, destination);
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(
+            transcript.contains(&format!("Toolkit ui path [{}]:", discovered.display())),
+            "{transcript}"
+        );
+        assert!(transcript.contains(&format!("Toolkit:     {}", discovered.display())));
+        let manifest = std::fs::read_to_string(destination.join("Cargo.toml")).unwrap();
+        let relative = relative_path(&destination, &discovered);
+        assert!(
+            manifest.contains(&format!("path = {:?}", relative.display().to_string())),
+            "{manifest}"
+        );
+    }
+
+    #[test]
+    fn standalone_noninteractive_creation_discovers_the_toolkit() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("scripted-app");
+        let mut req = request(destination.clone());
+        req.name = Some("scripted-app".into());
+        req.ui_path = None;
+
+        let outcome = create_app_from(temp.path(), req).expect("standalone scaffold");
+
+        assert_eq!(outcome.destination, destination);
+        assert!(destination.join("Cargo.toml").is_file());
+        assert!(doctor_app(&destination).unwrap().is_ready());
+    }
+
+    #[test]
+    fn toolkit_discovery_follows_the_qos_dev_executable_ancestry() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let ui = temp.path().join("ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(ui.join("Cargo.toml"), "[workspace]\n").unwrap();
+
+        assert_eq!(
+            ui_dir_from_ancestor(&temp.path().join("target/debug/qos-dev")),
+            Some(ui)
+        );
     }
 
     #[test]
@@ -9890,6 +10476,28 @@ mod tests {
         let summary = report.summary();
         assert!(summary.contains("missing dependency `ui`"));
         assert!(summary.contains("Not ready"));
+    }
+
+    #[test]
+    fn doctor_fails_early_with_actionable_missing_capnp_diagnostic() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("reading-list");
+        create_app(request(destination.clone())).unwrap();
+
+        let report = doctor_app_with_capnp_probe(&destination, || {
+            Err("could not run `capnp --version`: executable not found".to_owned())
+        })
+        .expect("doctor report");
+
+        assert!(!report.is_ready());
+        let check = report
+            .checks
+            .iter()
+            .find(|check| check.label == "Cap'n Proto compiler")
+            .expect("native compiler check");
+        assert_eq!(check.status, DoctorStatus::Fail);
+        assert!(check.detail.contains("install the Cap'n Proto compiler"));
+        assert!(check.detail.contains("qOS development container"));
     }
 
     #[test]
@@ -10106,7 +10714,9 @@ mod tests {
         let summary = outcome.summary();
         assert!(summary.contains("qos-dev check '/tmp/O'\\''Reilly app'"));
         assert!(summary.contains("qos-dev dev '/tmp/O'\\''Reilly app'"));
-        assert!(summary.contains("qos-dev scenario run --app '/tmp/O'\\''Reilly app'"));
+        assert!(summary.contains("Start developing:"));
+        assert!(summary.contains("Verify everything:"));
+        assert!(summary.contains("qos-dev --help"));
     }
 
     #[test]
@@ -10180,7 +10790,50 @@ mod tests {
         assert_eq!(parse_template("qr").unwrap(), Template::Qr);
         assert_eq!(parse_template("8").unwrap(), Template::Qr);
         assert_eq!(parse_template("showcase").unwrap(), Template::Qr);
+        assert_eq!(parse_template("9").unwrap(), Template::Workspace);
+        assert_eq!(
+            parse_template("master-detail").unwrap(),
+            Template::Workspace
+        );
         assert!(parse_template("dashboard").is_err());
+    }
+
+    #[test]
+    fn every_template_uses_the_toolkit_resource_action_host() {
+        for template in [
+            Template::Starter,
+            Template::Data,
+            Template::List,
+            Template::Tree,
+            Template::Graph,
+            Template::Async,
+            Template::Document,
+            Template::Qr,
+            Template::Workspace,
+        ] {
+            let spec = AppSpec {
+                package_name: "generated-app".into(),
+                crate_name: "generated_app".into(),
+                title: "Generated App".into(),
+                app_id: "dev.qos.generated.app".into(),
+                ui_path: PathBuf::from("../../ui"),
+                workspace_member: true,
+                template,
+            };
+            let manifest = cargo_toml(&spec);
+            assert!(!manifest.contains("qos-actions ="), "{template:?}");
+            let source = app_lib(&spec);
+            assert!(
+                source.contains("ui::widget::resource_actions::"),
+                "{template:?}"
+            );
+            assert!(
+                !source.contains("struct ResourceActionHost"),
+                "{template:?}"
+            );
+            assert!(!source.contains("fn resources("), "{template:?}");
+            assert!(!source.contains("start_resource_operation"), "{template:?}");
+        }
     }
 
     #[test]
@@ -10207,6 +10860,31 @@ mod tests {
         assert!(test.contains("Role::Image"));
         assert!(test.contains("name_contains"));
         assert!(app_readme(&spec).contains("payload-specific alternative text"));
+    }
+
+    #[test]
+    fn workspace_template_composes_navigation_and_isolated_durable_detail_views() {
+        let spec = AppSpec {
+            package_name: "project-workspace".into(),
+            crate_name: "project_workspace".into(),
+            title: "Project Workspace".into(),
+            app_id: "dev.qos.project.workspace".into(),
+            ui_path: PathBuf::from("../../ui"),
+            workspace_member: true,
+            template: Template::Workspace,
+        };
+        let source = app_lib(&spec);
+        assert!(source.contains("AppShell::new"));
+        assert!(source.contains("with_narrow_screen_state"));
+        assert!(source.contains("workspace-back"));
+        assert!(source.contains("ModelView::from_state(&selected"));
+        assert!(source.contains(".on_select"));
+        assert!(source.contains("TextInput::from_document_string"));
+        assert!(source.contains("workspace-item-{item_id}-title"));
+        let test = app_test(&spec);
+        assert!(test.contains("workspace_keeps_master_detail_views_isolated_and_synchronized"));
+        assert!(test.contains("perform_undo"));
+        assert!(app_readme(&spec).contains("responsive master-detail shell"));
     }
 
     #[test]
@@ -10414,6 +11092,7 @@ mod tests {
             Template::Async,
             Template::Document,
             Template::Qr,
+            Template::Workspace,
         ] {
             let spec = AppSpec {
                 package_name: "demo".into(),
@@ -10454,10 +11133,13 @@ mod tests {
     }
 
     #[test]
-    fn ui_path_is_explicit_outside_a_checkout() {
+    fn standalone_ui_path_is_discovered_and_can_be_overridden() {
         let temp = tempfile::tempdir().expect("temp dir");
-        let error = resolve_ui_dir(temp.path(), None, None).unwrap_err();
-        assert!(error.to_string().contains("--ui-path"));
+        let discovered = resolve_ui_dir(temp.path(), None, None).expect("discovered toolkit");
+        assert!(discovered.join("Cargo.toml").is_file());
+
+        let error = resolve_ui_dir(temp.path(), None, Some(Path::new("missing-ui"))).unwrap_err();
+        assert!(error.to_string().contains("does not contain Cargo.toml"));
 
         let ui = temp.path().join("toolkit-ui");
         std::fs::create_dir(&ui).expect("ui dir");
@@ -10493,6 +11175,72 @@ mod tests {
         let test = plan_app_task(&destination, AppTask::Test, &[]).expect("test plan");
         assert_eq!(test.args[0], "test");
         assert!(!test.args.iter().any(|arg| arg == "--"));
+    }
+
+    #[test]
+    fn app_quality_plan_scopes_format_and_clippy_to_the_app_package() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("reading-list");
+        create_app(request(destination.clone())).expect("create app");
+        let forwarded = [OsString::from("--nocapture")];
+
+        let plan = plan_app_quality(
+            &destination.join("src/lib.rs"),
+            &forwarded,
+            AppFormatMode::Check,
+        )
+        .expect("quality plan");
+        let manifest = destination.join("Cargo.toml").into_os_string();
+        assert_eq!(
+            plan.format.args,
+            [
+                OsString::from("fmt"),
+                OsString::from("--manifest-path"),
+                manifest.clone(),
+                OsString::from("--package"),
+                OsString::from("reading-list"),
+                OsString::from("--check"),
+            ]
+        );
+        assert_eq!(
+            plan.clippy.args,
+            [
+                OsString::from("clippy"),
+                OsString::from("--manifest-path"),
+                manifest.clone(),
+                OsString::from("--package"),
+                OsString::from("reading-list"),
+                OsString::from("--all-targets"),
+                OsString::from("--no-deps"),
+                OsString::from("--"),
+                OsString::from("-D"),
+                OsString::from("warnings"),
+            ]
+        );
+        assert_eq!(
+            plan.test.args,
+            [
+                OsString::from("test"),
+                OsString::from("--manifest-path"),
+                manifest,
+                OsString::from("--package"),
+                OsString::from("reading-list"),
+                OsString::from("--"),
+                OsString::from("--nocapture"),
+            ]
+        );
+
+        let fix = plan_app_quality(&destination, &[], AppFormatMode::Apply).expect("fix plan");
+        assert_eq!(
+            fix.format.args,
+            [
+                OsString::from("fmt"),
+                OsString::from("--manifest-path"),
+                destination.join("Cargo.toml").into_os_string(),
+                OsString::from("--package"),
+                OsString::from("reading-list"),
+            ]
+        );
     }
 
     #[test]

@@ -29,7 +29,10 @@ use std::rc::Rc;
 use ui::format::bytes as format_bytes;
 use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionSpec, OperationKind, Resource};
+use ui::qos_actions::{
+    ActionContract, ActionSpec, ConfirmationPolicy, OperationKind, PermissionRequirement, Resource,
+    RetryPolicy, RiskLevel,
+};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
@@ -1259,7 +1262,7 @@ impl MonitorApp {
 
         // Interval pill, left of the right block.
         let interval_r = Rect::new(pill_x0, cy + 1.0, pill_x1, cy + seg_h - 1.0);
-        charts::fill_rrect(scene, t, interval_r, seg_h / 2.0, c.surface_white_5);
+        charts::fill_rrect(scene, t, interval_r, seg_h / 2.0, c.lift(0.35));
         charts::stroke_rrect(scene, t, interval_r, seg_h / 2.0, c.border_standard, 1.0);
         let (tw, th) = tr.measure_weighted(
             &il,
@@ -1301,7 +1304,7 @@ impl MonitorApp {
         if active {
             charts::fill_rrect(scene, t, r, radius, c.accent[5]);
         } else {
-            charts::fill_rrect(scene, t, r, radius, c.surface_white_5);
+            charts::fill_rrect(scene, t, r, radius, c.lift(0.35));
             charts::stroke_rrect(scene, t, r, radius, c.border_standard, 1.0);
         }
         let text_color = if active { Color::WHITE } else { c.text_dim };
@@ -2429,7 +2432,7 @@ impl MonitorApp {
             if on {
                 with_alpha(c.accent[5], 60)
             } else {
-                c.surface_white_5
+                c.lift(0.35)
             },
         );
         charts::stroke_rrect(
@@ -2483,7 +2486,7 @@ impl MonitorApp {
             if on {
                 with_alpha(c.accent[5], 60)
             } else {
-                c.surface_white_5
+                c.lift(0.35)
             },
         );
         charts::stroke_rrect(
@@ -4172,8 +4175,27 @@ impl MonitorApp {
 }
 
 impl Widget for MonitorApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["monitor.refresh", "monitor.signal"]
+    }
+
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("processes", "monitor.processes", "Processes");
+        root.actions.push(
+            ActionSpec::operation(
+                "refresh",
+                "Refresh processes",
+                OperationKind::Effect,
+                "monitor.refresh",
+                &"",
+            )
+            .expect("monitor operation payload is serializable")
+            .with_contract(ActionContract {
+                permission: PermissionRequirement::Read,
+                retry: RetryPolicy::Idempotent,
+                ..ActionContract::default()
+            }),
+        );
         for process in &self.model.processes {
             let mut resource = Resource::new(
                 format!("process:{}", process.pid),
@@ -4189,7 +4211,17 @@ impl Widget for MonitorApp {
                     "monitor.signal",
                     &payload,
                 ) {
-                    resource.actions.push(spec);
+                    resource.actions.push(spec.with_contract(ActionContract {
+                        permission: PermissionRequirement::Admin,
+                        risk: if verb == "kill" {
+                            RiskLevel::Destructive
+                        } else {
+                            RiskLevel::Privileged
+                        },
+                        confirmation: ConfirmationPolicy::Confirm,
+                        retry: RetryPolicy::AtMostOnce,
+                        ..ActionContract::default()
+                    }));
                 }
             }
             root.children.push(resource);
@@ -4205,7 +4237,14 @@ impl Widget for MonitorApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != OperationKind::Effect || type_id != "monitor.signal" {
+        if kind != OperationKind::Effect {
+            return Ok(false);
+        }
+        if type_id == "monitor.refresh" {
+            self.sampler.refresh(&mut self.model);
+            return Ok(true);
+        }
+        if type_id != "monitor.signal" {
             return Ok(false);
         }
         let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
@@ -4222,7 +4261,9 @@ impl Widget for MonitorApp {
         if !self.model.processes.iter().any(|p| p.pid == pid) {
             return Err("process is no longer running".into());
         }
-        let _ = self.sampler.signal(pid, signal);
+        if !self.sampler.signal(pid, signal) {
+            return Err("The operating system refused the process signal".into());
+        }
         self.model.processes.retain(|p| p.pid != pid);
         if self.selected_pid == Some(pid) {
             self.selected_pid = None;
