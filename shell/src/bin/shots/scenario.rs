@@ -2228,6 +2228,7 @@ fn room_activity_explore_detail_compare() -> Scenario {
             Action::Key(Key::Named(NamedKey::End)),
             Action::Key(Key::Named(NamedKey::ArrowLeft)),
             Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Wait(2),
             Action::Snapshot("02-exact-comparison"),
         ],
     }
