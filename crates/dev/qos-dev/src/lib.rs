@@ -6052,22 +6052,30 @@ fn relative_artifact(app_dir: &Path, path: &Path) -> String {
 }
 
 impl CreateOutcome {
+    /// One-line result suitable when another workflow starts immediately.
     #[must_use]
-    pub fn summary(&self) -> String {
+    pub fn headline(&self) -> String {
         let action = if self.dry_run {
             "Would create"
         } else {
             "Created"
         };
-        let destination = shell_display_path(&self.destination);
-        let next = format!(
-            "qos-dev check {destination}\n  qos-dev test {destination}\n  qos-dev dev {destination}\n  qos-dev run {destination}\n  qos-dev scenario run --app {destination}\n  qos-dev shot {destination}\n  qos-dev inspect {destination}\n  qos-dev package {destination}"
-        );
         format!(
-            "{action} {} ({}) in {}\n\nNext:\n  {next}",
+            "{action} {} ({}) in {}",
             self.package_name,
             self.app_id,
             self.destination.display()
+        )
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let destination = shell_display_path(&self.destination);
+        let develop = format!("qos-dev dev {destination}");
+        let verify = format!("qos-dev check {destination}");
+        format!(
+            "{}\n\nStart developing:\n  {develop}\n\nVerify everything:\n  {verify}\n\nRun `qos-dev --help` for testing, scenarios, screenshots, inspection, localization, and packaging.",
+            self.headline()
         )
     }
 }
@@ -10533,7 +10541,9 @@ mod tests {
         let summary = outcome.summary();
         assert!(summary.contains("qos-dev check '/tmp/O'\\''Reilly app'"));
         assert!(summary.contains("qos-dev dev '/tmp/O'\\''Reilly app'"));
-        assert!(summary.contains("qos-dev scenario run --app '/tmp/O'\\''Reilly app'"));
+        assert!(summary.contains("Start developing:"));
+        assert!(summary.contains("Verify everything:"));
+        assert!(summary.contains("qos-dev --help"));
     }
 
     #[test]

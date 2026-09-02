@@ -1,6 +1,18 @@
 # Build a qOS app
 
-The intended first minute is:
+The shortest path from an idea to an app running in the live development loop
+is one command:
+
+```bash
+cargo run -p qos-dev -- new reading-list --dev
+```
+
+Creation is atomic. Once the app exists, `--dev` runs its structural preflight,
+opens it, and watches both app code and the local toolkit. A successful edit
+replaces the running process; a failed build leaves the last good app open and
+waits for the next save. Press Ctrl-C to stop.
+
+The same stages remain available separately for automation and focused work:
 
 ```bash
 cargo run -p qos-dev -- new reading-list
