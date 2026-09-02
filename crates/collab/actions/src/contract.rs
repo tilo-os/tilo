@@ -8,9 +8,10 @@
 use serde::{Deserialize, Serialize};
 
 /// Whether an action can be invoked in the resource's current state.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Availability {
+    #[default]
     Available,
     Unavailable {
         /// Stable programmatic reason such as `offline` or `selection_empty`.
@@ -18,12 +19,6 @@ pub enum Availability {
         /// Localised explanation suitable for a person or an agent transcript.
         reason: String,
     },
-}
-
-impl Default for Availability {
-    fn default() -> Self {
-        Self::Available
-    }
 }
 
 impl Availability {
@@ -135,9 +130,17 @@ pub enum ResultSpec {
 }
 
 impl ResultSpec {
+    /// Check that a completed action returned the shape it advertised.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable contract violation when `output` does not
+    /// match this result specification.
     pub fn validate(&self, output: &crate::ActionOutput) -> Result<(), String> {
         match self {
-            Self::None if output.value.is_none() && output.resources.is_empty() => Ok(()),
+            Self::None | Self::Job if output.value.is_none() && output.resources.is_empty() => {
+                Ok(())
+            }
             Self::None => Err("action declared no result but returned one".into()),
             Self::Json { schema } => {
                 let value = output
@@ -163,7 +166,6 @@ impl ResultSpec {
             // The broker assigns and returns the durable invocation id at
             // admission. Applications must not mint a second, unrelated job
             // identity merely to satisfy the result validator.
-            Self::Job if output.value.is_none() && output.resources.is_empty() => Ok(()),
             Self::Job => Err("job action returned an undeclared terminal value".into()),
         }
     }
