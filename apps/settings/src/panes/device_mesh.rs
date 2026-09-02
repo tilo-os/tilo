@@ -35,7 +35,14 @@ const ROLE_OPTIONS: &[&str] = &[
     "Available while active",
     "Always-on server",
 ];
-const REPLICATION_OPTIONS: &[&str] = &["On demand", "Workspace state", "Full workspace copy"];
+const REPLICATION_OPTIONS: &[&str] = &[
+    "Download files when opened",
+    "Workspace state only",
+    "Keep all files here",
+];
+const RUNTIME_STATUS_UNAVAILABLE: &str = "Not reported by the running service";
+const ON_DEMAND_DESCRIPTION: &str = "File names, metadata, and small preview thumbnails stay visible. Full file bytes download when you open them.";
+const FULL_COPY_DESCRIPTION: &str = "Keeping all files here is an explicit request for this device to retain full content. Settings cannot yet verify that every byte has arrived.";
 
 fn role_label(role: DeviceRole) -> &'static str {
     match role {
@@ -64,11 +71,15 @@ fn replication_label(intent: &ReplicationIntent) -> &'static str {
 
 fn replication_from_label(label: &str) -> Option<ReplicationIntent> {
     match label {
-        "On demand" => Some(ReplicationIntent::OnDemand),
-        "Workspace state" => Some(ReplicationIntent::WorkspaceOnly),
-        "Full workspace copy" => Some(ReplicationIntent::FullWorkspace),
+        "Download files when opened" => Some(ReplicationIntent::OnDemand),
+        "Workspace state only" => Some(ReplicationIntent::WorkspaceOnly),
+        "Keep all files here" => Some(ReplicationIntent::FullWorkspace),
         _ => None,
     }
+}
+
+fn shows_advanced_services(role: DeviceRole) -> bool {
+    role.can_serve()
 }
 
 /// Editor for the daemon's real device-mesh configuration.
@@ -78,6 +89,7 @@ pub struct DeviceMeshPane {
     load_status: String,
     needs_seed: bool,
     commit_context_pending: bool,
+    structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -95,10 +107,13 @@ impl DeviceMeshPane {
             Err(qos_relay::config::ConfigError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
             {
-                (
-                    RelayConfig::default(),
-                    "Not configured on this device".to_string(),
-                )
+                let mut config = RelayConfig::default();
+                // Settings is opened on interactive qOS devices far more
+                // often than on a newly provisioned headless relay. Do not
+                // visually opt an unconfigured desktop into server behavior.
+                config.device_role = DeviceRole::Interactive;
+                config.services = Default::default();
+                (config, "Not configured on this device".to_string())
             }
             Err(error) => (
                 RelayConfig::default(),
@@ -111,6 +126,7 @@ impl DeviceMeshPane {
             load_status,
             needs_seed: true,
             commit_context_pending: false,
+            structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
         }
@@ -141,13 +157,28 @@ impl DeviceMeshPane {
         .with_id("device_mesh.role")
         .with_placeholder(role_label(self.config.device_role));
 
+        let continuity = card(
+            "Continuity status",
+            rows(vec![
+                value_row("Open workspaces and app state", RUNTIME_STATUS_UNAVAILABLE),
+                value_row("Configuration", &self.load_status),
+                value_row(
+                    "Configuration file",
+                    &self.config_path.display().to_string(),
+                ),
+                caption(
+                    "This page configures what the device should keep, but it does not yet receive live sync progress. It will not infer that your work is up to date from a saved configuration file.",
+                ),
+            ]),
+        );
+
         let mut residency_rows = vec![value_row(
-            "Hosted workspaces",
+            "Configured workspaces",
             &self.config.workspaces.len().to_string(),
         )];
         if self.config.workspaces.is_empty() {
             residency_rows.push(caption(
-                "No workspace is assigned to this server yet. Settings will not fabricate one.",
+                "No workspace has a storage policy on this device yet. Settings will not fabricate an assignment.",
             ));
         } else {
             let replication = Dropdown::new(
@@ -160,92 +191,93 @@ impl DeviceMeshPane {
             .with_id("device_mesh.replication")
             .with_placeholder(replication_label(&self.common_replication()));
             residency_rows.push(choice_row_described(
-                "Copies on this device",
-                "A full copy retains collaboration records and file, ebook, and media bytes for every assigned workspace.",
+                "Files on this device",
+                "Choose whether full file bytes arrive on open or are explicitly kept here for every configured workspace.",
                 Box::new(replication),
             ));
+            residency_rows.push(caption(ON_DEMAND_DESCRIPTION));
+            residency_rows.push(caption(FULL_COPY_DESCRIPTION));
         }
         residency_rows.push(caption(
-            "Device sync uses the same signed collaboration and file replication as sharing with another person. Same identity changes permission, not validation. A copied file cannot be cryptographically taken back from a device that already received it.",
+            "Workspace and app records use signed replication. File content follows the policy above; a file already copied to another device cannot be cryptographically taken back.",
         ));
 
-        let status = card(
-            "This device",
+        let always_available_note = if shows_advanced_services(self.config.device_role) {
+            if self.config.workspaces.is_empty() {
+                "This device is configured to serve, but no workspace is assigned. Role alone does not make any workspace available."
+            } else {
+                "These assignments ask this device to retain workspace records. Full-file residency and durable availability still require proof from the running services, which Settings does not yet receive."
+            }
+        } else {
+            "This personal device is not configured as an availability host. A certified always-on server can keep assigned workspaces reachable while personal devices sleep."
+        };
+        let always_available = card(
+            "Always available",
             rows(vec![
                 choice_row_described(
-                    "Role",
-                    "Personal devices do not host. Hybrid devices serve while available; always-on servers are expected to stay connected.",
+                    "This device",
+                    "Available while active serves only while this device is awake; an always-on server is expected to stay connected. Neither choice proves reachability.",
                     Box::new(role),
                 ),
-                value_row("Configuration", &self.load_status),
-                value_row("File", &self.config_path.display().to_string()),
                 value_row(
-                    "Runtime reachability",
-                    "Not reported by the running service",
+                    "Workspace assignments",
+                    &self.config.workspaces.len().to_string(),
                 ),
-                caption(
-                    "Availability is intentionally not guessed from configuration. Changes take effect when the device service reloads this file.",
-                ),
+                value_row("Runtime availability", RUNTIME_STATUS_UNAVAILABLE),
+                caption(always_available_note),
             ]),
         );
 
-        let relays = card(
-            "Reachability",
-            rows(vec![
-                setting_row_described(
-                    "Collaboration and chat relay",
-                    "Accept inbound encrypted workspace and chat traffic when this server is reachable",
-                    Box::new(
-                        Toggle::new("settings.device_mesh.inbound_relay", INBOUND_RELAY_KEY)
-                            .with_id("device_mesh.inbound_relay"),
+        let mut sections = vec![
+            continuity,
+            card("What this device keeps", rows(residency_rows)),
+            always_available,
+        ];
+        if shows_advanced_services(self.config.device_role) {
+            sections.push(card(
+                "Advanced server services",
+                rows(vec![
+                    setting_row_described(
+                        "Collaboration and chat relay",
+                        "Accept inbound encrypted workspace and chat traffic when this server is reachable",
+                        Box::new(
+                            Toggle::new("settings.device_mesh.inbound_relay", INBOUND_RELAY_KEY)
+                                .with_id("device_mesh.inbound_relay"),
+                        ),
                     ),
-                ),
-                setting_row_described(
-                    "Remote-control relay",
-                    "Try the target directly first; if that fails, tunnel through this device",
-                    Box::new(
-                        Toggle::new("settings.device_mesh.remote_relay", REMOTE_RELAY_KEY)
-                            .with_id("device_mesh.remote_relay"),
+                    setting_row_described(
+                        "Remote-control relay",
+                        "Try the target directly first; if that fails, tunnel through this device",
+                        Box::new(
+                            Toggle::new("settings.device_mesh.remote_relay", REMOTE_RELAY_KEY)
+                                .with_id("device_mesh.remote_relay"),
+                        ),
                     ),
-                ),
-                value_row("Current remote-control route", "No active route reported"),
-                caption(
-                    "A relay only carries the encrypted session. The target device still shows consent, chooses shared surfaces, and filters every pointer or keyboard event.",
-                ),
-            ]),
-        );
+                    value_row("Current remote-control route", RUNTIME_STATUS_UNAVAILABLE),
+                    setting_row_described(
+                        "Serve app backends",
+                        "Allow compatible apps to request backend placement on this device",
+                        Box::new(
+                            Toggle::new("settings.device_mesh.app_serving", APP_SERVING_KEY)
+                                .with_id("device_mesh.app_serving"),
+                        ),
+                    ),
+                    setting_row_described(
+                        "Accept distributed jobs",
+                        "Advertise capacity for future sandboxed app jobs; this does not permit arbitrary host execution",
+                        Box::new(
+                            Toggle::new("settings.device_mesh.compute", COMPUTE_KEY)
+                                .with_id("device_mesh.compute"),
+                        ),
+                    ),
+                    caption(
+                        "These are service claims, not live status. The device certificate, workspace membership, and app scope still bound every request.",
+                    ),
+                ]),
+            ));
+        }
 
-        let serving = card(
-            "Apps and distributed work",
-            rows(vec![
-                setting_row_described(
-                    "Serve app backends",
-                    "Allow compatible apps to place their backend on this device",
-                    Box::new(
-                        Toggle::new("settings.device_mesh.app_serving", APP_SERVING_KEY)
-                            .with_id("device_mesh.app_serving"),
-                    ),
-                ),
-                setting_row_described(
-                    "Accept distributed jobs",
-                    "Advertise capacity for future sandboxed app jobs; this does not permit arbitrary host execution",
-                    Box::new(
-                        Toggle::new("settings.device_mesh.compute", COMPUTE_KEY)
-                            .with_id("device_mesh.compute"),
-                    ),
-                ),
-                caption(
-                    "Multiple servers divide clients and apps with stable, capacity-aware placement. Certificate, workspace, and app scope remain hard eligibility checks.",
-                ),
-            ]),
-        );
-
-        cards(vec![
-            status,
-            card("Workspace residency", rows(residency_rows)),
-            relays,
-            serving,
-        ])
+        cards(sections)
     }
 
     fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
@@ -322,6 +354,9 @@ impl Widget for DeviceMeshPane {
             .and_then(role_from_label)
             && role != self.config.device_role
         {
+            if shows_advanced_services(role) != shows_advanced_services(self.config.device_role) {
+                self.structure_dirty = true;
+            }
             self.config.device_role = role;
             changed = true;
         }
@@ -360,6 +395,7 @@ impl Widget for DeviceMeshPane {
         changed |= Self::apply_bool(state, root, COMPUTE_KEY, &mut self.config.services.compute);
         if changed {
             self.persist();
+            self.structure_dirty = true;
         }
         if let Some(composed) = &mut self.composed {
             composed.sync(state, root);
@@ -484,6 +520,14 @@ impl Widget for DeviceMeshPane {
         )
     }
 
+    fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.structure_dirty);
+        own || self
+            .composed
+            .as_mut()
+            .is_some_and(|composed| composed.take_structure_dirty())
+    }
+
     fn name(&self) -> &'static str {
         "DeviceMeshPane"
     }
@@ -515,7 +559,7 @@ mod tests {
         pane.sync(&mut doc, &automerge::ROOT);
         doc.put(&automerge::ROOT, ROLE_KEY, "Available while active")
             .unwrap();
-        doc.put(&automerge::ROOT, REPLICATION_KEY, "Full workspace copy")
+        doc.put(&automerge::ROOT, REPLICATION_KEY, "Keep all files here")
             .unwrap();
         doc.put(&automerge::ROOT, REMOTE_RELAY_KEY, false).unwrap();
         pane.sync(&mut doc, &automerge::ROOT);
@@ -535,6 +579,8 @@ mod tests {
         let path = dir.path().join("relay.toml");
         let mut pane = DeviceMeshPane::with_path(&path);
         assert!(pane.load_status.contains("Not configured"));
+        assert_eq!(pane.config.device_role, DeviceRole::Interactive);
+        assert_eq!(pane.config.services, Default::default());
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
         assert!(!path.exists());
@@ -542,5 +588,61 @@ mod tests {
             .unwrap();
         pane.sync(&mut doc, &automerge::ROOT);
         assert!(path.exists());
+    }
+
+    #[test]
+    fn file_policy_labels_map_to_the_existing_replication_intents() {
+        assert_eq!(
+            replication_from_label("Download files when opened"),
+            Some(ReplicationIntent::OnDemand)
+        );
+        assert_eq!(
+            replication_from_label("Workspace state only"),
+            Some(ReplicationIntent::WorkspaceOnly)
+        );
+        assert_eq!(
+            replication_from_label("Keep all files here"),
+            Some(ReplicationIntent::FullWorkspace)
+        );
+        assert_eq!(
+            replication_label(&ReplicationIntent::OnDemand),
+            "Download files when opened"
+        );
+        assert_eq!(
+            replication_label(&ReplicationIntent::FullWorkspace),
+            "Keep all files here"
+        );
+        assert!(ON_DEMAND_DESCRIPTION.contains("preview thumbnails"));
+        assert!(FULL_COPY_DESCRIPTION.contains("explicit request"));
+        assert!(FULL_COPY_DESCRIPTION.contains("cannot yet verify"));
+    }
+
+    #[test]
+    fn advanced_services_only_appear_for_devices_that_can_serve() {
+        assert!(!shows_advanced_services(DeviceRole::Interactive));
+        assert!(shows_advanced_services(DeviceRole::Hybrid));
+        assert!(shows_advanced_services(DeviceRole::AlwaysOnServer));
+    }
+
+    #[test]
+    fn changing_between_personal_and_serving_roles_requests_a_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay.toml");
+        let config = RelayConfig {
+            device_role: DeviceRole::Interactive,
+            ..RelayConfig::default()
+        };
+        config.save(&path).unwrap();
+        let mut pane = DeviceMeshPane::with_path(&path);
+        let mut doc = AutoCommit::new();
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert!(!pane.take_structure_dirty());
+
+        doc.put(&automerge::ROOT, ROLE_KEY, "Available while active")
+            .unwrap();
+        pane.sync(&mut doc, &automerge::ROOT);
+
+        assert!(pane.take_structure_dirty());
+        assert_eq!(pane.config.device_role, DeviceRole::Hybrid);
     }
 }
