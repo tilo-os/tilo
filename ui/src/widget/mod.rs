@@ -82,6 +82,72 @@ impl<I> ActionEmitter<I> {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn test_bool_action_binding() -> qos_actions::ActionBinding<bool> {
+    use qos_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource};
+    let spec = ActionSpec::typed_operation(
+        "set",
+        "Set",
+        "value",
+        OperationKind::Effect,
+        "test.set_bool",
+        vec![ActionParam::required("value", ParamType::Boolean, "Value")],
+        |args| EncodedAction::encode_operation("test.set_bool", &args.boolean("value")).unwrap(),
+    );
+    let resource = Resource::new("test:control", "test", "Test").with_action(spec.clone());
+    qos_actions::ActionBinding::new(&resource, &spec, |value| {
+        serde_json::json!({"value": value})
+            .as_object()
+            .unwrap()
+            .clone()
+    })
+    .unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn test_string_action_binding() -> qos_actions::ActionBinding<String> {
+    use qos_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource};
+    let spec = ActionSpec::typed_operation(
+        "set",
+        "Set",
+        "value",
+        OperationKind::Effect,
+        "test.set_string",
+        vec![ActionParam::required("value", ParamType::Text, "Value")],
+        |args| EncodedAction::encode_operation("test.set_string", &args.text("value")).unwrap(),
+    );
+    let resource = Resource::new("test:control", "test", "Test").with_action(spec.clone());
+    qos_actions::ActionBinding::new(&resource, &spec, |value| {
+        serde_json::json!({"value": value})
+            .as_object()
+            .unwrap()
+            .clone()
+    })
+    .unwrap()
+}
+
+#[cfg(test)]
+pub(crate) fn test_number_action_binding() -> qos_actions::ActionBinding<f64> {
+    use qos_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource};
+    let spec = ActionSpec::typed_operation(
+        "set",
+        "Set",
+        "value",
+        OperationKind::Effect,
+        "test.set_number",
+        vec![ActionParam::required("value", ParamType::Number, "Value")],
+        |args| EncodedAction::encode_operation("test.set_number", &args.number("value")).unwrap(),
+    );
+    let resource = Resource::new("test:control", "test", "Test").with_action(spec.clone());
+    qos_actions::ActionBinding::new(&resource, &spec, |value| {
+        serde_json::json!({"value": value})
+            .as_object()
+            .unwrap()
+            .clone()
+    })
+    .unwrap()
+}
+
 pub trait Widget {
     /// Attach native child views after the host window exists. The default
     /// recursively reaches retained descendants; leaf adapters make mounting
