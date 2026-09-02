@@ -67,6 +67,10 @@ FROM ${RPMS_REF} AS rpms
 # qos-kernel-core out of it.
 FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 
+# CI restores these checksum-pinned files from persistent storage before the
+# build; local builds use the same resumable verifier.
+FROM github-assets AS github-assets
+
 
 # ---- Pinned Windows compatibility runtimes -------------------------------
 # UMU is the upstream-supported way to run Proton outside Steam. Keep the
@@ -76,29 +80,19 @@ FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 # Linux Runtime container remains UMU-owned and is populated in the capsule's
 # content-addressed cache when a game first needs that particular runtime.
 FROM ${BASE_REF} AS windows-compat-artifacts
-ADD --checksum=sha256:138ce4b8843608a257d4bee88191ca78a989778bcefd8abb3c1d1aaac3ac6fb8 \
-    https://github.com/Open-Wine-Components/umu-launcher/releases/download/1.4.0/umu-launcher-1.4.0-zipapp.tar \
-    /tmp/umu-launcher.tar
-ADD --checksum=sha256:62e99e029a18fa313e6fa63d42390918101730a940e3491c54d9d58cab887c69 \
-    https://github.com/Open-Wine-Components/umu-proton/releases/download/UMU-Proton-10.0-4/UMU-Proton-10.0-4.tar.gz \
-    /tmp/umu-proton.tar.gz
-ADD --checksum=sha256:87271019d53a13299b495287ef45def9078a0d654e5f53f99f67b82fffa034a8 \
-    https://raw.githubusercontent.com/Open-Wine-Components/umu-database/8297d420143bf722387b572fa1b81b5fa22746ac/umu-database.csv \
-    /out/catalogues/umu-database.csv
 ## Bottles' upstream program records improve catalogue matching. They are data,
 ## never an instruction source: qOS imports identity/runner hints only and does
 ## not execute a record's Steps, URLs, shell snippets, or dependencies.
-ADD --checksum=sha256:65cd49136305dccaa3d327cc948fa508f8e1d33de3e6c36ba0d9bf4646ca1727 \
-    https://github.com/bottlesdevs/programs/archive/d1160b816ca44a1cc803ab9a0050071517cc1960.tar.gz \
-    /tmp/bottles-programs.tar.gz
-RUN mkdir -p /out/bin /out/proton \
-    && tar -xf /tmp/umu-launcher.tar -C /tmp \
+RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+    mkdir -p /out/bin /out/proton \
+    && install -D -m 0644 /qos-assets/umu-database-8297d420.csv /out/catalogues/umu-database.csv \
+    && tar -xf /qos-assets/umu-launcher-1.4.0.tar -C /tmp \
     && install -m 0755 /tmp/umu/umu-run /out/bin/umu-run \
     && install -m 0644 /tmp/umu/umu_run.py /out/bin/umu_run.py \
-    && tar -xzf /tmp/umu-proton.tar.gz -C /out/proton \
+    && tar -xzf /qos-assets/umu-proton-10.0-4.tar.gz -C /out/proton \
     && test -x /out/proton/UMU-Proton-10.0-4/proton \
     && mkdir -p /out/catalogues/bottles-programs \
-    && tar -xzf /tmp/bottles-programs.tar.gz --strip-components=1 -C /out/catalogues/bottles-programs \
+    && tar -xzf /qos-assets/bottles-programs-d1160b8.tar.gz --strip-components=1 -C /out/catalogues/bottles-programs \
     && chmod -R a-w /out/catalogues/bottles-programs
 
 
@@ -108,11 +102,9 @@ RUN mkdir -p /out/bin /out/proton \
 # AirPlay receivers. Build one audited commit, run its hardware-free protocol
 # suite, and copy only the static sender into the OS image.
 FROM docker.io/library/golang:1.25.0-bookworm@sha256:81dc45d05a7444ead8c92a389621fafabc8e40f8fd1a19d7e5df14e61e98bc1a AS doubletake-builder
-ADD --checksum=sha256:e6c213bb221f4598e7e5e35804e8066b5b49a15ca2fb685729c9cf4ad82a20b7 \
-    https://github.com/omarroth/doubletake/archive/ae067228d76df011375164814b729932ed55ca2f.tar.gz \
-    /tmp/doubletake.tar.gz
-RUN mkdir -p /src /out \
-    && tar -xzf /tmp/doubletake.tar.gz --strip-components=1 -C /src
+RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+    mkdir -p /src /out \
+    && tar -xzf /qos-assets/doubletake-ae06722.tar.gz --strip-components=1 -C /src
 WORKDIR /src
 RUN CGO_ENABLED=0 go test ./... \
     && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w -extldflags=-static' \
@@ -128,11 +120,9 @@ FROM ${BASE_REF} AS fluxcast-builder
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     dnf install -y --setopt=reposdir=/repo python3 \
     && dnf clean all
-ADD --checksum=sha256:bfa0e96a25928cb7c9d906643e8947182ad124b35bcad3f0c765f4fc011c47ab \
-    https://github.com/IlyaP358/fluxcast/archive/a74f39fe3f2012e20315cd37e13e9803871e587f.tar.gz \
-    /tmp/fluxcast.tar.gz
-RUN mkdir -p /src \
-    && tar -xzf /tmp/fluxcast.tar.gz --strip-components=1 -C /src
+RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+    mkdir -p /src \
+    && tar -xzf /qos-assets/fluxcast-a74f39f.tar.gz --strip-components=1 -C /src
 COPY os/tests/fluxcast-rtsp-receiver.py /fluxcast-rtsp-receiver.py
 RUN PYTHONPATH=/src/src python3 -m unittest discover -s /src/tests -p 'test_wfd.py' \
     && PYTHONPATH=/src/src python3 /fluxcast-rtsp-receiver.py
@@ -241,10 +231,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # layer. The archive checksum is also pinned in os/Containerfile.builder.
 ARG SCCACHE_VERSION=0.17.0
 ARG SCCACHE_SHA256=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
-ADD --checksum=sha256:${SCCACHE_SHA256} \
-    https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz \
-    /tmp/sccache.tar.gz
-RUN tar -xzf /tmp/sccache.tar.gz -C /tmp \
+RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+    echo "${SCCACHE_SHA256}  /qos-assets/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz" | sha256sum -c - \
+    && tar -xzf /qos-assets/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz -C /tmp \
     && install -m 0755 \
        "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" \
        /usr/local/bin/sccache \
@@ -254,13 +243,8 @@ RUN tar -xzf /tmp/sccache.tar.gz -C /tmp \
 
 WORKDIR /build
 
-# The whole cargo workspace: in-tree crates (ui) + submodule working trees
-# (shell, fs, greeter, installer, apps/*). .containerignore keeps target/,
-# os/output and .git out of the context.
-COPY . /build
-
 # Keep cargo's home and sccache's cache under /build (which exists via WORKDIR/
-# COPY). The fedora-bootc base has no /root, so nesting cache mounts there fails
+# itself). The fedora-bootc base has no /root, so nesting cache mounts there fails
 # ("stat /root: no such file or directory"); single subdirs of /build are safe.
 # Deterministic compile (reproducible builds): no incremental state in output,
 # remap the build path so binaries don't embed /build, fixed locale/timezone so
@@ -290,6 +274,12 @@ ENV CARGO_HOME=/build/.cargo-home \
 # engine built in the wpe-builder stage. Overlaying /usr in this throwaway
 # stage keeps pkg-config discovery entirely standard.
 COPY --from=wpe-builder /wpe/ /
+
+# Copy the frequently changing workspace only after the large, stable WPE
+# overlay. This keeps source-only iterations from re-importing the browser
+# engine before Cargo can reach its cache mounts. .containerignore excludes
+# target/, os/output and .git from the context.
+COPY . /build
 
 # Compile the binaries the OS images need. Cache mounts persist cargo's
 # registry + git checkouts (CARGO_HOME), the target dir, and the sccache store
@@ -354,6 +344,9 @@ COPY --from=wpe-builder /wpe/ /
 # The image-only Cargo overrides below use thin LTO, retaining cross-crate
 # optimization while allowing LLVM to use the runner cores. Other release
 # artifacts keep the workspace's stricter profile unchanged.
+# Layer timestamp rewriting can make a restored target cache newer than changed
+# workspace sources. Profiles are cleaned before fingerprinting so Cargo never
+# accepts a stale path-dependency rlib; sccache still reuses compiler objects.
 ARG QOS_WITH_BROWSER
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
@@ -362,6 +355,9 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=secret,id=aws_secret_access_key \
     export AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)" \
     && export AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key 2>/dev/null || true)" \
+    && sccache --start-server \
+    && cargo clean --release \
+    && cargo clean --profile thin-app \
     && if [ "${QOS_WITH_BROWSER}" = "0" ]; then \
          BROWSER_PKG=""; THIN_EXCLUDES="browser"; THIN_BROWSER_FEATURE=""; \
        else \
@@ -369,19 +365,29 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          THIN_EXCLUDES=""; THIN_BROWSER_FEATURE=",browser/wpe"; \
        fi \
     && APP_FEATURES="music/audio,music/streaming,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,chat/live-media,mail/live,disks/live,video_editor/decode,video_editor/gst" \
+    && RELEASE_ARGS="-p shell -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper -p qos-rollback -p qos-cli -p ush -p qos-projector -p pkg-cli -p install -p cli-shim" \
     && CARGO_PROFILE_RELEASE_LTO=thin \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
-       cargo build --release \
-        -p shell -p fs -p terminal -p file-explorer -p settings \
-        -p windows-vm --bin qos-windows-vm-control --bin qos-windows-rail \
-        -p greeter -p installer \
-        -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
-        -p qos-rollback -p qos-cli -p ush -p qos-projector \
-        -p pkg-cli -p install -p cli-shim \
-        ${BROWSER_PKG} \
-    && EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
-       APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}" \
-       /build/os/scripts/build-thin-apps.sh \
+       cargo build --release ${RELEASE_ARGS} ${BROWSER_PKG} \
+    && CARGO_PROFILE_RELEASE_LTO=thin \
+       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+       cargo build --release -p windows-vm \
+         --bin qos-windows-vm-control --bin qos-windows-rail \
+    && missing=0 \
+    && for b in shell qos-projector fs terminal file-explorer settings qos-greeter qos-installer qos-runtime-bundle qos-launcher qos-power qos-unlock-helper qos-rollback qos qos-pkg qos-install qos-cli-shim qos-ush qos-windows-vm-control qos-windows-rail; do \
+         [ -x "target/release/$b" ] || missing=1; \
+       done \
+    && { [ "${QOS_WITH_BROWSER}" = "0" ] || [ -x target/release/browser ] || missing=1; } \
+    && if [ "$missing" = 1 ]; then \
+         cargo clean --release \
+         && CARGO_PROFILE_RELEASE_LTO=thin \
+            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+            cargo build --release ${RELEASE_ARGS} ${BROWSER_PKG} \
+         && CARGO_PROFILE_RELEASE_LTO=thin \
+            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+            cargo build --release -p windows-vm \
+              --bin qos-windows-vm-control --bin qos-windows-rail; \
+       fi \
     && mkdir -p /out /out/optional /out/thin-apps \
     && { [ "${QOS_WITH_BROWSER}" = "0" ] \
          || cp target/release/browser /out/optional/browser; } \
@@ -406,6 +412,9 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-windows-vm-control \
           target/release/qos-windows-rail \
           /out/ \
+    && EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
+       APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}" \
+       /build/os/scripts/build-thin-apps.sh \
     && for m in /build/apps/*/qos-app.toml; do \
            p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
            b="$(basename "$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$m" | head -1)")"; \
@@ -697,7 +706,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     xorriso \
     genisoimage \
     udftools \
-    && dnf clean all && ${DROP_RPMDB_WAL}
+    && dnf clean all && ${FINALIZE_RPMDB}
 
 COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/qos-umu-run
 COPY --from=windows-compat-artifacts /out/bin/umu_run.py /usr/libexec/umu_run.py
@@ -775,11 +784,18 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     cups-ipptool \
     && dnf clean all && ${FINALIZE_RPMDB}
 
-# Ensure system groups exist in /etc/group and add greetd to them
-RUN (getent group video || echo "video:x:39:greetd" >> /etc/group) && \
-    (getent group input || echo "input:x:104:greetd" >> /etc/group) && \
-    sed -i 's/^video:x:39:$/video:x:39:greetd/' /etc/group && \
-    sed -i 's/^input:x:104:$/input:x:104:greetd/' /etc/group
+# Ensure hardware-access groups are materialised in the deployment's /etc and
+# add the greeter to them. `getent` is deliberately not used here: Fedora's NSS
+# stack can synthesize these well-known groups from systemd's user database
+# even when /etc/group has no corresponding record. That made this build step
+# incorrectly skip the records, after which first-boot `useradd -G video`
+# failed and left a freshly installed machine without its configured account.
+RUN grep -q '^video:' /etc/group || echo "video:x:39:greetd" >> /etc/group; \
+    grep -q '^input:' /etc/group || echo "input:x:104:greetd" >> /etc/group; \
+    sed -i 's/^video:x:39:$/video:x:39:greetd/' /etc/group; \
+    sed -i 's/^input:x:104:$/input:x:104:greetd/' /etc/group; \
+    grep -q '^video:x:39:.*greetd' /etc/group; \
+    grep -q '^input:x:104:.*greetd' /etc/group
 
 # Fonts
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
@@ -865,16 +881,15 @@ COPY --from=builder /out/qos-projector /usr/libexec/qos-projector
 # system audio) is delegated to the source-pinned, tested build above.
 COPY --from=doubletake-builder /out/doubletake /usr/libexec/qos-doubletake
 COPY --from=doubletake-builder /out/doubletake-test-receiver /usr/libexec/qos-doubletake-test-receiver
-ADD --checksum=sha256:e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118 \
-    https://raw.githubusercontent.com/omarroth/doubletake/ae067228d76df011375164814b729932ed55ca2f/LICENSE \
-    /usr/share/licenses/qos-doubletake/LICENSE
 # Miracast/Wi-Fi Display sender: full NetworkManager P2P, RTSP negotiation and
 # H.264/AAC RTP media, copied from the architecture-neutral tested source stage.
 COPY --from=fluxcast-builder /src/src /usr/libexec/qos-fluxcast-src
 COPY os/usr/libexec/qos-fluxcast /usr/libexec/qos-fluxcast
-ADD --checksum=sha256:3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986 \
-    https://raw.githubusercontent.com/IlyaP358/fluxcast/a74f39fe3f2012e20315cd37e13e9803871e587f/LICENSE \
-    /usr/share/licenses/qos-fluxcast/LICENSE
+RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+    install -D -m 0644 /qos-assets/doubletake-ae06722-LICENSE \
+      /usr/share/licenses/qos-doubletake/LICENSE \
+    && install -D -m 0644 /qos-assets/fluxcast-a74f39f-LICENSE \
+      /usr/share/licenses/qos-fluxcast/LICENSE
 COPY os/usr/share/dbus-1/system.d/zz-qos-projector-wifi-direct.conf \
      /usr/share/dbus-1/system.d/zz-qos-projector-wifi-direct.conf
 COPY os/usr/lib/systemd/user/qos-ush.service /usr/lib/systemd/user/qos-ush.service

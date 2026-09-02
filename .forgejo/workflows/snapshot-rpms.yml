@@ -14,7 +14,11 @@ on:
       # Refreshing on changes prevents an OS build from asking an older snapshot
       # for a package that was added to one of the Containerfiles.
       - os/Containerfile
+      - os/Containerfile.rpms
+      - os/external-assets/github-assets.tsv
+      - os/dev/cache-github-assets.sh
       - os/Containerfile.host
+      - os/dev/composefs/Containerfile
       - os/containers/qos-relay/Containerfile
       - os/kernel/Containerfile
       - .forgejo/workflows/snapshot-rpms.yml
@@ -28,9 +32,18 @@ jobs:
     runs-on: runner
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Restore checksum-verified external build inputs
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: os/external-assets/cache
+          key: external-build-inputs-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+
+      - name: Materialize immutable external build inputs
+        run: ./os/dev/cache-github-assets.sh
 
       # The base is the mirrored, digest-pinned one every image builds FROM
       # (os/base-snapshot.env) — the package set has to resolve against the
@@ -55,6 +68,7 @@ jobs:
           FILES=(
             os/Containerfile
             os/Containerfile.host
+            os/dev/composefs/Containerfile
             os/containers/qos-relay/Containerfile
             os/kernel/Containerfile
           )
@@ -77,7 +91,7 @@ jobs:
           echo "packages: $pkgs"
 
       - name: Log in to the code.sandbox.example registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: code.sandbox.example
           username: ${{ github.actor }}
@@ -85,9 +99,11 @@ jobs:
 
       - name: Build + push the frozen RPM repo image
         id: rpms
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
+          build-contexts: |
+            github-assets=os/external-assets/cache
           file: os/Containerfile.rpms
           push: true
           tags: code.sandbox.example/qos/rpms:${{ github.sha }}

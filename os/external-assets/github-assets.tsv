@@ -1,0 +1,12 @@
+# sha256<TAB>filename<TAB>immutable upstream URL
+138ce4b8843608a257d4bee88191ca78a989778bcefd8abb3c1d1aaac3ac6fb8	umu-launcher-1.4.0.tar	https://github.com/Open-Wine-Components/umu-launcher/releases/download/1.4.0/umu-launcher-1.4.0-zipapp.tar
+62e99e029a18fa313e6fa63d42390918101730a940e3491c54d9d58cab887c69	umu-proton-10.0-4.tar.gz	https://github.com/Open-Wine-Components/umu-proton/releases/download/UMU-Proton-10.0-4/UMU-Proton-10.0-4.tar.gz
+87271019d53a13299b495287ef45def9078a0d654e5f53f99f67b82fffa034a8	umu-database-8297d420.csv	https://raw.githubusercontent.com/Open-Wine-Components/umu-database/8297d420143bf722387b572fa1b81b5fa22746ac/umu-database.csv
+65cd49136305dccaa3d327cc948fa508f8e1d33de3e6c36ba0d9bf4646ca1727	bottles-programs-d1160b8.tar.gz	https://github.com/bottlesdevs/programs/archive/d1160b816ca44a1cc803ab9a0050071517cc1960.tar.gz
+e6c213bb221f4598e7e5e35804e8066b5b49a15ca2fb685729c9cf4ad82a20b7	doubletake-ae06722.tar.gz	https://github.com/omarroth/doubletake/archive/ae067228d76df011375164814b729932ed55ca2f.tar.gz
+bfa0e96a25928cb7c9d906643e8947182ad124b35bcad3f0c765f4fc011c47ab	fluxcast-a74f39f.tar.gz	https://github.com/IlyaP358/fluxcast/archive/a74f39fe3f2012e20315cd37e13e9803871e587f.tar.gz
+67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006	sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz	https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
+e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118	doubletake-ae06722-LICENSE	https://raw.githubusercontent.com/omarroth/doubletake/ae067228d76df011375164814b729932ed55ca2f/LICENSE
+3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986	fluxcast-a74f39f-LICENSE	https://raw.githubusercontent.com/IlyaP358/fluxcast/a74f39fe3f2012e20315cd37e13e9803871e587f/LICENSE
+# Fedora publishes virtio-win unsigned; pin the reviewed release by content.
+2f58eea024e0221a873032761dc3ed3262409cd80860b7b27d3d5a0f206616c9	virtio-win-0.1.302-1.noarch.rpm	https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-0.1.302-1.noarch.rpm
