@@ -7,12 +7,14 @@ use launcher::netgate::{EgressPolicy, NetGate, RELAY_PORT};
 use launcher::sandbox::NetGateBind;
 
 use crate::{
-    AudioBinding, AudioProtocol, AudioProxyLease, LaunchLease, LaunchResourceBroker, NetworkShape,
-    ResourceError, ResourceRequest,
+    AudioBinding, AudioProtocol, AudioProxyError, AudioProxyLease, LaunchLease,
+    LaunchResourceBroker, NetworkShape, ResourceError, ResourceRequest,
 };
 
 const LEASE_ROOT: &str = "/run/qos/windows-compat/leases";
 const SANDBOX_GATE: &str = "/run/qos/network/gate.sock";
+
+type StartAudioProxy = fn(PathBuf, u32, bool) -> Result<AudioProxyLease, AudioProxyError>;
 
 /// Concrete qOS adapter for resources that already have a secure broker.
 /// Host-filtered networking reuses the launcher's net-gate implementation.
@@ -24,6 +26,7 @@ pub struct SystemResourceBroker {
     gates: Mutex<BTreeMap<String, NetGate>>,
     audio: Mutex<BTreeMap<String, AudioProxyLease>>,
     uid: u32,
+    start_audio_proxy: StartAudioProxy,
 }
 
 impl SystemResourceBroker {
@@ -44,6 +47,18 @@ impl SystemResourceBroker {
             gates: Mutex::new(BTreeMap::new()),
             audio: Mutex::new(BTreeMap::new()),
             uid,
+            start_audio_proxy: AudioProxyLease::start,
+        }
+    }
+
+    #[cfg(test)]
+    fn for_uid_with_audio_proxy(uid: u32, start_audio_proxy: StartAudioProxy) -> Self {
+        Self {
+            next: AtomicU64::new(1),
+            gates: Mutex::new(BTreeMap::new()),
+            audio: Mutex::new(BTreeMap::new()),
+            uid,
+            start_audio_proxy,
         }
     }
 
@@ -68,7 +83,7 @@ impl LaunchResourceBroker for SystemResourceBroker {
             .iter()
             .any(|device| device == "microphone");
         let audio_proxy =
-            AudioProxyLease::start(PathBuf::from(LEASE_ROOT).join(&id), self.uid, microphone)
+            (self.start_audio_proxy)(PathBuf::from(LEASE_ROOT).join(&id), self.uid, microphone)
                 .map_err(|error| ResourceError::Refused(format!("audio proxy: {error}")))?;
         let audio = vec![
             AudioBinding {
@@ -134,16 +149,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn audio_proxy_is_fail_closed_when_the_host_pipewire_runtime_is_absent() {
-        // The broker must not substitute the session socket if its private
-        // proxy cannot start. This host normally lacks the image binaries.
-        let broker = SystemResourceBroker::for_uid(99_999);
+    fn audio_proxy_start_failure_is_fail_closed() {
+        fn unavailable_proxy(
+            root: PathBuf,
+            _uid: u32,
+            _microphone: bool,
+        ) -> Result<AudioProxyLease, AudioProxyError> {
+            Err(AudioProxyError::UnsafeLeasePath(root))
+        }
+
+        // Model an unavailable private PipeWire runtime explicitly. The
+        // broker must refuse the launch instead of substituting a session
+        // socket, independent of which audio packages the test host has.
+        let broker = SystemResourceBroker::for_uid_with_audio_proxy(99_999, unavailable_proxy);
         let caps = CapabilityPlan::empty();
         let result = broker.materialize(ResourceRequest {
             app_id: "dev.qos.windows.test",
             workspace_id: "workspace",
             capabilities: &caps,
         });
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(ResourceError::Refused(message)) if message.starts_with("audio proxy:"))
+        );
     }
 }
