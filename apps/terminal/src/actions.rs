@@ -1,10 +1,12 @@
 //! Resource + action-model status for the terminal.
 //!
-//! The qOS action-model recipe separates durable document mutations from
-//! effects. A terminal has no authored record model to undo: its shared
-//! Automerge document is the live screen projection. It does, however, publish
-//! honest **effect operations** for automation and collaborative control:
-//! sending text, interrupting the foreground process, and clearing the screen.
+//! The qOS action-model recipe (`docs/action-model-recipe.md`) splits every
+//! interaction into exactly one of two buckets: a *document-mutating* operation
+//! becomes an `Action` (`qos_actions::Action`) — a serializable value that
+//! deterministically changes the shared Automerge document, so undo and
+//! multi-peer replay come for free — while presentation / view state stays plain
+//! app code. PTY input is therefore exported as an effect on the live terminal
+//! resource, without fabricating document actions or a saved-session model.
 //!
 //! ## Everything that changes the world is external
 //!
@@ -62,9 +64,13 @@
 //! names "the current selection, an overlay being open" as presentation that must
 //! *never* be an action.
 //!
-//! These controls deliberately remain effects rather than undoable actions:
-//! they write bytes to the real PTY, while the resulting output is mirrored to
-//! collaborators through the same CRDT-backed grid as ordinary shell output.
+//! ## Consequence
+//!
+//! The terminal publishes its live session with send/interrupt/clear effects;
+//! [`take_committed_action`](ui::widget::Widget::take_committed_action) stays
+//! `None` (both toolkit defaults, so no [`ui::ActionHost`] is embedded — there is
+//! nothing for it to dispatch, and `main.rs` registers no action decoder). The
+//! tests below prove each half of this split on the real production path.
 
 #[cfg(test)]
 mod tests {
@@ -355,10 +361,10 @@ mod tests {
         );
     }
 
-    /// The terminal publishes its session effects to Ctrl+K without recording a
-    /// document action or undo boundary.
+    /// The live session exports PTY effects, but none creates a document undo
+    /// boundary.
     #[test]
-    fn exports_ctrl_k_effects_without_recording_a_document_action() {
+    fn exports_terminal_effects_without_document_actions() {
         let (mut widget, _rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         widget.init_crdt(&mut doc, &ROOT);
@@ -372,12 +378,18 @@ mod tests {
         assert_eq!(resources.len(), 1, "one terminal-session root");
         let terminal = &resources[0];
         assert_eq!(terminal.kind, "terminal.session");
-        let actions: Vec<&str> = terminal
+        let ids: Vec<_> = terminal
             .actions
             .iter()
             .map(|action| action.id.as_str())
             .collect();
-        assert_eq!(actions, ["send", "interrupt", "clear"]);
+        assert_eq!(ids, vec!["send", "interrupt", "clear"]);
+        assert!(
+            terminal
+                .actions
+                .iter()
+                .all(|action| action.kind == ui::qos_actions::OperationKind::Effect)
+        );
         assert!(
             widget.take_committed_action().is_none(),
             "no action is dispatched, so no action-host undo boundary is recorded",

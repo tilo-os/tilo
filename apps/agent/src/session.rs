@@ -15,9 +15,9 @@ use uuid::Uuid;
 use word_processor::actions::{self as wp, RegionKind, WordProcessorAction};
 
 use crate::apply::Editor;
-use crate::model::{Chooser, Decision, Route};
-use crate::plan::{self, Block, Instruction, Plan};
-use crate::surface::{self, AppContract, Offer, View};
+use crate::model::{Chooser, Route};
+use crate::plan::{self, Block, ConfirmationEvidence, Instruction, Plan};
+use crate::surface::{self, AppContract, View};
 use crate::wire::Link;
 
 #[derive(Clone, Debug)]
@@ -108,6 +108,11 @@ pub struct Session {
     /// How the last instruction was decided. The record that keeps a run on
     /// the fallback from being indistinguishable from a live one afterwards.
     last_route: Option<Route>,
+    /// Complete, permission-filtered live action directory supplied by the
+    /// broker. This is the planner's application catalogue; local document
+    /// contracts remain only for the agent's own editorial state/tools.
+    broker_surfaces: Vec<ui::collaboration::BrokerActionSurface>,
+    next_broker_request: u64,
 }
 
 /// How often the agent asks again while it still has no document.
@@ -200,6 +205,8 @@ impl Session {
             chooser,
             last_route: None,
             asked_at: Instant::now(),
+            broker_surfaces: Vec::new(),
+            next_broker_request: 1,
         })
     }
 
@@ -330,6 +337,17 @@ impl Session {
                 }
                 tracing::debug!(%user_id, peers = self.peers.len(), "sent our documents to a new participant");
             }
+            Some(CollabEvent::ActionCatalogue { surfaces }) => {
+                self.broker_surfaces = surfaces;
+                tracing::debug!(
+                    actions = self
+                        .broker_surfaces
+                        .iter()
+                        .map(|s| s.actions.len())
+                        .sum::<usize>(),
+                    "updated broker action catalogue"
+                );
+            }
             Some(_) | None => {}
         }
         if !changed {
@@ -459,16 +477,6 @@ impl Session {
         }
     }
 
-    /// Every operation the room's applications currently export and the
-    /// agent's capabilities allow — a denied one is absent, never merely
-    /// refused. Rebuilt on every call: the whole point of a survey is that
-    /// it answers for the room as it stands right now.
-    fn offers(&self, focus: Option<String>) -> Vec<Offer> {
-        let held = self.held();
-        let view = self.view(focus);
-        surface::offers(&held, &view, &self.cfg.permissions)
-    }
-
     /// Perform the discovered operation `id` names, against whichever
     /// document holds it. `Ok(Err(_))` is a refusal in words a person
     /// reads; `Err(_)` is this session's own I/O failing.
@@ -477,46 +485,131 @@ impl Session {
     /// through [`Editor::invoke`] — never against the survey `id` was
     /// chosen from. An operation that has gone away since is a refusal
     /// here, not a substitution.
-    fn perform(&mut self, id: &str, argument: Option<&str>) -> Result<Result<(), String>> {
-        let Some(address) = surface::decode_address(id) else {
+    fn perform(
+        &mut self,
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmation: &ConfirmationEvidence,
+    ) -> Result<Result<(), String>> {
+        let offers = surface::broker_offers(&self.broker_surfaces);
+        let Some(offer) = surface::find(&offers, id) else {
             return Ok(Err("that no longer names anything I can find".to_string()));
         };
-        let namespace = surface::app_of(&address.resource).to_string();
-        let view = self.view(None);
-        let registry = surface::registry();
-        let is_primary = self
-            .editor
-            .as_ref()
-            .is_some_and(|e| e.contract().namespace == namespace);
-        let held = if is_primary {
-            self.editor.as_mut()
+        let Some(peer_id) = offer.broker_peer_id else {
+            return Ok(Err(
+                "that operation is local-only and cannot be brokered".to_string()
+            ));
+        };
+        let descriptor = offer.descriptor.clone();
+        if !confirmation.satisfies(&descriptor.contract.confirmation) {
+            return Ok(Err("that action requires explicit confirmation".to_string()));
+        }
+        if let Err(error) = qos_actions::ActionArgs::bind_json(&descriptor.params, arguments) {
+            return Ok(Err(format!("I couldn't do that - {error}")));
+        }
+        let confirmation_json = match confirmation {
+            ConfirmationEvidence::None => serde_json::json!({}),
+            ConfirmationEvidence::Confirm => serde_json::json!({"confirm": true}),
+            ConfirmationEvidence::Phrase(phrase) => {
+                serde_json::json!({"confirmation_phrase": phrase})
+            }
+        };
+        let request_id = self.next_request_id();
+        if descriptor.resource_kind == surface::APPLICATION_KIND
+            && descriptor.address.action == surface::OPEN_ACTION
+        {
+            self.link.send(&CollabRequest::LaunchPublishedApplication {
+                request_id,
+                app_id: offer.app.clone(),
+            })?;
         } else {
-            self.peers.get_mut(namespace.as_str())
+            self.link.send(&CollabRequest::InvokePublishedAction {
+                request_id,
+                peer_id,
+                resource: descriptor.address.resource.clone(),
+                action: descriptor.address.action.clone(),
+                arguments: arguments.clone(),
+                confirmation: confirmation_json,
+            })?;
+        }
+        let (invocation_id, mut update) = match self.wait_for_broker_result(request_id)? {
+            Ok(receipt) => receipt,
+            Err(error) => return Ok(Err(format!("I couldn't do that - {error}"))),
         };
-        let Some(ed) = held else {
-            return Ok(Err("that isn't open here, so I can't act on it".to_string()));
-        };
-        let target_app_id = ed.contract().app_id;
-        match ed.invoke(&view, &address, argument, &registry) {
-            Ok(Some(delta)) => {
-                let req = CollabRequest::DocumentIncremental { data: delta };
-                if is_primary {
-                    self.link.send(&req)?;
-                } else {
-                    self.link
-                        .send_to_route(RouteSpec::app(target_app_id, self.cfg.cluster), &req)?;
-                }
-                tracing::info!(%id, "performed a discovered operation");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !update.is_terminal() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+            let request_id = self.next_request_id();
+            self.link.send(&CollabRequest::PublishedInvocationStatus {
+                request_id,
+                id: invocation_id,
+            })?;
+            match self.wait_for_broker_result(request_id)? {
+                Ok((_, latest)) => update = latest,
+                Err(error) => return Ok(Err(format!("I couldn't observe that action - {error}"))),
+            }
+        }
+        if !update.is_terminal() {
+            return Ok(Err(format!(
+                "action {invocation_id} was admitted but did not reach a terminal state in time"
+            )));
+        }
+        match update {
+            qos_actions::InvocationUpdate::Failed { error, .. } => {
+                Ok(Err(format!("I couldn't do that - {}", error.message)))
+            }
+            qos_actions::InvocationUpdate::Cancelled { message, .. } => {
+                Ok(Err(message.unwrap_or_else(|| {
+                    "that action was cancelled".to_string()
+                })))
+            }
+            qos_actions::InvocationUpdate::Succeeded { output, .. } => {
+                tracing::info!(%id, invocation_id, ?output, "broker action completed");
                 std::thread::sleep(self.cfg.pace);
                 Ok(Ok(()))
             }
-            Ok(None) => {
-                tracing::warn!(%id, "the operation changed nothing");
-                Ok(Err("that didn't change anything".to_string()))
+            _ => Ok(Err(
+                "the broker returned an invalid nonterminal result".to_string()
+            )),
+        }
+    }
+
+    fn next_request_id(&mut self) -> u64 {
+        let id = self.next_broker_request;
+        self.next_broker_request = self.next_broker_request.saturating_add(1);
+        id
+    }
+
+    fn wait_for_broker_result(
+        &mut self,
+        request_id: u64,
+    ) -> Result<Result<(u64, qos_actions::InvocationUpdate), String>> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut deferred = Vec::new();
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                self.link.defer(deferred);
+                return Ok(Err(
+                    "the broker did not answer the action request".to_string()
+                ));
             }
-            Err(e) => {
-                tracing::warn!(%id, "refused: {e}");
-                Ok(Err(format!("I couldn't do that - {e}")))
+            match self
+                .link
+                .recv((deadline - now).min(Duration::from_millis(100)))?
+            {
+                Some(CollabEvent::PublishedInvocationResult {
+                    request_id: received,
+                    result,
+                }) if received == request_id => {
+                    self.link.defer(deferred);
+                    return Ok(result);
+                }
+                Some(CollabEvent::ActionCatalogue { surfaces }) => {
+                    self.broker_surfaces = surfaces;
+                }
+                Some(event) => deferred.push(event),
+                None => {}
             }
         }
     }
@@ -592,38 +685,56 @@ impl Session {
     /// applications currently export — the model has no say in either of
     /// those, only in the single catalogue request that never needed it.
     fn decide(&mut self, ins_id: &str, asked: &str, blocks: &[Block]) -> Plan {
-        let offers = self.offers(Some(ins_id.to_string()));
-        if plan::clauses(asked).len() < 2 {
-            let Decision { instruction, route } = self.chooser.choose(asked, blocks);
-            let instruction = match instruction {
-                Instruction::Unknown(_) if !offers.is_empty() => {
-                    tracing::debug!("the catalogue found nothing; trying what the room discovers");
-                    Instruction::from_floor(asked, &offers)
+        let held = self.held();
+        let view = self.view(Some(ins_id.to_string()));
+        let catalogue = surface::Catalogue {
+            offers: surface::broker_offers(&self.broker_surfaces),
+            facts: surface::facts(&held, &view),
+            held: held
+                .iter()
+                .map(|(contract, _)| contract.namespace)
+                .collect(),
+        };
+        let offers = &catalogue.offers;
+        let decision = self.chooser.choose_actions(asked, blocks, &catalogue, 8);
+        let (plan, route) = match decision {
+            Ok(answer) => {
+                let mut steps = Vec::new();
+                let mut invalid = None;
+                for (id, arguments) in answer.actions.iter().zip(&answer.arguments) {
+                    match Instruction::from_answer(id, asked, Some(arguments), offers) {
+                        Ok(instruction) => steps.push(plan::Step::bound(instruction, offers)),
+                        Err(error) => {
+                            invalid = Some(format!("{error:?}"));
+                            break;
+                        }
+                    }
                 }
-                other => other,
-            };
-            tracing::info!(
-                block = %ins_id,
-                asked = %asked,
-                decided_by = route.label(),
-                live = route.is_live(),
-                ?instruction,
-                "{}",
-                route.detail()
-            );
-            self.last_route = Some(route);
-            return Plan::of(instruction);
-        }
-        let plan = Plan::from_floor(asked, &offers);
+                if let Some(error) = invalid {
+                    (
+                        Plan::from_surface(asked, offers),
+                        Route::Keywords(crate::model::Fallback::OutOfCatalogue(error)),
+                    )
+                } else {
+                    if let Some(then) = answer.then {
+                        steps.push(plan::Step::own(Instruction::Unknown(then)));
+                    }
+                    (Plan { steps }, Route::Model { why: answer.why })
+                }
+            }
+            Err(route) => (Plan::from_surface(asked, offers), route),
+        };
         tracing::info!(
             block = %ins_id,
             asked = %asked,
             steps = plan.len(),
             offers = offers.len(),
-            "read as a sequence of {} steps",
-            plan.len()
+            decided_by = route.label(),
+            live = route.is_live(),
+            "{}",
+            route.detail()
         );
-        self.last_route = None;
+        self.last_route = Some(route);
         plan
     }
 
@@ -672,12 +783,16 @@ impl Session {
                 // come back naming a step this turn already performed, and
                 // without the guard "put it in the open document" placed
                 // the same image twice.
-                Instruction::Perform { id, argument } => {
+                Instruction::Perform {
+                    id,
+                    arguments,
+                    confirmation,
+                } => {
                     if self.dispatched_this_turn.contains(id) {
                         true
                     } else {
                         let id = id.clone();
-                        match self.perform(&id, argument.as_deref())? {
+                        match self.perform(&id, arguments, confirmation)? {
                             Ok(()) => {
                                 self.dispatched_this_turn.insert(id);
                                 true

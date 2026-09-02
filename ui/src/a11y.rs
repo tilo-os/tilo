@@ -226,6 +226,9 @@ pub enum Politeness {
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct AccessNode {
     pub role: Role,
+    /// Stable identity of a retained actionable widget within its semantic
+    /// parent. Unlike a layout id, this survives rebuilds and sibling moves.
+    pub semantic_key: Option<String>,
     /// Opaque stable identity used to route actions on a synthetic child back
     /// to the widget that produced it. It has meaning only to that widget.
     pub action_target: Option<String>,
@@ -287,6 +290,7 @@ impl AccessNode {
     pub fn new(role: Role) -> Self {
         Self {
             role,
+            semantic_key: None,
             action_target: None,
             name: None,
             description: None,
@@ -301,6 +305,11 @@ impl AccessNode {
             bounds: None,
             children: Vec::new(),
         }
+    }
+
+    pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
+        self.semantic_key = Some(key.into());
+        self
     }
 
     /// Attach an opaque, widget-local target for actions on this synthetic

@@ -383,6 +383,9 @@ pub struct SheetsApp {
     /// chosen path arrives on, drained once per frame in [`Self::drain_io`].
     /// `None` when no import/export chooser is open.
     io: Option<(PendingIo, PortalChannel)>,
+    resource_invocation: Option<qos_actions::InvocationId>,
+    resource_result: Option<qos_actions::InvocationUpdate>,
+    pending_resource_io: Option<(qos_actions::InvocationId, actions::SheetsOperation)>,
     /// The last copied/cut rectangle, kept so an in-app paste can restore raw
     /// inputs and formats exactly (and shift relative formula references),
     /// beyond the plain-text payload other apps see on the system clipboard.
@@ -483,6 +486,9 @@ impl SheetsApp {
             saved_heads: Vec::new(),
             cache: None,
             io: None,
+            resource_invocation: None,
+            resource_result: None,
+            pending_resource_io: None,
             clipboard: None,
             palette: CommandPalette::commands(),
             actions: ui::ActionHost::new(),
@@ -1439,10 +1445,47 @@ impl SheetsApp {
                         PendingIo::Export(Interchange::Xlsx) => self.export_xlsx_to(doc, &path),
                         PendingIo::Export(Interchange::Ods) => self.export_ods_to(doc, &path),
                     },
-                    PortalOutcome::Cancelled => {}
+                    PortalOutcome::Cancelled => {
+                        if let Some(invocation) = self.resource_invocation.take() {
+                            self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                                invocation,
+                                message: Some("spreadsheet file selection was cancelled".into()),
+                            });
+                        }
+                    }
                     PortalOutcome::Failed(e) => {
                         self.status = format!("File chooser unavailable: {e}");
+                        if let Some(invocation) = self.resource_invocation.take() {
+                            self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                                invocation,
+                                error: qos_actions::ActionFailure {
+                                    code: "sheets.portal_failed".into(),
+                                    message: e,
+                                    details: None,
+                                    retryable: false,
+                                },
+                            });
+                        }
                     }
+                }
+                if let Some(invocation) = self.resource_invocation.take() {
+                    self.resource_result =
+                        Some(if self.status.to_ascii_lowercase().contains("failed") {
+                            qos_actions::InvocationUpdate::Failed {
+                                invocation,
+                                error: qos_actions::ActionFailure {
+                                    code: "sheets.io_failed".into(),
+                                    message: self.status.clone(),
+                                    details: None,
+                                    retryable: false,
+                                },
+                            }
+                        } else {
+                            qos_actions::InvocationUpdate::Succeeded {
+                                invocation,
+                                output: qos_actions::ActionOutput::default(),
+                            }
+                        });
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -3180,12 +3223,156 @@ fn file_label(path: &std::path::Path) -> String {
 }
 
 impl Widget for SheetsApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[actions::SHEETS_OPERATION_TYPE]
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            actions::SheetsOperation::ImportCsv { path: None } => {
+                self.begin_import(Interchange::Csv)
+            }
+            actions::SheetsOperation::ImportXlsx { path: None } => {
+                self.begin_import(Interchange::Xlsx)
+            }
+            actions::SheetsOperation::ImportOds { path: None } => {
+                self.begin_import(Interchange::Ods)
+            }
+            actions::SheetsOperation::ExportCsv { path: None } => {
+                self.begin_export(Interchange::Csv)
+            }
+            actions::SheetsOperation::ExportXlsx { path: None } => {
+                self.begin_export(Interchange::Xlsx)
+            }
+            actions::SheetsOperation::ExportOds { path: None } => {
+                self.begin_export(Interchange::Ods)
+            }
+            actions::SheetsOperation::ImportCsv { path: Some(_) }
+            | actions::SheetsOperation::ImportXlsx { path: Some(_) }
+            | actions::SheetsOperation::ImportOds { path: Some(_) }
+            | actions::SheetsOperation::ExportCsv { path: Some(_) }
+            | actions::SheetsOperation::ExportXlsx { path: Some(_) }
+            | actions::SheetsOperation::ExportOds { path: Some(_) } => {
+                return Err("direct spreadsheet I/O requires lifecycle dispatch".into());
+            }
+            actions::SheetsOperation::OpenCommandPalette => self.open_command_palette(),
+        }
+        Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        let direct = match &operation {
+            actions::SheetsOperation::ImportCsv { path }
+            | actions::SheetsOperation::ImportXlsx { path }
+            | actions::SheetsOperation::ImportOds { path }
+            | actions::SheetsOperation::ExportCsv { path }
+            | actions::SheetsOperation::ExportXlsx { path }
+            | actions::SheetsOperation::ExportOds { path } => path.is_some(),
+            _ => false,
+        };
+        if direct {
+            self.pending_resource_io = Some((invocation, operation));
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        if self.io.is_some() {
+            self.resource_invocation = Some(invocation);
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                qos_actions::ActionOutput::default(),
+            )))
+        }
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if self
+            .resource_result
+            .as_ref()
+            .is_some_and(|u| u.invocation() == invocation)
+        {
+            self.resource_result.take()
+        } else {
+            None
+        }
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.pending.seeded {
             // Pull the shared global defaults once at startup.
             self.global = GlobalSettings::load();
             self.initialize(state);
             self.pending.seeded = true;
+        }
+        if let Some((invocation, operation)) = self.pending_resource_io.take() {
+            let path = match &operation {
+                actions::SheetsOperation::ImportCsv { path }
+                | actions::SheetsOperation::ImportXlsx { path }
+                | actions::SheetsOperation::ImportOds { path }
+                | actions::SheetsOperation::ExportCsv { path }
+                | actions::SheetsOperation::ExportXlsx { path }
+                | actions::SheetsOperation::ExportOds { path } => {
+                    std::path::PathBuf::from(path.as_deref().unwrap_or_default())
+                }
+                _ => std::path::PathBuf::new(),
+            };
+            match operation {
+                actions::SheetsOperation::ImportCsv { .. } => self.import_csv_from(state, &path),
+                actions::SheetsOperation::ImportXlsx { .. } => self.import_xlsx_from(state, &path),
+                actions::SheetsOperation::ImportOds { .. } => self.import_ods_from(state, &path),
+                actions::SheetsOperation::ExportCsv { .. } => self.export_csv_to(state, &path),
+                actions::SheetsOperation::ExportXlsx { .. } => self.export_xlsx_to(state, &path),
+                actions::SheetsOperation::ExportOds { .. } => self.export_ods_to(state, &path),
+                _ => {}
+            }
+            self.resource_result = Some(if self.status.to_ascii_lowercase().contains("failed") {
+                qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "sheets.io_failed".into(),
+                        message: self.status.clone(),
+                        details: None,
+                        retryable: false,
+                    },
+                }
+            } else {
+                qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput::default(),
+                }
+            });
         }
         // Land a finished import/export file dialog before reloading, so the
         // imported sheet (or the export's status) is reflected this frame.

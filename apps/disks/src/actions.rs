@@ -308,10 +308,10 @@ mod tests {
         assert_eq!(here, there, "the peer sees the same projected inventory");
     }
 
-    /// Disks publishes its projected devices and per-machine effects to Ctrl+K,
-    /// without fabricating a document action or undo boundary.
+    /// Device operations are exported as external resource actions while the
+    /// projected document remains action-free.
     #[test]
-    fn exports_ctrl_k_effects_without_recording_a_document_action() {
+    fn exports_external_operations_without_document_actions() {
         let (mut app, mut doc) = synced();
 
         // Real event path: move the pointer over the surface.

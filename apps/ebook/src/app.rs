@@ -401,6 +401,9 @@ pub struct BooksApp {
     /// An in-flight host file-picker request, drained once per frame in
     /// `sync`. `None` when no picker is open (the app never draws its own).
     portal_rx: Option<PortalChannel>,
+    resource_open_path: Option<PathBuf>,
+    resource_invocation: Option<qos_actions::InvocationId>,
+    completed_resource_invocation: Option<qos_actions::InvocationUpdate>,
     /// Empty-state message when opening a book failed.
     load_error: Option<String>,
 
@@ -647,6 +650,9 @@ impl BooksApp {
             library_loaded: true,
             pending_open_path: None,
             portal_rx: None,
+            resource_open_path: None,
+            resource_invocation: None,
+            completed_resource_invocation: None,
             load_error: None,
             rect: Rect::ZERO,
             dirty: true,
@@ -1439,12 +1445,53 @@ impl BooksApp {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    PortalOutcome::Opened(path) => self.import_and_open(doc, &path),
+                    PortalOutcome::Opened(path) => {
+                        self.import_and_open(doc, &path);
+                        if let Some(invocation) = self.resource_invocation.take() {
+                            self.completed_resource_invocation =
+                                Some(if self.load_error.is_none() {
+                                    qos_actions::InvocationUpdate::Succeeded {
+                                        invocation,
+                                        output: qos_actions::ActionOutput::default(),
+                                    }
+                                } else {
+                                    qos_actions::InvocationUpdate::Failed {
+                                        invocation,
+                                        error: qos_actions::ActionFailure {
+                                            code: "ebook.open_failed".into(),
+                                            message: self.load_error.clone().unwrap_or_default(),
+                                            details: None,
+                                            retryable: false,
+                                        },
+                                    }
+                                });
+                        }
+                    }
                     // A cancel is not an error — leave the current view intact.
-                    PortalOutcome::Cancelled => {}
+                    PortalOutcome::Cancelled => {
+                        if let Some(invocation) = self.resource_invocation.take() {
+                            self.completed_resource_invocation =
+                                Some(qos_actions::InvocationUpdate::Cancelled {
+                                    invocation,
+                                    message: Some("book selection cancelled".into()),
+                                });
+                        }
+                    }
                     PortalOutcome::Failed(reason) => {
                         self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
                         self.dirty = true;
+                        if let Some(invocation) = self.resource_invocation.take() {
+                            self.completed_resource_invocation =
+                                Some(qos_actions::InvocationUpdate::Failed {
+                                    invocation,
+                                    error: qos_actions::ActionFailure {
+                                        code: "ebook.portal_failed".into(),
+                                        message: reason,
+                                        details: None,
+                                        retryable: false,
+                                    },
+                                });
+                        }
                     }
                 }
             }
@@ -2962,6 +3009,105 @@ impl BooksApp {
 }
 
 impl Widget for BooksApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::EBOOK_OPERATION_TYPE]
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        use crate::actions::EbookOperation;
+        match operation {
+            EbookOperation::PreviousPage => self.on_prev_page(),
+            EbookOperation::NextPage => self.on_next_page(),
+            EbookOperation::ToggleContents => self.on_toggle_toc(),
+            EbookOperation::ToggleNotes => self.on_toggle_notes(),
+            EbookOperation::OpenSettings => self.on_open_settings(),
+            EbookOperation::OpenBook { .. } => {
+                return Err("book open requires the lifecycle-capable operation host".into());
+            }
+        }
+        Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        match operation {
+            crate::actions::EbookOperation::OpenBook { path: file } => {
+                if self.resource_invocation.is_some() {
+                    return Err("another book open is in progress".into());
+                }
+                self.resource_invocation = Some(invocation);
+                if let Some(file) = file {
+                    self.resource_open_path = Some(file.into());
+                } else {
+                    self.request_open_via_portal();
+                    if self.portal_rx.is_none() {
+                        self.resource_invocation = None;
+                        return Err("book picker could not be started".into());
+                    }
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            _ => self
+                .invoke_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            qos_actions::ActionOutput::default(),
+                        )
+                    })
+                }),
+        }
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if cancellation_requested && self.resource_invocation == Some(invocation) {
+            self.resource_invocation = None;
+            self.resource_open_path = None;
+            self.portal_rx = None;
+            return Some(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("book open cancelled".into()),
+            });
+        }
+        if self
+            .completed_resource_invocation
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            return self.completed_resource_invocation.take();
+        }
+        None
+    }
+
     /// Publish the open book + its annotations so the host's Ctrl+K action
     /// palette scopes to them, via [`crate::actions`]'s
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl.
@@ -3011,6 +3157,27 @@ impl Widget for BooksApp {
         // Hydrate the persisted library on the first frame (when the document is
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
+        if let Some(path) = self.resource_open_path.take() {
+            self.import_and_open(doc, &path);
+            if let Some(invocation) = self.resource_invocation.take() {
+                self.completed_resource_invocation = Some(if self.load_error.is_none() {
+                    qos_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: qos_actions::ActionOutput::default(),
+                    }
+                } else {
+                    qos_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: qos_actions::ActionFailure {
+                            code: "ebook.open_failed".into(),
+                            message: self.load_error.clone().unwrap_or_default(),
+                            details: None,
+                            retryable: false,
+                        },
+                    }
+                });
+            }
+        }
         self.drain_portal(doc);
         if let Some(s) = self.shot_settings.take() {
             BooksDoc::write_settings(doc, &s);

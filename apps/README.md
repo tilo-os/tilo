@@ -11,6 +11,47 @@ default build and `--shots` stay hermetic.
 
 Toolkit exception: `browser` embeds Servo for page rendering.
 
+## Application contract (required)
+
+The resource/action surface is the application API. A feature is not complete
+when it is only reachable from a button, key binding, private message enum, or
+test hook. Its UI and every non-visual caller must converge on the same typed
+operation:
+
+1. `Widget::resources` publishes stable resource and action IDs, labels,
+   availability, permission, risk/confirmation, retry, execution, discovery,
+   result, and typed parameters.
+2. CRDT mutations are serializable `Action` values registered in the app's
+   `ActionRegistry`. Views and effects are serializable operations handled only
+   by `invoke_resource_operation`/`start_resource_operation`; every operation
+   type is declared by `local_resource_operation_handlers`.
+3. Inputs needed by a headless caller are parameters, not hidden UI state. A
+   file action may offer a portal when a person omits `path`, but agents and
+   scripts must be able to provide the path explicitly.
+4. `Immediate` means the work and its promised result exist before the handler
+   returns. Queued, portal, network, worker, or service work returns `Accepted`,
+   is polled by invocation ID, and terminates as succeeded, failed, or cancelled.
+5. Permission and confirmation are contract data enforced again by the broker.
+   Apps never accept a boolean such as `trusted` as authority and never report
+   simulated external success.
+
+The toolkit validates the live surface before publishing it, and the broker
+validates untrusted descriptors again. Presubmit runs
+`tools/check_app_resource_action_contract.py`, so an app without this surface or
+with an unattached operation handler cannot land. Exercise exactly what an agent
+sees with:
+
+```bash
+cargo run -q --bin qos-control -- actions list
+cargo run -q --bin qos-control -- actions invoke <provider> <id> --args-json '{"name":"value"}'
+cargo run -q --bin qos-control -- actions status <broker-invocation-id>
+cargo run -q --bin qos-control -- actions cancel <broker-invocation-id>
+```
+
+The same catalogue and invocation/status/cancel protocol is available to
+workspace agents through the certified collaboration channel. Do not add a
+second app-specific automation protocol.
+
 ## Productivity & documents
 
 | Crate | What it is |

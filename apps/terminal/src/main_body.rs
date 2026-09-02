@@ -21,7 +21,7 @@ use ui::collaboration::PresencePayload;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::{AppKind as PermAppKind, PermissionContext};
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
+use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource, RetryPolicy};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::{
     DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste,
@@ -1273,20 +1273,30 @@ const HISTORY_TRIM_SLACK: usize = 256;
 const HISTORY_TRIM_SLACK: usize = 8;
 
 impl Widget for TerminalWidget {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["terminal.send", "terminal.control"]
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "JSON serialization of an owned String is infallible"
     )]
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut terminal = Resource::new("terminal", "terminal.session", "Terminal session");
-        terminal.actions.push(ActionSpec::prompted_operation(
-            "send",
-            "Send text",
-            "Text to send",
-            "command",
-            OperationKind::Effect,
-            |text| EncodedAction::encode_operation("terminal.send", &text).expect("string payload"),
-        ));
+        terminal.actions.push(
+            ActionSpec::prompted_operation(
+                "send",
+                "Send text",
+                "Text to send",
+                "command",
+                OperationKind::Effect,
+                "terminal.send",
+                |text| {
+                    EncodedAction::encode_operation("terminal.send", &text).expect("string payload")
+                },
+            )
+            .retry_policy(RetryPolicy::AtMostOnce),
+        );
         for (id, label) in [
             ("interrupt", "Interrupt process"),
             ("clear", "Clear screen"),
@@ -1294,7 +1304,9 @@ impl Widget for TerminalWidget {
             if let Ok(spec) =
                 ActionSpec::operation(id, label, OperationKind::Effect, "terminal.control", &id)
             {
-                terminal.actions.push(spec);
+                terminal
+                    .actions
+                    .push(spec.retry_policy(RetryPolicy::Idempotent));
             }
         }
         vec![terminal]
