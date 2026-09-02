@@ -1967,7 +1967,7 @@ impl TerminalWidget {
             let final_byte = if pressed { 'M' } else { 'm' };
             self.write_input(format!("\x1b[<{button};{x};{y}{final_byte}").as_bytes());
         } else {
-            let legacy_button = if pressed { button } else { 3 | (button & 28) };
+            let legacy_button = if pressed { button } else { 3 | (button & 0x1c) };
             let x = x.min(223) as u8 + 32;
             let y = y.min(223) as u8 + 32;
             self.write_input(&[0x1b, b'[', b'M', legacy_button + 32, x, y]);
