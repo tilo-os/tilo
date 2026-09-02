@@ -3746,7 +3746,7 @@ impl Widget for ContactsApp {
                 }
                 Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
-            _ => self
+            crate::actions::ContactsOperation::Open { .. } => self
                 .invoke_resource_operation(kind, type_id, payload, doc, path)
                 .map(|handled| {
                     handled.then(|| {
@@ -3820,6 +3820,10 @@ impl Widget for ContactsApp {
             .and_then(|confirm| confirm.dialog.modal_capture())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the accessibility tree mirrors the toolbar, empty state, search, and contact list in one auditable hierarchy"
+    )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         if let Some(dialog) = self
             .delete_dialog

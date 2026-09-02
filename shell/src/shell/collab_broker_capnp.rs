@@ -2359,7 +2359,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     "the caller is not allowed to launch that application".into(),
                 ));
             }
-            workspace.clone()
+            workspace
         };
         let id = self.state.invocation_id.fetch_add(1, Ordering::Relaxed);
         let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
