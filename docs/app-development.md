@@ -53,12 +53,14 @@ complete. The text-scale pass exercises the supported 200% accessibility size.
 Pseudo-localization is a layout audit mode, not a language presented to users.
 
 `qos-dev check` is the copyable local/CI quality gate. It reports the complete
-structural `doctor` result, runs the app's Rust and generated accessibility
-tests, then executes every saved scenario in isolated state with accessibility
-auditing enabled. Use `--artifacts target/check` to retain each final semantic
-tree, target list, document, and versioned audit report; `--no-scenarios` keeps
-the structural and Rust-test phases for apps that deliberately have no saved
-flows. Arguments after `--` are forwarded to the Cargo test harness.
+structural `doctor` result, verifies formatting for only the app package, runs
+Clippy over every app target with warnings denied and dependencies excluded,
+runs the app's Rust and generated accessibility tests, then executes every
+saved scenario in isolated state with accessibility auditing enabled. Use
+`--artifacts target/check` to retain each final semantic tree, target list,
+document, and versioned audit report; `--no-scenarios` keeps the structural,
+format, lint, and Rust-test phases for apps that deliberately have no saved
+flows. Arguments after `--` are forwarded only to the Cargo test harness.
 
 For serialized screens, that structural preflight crosses file boundaries: it
 checks every component node against `src/components/mod.rs`, verifies each
