@@ -304,6 +304,7 @@ pub struct VirtualList<M: ListModel> {
     reorder_validator: Option<ReorderValidator<M>>,
     reorder_commit: Option<ReorderCommit<M>>,
     momentum: ScrollMomentum,
+    reduce_motion: bool,
     vbar: Scrollbar,
     last_tick: Option<Instant>,
     last_anchor: Option<SparseAnchor<M::Key>>,
@@ -360,6 +361,7 @@ impl<M: ListModel> VirtualList<M> {
             reorder_validator: None,
             reorder_commit: None,
             momentum: ScrollMomentum::new(),
+            reduce_motion: false,
             vbar: Scrollbar::vertical(),
             last_tick: None,
             last_anchor: None,
@@ -1130,6 +1132,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.reduce_motion = theme.reduce_motion;
+        if self.reduce_motion {
+            self.momentum.stop();
+        }
         self.reconcile_mounted();
         let mut child_nodes = Vec::with_capacity(self.mounted.len());
         for row in &mut self.mounted {
@@ -1203,7 +1209,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if theme.reduce_motion {
+        self.reduce_motion = theme.reduce_motion;
+        if self.reduce_motion {
             self.momentum.stop();
         }
         scene.push_layer(
@@ -1382,8 +1389,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     *handled = true;
                 } else if let Some(drag) = self.drag_scroll.finish(Instant::now()) {
                     if drag.dragged {
-                        self.momentum.fling(drag.velocity);
-                        self.last_tick = Some(Instant::now());
+                        if self.reduce_motion {
+                            self.momentum.stop();
+                        } else {
+                            self.momentum.fling(drag.velocity);
+                            self.last_tick = Some(Instant::now());
+                        }
                     } else if let Some((_, key)) = self.row_at_cursor() {
                         let toggle =
                             modifiers.state().control_key() || modifiers.state().super_key();
@@ -1399,8 +1410,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     .is_some_and(|point| self.rect.contains(point)) =>
             {
                 let delta = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => {
+                    MouseScrollDelta::LineDelta(_, y) if !self.reduce_motion => {
                         self.momentum.push(f64::from(*y) * -WHEEL_LINE_PX)
+                    }
+                    MouseScrollDelta::LineDelta(_, y) => {
+                        self.momentum.stop();
+                        f64::from(*y) * -WHEEL_LINE_PX
                     }
                     MouseScrollDelta::PixelDelta(position) => {
                         self.momentum.stop();
@@ -1634,6 +1649,7 @@ mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+    use std::time::Duration;
 
     use taffy::AvailableSpace;
     use winit::dpi::PhysicalPosition;
@@ -2409,6 +2425,46 @@ mod tests {
         dispatch(&mut list, &left(ElementState::Pressed), &taffy, node);
         dispatch(&mut list, &left(ElementState::Released), &taffy, node);
         assert!(list.selection().is_selected(&0));
+    }
+
+    #[test]
+    fn reduced_motion_keeps_direct_scroll_without_wheel_or_drag_decay() {
+        let model = VecListModel::new((0_u64..100).collect(), |key| *key).unwrap();
+        let mut list = VirtualList::new(model, 20.0, |_, _, key| {
+            Box::new(ProbeRow::new(
+                key.to_string(),
+                20.0,
+                false,
+                Rc::new(Cell::new(0)),
+            ))
+        })
+        .with_viewport_height(100.0);
+        let (taffy, node) = lay_out(&mut list, 200.0);
+        list.reduce_motion = true;
+
+        dispatch(&mut list, &cursor(50.0), &taffy, node);
+        let wheel = WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+            phase: winit::event::TouchPhase::Moved,
+        };
+        assert!(dispatch(&mut list, &wheel, &taffy, node));
+        assert_eq!(list.scroll_offset(), WHEEL_LINE_PX);
+        assert!(!list.momentum.is_active());
+
+        let now = Instant::now();
+        let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
+        let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
+        list.drag_scroll.begin(50.0, list.scroll_offset(), started);
+        assert!(list.drag_scroll.update(10.0, moved).is_some());
+        assert!(dispatch(
+            &mut list,
+            &left(ElementState::Released),
+            &taffy,
+            node
+        ));
+        assert!(!list.momentum.is_active());
+        assert!(!list.needs_animation_frame());
     }
 
     #[test]
