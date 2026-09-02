@@ -7822,7 +7822,7 @@ mod action_palette_tests {
     }
 
     #[test]
-    fn ctrl_k_invokes_a_projected_semantic_control() {
+    fn ctrl_k_does_not_project_an_uncontracted_effectful_control() {
         let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
         let captured = std::rc::Rc::clone(&presses);
         let button = Button::new("drive-me", "Drive me", None).on_click(move || {
@@ -7834,7 +7834,11 @@ mod action_palette_tests {
         app.action_palette.as_mut().unwrap().set_query("activate");
 
         assert!(app.action_palette_handle_key(&synth_enter()));
-        assert_eq!(presses.get(), 1, "Ctrl+K reaches the real control");
+        assert_eq!(
+            presses.get(),
+            0,
+            "effectful controls require an explicit domain action contract",
+        );
     }
 }
 
