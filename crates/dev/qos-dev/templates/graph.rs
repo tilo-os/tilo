@@ -22,13 +22,15 @@ pub fn app_root() -> Box<dyn Widget> {
             "create",
             "Create project",
             vec![qos_actions::ActionParam::required_owned(
-                "name", qos_actions::ParamType::Text, "Project name",
+                "name",
+                qos_actions::ParamType::Text,
+                "Project name",
             )],
         ),
         |payload| {
-            let _: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(payload)
-                .map_err(|error| error.to_string())?;
-            Ok(Default::default())
+            let _: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            Ok(qos_actions::ActionOutput::default())
         },
     )
 }
