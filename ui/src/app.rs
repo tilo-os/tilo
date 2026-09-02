@@ -224,6 +224,22 @@ type PresenceBroadcastSink = Box<dyn Fn(&PresenceKey, &PresencePayload) + Send +
 /// [`PresenceCtx::remote_cursors`] without App knowing about Iroh.
 type FrameTick = Box<dyn FnMut(&mut PresenceCtx) + Send + Sync>;
 
+/// Runtime audit result for one interactive control.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ControlBindingStatus {
+    Resolved,
+    /// Multiple affordances intentionally invoke the same operation.
+    SharedAddress,
+    StaleAddress,
+    ExplicitLegacy,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ControlBindingCoverage {
+    pub binding: crate::widget::ControlBindingMetadata,
+    pub status: ControlBindingStatus,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independently toggled, orthogonal opt-in/state bit with its own doc comment; grouping them into sub-structs would ripple through every read/write site in this file for no behavioural gain"
@@ -921,6 +937,44 @@ impl App {
         }
     }
 
+    /// Audit every retained control binding against the fresh resource tree.
+    /// This is public so development tooling can turn remaining explicit
+    /// legacy controls and stale/duplicate action addresses into a coverage
+    /// report without inspecting widget implementation details.
+    pub fn control_action_coverage(&self) -> Vec<ControlBindingCoverage> {
+        let resources = self.collect_resources();
+        self.control_action_coverage_for(&resources)
+    }
+
+    fn control_action_coverage_for(
+        &self,
+        resources: &[qos_actions::Resource],
+    ) -> Vec<ControlBindingCoverage> {
+        let mut seen = std::collections::HashSet::new();
+        self.root_widget
+            .control_action_bindings()
+            .into_iter()
+            .map(|binding| {
+                let status = match &binding.kind {
+                    crate::widget::ControlBindingKind::Action(address) => {
+                        if qos_actions::door::resolve(&resources, address).is_none() {
+                            ControlBindingStatus::StaleAddress
+                        } else if !seen.insert(address.clone()) {
+                            ControlBindingStatus::SharedAddress
+                        } else {
+                            ControlBindingStatus::Resolved
+                        }
+                    }
+                    crate::widget::ControlBindingKind::LegacyDocumentPath(_)
+                    | crate::widget::ControlBindingKind::LegacyCallback => {
+                        ControlBindingStatus::ExplicitLegacy
+                    }
+                };
+                ControlBindingCoverage { binding, status }
+            })
+            .collect()
+    }
+
     fn invoke_semantic_operation_encoded(
         &mut self,
         encoded: &qos_actions::EncodedAction,
@@ -946,6 +1000,37 @@ impl App {
             return;
         }
         let resources = self.collect_resources();
+        // Use this exact snapshot for coverage as well as publication. That
+        // prevents recursive/repeated resource collection and makes the audit
+        // correspond to the catalogue about to cross the wire.
+        let binding_coverage = self.control_action_coverage_for(&resources);
+        if binding_coverage
+            .iter()
+            .any(|entry| entry.status == ControlBindingStatus::StaleAddress)
+        {
+            for entry in binding_coverage
+                .iter()
+                .filter(|entry| entry.status == ControlBindingStatus::StaleAddress)
+            {
+                tracing::error!(
+                    control = %entry.binding.control_id,
+                    binding = ?entry.binding.kind,
+                    "refusing to publish a surface with a stale control action binding"
+                );
+            }
+            if self
+                .last_published_actions
+                .as_ref()
+                .is_some_and(|actions| !actions.is_empty())
+            {
+                self.collab_manager.send(CollabRequest::PublishActions {
+                    app_id: crate::collaboration::local_app_id(),
+                    actions: Vec::new(),
+                });
+                self.last_published_actions = Some(Vec::new());
+            }
+            return;
+        }
         let mut operation_handlers = self.root_widget.resource_operation_handlers();
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
         let violations =
@@ -1067,6 +1152,14 @@ impl App {
         invocation: Option<qos_actions::InvocationId>,
     ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
         let resources = self.collect_resources();
+        let resources = if actor == self.local_author.0 {
+            resources
+                .into_iter()
+                .filter_map(|resource| self.filter_resource_for_local_actor(resource))
+                .collect()
+        } else {
+            resources
+        };
         let typed_arguments = argument
             .and_then(|value| value.strip_prefix(qos_actions::ARGUMENTS_JSON_PREFIX))
             .map(|json| {
@@ -1188,6 +1281,58 @@ impl App {
                 Ok(started)
             }
         })()
+    }
+
+    /// Resolve queued local control intents against the current resource tree
+    /// and enter through the same door/lifecycle as every other caller.
+    fn dispatch_control_invocations(&mut self) -> usize {
+        let mut dispatched = 0;
+        while let Some(intent) = self.root_widget.take_control_invocation() {
+            let local_resources = self
+                .collect_resources()
+                .into_iter()
+                .filter_map(|resource| self.filter_resource_for_local_actor(resource))
+                .collect::<Vec<_>>();
+            let Some(resolved) = qos_actions::door::resolve(&local_resources, &intent.address)
+            else {
+                tracing::warn!(
+                    resource = %intent.address.resource,
+                    action = %intent.address.action,
+                    "action-bound control is unavailable to the local actor"
+                );
+                continue;
+            };
+            if !matches!(
+                resolved.contract.confirmation,
+                qos_actions::ConfirmationPolicy::None
+            ) {
+                // A bound control never manufactures confirmation. Hand the
+                // exact address to the standard palette flow, which owns the
+                // explicit confirm/phrase UI and only then enters the door.
+                self.open_action_palette();
+                if let Some(palette) = self.action_palette.as_mut() {
+                    palette.activate_address(&intent.address.resource, &intent.address.action);
+                }
+                dispatched += 1;
+                continue;
+            }
+            let json = format!(
+                "{}{}",
+                qos_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::Value::Object(intent.arguments.clone())
+            );
+            let actor = self.local_author.0.clone();
+            match self.invoke_resource_action(&intent.address, Some(&json), &actor, false, None) {
+                Ok(_) => dispatched += 1,
+                Err(error) => tracing::warn!(
+                    resource = %intent.address.resource,
+                    action = %intent.address.action,
+                    %error,
+                    "action-bound control invocation refused"
+                ),
+            }
+        }
+        dispatched
     }
 
     fn request_invocation_cancellation(&mut self, wire_id: u64) {
@@ -3008,6 +3153,7 @@ impl App {
             handled_any |= handled;
         }
         if handled_any {
+            self.dispatch_control_invocations();
             self.needs_sync = true;
             self.layout_dirty = true;
         }
@@ -5230,6 +5376,13 @@ impl AppHandler {
             }
         }
 
+        if app.dispatch_control_invocations() != 0 {
+            handled = true;
+            app.needs_sync = true;
+            app.layout_dirty = true;
+            window.request_redraw();
+        }
+
         app.broadcast_focus_presence();
         app.broadcast_location_presence();
         app.broadcast_view_presence();
@@ -5683,6 +5836,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         app.presence_ctx.prune_typing(typing_now);
         let typing_active = app.presence_ctx.has_active_typing(typing_now);
         if typing_active {
+            window.request_redraw();
+        }
+
+        if app.dispatch_control_invocations() != 0 {
+            app.needs_sync = true;
+            app.layout_dirty = true;
             window.request_redraw();
         }
 
@@ -8176,11 +8335,43 @@ mod semantic_tree_app_tests {
     /// `set-label`.
     struct CounterCard {
         button: Button,
+        destructive: bool,
     }
+
+    fn counter_resource(destructive: bool) -> Resource {
+        let bump =
+            ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump).unwrap();
+        let bump = if destructive {
+            bump.destructive()
+        } else {
+            bump
+        };
+        Resource::new("test.counter", "test.counter", "Counter")
+            .with_action(bump)
+            .with_action(ActionSpec::prompted(
+                "set-label",
+                "Set label",
+                "Label",
+                "name…",
+                ExecutionLocus::ClientLocal,
+                |s: &str| {
+                    EncodedAction::encode(COUNTER_TYPE, &CounterAction::SetLabel(s.to_string()))
+                        .unwrap()
+                },
+            ))
+    }
+
     impl CounterCard {
         fn new() -> Self {
+            Self::with_destructive(false)
+        }
+
+        fn with_destructive(destructive: bool) -> Self {
+            let resource = counter_resource(destructive);
+            let binding = qos_actions::ActionBinding::unit_for(&resource, "bump").unwrap();
             Self {
-                button: Button::new("bump", "Bump", None),
+                button: Button::new("bump", "Bump", None).on_action(binding),
+                destructive,
             }
         }
     }
@@ -8237,27 +8428,7 @@ mod semantic_tree_app_tests {
             KurboRect::ZERO
         }
         fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
-            vec![
-                Resource::new("test.counter", "test.counter", "Counter")
-                    .with_action(
-                        ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump)
-                            .unwrap(),
-                    )
-                    .with_action(ActionSpec::prompted(
-                        "set-label",
-                        "Set label",
-                        "Label",
-                        "name…",
-                        ExecutionLocus::ClientLocal,
-                        |s: &str| {
-                            EncodedAction::encode(
-                                COUNTER_TYPE,
-                                &CounterAction::SetLabel(s.to_string()),
-                            )
-                            .unwrap()
-                        },
-                    )),
-            ]
+            vec![counter_resource(self.destructive)]
         }
     }
 
@@ -8274,6 +8445,45 @@ mod semantic_tree_app_tests {
             Ok(Some((v, _))) => v.to_i64().unwrap_or(0),
             _ => 0,
         }
+    }
+
+    fn activate_bound_button(app: &mut App) {
+        let node = app.focusable_order[0];
+        let pointer = app.node_map[&node];
+        assert!(unsafe {
+            (*pointer).perform_action(
+                &crate::a11y::Action::Activate,
+                &mut app.state.doc,
+                &app.state.root,
+            )
+        });
+    }
+
+    #[test]
+    fn action_bound_control_uses_fresh_door_and_records_history() {
+        let mut app = app();
+        activate_bound_button(&mut app);
+        assert_eq!(counter(&app), 0, "control only queued an intent");
+        assert_eq!(app.dispatch_control_invocations(), 1);
+        assert_eq!(counter(&app), 1);
+        assert!(app.state.peek_last_undo().is_some());
+        assert_eq!(
+            app.control_action_coverage()[0].status,
+            ControlBindingStatus::Resolved
+        );
+    }
+
+    #[test]
+    fn action_bound_control_never_auto_confirms_destructive_action() {
+        let mut app = App::new(State::new(), Box::new(CounterCard::with_destructive(true)));
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        activate_bound_button(&mut app);
+        assert_eq!(app.dispatch_control_invocations(), 1);
+        assert_eq!(counter(&app), 0);
+        assert!(app.state.peek_last_undo().is_none());
+        assert!(app.action_palette().is_some(), "confirmation UI is open");
     }
     fn label(app: &App) -> String {
         match app.state.doc.get(&ROOT, "label") {

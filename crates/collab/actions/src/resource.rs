@@ -41,6 +41,7 @@ use crate::contract::{
     ActionContract, Availability, ConfirmationPolicy, DiscoveryScope, ExecutionMode,
     PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
 };
+use crate::door::ActionAddress;
 use crate::params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 
 /// Builds an action's encoded form from arguments already bound against its
@@ -51,6 +52,132 @@ use crate::params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 /// that holds an `ActionArgs` is looking at values it declared and can use them
 /// directly.
 pub type ArgsBuilder = Arc<dyn Fn(&ActionArgs) -> EncodedAction + Send + Sync>;
+
+/// A UI control's inert request to invoke one advertised operation.
+///
+/// This deliberately carries an address and typed JSON arguments, not an
+/// [`EncodedAction`]. The application host resolves the address against its
+/// *fresh* resource tree before opening the action door, so a control cannot
+/// retain stale authority when availability or policy changes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ControlInvocation {
+    pub address: ActionAddress,
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Failure to construct or emit a control binding.
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ActionBindingError {
+    #[error("action `{action}` is not exported by resource `{resource}`")]
+    ActionNotExported { resource: String, action: String },
+    #[error(transparent)]
+    InvalidArguments(#[from] ArgError),
+}
+
+/// Type-safe adapter from a control's input value to an exported action.
+///
+/// Construction requires the real [`Resource`] and [`ActionSpec`], rather
+/// than parallel string constants. Emission pre-validates arguments against a
+/// clone of that spec; the host nevertheless re-resolves and validates again
+/// at dispatch time because this object is convenience, not authority.
+#[derive(Clone)]
+pub struct ActionBinding<I> {
+    address: ActionAddress,
+    spec: ActionSpec,
+    arguments: Arc<dyn Fn(I) -> serde_json::Map<String, serde_json::Value> + Send + Sync>,
+}
+
+impl<I> ActionBinding<I> {
+    /// Bind a typed control value to arguments for an action actually exported
+    /// by `resource`.
+    pub fn new(
+        resource: &Resource,
+        spec: &ActionSpec,
+        arguments: impl Fn(I) -> serde_json::Map<String, serde_json::Value> + Send + Sync + 'static,
+    ) -> Result<Self, ActionBindingError> {
+        let exported = resource
+            .actions
+            .iter()
+            .find(|candidate| candidate.id == spec.id)
+            .ok_or_else(|| ActionBindingError::ActionNotExported {
+                resource: resource.id.0.clone(),
+                action: spec.id.clone(),
+            })?;
+        Ok(Self {
+            address: ActionAddress::new(resource.id.0.clone(), spec.id.clone()),
+            // Always retain the spec from the resource, even if a caller
+            // passed an independently-created spec with the same id.
+            spec: exported.clone(),
+            arguments: Arc::new(arguments),
+        })
+    }
+
+    /// Produce a host-routable intent after strict parameter validation.
+    pub fn invoke(&self, input: I) -> Result<ControlInvocation, ActionBindingError> {
+        let arguments = (self.arguments)(input);
+        self.spec.build_json(&arguments)?;
+        Ok(ControlInvocation {
+            address: self.address.clone(),
+            arguments,
+        })
+    }
+
+    pub fn address(&self) -> &ActionAddress {
+        &self.address
+    }
+}
+
+impl ActionBinding<()> {
+    /// Bind a nullary control to a nullary exported action.
+    pub fn unit(resource: &Resource, spec: &ActionSpec) -> Result<Self, ActionBindingError> {
+        let binding = Self::new(resource, spec, |()| serde_json::Map::new())?;
+        // Refuse a required-argument action at construction, not first click.
+        binding.spec.build_json(&serde_json::Map::new())?;
+        Ok(binding)
+    }
+
+    /// Look up the real exported spec by stable id, then create a nullary
+    /// binding. Useful when the resource is assembled inline or generated.
+    pub fn unit_for(resource: &Resource, action_id: &str) -> Result<Self, ActionBindingError> {
+        let spec = resource
+            .actions
+            .iter()
+            .find(|spec| spec.id == action_id)
+            .ok_or_else(|| ActionBindingError::ActionNotExported {
+                resource: resource.id.0.clone(),
+                action: action_id.to_string(),
+            })?;
+        Self::unit(resource, spec)
+    }
+
+    /// Bind a control to a fixed, strictly validated JSON argument object.
+    pub fn static_json(
+        resource: &Resource,
+        spec: &ActionSpec,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Self, ActionBindingError> {
+        let binding = Self::new(resource, spec, move |()| arguments.clone())?;
+        binding.spec.build_json(&(binding.arguments)(()))?;
+        Ok(binding)
+    }
+
+    /// Look up the real exported spec by id, then bind fixed JSON arguments.
+    pub fn static_json_for(
+        resource: &Resource,
+        action_id: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Self, ActionBindingError> {
+        let spec = resource
+            .actions
+            .iter()
+            .find(|spec| spec.id == action_id)
+            .ok_or_else(|| ActionBindingError::ActionNotExported {
+                resource: resource.id.0.clone(),
+                action: action_id.to_string(),
+            })?;
+        Self::static_json(resource, spec, arguments)
+    }
+}
 
 /// The parameter name a [`prompted`](ActionSpec::prompted) spec projects its
 /// single free-text argument under.
@@ -807,5 +934,35 @@ mod tests {
             .build_json(serde_json::json!({"value":"x"}).as_object().unwrap())
             .unwrap();
         assert_eq!(encoded.type_id, INVALID_ARGUMENTS_TYPE);
+    }
+
+    #[test]
+    fn binding_looks_up_real_spec_and_validates_static_arguments() {
+        let resource =
+            Resource::new("view:1", "view", "View").with_action(ActionSpec::typed_operation(
+                "zoom",
+                "Zoom",
+                "factor",
+                OperationKind::View,
+                "view.zoom",
+                vec![ActionParam::required("factor", ParamType::Number, "Factor")],
+                |args| {
+                    EncodedAction::encode_operation("view.zoom", &args.number("factor")).unwrap()
+                },
+            ));
+        assert!(ActionBinding::unit_for(&resource, "zoom").is_err());
+        let binding = ActionBinding::static_json_for(
+            &resource,
+            "zoom",
+            serde_json::json!({"factor": 1.5})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+        let invocation = binding.invoke(()).unwrap();
+        assert_eq!(invocation.address, ActionAddress::new("view:1", "zoom"));
+        assert_eq!(invocation.arguments["factor"], 1.5);
+        assert!(ActionBinding::unit_for(&resource, "missing").is_err());
     }
 }
