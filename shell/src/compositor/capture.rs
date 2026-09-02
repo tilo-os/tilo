@@ -903,6 +903,8 @@ impl CaptureExecutor {
             .map(|track| replay_audio_tail(&track.pcm, replay.frames.len()))
             .collect();
         for (frame_index, frame) in replay.frames.iter().enumerate() {
+            #[cfg(not(feature = "hdr-decode"))]
+            let _ = frame_index;
             output.write_access_unit(&frame.access_unit)?;
             #[cfg(feature = "hdr-decode")]
             for (track_index, pcm) in audio.iter().enumerate() {
