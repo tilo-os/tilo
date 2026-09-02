@@ -286,9 +286,6 @@ fn topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues() {
     let collab_2 = Collaborator::new("bob", "Bo");
     let mut workspace = Workspace::new(WorkspaceId::new(), "A");
     workspace.collaborators = vec![collab_1, collab_2];
-
-    let mut workspace = Workspace::new(WorkspaceId::new(), "A");
-    workspace.collaborators = vec![collab_1, collab_2];
     let mut tree = WorkspaceTree {
         workspaces: vec![workspace],
         active: WorkspaceId::from(0),
