@@ -141,7 +141,15 @@ def watch(
     latest: list[dict[str, Any]] = []
 
     while time.monotonic() < deadline:
-        latest = recent_runs(cwd=cwd, host=host, repo=repo, sha=sha, started=started)
+        try:
+            latest = recent_runs(
+                cwd=cwd, host=host, repo=repo, sha=sha, started=started
+            )
+        except (OSError, ValueError, subprocess.SubprocessError):
+            if not latest and time.monotonic() >= discovery_deadline:
+                raise
+            time.sleep(POLL_SECONDS)
+            continue
         keys = {run_key(item) for item in latest}
         if keys != last_keys:
             last_keys = keys
