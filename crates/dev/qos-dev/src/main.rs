@@ -1002,8 +1002,13 @@ fn run_check(args: CheckArgs) -> Result<()> {
         anyhow::bail!("app checks failed");
     }
 
+    let quality = qos_dev::plan_app_quality(&path, &args.forwarded)?;
+    println!("[check] Rust formatting");
+    quality.format.execute()?;
+    println!("[check] app-local Clippy");
+    quality.clippy.execute()?;
     println!("[check] Rust tests and generated accessibility contract");
-    qos_dev::plan_app_task(&path, qos_dev::AppTask::Test, &args.forwarded)?.execute()?;
+    quality.test.execute()?;
 
     if !args.no_scenarios {
         println!("[check] isolated accessibility-audited scenarios");
