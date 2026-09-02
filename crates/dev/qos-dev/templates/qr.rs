@@ -52,10 +52,7 @@ pub fn app_root() -> Box<dyn Widget> {
     let reset_binding = qos_actions::ActionBinding::static_json_for(
         &resource,
         "set-payload",
-        serde_json::Map::from_iter([(
-            "payload".into(),
-            serde_json::json!("https://qos.dev"),
-        )]),
+        serde_json::Map::from_iter([("payload".into(), serde_json::json!("https://qos.dev"))]),
     )
     .expect("generated default payload matches the exported QR action");
     let reset = Button::new("qr-reset", "Reset QR code", None).on_action(reset_binding);
@@ -66,19 +63,15 @@ pub fn app_root() -> Box<dyn Widget> {
         output,
         reset,
     ]);
-    ui::widget::resource_actions::immediate(
-        root,
-        resource,
-        move |bytes| {
-            let args: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-            let value = args
-                .get("payload")
-                .and_then(|value| value.as_str())
-                .ok_or("missing payload")?
-                .to_owned();
-            set_payload(&payload, value);
-            Ok(qos_actions::ActionOutput::default())
-        },
-    )
+    ui::widget::resource_actions::immediate(root, resource, move |bytes| {
+        let args: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        let value = args
+            .get("payload")
+            .and_then(|value| value.as_str())
+            .ok_or("missing payload")?
+            .to_owned();
+        set_payload(&payload, value);
+        Ok(qos_actions::ActionOutput::default())
+    })
 }

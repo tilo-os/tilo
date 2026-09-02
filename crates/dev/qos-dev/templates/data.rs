@@ -169,8 +169,8 @@ pub fn app_root() -> Box<dyn Widget> {
                 .expect("generated row arguments match the exported action");
                 Box::new(
                     Button::new(&format!("open-{}", row.id), "data-open", None)
-                    .on_action(binding)
-                    .fit_content(28.0),
+                        .on_action(binding)
+                        .fit_content(28.0),
                 )
             }),
     ];
@@ -179,17 +179,13 @@ pub fn app_root() -> Box<dyn Widget> {
         .with_accessible_name("data-accessible-name")
         .selectable(true);
     table.set_viewport(720.0, 32.0);
-    ui::widget::resource_actions::immediate(
-        Box::new(table),
-        row_resource(),
-        |payload| {
-            let args: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-            let id = args
-                .get("id")
-                .and_then(serde_json::Value::as_u64)
-                .ok_or("missing id")?;
-            Ok(open_row(id))
-        },
-    )
+    ui::widget::resource_actions::immediate(Box::new(table), row_resource(), |payload| {
+        let args: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let id = args
+            .get("id")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or("missing id")?;
+        Ok(open_row(id))
+    })
 }
