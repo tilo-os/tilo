@@ -650,14 +650,42 @@ pub trait Widget {
     /// Handle an action addressed to a synthetic accessibility child created
     /// by this widget. `target` is the opaque stable value supplied through
     /// [`AccessNode::with_action_target`](crate::a11y::AccessNode::with_action_target).
+    ///
+    /// Custom canvases using
+    /// [`AccessNode::with_keyed_action_routes`](crate::a11y::AccessNode::with_keyed_action_routes)
+    /// do not need to override this method: the default decodes the published
+    /// semantic target and forwards it to [`Widget::perform_action_at`].
     fn perform_semantic_action(
         &mut self,
-        _target: &str,
-        _action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
     ) -> bool {
-        false
+        // `AccessNode::with_keyed_action_routes` publishes a custom-painted
+        // control through the same semantic target that search and agents
+        // consume. Decode that target here, at the Widget boundary, so the
+        // app author implements `perform_action_at` once and gets every input
+        // route promised by the adapter. Explicit semantic targets keep using
+        // their widget-specific implementations because they do not carry
+        // this reserved prefix.
+        let Some((_, encoded_path)) = target
+            .strip_prefix("qos.key-action:")
+            .and_then(|target| target.rsplit_once(':'))
+        else {
+            return false;
+        };
+        let Ok(key_path) = encoded_path
+            .split('/')
+            .map(str::parse::<u64>)
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return false;
+        };
+        if key_path.is_empty() {
+            return false;
+        }
+        self.perform_action_at(action, &key_path, state, path)
     }
 
     /// A disabled (`false`) widget is excluded from focus traversal, must

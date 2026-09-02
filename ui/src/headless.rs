@@ -3489,7 +3489,7 @@ mod a11y_driver_tests {
                             .iter()
                             .enumerate()
                             .map(|(i, id)| {
-                                AccessNode::new(Role::ListItem)
+                                AccessNode::new(Role::Button)
                                     .with_name(*id)
                                     .with_hashed_key(*id)
                                     .with_state(
@@ -3499,7 +3499,11 @@ mod a11y_driver_tests {
                                     )
                             })
                             .collect(),
-                    ),
+                    )
+                    // This is the high-complexity custom-canvas path: one
+                    // keyed tree becomes searchable/agent-driveable while AT
+                    // still reaches the existing `perform_action_at` switch.
+                    .with_keyed_action_routes("test-strip"),
             )
         }
         fn perform_action_at(
