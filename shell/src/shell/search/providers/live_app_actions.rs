@@ -1,9 +1,8 @@
 //! Dynamic provider backed by the resource/action surfaces live qOS apps
 //! publish through the session collaboration broker.
 
-use std::time::Duration;
-
 use crate::shell::collab_broker::AppActionBroker;
+use crate::shell::search::ActionReceipt;
 use crate::shell::search::action_api::{ActionError, ActionParam, ParamType};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
@@ -12,8 +11,92 @@ use crate::shell::collab_broker_capnp::{PublishedAction, PublishedInput, Publish
 pub const PROVIDER_ID: &str = "app-actions";
 const ID_SEPARATOR: char = '\u{1f}';
 
+pub fn job_status_id(id: u64) -> String {
+    format!("job{ID_SEPARATOR}{id}")
+}
+
+pub fn job_cancel_id(id: u64) -> String {
+    format!("job-cancel{ID_SEPARATOR}{id}")
+}
+
 pub struct LiveAppActionsProvider {
     broker: AppActionBroker,
+}
+
+fn start_on_peer(
+    broker: &AppActionBroker,
+    peer_id: u64,
+    resource: &str,
+    action: &str,
+    argument: Option<&str>,
+    actor: &str,
+    confirmation: &qos_actions::ConfirmationPolicy,
+    confirmed: bool,
+    phrase: Option<&str>,
+) -> Result<crate::shell::collab_broker_capnp::InvocationJob, String> {
+    match confirmation {
+        qos_actions::ConfirmationPolicy::None => {
+            broker.start(peer_id, resource, action, argument, actor)
+        }
+        qos_actions::ConfirmationPolicy::Confirm => {
+            if !confirmed {
+                return Err("explicit confirmation is required".into());
+            }
+            let token =
+                broker.prepare_confirmation(peer_id, resource, action, argument, actor, None)?;
+            broker.start_confirmed(peer_id, resource, action, argument, actor, &token)
+        }
+        qos_actions::ConfirmationPolicy::Phrase { .. } => {
+            let token =
+                broker.prepare_confirmation(peer_id, resource, action, argument, actor, phrase)?;
+            broker.start_confirmed(peer_id, resource, action, argument, actor, &token)
+        }
+    }
+}
+
+fn receipt_for_job(
+    broker: &AppActionBroker,
+    job: crate::shell::collab_broker_capnp::InvocationJob,
+) -> ActionReceipt {
+    let update = broker
+        .status(job.id)
+        .unwrap_or_else(|| qos_actions::InvocationUpdate::Accepted {
+            invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(job.id))),
+        });
+    drop(job.completion);
+    ActionReceipt {
+        broker_invocation_id: Some(job.id),
+        update,
+    }
+}
+
+fn invocation_argument(
+    args: &crate::shell::search::action_api::ActionArgs,
+    typed_arguments: bool,
+    wants_content: bool,
+) -> (Option<String>, bool, Option<String>) {
+    let encoded = typed_arguments.then(|| {
+        let mut application_args = args.to_json();
+        application_args.remove("confirm");
+        application_args.remove("confirmation_phrase");
+        format!(
+            "{}{}",
+            qos_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::Value::Object(application_args)
+        )
+    });
+    let argument = encoded.or_else(|| {
+        if wants_content {
+            args.text("content").map(str::to_owned)
+        } else {
+            args.text("argument").map(str::to_owned)
+        }
+    });
+    (
+        argument,
+        args.boolean("confirm") == Some(true),
+        args.text("confirmation_phrase").map(str::to_owned),
+    )
 }
 
 impl LiveAppActionsProvider {
@@ -21,29 +104,42 @@ impl LiveAppActionsProvider {
         Self { broker }
     }
 
-    pub fn capability_target(id: &str) -> Option<(&str, qos_actions::OperationKind, &str)> {
+    pub fn capability_target(id: &str) -> Option<(&str, qos_actions::PermissionRequirement, &str)> {
         let mut parts = id.split(ID_SEPARATOR);
-        let _peer = parts.next()?.parse::<u64>().ok()?;
         let app = parts.next()?;
-        let kind = match parts.next()? {
-            "document" => qos_actions::OperationKind::Document,
-            "effect" => qos_actions::OperationKind::Effect,
-            "view" => qos_actions::OperationKind::View,
+        let permission = match parts.next()? {
+            "none" => qos_actions::PermissionRequirement::None,
+            "read" => qos_actions::PermissionRequirement::Read,
+            "comment" => qos_actions::PermissionRequirement::Comment,
+            "write" => qos_actions::PermissionRequirement::Write,
+            "invite" => qos_actions::PermissionRequirement::Invite,
+            "admin" => qos_actions::PermissionRequirement::Admin,
             _ => return None,
         };
+        let _workspace = parts.next()?;
+        let _record = parts.next()?;
         let _resource = parts.next()?;
         let action = parts.next()?;
-        parts.next().is_none().then_some((app, kind, action))
+        parts.next().is_none().then_some((app, permission, action))
     }
 
     fn result_id(surface: &PublishedSurface, action: &PublishedAction) -> String {
         format!(
-            "{}{}{}{}{}{}{}{}{}",
-            surface.peer_id,
-            ID_SEPARATOR,
+            "{}{}{}{}{}{}{}{}{}{}{}",
             surface.app_id,
             ID_SEPARATOR,
-            action.operation_kind.as_str(),
+            match action.contract.permission {
+                qos_actions::PermissionRequirement::None => "none",
+                qos_actions::PermissionRequirement::Read => "read",
+                qos_actions::PermissionRequirement::Comment => "comment",
+                qos_actions::PermissionRequirement::Write => "write",
+                qos_actions::PermissionRequirement::Invite => "invite",
+                qos_actions::PermissionRequirement::Admin => "admin",
+            },
+            ID_SEPARATOR,
+            surface.route.cluster_id,
+            ID_SEPARATOR,
+            surface.route.record_id,
             ID_SEPARATOR,
             action.resource,
             ID_SEPARATOR,
@@ -73,25 +169,42 @@ impl LiveAppActionsProvider {
     }
 
     fn action_params(action: &PublishedAction) -> Vec<ActionParam> {
-        if !action.params.is_empty() {
-            return action.params.clone();
+        let mut params = if action.params.is_empty() {
+            match action.input {
+                PublishedInput::None => Vec::new(),
+                PublishedInput::Text {
+                    wants_content: true,
+                    ..
+                } => vec![ActionParam::required(
+                    "content",
+                    ParamType::Text,
+                    "Content supplied to the application action",
+                )],
+                PublishedInput::Text { .. } => vec![ActionParam::required(
+                    "argument",
+                    ParamType::Text,
+                    "Text supplied to the application action",
+                )],
+            }
+        } else {
+            action.params.clone()
+        };
+        match &action.contract.confirmation {
+            qos_actions::ConfirmationPolicy::None => {}
+            qos_actions::ConfirmationPolicy::Confirm => params.push(ActionParam::required(
+                "confirm",
+                ParamType::Boolean,
+                "Explicitly confirm this consequential action",
+            )),
+            qos_actions::ConfirmationPolicy::Phrase { .. } => {
+                params.push(ActionParam::required(
+                    "confirmation_phrase",
+                    ParamType::Text,
+                    "Type the action's confirmation phrase exactly",
+                ));
+            }
         }
-        match action.input {
-            PublishedInput::None => Vec::new(),
-            PublishedInput::Text {
-                wants_content: true,
-                ..
-            } => vec![ActionParam::required(
-                "content",
-                ParamType::Text,
-                "Content supplied to the application action",
-            )],
-            PublishedInput::Text { .. } => vec![ActionParam::required(
-                "argument",
-                ParamType::Text,
-                "Text supplied to the application action",
-            )],
-        }
+        params
     }
 }
 
@@ -122,11 +235,79 @@ impl SearchProvider for LiveAppActionsProvider {
         let needle = ctx.needle.trim().to_lowercase();
         let actor = ctx.chrome.active_local_user();
         let mut results = Vec::new();
+        if needle.is_empty() || "jobs status progress".contains(&needle) {
+            for (id, update) in self.broker.statuses(&actor) {
+                let state = match &update {
+                    qos_actions::InvocationUpdate::Accepted { .. } => "accepted",
+                    qos_actions::InvocationUpdate::Progress { .. } => "running",
+                    qos_actions::InvocationUpdate::Item { .. } => "streaming",
+                    qos_actions::InvocationUpdate::Succeeded { .. } => "succeeded",
+                    qos_actions::InvocationUpdate::Failed { .. } => "failed",
+                    qos_actions::InvocationUpdate::Cancelled { .. } => "cancelled",
+                };
+                let status_broker = self.broker.clone();
+                results.push(SearchResult {
+                    kind: ResourceKind::Custom("action-job".into()),
+                    provider_id: PROVIDER_ID.into(),
+                    id: job_status_id(id),
+                    title: format!("Action job {id}"),
+                    subtitle: Some(state.into()),
+                    score: -10,
+                    params: Vec::new(),
+                    contract: None,
+                    on_open: std::rc::Rc::new(|_, _, _, _| Ok(())),
+                    on_invoke: Some(std::rc::Rc::new(move |_, _, _, _| {
+                        let update = status_broker
+                            .status(id)
+                            .ok_or_else(|| ActionError::Refused("unknown invocation id".into()))?;
+                        Ok(ActionReceipt {
+                            broker_invocation_id: Some(id),
+                            update,
+                        })
+                    })),
+                });
+                if self.broker.can_cancel(id, &actor) {
+                    let broker = self.broker.clone();
+                    let actor = actor.clone();
+                    let invoke_broker = broker.clone();
+                    let invoke_actor = actor.clone();
+                    results.push(SearchResult {
+                        kind: ResourceKind::Action,
+                        provider_id: PROVIDER_ID.into(),
+                        id: job_cancel_id(id),
+                        title: format!("Cancel action job {id}"),
+                        subtitle: Some("Requests cooperative cancellation".into()),
+                        score: 5,
+                        params: Vec::new(),
+                        contract: None,
+                        on_open: std::rc::Rc::new(move |_, _, _, _| {
+                            broker.cancel(id, &actor).map_err(ActionError::Refused)
+                        }),
+                        on_invoke: Some(std::rc::Rc::new(move |_, _, _, _| {
+                            invoke_broker
+                                .cancel(id, &invoke_actor)
+                                .map_err(ActionError::Refused)?;
+                            let update = invoke_broker.status(id).ok_or_else(|| {
+                                ActionError::Refused("unknown invocation id".into())
+                            })?;
+                            Ok(ActionReceipt {
+                                broker_invocation_id: Some(id),
+                                update,
+                            })
+                        })),
+                    });
+                }
+            }
+        }
         for surface in self.broker.surfaces() {
             if !Self::matches_scope(&surface, &ctx) {
                 continue;
             }
             for action in &surface.actions {
+                let unavailable_reason = match &action.contract.availability {
+                    qos_actions::Availability::Available => None,
+                    qos_actions::Availability::Unavailable { reason, .. } => Some(reason.clone()),
+                };
                 let searchable = format!(
                     "{} {} {} {} {}",
                     action.action_label,
@@ -159,22 +340,56 @@ impl SearchProvider for LiveAppActionsProvider {
                     }
                 );
                 let typed_arguments = !action.params.is_empty();
+                let confirmation = action.contract.confirmation.clone();
+                let surface_live = surface.live;
+                let app_id = surface.app_id.clone();
+                let cluster_id = surface.route.cluster_id.clone();
+                let action_label = action.action_label.clone();
+                let invoke_broker = broker.clone();
+                let invoke_resource = resource.clone();
+                let invoke_action_id = action_id.clone();
+                let invoke_actor = actor.clone();
+                let invoke_confirmation = confirmation.clone();
+                let invoke_app_id = app_id.clone();
+                let invoke_cluster_id = cluster_id.clone();
+                let invoke_unavailable_reason = unavailable_reason.clone();
                 results.push(SearchResult {
                     kind: ResourceKind::Action,
                     provider_id: PROVIDER_ID.to_string(),
                     id: Self::result_id(&surface, action),
                     title: action.action_label.clone(),
-                    subtitle: Some(action.description.clone().unwrap_or_else(|| {
-                        format!("{} · {}", action.resource_label, surface.app_id)
+                    subtitle: Some(unavailable_reason.clone().unwrap_or_else(|| {
+                        action.description.clone().unwrap_or_else(|| {
+                            if surface_live {
+                                format!("{} · {}", action.resource_label, surface.app_id)
+                            } else {
+                                format!(
+                                    "{} · {} · launches application",
+                                    action.resource_label, surface.app_id
+                                )
+                            }
+                        })
                     })),
                     score,
                     params,
-                    on_open: std::rc::Rc::new(move |_doc, _root, _chrome, args| {
+                    contract: Some(action.contract.clone()),
+                    on_open: std::rc::Rc::new(move |_doc, _root, chrome, args| {
+                        // Availability on an archived launchable descriptor is
+                        // only a last-known hint. Launch first and let the
+                        // freshly published surface decide; otherwise an app
+                        // closed while temporarily busy could never be opened
+                        // through that action again.
+                        if surface_live && let Some(reason) = &unavailable_reason {
+                            return Err(ActionError::Refused(reason.clone()));
+                        }
                         let encoded_arguments = typed_arguments.then(|| {
+                            let mut application_args = args.to_json();
+                            application_args.remove("confirm");
+                            application_args.remove("confirmation_phrase");
                             format!(
                                 "{}{}",
                                 qos_actions::ARGUMENTS_JSON_PREFIX,
-                                serde_json::Value::Object(args.to_json())
+                                serde_json::Value::Object(application_args)
                             )
                         });
                         let argument = if let Some(arguments) = encoded_arguments.as_deref() {
@@ -184,25 +399,189 @@ impl SearchProvider for LiveAppActionsProvider {
                         } else {
                             args.text("argument")
                         };
-                        let completion = broker
-                            .invoke(peer_id, &resource, &action_id, argument, &actor)
-                            .map_err(ActionError::Refused)?
-                            .recv_timeout(Duration::from_secs(5))
-                            .map_err(|_| {
-                                ActionError::Refused(
-                                    "application did not complete the action within five seconds"
-                                        .into(),
-                                )
-                            })?;
-                        if completion.code.is_empty() {
-                            Ok(())
-                        } else {
-                            Err(ActionError::Refused(format!(
-                                "{}: {}",
-                                completion.code, completion.message
-                            )))
+                        let confirmed = args.boolean("confirm") == Some(true);
+                        let phrase = args.text("confirmation_phrase").map(str::to_owned);
+                        if !surface_live {
+                            // Validate the human confirmation before starting
+                            // another process; the broker binds a fresh one-use
+                            // grant to the reconnected peer immediately before
+                            // delivery.
+                            match &confirmation {
+                                qos_actions::ConfirmationPolicy::Confirm if !confirmed => {
+                                    return Err(ActionError::Refused(
+                                        "explicit confirmation is required".into(),
+                                    ));
+                                }
+                                qos_actions::ConfirmationPolicy::Phrase { phrase: expected }
+                                    if phrase.as_deref() != Some(expected.as_str()) =>
+                                {
+                                    return Err(ActionError::Refused(
+                                        "the confirmation phrase did not match".into(),
+                                    ));
+                                }
+                                _ => {}
+                            }
+                            crate::shell::search::providers::applications::launch_installed_app(
+                                chrome, &app_id, &app_id,
+                            )?;
+                            let broker = broker.clone();
+                            let resource = resource.clone();
+                            let action_id = action_id.clone();
+                            let argument = argument.map(str::to_owned);
+                            let actor = actor.clone();
+                            let confirmation = confirmation.clone();
+                            let phrase = phrase.clone();
+                            let app_id = app_id.clone();
+                            let cluster_id = cluster_id.clone();
+                            let action_label = action_label.clone();
+                            std::thread::Builder::new()
+                                .name("qos-deferred-action".into())
+                                .spawn(move || {
+                                    let deadline = std::time::Instant::now()
+                                        + std::time::Duration::from_secs(30);
+                                    while std::time::Instant::now() < deadline {
+                                        let target =
+                                            broker.surfaces().into_iter().find(|surface| {
+                                                surface.live
+                                                    && surface.app_id == app_id
+                                                    && surface.route.cluster_id == cluster_id
+                                                    && surface.actions.iter().any(|candidate| {
+                                                        candidate.resource == resource
+                                                            && candidate.action == action_id
+                                                    })
+                                            });
+                                        if let Some(target) = target {
+                                            match start_on_peer(
+                                                &broker,
+                                                target.peer_id,
+                                                &resource,
+                                                &action_id,
+                                                argument.as_deref(),
+                                                &actor,
+                                                &confirmation,
+                                                confirmed,
+                                                phrase.as_deref(),
+                                            ) {
+                                                Ok(job) => {
+                                                    tracing::debug!(
+                                                        invocation_id = job.id,
+                                                        "deferred application action accepted"
+                                                    );
+                                                    drop(job.completion);
+                                                }
+                                                Err(error) => tracing::warn!(
+                                                    %error,
+                                                    action = %action_label,
+                                                    "deferred application action was refused"
+                                                ),
+                                            }
+                                            return;
+                                        }
+                                        std::thread::sleep(std::time::Duration::from_millis(100));
+                                    }
+                                    tracing::warn!(
+                                        action = %action_label,
+                                        app = %app_id,
+                                        "application did not publish its launchable action in time"
+                                    );
+                                })
+                                .map_err(|error| ActionError::Refused(error.to_string()))?;
+                            return Ok(());
                         }
+                        let job = start_on_peer(
+                            &broker,
+                            peer_id,
+                            &resource,
+                            &action_id,
+                            argument,
+                            &actor,
+                            &confirmation,
+                            confirmed,
+                            phrase.as_deref(),
+                        )
+                        .map_err(ActionError::Refused)?;
+                        tracing::debug!(invocation_id = job.id, "application action accepted");
+                        // Completion remains owned by the broker's job registry;
+                        // dropping this compatibility receiver does not erase status.
+                        drop(job.completion);
+                        // Admission is synchronous; execution is observed as a
+                        // broker job rather than blocking the compositor.
+                        Ok(())
                     }),
+                    on_invoke: Some(std::rc::Rc::new(move |_doc, _root, chrome, args| {
+                        if surface_live && let Some(reason) = &invoke_unavailable_reason {
+                            return Err(ActionError::Refused(reason.clone()));
+                        }
+                        let (argument, confirmed, phrase) =
+                            invocation_argument(args, typed_arguments, wants_content);
+                        if !surface_live {
+                            match &invoke_confirmation {
+                                qos_actions::ConfirmationPolicy::Confirm if !confirmed => {
+                                    return Err(ActionError::Refused(
+                                        "explicit confirmation is required".into(),
+                                    ));
+                                }
+                                qos_actions::ConfirmationPolicy::Phrase { phrase: expected }
+                                    if phrase.as_deref() != Some(expected.as_str()) =>
+                                {
+                                    return Err(ActionError::Refused(
+                                        "the confirmation phrase did not match".into(),
+                                    ));
+                                }
+                                _ => {}
+                            }
+                            crate::shell::search::providers::applications::launch_installed_app(
+                                chrome,
+                                &invoke_app_id,
+                                &invoke_app_id,
+                            )?;
+                            let deadline =
+                                std::time::Instant::now() + std::time::Duration::from_secs(30);
+                            while std::time::Instant::now() < deadline {
+                                let target = invoke_broker.surfaces().into_iter().find(|surface| {
+                                    surface.live
+                                        && surface.app_id == invoke_app_id
+                                        && surface.route.cluster_id == invoke_cluster_id
+                                        && surface.actions.iter().any(|candidate| {
+                                            candidate.resource == invoke_resource
+                                                && candidate.action == invoke_action_id
+                                        })
+                                });
+                                if let Some(target) = target {
+                                    let job = start_on_peer(
+                                        &invoke_broker,
+                                        target.peer_id,
+                                        &invoke_resource,
+                                        &invoke_action_id,
+                                        argument.as_deref(),
+                                        &invoke_actor,
+                                        &invoke_confirmation,
+                                        confirmed,
+                                        phrase.as_deref(),
+                                    )
+                                    .map_err(ActionError::Refused)?;
+                                    return Ok(receipt_for_job(&invoke_broker, job));
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(100));
+                            }
+                            return Err(ActionError::Refused(
+                                "application did not publish its launchable action in time".into(),
+                            ));
+                        }
+                        let job = start_on_peer(
+                            &invoke_broker,
+                            peer_id,
+                            &invoke_resource,
+                            &invoke_action_id,
+                            argument.as_deref(),
+                            &invoke_actor,
+                            &invoke_confirmation,
+                            confirmed,
+                            phrase.as_deref(),
+                        )
+                        .map_err(ActionError::Refused)?;
+                        Ok(receipt_for_job(&invoke_broker, job))
+                    })),
                 });
             }
         }

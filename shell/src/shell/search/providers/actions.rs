@@ -783,6 +783,7 @@ impl SearchProvider for ActionsProvider {
                     subtitle: Some(action.subtitle.to_string()),
                     score,
                     params: action.params.to_vec(),
+                    contract: None,
                     on_open: Rc::new(move |_doc, _root, chrome: &Chrome, args: &ActionArgs| {
                         let mut st = chrome.borrow_mut();
                         let outcome = apply(&mut st, args);
@@ -792,6 +793,7 @@ impl SearchProvider for ActionsProvider {
                         }
                         outcome
                     }),
+                    on_invoke: None,
                 });
             }
         }

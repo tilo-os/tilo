@@ -329,6 +329,8 @@ pub struct CalendarApp {
     /// ticking (`needs_animation_frame`) so the worker's result lands promptly
     /// without waiting for the next unrelated input.
     syncing: bool,
+    resource_sync_invocation: Option<qos_actions::InvocationId>,
+    resource_sync_result: Option<qos_actions::InvocationUpdate>,
 
     /// Framework-owned action dispatch. Each on-screen affordance dispatches its
     /// [`CalendarAction`](crate::actions::CalendarAction) through this: the host
@@ -436,6 +438,8 @@ impl CalendarApp {
             agenda: AgendaView::new(),
             sync_rx: None,
             syncing: false,
+            resource_sync_invocation: None,
+            resource_sync_result: None,
             actions: ui::ActionHost::new(),
             model_heads: Vec::new(),
         }
@@ -634,7 +638,30 @@ impl CalendarApp {
                 for id in deleted {
                     CalDoc::dequeue_delete(doc, id);
                 }
+                let failure = match &outcome {
+                    SyncOutcome::Failed(reason) => Some(reason.clone()),
+                    SyncOutcome::Offline => Some("calendar service is offline".to_string()),
+                    SyncOutcome::Synced { .. } => None,
+                };
                 self.apply_sync_result(result, outcome, doc);
+                if let Some(invocation) = self.resource_sync_invocation.take() {
+                    self.resource_sync_result = Some(if let Some(message) = failure {
+                        qos_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: qos_actions::ActionFailure {
+                                code: "calendar.sync_failed".into(),
+                                message,
+                                details: None,
+                                retryable: true,
+                            },
+                        }
+                    } else {
+                        qos_actions::InvocationUpdate::Succeeded {
+                            invocation,
+                            output: qos_actions::ActionOutput::default(),
+                        }
+                    });
+                }
                 // A landed pull mutated the document — persist it.
                 self.force_persist = true;
             }
@@ -644,6 +671,18 @@ impl CalendarApp {
                 self.sync_rx = None;
                 self.syncing = false;
                 self.status = Some("Sync failed".into());
+                if let Some(invocation) = self.resource_sync_invocation.take() {
+                    self.resource_sync_result = Some(qos_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: qos_actions::ActionFailure {
+                            code: "calendar.sync_worker_lost".into(),
+                            message: "calendar synchronization worker stopped without a result"
+                                .into(),
+                            details: None,
+                            retryable: true,
+                        },
+                    });
+                }
                 self.dirty = true;
             }
         }
@@ -993,6 +1032,9 @@ impl CalendarApp {
             new_event: crate::actions::EventData::from_event(&template),
             events,
             tasks,
+            can_sync: self.demo || !self.accounts.is_empty(),
+            syncing: self.syncing,
+            can_export: !self.model.events.is_empty() || !self.model.tasks.is_empty(),
         }
     }
 
@@ -4038,6 +4080,10 @@ impl Default for CalendarApp {
 }
 
 impl Widget for CalendarApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::CALENDAR_OPERATION_TYPE]
+    }
+
     /// Publish the open calendar + its events/tasks so the host's Ctrl+K action
     /// palette scopes to them. Delegates to the
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
@@ -4051,6 +4097,102 @@ impl Widget for CalendarApp {
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if type_id != crate::actions::CALENDAR_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let operation: crate::actions::CalendarOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        match (kind, operation) {
+            (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowMonth) => {
+                self.view = View::Month
+            }
+            (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowWeek) => {
+                self.view = View::Week
+            }
+            (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowDay) => {
+                self.view = View::Day
+            }
+            (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowAgenda) => {
+                self.view = View::Agenda
+            }
+            (qos_actions::OperationKind::Effect, crate::actions::CalendarOperation::Sync) => {
+                if self.syncing {
+                    return Err("calendar synchronization is already running".into());
+                }
+                let mut doc = doc.clone();
+                self.start_sync(&mut doc);
+            }
+            (qos_actions::OperationKind::Effect, crate::actions::CalendarOperation::ExportIcs) => {
+                self.export_ics()
+            }
+            _ => return Err("operation kind does not match Calendar operation".into()),
+        }
+        self.dirty = true;
+        Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let operation = (type_id == crate::actions::CALENDAR_OPERATION_TYPE)
+            .then(|| serde_json::from_slice::<crate::actions::CalendarOperation>(payload))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        if kind != qos_actions::OperationKind::Effect
+            || operation != Some(crate::actions::CalendarOperation::Sync)
+        {
+            return self
+                .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
+                .map(|result| result.map(ui::widget::ResourceOperationStart::Completed));
+        }
+        if self.resource_sync_invocation.is_some() || self.syncing {
+            return Err("calendar synchronization is already running".into());
+        }
+        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        if self.syncing {
+            self.resource_sync_invocation = Some(invocation);
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                qos_actions::ActionOutput::default(),
+            )))
+        }
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if self
+            .resource_sync_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            self.resource_sync_result.take()
+        } else {
+            None
+        }
     }
 
     /// Fold the calendar's events into the unified Ctrl+K palette: a snapshot

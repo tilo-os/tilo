@@ -405,6 +405,8 @@ pub struct FeedsApp {
     // --- refresh progress + non-blocking drain --------------------------
     /// Live refresh progress shown in the list header.
     refresh: RefreshState,
+    resource_refresh_invocation: Option<qos_actions::InvocationId>,
+    resource_refresh_result: Option<qos_actions::InvocationUpdate>,
     /// CRDT writes produced by the doc-less `draw`-time drain, flushed on the
     /// next pass that holds the document.
     pending_doc_writes: Vec<DocWrite>,
@@ -503,6 +505,8 @@ impl FeedsApp {
             settings_btn_rect: Rect::ZERO,
             settings_hits: Vec::new(),
             refresh: RefreshState::default(),
+            resource_refresh_invocation: None,
+            resource_refresh_result: None,
             pending_doc_writes: Vec::new(),
             sidebar: FlapState::open_when_docked(),
             detail_pushed: false,
@@ -1404,6 +1408,27 @@ impl FeedsApp {
             && self.refresh.finished_at.is_none()
         {
             self.refresh.finished_at = Some(Instant::now());
+            if let Some(invocation) = self.resource_refresh_invocation.take() {
+                self.resource_refresh_result = Some(if self.refresh.failed_feeds > 0 {
+                    qos_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: qos_actions::ActionFailure {
+                            code: "feeds.refresh_incomplete".into(),
+                            message: format!(
+                                "{} of {} subscriptions failed to refresh",
+                                self.refresh.failed_feeds, self.refresh.total
+                            ),
+                            details: None,
+                            retryable: true,
+                        },
+                    }
+                } else {
+                    qos_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: qos_actions::ActionOutput::default(),
+                    }
+                });
+            }
         }
     }
 
@@ -3653,6 +3678,10 @@ fn chrono_date(published: i64, now: i64) -> String {
 // ---------------------------------------------------------------------
 
 impl Widget for FeedsApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::FEEDS_OPERATION_TYPE]
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         self.now = chrono::Utc::now().timestamp();
         if !self.synced {
@@ -3713,6 +3742,74 @@ impl Widget for FeedsApp {
     /// (`qos_actions::ResourceProvider`) impl in [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != qos_actions::OperationKind::Effect {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            crate::actions::FeedsOperation::RefreshAll => {
+                if self.store.feeds.is_empty() {
+                    return Err("there are no subscriptions to refresh".into());
+                }
+                self.refresh_all();
+            }
+        }
+        Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != qos_actions::OperationKind::Effect
+            || type_id != crate::actions::FEEDS_OPERATION_TYPE
+        {
+            return Ok(None);
+        }
+        if self.resource_refresh_invocation.is_some() || self.refresh.in_progress() {
+            return Err("a feed refresh is already running".into());
+        }
+        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        self.resource_refresh_invocation = Some(invocation);
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        self.drain_fetches_live();
+        if self
+            .resource_refresh_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            self.resource_refresh_result.take()
+        } else {
+            None
+        }
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched

@@ -14,7 +14,7 @@
 //!     read into a small cache on `sync` and kept in step from `handle_event`.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -61,32 +61,26 @@ const NARROW_BREAKPOINT: f64 = 720.0;
 
 /// Click/hover targets discovered during `draw` and consumed by
 /// `handle_event`. Cleared and rebuilt every frame.
+#[allow(
+    dead_code,
+    reason = "restore-sheet targets stay private until a real provider exists"
+)]
 #[derive(Clone, Debug, PartialEq)]
 enum Hit {
     Tab(View),
     Source(Option<String>),
     Snap(String),
-    BackupNow,
-    Restore,
-    Verify,
-    Delete,
-    RestoreConfirm,
-    RestoreCancel,
     Dest(String),
     Policy(PolicyField, i64),
     FileRow(usize),
+    // Kept only by the dormant restore-sheet renderer. The sheet has no entry
+    // point until a real storage backend exists.
+    RestoreConfirm,
+    RestoreCancel,
     /// The Timeline source-rail collapse / summon toggle.
     ToggleRail,
     /// The scrim behind an open overlay rail (tap to dismiss).
     CloseRail,
-}
-
-/// An in-flight "Back up now" job. Purely visual / in-memory: it animates a
-/// progress bar and, on completion, materialises a fresh manual snapshot.
-struct Job {
-    source: String,
-    started: Instant,
-    dur: Duration,
 }
 
 /// Cached copy of the CRDT UI state, refreshed on every `sync` and kept in
@@ -127,7 +121,6 @@ pub struct BackupsApp {
     timeline_content_h: f64,
     policy_focus: usize,
     file_sel: usize,
-    job: Option<Job>,
     toast: Option<(String, Instant)>,
     seeded: bool,
     /// The Timeline source rail as the shared adaptive drawer: docked beside the
@@ -159,6 +152,10 @@ impl Default for BackupsApp {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "the restore-sheet renderer is retained but has no UI or action entry point until a real storage provider exists"
+)]
 impl BackupsApp {
     /// The live app: starts on an empty catalog (real first-run state) and
     /// shows onboarding until the user configures a source + destination.
@@ -187,7 +184,6 @@ impl BackupsApp {
             timeline_content_h: 0.0,
             policy_focus: 0,
             file_sel: 0,
-            job: None,
             toast: None,
             seeded: false,
             drawer: SidebarDrawer::new()
@@ -278,12 +274,6 @@ impl BackupsApp {
         }
     }
 
-    fn job_progress(&self) -> Option<f64> {
-        self.job
-            .as_ref()
-            .map(|j| (j.started.elapsed().as_secs_f64() / j.dur.as_secs_f64()).clamp(0.0, 1.0))
-    }
-
     // ---- top-level draw -------------------------------------------------
 
     /// Fresh install: nothing configured yet, show onboarding not a dashboard.
@@ -353,9 +343,6 @@ impl BackupsApp {
         // restore modal + toast so those still overlay it.
         self.draw_status_bubble(scene, t, tr, theme);
 
-        if self.ui.restore_open {
-            self.draw_restore_modal(scene, t, tr, theme);
-        }
         self.draw_toast(scene, t, tr, theme);
     }
 
@@ -382,8 +369,7 @@ impl BackupsApp {
         let narrow = self.rect.width() < NARROW_BREAKPOINT;
 
         let brand_right = self.draw_top_bar_left_cluster(scene, tr, theme, t, bar, cy, narrow);
-        let btn = self.draw_top_bar_backup_button(scene, tr, theme, t, bar, cy, narrow);
-        self.draw_top_bar_tabs(scene, tr, theme, t, cy, brand_right, btn.x0);
+        self.draw_top_bar_tabs(scene, tr, theme, t, cy, brand_right, bar.x1 - PAD);
     }
 
     /// The top bar's left cluster: the Timeline-rail hamburger (when
@@ -432,130 +418,6 @@ impl BackupsApp {
             lx += f64::from(tw);
         }
         lx
-    }
-
-    /// The "Back up now" primary action — icon-only at narrow so it never
-    /// crowds the tabs. Returns its rect so the tab strip can lay out in the
-    /// remaining gap. Split out of [`Self::draw_top_bar`] to keep it under
-    /// the line budget.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_top_bar_backup_button(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        bar: Rect,
-        cy: f64,
-        narrow: bool,
-    ) -> Rect {
-        let c = &theme.tokens.colors;
-        let bw = if narrow { 40.0 } else { 152.0 };
-        let btn = Rect::new(bar.x1 - PAD - bw, cy - 18.0, bar.x1 - PAD, cy + 18.0);
-        let running = self.job.is_some();
-        let hovered = self.hover == Some(Hit::BackupNow);
-        let fill = if running {
-            c.surfaces.raised
-        } else if hovered {
-            theme.accent_hover
-        } else {
-            theme.accent_primary
-        };
-        paint::fill_rrect(scene, t, btn, 9.0, fill);
-        if let Some(p) = self.job_progress() {
-            // Progress sliver along the bottom of the button.
-            let pr = Rect::new(
-                btn.x0 + 3.0,
-                btn.y1 - 6.0,
-                btn.x0 + 3.0 + (btn.width() - 6.0) * p,
-                btn.y1 - 3.0,
-            );
-            paint::fill_rrect(scene, t, pr, 1.5, theme.accent_primary);
-        }
-        if narrow {
-            Self::draw_backup_button_plus_narrow(scene, t, btn, c.text_primary, running);
-        } else {
-            Self::draw_backup_button_label(scene, tr, t, btn, cy, c.text_primary, running);
-        }
-        self.hits.push((btn, Hit::BackupNow));
-        btn
-    }
-
-    /// The narrow "+" glyph, centred on the button (drawn only while idle).
-    fn draw_backup_button_plus_narrow(
-        scene: &mut Scene,
-        t: Affine,
-        btn: Rect,
-        glyph_color: Color,
-        running: bool,
-    ) {
-        if running {
-            return;
-        }
-        let gc = btn.center();
-        paint::poly(
-            scene,
-            t,
-            &[(gc.x - 5.0, gc.y), (gc.x + 5.0, gc.y)],
-            glyph_color,
-            2.0,
-            false,
-        );
-        paint::poly(
-            scene,
-            t,
-            &[(gc.x, gc.y - 5.0), (gc.x, gc.y + 5.0)],
-            glyph_color,
-            2.0,
-            false,
-        );
-    }
-
-    /// The wide "+ Back up now" / "Backing up…" glyph and label.
-    fn draw_backup_button_label(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        btn: Rect,
-        cy: f64,
-        glyph_color: Color,
-        running: bool,
-    ) {
-        let label = if running {
-            "Backing up…"
-        } else {
-            "Back up now"
-        };
-        let gx = btn.x0 + 16.0;
-        if !running {
-            paint::poly(
-                scene,
-                t,
-                &[(gx - 5.0, cy), (gx + 5.0, cy)],
-                glyph_color,
-                2.0,
-                false,
-            );
-            paint::poly(
-                scene,
-                t,
-                &[(gx, cy - 5.0), (gx, cy + 5.0)],
-                glyph_color,
-                2.0,
-                false,
-            );
-        }
-        paint::text_center(
-            scene,
-            tr,
-            t,
-            label,
-            13.5,
-            glyph_color,
-            btn.x0 + 16.0,
-            btn.x1 - 6.0,
-            cy - 7.0,
-        );
     }
 
     /// The view segmented-tab control, centred between the left cluster and
@@ -1492,59 +1354,10 @@ impl BackupsApp {
             detail_rect.y0 + 33.0,
         );
 
-        // Action buttons, right-aligned.
-        let btns: [(&str, Hit, Color); 3] = [
-            ("Restore…", Hit::Restore, theme.accent_primary),
-            ("Verify", Hit::Verify, c.surfaces.raised),
-            (
-                "Delete",
-                Hit::Delete,
-                c.semantic.danger.with_alpha_factor(0.18),
-            ),
-        ];
-        let mut btn_x = detail_rect.x1 - 12.0;
-        let btn_h = 32.0;
-        let btn_y = detail_rect.y0 + (detail_rect.height() - btn_h) / 2.0;
-        for (label, hit, fill) in btns.iter().rev() {
-            let (label_w, _) = tr.measure(label, 12.5, None);
-            let btn_w = f64::from(label_w) + 28.0;
-            let btn = Rect::new(btn_x - btn_w, btn_y, btn_x, btn_y + btn_h);
-            let hovered = self.hover.as_ref() == Some(hit);
-            let fill_color = if hovered {
-                fill.with_alpha_factor(0.85)
-            } else {
-                *fill
-            };
-            paint::fill_rrect(scene, t, btn, 8.0, fill_color);
-            if *hit != Hit::Restore {
-                paint::stroke_rrect(
-                    scene,
-                    t,
-                    btn,
-                    8.0,
-                    ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-                    1.0,
-                );
-            }
-            let fg = if *hit == Hit::Delete {
-                c.semantic.danger
-            } else {
-                c.text_primary
-            };
-            paint::text_center(
-                scene,
-                tr,
-                t,
-                label,
-                12.5,
-                fg,
-                btn.x0,
-                btn.x1,
-                btn_y + (btn_h - 12.5) / 2.0,
-            );
-            self.hits.push((btn, hit.clone()));
-            btn_x -= btn_w + 8.0;
-        }
+        // Snapshot restore, verification, and deletion are intentionally not
+        // drawn until a storage provider supplies those effects. A disabled or
+        // simulated button would advertise a capability the live app does not
+        // have.
     }
 
     // ---- SOURCES view ---------------------------------------------------
@@ -3638,26 +3451,6 @@ impl BackupsApp {
                 let toggle = self.ui.sel_snapshot.as_deref() == Some(id.as_str());
                 BackupsDoc::set_selected_snapshot(doc, root, if toggle { None } else { Some(&id) });
             }
-            Hit::BackupNow => self.start_job(),
-            Hit::Restore => {
-                if self.ui.sel_snapshot.is_some() {
-                    BackupsDoc::set_restore_open(doc, root, true);
-                    self.file_sel = 0;
-                }
-            }
-            Hit::RestoreConfirm => {
-                BackupsDoc::set_restore_open(doc, root, false);
-                self.toast_now("Restore started in the background");
-            }
-            Hit::RestoreCancel => BackupsDoc::set_restore_open(doc, root, false),
-            Hit::Verify => self.toast_now("Verifying snapshot integrity…"),
-            Hit::Delete => {
-                if let Some(id) = self.ui.sel_snapshot.clone() {
-                    self.catalog.snapshots.retain(|s| s.id != id);
-                    BackupsDoc::set_selected_snapshot(doc, root, None);
-                    self.toast_now("Snapshot deleted");
-                }
-            }
             Hit::Dest(id) => {
                 BackupsDoc::set_selected_dest(doc, root, &id);
                 BackupsDoc::set_view(doc, root, View::Destinations);
@@ -3673,57 +3466,15 @@ impl BackupsApp {
                     .unwrap_or(0);
             }
             Hit::FileRow(i) => self.file_sel = i,
+            // The restore renderer is dormant while no storage provider exists,
+            // so these legacy sheet targets cannot be published or hit.
+            Hit::RestoreConfirm | Hit::RestoreCancel => {}
             // The Timeline source-rail collapse / summon toggle.
             Hit::ToggleRail => self.drawer.toggle(),
             // A tap on the scrim behind an open overlay rail dismisses it.
             Hit::CloseRail => self.drawer.close(),
         }
         self.load_cache(doc, root);
-    }
-
-    fn start_job(&mut self) {
-        if self.job.is_some() {
-            return;
-        }
-        let source = self
-            .ui
-            .sel_source
-            .clone()
-            .unwrap_or_else(|| "home".to_string());
-        self.job = Some(Job {
-            source,
-            started: Instant::now(),
-            dur: Duration::from_millis(2600),
-        });
-        self.toast_now("Snapshot started");
-    }
-
-    /// Materialise the just-finished job as a new manual snapshot.
-    fn finish_job(&mut self) {
-        let Some(job) = self.job.take() else { return };
-        let size = self.catalog.protected_bytes(&job.source).max(1);
-        let id = format!("manual-{}", self.catalog.snapshots.len());
-        let dest = "pool".to_string();
-        self.catalog.snapshots.insert(
-            0,
-            Snapshot {
-                id,
-                source_id: job.source,
-                dest_id: dest,
-                day: 0,
-                time: "now".into(),
-                kind: SnapType::Manual,
-                retention: Retention::Keep,
-                size_bytes: size,
-                delta_bytes: 128 * 1024 * 1024,
-                files_changed: 64,
-                status: SnapStatus::Complete,
-                // A freshly-captured snapshot has no browsable index yet — the
-                // restore sheet shows its empty state rather than fake files.
-                files: Vec::new(),
-            },
-        );
-        self.toast_now("Snapshot complete");
     }
 
     fn cycle_view(&mut self, dir: i32, doc: &mut AutoCommit, root: &ObjId) {
@@ -3770,14 +3521,14 @@ impl BackupsApp {
 }
 
 impl Widget for BackupsApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if !self.seeded {
             BackupsDoc::seed(state, path);
             self.seeded = true;
-        }
-        // Finish any job whose timer has elapsed before reading state.
-        if self.job_progress() == Some(1.0) {
-            self.finish_job();
         }
         self.load_cache(state, path);
         // Auto-select the newest snapshot in the active filter so the detail
@@ -3809,10 +3560,6 @@ impl Widget for BackupsApp {
                 "schedules" => {
                     BackupsDoc::set_view(state, path, View::Schedules);
                     self.ui.view = View::Schedules;
-                }
-                "restore" => {
-                    BackupsDoc::set_restore_open(state, path, true);
-                    self.ui.restore_open = true;
                 }
                 _ => {}
             }
@@ -3906,17 +3653,6 @@ impl Widget for BackupsApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                // A click outside the modal closes it.
-                if self.ui.restore_open {
-                    if let Some(hit) = self.hit_at(self.last_mouse) {
-                        self.dispatch(hit, state, path);
-                    } else {
-                        BackupsDoc::set_restore_open(state, path, false);
-                        self.load_cache(state, path);
-                    }
-                    *handled = true;
-                    return;
-                }
                 if let Some(hit) = self.hit_at(self.last_mouse) {
                     self.dispatch(hit, state, path);
                     *handled = true;
@@ -3971,8 +3707,7 @@ impl Widget for BackupsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.job.is_some()
-            || self.toast.is_some()
+        self.toast.is_some()
             || self.drawer.is_animating()
             || self.status_bubble.needs_frame(Instant::now())
     }
@@ -4035,14 +3770,6 @@ impl BackupsApp {
                 }
                 *handled = true;
             }
-            Key::Named(NamedKey::Enter) => {
-                if self.ui.view == View::Timeline && self.ui.sel_snapshot.is_some() {
-                    BackupsDoc::set_restore_open(doc, root, true);
-                    self.file_sel = 0;
-                    self.load_cache(doc, root);
-                    *handled = true;
-                }
-            }
             Key::Character(s) => self.handle_character_key(s, doc, root, handled),
             _ => {}
         }
@@ -4076,10 +3803,6 @@ impl BackupsApp {
             "4" => {
                 BackupsDoc::set_view(doc, root, View::Schedules);
                 self.load_cache(doc, root);
-                *handled = true;
-            }
-            "n" | "N" => {
-                self.start_job();
                 *handled = true;
             }
             "+" | "=" if self.ui.view == View::Schedules => {
@@ -4144,6 +3867,7 @@ mod tests {
         tr: TextRenderer,
     }
 
+    #[allow(dead_code)]
     impl Frame {
         fn demo() -> Self {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -4262,95 +3986,22 @@ mod tests {
     }
 
     #[test]
-    fn clicking_back_up_now_starts_a_job() {
-        let mut f = Frame::demo();
-        assert!(f.app.job.is_none(), "no job before the click");
-        f.click_hit(|h| matches!(h, Hit::BackupNow));
+    fn effects_without_a_storage_backend_are_not_advertised() {
+        let f = Frame::demo();
         assert!(
-            f.app.job.is_some(),
-            "clicking Back up now started a snapshot job"
+            f.app
+                .hits
+                .iter()
+                .all(|(_, hit)| !matches!(hit, Hit::FileRow(_))),
+            "the dormant restore browser is not reachable"
         );
-    }
-
-    #[test]
-    fn opening_restore_shows_the_indexed_snapshot_contents() {
-        let mut f = Frame::demo();
-        // sync auto-selects the newest snapshot, so the detail actions render.
-        f.click_hit(|h| matches!(h, Hit::Restore));
+        let resources = Widget::resources(&f.app, &f.state.doc);
+        assert_eq!(resources.len(), 1, "only retention policy is driveable");
+        assert_eq!(resources[0].kind, "backups.policy");
         assert!(
-            BackupsDoc::restore_open(&f.state.doc, &f.state.root),
-            "clicking Restore opened the restore sheet"
-        );
-        // The demo snapshot carries a real (sample) file index, so the browser
-        // shows selectable file rows rather than fabricating them inline.
-        assert!(
-            f.has_hit(|h| matches!(h, Hit::FileRow(_))),
-            "the restore browser lists the snapshot's indexed files"
-        );
-    }
-
-    #[test]
-    #[allow(
-        clippy::float_cmp,
-        reason = "these rectangles are assembled from exact integer-valued constants"
-    )]
-    fn restore_footer_buttons_keep_layout_and_dispatch_policy() {
-        let mut f = Frame::demo();
-        f.click_hit(|h| matches!(h, Hit::Restore));
-
-        let confirm = f.rect_of(|h| matches!(h, Hit::RestoreConfirm));
-        let cancel = f.rect_of(|h| matches!(h, Hit::RestoreCancel));
-        assert_eq!(confirm.width(), 170.0);
-        assert_eq!(cancel.width(), 110.0);
-        assert_eq!(confirm.height(), 38.0);
-        assert_eq!(confirm.y0, cancel.y0);
-        assert_eq!(confirm.x0 - cancel.x1, 12.0);
-
-        f.click_hit(|h| matches!(h, Hit::RestoreCancel));
-        assert!(
-            !BackupsDoc::restore_open(&f.state.doc, &f.state.root),
-            "Cancel closes without starting a restore"
-        );
-        assert!(f.app.toast.is_none());
-
-        f.click_hit(|h| matches!(h, Hit::Restore));
-        f.click_hit(|h| matches!(h, Hit::RestoreConfirm));
-        assert!(
-            !BackupsDoc::restore_open(&f.state.doc, &f.state.root),
-            "Restore selected closes the modal"
-        );
-        assert_eq!(
-            f.app.toast.as_ref().map(|(message, _)| message.as_str()),
-            Some("Restore started in the background")
-        );
-    }
-
-    #[test]
-    fn escape_still_cancels_the_restore_modal() {
-        let mut f = Frame::demo();
-        f.click_hit(|h| matches!(h, Hit::Restore));
-        f.key(&Key::Named(NamedKey::Escape));
-        assert!(!BackupsDoc::restore_open(&f.state.doc, &f.state.root));
-        assert!(!f.has_hit(|hit| matches!(hit, Hit::RestoreConfirm | Hit::RestoreCancel)));
-    }
-
-    #[test]
-    fn a_snapshot_without_an_index_shows_no_fabricated_files() {
-        let mut f = Frame::demo();
-        // Simulate a real (un-indexed) snapshot: strip the sample listings.
-        for s in &mut f.app.catalog.snapshots {
-            s.files.clear();
-        }
-        f.click_hit(|h| matches!(h, Hit::Restore));
-        assert!(
-            BackupsDoc::restore_open(&f.state.doc, &f.state.root),
-            "the restore sheet is open"
-        );
-        // Nothing is fabricated: with no index there are zero file rows, and the
-        // sheet falls back to its honest empty state.
-        assert!(
-            !f.has_hit(|h| matches!(h, Hit::FileRow(_))),
-            "an un-indexed snapshot lists no files instead of a fake tree"
+            qos_actions::flatten(&resources)
+                .iter()
+                .all(|entry| { entry.action.kind == qos_actions::OperationKind::Document })
         );
     }
 

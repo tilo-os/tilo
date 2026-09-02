@@ -16,9 +16,8 @@
 //!    block-device backend is selected only when
 //!    `QOS_IMAGER_ALLOW_WRITE=1` is set (mirroring the VPN app's
 //!    `QOS_VPN_ALLOW_EXEC` precedent) **and** the target is a real device.
-//!    Tests, `--shots`, and normal dev runs leave it unset, so
-//!    [`WriteBackend::system`] resolves to [`WriteBackend::Simulated`] and no
-//!    device is ever opened.
+//!    Tests, `--shots`, and normal dev runs leave it unset, so starting a write
+//!    is refused and no device is opened.
 //!
 //! 3. **Capacity + fit checks** ([`WriteRequest`] / [`TargetDrive::fits`]).
 //!
@@ -40,8 +39,10 @@ pub const CHUNK: usize = 4 * 1024 * 1024;
 /// Outcome of asking to start a job.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JobStart {
-    /// Pre-conditions satisfied; the (simulated or real) job may run.
+    /// Pre-conditions satisfied; the real job may run.
     Started,
+    /// Refused because privileged raw-device writes are not enabled.
+    WriteDisabled,
     /// Refused — the confirmation token did not match the target device.
     /// This is the safety gate: a typo means no write.
     ConfirmationMismatch,
@@ -54,9 +55,8 @@ pub enum JobStart {
 /// Which engine actually performs the write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteBackend {
-    /// Default everywhere except a privileged, explicitly-opted-in run:
-    /// advance progress numbers, write nothing.
-    Simulated,
+    /// Raw-device effects are unavailable in this process.
+    Disabled,
     /// Real raw write via a direct block-device open. Selecting this is itself
     /// gated (see [`WriteBackend::system`]); it is never the default.
     System,
@@ -66,20 +66,19 @@ impl WriteBackend {
     /// Choose the backend for the running process. The real backend is only
     /// ever returned when an operator has explicitly opted in via the
     /// `QOS_IMAGER_ALLOW_WRITE=1` environment variable. In every other case
-    /// (tests, `--shots`, normal dev runs) this is [`WriteBackend::Simulated`]
-    /// so we cannot brick a device by accident.
+    /// (tests, `--shots`, normal dev runs) this is [`WriteBackend::Disabled`].
     pub fn system() -> Self {
         if allow_write() {
             WriteBackend::System
         } else {
-            WriteBackend::Simulated
+            WriteBackend::Disabled
         }
     }
 }
 
 /// The env allow-gate. `QOS_IMAGER_ALLOW_WRITE=1` is the single switch that
 /// lets a real block-device write happen; unset (the default) keeps every
-/// path simulated. Modelled on the VPN app's `QOS_VPN_ALLOW_EXEC`.
+/// path unavailable. Modelled on the VPN app's `QOS_VPN_ALLOW_EXEC`.
 pub fn allow_write() -> bool {
     std::env::var("QOS_IMAGER_ALLOW_WRITE").as_deref() == Ok("1")
 }
@@ -112,7 +111,7 @@ impl WriteRequest {
 ///
 /// This is the pure *planning / dry-run* entry: it validates and never opens a
 /// device. The live app hands a `Started` request to [`spawn_job`], which
-/// chooses the backend; with the allow-gate off that is the simulated engine.
+/// chooses the backend; with the allow-gate off the request is refused.
 pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
     if req.source.size == 0 || req.target.name.is_empty() {
         return JobStart::Incomplete;
@@ -449,9 +448,8 @@ fn finish_target(_target: &TargetDrive) {}
 /// per frame. The returned [`JobStart`] is the validation result; a channel is
 /// only returned when it is [`JobStart::Started`].
 ///
-/// * Allow-gate **off** (default) → a *simulated* worker emits synthetic
-///   progress on a short timeline so the bars animate through the exact same
-///   drain path, and **no device is opened**.
+/// * Allow-gate **off** (default) → the request is refused and no worker is
+///   created.
 /// * Allow-gate **on** → the *real* [`run_system_job`] streams a byte-for-byte
 ///   copy + read-back verify of the device.
 pub fn spawn_job(req: WriteRequest, typed: &str) -> (JobStart, Option<Receiver<Progress>>) {
@@ -459,62 +457,16 @@ pub fn spawn_job(req: WriteRequest, typed: &str) -> (JobStart, Option<Receiver<P
     if start != JobStart::Started {
         return (start, None);
     }
+    if WriteBackend::system() == WriteBackend::Disabled {
+        return (JobStart::WriteDisabled, None);
+    }
     let (tx, rx) = std::sync::mpsc::channel();
-    let backend = WriteBackend::system();
     let _ = std::thread::Builder::new()
         .name("imager-write".into())
-        .spawn(move || match backend {
-            WriteBackend::System => {
-                let _ = run_system_job(&req, &tx);
-            }
-            WriteBackend::Simulated => simulate_job(&req, &tx),
+        .spawn(move || {
+            let _ = run_system_job(&req, &tx);
         });
     (JobStart::Started, Some(rx))
-}
-
-/// Drive synthetic progress for the simulated backend: a write phase then a
-/// verify phase, paced so the live UI shows moving bars. Writes nothing.
-fn simulate_job(req: &WriteRequest, tx: &Sender<Progress>) {
-    use std::time::Duration;
-    let rate = 180_000_000u64; // 180 MB/s — a plausible USB3 figure for the ETA.
-    let steps = 40;
-    for i in 1..=steps {
-        let frac = f64::from(i) / f64::from(steps);
-        if tx
-            .send(Progress {
-                phase: JobPhase::Writing,
-                write_frac: frac,
-                verify_frac: 0.0,
-                rate_bps: rate,
-            })
-            .is_err()
-        {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(30));
-    }
-    for i in 1..=steps {
-        let frac = f64::from(i) / f64::from(steps);
-        if tx
-            .send(Progress {
-                phase: JobPhase::Verifying,
-                write_frac: 1.0,
-                verify_frac: frac,
-                rate_bps: rate,
-            })
-            .is_err()
-        {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let _ = tx.send(Progress {
-        phase: JobPhase::Success,
-        write_frac: 1.0,
-        verify_frac: 1.0,
-        rate_bps: 0,
-    });
-    let _ = req; // no bytes touched — the request only shapes the timeline length
 }
 
 #[cfg(test)]
@@ -537,11 +489,11 @@ mod tests {
     }
 
     #[test]
-    fn default_backend_is_simulated_without_gate() {
+    fn default_backend_is_disabled_without_gate() {
         let _g = ENV_LOCK.lock().unwrap();
-        // No opt-in env var set → must be simulated, never System.
+        // No opt-in env var set → unavailable, never a fake success.
         unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
-        assert_eq!(WriteBackend::system(), WriteBackend::Simulated);
+        assert_eq!(WriteBackend::system(), WriteBackend::Disabled);
         assert!(!allow_write());
     }
 
@@ -550,12 +502,12 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         // The real block-device backend is chosen ONLY when the operator opts
         // in explicitly; flipping the gate is the single switch between the
-        // simulated worker and the real device write.
+        // disabled path and the real device write.
         unsafe { std::env::set_var("QOS_IMAGER_ALLOW_WRITE", "1") };
         assert!(allow_write());
         assert_eq!(WriteBackend::system(), WriteBackend::System);
         unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
-        assert_eq!(WriteBackend::system(), WriteBackend::Simulated);
+        assert_eq!(WriteBackend::system(), WriteBackend::Disabled);
     }
 
     #[test]
@@ -583,15 +535,16 @@ mod tests {
     }
 
     #[test]
-    fn begin_planned_path_touches_no_device_with_gate_off() {
+    fn spawn_refuses_instead_of_simulating_with_gate_off() {
         let _g = ENV_LOCK.lock().unwrap();
-        // With the gate off, a fully-armed request validates to Started — the
-        // planned/dry-run path — and selects the simulated backend, so nothing
-        // is ever written.
+        // Validation remains pure, but the live start refuses rather than
+        // reporting synthetic progress and success.
         unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
         let r = req();
         assert_eq!(begin_job(&r, "sdb"), JobStart::Started);
-        assert_eq!(WriteBackend::system(), WriteBackend::Simulated);
+        let (start, rx) = spawn_job(r, "sdb");
+        assert_eq!(start, JobStart::WriteDisabled);
+        assert!(rx.is_none());
     }
 
     #[test]

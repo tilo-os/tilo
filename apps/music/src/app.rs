@@ -924,7 +924,10 @@ impl MusicApp {
 
     fn persist_playback(&mut self, state: &mut AutoCommit) {
         self.pb.position_ms = self.playhead_ms as u64;
-        doc::write_playback(state, &self.pb);
+        self.perform_action(
+            state,
+            &crate::actions::MusicAction::SetPlayback(self.pb.clone()),
+        );
         self.bound_track = self.pb.current.clone();
     }
 
@@ -972,7 +975,10 @@ impl MusicApp {
                     .collect(),
             })
             .collect();
-        crate::actions::MusicResourceCtx { playlists }
+        crate::actions::MusicResourceCtx {
+            playlists,
+            playback: self.pb.clone(),
+        }
     }
 
     /// A one-line "Title — Artist" label for a track id, for the palette.

@@ -545,6 +545,9 @@ pub struct SlidesApp {
     /// worker-thread/channel contract as [`Self::portal_rx`]; `save` carries
     /// the deck bytes to write once the user names a destination.
     doc_portal_rx: Option<DocPortalChannel>,
+    resource_file: Option<(bool, std::path::PathBuf)>,
+    resource_invocation: Option<qos_actions::InvocationId>,
+    completed_resource_invocation: Option<qos_actions::InvocationUpdate>,
     /// Visible result of a fallible open/save/image operation. Previously those
     /// paths failed silently, leaving users unsure whether a click worked.
     io_toast: Option<(String, ToastKind)>,
@@ -666,6 +669,9 @@ impl SlidesApp {
             toolbar_tools: ToolbarTools::default(),
             portal_rx: None,
             doc_portal_rx: None,
+            resource_file: None,
+            resource_invocation: None,
+            completed_resource_invocation: None,
             io_toast: None,
             ctx_menu: ContextMenu::new(),
             ctx_hits: Vec::new(),
@@ -2360,33 +2366,44 @@ impl SlidesApp {
                 match outcome {
                     DocOutcome::Open(path) => {
                         let power_point = is_pptx(&path);
-                        self.io_toast = Some(if self.load_presentation(doc, &path) {
+                        let success = self.load_presentation(doc, &path);
+                        self.io_toast = Some(if success {
                             (
-                                if power_point {
+                                (if power_point {
                                     "PowerPoint opened · slides, text, shapes and pictures imported"
                                 } else {
                                     "Presentation opened"
-                                }
+                                })
                                 .into(),
                                 ToastKind::Success,
                             )
                         } else {
                             ("Could not open the presentation".into(), ToastKind::Error)
                         });
+                        self.finish_resource_file(
+                            success,
+                            (!success).then(|| "presentation could not be opened".into()),
+                        );
                     }
                     DocOutcome::Save(path) => {
                         let power_point = is_pptx(&path);
-                        self.io_toast = Some(if self.save_presentation(&path) {
-                            (if power_point { "PowerPoint saved · animations and master themes aren't exported" } else { "Presentation saved" }.into(), ToastKind::Success)
+                        let success = self.save_presentation(&path);
+                        self.io_toast = Some(if success {
+                            ((if power_point { "PowerPoint saved · animations and master themes aren't exported" } else { "Presentation saved" }).into(), ToastKind::Success)
                         } else {
                             ("Could not save the presentation".into(), ToastKind::Error)
                         });
+                        self.finish_resource_file(
+                            success,
+                            (!success).then(|| "presentation could not be saved".into()),
+                        );
                     }
-                    DocOutcome::Cancelled => {}
+                    DocOutcome::Cancelled => self.finish_resource_file(false, None),
                     DocOutcome::Failed(reason) => {
                         eprintln!("slides: file chooser failed: {reason}");
                         self.io_toast =
                             Some(("Could not open the file chooser".into(), ToastKind::Error));
+                        self.finish_resource_file(false, Some(reason));
                     }
                 }
             }
@@ -2395,6 +2412,33 @@ impl SlidesApp {
                 self.doc_portal_rx = None;
             }
         }
+    }
+
+    fn finish_resource_file(&mut self, success: bool, error: Option<String>) {
+        let Some(invocation) = self.resource_invocation.take() else {
+            return;
+        };
+        self.completed_resource_invocation = Some(if success {
+            qos_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: qos_actions::ActionOutput::default(),
+            }
+        } else if let Some(message) = error {
+            qos_actions::InvocationUpdate::Failed {
+                invocation,
+                error: qos_actions::ActionFailure {
+                    code: "slides.file_failed".into(),
+                    message,
+                    details: None,
+                    retryable: false,
+                },
+            }
+        } else {
+            qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("file selection cancelled".into()),
+            }
+        });
     }
 
     /// Load a `.odp` from disk, replacing the deck in the shared document so
@@ -4629,7 +4673,124 @@ fn write_demo_image() -> Option<PathBuf> {
 }
 
 impl Widget for SlidesApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::SLIDES_OPERATION_TYPE]
+    }
+
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        use crate::actions::SlidesOperation;
+        match operation {
+            SlidesOperation::ShowEditor => self.mode = Mode::Edit,
+            SlidesOperation::ShowOverview => self.mode = Mode::Overview,
+            SlidesOperation::StartPresentation => self.enter_present(),
+            SlidesOperation::EndPresentation => self.exit_present(),
+            SlidesOperation::Open { .. } | SlidesOperation::SaveAs { .. } => {
+                return Err(
+                    "presentation file operations require the lifecycle-capable host".into(),
+                );
+            }
+        }
+        Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        let save_operation = matches!(&operation, crate::actions::SlidesOperation::SaveAs { .. });
+        match operation {
+            crate::actions::SlidesOperation::Open { path: file }
+            | crate::actions::SlidesOperation::SaveAs { path: file } => {
+                if self.resource_invocation.is_some() {
+                    return Err("another presentation file operation is running".into());
+                }
+                let save = save_operation;
+                self.resource_invocation = Some(invocation);
+                let direct = file.is_some();
+                if let Some(file) = file {
+                    self.resource_file = Some((save, file.into()));
+                } else if save {
+                    self.request_odp_save();
+                } else {
+                    self.request_odp_open();
+                }
+                if !direct && self.doc_portal_rx.is_none() {
+                    self.resource_invocation = None;
+                    return Err("presentation picker could not be started".into());
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            _ => self
+                .invoke_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            qos_actions::ActionOutput::default(),
+                        )
+                    })
+                }),
+        }
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if cancellation_requested && self.resource_invocation == Some(invocation) {
+            self.resource_invocation = None;
+            self.resource_file = None;
+            self.doc_portal_rx = None;
+            return Some(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("presentation file operation cancelled".into()),
+            });
+        }
+        if self
+            .completed_resource_invocation
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            return self.completed_resource_invocation.take();
+        }
+        None
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        if let Some((save, file)) = self.resource_file.take() {
+            let success = if save {
+                self.save_presentation(&file)
+            } else {
+                self.load_presentation(state, &file)
+            };
+            self.finish_resource_file(
+                success,
+                (!success).then(|| "presentation file operation failed".into()),
+            );
+        }
         if !self.seeded {
             if SlidesDoc::is_empty(state) {
                 SlidesDoc::seed(state, &self.deck);
