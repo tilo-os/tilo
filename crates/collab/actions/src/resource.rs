@@ -90,6 +90,11 @@ pub struct ActionBinding<I> {
 impl<I> ActionBinding<I> {
     /// Bind a typed control value to arguments for an action actually exported
     /// by `resource`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionBindingError::ActionNotExported`] if `spec` is absent
+    /// from `resource`.
     pub fn new(
         resource: &Resource,
         spec: &ActionSpec,
@@ -113,6 +118,11 @@ impl<I> ActionBinding<I> {
     }
 
     /// Produce a host-routable intent after strict parameter validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionBindingError::InvalidArguments`] if the mapped input
+    /// violates the exported action's parameter contract.
     pub fn invoke(&self, input: I) -> Result<ControlInvocation, ActionBindingError> {
         let arguments = (self.arguments)(input);
         self.spec.build_json(&arguments)?;
@@ -129,6 +139,10 @@ impl<I> ActionBinding<I> {
 
 impl ActionBinding<()> {
     /// Bind a nullary control to a nullary exported action.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the action is not exported or requires arguments.
     pub fn unit(resource: &Resource, spec: &ActionSpec) -> Result<Self, ActionBindingError> {
         let binding = Self::new(resource, spec, |()| serde_json::Map::new())?;
         // Refuse a required-argument action at construction, not first click.
@@ -138,6 +152,10 @@ impl ActionBinding<()> {
 
     /// Look up the real exported spec by stable id, then create a nullary
     /// binding. Useful when the resource is assembled inline or generated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `action_id` is not exported or requires arguments.
     pub fn unit_for(resource: &Resource, action_id: &str) -> Result<Self, ActionBindingError> {
         let spec = resource
             .actions
@@ -151,6 +169,11 @@ impl ActionBinding<()> {
     }
 
     /// Bind a control to a fixed, strictly validated JSON argument object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the action is not exported or `arguments` violate
+    /// its parameter contract.
     pub fn static_json(
         resource: &Resource,
         spec: &ActionSpec,
@@ -162,6 +185,11 @@ impl ActionBinding<()> {
     }
 
     /// Look up the real exported spec by id, then bind fixed JSON arguments.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `action_id` is not exported or `arguments` violate
+    /// its parameter contract.
     pub fn static_json_for(
         resource: &Resource,
         action_id: &str,
@@ -313,6 +341,16 @@ pub struct ActionSpec {
     build: ArgsBuilder,
 }
 
+struct TypedActionSeed {
+    id: String,
+    label: String,
+    placeholder: String,
+    locus: ExecutionLocus,
+    kind: OperationKind,
+    operation_type: Option<String>,
+    params: Vec<ActionParam>,
+}
+
 impl ActionSpec {
     /// An action that fires immediately. `type_id` must match the app's
     /// registry registration for `A`.
@@ -422,6 +460,10 @@ impl ActionSpec {
     }
 
     /// An immediate effect or view operation owned by the application.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Encode`] if `payload` fails to serialize.
     pub fn operation<T>(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -432,7 +474,7 @@ impl ActionSpec {
     where
         T: serde::Serialize,
     {
-        debug_assert!(kind != OperationKind::Document);
+        debug_assert_ne!(kind, OperationKind::Document);
         let type_id = type_id.into();
         let encoded = EncodedAction::encode_operation(type_id.clone(), payload)?;
         let for_build = encoded.clone();
@@ -464,7 +506,7 @@ impl ActionSpec {
         type_id: impl Into<String>,
         build: impl Fn(&str) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
-        debug_assert!(kind != OperationKind::Document);
+        debug_assert_ne!(kind, OperationKind::Document);
         let prompt = prompt.into();
         let type_id = type_id.into();
         let expected = type_id.clone();
@@ -529,13 +571,15 @@ impl ActionSpec {
         build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
         Self::typed_with_kind(
-            id,
-            label,
-            placeholder,
-            locus,
-            OperationKind::Document,
-            None,
-            params,
+            TypedActionSeed {
+                id: id.into(),
+                label: label.into(),
+                placeholder: placeholder.into(),
+                locus,
+                kind: OperationKind::Document,
+                operation_type: None,
+                params,
+            },
             build,
         )
     }
@@ -551,49 +595,45 @@ impl ActionSpec {
         params: Vec<ActionParam>,
         build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
-        debug_assert!(kind != OperationKind::Document);
+        debug_assert_ne!(kind, OperationKind::Document);
         Self::typed_with_kind(
-            id,
-            label,
-            placeholder,
-            ExecutionLocus::ClientLocal,
-            kind,
-            Some(type_id.into()),
-            params,
+            TypedActionSeed {
+                id: id.into(),
+                label: label.into(),
+                placeholder: placeholder.into(),
+                locus: ExecutionLocus::ClientLocal,
+                kind,
+                operation_type: Some(type_id.into()),
+                params,
+            },
             build,
         )
     }
 
     fn typed_with_kind(
-        id: impl Into<String>,
-        label: impl Into<String>,
-        placeholder: impl Into<String>,
-        locus: ExecutionLocus,
-        kind: OperationKind,
-        operation_type: Option<String>,
-        params: Vec<ActionParam>,
+        seed: TypedActionSeed,
         build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
-        let build: ArgsBuilder = if let Some(expected) = operation_type.clone() {
+        let build: ArgsBuilder = if let Some(expected) = seed.operation_type.clone() {
             Arc::new(move |args| enforce_operation_type(build(args), &expected))
         } else {
             Arc::new(build)
         };
-        let input = derive_input(&params, &build, placeholder.into());
+        let input = derive_input(&seed.params, &build, seed.placeholder);
         Self {
-            id: id.into(),
-            label: label.into(),
+            id: seed.id,
+            label: seed.label,
             description: None,
-            locus,
-            kind,
-            operation_type,
-            contract: if kind == OperationKind::View {
+            locus: seed.locus,
+            kind: seed.kind,
+            operation_type: seed.operation_type,
+            contract: if seed.kind == OperationKind::View {
                 ActionContract::view()
             } else {
                 ActionContract::default()
             },
             input,
-            params,
+            params: seed.params,
             build,
         }
     }
@@ -743,14 +783,14 @@ fn enforce_operation_type(encoded: EncodedAction, expected: &str) -> EncodedActi
     if encoded.type_id == expected {
         encoded
     } else {
-        EncodedAction::encode_operation(
-            INVALID_ARGUMENTS_TYPE,
-            &format!(
+        EncodedAction {
+            type_id: INVALID_ARGUMENTS_TYPE.into(),
+            payload: format!(
                 "operation builder returned `{}` but declared `{expected}`",
                 encoded.type_id
-            ),
-        )
-        .expect("framework refusal is serializable")
+            )
+            .into_bytes(),
+        }
     }
 }
 
