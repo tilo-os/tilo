@@ -58,6 +58,10 @@ fn profile_resource() -> qos_actions::Resource {
 }
 
 /// A complete local form → typed state → retained output loop.
+#[expect(
+    clippy::expect_used,
+    reason = "the binding uses the sole action constructed immediately above"
+)]
 pub fn app_root() -> Box<dyn Widget> {
     crate::install_catalog();
     let name = LocalState::new(String::from("world"));
@@ -89,21 +93,20 @@ pub fn app_root() -> Box<dyn Widget> {
     )
     .with_id("region-select");
 
-    let reset_name = name.clone();
-    let reset_updates = updates.clone();
-    let reset_refresh = refresh_minutes.clone();
-    let reset_volume = volume.clone();
-    let reset_region = region.clone();
-    let reset = Button::new("reset-form", "Reset form", None).on_click(move || {
-        update_profile(
-            &reset_name,
-            &reset_updates,
-            &reset_refresh,
-            &reset_volume,
-            &reset_region,
-            ("world".into(), true, 15.0, 0.65, "Europe/Berlin".into()),
-        );
-    });
+    let resource = profile_resource();
+    let reset_binding = qos_actions::ActionBinding::static_json_for(
+        &resource,
+        "update-profile",
+        serde_json::Map::from_iter([
+            ("name".into(), serde_json::json!("world")),
+            ("updates".into(), serde_json::json!(true)),
+            ("refresh".into(), serde_json::json!(15.0)),
+            ("volume".into(), serde_json::json!(0.65)),
+            ("region".into(), serde_json::json!("Europe/Berlin")),
+        ]),
+    )
+    .expect("generated defaults match the exported profile action");
+    let reset = Button::new("reset-form", "Reset form", None).on_action(reset_binding);
 
     let root = Box::new(ui::column![
         Text::new("starter-title").with_role(TextRole::Title),
@@ -115,7 +118,7 @@ pub fn app_root() -> Box<dyn Widget> {
         greeting,
         reset,
     ]);
-    ui::widget::resource_actions::immediate(root, profile_resource(), move |payload| {
+    ui::widget::resource_actions::immediate(root, resource, move |payload| {
         let args: serde_json::Map<String, serde_json::Value> =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
         let values = (

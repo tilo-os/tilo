@@ -15,7 +15,32 @@ pub struct Row {
     pub name: String,
 }
 
-fn open_row(_id: u64) {}
+fn row_resource() -> qos_actions::Resource {
+    let mut resource = ui::widget::resource_actions::typed_resource(
+        "generated.table",
+        "Results",
+        "open",
+        "Open row",
+        vec![qos_actions::ActionParam::required_owned(
+            "id",
+            qos_actions::ParamType::Integer,
+            "Stable row id",
+        )],
+    );
+    if let Some(action) = resource.actions.first_mut() {
+        action.contract.result = qos_actions::ResultSpec::Resource {
+            resource_kind: "generated.table.row".into(),
+        };
+    }
+    resource
+}
+
+fn open_row(id: u64) -> qos_actions::ActionOutput {
+    qos_actions::ActionOutput {
+        value: None,
+        resources: vec![format!("generated.table.row:{id}")],
+    }
+}
 
 /// A sparse asynchronous model with one current viewport request.
 ///
@@ -123,6 +148,10 @@ impl TableModel for Rows {
 }
 
 /// A hundred-million-row table with bounded data and retained-widget windows.
+#[expect(
+    clippy::expect_used,
+    reason = "the binding uses the sole action constructed immediately above"
+)]
 pub fn app_root() -> Box<dyn Widget> {
     crate::install_catalog();
     let columns = vec![
@@ -131,14 +160,16 @@ pub fn app_root() -> Box<dyn Widget> {
         ColumnDef::<Row>::new("actions", "data-actions-column", ColumnWidth::Fixed(120.0))
             .with_widget(|row, _| {
                 let id = row.id;
+                let resource = row_resource();
+                let binding = qos_actions::ActionBinding::static_json_for(
+                    &resource,
+                    "open",
+                    serde_json::Map::from_iter([("id".into(), serde_json::json!(id))]),
+                )
+                .expect("generated row arguments match the exported action");
                 Box::new(
-                    Button::new(
-                        &format!("open-{}", row.id),
-                        "data-open",
-                        Some("open-requested"),
-                    )
-                    .with_click_value(row.id.to_string())
-                    .on_click(move || open_row(id))
+                    Button::new(&format!("open-{}", row.id), "data-open", None)
+                    .on_action(binding)
                     .fit_content(28.0),
                 )
             }),
@@ -150,17 +181,7 @@ pub fn app_root() -> Box<dyn Widget> {
     table.set_viewport(720.0, 32.0);
     ui::widget::resource_actions::immediate(
         Box::new(table),
-        ui::widget::resource_actions::typed_resource(
-            "generated.table",
-            "Results",
-            "open",
-            "Open row",
-            vec![qos_actions::ActionParam::required_owned(
-                "id",
-                qos_actions::ParamType::Integer,
-                "Stable row id",
-            )],
-        ),
+        row_resource(),
         |payload| {
             let args: serde_json::Map<String, serde_json::Value> =
                 serde_json::from_slice(payload).map_err(|error| error.to_string())?;
@@ -168,8 +189,7 @@ pub fn app_root() -> Box<dyn Widget> {
                 .get("id")
                 .and_then(serde_json::Value::as_u64)
                 .ok_or("missing id")?;
-            open_row(id);
-            Ok(qos_actions::ActionOutput::default())
+            Ok(open_row(id))
         },
     )
 }

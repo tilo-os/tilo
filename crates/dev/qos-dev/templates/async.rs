@@ -23,21 +23,26 @@ fn count_entries() -> Result<usize, String> {
 }
 
 /// A complete button → worker → typed state → retained subtree loop.
+#[expect(
+    clippy::expect_used,
+    reason = "the binding uses the sole action constructed immediately above"
+)]
 pub fn app_root() -> Box<dyn Widget> {
     crate::install_catalog();
     let task = LatestTask::new(LoadState::Idle);
     let result = task.state();
-    let run_task = task.clone();
+    let resource = ui::widget::resource_actions::resource(
+        "generated.background-task",
+        "Background task",
+        "run",
+        "Run task",
+        true,
+    );
+    let run_binding = qos_actions::ActionBinding::unit_for(&resource, "run")
+        .expect("generated run button matches the exported action");
+    let run = Button::new("run-task", "task-run", None).on_action(run_binding);
 
-    let run = Button::new("run-task", "task-run", None).on_click(move || {
-        let completion = run_task.begin(LoadState::Loading);
-        std::thread::spawn(move || {
-            let result = count_entries().map_or_else(LoadState::Failed, LoadState::Ready);
-            let _ = completion.complete(result);
-        });
-    });
-
-    let body_task = task;
+    let body_task = task.clone();
     let body = ModelView::from_state_by(
         &result,
         |result| match result {
@@ -75,17 +80,17 @@ pub fn app_root() -> Box<dyn Widget> {
     ]);
     ui::widget::resource_actions::background(
         root,
-        ui::widget::resource_actions::resource(
-            "generated.background-task",
-            "Background task",
-            "run",
-            "Run task",
-            true,
-        ),
-        |_| {
+        resource,
+        move |_| {
+            let completion = task.begin(LoadState::Loading);
             let (sender, receiver) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                let result = count_entries().map(|_| qos_actions::ActionOutput::default());
+                let result = count_entries();
+                let state = result
+                    .as_ref()
+                    .map_or_else(|error| LoadState::Failed(error.clone()), |count| LoadState::Ready(*count));
+                let _ = completion.complete(state);
+                let result = result.map(|_| qos_actions::ActionOutput::default());
                 let _ = sender.send(result);
             });
             Ok(receiver)
