@@ -1,7 +1,7 @@
 # Maintainer: qOS contributors <qos@code.podesta.ai>
 pkgbase=qos-session
 pkgname=(qos-session qos-session-devel)
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='qOS collaborative compositor as a Wayland session'
 url='https://code.podesta.ai/qos/qos'
