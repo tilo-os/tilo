@@ -21,7 +21,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { path = "../../ui" }
+ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 qos-actions = { path = "../../crates/collab/actions" }
 # Real FUTO swipe decoder (ExecuTorch over FFI). Builds a stub reporting
 # "unavailable" when the FUTO libs aren't linked, so the OSK falls back to

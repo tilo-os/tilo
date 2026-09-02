@@ -27,7 +27,7 @@ live-capture = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { path = "../../ui" }
+ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 # The qOS ACTION model: Camera's `actions` module exports its gallery/scan
 # metadata operations as replayable actions the host's Ctrl+K palette dispatches.
 qos-actions = { path = "../../crates/collab/actions" }
