@@ -1,4 +1,5 @@
 use ui::LocalState;
+use ui::qos_actions;
 use ui::tokens::TextRole;
 use ui::widget::{Button, ModelView, QrWidget, Text, TextInput, Widget, labeled_field};
 
@@ -32,9 +33,9 @@ pub fn app_root() -> Box<dyn Widget> {
         output,
         reset,
     ]);
-    crate::resource_actions::immediate(
+    ui::widget::resource_actions::immediate(
         root,
-        crate::resource_actions::typed_resource(
+        ui::widget::resource_actions::typed_resource(
             "generated.qr-code",
             "QR code",
             "set-payload",
