@@ -8,6 +8,10 @@ publish.workspace = true
 license.workspace = true
 description = "qOS on-screen keyboard — data-driven layouts, responsive sizing, customizable toolbar."
 
+# The app uses the protocol types through ui's canonical re-export.
+[package.metadata.cargo-machete]
+ignored = ["qos-actions"]
+
 [lib]
 name = "osk"
 path = "src/lib.rs"
