@@ -1832,11 +1832,17 @@ impl FileExplorerWidget {
                         .iter()
                         .rev()
                         .map(|version| {
+                            let person =
+                                collab_types::Ed25519PublicKey::from_bytes(version.actor.person);
                             t_args(
                                 "files-history-version-line",
                                 &[
                                     arg("action", t(version.provenance_key())),
                                     arg("time", format_timestamp(version.timestamp_ms)),
+                                    arg(
+                                        "person",
+                                        self.trusted_humans.display_name_or_fingerprint(&person),
+                                    ),
                                     arg("device", short_fingerprint(&version.actor.device)),
                                 ],
                             )
@@ -7304,6 +7310,10 @@ mod command_path_tests {
         let panel = w.collab_panel.as_ref().unwrap();
         assert!(panel.title.contains("Version History"));
         assert!(panel.lines[0].contains("Created"));
+        assert!(
+            panel.lines[0].contains("by"),
+            "file history attributes the human before the secondary device"
+        );
         w.apply_command(FileCommand::CloseCollabPanel);
         assert!(w.collab_panel.is_none());
     }

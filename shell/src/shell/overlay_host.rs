@@ -4107,6 +4107,9 @@ impl ShellOverlayHost {
                 if let Some(sub) = &r.subtitle {
                     e = e.description(sub.clone());
                 }
+                if r.id == "room.activity.open" {
+                    e = e.keybinding("Super+H");
+                }
                 entries.push(e);
                 results.push(r.clone());
             }
@@ -5974,7 +5977,7 @@ impl ShellOverlayHost {
     /// tab; `Super+K`/`Super+Space`/`Alt+Space` open in global scope
     /// (`Alt+Space` is the nested-Wayland-client substitute, since a
     /// host DE running qOS as a client swallows Super first).
-    /// `Ctrl+Tab`/`Super+Tab` toggle the overview; Esc closes the top
+    /// `Super+H` toggles workspace history; `Ctrl+Tab`/`Super+Tab` toggle the overview; Esc closes the top
     /// overlay. Only called for a `Pressed` `KeyboardInput`.
     fn handle_shell_keyboard_event(
         &mut self,
@@ -6109,6 +6112,30 @@ impl ShellOverlayHost {
         path: &ObjId,
         handled: &mut bool,
     ) -> bool {
+        // Workspace history is an OS surface, not browser navigation history,
+        // so keep Ctrl+H available to the focused app and reserve Super+H.
+        if super_down
+            && let Key::Character(s) = logical_key
+            && s.eq_ignore_ascii_case("h")
+            && let Some(chrome) = self.chrome.clone()
+        {
+            if shift_down {
+                self.room_activity
+                    .set_view(crate::shell::room_activity::ActivityView::Explore);
+            } else if !chrome.borrow().overlays.room_activity {
+                self.room_activity
+                    .set_view(crate::shell::room_activity::ActivityView::CatchUp);
+            }
+            let mut st = chrome.borrow_mut();
+            st.overlays.room_activity = if shift_down {
+                true
+            } else {
+                !st.overlays.room_activity
+            };
+            st.bump();
+            *handled = true;
+            return true;
+        }
         if let Key::Character(s) = logical_key
             && s.as_str().eq_ignore_ascii_case("k")
         {
@@ -14281,6 +14308,39 @@ mod tests {
         assert!(
             !h.chrome.borrow().overlays.projection,
             "the same familiar chord closes the sheet again"
+        );
+    }
+
+    #[test]
+    fn super_h_opens_and_toggles_workspace_history_without_taking_ctrl_h() {
+        let mut h = build_harness();
+        let sup = Modifiers::from(ModifiersState::SUPER);
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        assert!(!h.chrome.borrow().overlays.room_activity);
+
+        assert!(pump(&mut h, &key_press(Key::Character("h".into())), sup));
+        assert!(h.chrome.borrow().overlays.room_activity);
+
+        assert!(pump(&mut h, &key_press(Key::Character("H".into())), sup));
+        assert!(!h.chrome.borrow().overlays.room_activity);
+
+        assert!(
+            !pump(&mut h, &key_press(Key::Character("h".into())), ctrl),
+            "Ctrl+H remains available to the focused app"
+        );
+        assert!(!h.chrome.borrow().overlays.room_activity);
+    }
+
+    #[test]
+    fn super_shift_h_opens_the_full_history_explorer_directly() {
+        let mut h = build_harness();
+        let chord = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
+
+        assert!(pump(&mut h, &key_press(Key::Character("h".into())), chord));
+        assert!(h.chrome.borrow().overlays.room_activity);
+        assert_eq!(
+            h.host.room_activity().view(),
+            crate::shell::room_activity::ActivityView::Explore
         );
     }
 
