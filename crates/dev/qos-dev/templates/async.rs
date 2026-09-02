@@ -1,5 +1,5 @@
 use ui::widget::{Banner, Button, Spinner, Text, Widget};
-use ui::{LatestTask, ModelView, tokens::TextRole};
+use ui::{LatestTask, ModelView, qos_actions, tokens::TextRole};
 
 enum LoadState {
     Idle,
@@ -73,9 +73,9 @@ pub fn app_root() -> Box<dyn Widget> {
         run,
         body,
     ]);
-    crate::resource_actions::background(
+    ui::widget::resource_actions::background(
         root,
-        crate::resource_actions::resource(
+        ui::widget::resource_actions::resource(
             "generated.background-task",
             "Background task",
             "run",

@@ -6,7 +6,6 @@ license.workspace = true
 publish = false
 
 [dependencies]
-qos-actions = { path = "../../collab/actions" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ui = { path = "../../../ui" }
