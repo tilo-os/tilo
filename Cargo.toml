@@ -30,6 +30,7 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
+    "crates/app/qos-app",
     "crates/windows/compat-catalogue",
     "crates/windows/compat-service",
     "crates/dev/headless-schema",

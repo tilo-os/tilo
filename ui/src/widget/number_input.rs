@@ -22,6 +22,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 use crate::widget::{TextInput, TextInputKind};
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -169,6 +170,7 @@ pub struct NumberInput {
     on_change_path: String,
     crdt_bound: bool,
     local_state: Option<crate::local_state::LocalBinding<f64>>,
+    action: Option<ActionEmitter<f64>>,
     enabled: bool,
     width: f64,
     height: f64,
@@ -176,6 +178,9 @@ pub struct NumberInput {
 }
 
 impl NumberInput {
+    fn effectively_enabled(&self) -> bool {
+        self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
+    }
     /// Construct a number field showing `value`, with a default range of
     /// the full `f64` line, `step = 1`, integer display, and no suffix.
     pub fn new(value: f64) -> Self {
@@ -203,6 +208,7 @@ impl NumberInput {
             on_change_path: String::new(),
             crdt_bound: false,
             local_state: None,
+            action: None,
             enabled: true,
             width: DEFAULT_WIDTH,
             height: DEFAULT_HEIGHT,
@@ -297,6 +303,15 @@ impl NumberInput {
         self
     }
 
+    /// Route every committed numeric value through an exported action.
+    #[must_use]
+    pub fn on_action(mut self, binding: qos_actions::ActionBinding<f64>) -> Self {
+        self.action = Some(ActionEmitter::new(binding));
+        self.changed = None;
+        self.pending_write = None;
+        self
+    }
+
     /// Build-time enabled flag. A disabled field is inert and dimmed.
     #[must_use]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
@@ -324,7 +339,9 @@ impl NumberInput {
     pub fn set_value(&mut self, v: f64) {
         self.value = v.clamp(self.min, self.max);
         self.sync_field();
-        self.publish_local_state();
+        if self.action.is_none() {
+            self.publish_local_state();
+        }
     }
 
     /// Poll for a committed user change since the last call, draining it.
@@ -373,9 +390,7 @@ impl NumberInput {
             let clamped = parsed.clamp(self.min, self.max);
             if (clamped - self.value).abs() > f64::EPSILON {
                 self.value = clamped;
-                self.changed = Some(clamped);
-                self.pending_write = Some(clamped);
-                self.publish_local_state();
+                self.record_user_value(clamped);
             }
         }
         // Whether or not the value moved, re-render the canonical text so a
@@ -389,9 +404,7 @@ impl NumberInput {
         let next = (self.value + delta).clamp(self.min, self.max);
         if (next - self.value).abs() > f64::EPSILON {
             self.value = next;
-            self.changed = Some(next);
-            self.pending_write = Some(next);
-            self.publish_local_state();
+            self.record_user_value(next);
         }
         self.sync_field();
     }
@@ -425,6 +438,16 @@ impl NumberInput {
     fn publish_local_state(&mut self) {
         if let Some(binding) = &mut self.local_state {
             binding.publish(&self.value);
+        }
+    }
+
+    fn record_user_value(&mut self, value: f64) {
+        if let Some(action) = &mut self.action {
+            let _ = action.emit(value);
+        } else {
+            self.changed = Some(value);
+            self.pending_write = Some(value);
+            self.publish_local_state();
         }
     }
 }
@@ -529,7 +552,7 @@ impl Widget for NumberInput {
     ) {
         let colors = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.md);
-        let disabled = !self.enabled;
+        let disabled = !self.effectively_enabled();
         if disabled {
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
@@ -600,7 +623,7 @@ impl Widget for NumberInput {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return;
         }
 
@@ -705,6 +728,36 @@ impl Widget for NumberInput {
         "NumberInput"
     }
 
+    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+    }
+
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let control_id = self.test_id().unwrap_or("number_input");
+        if let Some(action) = &self.action {
+            vec![action.metadata(control_id)]
+        } else if self.crdt_bound {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::LegacyDocumentPath(self.on_change_path.clone()),
+            }]
+        } else {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::LegacyCallback,
+            }]
+        }
+    }
+
     fn test_id(&self) -> Option<&str> {
         if self.id.is_empty() {
             Some("number_input")
@@ -718,7 +771,7 @@ impl Widget for NumberInput {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return None;
         }
         if self.field_rect.contains(point) {
@@ -731,10 +784,10 @@ impl Widget for NumberInput {
     }
 
     fn is_focusable(&self) -> bool {
-        self.enabled
+        self.effectively_enabled()
     }
     fn is_enabled(&self) -> bool {
-        self.enabled
+        self.effectively_enabled()
     }
     fn set_focus(&mut self, focused: bool) {
         if focused {
@@ -786,7 +839,7 @@ impl Widget for NumberInput {
                 .with_state(AccessState {
                     focusable: self.is_focusable(),
                     focused: self.is_focused(),
-                    disabled: !self.enabled,
+                    disabled: !self.effectively_enabled(),
                     ..Default::default()
                 }),
         )
@@ -799,7 +852,7 @@ impl Widget for NumberInput {
         root: &ObjId,
     ) -> bool {
         use crate::a11y::Action;
-        if !self.enabled {
+        if !self.effectively_enabled() {
             return false;
         }
         match action {
@@ -820,9 +873,7 @@ impl Widget for NumberInput {
                 let clamped = parsed.clamp(self.min, self.max);
                 if (clamped - self.value).abs() > f64::EPSILON {
                     self.value = clamped;
-                    self.changed = Some(clamped);
-                    self.pending_write = Some(clamped);
-                    self.publish_local_state();
+                    self.record_user_value(clamped);
                     self.flush_crdt(state, root);
                 }
                 self.sync_field();
@@ -1186,5 +1237,37 @@ mod tests {
         dispatch(&mut n, &press());
         assert_eq!(n.value(), before, "disabled field ignores stepper clicks");
         assert!(!Widget::is_focusable(&n));
+    }
+
+    #[test]
+    fn action_binding_owns_accessibility_value_changes() {
+        let mut number = NumberInput::new(10.0)
+            .with_on_change_path("legacy")
+            .on_action(crate::widget::test_number_action_binding());
+        let mut doc = AutoCommit::new();
+        Widget::refresh_control_action_availability(&mut number, &std::collections::HashSet::new());
+        assert!(!Widget::is_enabled(&number));
+        Widget::refresh_control_action_availability(
+            &mut number,
+            &std::collections::HashSet::from([qos_actions::ActionAddress::new(
+                "test:control",
+                "set",
+            )]),
+        );
+        assert!(Widget::is_enabled(&number));
+        assert!(Widget::perform_action(
+            &mut number,
+            &crate::a11y::Action::SetValue("42".into()),
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
+        assert_eq!(number.take_changed(), None);
+        assert_eq!(
+            Widget::take_control_invocation(&mut number)
+                .unwrap()
+                .arguments["value"],
+            42.0
+        );
     }
 }
