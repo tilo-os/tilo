@@ -280,8 +280,7 @@ fn choice_prompt_spec(
         move |args| {
             let v = args
                 .text("choice")
-                .map(str::to_string)
-                .unwrap_or_else(|| fallback.clone());
+                .map_or_else(|| fallback.clone(), str::to_string);
             encode(&set_text_action(key, v))
         },
     )

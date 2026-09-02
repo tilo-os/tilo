@@ -1109,24 +1109,32 @@ impl Widget for ContainersApp {
         }
         match type_id {
             "containers.container" => match verb {
-                "start" => podman::run_action(Action::Start, target).map_err(|e| e.to_string())?,
-                "stop" => podman::run_action(Action::Stop, target).map_err(|e| e.to_string())?,
+                "start" => {
+                    podman::run_action(Action::Start, target)?;
+                }
+                "stop" => {
+                    podman::run_action(Action::Stop, target)?;
+                }
                 "restart" => {
-                    podman::run_action(Action::Restart, target).map_err(|e| e.to_string())?
+                    podman::run_action(Action::Restart, target)?;
                 }
-                "pause" => podman::run_action(Action::Pause, target).map_err(|e| e.to_string())?,
+                "pause" => {
+                    podman::run_action(Action::Pause, target)?;
+                }
                 "remove" => {
-                    podman::run_action(Action::Remove, target).map_err(|e| e.to_string())?
+                    podman::run_action(Action::Remove, target)?;
                 }
-                "shell" => crate::terminal::spawn_exec_attach(target, "/bin/sh")
-                    .map_err(|e| e.to_string())?,
+                "shell" => {
+                    crate::terminal::spawn_exec_attach(target, "/bin/sh")
+                        .map_err(|e| e.to_string())?;
+                }
                 _ => return Ok(false),
             },
             "containers.image" if verb == "remove" => {
-                podman::remove_image(target, true).map_err(|e| e.to_string())?
+                podman::remove_image(target, true)?;
             }
             "containers.volume" if verb == "remove" => {
-                podman::remove_volume(target, false).map_err(|e| e.to_string())?
+                podman::remove_volume(target, false)?;
             }
             _ => return Ok(false),
         }
