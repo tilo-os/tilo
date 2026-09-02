@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use ui::LatestRequest;
+use ui::qos_actions;
 use ui::widget::virtual_list::{ListModel, ListModelChange, ListRowState, VirtualList};
 use ui::widget::{Button, Container, Text, Widget};
 
@@ -172,9 +173,9 @@ pub fn app_root() -> Box<dyn Widget> {
         .with_semantic_key(u64::to_string)
         .with_viewport_height(420.0)
         .multi_select(true);
-    crate::resource_actions::immediate(
+    ui::widget::resource_actions::immediate(
         Box::new(list),
-        crate::resource_actions::typed_resource(
+        ui::widget::resource_actions::typed_resource(
             "generated.activity-list",
             "Activity",
             "open",

@@ -1,4 +1,5 @@
 use ui::LocalState;
+use ui::qos_actions;
 use ui::tokens::TextRole;
 use ui::widget::{
     Button, Checkbox, Dropdown, NumberInput, Slider, Text, TextInput, Widget, labeled_check,
@@ -21,7 +22,7 @@ fn update_profile(
 }
 
 fn profile_resource() -> qos_actions::Resource {
-    crate::resource_actions::typed_resource(
+    ui::widget::resource_actions::typed_resource(
         "generated.form",
         "Profile form",
         "update-profile",
@@ -114,7 +115,7 @@ pub fn app_root() -> Box<dyn Widget> {
         greeting,
         reset,
     ]);
-    crate::resource_actions::immediate(root, profile_resource(), move |payload| {
+    ui::widget::resource_actions::immediate(root, profile_resource(), move |payload| {
         let args: serde_json::Map<String, serde_json::Value> =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
         let values = (
