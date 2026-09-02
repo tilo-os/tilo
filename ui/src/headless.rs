@@ -281,6 +281,10 @@ pub struct InspectionNode {
     pub path: String,
     pub widget: String,
     pub test_id: Option<String>,
+    /// Whether the retained widget participates in keyboard focus traversal.
+    /// Kept in the inspection format so an omitted semantic node cannot hide
+    /// an interactive control from the accessibility audit.
+    pub focusable: bool,
     /// `[x, y, width, height]` in logical window coordinates.
     pub rect: [f64; 4],
     pub semantics: Option<AccessNode>,
@@ -311,6 +315,39 @@ pub const ACCESSIBILITY_AUDIT_VERSION: u32 = 1;
 pub struct AccessibilityAudit {
     pub version: u32,
     pub issues: Vec<AccessibilityIssue>,
+}
+
+/// Current machine-readable qOS-native contract report format.
+pub const NATIVE_APP_AUDIT_VERSION: u32 = 1;
+
+/// One reason an app cannot yet be certified as fully action-native.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct NativeAppIssue {
+    pub control: String,
+    pub code: String,
+    pub message: String,
+}
+
+/// Runtime proof over the app's actual laid-out widget and resource trees.
+///
+/// A clean report means every inventoried retained control enters through a
+/// fresh exported resource action and the complete focusable tree satisfies
+/// the accessibility contract. The live [`crate::App`] then supplies the
+/// remaining properties by construction: the same actions are published to
+/// search and agents, pass through the permission door, and document changes
+/// use the shared collaboration/history executor.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct NativeAppAudit {
+    pub version: u32,
+    pub accessibility: AccessibilityAudit,
+    pub issues: Vec<NativeAppIssue>,
+}
+
+impl NativeAppAudit {
+    #[must_use]
+    pub fn is_certified(&self) -> bool {
+        self.accessibility.is_clean() && self.issues.is_empty()
+    }
 }
 
 impl Default for AccessibilityAudit {
@@ -1304,6 +1341,70 @@ impl FrameHarness {
         }
     }
 
+    /// Certify the laid-out application against the action-native contract.
+    ///
+    /// Unlike a source-pattern check this resolves bindings against the live
+    /// resource tree, so conditional resources and custom widgets are covered.
+    /// A custom-painted control participates by exposing accessibility
+    /// semantics and an [`crate::widget::ActionEmitter`] inventory entry.
+    #[must_use]
+    pub fn native_app_audit(&self) -> NativeAppAudit {
+        use crate::widget::ControlBindingKind;
+
+        let resources = self.root.resources(&self.state.doc);
+        let bindings = self.root.control_action_bindings();
+        let inventoried_controls = bindings
+            .iter()
+            .map(|binding| binding.control_id.clone())
+            .collect::<HashSet<_>>();
+        let inspection = self.inspection();
+        let semantic_effect_controls = count_effect_controls(&inspection.root);
+        let mut issues = bindings
+            .into_iter()
+            .filter_map(|binding| match binding.kind {
+                ControlBindingKind::Action(address) => {
+                    qos_actions::door::resolve(&resources, &address)
+                        .is_none()
+                        .then(|| NativeAppIssue {
+                            control: binding.control_id,
+                            code: "stale-action-binding".into(),
+                            message: format!(
+                                "bound action {}/{} is absent from the live resource tree",
+                                address.resource, address.action
+                            ),
+                        })
+                }
+                ControlBindingKind::LegacyDocumentPath(path) => Some(NativeAppIssue {
+                    control: binding.control_id,
+                    code: "legacy-document-path".into(),
+                    message: format!(
+                        "direct document path {path:?} bypasses the resource/action door"
+                    ),
+                }),
+                ControlBindingKind::LegacyCallback => Some(NativeAppIssue {
+                    control: binding.control_id,
+                    code: "legacy-callback".into(),
+                    message: "imperative callback bypasses the resource/action door".into(),
+                }),
+            })
+            .collect::<Vec<_>>();
+        if semantic_effect_controls > inventoried_controls.len() {
+            issues.push(NativeAppIssue {
+                control: "<application>".into(),
+                code: "missing-action-inventory".into(),
+                message: format!(
+                    "{semantic_effect_controls} effect-capable semantic controls are present but only {} controls declare an action path",
+                    inventoried_controls.len()
+                ),
+            });
+        }
+        NativeAppAudit {
+            version: NATIVE_APP_AUDIT_VERSION,
+            accessibility: self.accessibility_audit(),
+            issues,
+        }
+    }
+
     /// The live document. Used to dump state and to hand to a saver.
     pub fn state_mut(&mut self) -> &mut State {
         &mut self.state
@@ -1890,6 +1991,7 @@ fn collect_inspection(
         path,
         widget: name,
         test_id: widget.test_id().map(str::to_owned),
+        focusable: widget.is_focusable(),
         rect: [rect.x0, rect.y0, rect.width(), rect.height()],
         semantics: widget.accessibility(),
         children,
@@ -1897,12 +1999,51 @@ fn collect_inspection(
 }
 
 fn audit_inspection_node(node: &InspectionNode, issues: &mut Vec<AccessibilityIssue>) {
+    if node.focusable && node.semantics.is_none() {
+        push_audit_issue(
+            issues,
+            &node.path,
+            "missing-semantics",
+            "a keyboard-focusable widget must expose accessibility semantics",
+        );
+    }
     if let Some(semantics) = &node.semantics {
         audit_access_node(semantics, &node.path, issues);
     }
     for child in &node.children {
         audit_inspection_node(child, issues);
     }
+}
+
+fn count_effect_controls(node: &InspectionNode) -> usize {
+    let retained = node.semantics.as_ref().map_or(0, count_effect_access_nodes);
+    retained
+        + node
+            .children
+            .iter()
+            .map(count_effect_controls)
+            .sum::<usize>()
+}
+
+fn count_effect_access_nodes(node: &AccessNode) -> usize {
+    let own = usize::from(matches!(
+        node.role,
+        Role::Button
+            | Role::ToggleButton
+            | Role::Checkbox
+            | Role::RadioButton
+            | Role::Switch
+            | Role::ComboBox
+            | Role::Slider
+            | Role::SpinButton
+            | Role::TextInput
+            | Role::MultilineTextInput
+    ));
+    own + node
+        .children
+        .iter()
+        .map(count_effect_access_nodes)
+        .sum::<usize>()
 }
 
 fn audit_access_node(node: &AccessNode, path: &str, issues: &mut Vec<AccessibilityIssue>) {
@@ -2419,6 +2560,53 @@ fn write_headless_output(
 mod tests {
     use super::*;
     use crate::widget::{Button, Checkbox, Column, TextInput, TreeNode, TreeView};
+
+    #[test]
+    fn native_app_audit_proves_action_binding_and_a11y_together() {
+        let resource = qos_actions::Resource::new("example:1", "example", "Example").with_action(
+            qos_actions::ActionSpec::operation(
+                "save",
+                "Save",
+                qos_actions::OperationKind::Effect,
+                "example.save",
+                &(),
+            )
+            .unwrap(),
+        );
+        let binding = qos_actions::ActionBinding::unit_for(&resource, "save").unwrap();
+        let root = crate::widget::resource_actions::immediate(
+            Box::new(Column::new().push(Box::new(
+                Button::new("save", "Save", None).on_action(binding),
+            ))),
+            resource,
+            |_| Ok(qos_actions::ActionOutput::default()),
+        );
+        let driver = Driver::new(State::new(), root, (320, 160));
+        assert!(driver.native_app_audit().is_certified());
+
+        let legacy = Driver::new(
+            State::new(),
+            Box::new(Button::new("legacy", "Legacy", Some("clicked"))),
+            (320, 160),
+        );
+        let audit = legacy.native_app_audit();
+        assert!(!audit.is_certified());
+        assert_eq!(audit.issues[0].code, "legacy-document-path");
+
+        let omitted = Driver::new(
+            State::new(),
+            Box::new(Button::new("omitted", "Omitted", None)),
+            (320, 160),
+        );
+        assert!(
+            omitted
+                .native_app_audit()
+                .issues
+                .iter()
+                .any(|issue| issue.code == "missing-action-inventory"),
+            "an interactive custom/control implementation cannot certify itself by omitting inventory"
+        );
+    }
 
     #[test]
     fn spec_parses_every_action_shape() {
