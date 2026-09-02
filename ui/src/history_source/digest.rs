@@ -14,6 +14,13 @@ use crate::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
 use crate::widget::history_group::{GroupingConfig, group_entries};
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct ActivityBriefAction {
+    pub author: HistoryAuthor,
+    pub summary: String,
+    pub timestamp: SystemTime,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct ActivityBrief {
     /// User/agent-supplied group name, or the deterministic fallback title.
     pub title: String,
@@ -23,6 +30,10 @@ pub struct ActivityBrief {
     pub apps: Vec<String>,
     pub resources: Vec<String>,
     pub changes: usize,
+    /// Oldest-first evidence rows for the card's inline expansion. Keeping
+    /// these structured avoids forcing Catch up to navigate into Explorer
+    /// merely to answer who performed each underlying action.
+    pub actions: Vec<ActivityBriefAction>,
     pub first_at: SystemTime,
     pub last_at: SystemTime,
     /// Stable explicit work-group id, when the actions supplied one.
@@ -133,6 +144,14 @@ impl ActivityDigest {
                     apps,
                     resources,
                     changes: group.len(),
+                    actions: slice
+                        .iter()
+                        .map(|entry| ActivityBriefAction {
+                            author: entry.author.clone(),
+                            summary: entry.summary.clone(),
+                            timestamp: entry.timestamp,
+                        })
+                        .collect(),
                     first_at: group.first_time,
                     last_at: group.last_time,
                     group_id,
@@ -210,6 +229,8 @@ mod tests {
         );
         assert_eq!(digest.briefs[0].apps, vec!["Notes"]);
         assert_eq!(digest.briefs[0].resources, vec!["Launch brief"]);
+        assert_eq!(digest.briefs[0].actions.len(), 2);
+        assert_eq!(digest.briefs[0].actions[1].author.name, "Maren");
     }
 
     #[test]
