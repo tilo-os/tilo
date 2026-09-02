@@ -1204,7 +1204,6 @@ dependencies = [
  "qos-actions",
  "runtime-dylib",
  "serde",
- "serde_json",
  "taffy",
  "ui",
  "vello",
