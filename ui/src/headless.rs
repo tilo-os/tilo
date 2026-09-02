@@ -408,6 +408,11 @@ pub struct FrameHarness {
     /// [`crate::app::App`]'s `local_author` so a scenario exercises the same
     /// author-scoped history a user does.
     author: crate::permissions::UserId,
+    /// Same decoder and transport doors used by the live application host.
+    /// Tests register document action types explicitly, just as `main` does.
+    action_registry: qos_actions::ActionRegistry,
+    action_transport: Box<dyn qos_actions::ActionTransport>,
+    pending_control_invocations: HashSet<qos_actions::InvocationId>,
     /// Per-pass frame profiler, installed by the perf harness via
     /// [`Driver::begin_profiling`]. `None` on a normal (persistence) run, so
     /// [`Driver::relayout`] and [`Driver::send`] pay nothing. When set, each
@@ -458,6 +463,9 @@ impl FrameHarness {
             viewport,
             focused: None,
             author: crate::collaboration::local_user_id(),
+            action_registry: qos_actions::ActionRegistry::new(),
+            action_transport: Box::new(qos_actions::LocalTransport::new()),
+            pending_control_invocations: HashSet::new(),
             profiler: None,
         };
         d.relayout();
@@ -487,6 +495,12 @@ impl FrameHarness {
                 "headless: initial widget structure did not converge"
             );
         }
+    }
+
+    /// Register replayable document action decoders for a driven app.
+    /// Mirrors [`crate::App::action_registry_mut`].
+    pub fn action_registry_mut(&mut self) -> &mut qos_actions::ActionRegistry {
+        &mut self.action_registry
     }
 
     /// Undo the last action, the way the live host does — through
@@ -787,6 +801,7 @@ impl FrameHarness {
             return false;
         };
         while std::time::Instant::now() < deadline {
+            self.poll_control_invocations();
             self.relayout();
             if condition(self) {
                 return true;
@@ -1135,6 +1150,10 @@ impl FrameHarness {
                 self.state.commit_action(None, None);
                 self.root.on_commit();
             }
+            // Action-bound controls enqueue an intent instead of mutating the
+            // document inside `perform_action`; drain it before presenting
+            // the next frame, exactly as the live host does.
+            self.host_tick();
             self.relayout();
             return Ok(());
         }
@@ -1520,6 +1539,8 @@ impl FrameHarness {
     /// 3. **Undo/redo the tree asked for** runs last, so an action performed in
     ///    the same tick is already on the stack and is what gets reverted.
     fn host_tick(&mut self) {
+        self.dispatch_control_invocations();
+        self.poll_control_invocations();
         let author = self.author.clone();
         let root: *mut dyn Widget = self.root.as_mut();
         crate::undo::record_dispatched_action(&mut self.state, root, &self.node_map, &author);
@@ -1541,6 +1562,114 @@ impl FrameHarness {
         // An Undo/Redo control the widget tree activated during that event.
         // Same route the live host takes: the widget asks, the host performs.
         self.drain_undo_requests();
+    }
+
+    fn dispatch_control_invocations(&mut self) {
+        while let Some(intent) = self.root.take_control_invocation() {
+            let resources = self.root.resources(&self.state.doc);
+            let Some(spec) = qos_actions::door::resolve(&resources, &intent.address) else {
+                tracing::warn!(
+                    resource = %intent.address.resource,
+                    action = %intent.address.action,
+                    "headless: action-bound control has a stale address"
+                );
+                continue;
+            };
+            if !matches!(
+                spec.contract.confirmation,
+                qos_actions::ConfirmationPolicy::None
+            ) {
+                tracing::warn!(
+                    resource = %intent.address.resource,
+                    action = %intent.address.action,
+                    "headless: refusing to manufacture action confirmation"
+                );
+                continue;
+            }
+            let kind = spec.kind;
+            let execution = spec.contract.execution.clone();
+            let result = spec.contract.result.clone();
+            if kind == qos_actions::OperationKind::Document {
+                let before = self.state.doc.get_heads();
+                match qos_actions::door::invoke_json(
+                    &mut self.state.doc,
+                    &resources,
+                    &intent.address,
+                    &intent.arguments,
+                    self.author.0.as_bytes(),
+                    &self.action_registry,
+                    self.action_transport.as_mut(),
+                ) {
+                    Ok(dispatched) if dispatched.mutated_local() => {
+                        self.state.record_committed_action_authored(
+                            before,
+                            None,
+                            None,
+                            Some(self.author.clone()),
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(%error, "headless: document action refused"),
+                }
+                continue;
+            }
+
+            let encoded = match qos_actions::door::encode_json(
+                &resources,
+                &intent.address,
+                &intent.arguments,
+            ) {
+                Ok(encoded) => encoded,
+                Err(error) => {
+                    tracing::warn!(%error, "headless: action arguments refused");
+                    continue;
+                }
+            };
+            let invocation = qos_actions::InvocationId::new();
+            match self.root.start_resource_operation(
+                invocation,
+                kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &self.state.doc,
+                &self.state.root,
+            ) {
+                Ok(Some(crate::widget::ResourceOperationStart::Completed(output))) => {
+                    if let Err(error) = result.validate(&output) {
+                        tracing::warn!(%error, "headless: operation result violated its contract");
+                    }
+                }
+                Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+                    if matches!(execution, qos_actions::ExecutionMode::Immediate) =>
+                {
+                    tracing::warn!("headless: an immediate action remained pending");
+                }
+                Ok(Some(crate::widget::ResourceOperationStart::Accepted)) => {
+                    self.pending_control_invocations.insert(invocation);
+                }
+                Ok(None) => tracing::warn!("headless: no widget accepted the bound operation"),
+                Err(error) => tracing::warn!(%error, "headless: bound operation failed"),
+            }
+        }
+    }
+
+    fn poll_control_invocations(&mut self) {
+        let invocations = self
+            .pending_control_invocations
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        for invocation in invocations {
+            if let Some(update) = self.root.poll_resource_operation(
+                invocation,
+                false,
+                &self.state.doc,
+                &self.state.root,
+            ) && update.is_terminal()
+            {
+                self.pending_control_invocations.remove(&invocation);
+            }
+        }
     }
 
     /// Move the pointer to `(x, y)` and press+release the left button — the
@@ -2563,26 +2692,27 @@ mod tests {
 
     #[test]
     fn native_app_audit_proves_action_binding_and_a11y_together() {
-        let resource = qos_actions::Resource::new("example:1", "example", "Example").with_action(
-            qos_actions::ActionSpec::operation(
-                "save",
-                "Save",
-                qos_actions::OperationKind::Effect,
-                "example.save",
-                &(),
-            )
-            .unwrap(),
-        );
+        let resource =
+            crate::widget::resource_actions::resource("example", "Example", "save", "Save", false);
         let binding = qos_actions::ActionBinding::unit_for(&resource, "save").unwrap();
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let operation_calls = calls.clone();
         let root = crate::widget::resource_actions::immediate(
             Box::new(Column::new().push(Box::new(
                 Button::new("save", "Save", None).on_action(binding),
             ))),
             resource,
-            |_| Ok(qos_actions::ActionOutput::default()),
+            move |_| {
+                operation_calls.set(operation_calls.get() + 1);
+                Ok(qos_actions::ActionOutput::default())
+            },
         );
-        let driver = Driver::new(State::new(), root, (320, 160));
+        let mut driver = Driver::new(State::new(), root, (320, 160));
         assert!(driver.native_app_audit().is_certified());
+        driver
+            .perform_named("save", &crate::a11y::Action::Activate)
+            .expect("bound control dispatches through the headless host");
+        assert_eq!(calls.get(), 1);
 
         let legacy = Driver::new(
             State::new(),
