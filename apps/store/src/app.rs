@@ -582,7 +582,7 @@ impl StoreApp {
         // reads it back next frame and flips `active_filter`, which
         // re-filters the catalog.
         let sink = self.filter_click.clone();
-        let group = ToggleGroup::new(segs, selected).on_change(move |idx| {
+        let group = ToggleGroup::new(segs, selected).on_view("store.source-filter", move |idx| {
             sink.set(Some(idx));
         });
         Box::new(

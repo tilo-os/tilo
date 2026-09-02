@@ -387,6 +387,10 @@ impl SemanticTree {
     /// qOS resource/action surface. Bespoke app actions remain preferable for
     /// domain operations; this projection closes the driveability gap for
     /// ordinary controls such as buttons, fields, tabs, toggles, and sliders.
+    #[expect(
+        clippy::expect_used,
+        reason = "the framework-owned semantic operation contains only serializable strings"
+    )]
     pub(crate) fn action_resources(&self) -> Vec<Resource> {
         self.iter()
             .filter(|node| node.id != self.root && !node.id.0.starts_with("r:"))
@@ -398,12 +402,14 @@ impl SemanticTree {
                     .iter()
                     .filter_map(|action| match &action.kind {
                         SemanticActionKind::Verb(verb)
-                            if semantic_operation_kind(node.role, verb) == OperationKind::View =>
+                            if semantic_operation_kind(node.role, verb) == OperationKind::View
+                                || node.semantic_target.is_some() =>
                         {
                             Some((action, verb))
                         }
-                        SemanticActionKind::App(_) | SemanticActionKind::AppPrompted { .. } => None,
-                        SemanticActionKind::Verb(_) => None,
+                        SemanticActionKind::Verb(_)
+                        | SemanticActionKind::App(_)
+                        | SemanticActionKind::AppPrompted { .. } => None,
                     })
                     .collect::<Vec<_>>();
                 if verbs.is_empty() {
@@ -662,7 +668,7 @@ impl Build<'_> {
                     actions,
                     children,
                     widget_taffy_id: taffy_id.map(u64::from),
-                    semantic_target: None,
+                    semantic_target: access.action_target.clone(),
                 };
                 self.order.push(id.clone());
                 self.insert_node(node);
@@ -1052,7 +1058,7 @@ mod tests {
     }
 
     #[test]
-    fn editable_value_is_not_projected_without_a_domain_contract() {
+    fn standard_local_text_input_projects_its_framework_owned_set_value() {
         let mut field = TextInput::new(Vec::new()).with_accessible_name("Destination");
         let node_map = layout(&mut field);
         let mut tree = SemanticTree::new();
@@ -1061,11 +1067,11 @@ mod tests {
         let destination = resources
             .iter()
             .find(|resource| resource.label == "Destination");
-        assert!(destination.is_none_or(|resource| {
+        assert!(destination.is_some_and(|resource| {
             resource
                 .actions
                 .iter()
-                .all(|action| action.id != "set-value")
+                .any(|action| action.id == "set-value")
         }));
     }
 

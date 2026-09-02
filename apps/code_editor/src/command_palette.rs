@@ -20,7 +20,6 @@ use crate::model::NodeId as TreeId;
 pub enum PaletteKind {
     File(TreeId),
     Command(Command),
-    LineJump(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +50,40 @@ pub enum Command {
 }
 
 impl Command {
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::NewFile => "new-file",
+            Self::OpenFolder => "open-folder",
+            Self::OpenFile => "open-file",
+            Self::Save => "save",
+            Self::SaveAs => "save-as",
+            Self::SaveAll => "save-all",
+            Self::RevertFile => "revert-file",
+            Self::CloseTab => "close-tab",
+            Self::Find => "find",
+            Self::Replace => "replace",
+            Self::SearchProject => "search-project",
+            Self::GoToLine => "go-to-line",
+            Self::DuplicateLine => "duplicate-line",
+            Self::MoveLineUp => "move-line-up",
+            Self::MoveLineDown => "move-line-down",
+            Self::DeleteLine => "delete-line",
+            Self::ToggleComment => "toggle-comment",
+            Self::ToggleBottomPanel => "toggle-bottom-panel",
+            Self::NextTheme => "next-theme",
+            Self::GoToProblems => "go-to-problems",
+            Self::GoToSearch => "go-to-search",
+            Self::GoToTerminal => "go-to-terminal",
+            Self::ToggleSidebar => "toggle-sidebar",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::catalogue()
+            .into_iter()
+            .find_map(|(command, _, _)| (command.id() == id).then_some(command))
+    }
+
     pub fn all() -> Vec<(Command, &'static str)> {
         Self::catalogue()
             .into_iter()
@@ -124,9 +157,12 @@ impl Command {
 
 #[derive(Clone, Debug)]
 pub struct Entry {
-    pub label: String,
     pub detail: String,
     pub kind: PaletteKind,
+    /// The resource-backed row that executes this entry. Keeping it beside
+    /// the presentation metadata makes it impossible for the adapter to
+    /// accidentally invent a private callback command.
+    pub action: CommandEntry,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,8 +179,6 @@ pub struct CommandPalette {
     viewport: Rect,
     mode: Mode,
 }
-
-const GOTO_ID: &str = "code-editor:goto-line";
 
 impl CommandPalette {
     pub fn new() -> Self {
@@ -184,14 +218,11 @@ impl CommandPalette {
             if !belongs {
                 continue;
             }
-            let index = self.active.len();
             self.active.push(entry.kind.clone());
-            let mut row = CommandEntry::new(format!("code-editor:{index}"), &entry.label).icon(
-                match entry.kind {
-                    PaletteKind::File(_) => Icon::File,
-                    PaletteKind::Command(_) | PaletteKind::LineJump(_) => Icon::Settings,
-                },
-            );
+            let mut row = entry.action.clone().icon(match entry.kind {
+                PaletteKind::File(_) => Icon::File,
+                PaletteKind::Command(_) => Icon::Settings,
+            });
             match entry.kind {
                 PaletteKind::File(_) if !entry.detail.is_empty() => {
                     row = row.description(&entry.detail);
@@ -226,30 +257,33 @@ impl CommandPalette {
     pub fn open_goto(&mut self) {
         self.mode = Mode::Goto;
         self.active.clear();
-        self.shared
-            .open_argument(GOTO_ID, "Go to line", "Line number\u{2026}", None);
+        if let Some(entry) = self
+            .entries
+            .iter()
+            .find(|entry| entry.kind == PaletteKind::Command(Command::GoToLine))
+        {
+            self.shared.open_action_argument(entry.action.clone(), None);
+        }
     }
 
-    pub fn take_chosen(&mut self) -> Option<PaletteKind> {
-        let outcome = self.shared.take_outcome()?;
-        if outcome.id == GOTO_ID {
-            return outcome
-                .argument
-                .and_then(|value| value.trim().parse::<usize>().ok())
-                .map(|line| PaletteKind::LineJump(line.max(1)));
-        }
-        let index: usize = outcome.id.strip_prefix("code-editor:")?.parse().ok()?;
-        self.active.get(index).cloned()
+    pub fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
+        self.shared.take_control_invocation()
+    }
+
+    pub fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        self.shared.control_action_bindings()
     }
 
     pub fn seed_query(&mut self, query: &str) {
         if self.mode == Mode::Goto {
-            self.shared.open_argument(
-                GOTO_ID,
-                "Go to line",
-                "Line number\u{2026}",
-                Some(query.to_string()),
-            );
+            if let Some(entry) = self
+                .entries
+                .iter()
+                .find(|entry| entry.kind == PaletteKind::Command(Command::GoToLine))
+            {
+                self.shared
+                    .open_action_argument(entry.action.clone(), Some(query.to_string()));
+            }
         } else {
             self.shared.set_query(query);
         }
@@ -328,17 +362,31 @@ impl Default for CommandPalette {
 mod tests {
     use super::*;
 
+    fn native(resource_id: &str, action_id: &str, label: &str) -> CommandEntry {
+        let resource = ui::qos_actions::Resource::new(resource_id, "test", "Test").with_action(
+            ui::qos_actions::ActionSpec::operation(
+                action_id,
+                label,
+                ui::qos_actions::OperationKind::View,
+                "test.view",
+                &action_id,
+            )
+            .unwrap(),
+        );
+        CommandEntry::from_flat_action(&ui::qos_actions::flatten(&[resource])[0])
+    }
+
     fn entries() -> Vec<Entry> {
         vec![
             Entry {
-                label: "main.rs".into(),
                 detail: "src".into(),
                 kind: PaletteKind::File(42),
+                action: native("code_editor.file:42", "open", "Open main.rs"),
             },
             Entry {
-                label: "File: New File".into(),
                 detail: String::new(),
                 kind: PaletteKind::Command(Command::NewFile),
+                action: native("code_editor.project", "command-new-file", "New file"),
             },
         ]
     }
@@ -354,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_outcome_maps_back_to_typed_file_id() {
+    fn shared_selection_emits_the_file_resource_action() {
         let mut palette = CommandPalette::new();
         palette.set_entries(entries());
         palette.open_files();
@@ -362,6 +410,10 @@ mod tests {
         palette
             .shared
             .activate_selected(&mut state, &automerge::ROOT);
-        assert_eq!(palette.take_chosen(), Some(PaletteKind::File(42)));
+        let invocation = palette
+            .take_control_invocation()
+            .expect("native invocation");
+        assert_eq!(invocation.address.resource, "code_editor.file:42");
+        assert_eq!(invocation.address.action, "open");
     }
 }

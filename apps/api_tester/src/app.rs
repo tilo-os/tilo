@@ -373,12 +373,17 @@ impl ApiTesterApp {
         let mut url_input = TextInput::local().with_kind(TextInputKind::Url);
         url_input.set_plain_chrome(true);
         url_input.set_text(&model.request.url);
-        let url_input = url_input.with_id("api.url");
+        let url_input = url_input
+            .with_id("api.url")
+            .with_accessible_name("Request URL");
         let mut body_input = TextInput::local();
         body_input.set_plain_chrome(true);
         body_input.set_mono(true);
         body_input.set_text(&model.request.body_text);
-        let body_input = body_input.multiline(true).with_id("api.body");
+        let body_input = body_input
+            .multiline(true)
+            .with_id("api.body")
+            .with_accessible_name("Request body");
 
         let sink: Sink = Rc::new(RefCell::new(Vec::new()));
 
@@ -402,7 +407,7 @@ impl ApiTesterApp {
         let send_button = Button::new("api.send", "Send", None)
             .primary()
             .with_size(SEND_W as f32, 36.0)
-            .on_click(move || send_sink.borrow_mut().push(Cmd::Send));
+            .on_effect(move || send_sink.borrow_mut().push(Cmd::Send));
 
         // Request-builder tabs.
         let tab_sink = sink.clone();
@@ -413,7 +418,9 @@ impl ApiTesterApp {
                 .collect(),
             0,
         )
-        .on_change(move |i| tab_sink.borrow_mut().push(Cmd::SetTab(i)));
+        .on_view("api.request-tabs", move |i| {
+            tab_sink.borrow_mut().push(Cmd::SetTab(i));
+        });
 
         // Response-view switch.
         let view_sink = sink.clone();
@@ -424,7 +431,9 @@ impl ApiTesterApp {
                 .collect(),
             0,
         )
-        .on_change(move |i| view_sink.borrow_mut().push(Cmd::SetView(i)));
+        .on_view("api.response-view", move |i| {
+            view_sink.borrow_mut().push(Cmd::SetView(i));
+        });
 
         BuiltWidgets {
             method_dropdown,

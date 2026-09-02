@@ -377,6 +377,19 @@ impl Widget for ThemeRow {
     fn test_id(&self) -> Option<&str> {
         Some(&self.id)
     }
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::RadioButton)
+                .with_name(self.name.clone())
+                .with_action_target(format!("themes.select:{}", self.id))
+                .with_state(ui::a11y::AccessState {
+                    focusable: true,
+                    checked: Some(self.view.selected),
+                    selected: self.view.selected,
+                    ..Default::default()
+                }),
+        )
+    }
 }
 
 // --- shared colour helpers ---------------------------------------------

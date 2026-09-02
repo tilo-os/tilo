@@ -483,17 +483,20 @@ impl Widget for Checkbox {
             .as_ref()
             .map(|n| crate::i18n!(n))
             .filter(|n| !n.is_empty());
-        Some(
-            AccessNode::new(Role::Checkbox)
-                .with_optional_name(name)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    disabled: !self.is_enabled(),
-                    checked: Some(self.is_checked),
-                    ..Default::default()
-                }),
-        )
+        let mut node = AccessNode::new(Role::Checkbox)
+            .with_semantic_key(self.test_id().unwrap_or("checkbox"))
+            .with_optional_name(name)
+            .with_state(AccessState {
+                focusable: self.is_focusable(),
+                focused: self.is_focused(),
+                disabled: !self.is_enabled(),
+                checked: Some(self.is_checked),
+                ..Default::default()
+            });
+        if self.action.is_none() && self.on_change.is_none() {
+            node = node.with_action_target(self.test_id().unwrap_or("checkbox"));
+        }
+        Some(node)
     }
 
     /// Accessibility: an AT toggles the checkbox with
@@ -554,15 +557,18 @@ impl Widget for Checkbox {
         } else if !self.on_toggle_path.is_empty() {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyDocumentPath(self.on_toggle_path.clone()),
+                kind: ControlBindingKind::CollaborativeDocument(self.on_toggle_path.clone()),
             }]
-        } else if self.on_change.is_some() || self.local_state.is_some() {
+        } else if self.on_change.is_some() {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
                 kind: ControlBindingKind::LegacyCallback,
             }]
         } else {
-            Vec::new()
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
+            }]
         }
     }
 

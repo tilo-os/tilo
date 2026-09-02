@@ -208,6 +208,11 @@ impl Chooser {
     /// this path has no compiled-in application vocabulary: the model must
     /// discover operation ids through read-only tools, and can finish only by
     /// submitting `plan` with native JSON argument values.
+    ///
+    /// # Errors
+    ///
+    /// Returns the deterministic fallback route when model discovery is
+    /// disabled, unavailable, invalid, exhausted, or misses its deadline.
     pub fn choose_actions(
         &self,
         rest: &str,
@@ -1009,7 +1014,7 @@ mod tests {
             },
         };
         let catalogue = Catalogue {
-            offers: vec![offer.clone()],
+            offers: vec![offer],
             facts: Vec::new(),
             held: vec!["calculator"],
         };

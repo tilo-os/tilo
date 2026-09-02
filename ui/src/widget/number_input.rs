@@ -748,12 +748,12 @@ impl Widget for NumberInput {
         } else if self.crdt_bound {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyDocumentPath(self.on_change_path.clone()),
+                kind: ControlBindingKind::CollaborativeDocument(self.on_change_path.clone()),
             }]
         } else {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyCallback,
+                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
             }]
         }
     }
@@ -832,17 +832,20 @@ impl Widget for NumberInput {
     /// `SetValue`, all through the same commit path as pointer/keyboard input.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        Some(
-            AccessNode::new(Role::SpinButton)
-                .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
-                .with_value(self.format_value())
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    disabled: !self.effectively_enabled(),
-                    ..Default::default()
-                }),
-        )
+        let mut node = AccessNode::new(Role::SpinButton)
+            .with_semantic_key(self.test_id().unwrap_or("number_input"))
+            .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
+            .with_value(self.format_value())
+            .with_state(AccessState {
+                focusable: self.is_focusable(),
+                focused: self.is_focused(),
+                disabled: !self.effectively_enabled(),
+                ..Default::default()
+            });
+        if self.action.is_none() {
+            node = node.with_action_target(self.test_id().unwrap_or("number_input"));
+        }
+        Some(node)
     }
 
     fn perform_action(
