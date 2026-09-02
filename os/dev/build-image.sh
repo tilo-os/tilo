@@ -57,6 +57,7 @@ done
 # docs/supply-chain.md). Override via $SOURCE_DATE_EPOCH.
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$QOS_REPO" log -1 --format=%ct 2>/dev/null || echo 0)}"
 export SOURCE_DATE_EPOCH
+"$QOS_OS_DIR/dev/cache-github-assets.sh"
 # The digest-pinned base the build starts FROM — our own mirror of the Fedora
 # bootc image, because upstream deletes the manifest a digest points at within
 # about a day (see os/base-snapshot.env). Written by the mirror-base CI job.
@@ -66,7 +67,11 @@ export SOURCE_DATE_EPOCH
 # The digest-pinned frozen RPM repo the build installs from (written by
 # os/dev/snapshot-rpms.sh / the snapshot-rpms CI job). Cross-time reproducible.
 # shellcheck disable=SC1091
+# An explicit RPMS_REF is useful for validating a just-built snapshot before it
+# is published and pinned. Do not let the tracked default silently overwrite it.
+_qos_rpms_ref_override="${RPMS_REF:-}"
 [ -f "$QOS_OS_DIR/rpms-snapshot.env" ] && . "$QOS_OS_DIR/rpms-snapshot.env"
+RPMS_REF="${_qos_rpms_ref_override:-${RPMS_REF:-}}"
 [ -n "${RPMS_REF:-}" ] || die "no RPMS_REF — run ./os/dev/snapshot-rpms.sh (or the snapshot-rpms CI job) first"
 # The digest-pinned qos-kernel image (built by .forgejo/workflows/build-kernel.yml
 # — see os/kernel/Containerfile).  os/Containerfile swaps kernel-core →
@@ -156,6 +161,7 @@ read -r -a _qos_build_args <<< "${QOS_BUILD_ARGS:-}"
 # $1 = the composefs digest to seal into the UKI ("" to let bootc compute it).
 build_image() {
   podman build -f "$QOS_OS_DIR/Containerfile" -t "$QOS_IMAGE" \
+    --build-context "github-assets=$QOS_REPO/os/external-assets/cache" \
     "${_qos_build_args[@]}" \
     --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
     --build-arg "BASE_REF=$BASE_REF" \

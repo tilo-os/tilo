@@ -179,10 +179,11 @@ fi
 #
 # We are already root here (via the sudoers drop-in), so `systemd-run` talks to
 # the system manager directly — no second sudo, and the existing sudoers rule
-# is unchanged. `--pipe` forwards our stdin (the password) and stdout/stderr
-# (progress) straight through to the unit; `--wait` blocks and propagates the
-# unit's exit code; `--collect` reaps the unit afterwards; `--quiet` suppresses
-# systemd-run's own "Running as unit:" chatter so it never leaks into the log.
+# is unchanged. Do not use `systemd-run --pipe`: Fedora/systemd can reset the
+# transient-unit D-Bus request while passing the greeter process's anonymous
+# pipes as file descriptors. A private /run bridge gives the unit ordinary
+# root-only files instead. We tail its output back to the UI while it runs; the
+# startup secret and recovery key never enter the journal or command line.
 # The QOS_INSTALL_TRANSIENT guard breaks the re-exec recursion: the unit runs
 # this same script again, already in the system domain, and falls through to
 # the real work below.
@@ -191,12 +192,46 @@ fi
 # (the historical behaviour) — correct on a permissive medium, and the live
 # medium also carries a scoped SELinux module (qos-installer.cil) as a backstop.
 if [ -z "${QOS_INSTALL_TRANSIENT:-}" ] && command -v systemd-run >/dev/null 2>&1; then
-  exec systemd-run \
-    --pipe --collect --quiet --wait \
+  # qos-installer-setup creates this from PID 1 before the greeter starts, so
+  # it has a system runtime SELinux label rather than xdm_tmp_t. The latter is
+  # deliberately inaccessible to an enforcing transient system service.
+  [ -d /run/qos-installer/bridge ] \
+    || die "installer runtime bridge is missing (qos-installer-setup did not complete)"
+  BRIDGE="$(mktemp -d /run/qos-installer/bridge/run.XXXXXX)"
+  chmod 0700 "$BRIDGE"
+  INPUT="$BRIDGE/stdin"
+  OUTPUT="$BRIDGE/output"
+  umask 077
+  cat > "$INPUT"
+  : > "$OUTPUT"
+  # xdm_t has a file-creation type transition even below a var_run_t parent.
+  # Match the PID-1-created directory explicitly before the service manager
+  # opens these paths; otherwise systemd reports EXIT_STDIN (209) before exec.
+  chcon --reference=/run/qos-installer/bridge "$BRIDGE" "$INPUT" "$OUTPUT"
+  cleanup_bridge() { rm -rf "$BRIDGE"; }
+  trap cleanup_bridge EXIT
+  systemd-run \
+    --collect --quiet --wait \
     --unit="qos-install-$$" \
+    --property=Type=exec \
+    --property="StandardInput=file:$INPUT" \
+    --property="StandardOutput=append:$OUTPUT" \
+    --property="StandardError=append:$OUTPUT" \
     --setenv=QOS_INSTALL_TRANSIENT=1 \
     --setenv=QOS_TARGET_IMGREF="$QOS_TARGET_IMGREF" \
-    -- "$0" "$@"
+    -- "$0" "$@" &
+  RUNNER=$!
+  tail --pid="$RUNNER" -n +1 -F "$OUTPUT" &
+  TAILER=$!
+  set +e
+  wait "$RUNNER"
+  RC=$?
+  wait "$TAILER" 2>/dev/null
+  if [ ! -s "$OUTPUT" ]; then
+    printf 'error: transient installer service failed before producing output (status %s)\n' "$RC" >&2
+  fi
+  set -e
+  exit "$RC"
 fi
 
 # --- parse args --------------------------------------------------------------
@@ -368,7 +403,9 @@ while read -r SOURCE MOUNTPOINT; do
     /|/boot|/boot/*|/sysroot|/sysroot/*|/run/initramfs/live|/run/initramfs/live/*|/run/rootfsbase|/run/rootfsbase/*) ;;
     *) continue ;;
   esac
-  LIVE_DISK="$(lsblk -spno NAME,TYPE "$SOURCE" 2>/dev/null | awk '$2 == "disk" || $2 == "rom" { print $1; exit }')"
+  # Raw output matters: normal lsblk tree output prefixes the parent with
+  # `\u2514\u2500`, turning /dev/vda into the invalid path `\u2514\u2500/dev/vda`.
+  LIVE_DISK="$(lsblk -srpno NAME,TYPE "$SOURCE" 2>/dev/null | awk '$2 == "disk" || $2 == "rom" { print $1; exit }')"
   [ -n "$LIVE_DISK" ] || continue
   LIVE_MAJ_MIN="$(lsblk -dno MAJ:MIN "$LIVE_DISK" 2>/dev/null || true)"
   [ -n "$LIVE_MAJ_MIN" ] && break
@@ -501,11 +538,6 @@ if [ "$ENCRYPT" -eq 1 ]; then
   # left alone; only `finish` removes the install key.
   trap '"$DISK_ENCRYPT" teardown "$DISK" --mnt "$ENC_MNT" >/dev/null 2>&1 || true' EXIT
 
-  # Every karg the volume needs becomes a --karg; word-splitting KARGS is
-  # intentional (it is a space-separated list this script produced).
-  KARG_ARGS=()
-  for k in $ENC_KARGS; do KARG_ARGS+=(--karg "$k"); done
-
   # --skip-finalize because bootc's finalize step remounts the target READ-ONLY,
   # and the account/hostname/keyboard seeding below writes into the deployment's
   # /etc on that same mount. qos-disk-encrypt finish unmounts and closes the
@@ -519,12 +551,26 @@ if [ "$ENCRYPT" -eq 1 ]; then
     --security-opt label=type:unconfined_t \
     "$LOCAL_IMG" \
     bootc install to-filesystem \
-      --root-mount-spec "UUID=$ENC_ROOT_UUID" \
-      --karg-delete qos.installer=1 \
-      "${KARG_ARGS[@]}" \
       --target-imgref "$QOS_TARGET_IMGREF" \
       --skip-finalize \
       /target
+
+  # A sealed UKI cannot accept bootc --karg/--karg-delete arguments. The live
+  # UKI carries fixed-width, signed UUID placeholders; specialize only those
+  # bytes on the installed ESP, then restore its live-only mode token. Verified
+  # TPM mode subsequently re-signs and validates this exact target UKI.
+  TARGET_UKI="$(find "$ENC_MNT/boot/efi/EFI/Linux" -type f \
+    -path '*/bootc/bootc_composefs-*.efi' -print -quit)"
+  [ -n "$TARGET_UKI" ] || die "installed target has no bootc UKI on its ESP"
+  LUKS_UUID="$(cryptsetup luksUUID "$ENC_LUKS")"
+  [ -n "$LUKS_UUID" ] || die "could not read the installed LUKS UUID"
+  /usr/libexec/qos-uki-cmdline replace \
+    qos.root=0000000000000000000000000000000000000 \
+    "root=UUID=$ENC_ROOT_UUID" "$TARGET_UKI"
+  /usr/libexec/qos-uki-cmdline replace \
+    qos.luks=000000000000000000000000000000000000000000000 \
+    "rd.luks.uuid=luks-$LUKS_UUID" "$TARGET_UKI"
+  /usr/libexec/qos-uki-cmdline replace qos.installer=1 qos.mode=normal "$TARGET_UKI"
 elif [ "$ALONGSIDE" -eq 1 ]; then
   validate_alongside
   step "Formatting only $ROOT_PARTITION for qOS; preserving every other partition"
@@ -629,6 +675,14 @@ find_deploy_etc() {
 if [ "$ENCRYPT" -eq 1 ]; then
   MNT="$ENC_MNT"
   DEPLOY_ETC="$(find_deploy_etc "$MNT")"
+  # The composefs backend has no ostree checkout and does not assemble /etc on
+  # the physical root at install time. Its persistent mutable state is stored
+  # as state/deploy/<composefs-digest>/etc and bound into the assembled root by
+  # initramfs. Seed that backend-owned directory directly.
+  if [ -z "$DEPLOY_ETC" ] && [ -d "$MNT/state/deploy" ]; then
+    DEPLOY_ETC="$(find "$MNT/state/deploy" -mindepth 2 -maxdepth 2 \
+      -type d -name etc -print -quit)"
+  fi
 elif [ "$ALONGSIDE" -eq 1 ]; then
   MNT="$ALONGSIDE_MNT"
   DEPLOY_ETC="$(find_deploy_etc "$MNT")"
@@ -665,6 +719,12 @@ fi
 install -D -m 0644 /usr/share/qos/greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"
 printf '\n[initial_session]\ncommand = "/usr/bin/shell --backend drm"\nuser = "%s"\n' \
   "$USERNAME" >> "$DEPLOY_ETC/greetd/config.toml"
+# DEPLOY_ETC is reached through a transient /run mount. SELinux therefore
+# cannot infer the eventual /etc pathname while we are offline and otherwise
+# gives this file var_run_t. Enforcing greetd (xdm_t) then refuses to read its
+# own configuration on the first installed boot. Copy the label from the
+# correctly labelled live /etc counterpart; only the contents differ.
+chcon --reference=/etc/greetd/config.toml "$DEPLOY_ETC/greetd/config.toml"
 rm -f "$DEPLOY_ETC/sudoers.d/qos-installer"
 # Release media mask sshd, while an explicit diagnostic image may enable it.
 # Neither live-only state belongs on the installed system; the base qOS image

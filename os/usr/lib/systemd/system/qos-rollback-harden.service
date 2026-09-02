@@ -3,6 +3,11 @@ Description=Set the TPM dictionary-attack reset authorisation and tighten its pa
 Documentation=man:qos-rollback(8)
 After=local-fs.target
 ConditionPathExists=/usr/bin/qos-rollback
+# Never mutate the device TPM from a disposable installer environment. The
+# authorisation is useful only when it is durably recorded on the installed,
+# encrypted root; doing this from the live medium strands the secret there and
+# makes the installed system unable to administer its own lockout policy.
+ConditionKernelCommandLine=!qos.installer
 # Once the authorisation has been recorded there is nothing left to do.
 ConditionPathExists=!/var/lib/qos/rollback/lockout-auth
 

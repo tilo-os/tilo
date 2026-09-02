@@ -41,8 +41,12 @@ QOS_PIDFILE="$QOS_RUN/qemu.pid"
 # The blank disk the custom installer writes onto (becomes the installed
 # system), attached as a SECOND virtio disk (/dev/vdb) by vm.sh boot-installer
 # and booted on its own by vm.sh boot-target.
-QOS_TARGET_DISK="${QOS_TARGET_DISK:-$QOS_RUN/target.qcow2}"
-QOS_TARGET_SIZE="${QOS_TARGET_SIZE:-20G}"
+# OS targets are multi-gigabyte even when qcow2-sparse. Keep them on the build
+# filesystem, not QOS_RUN's commonly-tmpfs /tmp directory, or a realistic
+# encrypted install can exhaust RAM-backed storage and surface as guest I/O
+# errors. 40 GiB also matches the installer's supported whole-disk envelope.
+QOS_TARGET_DISK="${QOS_TARGET_DISK:-$QOS_INSTALLER_OUTPUT/test-target.qcow2}"
+QOS_TARGET_SIZE="${QOS_TARGET_SIZE:-40G}"
 
 # Software TPM 2.0 (swtpm) so encrypted/TPM-bound installs can be booted and
 # unlock-tested, and so a measured boot can be observed at all. Off by default;
