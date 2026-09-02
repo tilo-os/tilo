@@ -19,7 +19,7 @@ use qos_relay::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
 use qos_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use crate::network::protocol::NeighbourMsg;
+use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg};
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const PEER_TIMEOUT: Duration = Duration::from_secs(15);
@@ -662,6 +662,16 @@ async fn publish(
     shell_checkpoint: bool,
 ) {
     let Some(topic) = topics.get(&ws) else { return };
+    if let NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. } = &msg
+        && snapshot.len() > MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES
+    {
+        tracing::warn!(
+            ws,
+            bytes = snapshot.len(),
+            "personal continuity checkpoint exceeds transport limit"
+        );
+        return;
+    }
     let bytes = match postcard::to_allocvec(&msg) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -723,6 +733,14 @@ fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32], Re
                 collab_types::DocumentMutation::Incremental(_) => Retention::Delta,
             };
             return Some((*blake3::hash(route.as_bytes()).as_bytes(), retention));
+        }
+        NeighbourMsg::PersonalContinuityCheckpoint {
+            user_public_key, ..
+        } => {
+            let mut route = Vec::with_capacity(20 + user_public_key.len());
+            route.extend_from_slice(b"personal-continuity\0");
+            route.extend_from_slice(user_public_key);
+            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
         _ => return None,
     };
@@ -932,6 +950,39 @@ mod tests {
             ),
             Some((_, Retention::Delta))
         ));
+        let root_a = [0xA1; 32];
+        let root_b = [0xB2; 32];
+        let checkpoint_a = NeighbourMsg::PersonalContinuityCheckpoint {
+            user_public_key: root_a,
+            publisher: 1,
+            snapshot: vec![7],
+        };
+        let checkpoint_b = NeighbourMsg::PersonalContinuityCheckpoint {
+            user_public_key: root_b,
+            publisher: 2,
+            snapshot: vec![8],
+        };
+        let Some((channel_a, Retention::Checkpoint)) = retention(&checkpoint_a, false) else {
+            panic!("personal continuity checkpoints must be retained baselines");
+        };
+        let Some((channel_b, Retention::Checkpoint)) = retention(&checkpoint_b, false) else {
+            panic!("personal continuity checkpoints must be retained baselines");
+        };
+        assert_ne!(
+            channel_a, channel_b,
+            "each user root has an isolated host channel"
+        );
+        assert!(
+            retention(
+                &NeighbourMsg::PersonalContinuityRequest {
+                    user_public_key: root_a,
+                    requester: 1,
+                },
+                false,
+            )
+            .is_none(),
+            "requests are live probes, never retained work"
+        );
         for live in [
             NeighbourMsg::RemoteInput {
                 peer: 1,

@@ -5355,6 +5355,33 @@ impl WorkspaceTree {
         ws_id
     }
 
+    /// Add a dormant local entry for a room discovered through the private
+    /// same-identity continuation lane. Unlike [`Self::append_empty_workspace`]
+    /// this creates no strip or window and never changes focus, so merely
+    /// learning that another device has a workspace open cannot publish an
+    /// empty local layout into that room or pull the current session away.
+    /// The room's authenticated sync response supplies its real name/layout.
+    pub fn adopt_continuation_room(&mut self, room: RoomId, source_device: &str) -> bool {
+        if room.is_nil()
+            || self
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.room == room)
+        {
+            return false;
+        }
+        let id = WorkspaceId::new();
+        let mut workspace = Workspace::new(id, format!("From {source_device}"));
+        workspace.room = room;
+        self.workspaces.push(workspace);
+        self.room_authority.insert(room, RoomAuthority::Unpinned);
+        self.room_share_floor
+            .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
+        self.seed_doc_from_cache();
+        self.flush_to_disk();
+        true
+    }
+
     pub fn set_active(&mut self, id: WorkspaceId) {
         use automerge::{ROOT, ScalarValue, transaction::Transactable};
         if self.workspaces.iter().any(|w| w.id == id) {
@@ -9094,5 +9121,24 @@ mod peer_window_merge_tests {
         assert_eq!(ws.owner.as_ref(), Some(&bob));
         assert_eq!(ws.role_of(&alice), None);
         assert_eq!(ws.role_of(&bob), Some(CapRole::Owner));
+    }
+
+    #[test]
+    fn continuity_room_is_dormant_and_does_not_steal_focus() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let active_before = tree.active;
+        let room = RoomId::new();
+
+        assert!(tree.adopt_continuation_room(room, "Laptop"));
+        assert!(!tree.adopt_continuation_room(room, "Laptop"));
+        assert_eq!(tree.active, active_before);
+        let adopted = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .expect("continuation workspace");
+        assert_eq!(adopted.name, "From Laptop");
+        assert!(adopted.strips.is_empty());
+        assert_eq!(tree.room_authority(room), RoomAuthority::Unpinned);
     }
 }
