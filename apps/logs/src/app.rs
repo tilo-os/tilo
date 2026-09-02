@@ -2039,6 +2039,22 @@ impl Widget for LogsApp {
     fn test_id(&self) -> Option<&str> {
         Some("logs_app")
     }
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        let search = self
+            .search_input
+            .accessibility()
+            .map(|node| node.with_action_target("logs.search"));
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Window)
+                .with_name("System logs")
+                .with_state(ui::a11y::AccessState {
+                    focusable: true,
+                    focused: self.focused,
+                    ..Default::default()
+                })
+                .with_children(search.into_iter().collect()),
+        )
+    }
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -2066,11 +2082,14 @@ impl Widget for LogsApp {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.search_input.cursor_shape(point)
     }
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.search_input
-            .is_focused()
-            .then(|| self.search_input.accessibility())
-            .flatten()
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        target == "logs.search" && self.search_input.perform_action(action, state, path)
     }
     fn needs_commit(&self) -> bool {
         self.search_input.needs_commit()

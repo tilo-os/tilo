@@ -54,6 +54,11 @@ pub struct Button {
     /// An advertised action intent. While present it is the exclusive
     /// activation path; raw document writes and callbacks are suppressed.
     action: Option<ActionEmitter<()>>,
+    /// Resource and handler synthesized by the low-ceremony `on_effect` /
+    /// `on_view` APIs. The closure is still ordinary Rust, but it is reachable
+    /// only through the same published action door as agents and search.
+    native_resource: Option<qos_actions::Resource>,
+    native_handler: Option<Box<dyn FnMut()>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     /// When `false`: skipped by focus, rejects input, renders dimmed.
@@ -95,6 +100,8 @@ impl Button {
             fit_content: false,
             on_click: None,
             action: None,
+            native_resource: None,
+            native_handler: None,
             presence_path: Vec::new(),
             permission_scope: None,
             enabled: true,
@@ -140,6 +147,54 @@ impl Button {
         self.on_click_path = None;
         self.click_value = None;
         self.on_click = None;
+        self
+    }
+
+    /// Publish a zero-argument effect and route every activation through it.
+    ///
+    /// This is the quick-app path: it keeps closure ergonomics without making
+    /// an invisible callback-only control. For replayable document mutations,
+    /// prefer a typed document [`Action`](qos_actions::Action).
+    #[must_use]
+    pub fn on_effect<F: FnMut() + 'static>(self, handler: F) -> Self {
+        self.on_native(qos_actions::OperationKind::Effect, handler)
+    }
+
+    /// Publish a zero-argument transient presentation action. View actions are
+    /// discoverable and agent-driveable but intentionally absent from document
+    /// history and collaboration logs.
+    #[must_use]
+    pub fn on_view<F: FnMut() + 'static>(self, handler: F) -> Self {
+        self.on_native(qos_actions::OperationKind::View, handler)
+    }
+
+    #[expect(
+        clippy::expect_used,
+        reason = "String serialization and lookup of the just-created action are infallible"
+    )]
+    fn on_native<F: FnMut() + 'static>(
+        mut self,
+        kind: qos_actions::OperationKind,
+        handler: F,
+    ) -> Self {
+        const TYPE_ID: &str = "qos.ui.control.invoke";
+        let resource_id = format!("qos.control:{}", self.id);
+        let mut spec = qos_actions::ActionSpec::operation(
+            "invoke",
+            self.label.clone(),
+            kind,
+            TYPE_ID,
+            &self.id,
+        )
+        .expect("a control id is always JSON serializable");
+        spec.contract.discovery = qos_actions::DiscoveryScope::Launchable;
+        let resource = qos_actions::Resource::new(resource_id, "qos.control", self.label.clone())
+            .with_action(spec);
+        let binding = qos_actions::ActionBinding::unit_for(&resource, "invoke")
+            .expect("the synthesized invoke action is nullary");
+        self = self.on_action(binding);
+        self.native_resource = Some(resource);
+        self.native_handler = Some(Box::new(handler));
         self
     }
 
@@ -976,6 +1031,41 @@ impl Widget for Button {
         self.effectively_enabled()
     }
 
+    fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        self.native_resource.iter().cloned().collect()
+    }
+
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        self.native_resource
+            .as_ref()
+            .map(|_| std::iter::once("qos.ui.control.invoke".to_owned()).collect())
+            .unwrap_or_default()
+    }
+
+    fn invoke_resource_operation_v2(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<qos_actions::ActionOutput>, String> {
+        if kind == qos_actions::OperationKind::Document
+            || type_id != "qos.ui.control.invoke"
+            || self.native_handler.is_none()
+        {
+            return Ok(None);
+        }
+        let control: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        if control != self.id {
+            return Ok(None);
+        }
+        if let Some(handler) = &mut self.native_handler {
+            handler();
+        }
+        Ok(Some(qos_actions::ActionOutput::default()))
+    }
+
     fn refresh_control_action_availability(
         &mut self,
         allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
@@ -1002,7 +1092,7 @@ impl Widget for Button {
         if let Some(path) = &self.on_click_path {
             bindings.push(ControlBindingMetadata {
                 control_id: self.id.clone(),
-                kind: ControlBindingKind::LegacyDocumentPath(path.clone()),
+                kind: ControlBindingKind::CollaborativeDocument(path.clone()),
             });
         }
         if self.on_click.is_some() {
@@ -1050,17 +1140,19 @@ impl Widget for Button {
         } else {
             Some(label)
         };
-        Some(
-            AccessNode::new(Role::Button)
-                .with_semantic_key(&self.id)
-                .with_optional_name(name)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    disabled: !self.is_enabled(),
-                    ..Default::default()
-                }),
-        )
+        let mut node = AccessNode::new(Role::Button)
+            .with_semantic_key(&self.id)
+            .with_optional_name(name)
+            .with_state(AccessState {
+                focusable: self.is_focusable(),
+                focused: self.is_focused(),
+                disabled: !self.is_enabled(),
+                ..Default::default()
+            });
+        if self.action.is_none() && self.on_click_path.is_some() {
+            node = node.with_action_target(&self.id);
+        }
+        Some(node)
     }
 
     fn presence_key(&self) -> Option<PresenceKey> {
@@ -1244,7 +1336,7 @@ mod tests {
         let bindings = button.control_action_bindings();
         assert!(bindings.iter().any(|entry| matches!(
             entry.kind,
-            crate::widget::ControlBindingKind::LegacyDocumentPath(_)
+            crate::widget::ControlBindingKind::CollaborativeDocument(_)
         )));
         assert!(bindings.iter().any(|entry| matches!(
             entry.kind,

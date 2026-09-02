@@ -690,7 +690,7 @@ impl FileExplorerWidget {
             // wired to re-read the directory (Refresh).
             let sink = self.cmds.clone();
             let retry = ui::widget::Button::new("files.retry", &t("files-try-again"), None)
-                .on_click(move || crate::command::push(&sink, FileCommand::Refresh));
+                .on_effect(move || crate::command::push(&sink, FileCommand::Refresh));
             view_col = view_col.push(Box::new(
                 Row::new()
                     .push(Box::new(Text::new(err)))

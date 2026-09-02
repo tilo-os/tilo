@@ -978,7 +978,7 @@ fn build_button(
         .with_size(item_width(face, &label), BTN_H)
         .tooltip(label.clone())
         .with_accessible_name(&label)
-        .on_click(move || slot.set(Some(hit)))
+        .on_effect(move || slot.set(Some(hit)))
 }
 
 /// Wrap an RGBA buffer as the image type the scene draws.

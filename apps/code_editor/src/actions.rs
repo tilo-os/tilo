@@ -49,6 +49,7 @@ use qos_actions::{
     ResultSpec, RetryPolicy,
 };
 
+use crate::command_palette::Command;
 use crate::doc::EditorDoc;
 
 /// Registry `type_id` for every Code action.
@@ -57,10 +58,23 @@ pub const CODE_EDITOR_OPERATION_TYPE: &str = "code_editor.operation";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CodeEditorOperation {
-    Open { node: u64 },
-    OpenFile { path: Option<String> },
-    OpenFolder { path: Option<String> },
-    Save { node: u64, path: Option<String> },
+    Open {
+        node: u64,
+    },
+    OpenFile {
+        path: Option<String>,
+    },
+    OpenFolder {
+        path: Option<String>,
+    },
+    Save {
+        node: u64,
+        path: Option<String>,
+    },
+    Command {
+        id: String,
+        argument: Option<String>,
+    },
 }
 
 fn file_operation(
@@ -77,6 +91,7 @@ fn file_operation(
             .execution(ExecutionMode::Background { cancellable: true })
             .returns(ResultSpec::Job),
         CodeEditorOperation::Save { .. } => spec.destructive(),
+        CodeEditorOperation::Command { .. } => spec,
     }
 }
 
@@ -212,6 +227,51 @@ pub fn provide_resources(ctx: &CodeEditorResourceCtx, _doc: &AutoCommit) -> Vec<
         ctx.project_name.clone()
     };
     let mut project = Resource::new("code_editor.project", "code_editor.project", label);
+    for (command, command_label, _) in Command::catalogue() {
+        let action_id = format!("command-{}", command.id());
+        let kind = match command {
+            Command::OpenFolder
+            | Command::OpenFile
+            | Command::Save
+            | Command::SaveAs
+            | Command::SaveAll
+            | Command::RevertFile => OperationKind::Effect,
+            _ => OperationKind::View,
+        };
+        let spec = if command == Command::GoToLine {
+            ActionSpec::prompted_operation(
+                action_id,
+                command_label,
+                "Line number",
+                "e.g. 42",
+                kind,
+                CODE_EDITOR_OPERATION_TYPE,
+                move |argument| {
+                    EncodedAction::encode_operation(
+                        CODE_EDITOR_OPERATION_TYPE,
+                        &CodeEditorOperation::Command {
+                            id: command.id().to_string(),
+                            argument: Some(argument.to_string()),
+                        },
+                    )
+                    .expect("CodeEditorOperation is always serializable")
+                },
+            )
+        } else {
+            ActionSpec::operation(
+                action_id,
+                command_label,
+                kind,
+                CODE_EDITOR_OPERATION_TYPE,
+                &CodeEditorOperation::Command {
+                    id: command.id().to_string(),
+                    argument: None,
+                },
+            )
+            .expect("CodeEditorOperation is always serializable")
+        };
+        project.actions.push(spec);
+    }
     for (id, label, folder) in [
         ("open-file", "Open file", false),
         ("open-folder", "Open project folder", true),
@@ -470,10 +530,12 @@ mod tests {
         );
         assert_eq!(file_actions[1].params()[0].name, "path");
 
-        // The one palette surfaces the tree's actions as rows.
+        // The one palette surfaces the tree's actions as rows; a query reaches
+        // actions beyond the empty-query display cap as well.
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
+        palette.set_query("New file");
         let labels = palette.result_labels();
         assert!(labels.iter().any(|l| l.contains("New file")), "{labels:?}");
     }

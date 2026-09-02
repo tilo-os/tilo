@@ -1273,6 +1273,19 @@ const HISTORY_TRIM_SLACK: usize = 256;
 const HISTORY_TRIM_SLACK: usize = 8;
 
 impl Widget for TerminalWidget {
+    fn test_id(&self) -> Option<&str> {
+        Some("terminal")
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        vec![ui::widget::ControlBindingMetadata {
+            control_id: "terminal".into(),
+            kind: ui::widget::ControlBindingKind::Action(ui::qos_actions::ActionAddress::new(
+                "terminal", "send",
+            )),
+        }]
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["terminal.send", "terminal.control"]
     }
