@@ -371,7 +371,10 @@ cargo run -p qos-dev -- doctor apps/reading-list
 `doctor` finds the app from any descendant path, parses the Cargo manifest,
 resolves its `ui` dependency, validates `qos-app.toml` through the same package
 schema used by installation, and checks the standard app-root and launch
-lifecycle seams. It also validates every serialized screen with the renderer's
+lifecycle seams. It also runs `capnp --version`, because the shared UI runtime
+generates its collaboration protocol while compiling; a missing compiler is
+reported with an install-or-development-container remedy before Cargo starts.
+It validates every serialized screen with the renderer's
 lightweight graph schema, parses every Fluent catalog, reconciles the generated
 locale registry with files on disk, and checks saved headless scenarios with
 the exact wire grammar used by the runtime driver. It reports every problem in
