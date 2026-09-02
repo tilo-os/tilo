@@ -5,10 +5,14 @@ set -euo pipefail
 : "${GITHUB_SERVER_URL:?missing Forgejo server URL}"
 : "${GITHUB_REF_NAME:?missing release tag}"
 : "${HOMEBREW_TAP_TOKEN:?missing protected tap token}"
+command -v brew >/dev/null 2>&1 \
+  || { printf 'Homebrew is required to audit the tap before publication\n' >&2; exit 1; }
 
 assets="${1:-release-assets}"
 version="${GITHUB_REF_NAME#imager-v}"
 [ "$version" != "$GITHUB_REF_NAME" ] || { printf 'expected imager-v* tag\n' >&2; exit 2; }
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+  || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 2; }
 base_url="${GITHUB_SERVER_URL}/qos/qos/releases/download/${GITHUB_REF_NAME}"
 
 digest() {
@@ -67,17 +71,15 @@ if grep -REn '@[A-Z0-9_]+@' "$work/tap/Formula" "$work/tap/Casks"; then
 fi
 ruby -c "$work/tap/Formula/qos-imager.rb"
 ruby -c "$work/tap/Casks/qos-imager.rb"
-if command -v brew >/dev/null 2>&1; then
-  # Modern Homebrew audits names, not arbitrary paths. Tap the unpushed local
-  # commit under a disposable name so the exact files about to be pushed are
-  # audited without depending on stale remote state.
-  HOMEBREW_NO_AUTO_UPDATE=1 brew tap qos/release-audit "$work/tap"
-  audit_tapped=1
-  HOMEBREW_NO_AUTO_UPDATE=1 brew audit --strict --formula qos/release-audit/qos-imager
-  HOMEBREW_NO_AUTO_UPDATE=1 brew audit --strict --cask qos/release-audit/qos-imager
-  HOMEBREW_NO_AUTO_UPDATE=1 brew untap qos/release-audit >/dev/null
-  audit_tapped=0
-fi
+# Modern Homebrew audits names, not arbitrary paths. Tap the unpushed local
+# commit under a disposable name so the exact files about to be pushed are
+# audited without depending on stale remote state.
+HOMEBREW_NO_AUTO_UPDATE=1 brew tap qos/release-audit "$work/tap"
+audit_tapped=1
+HOMEBREW_NO_AUTO_UPDATE=1 brew audit --strict --formula qos/release-audit/qos-imager
+HOMEBREW_NO_AUTO_UPDATE=1 brew audit --strict --cask qos/release-audit/qos-imager
+HOMEBREW_NO_AUTO_UPDATE=1 brew untap qos/release-audit >/dev/null
+audit_tapped=0
 
 if [ ! -f "$work/tap/README.md" ]; then
   printf '# qOS Homebrew tap\n\n```sh\nbrew tap qos/qos %s/qos/homebrew-qos.git\nbrew install qos-imager\n# macOS GUI:\nbrew install --cask qos-imager\n```\n' \

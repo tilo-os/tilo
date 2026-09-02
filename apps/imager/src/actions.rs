@@ -250,6 +250,8 @@ pub enum ImagerAction {
     /// Set the first user's password (a secret — dispatched by the on-screen
     /// field, never surfaced through the Ctrl+K palette).
     SetPassword { value: String },
+    /// Set the installed system locale.
+    SetLocale { value: String },
     /// Set the system timezone.
     SetTimezone { value: String },
     /// Set the keyboard layout.
@@ -272,6 +274,7 @@ impl Action for ImagerAction {
             ImagerAction::SetFullName { value } => p.user.full_name.clone_from(value),
             ImagerAction::SetUsername { value } => p.user.username.clone_from(value),
             ImagerAction::SetPassword { value } => p.user.password.clone_from(value),
+            ImagerAction::SetLocale { value } => p.locale.clone_from(value),
             ImagerAction::SetTimezone { value } => p.timezone.clone_from(value),
             ImagerAction::SetKeyboard { value } => p.keyboard.clone_from(value),
         }
@@ -603,6 +606,12 @@ mod tests {
         );
         dispatch(
             &mut doc,
+            &ImagerAction::SetLocale {
+                value: "nl_NL.UTF-8".into(),
+            },
+        );
+        dispatch(
+            &mut doc,
             &ImagerAction::SetTimezone {
                 value: "Europe/Amsterdam".into(),
             },
@@ -617,6 +626,7 @@ mod tests {
         assert_eq!(p.user.full_name, "Ada Lovelace");
         assert_eq!(p.user.username, "ada");
         assert_eq!(p.user.password, "s3cret");
+        assert_eq!(p.locale, "nl_NL.UTF-8");
         assert_eq!(p.timezone, "Europe/Amsterdam");
         assert_eq!(p.keyboard, "nl");
     }
@@ -685,6 +695,7 @@ mod tests {
                 "install-mode",
                 "encrypt",
                 "autologin",
+                "locale",
                 "hostname",
                 "full-name",
                 "username",

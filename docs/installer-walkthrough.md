@@ -23,7 +23,7 @@ That prompt is a security feature, not data loss.
 ## Download and launch qOS Imager
 
 Download the signed qOS Imager from the landing page or qOS release page. The
-release matrix is Linux x86-64/ARM64 (AppImage, Flatpak bundle, portable tar,
+release matrix is Linux x86-64/ARM64 (AppImage, portable tar,
 Homebrew), Windows x86-64 (setup EXE, standalone EXE, WinGet), and macOS
 x86-64/Apple silicon (DMG, app zip, Homebrew cask). Verify the published
 SHA-256 digest before launching it. Never use
@@ -67,8 +67,9 @@ Review screen shows the resulting choices before any destructive operation.
 
 The current host bundles elevate the imager process for raw-device access; the
 application still has its typed target gate, system-disk acknowledgement, and
-readback verification. A future split privileged helper would reduce the amount
-of elevated UI code and remains preferable before a stable release.
+readback verification. Flatpak is not offered because safely supporting raw
+media from its sandbox requires a separately installed privileged host helper;
+elevating the Flatpak itself would not provide a meaningful security boundary.
 
 ## Boot the installation medium
 

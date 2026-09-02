@@ -18,13 +18,17 @@ ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
 karg_deletes="$(grep -c -- '--karg-delete qos.installer=1' "$backend" || true)"
-if [ "$karg_deletes" -eq 3 ]; then
-  ok "encrypted, erase, and alongside installs remove qos.installer=1"
+if [ "$karg_deletes" -eq 2 ] \
+   && grep -Fq 'qos.root=0000000000000000000000000000000000000' "$backend" \
+   && grep -Fq 'qos.luks=000000000000000000000000000000000000000000000' "$backend" \
+   && grep -Fq 'replace qos.installer=1 qos.mode=normal "$TARGET_UKI"' "$backend"; then
+  ok "sealed encrypted installs specialize UUID slots and restore normal mode"
 else
-  bad "expected three target karg deletions, found $karg_deletes"
+  bad "sealed target UKI handoff is incomplete (legacy deletions: $karg_deletes)"
 fi
 
-if grep -Fq 'COPY etc/greetd/config.toml /usr/share/qos/greetd-config.toml' "$containerfile" \
+if grep -Fq '"$INSTALLER_CONTEXT/rootfs/usr/share/qos/greetd-config.toml"' "$builder" \
+   && grep -Fq 'COPY rootfs/ /' "$containerfile" \
    && grep -Fq 'greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"' "$backend" \
    && grep -Fq '[initial_session]' "$backend" \
    && grep -Fq 'user = "%s"' "$backend"; then
@@ -55,7 +59,7 @@ fi
 
 if grep -Fq 'TARGET_MAJ_MIN=' "$backend" \
    && grep -Fq 'LIVE_MAJ_MIN=' "$backend" \
-   && grep -Fq 'lsblk -spno NAME,TYPE' "$backend" \
+   && grep -Fq 'lsblk -srpno NAME,TYPE' "$backend" \
    && grep -Fq "could not resolve the live medium's physical disk" "$backend"; then
   ok "live-medium refusal compares stable block identities and fails closed"
 else
@@ -97,6 +101,7 @@ else
 fi
 
 if grep -Fq 'CONF_TMP="$(mktemp ' "$backend" \
+   && grep -Fq 'find "$MNT/state/deploy"' "$backend" \
    && grep -Fq 'chmod 0600 "$CONF_TMP"' "$backend" \
    && grep -Fq 'mv -f "$CONF_TMP" "$CONF"' "$backend"; then
   ok "account password hash is created privately and published atomically"
@@ -106,10 +111,24 @@ fi
 
 if grep -Fq 'systemctl mask sshd.service' "$containerfile" \
    && ! grep -Fq 'quickuser:quickdesktop:wheel' "$builder" \
-   && grep -Fq -- '--dev-login requires a non-empty QOS_INSTALLER_DEV_PASSWORD' "$builder"; then
+   && grep -Fq -- '--dev-login requires a non-empty QOS_INSTALLER_DEV_PASSWORD' "$builder" \
+   && grep -Fq 'replace qos.mode=normal qos.installer=1' "$containerfile" \
+   && grep -Fq 'show | grep -qw qos.installer=1' "$containerfile"; then
   ok "release installer has no public debug credential and masks SSH"
 else
   bad "release installer still exposes a known debug login or SSH"
+fi
+
+if grep -Fq 'StandardInput=file:$INPUT' "$backend" \
+   && grep -Fq 'StandardOutput=append:$OUTPUT' "$backend" \
+   && grep -Fq 'tail --pid="$RUNNER"' "$backend" \
+   && grep -Fq 'mktemp -d /run/qos-installer/bridge/run.XXXXXX' "$backend" \
+   && grep -Fq 'chcon --reference=/run/qos-installer/bridge "$BRIDGE" "$INPUT" "$OUTPUT"' "$backend" \
+   && grep -Fq 'ExecStart=/usr/bin/install -d -m 0700 /run/qos-installer/bridge' "$repo_root/os/usr/lib/systemd/system/qos-installer-setup.service" \
+   && ! grep -Fq -- '--pipe --collect' "$backend"; then
+  ok "privileged handoff keeps secrets out of D-Bus fd passing and journald"
+else
+  bad "privileged handoff does not use the tested root-only file bridge"
 fi
 
 if grep -Fq "refusing to modify pre-existing account" "$firstboot_user" \
@@ -129,6 +148,14 @@ else
   bad "host setup profile is not securely transported into the live installer"
 fi
 
+if grep -Fq "grep -q '^video:' /etc/group" "$repo_root/os/Containerfile" \
+   && grep -Fq "grep -q '^input:' /etc/group" "$repo_root/os/Containerfile" \
+   && ! grep -Fq 'getent group video' "$repo_root/os/Containerfile"; then
+  ok "hardware-access groups are materialised instead of trusting synthesized NSS records"
+else
+  bad "hardware-access groups must be real /etc/group records for first-boot useradd"
+fi
+
 if grep -Fq -- '--full-name' "$backend" \
    && grep -Fq -- '--locale' "$backend" \
    && grep -Fq 'install-user-full-name' "$firstboot_user"; then
@@ -142,6 +169,21 @@ if grep -Fq '"$DEPLOY_ETC/systemd/system/sshd.service"' "$backend" \
   ok "live-only SSH state is removed from the installed target"
 else
   bad "live-medium SSH mask/enablement can leak into the target"
+fi
+
+if grep -Fq 'chcon --reference=/etc/greetd/config.toml "$DEPLOY_ETC/greetd/config.toml"' "$backend"; then
+  ok "installed greeter configuration receives an enforcing-compatible /etc label"
+else
+  bad "installed greeter configuration can retain a transient /run SELinux label"
+fi
+
+if grep -Fq 'ConditionKernelCommandLine=!qos.installer' \
+      "$repo_root/os/usr/lib/systemd/system/qos-rollback-harden.service" \
+   && grep -Fq 'ConditionKernelCommandLine=!qos.installer' \
+      "$repo_root/os/usr/lib/systemd/system/shell-firstboot.service"; then
+  ok "disposable live boots cannot consume first-boot state or mutate TPM lockout policy"
+else
+  bad "live installer can run installed-system first-boot or TPM-hardening services"
 fi
 
 if grep -Fq -- '--alongside' "$backend" \
