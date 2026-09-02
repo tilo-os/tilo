@@ -7771,19 +7771,20 @@ mod action_palette_tests {
     }
 
     #[test]
-    fn ctrl_k_invokes_a_projected_semantic_control() {
-        let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
-        let captured = std::rc::Rc::clone(&presses);
-        let button = Button::new("drive-me", "Drive me", None).on_click(move || {
-            captured.set(captured.get().saturating_add(1));
-        });
+    fn ctrl_k_invokes_a_projected_semantic_view_control() {
+        let button = Button::new("drive-me", "Drive me", None);
         let mut app = App::new(State::new(), Box::new(button));
         app.init_layout();
+        app.set_focused_node(None);
+        assert!(!app.root_widget.is_focused());
         app.open_action_palette();
-        app.action_palette.as_mut().unwrap().set_query("activate");
+        app.action_palette.as_mut().unwrap().set_query("focus");
 
         assert!(app.action_palette_handle_key(&synth_enter()));
-        assert_eq!(presses.get(), 1, "Ctrl+K reaches the real control");
+        assert!(
+            app.root_widget.is_focused(),
+            "Ctrl+K reaches the real retained control"
+        );
     }
 }
 
