@@ -1215,6 +1215,7 @@ pub mod merge_strategy;
 // point is `identity_flow/mod.rs`.
 pub mod identity_flow;
 pub mod qr;
+pub mod resource_actions;
 pub use conflict_banner::ConflictBanner;
 pub use conflict_picker::{ConflictPicker, PickerOutcome};
 pub use identity_flow::{

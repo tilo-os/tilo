@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use ui::LatestRequest;
+use ui::qos_actions;
 use ui::widget::data_table::{
     ColumnDef, ColumnWidth, DataTable, TableModel, TableModelChange, TableRowState,
 };
@@ -147,9 +148,9 @@ pub fn app_root() -> Box<dyn Widget> {
         .with_accessible_name("data-accessible-name")
         .selectable(true);
     table.set_viewport(720.0, 32.0);
-    crate::resource_actions::immediate(
+    ui::widget::resource_actions::immediate(
         Box::new(table),
-        crate::resource_actions::typed_resource(
+        ui::widget::resource_actions::typed_resource(
             "generated.table",
             "Results",
             "open",

@@ -1,6 +1,18 @@
 # Build a qOS app
 
-The intended first minute is:
+The shortest path from an idea to an app running in the live development loop
+is one command:
+
+```bash
+cargo run -p qos-dev -- new reading-list --dev
+```
+
+Creation is atomic. Once the app exists, `--dev` runs its structural preflight,
+opens it, and watches both app code and the local toolkit. A successful edit
+replaces the running process; a failed build leaves the last good app open and
+waits for the next save. Press Ctrl-C to stop.
+
+The same stages remain available separately for automation and focused work:
 
 ```bash
 cargo run -p qos-dev -- new reading-list
@@ -1080,6 +1092,14 @@ ActionSpec::operation(
     resource_kind: "mail.conversation".into(),
 })
 ```
+
+For a small app with one launchable resource, wrap its ordinary retained root
+with `ui::widget::resource_actions::immediate` or `background`. The toolkit
+owns the forwarding widget, operation dispatch, pending-job bookkeeping, and
+failure conversion; the app supplies only its resource contract and operation
+closure. `qos-dev new` uses this path and imports action types through
+`ui::qos_actions`, so a generated project contains no copied host
+implementation and needs no direct internal actions dependency.
 
 Register document action decoders in `App::action_registry_mut`. Handle every
 effect and view type in `Widget::invoke_resource_operation_v2`, return an
