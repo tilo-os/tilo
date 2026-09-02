@@ -402,8 +402,9 @@ impl SemanticTree {
                         {
                             Some((action, verb))
                         }
-                        SemanticActionKind::App(_) | SemanticActionKind::AppPrompted { .. } => None,
-                        SemanticActionKind::Verb(_) => None,
+                        SemanticActionKind::App(_)
+                        | SemanticActionKind::AppPrompted { .. }
+                        | SemanticActionKind::Verb(_) => None,
                     })
                     .collect::<Vec<_>>();
                 if verbs.is_empty() {
