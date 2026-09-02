@@ -14,7 +14,7 @@ use crate::network::actor::{Actor, HostIdentity, NetCmd, NetEvent};
 use crate::network::behaviour::load_or_create_keypair;
 use crate::network::identity::PeerIdentityStore;
 use crate::network::invite::accept_invite_into;
-use crate::network::protocol::NeighbourMsg;
+use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg};
 use crate::network::replica::WorkspaceTreeReplica;
 #[cfg(test)]
 use crate::shell::state::WorkspaceTree;
@@ -35,6 +35,19 @@ pub fn room_topic_id(room: RoomId) -> u64 {
     // hot path — `room_workspace_id` never returns 0 on success, so a real
     // topic id can't collide with the fallback.
     qos_relay::room_workspace_id(&room.to_string()).unwrap_or(DEFAULT_WS_TOPIC)
+}
+
+/// Stable private shard shared only by certified devices rooted in the same
+/// person identity. The full root key is also carried in and authenticated on
+/// every message; this 64-bit value is routing, never authority.
+pub fn personal_continuity_topic_id(user_public_key: &[u8; 32]) -> u64 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"qos-personal-continuity-v1\0");
+    hasher.update(user_public_key);
+    let mut bytes = [0_u8; 8];
+    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..8]);
+    let topic = u64::from_le_bytes(bytes);
+    if topic == DEFAULT_WS_TOPIC { 1 } else { topic }
 }
 
 /// Default on-disk path of the machine's device key, from which the
@@ -210,6 +223,13 @@ pub struct ShellNetwork {
     /// When [`Self::kick_periodic_sync`] last asked. `None` until the
     /// first tick, so the first frame after startup kicks a round.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
+    /// Private, same-person continuation state. It is intentionally separate
+    /// from `replica`, whose documents are visible to room collaborators.
+    personal_continuity: Mutex<crate::shell::personal_continuity::PersonalContinuity>,
+    personal_continuity_user: Option<[u8; 32]>,
+    personal_continuity_device: Option<crate::shell::personal_continuity::DeviceId>,
+    personal_continuity_counter: Mutex<u64>,
+    personal_continuity_fingerprint: Mutex<Option<[u8; 32]>>,
     /// Verified transport-device chains received on workspace topics.
     peer_identities: PeerIdentityStore,
     /// Production is fail-closed until a peer presents `IdentityHello`.
@@ -410,6 +430,15 @@ impl ShellNetwork {
         );
         let listen_addrs: Arc<Mutex<Vec<iroh::EndpointAddr>>> = Arc::new(Mutex::new(Vec::new()));
         let host_identity = host_identity_for_key(&keypair, keypair_path);
+        let personal_continuity_user = host_identity
+            .as_ref()
+            .map(|identity| identity.device_cert.user_public_key);
+        let personal_continuity_device = host_identity.as_ref().and_then(|identity| {
+            crate::shell::personal_continuity::DeviceId::new(hex::encode(
+                identity.device_cert.device_public_key,
+            ))
+            .ok()
+        });
         let (cmd_tx, _join) = Actor::spawn_reporting_addrs(
             endpoint,
             lookup,
@@ -457,6 +486,13 @@ impl ShellNetwork {
             listen_addrs,
             host_addrs: Mutex::new(host_addrs),
             last_sync_kick: Mutex::new(None),
+            personal_continuity: Mutex::new(
+                crate::shell::personal_continuity::PersonalContinuity::default(),
+            ),
+            personal_continuity_user,
+            personal_continuity_device,
+            personal_continuity_counter: Mutex::new(0),
+            personal_continuity_fingerprint: Mutex::new(None),
             peer_identities: PeerIdentityStore::new(),
             require_peer_identity: true,
             pending_identity_admissions: Mutex::new(pending_identity_admissions),
@@ -512,6 +548,15 @@ impl ShellNetwork {
     }
 
     fn explicit_topic_for_message(msg: &NeighbourMsg) -> Option<u64> {
+        if let NeighbourMsg::PersonalContinuityRequest {
+            user_public_key, ..
+        }
+        | NeighbourMsg::PersonalContinuityCheckpoint {
+            user_public_key, ..
+        } = msg
+        {
+            return Some(personal_continuity_topic_id(user_public_key));
+        }
         let room = match msg {
             NeighbourMsg::IdentityAnnouncement { room, .. }
             | NeighbourMsg::IdentityAnnouncementV2 { room, .. }
@@ -838,6 +883,9 @@ impl ShellNetwork {
         let mut topics = vec![DEFAULT_WS_TOPIC];
         if let Ok(replica) = self.replica.lock() {
             topics.extend(replica.tree.read().rooms().into_iter().map(room_topic_id));
+        }
+        if let Some(user_public_key) = self.personal_continuity_user {
+            topics.push(personal_continuity_topic_id(&user_public_key));
         }
         topics.into_iter().all(|topic| self.join_topic(topic))
     }
@@ -1330,6 +1378,106 @@ impl ShellNetwork {
         for msg in outgoing {
             let _ = self.publish_message(msg);
         }
+        self.publish_personal_continuity_request();
+        self.publish_personal_continuity_if_changed();
+    }
+
+    fn local_continuity_snapshot_bytes(&self) -> Option<Vec<u8>> {
+        let device = self.personal_continuity_device.clone()?;
+        let tree_handle = self.replica.lock().ok()?.tree.clone();
+
+        // Hash a counter-neutral capture so a quiet tree stays quiet. The
+        // device counter advances only for a real topology/app change.
+        let neutral = crate::shell::personal_continuity::DeviceContinuationSnapshot::capture(
+            &tree_handle.read(),
+            device.clone(),
+            0,
+        )
+        .snapshot;
+        let neutral_bytes = postcard::to_allocvec(&neutral).ok()?;
+        let fingerprint = *blake3::hash(&neutral_bytes).as_bytes();
+
+        let mut previous = self.personal_continuity_fingerprint.lock().ok()?;
+        if previous.as_ref() == Some(&fingerprint) {
+            let continuity = self.personal_continuity.lock().ok()?;
+            let bytes = postcard::to_allocvec(&*continuity).ok()?;
+            if bytes.len() > MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES {
+                // Do not let a malformed/stale in-memory value bypass the
+                // transport limit merely because the captured tree is quiet.
+                tracing::warn!(
+                    bytes = bytes.len(),
+                    "cached personal continuity checkpoint exceeds transport limit"
+                );
+                return None;
+            }
+            return Some(bytes);
+        }
+        let mut counter = self.personal_continuity_counter.lock().ok()?;
+        *counter = counter.saturating_add(1);
+        let report = crate::shell::personal_continuity::DeviceContinuationSnapshot::capture(
+            &tree_handle.read(),
+            device.clone(),
+            *counter,
+        );
+        if report.redacted_foreign_tabs > 0 {
+            tracing::debug!(
+                redacted = report.redacted_foreign_tabs,
+                "personal continuity omitted non-portable foreign surfaces"
+            );
+        }
+        let mut continuity = self.personal_continuity.lock().ok()?;
+        continuity.upsert(report.snapshot).ok()?;
+        let bytes = postcard::to_allocvec(&*continuity).ok()?;
+        if bytes.len() > MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES {
+            tracing::warn!(
+                bytes = bytes.len(),
+                "personal continuity checkpoint exceeds transport limit"
+            );
+            return None;
+        }
+        *previous = Some(fingerprint);
+        Some(bytes)
+    }
+
+    fn publish_personal_continuity_request(&self) {
+        let Some(user_public_key) = self.personal_continuity_user else {
+            return;
+        };
+        let _ = self.publish_message(NeighbourMsg::PersonalContinuityRequest {
+            user_public_key,
+            requester: self.local_peer_id_hash(),
+        });
+    }
+
+    fn publish_personal_continuity_if_changed(&self) {
+        let Some(user_public_key) = self.personal_continuity_user else {
+            return;
+        };
+        let before = self
+            .personal_continuity_fingerprint
+            .lock()
+            .ok()
+            .and_then(|fingerprint| *fingerprint);
+        let Some(snapshot) = self.local_continuity_snapshot_bytes() else {
+            return;
+        };
+        let after = self
+            .personal_continuity_fingerprint
+            .lock()
+            .ok()
+            .and_then(|fingerprint| *fingerprint);
+        if before == after && before.is_some() {
+            return;
+        }
+        let msg = NeighbourMsg::PersonalContinuityCheckpoint {
+            user_public_key,
+            publisher: self.local_peer_id_hash(),
+            snapshot,
+        };
+        let ws = personal_continuity_topic_id(&user_public_key);
+        if self.join_topic(ws) {
+            let _ = self.cmd_tx.try_send(NetCmd::PublishCheckpoint { ws, msg });
+        }
     }
 
     /// [`Self::publish_sync_requests`], rate-limited to
@@ -1396,6 +1544,27 @@ impl ShellNetwork {
     /// `ws` — see [`NetEvent::HostReady`]. Unlike `SyncReq`, this does
     /// not need another device online to answer it.
     fn handle_host_ready(&self, ws: u64, peer: iroh::EndpointId) {
+        if self
+            .personal_continuity_user
+            .is_some_and(|user| personal_continuity_topic_id(&user) == ws)
+        {
+            // PublishCheckpoint gives a newly enrolled/offline device a
+            // retained baseline even when no interactive device is online.
+            if let (Some(user_public_key), Some(snapshot)) = (
+                self.personal_continuity_user,
+                self.local_continuity_snapshot_bytes(),
+            ) {
+                let _ = self.cmd_tx.try_send(NetCmd::PublishCheckpoint {
+                    ws,
+                    msg: NeighbourMsg::PersonalContinuityCheckpoint {
+                        user_public_key,
+                        publisher: self.local_peer_id_hash(),
+                        snapshot,
+                    },
+                });
+            }
+            return;
+        }
         let room = self.replica.lock().ok().and_then(|replica| {
             replica
                 .tree
@@ -1481,6 +1650,9 @@ impl ShellNetwork {
                 claimed_peer,
                 "dropping collaboration message whose session identity does not match its authenticated transport"
             );
+            return;
+        }
+        if self.dispatch_personal_continuity(ws, &origin, &msg) {
             return;
         }
         if self.require_peer_identity
@@ -1581,6 +1753,111 @@ impl ShellNetwork {
         }
     }
 
+    /// Handle the private same-person lane before room authorization. Returns
+    /// `true` for both accepted and rejected personal messages so neither can
+    /// fall through into the collaboration-room replica.
+    fn dispatch_personal_continuity(
+        &self,
+        ws: u64,
+        origin: &crate::shell::state::PeerOrigin,
+        msg: &NeighbourMsg,
+    ) -> bool {
+        let (user_public_key, checkpoint) = match msg {
+            NeighbourMsg::PersonalContinuityRequest {
+                user_public_key, ..
+            } => (user_public_key, None),
+            NeighbourMsg::PersonalContinuityCheckpoint {
+                user_public_key,
+                snapshot,
+                ..
+            } => (user_public_key, Some(snapshot.as_slice())),
+            _ => return false,
+        };
+        let Some(local_user) = self.personal_continuity_user else {
+            return true;
+        };
+        let identity = self.peer_identities.get(origin);
+        if ws != personal_continuity_topic_id(user_public_key)
+            || user_public_key != &local_user
+            || identity
+                .as_ref()
+                .is_none_or(|peer| !peer.is_same_user(&local_user))
+        {
+            tracing::warn!(
+                peer = %origin,
+                "dropping personal continuity traffic from a different identity"
+            );
+            return true;
+        }
+
+        let Some(snapshot_bytes) = checkpoint else {
+            let Some(snapshot) = self.local_continuity_snapshot_bytes() else {
+                return true;
+            };
+            let msg = NeighbourMsg::PersonalContinuityCheckpoint {
+                user_public_key: local_user,
+                publisher: self.local_peer_id_hash(),
+                snapshot,
+            };
+            if self.join_topic(ws) {
+                let _ = self.cmd_tx.try_send(NetCmd::PublishCheckpoint { ws, msg });
+            }
+            return true;
+        };
+        if snapshot_bytes.len() > MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES {
+            tracing::warn!(
+                bytes = snapshot_bytes.len(),
+                "dropping oversized continuity state"
+            );
+            return true;
+        }
+        let Ok(incoming) = postcard::from_bytes::<
+            crate::shell::personal_continuity::PersonalContinuity,
+        >(snapshot_bytes) else {
+            tracing::warn!("dropping invalid continuity checkpoint");
+            return true;
+        };
+        let rooms: Vec<_> = incoming
+            .snapshots()
+            .values()
+            .flat_map(|snapshot| {
+                let source_device = snapshot.device.as_str().to_string();
+                snapshot
+                    .workspaces
+                    .iter()
+                    .map(move |workspace| (workspace.room, source_device.clone()))
+            })
+            .collect();
+        let mut changed = false;
+        if let Ok(mut continuity) = self.personal_continuity.lock() {
+            for snapshot in incoming.snapshots().values() {
+                match continuity.upsert(snapshot.clone()) {
+                    Ok(snapshot_changed) => changed |= snapshot_changed,
+                    Err(error) => {
+                        tracing::warn!(%error, "dropping conflicting continuity checkpoint");
+                    }
+                }
+            }
+        }
+        if changed {
+            let tree_handle = self.replica.lock().ok().map(|replica| replica.tree.clone());
+            let adopted = tree_handle.is_some_and(|tree| {
+                let mut tree = tree.write();
+                rooms
+                    .into_iter()
+                    .fold(false, |changed, (room, source_device)| {
+                        tree.adopt_continuation_room(room, &source_device) || changed
+                    })
+            });
+            if adopted {
+                // Joining the room topics is demand-driven by these requests;
+                // the active workspace remains untouched.
+                self.publish_sync_requests();
+            }
+        }
+        true
+    }
+
     /// Return the session handle a message claims as its publisher.
     ///
     /// These fields are routing conveniences, not identities. Production
@@ -1602,6 +1879,8 @@ impl ShellNetwork {
             | NeighbourMsg::SurfaceFrame { source_peer, .. } => Some(*source_peer),
             NeighbourMsg::ScrollbackRequest { requester, .. } => Some(*requester),
             NeighbourMsg::ScrollbackResponse { responder, .. } => Some(*responder),
+            NeighbourMsg::PersonalContinuityRequest { requester, .. } => Some(*requester),
+            NeighbourMsg::PersonalContinuityCheckpoint { publisher, .. } => Some(*publisher),
             NeighbourMsg::SyncReq { .. }
             | NeighbourMsg::SyncResp { .. }
             | NeighbourMsg::PermissionGrant { .. }
@@ -1622,6 +1901,8 @@ impl ShellNetwork {
             | NeighbourMsg::SurfaceStreamEnd { .. }
             | NeighbourMsg::RemoteInput { .. }
             | NeighbourMsg::PermissionGrant { .. } => crate::shell::state::Verb::Write,
+            NeighbourMsg::PersonalContinuityRequest { .. }
+            | NeighbourMsg::PersonalContinuityCheckpoint { .. } => crate::shell::state::Verb::Read,
             _ => crate::shell::state::Verb::Read,
         }
     }
@@ -1672,9 +1953,15 @@ impl ShellNetwork {
         // that exact transport peer as authority; allow only its SyncResp to
         // bootstrap the signed-invite room. The replica still checks that it
         // is the pinned governance writer before accepting the candidate.
-        let allowed = if pinned_authority_may_bootstrap
-            && tree.room_authority(room) == crate::shell::state::RoomAuthority::Peer(origin.clone())
-        {
+        let pinned_inviter = pinned_authority_may_bootstrap
+            && tree.room_authority(room)
+                == crate::shell::state::RoomAuthority::Peer(origin.clone());
+        let same_person_continuation = pinned_authority_may_bootstrap
+            && tree.room_authority(room) == crate::shell::state::RoomAuthority::Unpinned
+            && self
+                .personal_continuity_user
+                .is_some_and(|local_user| identity.is_same_user(&local_user));
+        let allowed = if pinned_inviter || same_person_continuation {
             true
         } else {
             let person = collab_types::caps::Principal::person_from_key(
@@ -2165,6 +2452,13 @@ pub(crate) fn shell_network_for_test(
         listen_addrs: Arc::new(Mutex::new(Vec::new())),
         host_addrs: Mutex::new(Vec::new()),
         last_sync_kick: Mutex::new(None),
+        personal_continuity: Mutex::new(
+            crate::shell::personal_continuity::PersonalContinuity::default(),
+        ),
+        personal_continuity_user: None,
+        personal_continuity_device: None,
+        personal_continuity_counter: Mutex::new(0),
+        personal_continuity_fingerprint: Mutex::new(None),
         peer_identities: PeerIdentityStore::new(),
         require_peer_identity: false,
         pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
@@ -2182,6 +2476,233 @@ pub(crate) fn shell_network_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn personal_continuity_network_for_test(
+        user_public_key: [u8; 32],
+    ) -> (ShellNetwork, mpsc::Receiver<NetCmd>) {
+        let (mut net, commands) =
+            shell_network_for_test(WorkspaceTree::default().shared(), 0xC011_AB);
+        net.personal_continuity_user = Some(user_public_key);
+        net.personal_continuity_device = Some(
+            crate::shell::personal_continuity::DeviceId::new("local-continuity-device")
+                .expect("valid local device id"),
+        );
+        // Exercise the production fail-closed gate rather than the usual
+        // in-process test bridge's unauthenticated compatibility mode.
+        net.require_peer_identity = true;
+        (net, commands)
+    }
+
+    fn authenticated_personal_peer(
+        net: &ShellNetwork,
+        root: &ed25519_dalek::SigningKey,
+        device: &iroh::SecretKey,
+    ) {
+        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: *device.public().as_bytes(),
+            device_label: "Personal device".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, root).expect("valid personal device certificate");
+        let origin = crate::shell::state::PeerOrigin::peer(&device.public());
+        net.accept_identity_hello(
+            personal_continuity_topic_id(&cert.user_public_key),
+            &origin,
+            &device.public(),
+            &cert,
+            &[],
+        );
+    }
+
+    #[test]
+    fn personal_continuity_topic_is_stable_and_root_bound() {
+        let root_a = [0xA1; 32];
+        let root_b = [0xB2; 32];
+        assert_eq!(
+            personal_continuity_topic_id(&root_a),
+            personal_continuity_topic_id(&root_a),
+            "a user's devices must join one stable private shard"
+        );
+        assert_ne!(
+            personal_continuity_topic_id(&root_a),
+            personal_continuity_topic_id(&root_b),
+            "fixed distinct roots must not share a test shard"
+        );
+        assert_ne!(personal_continuity_topic_id(&root_a), DEFAULT_WS_TOPIC);
+    }
+
+    #[test]
+    fn personal_continuity_rejects_a_certified_different_root() {
+        let local_root = ed25519_dalek::SigningKey::from_bytes(&[0xA1; 32]);
+        let foreign_root = ed25519_dalek::SigningKey::from_bytes(&[0xB2; 32]);
+        let foreign_device = iroh::SecretKey::from_bytes(&[0xB3; 32]);
+        let local_user = local_root.verifying_key().to_bytes();
+        let (net, mut commands) = personal_continuity_network_for_test(local_user);
+        authenticated_personal_peer(&net, &foreign_root, &foreign_device);
+        while commands.try_recv().is_ok() {}
+
+        let foreign_device_id = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            foreign_device.public().as_bytes(),
+        ))
+        .expect("endpoint id is a valid device id");
+        let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
+            foreign_device_id.clone(),
+            1,
+            None,
+            Vec::new(),
+        )
+        .expect("valid snapshot");
+        net.dispatch_neighbour_msg(
+            personal_continuity_topic_id(&local_user),
+            foreign_device.public(),
+            NeighbourMsg::PersonalContinuityCheckpoint {
+                user_public_key: local_user,
+                publisher: crate::network::behaviour::peer_liveness_handle(
+                    &foreign_device.public(),
+                ),
+                snapshot: postcard::to_allocvec(&snapshot).expect("encode snapshot"),
+            },
+        );
+
+        assert!(
+            net.personal_continuity
+                .lock()
+                .expect("continuity")
+                .snapshot_for(&foreign_device_id)
+                .is_none(),
+            "a valid device certificate for another root cannot write this private lane"
+        );
+        assert!(
+            commands.try_recv().is_err(),
+            "rejection must not trigger restore or other transport side effects"
+        );
+    }
+
+    #[test]
+    fn personal_continuity_accepts_same_root_checkpoint_without_restore_side_effects() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xC1; 32]);
+        let peer_device = iroh::SecretKey::from_bytes(&[0xC2; 32]);
+        let user_public_key = root.verifying_key().to_bytes();
+        let (net, mut commands) = personal_continuity_network_for_test(user_public_key);
+        authenticated_personal_peer(&net, &root, &peer_device);
+        while commands.try_recv().is_ok() {}
+
+        let peer_device_id = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            peer_device.public().as_bytes(),
+        ))
+        .expect("endpoint id is a valid device id");
+        let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
+            peer_device_id.clone(),
+            1,
+            None,
+            Vec::new(),
+        )
+        .expect("valid snapshot");
+        let mut offered = crate::shell::personal_continuity::PersonalContinuity::default();
+        offered
+            .upsert(snapshot.clone())
+            .expect("store offered state");
+        net.dispatch_neighbour_msg(
+            personal_continuity_topic_id(&user_public_key),
+            peer_device.public(),
+            NeighbourMsg::PersonalContinuityCheckpoint {
+                user_public_key,
+                publisher: crate::network::behaviour::peer_liveness_handle(&peer_device.public()),
+                snapshot: postcard::to_allocvec(&offered).expect("encode checkpoint"),
+            },
+        );
+
+        assert_eq!(
+            net.personal_continuity
+                .lock()
+                .expect("continuity")
+                .snapshot_for(&peer_device_id),
+            Some(&snapshot),
+            "same-root state is stored as an offer for later UX, not applied now"
+        );
+        assert!(
+            commands.try_recv().is_err(),
+            "receiving a checkpoint neither focuses nor launches applications"
+        );
+    }
+
+    #[test]
+    fn personal_continuity_accepts_populated_same_root_checkpoint_without_changing_focus() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xD1; 32]);
+        let peer_device = iroh::SecretKey::from_bytes(&[0xD2; 32]);
+        let user_public_key = root.verifying_key().to_bytes();
+        let (net, _commands) = personal_continuity_network_for_test(user_public_key);
+        authenticated_personal_peer(&net, &root, &peer_device);
+
+        let active_before = net
+            .replica
+            .lock()
+            .expect("replica")
+            .tree
+            .read()
+            .active_workspace()
+            .map(|workspace| workspace.id);
+        let peer_device_id = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            peer_device.public().as_bytes(),
+        ))
+        .expect("endpoint id is a valid device id");
+        let room = RoomId::new();
+        let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
+            peer_device_id.clone(),
+            1,
+            None,
+            vec![crate::shell::personal_continuity::WorkspaceContinuation {
+                room,
+                apps: Vec::new(),
+            }],
+        )
+        .expect("valid populated snapshot");
+        let mut offered = crate::shell::personal_continuity::PersonalContinuity::default();
+        offered
+            .upsert(snapshot.clone())
+            .expect("store offered state");
+
+        net.dispatch_neighbour_msg(
+            personal_continuity_topic_id(&user_public_key),
+            peer_device.public(),
+            NeighbourMsg::PersonalContinuityCheckpoint {
+                user_public_key,
+                publisher: crate::network::behaviour::peer_liveness_handle(&peer_device.public()),
+                snapshot: postcard::to_allocvec(&offered).expect("encode populated checkpoint"),
+            },
+        );
+
+        assert_eq!(
+            net.personal_continuity
+                .lock()
+                .expect("continuity")
+                .snapshot_for(&peer_device_id),
+            Some(&snapshot),
+            "a populated continuation must traverse the production Postcard codec"
+        );
+        let replica = net.replica.lock().expect("replica");
+        let tree = replica.tree.read();
+        assert_eq!(
+            tree.active_workspace().map(|workspace| workspace.id),
+            active_before,
+            "receiving a continuation must not move focus"
+        );
+        let adopted = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .expect("continuation room is available for later user-directed restore");
+        assert!(
+            adopted.strips.is_empty(),
+            "receiving a continuation must not recreate applications"
+        );
+    }
 
     #[test]
     fn pending_invites_survive_restart_and_cancel_exactly_one_credential() {
