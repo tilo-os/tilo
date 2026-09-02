@@ -926,8 +926,11 @@ pub trait Widget {
 /// `NodeId` (not a `Result`) across every implementor, so surfacing a
 /// theoretical error here would mean threading a `Result` through the whole
 /// toolkit for a branch that can't be taken.
-pub(crate) trait TaffyTreeExt {
+pub trait TaffyTreeExt {
+    /// Insert a leaf node for a widget-owned style.
     fn leaf_node(&mut self, style: taffy::Style) -> NodeId;
+
+    /// Insert a parent whose child ids were built in this same tree.
     fn parent_node(&mut self, style: taffy::Style, children: &[NodeId]) -> NodeId;
 }
 
