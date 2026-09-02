@@ -1,7 +1,0 @@
-#!/bin/sh
-set -eu
-if [ "${QOS_IMAGER_ALLOW_WRITE:-}" = 1 ]; then
-  exec /app/bin/qos-imager-bin "$@"
-fi
-exec flatpak-spawn --host pkexec env QOS_IMAGER_ALLOW_WRITE=1 \
-  flatpak run --command=qos-imager-bin org.qos.Imager "$@"

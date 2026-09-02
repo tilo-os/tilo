@@ -39,6 +39,10 @@ COPY rootfs/ /
 # the explicit non-default password required by build-custom-installer.sh.
 RUN printf 'kargs = ["qos.installer=1"]\n' \
       > /usr/lib/bootc/kargs.d/50-installer.toml \
+    && /usr/libexec/qos-uki-cmdline append qos.root=0000000000000000000000000000000000000 \
+    && /usr/libexec/qos-uki-cmdline append qos.luks=000000000000000000000000000000000000000000000 \
+    && /usr/libexec/qos-uki-cmdline replace qos.mode=normal qos.installer=1 \
+    && /usr/libexec/qos-uki-cmdline show | grep -qw qos.installer=1 \
     && systemctl enable qos-firstboot-user.service qos-installer-setup.service \
     && if [ "$QOS_INSTALLER_DEV_SSH" = 1 ]; then \
          systemctl unmask sshd.service && systemctl enable sshd.service; \

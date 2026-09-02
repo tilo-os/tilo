@@ -9,6 +9,8 @@ set -euo pipefail
 assets="${1:-release-assets}"
 version="${GITHUB_REF_NAME#imager-v}"
 [ "$version" != "$GITHUB_REF_NAME" ] || { printf 'expected imager-v* tag\n' >&2; exit 2; }
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+  || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 2; }
 manifest_source="$(find "$assets" -type d -name winget -print -quit)"
 [ -n "$manifest_source" ] || { printf 'WinGet manifests were not downloaded\n' >&2; exit 1; }
 [ "$(find "$manifest_source" -maxdepth 1 -name '*.yaml' | wc -l)" -eq 3 ] \

@@ -1,8 +1,8 @@
 # SELinux on the qOS installer live medium (E1)
 
-Status: implemented, **pending VM install-test confirmation** (this build
-environment cannot boot the medium). Tracks roadmap item **E1** — "SELinux
-policy for qOS components (drop installer `enforcing=0`)".
+Status: implemented and exercised from the sealed live medium. Tracks roadmap
+item **E1** — "SELinux policy for qOS components (drop installer
+`enforcing=0`)".
 
 ## TL;DR
 
@@ -35,11 +35,16 @@ A/B). The cheap unblock was global `enforcing=0`.
 
 ## The fix: run the privileged work as a transient system unit
 
-`qos-install`, once root, re-execs its real work via:
+`qos-install`, once root, stages stdin and output in a mode-0700 directory under
+`/run`, then re-execs its real work via a transient service equivalent to:
 
 ```
-systemd-run --pipe --collect --quiet --wait \
+systemd-run --collect --quiet --wait \
   --unit=qos-install-$$ \
+  --property=Type=exec \
+  --property=StandardInput=file:/run/qos-install.XXXXXX/stdin \
+  --property=StandardOutput=append:/run/qos-install.XXXXXX/output \
+  --property=StandardError=append:/run/qos-install.XXXXXX/output \
   --setenv=QOS_INSTALL_TRANSIENT=1 \
   --setenv=QOS_TARGET_IMGREF=... \
   -- /usr/libexec/qos-install <original args>
@@ -53,9 +58,15 @@ podman/bootc (the ordinary "systemd runs a container service" path), and stay
 **fully enforced**. `xdm_t` no longer touches container storage or the disk.
 
 Why this shape:
-- `--pipe` plumbs our stdin (the account password, one line) and stdout/stderr
-  (progress, tailed live by the UI) straight through — no journald buffering,
-  so streaming is unchanged.
+- The first VM run proved that `systemd-run --pipe` is not reliable here:
+  Fedora/systemd reset the transient-unit request while passing the greeter's
+  anonymous pipe file descriptors. Ordinary root-only files avoid that D-Bus
+  FD-passing path. PID 1 creates the root-only `/run/qos-installer/bridge`
+  below the readable validated-profile directory before greetd, and the wrapper
+  matches every bridge file to that system runtime SELinux label before
+  systemd opens it; without that explicit match, systemd correctly fails with
+  `EXIT_STDIN` (209). Output is tailed while the service runs, so progress still
+  streams and neither the startup secret nor recovery key enters journald.
 - `--wait` propagates the unit's exit code, so the UI's success/failure
   detection is unchanged.
 - `--collect` reaps the unit; `--quiet` keeps systemd-run's own chatter out of
@@ -89,10 +100,9 @@ The module also carries the **hardening rules** (commented) that should replace
 `typepermissive` once a VM run confirms them. Their CIL syntax + class/perm
 names were validated with `secilc`.
 
-## What still needs a VM to confirm
+## VM confirmation
 
-This build env can't boot the medium, so the following is reasoned, not
-observed. Build the installer and run an install on a VM (`./os/dev/vm.sh
+Build the installer and run an install on a VM (`./os/dev/vm.sh
 boot-installer`), then:
 
 1. **Does the install complete under enforcing?** Run a full install to a blank

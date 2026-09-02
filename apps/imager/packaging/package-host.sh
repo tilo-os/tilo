@@ -7,6 +7,9 @@ out="${1:-dist/qos-imager}"
 host="$(uname -s)"
 require_signing="${QOS_REQUIRE_SIGNING:-0}"
 require_native_packages="${QOS_REQUIRE_NATIVE_PACKAGES:-0}"
+version="${QOS_VERSION:-0.1.0}"
+version="${version#imager-v}"
+version="${version#v}"
 machine="$(uname -m)"
 case "$machine" in
   x86_64|amd64) package_arch="x86_64" ;;
@@ -17,16 +20,18 @@ if [ "$require_signing" = 1 ]; then
   case "$host" in
     Darwin)
       [ -n "${QOS_MAC_SIGNING_IDENTITY:-}" ] \
-        && [ -n "${QOS_APPLE_ID:-}" ] \
-        && [ -n "${QOS_APPLE_TEAM_ID:-}" ] \
-        && [ -n "${QOS_APPLE_APP_PASSWORD:-}" ] \
+        && { [ -n "${QOS_NOTARY_KEYCHAIN_PROFILE:-}" ] \
+             || { [ -n "${QOS_APPLE_ID:-}" ] \
+                  && [ -n "${QOS_APPLE_TEAM_ID:-}" ] \
+                  && [ -n "${QOS_APPLE_APP_PASSWORD:-}" ]; }; } \
         || { printf 'macOS signing and notarization credentials are required\n' >&2; exit 1; }
       command -v codesign >/dev/null && command -v xcrun >/dev/null \
         || { printf 'codesign and xcrun are required\n' >&2; exit 1; }
       ;;
     Linux)
-      [ -n "${QOS_LINUX_SIGNING_KEY:-}" ] \
-        || { printf 'QOS_LINUX_SIGNING_KEY is required\n' >&2; exit 1; }
+      { [ -n "${QOS_LINUX_SIGNER:-}" ] && [ -n "${QOS_LINUX_VERIFY_KEY:-}" ]; } \
+        || [ -n "${QOS_LINUX_SIGNING_KEY:-}" ] \
+        || { printf 'QOS_LINUX_SIGNER + QOS_LINUX_VERIFY_KEY or QOS_LINUX_SIGNING_KEY are required\n' >&2; exit 1; }
       command -v gpg >/dev/null \
         || { printf 'gpg is required for a signed Linux release\n' >&2; exit 1; }
       ;;
@@ -44,6 +49,30 @@ write_digest() {
   fi
 }
 
+sign_linux_artifact() {
+  artifact="$1"
+  if [ -n "${QOS_LINUX_SIGNER:-}" ]; then
+    "$QOS_LINUX_SIGNER" "$artifact" "$artifact.asc"
+    [ -s "$artifact.asc" ] \
+      || { printf 'external Linux signer did not create %s.asc\n' "$artifact" >&2; exit 1; }
+    signer_fingerprint="$(gpg --batch --with-colons --fingerprint "$QOS_LINUX_VERIFY_KEY" \
+      | awk -F: '$1 == "fpr" { print $10; exit }')"
+    [ -n "$signer_fingerprint" ] \
+      || { printf 'QOS_LINUX_VERIFY_KEY is not in the release keyring\n' >&2; exit 1; }
+    verified_fingerprint="$(gpg --batch --status-fd 1 --verify "$artifact.asc" "$artifact" 2>/dev/null \
+      | awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print $3; exit }')"
+    [ "$verified_fingerprint" = "$signer_fingerprint" ] \
+      || { printf 'Linux signature was not made by QOS_LINUX_VERIFY_KEY\n' >&2; exit 1; }
+  elif [ -n "${QOS_LINUX_SIGNING_KEY:-}" ]; then
+    gpg --batch --yes --local-user "$QOS_LINUX_SIGNING_KEY" \
+      --armor --detach-sign "$artifact"
+    gpg --batch --verify "$artifact.asc" "$artifact"
+  elif [ "$require_signing" = 1 ]; then
+    printf 'Linux signing credentials are required for a release build\n' >&2
+    exit 1
+  fi
+}
+
 case "$host" in
   Darwin)
     app="$out/qOS Imager.app"
@@ -52,6 +81,10 @@ case "$host" in
     cp apps/imager/packaging/macos/qos-imager "$app/Contents/MacOS/qos-imager"
     chmod +x "$app/Contents/MacOS/qos-imager" "$app/Contents/MacOS/qos-imager-bin"
     cp apps/imager/packaging/macos/Info.plist "$app/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" \
+      "$app/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $version" \
+      "$app/Contents/Info.plist"
     if [ -n "${QOS_MAC_SIGNING_IDENTITY:-}" ]; then
       codesign --force --options runtime --timestamp \
         --sign "$QOS_MAC_SIGNING_IDENTITY" "$app/Contents/MacOS/qos-imager-bin"
@@ -64,8 +97,14 @@ case "$host" in
     fi
     artifact_base="qos-imager-macos-$package_arch"
     ditto -c -k --keepParent "$app" "$out/$artifact_base.zip"
-    if [ -n "${QOS_APPLE_ID:-}" ] && [ -n "${QOS_APPLE_TEAM_ID:-}" ] \
-       && [ -n "${QOS_APPLE_APP_PASSWORD:-}" ]; then
+    if [ -n "${QOS_NOTARY_KEYCHAIN_PROFILE:-}" ]; then
+      xcrun notarytool submit "$out/$artifact_base.zip" --wait \
+        --keychain-profile "$QOS_NOTARY_KEYCHAIN_PROFILE"
+      xcrun stapler staple "$app"
+      rm -f "$out/$artifact_base.zip"
+      ditto -c -k --keepParent "$app" "$out/$artifact_base.zip"
+    elif [ -n "${QOS_APPLE_ID:-}" ] && [ -n "${QOS_APPLE_TEAM_ID:-}" ] \
+         && [ -n "${QOS_APPLE_APP_PASSWORD:-}" ]; then
       xcrun notarytool submit "$out/$artifact_base.zip" --wait \
         --apple-id "$QOS_APPLE_ID" --team-id "$QOS_APPLE_TEAM_ID" \
         --password "$QOS_APPLE_APP_PASSWORD"
@@ -84,6 +123,21 @@ case "$host" in
       hdiutil create -quiet -volname "qOS Imager" -srcfolder "$dmg_root" \
         -ov -format UDZO "$out/$artifact_base.dmg"
       rm -rf "$dmg_root"
+      if [ -n "${QOS_MAC_SIGNING_IDENTITY:-}" ]; then
+        codesign --force --timestamp --sign "$QOS_MAC_SIGNING_IDENTITY" \
+          "$out/$artifact_base.dmg"
+        codesign --verify --verbose=2 "$out/$artifact_base.dmg"
+        if [ -n "${QOS_NOTARY_KEYCHAIN_PROFILE:-}" ]; then
+          xcrun notarytool submit "$out/$artifact_base.dmg" --wait \
+            --keychain-profile "$QOS_NOTARY_KEYCHAIN_PROFILE"
+        else
+          xcrun notarytool submit "$out/$artifact_base.dmg" --wait \
+            --apple-id "$QOS_APPLE_ID" --team-id "$QOS_APPLE_TEAM_ID" \
+            --password "$QOS_APPLE_APP_PASSWORD"
+        fi
+        xcrun stapler staple "$out/$artifact_base.dmg"
+        xcrun stapler validate "$out/$artifact_base.dmg"
+      fi
       write_digest "$out/$artifact_base.dmg"
     elif [ "$require_native_packages" = 1 ]; then
       printf 'hdiutil is required for the release DMG\n' >&2
@@ -101,13 +155,7 @@ case "$host" in
     cp docs/installer-walkthrough.md "$bundle/README.md"
     tar -C "$out" -czf "$out/$artifact_base.tar.gz" "$artifact_base"
     write_digest "$out/$artifact_base.tar.gz"
-    if [ -n "${QOS_LINUX_SIGNING_KEY:-}" ]; then
-      gpg --batch --yes --local-user "$QOS_LINUX_SIGNING_KEY" \
-        --armor --detach-sign "$out/$artifact_base.tar.gz"
-    elif [ "$require_signing" = 1 ]; then
-      printf 'QOS_LINUX_SIGNING_KEY is required for a release build\n' >&2
-      exit 1
-    fi
+    sign_linux_artifact "$out/$artifact_base.tar.gz"
 
     appdir="$out/qOS_Imager.AppDir"
     mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications"
@@ -124,24 +172,12 @@ case "$host" in
       ARCH="$package_arch" appimagetool "$appdir" "$out/$artifact_base.AppImage" >/dev/null
       chmod +x "$out/$artifact_base.AppImage"
       write_digest "$out/$artifact_base.AppImage"
+      sign_linux_artifact "$out/$artifact_base.AppImage"
     elif [ "$require_native_packages" = 1 ]; then
       printf 'linuxdeploy and appimagetool are required for the release AppImage\n' >&2
       exit 1
     fi
 
-    if command -v flatpak-builder >/dev/null 2>&1; then
-      flatpak_dir="$out/flatpak-build"
-      flatpak_repo="$out/flatpak-repo"
-      rm -rf "$flatpak_dir" "$flatpak_repo"
-      flatpak-builder --force-clean --repo="$flatpak_repo" "$flatpak_dir" \
-        apps/imager/packaging/linux/org.qos.Imager.yml
-      flatpak build-bundle "$flatpak_repo" "$out/$artifact_base.flatpak" \
-        org.qos.Imager stable
-      write_digest "$out/$artifact_base.flatpak"
-    elif [ "$require_native_packages" = 1 ]; then
-      printf 'flatpak-builder is required for the release Flatpak bundle\n' >&2
-      exit 1
-    fi
     ;;
   *)
     printf 'unsupported host: %s\n' "$(uname -s)" >&2
