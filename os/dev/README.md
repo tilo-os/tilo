@@ -228,7 +228,7 @@ from before this existed and has been removed.
 
 How it works:
 
-- `Containerfile.installer` bakes the kernel arg **`qos.installer=1`**. That single
+- `Containerfile.installer` bakes the kernel arg **`qos.install`**. That single
   flag drives everything: `qos-session-select` launches the installer (not the
   greeter), the `qos-install` backend refuses to run without it, and
   `qos-installer-setup.service` (which drops in the passwordless sudoers rule)

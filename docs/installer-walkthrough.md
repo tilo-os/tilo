@@ -28,6 +28,10 @@ Homebrew), Windows x86-64 (setup EXE, standalone EXE, WinGet), and macOS
 x86-64/Apple silicon (DMG, app zip, Homebrew cask). Verify the published
 SHA-256 digest before launching it. Never use
 an imager or OS image obtained from a mirror whose digest is not listed by qOS.
+Each signed host installer embeds the same release catalog. It names the
+architecture-matched compressed live installer by immutable tag and includes
+SHA-256 digests for both the downloaded archive and expanded raw disk image.
+The Imager caches and verifies both before allowing the medium to be written.
 The cross-platform build workflow also emits digests, but its unsigned CI
 artifacts are for validation only: they must not be presented as production
 downloads. Code signing on Linux and Windows and signing plus notarization on

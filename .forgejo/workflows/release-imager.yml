@@ -32,11 +32,66 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: release-imager-${{ github.ref }}
-  cancel-in-progress: true
+  # Package promotion and the website manifest are mutable "latest" pointers.
+  # One global lane prevents an older, slower tag from overwriting a newer one.
+  group: release-imager-promotion
+  cancel-in-progress: false
 
 jobs:
+  medium:
+    if: startsWith(github.ref, 'refs/tags/imager-v')
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: runner
+          - arch: aarch64
+            runner: runner-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build the tested qOS live installer
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          ./os/dev/build-image.sh
+          ./os/dev/build-custom-installer.sh
+          apps/imager/packaging/package-install-medium.sh \
+            os/output/installer/qcow2/disk.qcow2 "${{ matrix.arch }}"
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: qos-installer-medium-${{ matrix.arch }}
+          path: |
+            dist/qos-installer/qos-installer-linux-*.img.zst
+            dist/qos-installer/qos-installer-linux-*.img.zst.sha256
+            dist/qos-installer/catalog-*.json
+
+  catalog:
+    if: always()
+    needs: medium
+    runs-on: runner
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        if: startsWith(github.ref, 'refs/tags/imager-v')
+        with:
+          path: release-assets
+      - name: Assemble the release catalog
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
+            apps/imager/packaging/build-release-catalog.sh release-assets
+          else
+            mkdir -p dist/qos-installer-catalog
+            cp apps/imager/release-catalog.json \
+              dist/qos-installer-catalog/qos-installer-catalog-v1.json
+          fi
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: qos-installer-catalog
+          path: dist/qos-installer-catalog/*
+
   linux:
+    needs: catalog
     permissions:
       contents: read
       id-token: write
@@ -50,6 +105,11 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          name: qos-installer-catalog
+          path: release-catalog
+      - run: cp release-catalog/qos-installer-catalog-v1.json apps/imager/release-catalog.json
       - name: Configure release signing
         env:
           CREDENTIAL_BROKER: ${{ vars.IMAGER_CREDENTIAL_BROKER }}
@@ -105,12 +165,19 @@ jobs:
           if-no-files-found: ignore
 
   windows:
+    needs: catalog
     permissions:
       contents: read
       id-token: write
     runs-on: windows
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          name: qos-installer-catalog
+          path: release-catalog
+      - shell: powershell
+        run: Copy-Item release-catalog/qos-installer-catalog-v1.json apps/imager/release-catalog.json
       - name: Configure release signing
         shell: powershell
         env:
@@ -172,6 +239,7 @@ jobs:
             dist/qos-imager/winget/*.yaml
 
   macos:
+    needs: catalog
     permissions:
       contents: read
       id-token: write
@@ -185,6 +253,11 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          name: qos-installer-catalog
+          path: release-catalog
+      - run: cp release-catalog/qos-installer-catalog-v1.json apps/imager/release-catalog.json
       - name: Configure release signing
         env:
           CREDENTIAL_BROKER: ${{ vars.IMAGER_CREDENTIAL_BROKER }}
