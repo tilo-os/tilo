@@ -41,6 +41,14 @@ pub fn register_actions(registry: &mut ActionRegistry) {
 /// The inputs write directly to the Automerge model. The preview reads the
 /// same fields during normal synchronization, so persistence, collaboration,
 /// inspection, and Ctrl+Z need no app-owned notification or binding layer.
+///
+/// # Panics
+///
+/// Panics only if serializing the generated `DocumentAction` enum fails.
+#[expect(
+    clippy::expect_used,
+    reason = "the generated action enum contains only serializable strings and unit variants"
+)]
 pub fn app_root() -> Box<dyn Widget> {
     crate::install_catalog();
     let title = TextInput::from_document_string("document-title")
@@ -89,24 +97,16 @@ pub fn app_root() -> Box<dyn Widget> {
             .expect("bound document content is serializable")
         },
     );
-    let resource = Resource::new(
-        "generated.document:root",
-        "generated.document",
-        "Document",
-    )
-    .with_action(set_content)
-    .with_action(
-        qos_actions::ActionSpec::immediate(
-            "clear",
-            "Clear document",
-            DOCUMENT_ACTION_TYPE,
-            &DocumentAction::Clear,
-        )
-        .expect("the generated document action is serializable"),
-    );
-    crate::resource_actions::immediate(
-        root,
-        resource,
-        |_| Ok(Default::default()),
-    )
+    let resource = Resource::new("generated.document:root", "generated.document", "Document")
+        .with_action(set_content)
+        .with_action(
+            qos_actions::ActionSpec::immediate(
+                "clear",
+                "Clear document",
+                DOCUMENT_ACTION_TYPE,
+                &DocumentAction::Clear,
+            )
+            .expect("the generated document action is serializable"),
+        );
+    crate::resource_actions::immediate(root, resource, |_| Ok(qos_actions::ActionOutput::default()))
 }

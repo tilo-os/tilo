@@ -180,14 +180,20 @@ pub fn app_root() -> Box<dyn Widget> {
             "open",
             "Open activity",
             vec![qos_actions::ActionParam::required_owned(
-                "id", qos_actions::ParamType::Integer, "Stable activity id",
+                "id",
+                qos_actions::ParamType::Integer,
+                "Stable activity id",
             )],
         ),
         |payload| {
-            let args: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-            let id = args.get("id").and_then(serde_json::Value::as_u64).ok_or("missing id")?;
+            let args: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            let id = args
+                .get("id")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or("missing id")?;
             open_activity(id);
-            Ok(Default::default())
+            Ok(qos_actions::ActionOutput::default())
         },
     )
 }

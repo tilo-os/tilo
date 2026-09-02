@@ -7209,7 +7209,6 @@ fn workspace_keeps_master_detail_views_isolated_and_synchronized() {{
         {crate_name}::app_root(),
         (460, 820),
     );
-    compact.relayout();
     compact.expect(
         &SemanticExpectation::named("workspace-shell-back")
             .role(Role::Button)

@@ -555,7 +555,6 @@ mod tests {
 
         let mut compact =
             ui::headless::Driver::new(ui::State::new(), super::workspace::app_root(), (460, 820));
-        compact.relayout();
         compact
             .expect(
                 &SemanticExpectation::named("workspace-shell-back")
