@@ -465,6 +465,28 @@ impl Session {
         out
     }
 
+    /// Prefer broker-routable offers, while retaining the known-document
+    /// catalogue until the asynchronous broker snapshot has advertised the
+    /// same address. This prevents an instruction arriving with the document
+    /// from being permanently refused merely because its catalogue event is
+    /// one frame behind it.
+    fn offers(
+        &self,
+        held: &[(&'static AppContract, &automerge::AutoCommit)],
+        view: &View,
+    ) -> Vec<surface::Offer> {
+        let mut offers = surface::broker_offers(&self.broker_surfaces);
+        for local in surface::offers(held, view, &self.cfg.permissions) {
+            if !offers
+                .iter()
+                .any(|broker| broker.address() == local.address())
+            {
+                offers.push(local);
+            }
+        }
+        offers
+    }
+
     /// Where the agent is looking: `focus` on a document, and the
     /// directory it was configured to browse, when it has one.
     fn view(&self, focus: Option<String>) -> View {
@@ -492,9 +514,19 @@ impl Session {
         confirmation: &ConfirmationEvidence,
     ) -> Result<Result<(), String>> {
         let offers = surface::broker_offers(&self.broker_surfaces);
-        let Some(offer) = surface::find(&offers, id) else {
-            return Ok(Err("that no longer names anything I can find".to_string()));
-        };
+        if let Some(offer) = surface::find(&offers, id).cloned() {
+            return self.perform_broker(id, &offer, arguments, confirmation);
+        }
+        self.perform_local(id, arguments, confirmation)
+    }
+
+    fn perform_broker(
+        &mut self,
+        id: &str,
+        offer: &surface::Offer,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmation: &ConfirmationEvidence,
+    ) -> Result<Result<(), String>> {
         let Some(peer_id) = offer.broker_peer_id else {
             return Ok(Err(
                 "that operation is local-only and cannot be brokered".to_string()
@@ -571,6 +603,73 @@ impl Session {
             _ => Ok(Err(
                 "the broker returned an invalid nonterminal result".to_string()
             )),
+        }
+    }
+
+    fn perform_local(
+        &mut self,
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmation: &ConfirmationEvidence,
+    ) -> Result<Result<(), String>> {
+        let Some(address) = surface::decode_address(id) else {
+            return Ok(Err("that no longer names anything I can find".to_string()));
+        };
+        let namespace = surface::app_of(&address.resource).to_string();
+        let view = self.view(None);
+        let registry = surface::registry();
+        let is_primary = self
+            .editor
+            .as_ref()
+            .is_some_and(|editor| editor.contract().namespace == namespace);
+        let held = if is_primary {
+            self.editor.as_mut()
+        } else {
+            self.peers.get_mut(namespace.as_str())
+        };
+        let Some(editor) = held else {
+            return Ok(Err("that isn't open here, so I can't act on it".to_string()));
+        };
+        let target_app_id = editor.contract().app_id;
+        let live = editor.resources(&view);
+        let Some(descriptor) = qos_actions::door::survey(&live)
+            .into_iter()
+            .find(|descriptor| descriptor.address == address)
+        else {
+            return Ok(Err("that no longer names anything I can find".to_string()));
+        };
+        if !surface::permitted_descriptor(&self.cfg.permissions, &descriptor) {
+            return Ok(Err("that no longer names anything I can find".to_string()));
+        }
+        if !confirmation.satisfies(&descriptor.contract.confirmation) {
+            return Ok(Err("that action requires explicit confirmation".to_string()));
+        }
+        let invoked = if confirmation.is_confirmed() {
+            editor.invoke_json_confirmed(&view, &address, arguments, &registry)
+        } else {
+            editor.invoke_json(&view, &address, arguments, &registry)
+        };
+        match invoked {
+            Ok(Some(delta)) => {
+                let request = CollabRequest::DocumentIncremental { data: delta };
+                if is_primary {
+                    self.link.send(&request)?;
+                } else {
+                    self.link
+                        .send_to_route(RouteSpec::app(target_app_id, self.cfg.cluster), &request)?;
+                }
+                tracing::info!(%id, "performed a discovered operation");
+                std::thread::sleep(self.cfg.pace);
+                Ok(Ok(()))
+            }
+            Ok(None) => {
+                tracing::warn!(%id, "the operation changed nothing");
+                Ok(Err("that didn't change anything".to_string()))
+            }
+            Err(error) => {
+                tracing::warn!(%id, "refused: {error}");
+                Ok(Err(format!("I couldn't do that - {error}")))
+            }
         }
     }
 
@@ -688,7 +787,7 @@ impl Session {
         let held = self.held();
         let view = self.view(Some(ins_id.to_string()));
         let catalogue = surface::Catalogue {
-            offers: surface::broker_offers(&self.broker_surfaces),
+            offers: self.offers(&held, &view),
             facts: surface::facts(&held, &view),
             held: held
                 .iter()

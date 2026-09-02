@@ -397,14 +397,8 @@ impl SemanticTree {
                     .actions
                     .iter()
                     .filter_map(|action| match &action.kind {
-                        SemanticActionKind::Verb(verb)
-                            if semantic_operation_kind(node.role, verb) == OperationKind::View =>
-                        {
-                            Some((action, verb))
-                        }
-                        SemanticActionKind::App(_)
-                        | SemanticActionKind::AppPrompted { .. }
-                        | SemanticActionKind::Verb(_) => None,
+                        SemanticActionKind::Verb(verb) => Some((action, verb)),
+                        SemanticActionKind::App(_) | SemanticActionKind::AppPrompted { .. } => None,
                     })
                     .collect::<Vec<_>>();
                 if verbs.is_empty() {
