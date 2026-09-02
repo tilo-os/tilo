@@ -1,3 +1,4 @@
+use ui::qos_actions;
 use ui::widget::{Button, Text, TreeNode, TreeView, Widget};
 
 fn open_node(_id: u64) {}
@@ -51,9 +52,9 @@ pub fn app_root() -> Box<dyn Widget> {
             .with_viewport(280.0, 36.0)
             .with_accessible_name("tree-accessible-name"),
     );
-    crate::resource_actions::immediate(
+    ui::widget::resource_actions::immediate(
         root,
-        crate::resource_actions::typed_resource(
+        ui::widget::resource_actions::typed_resource(
             "generated.tree",
             "Workspace",
             "open",
