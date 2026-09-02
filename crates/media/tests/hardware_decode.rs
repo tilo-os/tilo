@@ -40,8 +40,8 @@ mod real {
         // A frame has to land before the report means anything: the decoder is
         // only plugged once the pipeline prerolls.
         let frame = decode_frame_at(&mut engine, 1_000, "hardware decode probe");
-        assert_eq!(frame.width, 1920);
-        assert_eq!(frame.height, 1080);
+        assert_eq!(frame.width, FIXTURE_WIDTH);
+        assert_eq!(frame.height, FIXTURE_HEIGHT);
 
         let report = engine.hw_report();
         let element = report.decoder_element.clone().unwrap_or_else(|| {
