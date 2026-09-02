@@ -71,6 +71,7 @@ pub struct WebView {
     cached_image: Option<PenikoImage>,
     cached_key: (usize, u32, u32),
     test_id: String,
+    accessible_name: String,
 }
 
 impl WebView {
@@ -85,6 +86,7 @@ impl WebView {
             cached_image: None,
             cached_key: (0, 0, 0),
             test_id: "webview".to_string(),
+            accessible_name: "Web content".to_string(),
         }
     }
 
@@ -93,6 +95,12 @@ impl WebView {
     #[must_use]
     pub fn with_test_id(mut self, id: &str) -> Self {
         self.test_id = id.to_string();
+        self
+    }
+
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = name.into();
         self
     }
 
@@ -398,6 +406,18 @@ impl Widget for WebView {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::Document)
+                .with_name(self.accessible_name.clone())
+                .with_state(crate::a11y::AccessState {
+                    focusable: true,
+                    focused: self.focused,
+                    ..Default::default()
+                }),
+        )
     }
 
     /// A freshly-exported engine frame that the scene hasn't painted yet

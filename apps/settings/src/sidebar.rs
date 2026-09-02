@@ -334,6 +334,20 @@ impl Widget for SidebarRow {
         Some(self.category.label())
     }
 
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::RadioButton)
+                .with_name(self.category.label())
+                .with_action_target(self.select_key.clone())
+                .with_state(ui::a11y::AccessState {
+                    focusable: true,
+                    checked: Some(self.active),
+                    selected: self.active,
+                    ..Default::default()
+                }),
+        )
+    }
+
     /// Expose the active state so a rebuilt tree can be inspected — used by
     /// the interaction tests to confirm the highlight followed the click. The
     /// `Widget::get_state` channel (ephemeral, non-persisted) is the natural

@@ -17,8 +17,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::{ACCENT_PRIMARY_IDX, ON_FILL_MIN_CONTRAST};
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use crate::widget::{ActionEmitter, ControlBindingMetadata, TaffyTreeExt, Widget};
 
 /// Lossless `usize -> f64` widening for segment-strip geometry. Segment
 /// counts are bounded far below `u32::MAX`, so routing through `u32` (which
@@ -47,9 +46,12 @@ impl Segment {
 }
 
 pub struct ToggleGroup {
+    id: Option<String>,
     segments: Vec<Segment>,
     selected: usize,
     on_change: Option<Box<dyn FnMut(usize)>>,
+    action: Option<ActionEmitter<usize>>,
+    native_resource: Option<crate::qos_actions::Resource>,
     /// Indices aligned 1:1 with `segments`; drawing also consults this for
     /// the fill.
     segment_rects: Vec<Rect>,
@@ -76,9 +78,12 @@ impl ToggleGroup {
         // `len == 0`, so this collapses to the same no-segments case.
         let selected = selected.min(len.saturating_sub(1));
         Self {
+            id: None,
             segments,
             selected,
             on_change: None,
+            action: None,
+            native_resource: None,
             segment_rects: Vec::new(),
             rect: Rect::ZERO,
             last_cursor: Cell::new(Point::ZERO),
@@ -95,6 +100,97 @@ impl ToggleGroup {
     pub fn on_change<F: FnMut(usize) + 'static>(mut self, f: F) -> Self {
         self.on_change = Some(Box::new(f));
         self
+    }
+
+    /// Give this compound control a stable identity for headless driving,
+    /// accessibility actions, and resource/action publication.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// Publish segment selection as a transient view action while preserving
+    /// the familiar closure API. UI, accessibility, search, and agents all
+    /// enter through the same typed `index` operation.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "the generated integer schema and action are internally consistent"
+    )]
+    pub fn on_view<F: FnMut(usize) + 'static>(mut self, id: &str, f: F) -> Self {
+        use crate::qos_actions::{
+            ActionBinding, ActionParam, ActionSpec, DiscoveryScope, EncodedAction, OperationKind,
+            ParamType, Resource,
+        };
+
+        const TYPE_ID: &str = "qos.ui.segmented.select";
+        self.id = Some(id.to_owned());
+        let control_id = id.to_owned();
+        let mut spec = ActionSpec::typed_operation(
+            "select",
+            "Select",
+            "Choose a segment",
+            OperationKind::View,
+            TYPE_ID,
+            vec![ActionParam::required(
+                "index",
+                ParamType::Integer,
+                "Zero-based segment index",
+            )],
+            move |args| {
+                EncodedAction::encode_operation(
+                    TYPE_ID,
+                    &serde_json::json!({
+                        "control": control_id,
+                        "index": args.integer("index").unwrap_or_default(),
+                    }),
+                )
+                .expect("generated segmented action payload is serializable")
+            },
+        );
+        spec.contract.discovery = DiscoveryScope::Launchable;
+        let resource = Resource::new(format!("qos.control:{id}"), "qos.control.segmented", id)
+            .with_action(spec.clone());
+        let binding = ActionBinding::new(&resource, &spec, |index: usize| {
+            serde_json::Map::from_iter([("index".into(), serde_json::json!(index))])
+        })
+        .expect("segment index matches the generated integer parameter");
+        self.action = Some(ActionEmitter::new(binding));
+        self.native_resource = Some(resource);
+        self.on_change = Some(Box::new(f));
+        self
+    }
+
+    fn request_selection(&mut self, index: usize) {
+        if self.selected == index {
+            return;
+        }
+        if let Some(action) = &mut self.action {
+            if let Err(error) = action.emit(index) {
+                tracing::warn!(%error, "segmented action refused its index");
+            }
+            return;
+        }
+        self.apply_selection(index);
+    }
+
+    fn apply_selection(&mut self, index: usize) {
+        self.selected = index;
+        self.cache_dirty = true;
+        if let Some(callback) = self.on_change.as_mut() {
+            callback(index);
+        }
+    }
+
+    fn segment_prefix(&self) -> String {
+        self.id
+            .as_ref()
+            .map_or_else(|| "segment:".to_owned(), |id| format!("{id}:segment:"))
+    }
+
+    fn segment_id(&self, index: usize) -> String {
+        format!("{}{index}", self.segment_prefix())
     }
 
     pub fn selected(&self) -> usize {
@@ -652,12 +748,7 @@ impl Widget for ToggleGroup {
                     if seg_rect.contains(pos) {
                         *handled = true;
                         *focus_target = Some(node_id);
-                        if self.selected != i {
-                            self.selected = i;
-                            if let Some(cb) = self.on_change.as_mut() {
-                                cb(i);
-                            }
-                        }
+                        self.request_selection(i);
                         break;
                     }
                 }
@@ -684,6 +775,76 @@ impl Widget for ToggleGroup {
         self.is_focused
     }
 
+    fn is_enabled(&self) -> bool {
+        self.action.as_ref().is_none_or(ActionEmitter::is_available)
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    fn resources(&self, _doc: &AutoCommit) -> Vec<crate::qos_actions::Resource> {
+        self.native_resource.iter().cloned().collect()
+    }
+
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        self.native_resource
+            .as_ref()
+            .map(|_| std::iter::once("qos.ui.segmented.select".to_owned()).collect())
+            .unwrap_or_default()
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<crate::qos_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<crate::qos_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let Some(action) = &self.action else {
+            return Vec::new();
+        };
+        (0..self.segments.len())
+            .map(|index| action.metadata(self.segment_id(index)))
+            .collect()
+    }
+
+    fn invoke_resource_operation_v2(
+        &mut self,
+        kind: crate::qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<crate::qos_actions::ActionOutput>, String> {
+        if kind != crate::qos_actions::OperationKind::View
+            || type_id != "qos.ui.segmented.select"
+            || self.action.is_none()
+        {
+            return Ok(None);
+        }
+        let value: serde_json::Value =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        if value.get("control").and_then(serde_json::Value::as_str) != self.id.as_deref() {
+            return Ok(None);
+        }
+        let index = value
+            .get("index")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|index| *index < self.segments.len())
+            .ok_or_else(|| "segmented action index is out of range".to_owned())?;
+        self.apply_selection(index);
+        Ok(Some(crate::qos_actions::ActionOutput::default()))
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // Segment labels are runtime strings (host-provided), not FTL
@@ -699,7 +860,7 @@ impl Widget for ToggleGroup {
             .enumerate()
             .map(|(i, s)| {
                 AccessNode::new(Role::ToggleButton)
-                    .with_action_target(format!("segment:{i}"))
+                    .with_action_target(self.segment_id(i))
                     .with_name(s.label.clone())
                     .with_state(AccessState {
                         checked: Some(i == self.selected),
@@ -728,8 +889,9 @@ impl Widget for ToggleGroup {
         _state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        let prefix = self.segment_prefix();
         let Some(index) = target
-            .strip_prefix("segment:")
+            .strip_prefix(&prefix)
             .and_then(|value| value.parse::<usize>().ok())
             .filter(|index| *index < self.segments.len())
         else {
@@ -741,13 +903,7 @@ impl Widget for ToggleGroup {
         ) {
             return false;
         }
-        if self.selected != index {
-            self.selected = index;
-            self.cache_dirty = true;
-            if let Some(callback) = self.on_change.as_mut() {
-                callback(index);
-            }
-        }
+        self.request_selection(index);
         true
     }
 }
@@ -1087,6 +1243,62 @@ mod tests {
             &mut AutoCommit::new(),
             &automerge::ROOT,
         ));
+        assert_eq!(group.selected(), 1);
+        assert_eq!(&*changed.borrow(), &[1]);
+    }
+
+    #[test]
+    fn on_view_publishes_and_executes_one_typed_resource_action() {
+        let changed = Rc::new(RefCell::new(Vec::new()));
+        let captured = Rc::clone(&changed);
+        let mut group = ToggleGroup::new(vec![Segment::new("Light"), Segment::new("Dark")], 0)
+            .on_view("appearance", move |index| captured.borrow_mut().push(index));
+
+        let resources = Widget::resources(&group, &AutoCommit::new());
+        assert_eq!(resources.len(), 1);
+        let resource = &resources[0];
+        assert_eq!(resource.id.as_str(), "qos.control:appearance");
+        assert_eq!(resource.actions.len(), 1);
+        let spec = &resource.actions[0];
+        assert_eq!(spec.kind, crate::qos_actions::OperationKind::View);
+        assert_eq!(
+            spec.contract.discovery,
+            crate::qos_actions::DiscoveryScope::Launchable
+        );
+        assert_eq!(spec.params()[0].name, "index");
+
+        assert!(Widget::perform_semantic_action(
+            &mut group,
+            "appearance:segment:1",
+            &crate::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            group.selected(),
+            0,
+            "UI intent does not bypass the action host"
+        );
+        assert!(changed.borrow().is_empty());
+
+        let invocation = Widget::take_control_invocation(&mut group).unwrap();
+        assert_eq!(
+            invocation.address,
+            crate::qos_actions::ActionAddress::new("qos.control:appearance", "select")
+        );
+        assert_eq!(invocation.arguments["index"], 1);
+        let encoded = spec.build_json(&invocation.arguments).unwrap();
+        assert_eq!(encoded.type_id, "qos.ui.segmented.select");
+        let output = Widget::invoke_resource_operation_v2(
+            &mut group,
+            crate::qos_actions::OperationKind::View,
+            &encoded.type_id,
+            &encoded.payload,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+        )
+        .unwrap();
+        assert!(output.is_some());
         assert_eq!(group.selected(), 1);
         assert_eq!(&*changed.borrow(), &[1]);
     }

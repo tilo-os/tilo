@@ -315,7 +315,60 @@ impl AccessNode {
     /// Attach an opaque, widget-local target for actions on this synthetic
     /// node. Prefer stable model keys over visible indices.
     pub fn with_action_target(mut self, target: impl Into<String>) -> Self {
-        self.action_target = Some(target.into());
+        let target = target.into();
+        // An actionable synthetic node necessarily needs stable identity for
+        // agents and AT to hold across frames. Derive the existing compact key
+        // from the same opaque target so authors cannot accidentally provide
+        // routability without durability.
+        self.key = Some(hash_key(&target));
+        self.semantic_key = Some(target.clone());
+        self.action_target = Some(target);
+        self
+    }
+
+    /// Route every keyed actionable descendant through its existing
+    /// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at)
+    /// implementation. This is the high-complexity custom-canvas adapter:
+    /// timeline/editor authors keep one stable keyed semantic tree instead of
+    /// duplicating an action id and handler for every painted affordance.
+    pub fn with_keyed_action_routes(mut self, namespace: &str) -> Self {
+        fn actionable(role: Role) -> bool {
+            matches!(
+                role,
+                Role::Button
+                    | Role::ToggleButton
+                    | Role::Checkbox
+                    | Role::RadioButton
+                    | Role::Switch
+                    | Role::ComboBox
+                    | Role::Slider
+                    | Role::SpinButton
+                    | Role::TextInput
+                    | Role::MultilineTextInput
+            )
+        }
+
+        fn visit(node: &mut AccessNode, namespace: &str, parent: &[u64]) {
+            let mut path = parent.to_vec();
+            if let Some(key) = node.key {
+                path.push(key);
+            }
+            if actionable(node.role) && node.action_target.is_none() && !path.is_empty() {
+                let encoded = path
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join("/");
+                let target = format!("qos.key-action:{namespace}:{encoded}");
+                node.semantic_key = Some(target.clone());
+                node.action_target = Some(target);
+            }
+            for child in &mut node.children {
+                visit(child, namespace, &path);
+            }
+        }
+
+        visit(&mut self, namespace, &[]);
         self
     }
 

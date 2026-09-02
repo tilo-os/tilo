@@ -24,7 +24,7 @@ use crate::tokens::TextRole;
 use crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use qos_actions::{ActionInput, FlatAction};
+use qos_actions::{ActionAddress, ActionInput, ControlInvocation, FlatAction, PROMPTED_PARAM};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SearchScope {
@@ -144,6 +144,8 @@ pub struct CommandEntry {
     pub group_total: Option<usize>,
     pub icon: Option<Icon>,
     pub on_select: Option<Arc<SelectFn>>,
+    action_address: Option<ActionAddress>,
+    action_argument: Option<String>,
 }
 
 impl std::fmt::Debug for CommandEntry {
@@ -159,6 +161,7 @@ impl std::fmt::Debug for CommandEntry {
             .field("group_total", &self.group_total)
             .field("icon", &self.icon)
             .field("on_select", &self.on_select.as_ref().map(|_| "<fn>"))
+            .field("action_address", &self.action_address)
             .finish()
     }
 }
@@ -176,6 +179,8 @@ impl CommandEntry {
             group_total: None,
             icon: None,
             on_select: None,
+            action_address: None,
+            action_argument: None,
         }
     }
 
@@ -283,7 +288,9 @@ impl CommandEntry {
         } = &fa.action.input
         {
             entry = entry.with_argument(prompt.clone(), placeholder.clone());
+            entry.action_argument = Some(PROMPTED_PARAM.to_string());
         }
+        entry.action_address = Some(ActionAddress::new(&fa.resource_id.0, &fa.action.id));
         entry
     }
 
@@ -426,6 +433,10 @@ pub struct CommandPalette {
     /// closes such a dedicated prompt instead of revealing an unrelated list.
     direct_argument: bool,
     outcome: Option<CommandOutcome>,
+    /// Native palette rows enqueue an inert address+arguments request here.
+    /// The application host re-resolves it against the fresh resource tree,
+    /// exactly like a bound Button; the palette never executes app code.
+    action_invocation: Option<ControlInvocation>,
     /// Skip the built-in fuzzy filter when `true`, for provider hosts whose
     /// pre-matched result set should show verbatim.
     bypass_fuzzy: bool,
@@ -481,6 +492,7 @@ impl CommandPalette {
             arg_state: None,
             direct_argument: false,
             outcome: None,
+            action_invocation: None,
             bypass_fuzzy: false,
             hide_filter_strip: false,
             host_filter_strip: false,
@@ -530,6 +542,7 @@ impl CommandPalette {
         self.arg_state = None;
         self.direct_argument = false;
         self.outcome = None;
+        self.action_invocation = None;
         self.cursor = 0;
         self.rebuild();
     }
@@ -538,7 +551,11 @@ impl CommandPalette {
     /// selectable row. This is useful for dedicated shortcuts such as
     /// "Go to line", while retaining the palette's shared text selection,
     /// clipboard and IME behavior.
-    pub fn open_argument(
+    /// Internal compatibility path for toolkit-owned, non-application UI.
+    /// qOS applications cannot use this to manufacture an outcome that
+    /// bypasses the resource/action catalogue; use [`Self::open_action_argument`].
+    #[cfg(test)]
+    fn open_argument(
         &mut self,
         id: impl Into<String>,
         prompt: impl Into<String>,
@@ -553,6 +570,36 @@ impl CommandPalette {
             entry_id: id.into(),
             prompt: prompt.into(),
             placeholder: placeholder.into(),
+            selection: crate::text_selection::Selection {
+                anchor: 0,
+                cursor: buffer.len(),
+            },
+            buffer,
+            composition: QueryComposition::new(),
+        });
+    }
+
+    /// Open a resource-backed prompted action directly at its argument step.
+    /// Keyboard shortcuts can therefore reuse the exact same typed action row
+    /// as Ctrl+K without manufacturing a private outcome id.
+    pub fn open_action_argument(&mut self, entry: CommandEntry, prefill: Option<String>) {
+        let Some(spec) = entry.argument.clone() else {
+            self.set_entries(vec![entry]);
+            self.open();
+            return;
+        };
+        debug_assert!(entry.action_address.is_some());
+        let buffer = prefill.or(spec.prefill).unwrap_or_default();
+        let id = entry.id.clone();
+        self.set_entries(vec![entry]);
+        self.is_focused = true;
+        self.outcome = None;
+        self.action_invocation = None;
+        self.direct_argument = true;
+        self.arg_state = Some(ArgState {
+            entry_id: id,
+            prompt: spec.prompt,
+            placeholder: spec.placeholder,
             selection: crate::text_selection::Selection {
                 anchor: 0,
                 cursor: buffer.len(),
@@ -747,6 +794,21 @@ impl CommandPalette {
         id: String,
         argument: Option<String>,
     ) {
+        if let Some(entry) = self.entries.iter().find(|e| e.id == id)
+            && let Some(address) = entry.action_address.clone()
+        {
+            let mut arguments = serde_json::Map::new();
+            if let (Some(name), Some(value)) = (&entry.action_argument, argument) {
+                arguments.insert(name.clone(), serde_json::Value::String(value));
+            }
+            self.action_invocation = Some(ControlInvocation { address, arguments });
+            self.outcome = None;
+            self.arg_state = None;
+            if self.mode == PaletteMode::Commands {
+                self.is_focused = false;
+            }
+            return;
+        }
         if let Some(cb) = self
             .entries
             .iter()
@@ -1829,6 +1891,25 @@ const FILTER_STRIP_HEIGHT: f64 = 36.0;
 const FOOTER_HEIGHT: f64 = 28.0;
 
 impl Widget for CommandPalette {
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.action_invocation.take()
+    }
+
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        self.entries
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .action_address
+                    .clone()
+                    .map(|address| crate::widget::ControlBindingMetadata {
+                        control_id: entry.id.clone(),
+                        kind: crate::widget::ControlBindingKind::Action(address),
+                    })
+            })
+            .collect()
+    }
+
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
     }
@@ -2198,6 +2279,69 @@ mod tests {
         assert_eq!(p.selected_id(), Some("a"));
         p.set_cursor(1);
         assert_eq!(p.selected_id(), Some("b"));
+    }
+
+    #[test]
+    fn immediate_resource_action_enqueues_an_address_not_a_private_outcome() {
+        let spec = qos_actions::ActionSpec::operation(
+            "save",
+            "Save",
+            qos_actions::OperationKind::Effect,
+            "test.save",
+            &(),
+        )
+        .unwrap();
+        let resources = vec![
+            qos_actions::Resource::new("document:1", "document", "Document").with_action(spec),
+        ];
+        let flat = qos_actions::flatten(&resources);
+        let mut palette = CommandPalette::commands();
+        palette.set_entries(vec![CommandEntry::from_flat_action(&flat[0])]);
+        palette.open();
+        palette.activate_selected(&mut AutoCommit::new(), &automerge::ROOT);
+
+        assert!(palette.take_outcome().is_none());
+        let invocation = Widget::take_control_invocation(&mut palette).unwrap();
+        assert_eq!(invocation.address, ActionAddress::new("document:1", "save"));
+        assert!(invocation.arguments.is_empty());
+    }
+
+    #[test]
+    fn prompted_resource_action_binds_its_declared_argument() {
+        let spec = qos_actions::ActionSpec::prompted(
+            "rename",
+            "Rename",
+            "New name",
+            "name…",
+            qos_actions::ExecutionLocus::ClientLocal,
+            |name| qos_actions::EncodedAction::encode_operation("test.rename", &name).unwrap(),
+        );
+        let resources = vec![
+            qos_actions::Resource::new("document:1", "document", "Document").with_action(spec),
+        ];
+        let flat = qos_actions::flatten(&resources);
+        let entry = CommandEntry::from_flat_action(&flat[0]);
+        let mut palette = CommandPalette::commands();
+        palette.open_action_argument(entry, Some("Project Atlas".into()));
+
+        let mut handled = false;
+        dispatch_h(
+            &mut palette,
+            &key_press(Key::Named(NamedKey::Enter)),
+            Modifiers::default(),
+            &mut handled,
+        );
+        assert!(handled);
+        assert!(palette.take_outcome().is_none());
+        let invocation = Widget::take_control_invocation(&mut palette).unwrap();
+        assert_eq!(
+            invocation.address,
+            ActionAddress::new("document:1", "rename")
+        );
+        assert_eq!(invocation.arguments[PROMPTED_PARAM], "Project Atlas");
+
+        let encoded = flat[0].action.build_json(&invocation.arguments).unwrap();
+        assert_eq!(encoded.type_id, "test.rename");
     }
 
     #[test]

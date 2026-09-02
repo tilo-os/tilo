@@ -3707,22 +3707,24 @@ impl Widget for TextInput {
         } else if self.crdt_bound || self.bound_text.is_some() {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyDocumentPath(if self.on_change_path.is_empty() {
-                    "<nested-text>".to_string()
-                } else {
-                    self.on_change_path.clone()
-                }),
+                kind: ControlBindingKind::CollaborativeDocument(
+                    if self.on_change_path.is_empty() {
+                        "<nested-text>".to_string()
+                    } else {
+                        self.on_change_path.clone()
+                    },
+                ),
             }]
-        } else if self.on_change.is_some()
-            || self.local_state.is_some()
-            || self.external_buffer.is_some()
-        {
+        } else if self.on_change.is_some() {
             vec![ControlBindingMetadata {
                 control_id: control_id.to_string(),
                 kind: ControlBindingKind::LegacyCallback,
             }]
         } else {
-            Vec::new()
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
+            }]
         }
     }
 
@@ -3838,6 +3840,9 @@ impl Widget for TextInput {
         if !self.id.is_empty() {
             node = node.with_semantic_key(&self.id);
         }
+        if self.action.is_none() && self.on_change.is_none() {
+            node = node.with_action_target(self.test_id().unwrap_or("text_input"));
+        }
         if !self.secret {
             node = node.with_text_selection(
                 self.selection_anchor.unwrap_or(self.cursor_pos),
@@ -3846,6 +3851,11 @@ impl Widget for TextInput {
         }
         if !self.accessible_name.is_empty() {
             node = node.with_name(crate::i18n!(&self.accessible_name));
+        } else if !self.placeholder.is_empty() {
+            // A visible placeholder is already the app author's concise field
+            // description. Reuse it as the accessible name by default; an
+            // explicit name still wins when the prompt is merely an example.
+            node = node.with_name(crate::i18n!(&self.placeholder));
         }
         Some(node)
     }

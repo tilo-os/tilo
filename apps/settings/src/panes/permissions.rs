@@ -424,7 +424,7 @@ fn workspace_grants_intro_card() -> El {
                     None,
                 )
                 .with_size(248.0, 40.0)
-                .on_click(|| {
+                .on_effect(|| {
                     let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
                         route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
                     });

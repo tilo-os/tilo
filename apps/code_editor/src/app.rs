@@ -146,6 +146,10 @@ pub struct CodeApp {
     /// undo boundary and replays byte-identically on peers, the same path a
     /// Ctrl+K palette dispatch takes. See [`crate::actions`].
     actions: ui::ActionHost,
+    /// Command selected through an exported resource action. Resource
+    /// operations intentionally receive an immutable document snapshot; the
+    /// next sync applies the command with mutable CRDT access.
+    pending_resource_command: Option<(String, Option<String>)>,
 
     /// Adaptive open/closed state of the file-tree sidebar (the shared flap
     /// kernel). Docked-open when wide, overlay-closed when narrow.
@@ -506,6 +510,7 @@ impl CodeApp {
             panel: BottomPanel::new(),
             palette: CommandPalette::new(),
             actions: ui::ActionHost::new(),
+            pending_resource_command: None,
             flap: FlapState::open_when_docked(),
             flap_tick: Instant::now(),
             // Seed wide so the first frame of a desktop window (and `--shots`,
@@ -1038,6 +1043,16 @@ impl CodeApp {
 
     /// Refresh the command palette's entry set (files + commands).
     fn refresh_palette_entries(&mut self) {
+        let resources = actions::provide_resources(&self.code_resource_ctx(), &AutoCommit::new());
+        let mut native_rows = qos_actions::flatten(&resources)
+            .into_iter()
+            .map(|flat| {
+                (
+                    (flat.resource_id.0.clone(), flat.action.id.clone()),
+                    ui::CommandEntry::from_flat_action(&flat),
+                )
+            })
+            .collect::<HashMap<_, _>>();
         let mut entries: Vec<Entry> = Vec::new();
         // Files.
         for (id, node) in &self.session.project.nodes {
@@ -1050,18 +1065,25 @@ impl CodeApp {
                     .map_or("", |x| x.0)
                     .to_string();
                 entries.push(Entry {
-                    label: node.name.clone(),
                     detail,
                     kind: PaletteKind::File(*id),
+                    action: native_rows
+                        .remove(&(format!("code_editor.file:{id}"), "open".into()))
+                        .expect("every project file is published with an open action"),
                 });
             }
         }
         // Commands.
-        for (cmd, label) in Command::all() {
+        for (cmd, _) in Command::all() {
             entries.push(Entry {
-                label: label.to_string(),
                 detail: String::new(),
                 kind: PaletteKind::Command(cmd),
+                action: native_rows
+                    .remove(&(
+                        "code_editor.project".into(),
+                        format!("command-{}", cmd.id()),
+                    ))
+                    .expect("every editor command is a published resource action"),
             });
         }
         self.palette.set_entries(entries);
@@ -1073,12 +1095,17 @@ impl CodeApp {
     pub(crate) fn code_resource_ctx(&self) -> actions::CodeEditorResourceCtx {
         let open_files = self
             .session
-            .open
+            .project
+            .nodes
             .iter()
-            .map(|b| actions::OpenFileRef {
-                node: b.node as u64,
-                name: b.name.clone(),
-                can_save: b.path.is_some(),
+            .filter(|(_, node)| matches!(node.kind, NodeKind::File { .. }))
+            .map(|(id, node)| actions::OpenFileRef {
+                node: *id as u64,
+                name: node.name.clone(),
+                can_save: self
+                    .session
+                    .buffer_of(*id)
+                    .is_some_and(|buffer| buffer.path.is_some()),
             })
             .collect();
         actions::CodeEditorResourceCtx {
@@ -1952,13 +1979,6 @@ impl CodeApp {
             self.apply_tree_event(ev);
         }
         self.drain_tab_bar(doc);
-        if let Some(kind) = self.palette.take_chosen() {
-            match kind {
-                PaletteKind::File(id) => self.open_node(id),
-                PaletteKind::Command(cmd) => self.apply_command(cmd, doc),
-                PaletteKind::LineJump(n) => self.go_to_line(n),
-            }
-        }
         if let Some(index) = self.panel.take_activated_hit() {
             self.open_search_hit(index);
         }
@@ -3288,6 +3308,17 @@ impl Widget for CodeApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        if let Some((id, argument)) = self.pending_resource_command.take()
+            && let Some(command) = Command::from_id(&id)
+        {
+            if command == Command::GoToLine {
+                if let Some(line) = argument.and_then(|value| value.trim().parse::<usize>().ok()) {
+                    self.go_to_line(line.max(1));
+                }
+            } else {
+                self.apply_command(command, state);
+            }
+        }
         if let Some((invocation, operation)) = self.pending_resource_file.take() {
             self.notice = None;
             let result = match operation {
@@ -3770,6 +3801,26 @@ impl Widget for CodeApp {
         Some("code-editor")
     }
 
+    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.palette.take_control_invocation().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(Widget::take_control_invocation)
+        })
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = self
+            .children()
+            .into_iter()
+            .flat_map(Widget::control_action_bindings)
+            .collect::<Vec<_>>();
+        if self.palette.is_visible() {
+            bindings.extend(self.palette.control_action_bindings());
+        }
+        bindings
+    }
+
     /// Expose the panes so headless driving can address them by name. Without
     /// this the whole editor is one opaque rect and `--headless-drive` can only
     /// click at raw coordinates.
@@ -3839,6 +3890,9 @@ impl Widget for CodeApp {
                 if !self.save_buffer(doc, node as TreeId, false) {
                     return Err("file could not be saved without user input".to_string());
                 }
+            }
+            (_, crate::actions::CodeEditorOperation::Command { id, argument }) => {
+                self.pending_resource_command = Some((id, argument));
             }
             _ => return Err("operation kind does not match Code operation".to_string()),
         }
