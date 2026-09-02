@@ -70,7 +70,16 @@ pub enum ApiTesterOperation {
     },
 }
 
-pub fn send_request_operation(collection_id: Uuid, request_id: Uuid) -> ActionSpec {
+/// Build the external operation for sending one saved request.
+///
+/// # Errors
+///
+/// Returns [`ActionError`] if the operation payload cannot be encoded. Callers
+/// must then omit the action rather than publish an operation they cannot run.
+pub fn send_request_operation(
+    collection_id: Uuid,
+    request_id: Uuid,
+) -> Result<ActionSpec, ActionError> {
     ActionSpec::operation(
         "send",
         "Send request",
@@ -81,9 +90,10 @@ pub fn send_request_operation(collection_id: Uuid, request_id: Uuid) -> ActionSp
             request_id: request_id.to_string(),
         },
     )
-    .expect("ApiTesterOperation is always serializable")
-    .with_description("Queue this saved request using the active environment")
-    .execution(ExecutionMode::Background { cancellable: false })
+    .map(|spec| {
+        spec.with_description("Queue this saved request using the active environment")
+            .execution(ExecutionMode::Background { cancellable: false })
+    })
 }
 
 /// Every collaborative operation the API tester exports on its shared workspace.
@@ -561,7 +571,7 @@ fn add_collection_children(
 
         for r in &c.requests {
             let rid = r.id;
-            let child = Resource::new(
+            let mut child = Resource::new(
                 format!("api_tester.request:{rid}"),
                 "api_tester.request",
                 request_label(r),
@@ -578,8 +588,10 @@ fn add_collection_children(
                 "delete",
                 "Delete request",
                 &delete_request_action(cid, rid),
-            ))
-            .with_action(send_request_operation(cid, rid));
+            ));
+            if let Ok(send) = send_request_operation(cid, rid) {
+                child = child.with_action(send);
+            }
             node = node.with_child(child);
         }
         root = root.with_child(node);
