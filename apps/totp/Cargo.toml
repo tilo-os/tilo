@@ -20,7 +20,7 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
-ui = { path = "../../ui", features = ["portal"] }
+ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
 # The qOS resource + action model: every collaborative doc mutation (add /
 # delete / rename / recolour / reorder an account) is a replayable action, so
 # undo, cross-peer replay, and the Ctrl+K palette share one implementation.
