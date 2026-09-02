@@ -29,8 +29,8 @@ use ui::widget::{
 };
 use ui::{
     ActivityBrief, ActivityDigest, ActivityTimeline, AuthorDirectory, BandUndoRequest, ChangeRun,
-    GroupNameRequest, HistoryComparison, HistoryFacetIndex, HistorySelectionDetail, HistorySource,
-    NamedRange, NarrativeRequest, RecordStore, Theme, Widget, format_relative_time,
+    ColorCompat, GroupNameRequest, HistoryComparison, HistoryFacetIndex, HistorySelectionDetail,
+    HistorySource, NamedRange, NarrativeRequest, RecordStore, Theme, Widget, format_relative_time,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -347,6 +347,7 @@ pub struct RoomActivityPane {
     keyboard_focus: Option<ActivityFocus>,
     detail_action_rects: Vec<(DetailAction, Rect)>,
     comparison: Option<HistoryComparison>,
+    comparison_attempted: bool,
     comparison_selection: Vec<HistoryEntryId>,
     explorer_pane: ExplorerPane,
     explorer_pane_rects: Vec<(ExplorerPane, Rect)>,
@@ -443,6 +444,7 @@ impl RoomActivityPane {
             keyboard_focus: None,
             detail_action_rects: Vec::new(),
             comparison: None,
+            comparison_attempted: false,
             comparison_selection: Vec::new(),
             explorer_pane: ExplorerPane::default(),
             explorer_pane_rects: Vec::new(),
@@ -661,6 +663,7 @@ impl RoomActivityPane {
 
     fn clear_comparison(&mut self) {
         self.comparison = None;
+        self.comparison_attempted = false;
         self.comparison_selection.clear();
     }
 
@@ -1209,6 +1212,11 @@ impl RoomActivityPane {
         }
     }
 
+    fn timeline_is_visible(&self) -> bool {
+        self.view == ActivityView::Explore
+            && (self.sheet.width() >= 900.0 || self.explorer_pane == ExplorerPane::Timeline)
+    }
+
     // ---------- Paint ----------
 
     pub fn draw(
@@ -1442,8 +1450,35 @@ impl RoomActivityPane {
                 at(transform, bounds.x0 + 12.0, bounds.y0 + 88.0),
                 Some(width),
             );
-            self.draw_detail_actions(scene, transform, tr, theme, bounds, &detail);
-            self.draw_detail_comparison(scene, transform, tr, theme, bounds, width);
+            let actions_bottom =
+                self.draw_detail_actions(scene, transform, tr, theme, bounds, &detail);
+            self.draw_detail_comparison(
+                scene,
+                transform,
+                tr,
+                theme,
+                bounds,
+                width,
+                actions_bottom + 14.0,
+            );
+        } else {
+            let width = text_width(bounds.width() - 24.0);
+            tr.draw_text(
+                scene,
+                "Select an outcome or a range of actions",
+                theme.tokens.typography.scale.base,
+                theme.tokens.colors.text_primary,
+                at(transform, bounds.x0 + 12.0, bounds.y0 + 44.0),
+                Some(width),
+            );
+            tr.draw_text(
+                scene,
+                "See who was involved, affected resources, and an exact before-and-after comparison.",
+                size,
+                theme.tokens.colors.text_dim,
+                at(transform, bounds.x0 + 12.0, bounds.y0 + 88.0),
+                Some(width),
+            );
         }
     }
 
@@ -1455,9 +1490,10 @@ impl RoomActivityPane {
         theme: &Theme,
         bounds: Rect,
         detail: &HistorySelectionDetail,
-    ) {
+    ) -> f64 {
         let mut x = bounds.x0 + 12.0;
         let mut y = bounds.y0 + 170.0;
+        let compared = self.comparison_attempted;
         for action in [
             DetailAction::Open,
             DetailAction::Compare,
@@ -1475,29 +1511,55 @@ impl RoomActivityPane {
             if !enabled {
                 continue;
             }
-            if x + 60.0 > bounds.x1 - 12.0 {
+            let label = self.detail_action_label(action);
+            let button_width = f64::from(
+                (tr.measure(label, theme.tokens.typography.scale.sm, None).0 + 20.0).max(60.0),
+            );
+            if x + button_width > bounds.x1 - 12.0 {
                 x = bounds.x0 + 12.0;
                 y += 34.0;
             }
-            let rect = Rect::new(x, y, x + 60.0, y + 28.0);
+            let rect = Rect::new(x, y, x + button_width, y + 28.0);
+            let is_active = action == DetailAction::Compare && compared;
+            let shape = RoundedRect::from_rect(rect, 6.0);
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.lift(0.35),
+                if is_active {
+                    theme.tokens.colors.accent[5].with_alpha_factor(0.28)
+                } else {
+                    theme.tokens.colors.lift(0.35)
+                },
                 None,
-                &RoundedRect::from_rect(rect, 6.0),
+                &shape,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                if is_active {
+                    theme.tokens.colors.accent[4]
+                } else {
+                    theme.tokens.colors.border_standard
+                },
+                None,
+                &shape,
             );
             tr.draw_text(
                 scene,
-                self.detail_action_label(action),
+                label,
                 theme.tokens.typography.scale.sm,
-                theme.tokens.colors.text_primary,
+                if is_active {
+                    theme.tokens.colors.accent[4]
+                } else {
+                    theme.tokens.colors.text_primary
+                },
                 at(transform, rect.x0 + 8.0, rect.y0 + 7.0),
                 None,
             );
             self.detail_action_rects.push((action, rect));
-            x += 66.0;
+            x += button_width + 6.0;
         }
+        y + 28.0
     }
 
     fn draw_detail_comparison(
@@ -1508,33 +1570,156 @@ impl RoomActivityPane {
         theme: &Theme,
         bounds: Rect,
         width: f32,
+        y: f64,
     ) {
-        if self.comparison_selection != self.selected_ids() {
+        if !self.comparison_attempted {
+            return;
+        }
+        if y + 70.0 > bounds.y1 {
             return;
         }
         let Some(comparison) = &self.comparison else {
+            self.draw_unavailable_comparison(scene, transform, tr, theme, bounds, y);
             return;
         };
-        let mut lines = vec![format!(
-            "Before {} B · After {} B · {} patches",
-            comparison.before_document.len(),
-            comparison.after_document.len(),
-            comparison.patches.len()
-        )];
-        lines.extend(
-            comparison
-                .patches
-                .iter()
-                .take(4)
-                .map(|patch| format!("{:?}", patch.action)),
+        let labels = comparison_change_labels(&comparison.patches);
+        let visible = labels.len().min(4);
+        let overflow_height = if labels.len() > visible { 18.0 } else { 0.0 };
+        let card_height = 68.0 + 20.0 * visible as f64 + overflow_height;
+        let card = Rect::new(
+            bounds.x0 + 12.0,
+            y,
+            bounds.x1 - 12.0,
+            (y + card_height).min(bounds.y1 - 8.0),
+        );
+        let shape = RoundedRect::from_rect(card, 8.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.accent[5].with_alpha_factor(0.12),
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.accent[5].with_alpha_factor(0.55),
+            None,
+            &shape,
+        );
+        tr.draw_text_weighted(
+            scene,
+            "What changed",
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_primary,
+            at(transform, card.x0 + 12.0, card.y0 + 10.0),
+            None,
+            ui::text_render::TextWeight::Medium,
+        );
+        let action_word = if comparison.entries.len() == 1 {
+            "action"
+        } else {
+            "actions"
+        };
+        let change_word = if comparison.patches.len() == 1 {
+            "document change"
+        } else {
+            "document changes"
+        };
+        tr.draw_text(
+            scene,
+            &format!(
+                "{} {action_word} · {} {change_word}",
+                comparison.entries.len(),
+                comparison.patches.len()
+            ),
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_dim,
+            at(transform, card.x0 + 12.0, card.y0 + 32.0),
+            Some(width - 24.0),
+        );
+        if labels.is_empty() {
+            tr.draw_text(
+                scene,
+                "No content differences in this selection",
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_dim,
+                at(transform, card.x0 + 12.0, card.y0 + 52.0),
+                Some(width - 24.0),
+            );
+            return;
+        }
+        for (index, label) in labels.iter().take(visible).enumerate() {
+            tr.draw_text(
+                scene,
+                &format!("• {label}"),
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_primary,
+                at(
+                    transform,
+                    card.x0 + 12.0,
+                    card.y0 + 54.0 + index as f64 * 20.0,
+                ),
+                Some(width - 24.0),
+            );
+        }
+        if labels.len() > visible {
+            tr.draw_text(
+                scene,
+                &format!("+{} more", labels.len() - visible),
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_dim,
+                at(
+                    transform,
+                    card.x0 + 22.0,
+                    card.y0 + 54.0 + visible as f64 * 20.0,
+                ),
+                Some(width - 34.0),
+            );
+        }
+    }
+
+    fn draw_unavailable_comparison(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        bounds: Rect,
+        y: f64,
+    ) {
+        let card = Rect::new(bounds.x0 + 12.0, y, bounds.x1 - 12.0, y + 92.0);
+        let shape = RoundedRect::from_rect(card, 8.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.lift(0.35),
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &shape,
+        );
+        tr.draw_text_weighted(
+            scene,
+            "Preview unavailable",
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_primary,
+            at(transform, card.x0 + 12.0, card.y0 + 10.0),
+            None,
+            ui::text_render::TextWeight::Medium,
         );
         tr.draw_text(
             scene,
-            &lines.join("\n"),
+            "This action has provenance, but no materialized before-and-after snapshot.",
             theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_dim,
-            at(transform, bounds.x0 + 12.0, bounds.y0 + 246.0),
-            Some(width),
+            at(transform, card.x0 + 12.0, card.y0 + 36.0),
+            Some(text_width(card.width() - 24.0)),
         );
     }
 
@@ -1692,7 +1877,18 @@ impl RoomActivityPane {
             let expanded = self.expanded_brief == Some(index);
             // Outcome, who/when, and affected context must all be scannable
             // without opening the card.
-            let height = if expanded { 150.0 } else { 88.0 };
+            let title_lines = tr.clamp_to_lines(
+                &brief.title,
+                theme.tokens.typography.scale.base,
+                text_width(x1 - x0 - 24.0),
+                2,
+            );
+            let title_extra = 18.0 * title_lines.len().saturating_sub(1) as f64;
+            let height = if expanded {
+                112.0 + 18.0 * brief.actions.len() as f64
+            } else {
+                88.0
+            } + title_extra;
             let more_room = 34.0;
             let has_later = index
                 .checked_add(1)
@@ -1842,13 +2038,14 @@ impl RoomActivityPane {
             .or_else(|| self.digest.headline())
         {
             let latest = format!("Latest \u{00b7} {headline}");
+            let latest = tr.elide_to_width(&latest, sub_size, wrap_width);
             tr.draw_text(
                 scene,
                 &latest,
                 sub_size,
                 colors.text_primary,
                 at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 51.0),
-                Some(wrap_width),
+                None,
             );
         }
     }
@@ -2116,8 +2313,14 @@ impl RoomActivityPane {
                     .and_then(|detail| detail.resources.into_iter().next());
             }
             DetailAction::Compare => {
+                self.comparison_attempted = true;
                 self.comparison = self.compare_selection(tree, records);
                 self.comparison_selection = self.selected_ids();
+                // Reading an `AutoCommit` comparison closes any pending
+                // transaction. That changes the observed heads without
+                // changing content; keep refresh from treating the next
+                // paint as an external edit and discarding the result.
+                self.last_heads = tree.doc.get_heads();
                 outcome.compared = self.comparison.is_some();
             }
             DetailAction::Undo => {
@@ -2152,7 +2355,7 @@ impl RoomActivityPane {
         tree: &mut WorkspaceTree,
         records: Option<&RecordStore>,
     ) -> Option<RoomActivityOutcome> {
-        if self.timeline.wants_keyboard() {
+        if self.timeline_is_visible() && self.timeline.wants_keyboard() {
             return None;
         }
         let WindowEvent::KeyboardInput {
@@ -2200,6 +2403,10 @@ impl RoomActivityPane {
             && let Some(outcome) = self.handle_pointer_click(point, tree, records)
         {
             return outcome;
+        }
+
+        if !self.timeline_is_visible() {
+            return out;
         }
 
         let mut handled = false;
@@ -2421,8 +2628,10 @@ impl RoomActivityPane {
                     .and_then(|detail| detail.resources.into_iter().next());
             }
             ActivityFocus::Detail(DetailAction::Compare) => {
+                self.comparison_attempted = true;
                 self.comparison = self.compare_selection(tree, records);
                 self.comparison_selection = self.selected_ids();
+                self.last_heads = tree.doc.get_heads();
                 outcome.compared = self.comparison.is_some();
             }
             ActivityFocus::Detail(DetailAction::Undo) => {
@@ -2660,16 +2869,18 @@ impl RoomActivityPane {
             .enumerate()
             .filter_map(|(index, focus)| self.accessibility_control_node(focus, index, set_size))
             .collect();
-        let mut history = AccessNode::new(Role::List).with_name("History entries");
-        history.children = (0..self.timeline.visible_len().min(100))
-            .filter_map(|index| self.timeline.visible_entry(index))
-            .map(|entry| {
-                AccessNode::new(Role::ListItem)
-                    .with_name(entry.summary.clone())
-                    .with_description(format!("By {}", entry.author.name))
-            })
-            .collect();
-        root.children.push(history);
+        if self.timeline_is_visible() {
+            let mut history = AccessNode::new(Role::List).with_name("History entries");
+            history.children = (0..self.timeline.visible_len().min(100))
+                .filter_map(|index| self.timeline.visible_entry(index))
+                .map(|entry| {
+                    AccessNode::new(Role::ListItem)
+                        .with_name(entry.summary.clone())
+                        .with_description(format!("By {}", entry.author.name))
+                })
+                .collect();
+            root.children.push(history);
+        }
         if let Some(detail) = self.selection_detail() {
             root.children.push(
                 AccessNode::new(Role::Group)
@@ -2984,6 +3195,66 @@ fn detail_provenance(detail: &HistorySelectionDetail) -> String {
     )
 }
 
+/// Turn Automerge's structural patch vocabulary into a small, stable set of
+/// phrases suitable for the human-facing comparison preview. Resource-native
+/// renderers can still use the complete before/after documents when opened.
+fn comparison_change_labels(patches: &[automerge::Patch]) -> Vec<String> {
+    let mut labels = Vec::new();
+    for patch in patches {
+        let label = match &patch.action {
+            automerge::PatchAction::PutMap { key, conflict, .. } => {
+                if *conflict {
+                    format!("Resolved concurrent changes to {}", humanize_field(key))
+                } else {
+                    format!("Updated {}", humanize_field(key))
+                }
+            }
+            automerge::PatchAction::DeleteMap { key } => {
+                format!("Removed {}", humanize_field(key))
+            }
+            automerge::PatchAction::PutSeq { conflict, .. } => {
+                if *conflict {
+                    "Resolved concurrent list changes".to_string()
+                } else {
+                    "Updated a list item".to_string()
+                }
+            }
+            automerge::PatchAction::Insert { values, .. } => plural(values.len(), "item", "Added"),
+            automerge::PatchAction::SpliceText { .. } => "Edited text".to_string(),
+            automerge::PatchAction::Increment { prop, value } => {
+                let field = match prop {
+                    Prop::Map(key) => humanize_field(key),
+                    Prop::Seq(_) => "a counter".to_string(),
+                };
+                if *value < 0 {
+                    format!("Decreased {field}")
+                } else {
+                    format!("Increased {field}")
+                }
+            }
+            automerge::PatchAction::Conflict { prop } => match prop {
+                Prop::Map(key) => format!("Concurrent changes to {}", humanize_field(key)),
+                Prop::Seq(_) => "Concurrent list changes".to_string(),
+            },
+            automerge::PatchAction::DeleteSeq { length, .. } => plural(*length, "item", "Removed"),
+            automerge::PatchAction::Mark { .. } => "Changed text formatting".to_string(),
+        };
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    labels
+}
+
+fn humanize_field(field: &str) -> String {
+    let words = field.replace('_', " ").replace('-', " ");
+    if words.trim().is_empty() {
+        "content".to_string()
+    } else {
+        words
+    }
+}
+
 fn draw_brief_card(
     scene: &mut Scene,
     transform: Affine,
@@ -3002,26 +3273,36 @@ fn draw_brief_card(
         &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
     );
     let width = text_width(rect.width() - 24.0);
-    tr.draw_text_weighted(
-        scene,
-        &brief.title,
-        theme.tokens.typography.scale.base,
-        theme.tokens.colors.text_primary,
-        at(transform, rect.x0 + 12.0, rect.y0 + 10.0),
-        Some(width),
-        ui::text_render::TextWeight::Medium,
+    let title_lines = tr.clamp_to_lines(&brief.title, theme.tokens.typography.scale.base, width, 2);
+    for (index, title) in title_lines.iter().enumerate() {
+        tr.draw_text_weighted(
+            scene,
+            title,
+            theme.tokens.typography.scale.base,
+            theme.tokens.colors.text_primary,
+            at(
+                transform,
+                rect.x0 + 12.0,
+                rect.y0 + 10.0 + index as f64 * 18.0,
+            ),
+            None,
+            ui::text_render::TextWeight::Medium,
+        );
+    }
+    let title_extra = 18.0 * title_lines.len().saturating_sub(1) as f64;
+    let byline = format!(
+        "{} \u{00b7} {}",
+        brief.detail,
+        format_relative_time(brief.last_at, now)
     );
+    let byline = tr.elide_to_width(&byline, theme.tokens.typography.scale.sm, width);
     tr.draw_text(
         scene,
-        &format!(
-            "{} \u{00b7} {}",
-            brief.detail,
-            format_relative_time(brief.last_at, now)
-        ),
+        &byline,
         theme.tokens.typography.scale.sm,
         theme.tokens.colors.text_dim,
-        at(transform, rect.x0 + 12.0, rect.y0 + 34.0),
-        Some(width),
+        at(transform, rect.x0 + 12.0, rect.y0 + 34.0 + title_extra),
+        None,
     );
     let mut provenance = brief.apps.join(", ");
     if !brief.resources.is_empty() {
@@ -3037,41 +3318,38 @@ fn draw_brief_card(
             format!("{} underlying actions", brief.changes)
         };
     }
+    let provenance = tr.elide_to_width(&provenance, theme.tokens.typography.scale.sm, width);
     tr.draw_text(
         scene,
         &provenance,
         theme.tokens.typography.scale.sm,
         theme.tokens.colors.text_dim,
-        at(transform, rect.x0 + 12.0, rect.y0 + 56.0),
-        Some(width),
+        at(transform, rect.x0 + 12.0, rect.y0 + 56.0 + title_extra),
+        None,
     );
     if expanded {
-        let mut action_y = rect.y0 + 78.0;
-        for action in brief.actions.iter().take(2) {
+        let mut action_y = rect.y0 + 78.0 + title_extra;
+        for action in &brief.actions {
+            let action_line = format!(
+                "{} · {} · {}",
+                action.author.name,
+                action.summary,
+                format_relative_time(action.timestamp, now)
+            );
+            let action_line = tr.elide_to_width(
+                &action_line,
+                theme.tokens.typography.scale.sm,
+                text_width(rect.width() - 32.0),
+            );
             tr.draw_text(
                 scene,
-                &format!(
-                    "{} · {} · {}",
-                    action.author.name,
-                    action.summary,
-                    format_relative_time(action.timestamp, now)
-                ),
+                &action_line,
                 theme.tokens.typography.scale.sm,
                 theme.tokens.colors.text_primary,
                 at(transform, rect.x0 + 20.0, action_y),
-                Some(text_width(rect.width() - 32.0)),
+                None,
             );
             action_y += 18.0;
-        }
-        if brief.actions.len() > 2 {
-            tr.draw_text(
-                scene,
-                &format!("+{} more actions", brief.actions.len().saturating_sub(2)),
-                theme.tokens.typography.scale.sm,
-                theme.tokens.colors.text_dim,
-                at(transform, rect.x0 + 20.0, action_y),
-                Some(text_width(rect.width() - 32.0)),
-            );
         }
     }
     let affordance = if expanded {
@@ -3092,9 +3370,9 @@ fn draw_brief_card(
             transform,
             rect.x0 + 12.0,
             if expanded {
-                rect.y0 + 128.0
+                rect.y0 + 84.0 + 18.0 * brief.actions.len() as f64 + title_extra
             } else {
-                rect.y0 + 72.0
+                rect.y0 + 72.0 + title_extra
             },
         ),
         Some(width),
@@ -5114,6 +5392,14 @@ mod tests {
                 .take(pane.focus_order().len())
                 .all(|node| node.state.focusable)
         );
+        assert!(
+            !snapshot.children.iter().any(|node| {
+                node.role == ui::a11y::Role::List && node.name.as_deref() == Some("History entries")
+            }),
+            "the hidden Explorer timeline is not exposed from Catch up"
+        );
+        pane.set_view(ActivityView::Explore);
+        let snapshot = pane.accessibility_snapshot();
         assert!(snapshot.children.iter().any(|node| {
             node.role == ui::a11y::Role::List && node.name.as_deref() == Some("History entries")
         }));
