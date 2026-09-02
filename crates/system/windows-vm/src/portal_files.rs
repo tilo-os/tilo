@@ -539,7 +539,13 @@ mod tests {
         let lease = broker.materialize(&request(grant)).unwrap();
         assert!(lease.shares[0].read_only);
         let document = lease.shares[0].host_path.join("document");
-        assert!(OpenOptions::new().write(true).open(&document).is_err());
+        let mode = fs::metadata(&document).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o400);
+        assert_eq!(
+            mode & 0o222,
+            0,
+            "read-only projections must have no write bits"
+        );
         broker.revoke(&lease.lease_id);
     }
 
