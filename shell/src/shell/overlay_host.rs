@@ -14546,6 +14546,9 @@ mod tests {
     fn pointer_over_the_sheet_reaches_the_timeline() {
         let mut h = build_harness();
         h.chrome.borrow_mut().overlays.room_activity = true;
+        h.host
+            .room_activity_mut()
+            .set_view(crate::shell::room_activity::ActivityView::Explore);
         h.host.force_room_activity_settled();
         paint(&mut h);
 
@@ -14827,6 +14830,9 @@ mod tests {
     fn typing_filters_by_contributor_without_stealing_escape() {
         let mut h = build_harness();
         h.chrome.borrow_mut().overlays.room_activity = true;
+        h.host
+            .room_activity_mut()
+            .set_view(crate::shell::room_activity::ActivityView::Explore);
         h.host.force_room_activity_settled();
         paint(&mut h);
         assert!(h.host.room_activity().visible_len() > 0);
