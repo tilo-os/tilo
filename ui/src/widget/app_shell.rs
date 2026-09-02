@@ -1176,6 +1176,28 @@ mod tests {
         assert_eq!(screen.with(Clone::clone), NarrowScreen::List);
     }
 
+    #[test]
+    fn headless_cold_compact_shell_is_structurally_settled() {
+        let app = shell().with_id("cold-shell");
+        let mut driver =
+            crate::headless::Driver::new(crate::State::new(), Box::new(app), (460, 820));
+
+        driver
+            .expect(
+                &crate::headless::SemanticExpectation::named("cold-shell-back")
+                    .role(crate::a11y::Role::Button)
+                    .name("Back"),
+            )
+            .expect("the first observable compact frame includes retained Back");
+        assert!(
+            driver
+                .focus_access_nodes()
+                .iter()
+                .any(|node| node.name.as_deref() == Some("Back")),
+            "the settled Back control is in keyboard focus order"
+        );
+    }
+
     /// Narrow: the back arrow is the way from the content screen back to the
     /// list, preserving the selection.
     #[test]
