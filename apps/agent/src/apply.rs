@@ -509,6 +509,11 @@ impl Editor {
     /// Typed counterpart to [`invoke`](Self::invoke). This is the canonical
     /// headless path: the descriptor's complete parameter schema is bound by
     /// the shared door before an app action is decoded or mutates state.
+    ///
+    /// # Errors
+    ///
+    /// Returns any [`DoorError`] produced while resolving, binding, decoding,
+    /// or invoking the live operation.
     pub fn invoke_json(
         &mut self,
         view: &View,
@@ -525,7 +530,7 @@ impl Editor {
             &resources,
             address,
             arguments,
-            &self.actor.to_bytes(),
+            self.actor.to_bytes(),
             registry,
             &mut transport,
         )?;
@@ -538,6 +543,11 @@ impl Editor {
     /// descriptor's confirmation policy. Keeping this separate from
     /// [`invoke_json`](Self::invoke_json) makes an unconfirmed call fail closed
     /// in the shared door even if a caller forgets its own policy check.
+    ///
+    /// # Errors
+    ///
+    /// Returns any [`DoorError`] produced while resolving, binding, decoding,
+    /// or invoking the live confirmed operation.
     pub fn invoke_json_confirmed(
         &mut self,
         view: &View,
@@ -554,7 +564,7 @@ impl Editor {
             &resources,
             address,
             arguments,
-            &self.actor.to_bytes(),
+            self.actor.to_bytes(),
             registry,
             &mut transport,
         )?;

@@ -4897,7 +4897,11 @@ impl Widget for FileExplorerWidget {
 
     #[allow(
         clippy::expect_used,
-        reason = "JSON serialization of an owned String is infallible"
+        reason = "JSON serialization of owned strings and static command payloads is infallible"
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the resource catalogue mirrors the folder/entry protocol in one auditable tree; splitting it would separate action contracts from their resources"
     )]
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
         let mut folder = Resource::new(
@@ -4994,29 +4998,17 @@ impl Widget for FileExplorerWidget {
             ..ActionContract::default()
         });
         folder.actions.push(new_folder);
-        for (id, label, type_id, available) in
-            [("paste", "Paste", "files.paste", !self.clipboard.is_empty())]
-        {
-            let spec = ActionSpec::operation(id, label, OperationKind::Effect, type_id, &"")
+        let paste =
+            ActionSpec::operation("paste", "Paste", OperationKind::Effect, "files.paste", &"")
                 .expect("file operation payload is serializable")
                 .with_contract(ActionContract {
-                    availability: if available {
-                        Availability::Available
-                    } else {
+                    availability: if self.clipboard.is_empty() {
                         Availability::Unavailable {
-                            code: if id == "paste" {
-                                "clipboard_empty"
-                            } else {
-                                "location_unavailable"
-                            }
-                            .into(),
-                            reason: if id == "paste" {
-                                "Copy or cut files before pasting"
-                            } else {
-                                "The current location cannot contain a new folder"
-                            }
-                            .into(),
+                            code: "clipboard_empty".into(),
+                            reason: "Copy or cut files before pasting".into(),
                         }
+                    } else {
+                        Availability::Available
                     },
                     permission: PermissionRequirement::Write,
                     risk: RiskLevel::Low,
@@ -5025,8 +5017,7 @@ impl Widget for FileExplorerWidget {
                     reversible: false,
                     ..ActionContract::default()
                 });
-            folder.actions.push(spec);
-        }
+        folder.actions.push(paste);
         for entry in &self.entries {
             let path = entry.path.to_string_lossy().into_owned();
             let mut resource =
@@ -5082,6 +5073,10 @@ impl Widget for FileExplorerWidget {
         vec![folder]
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "this is the single protocol dispatcher for the declared local file operations; keeping the match together makes handler coverage auditable"
+    )]
     fn invoke_resource_operation(
         &mut self,
         kind: OperationKind,
@@ -5123,7 +5118,7 @@ impl Widget for FileExplorerWidget {
                     return Err(format!("paste failed: {}", failures.join("; ")));
                 }
             }
-            (OperationKind::View, "files.navigate") | (OperationKind::View, "files.open") => {
+            (OperationKind::View, "files.navigate" | "files.open") => {
                 let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 self.open_path(PathBuf::from(value));
             }
