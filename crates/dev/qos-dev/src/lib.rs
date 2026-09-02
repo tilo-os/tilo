@@ -3912,14 +3912,29 @@ impl DoctorReport {
 ///
 /// Returns an error when the selected app directory cannot be resolved.
 pub fn doctor_app(start: &Path) -> Result<DoctorReport> {
+    doctor_app_with_capnp_probe(start, probe_capnp_compiler)
+}
+
+fn doctor_app_with_capnp_probe(
+    start: &Path,
+    probe_capnp: impl FnOnce() -> std::result::Result<String, String>,
+) -> Result<DoctorReport> {
     let app_dir = resolve_app_dir(start)?;
-    Ok(doctor_resolved_app(app_dir))
+    Ok(doctor_resolved_app_with_capnp_probe(app_dir, probe_capnp))
 }
 
 fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
+    doctor_resolved_app_with_capnp_probe(app_dir, probe_capnp_compiler)
+}
+
+fn doctor_resolved_app_with_capnp_probe(
+    app_dir: PathBuf,
+    probe_capnp: impl FnOnce() -> std::result::Result<String, String>,
+) -> DoctorReport {
     let mut checks = Vec::new();
     let package_name = check_cargo_manifest(&app_dir, &mut checks);
     let package_id = check_package_manifest(&app_dir, &mut checks);
+    check_capnp_compiler(&mut checks, probe_capnp);
 
     check_source_file(
         &app_dir,
@@ -3949,6 +3964,51 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
     }
 
     DoctorReport { app_dir, checks }
+}
+
+fn probe_capnp_compiler() -> std::result::Result<String, String> {
+    let output = ProcessCommand::new("capnp")
+        .arg("--version")
+        .output()
+        .map_err(|error| format!("could not run `capnp --version`: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let error_detail = if stderr.trim().is_empty() {
+            String::new()
+        } else {
+            format!(": {}", stderr.trim())
+        };
+        return Err(format!(
+            "`capnp --version` exited with {}{}",
+            output.status, error_detail
+        ));
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Ok(if version.is_empty() {
+        "`capnp --version` succeeded".to_owned()
+    } else {
+        version
+    })
+}
+
+fn check_capnp_compiler(
+    checks: &mut Vec<DoctorCheck>,
+    probe_capnp: impl FnOnce() -> std::result::Result<String, String>,
+) {
+    let (status, detail) = match probe_capnp() {
+        Ok(version) => (DoctorStatus::Pass, version),
+        Err(error) => (
+            DoctorStatus::Fail,
+            format!(
+                "{error}; install the Cap'n Proto compiler (`capnp`) or run qos-dev inside the qOS development container"
+            ),
+        ),
+    };
+    checks.push(DoctorCheck {
+        status,
+        label: "Cap'n Proto compiler",
+        detail,
+    });
 }
 
 fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
@@ -7593,6 +7653,10 @@ fn app_readme(spec: &AppSpec) -> String {
 mod tests {
     use super::*;
 
+    fn doctor_app(start: &Path) -> Result<DoctorReport> {
+        doctor_app_with_capnp_probe(start, || Ok("Cap'n Proto version 1.0.2".to_owned()))
+    }
+
     fn request(dir: PathBuf) -> NewAppRequest {
         NewAppRequest {
             name: Some("reading-list".into()),
@@ -10232,6 +10296,28 @@ mod tests {
         let summary = report.summary();
         assert!(summary.contains("missing dependency `ui`"));
         assert!(summary.contains("Not ready"));
+    }
+
+    #[test]
+    fn doctor_fails_early_with_actionable_missing_capnp_diagnostic() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("reading-list");
+        create_app(request(destination.clone())).unwrap();
+
+        let report = doctor_app_with_capnp_probe(&destination, || {
+            Err("could not run `capnp --version`: executable not found".to_owned())
+        })
+        .expect("doctor report");
+
+        assert!(!report.is_ready());
+        let check = report
+            .checks
+            .iter()
+            .find(|check| check.label == "Cap'n Proto compiler")
+            .expect("native compiler check");
+        assert_eq!(check.status, DoctorStatus::Fail);
+        assert!(check.detail.contains("install the Cap'n Proto compiler"));
+        assert!(check.detail.contains("qOS development container"));
     }
 
     #[test]
