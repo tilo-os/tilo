@@ -931,8 +931,8 @@ pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
     root
 }
 
-/// Lets the caller flip the peer-sync palette commands on (`/invite`,
-/// `/connect`), mirroring `--enable-peer-sync`. [`build_nirios_root`] keeps
+/// Lets the caller expose the peer-sync palette commands (`/invite`,
+/// `/connect`) for a network-enabled session. [`build_nirios_root`] keeps
 /// the zero-arg shape so call-sites that don't care don't have to thread it.
 pub fn build_nirios_root_with_options(
     tree: &WorkspaceTree,
