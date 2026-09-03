@@ -8,6 +8,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 backend="$repo_root/os/usr/libexec/qos-install"
 encryptor="$repo_root/os/usr/libexec/qos-disk-encrypt"
 containerfile="$repo_root/os/Containerfile.installer"
+production_containerfile="$repo_root/os/Containerfile"
 builder="$repo_root/os/dev/build-custom-installer.sh"
 firstboot_user="$repo_root/os/usr/libexec/qos-firstboot-user"
 profile_extractor="$repo_root/os/usr/libexec/qos-installer-profile-extract"
@@ -199,6 +200,27 @@ if grep -Fq -- '--passphrase) force_passphrase=1' "$disk_encrypt" \
   ok "TPM short-PIN enrollment requires a verified-boot decision"
 else
   bad "disk helper can create a misleading TPM slot while boot is unverified"
+fi
+
+# Generation-bound TPM enrollment cannot be enabled as a one-line replacement
+# for systemd-cryptenroll. The installer changes measured UKI bytes after the
+# release image is built; the release carries no matching signed prediction, and
+# there is not yet an early-boot consumer for a qos-rollback token. Until all
+# three prerequisites arrive together, retain the honest PCR-7 token plus the
+# independent recovery/FIDO paths and reject any partial enrollment wiring.
+rollback_enrollment_calls="$(
+  grep -hE 'qos-rollback[[:space:]]+enroll' "$backend" "$encryptor" 2>/dev/null \
+    | grep -vE '^[[:space:]]*#' || true
+)"
+if [ -z "$rollback_enrollment_calls" ] \
+   && grep -Fq 'install -d -m 0755 /usr/share/qos/pcr-predictions' "$production_containerfile" \
+   && grep -Fq 'the directory ships empty' "$production_containerfile" \
+   && grep -Fq -- '--tpm2-pcrs=7 --tpm2-with-pin=yes' "$encryptor" \
+   && grep -Fq -- '--recovery-key "$dev"' "$encryptor" \
+   && grep -Fq -- '--fido2-device=auto "$dev"' "$encryptor"; then
+  ok "PCR11 rollback enrollment stays fail-closed until target predictions and initramfs unlock exist"
+else
+  bad "installer partially enables generation enrollment without its target prediction/unlock prerequisites"
 fi
 
 if grep -Fq 'CONF_TMP="$(mktemp ' "$backend" \
