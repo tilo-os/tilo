@@ -6,8 +6,6 @@ Wants=network-online.target
 Before=qos-relay.service qos-fs-replica.service
 # Runs until both the signed device certificate and home-peer bundle
 # are durable, then becomes an immediate no-op on later service starts.
-ConditionPathExists=/etc/qos/enrollment-token.txt
-
 [Service]
 Type=oneshot
 RemainAfterExit=yes
