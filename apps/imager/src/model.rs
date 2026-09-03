@@ -52,6 +52,48 @@ pub struct Source {
     /// Whether this source can drive a full qOS install (vs. raw ISO write
     /// only).
     pub installable: bool,
+    /// Stable identity of the file selected and reviewed by the user. The
+    /// privileged writer rejects a path which now resolves to another file.
+    #[serde(default)]
+    pub identity: Option<SourceIdentity>,
+    /// Digest bound into a signed release catalog. Local arbitrary images do
+    /// not have an external trust anchor, so they rely on identity + exact size.
+    #[serde(default)]
+    pub expected_sha256: Option<String>,
+}
+
+/// Platform file identity, portable across the helper request boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceIdentity {
+    pub volume: u64,
+    pub file: u64,
+}
+
+impl SourceIdentity {
+    /// Capture the strongest stable identity exposed by the current host.
+    pub fn from_metadata(metadata: &std::fs::Metadata) -> Option<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Some(Self {
+                volume: metadata.dev(),
+                file: metadata.ino(),
+            })
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::fs::MetadataExt;
+            Some(Self {
+                volume: u64::from(metadata.volume_serial_number()?),
+                file: metadata.file_index()?,
+            })
+        }
+        #[cfg(not(any(unix, target_os = "windows")))]
+        {
+            let _ = metadata;
+            None
+        }
+    }
 }
 
 impl Source {
@@ -104,6 +146,8 @@ impl QosRelease {
             size: self.size,
             label: format!("qOS {} ({})", self.version, self.channel),
             installable: true,
+            identity: None,
+            expected_sha256: (!self.image_sha256.is_empty()).then(|| self.image_sha256.clone()),
         }
     }
 }
@@ -972,6 +1016,8 @@ pub fn sample_source() -> Source {
             size: 0,
             label: String::new(),
             installable: false,
+            identity: None,
+            expected_sha256: None,
         },
         QosRelease::to_source,
     )
@@ -988,6 +1034,8 @@ pub fn sample_recent_sources() -> Vec<Source> {
             size: 2_113_929_216,
             label: "Fedora-WS-Live-42-1-1".into(),
             installable: false,
+            identity: None,
+            expected_sha256: None,
         },
         Source {
             kind: SourceKind::IsoFile,
@@ -996,6 +1044,8 @@ pub fn sample_recent_sources() -> Vec<Source> {
             size: 1_181_116_006,
             label: "ARCH_202606".into(),
             installable: false,
+            identity: None,
+            expected_sha256: None,
         },
     ]
 }
