@@ -684,6 +684,52 @@ pub enum ShortcutAction {
     WorkspaceOverview,
     Lock,
     QuickSettings,
+    ShortcutHelp,
+    FocusPreviousWindow,
+    FocusNextWindow,
+    PreviousTab,
+    NextTab,
+    PreviousStrip,
+    NextStrip,
+    PreviousWorkspace,
+    NextWorkspace,
+    MoveGroupLeft,
+    MoveGroupRight,
+    ResizeNarrower,
+    ResizeWider,
+}
+
+/// Desktop-navigation preferences consumed directly by the shell.
+///
+/// This is deliberately separate from editable one-shot chords: Vim mode is
+/// a complete navigation layer whose keys must stay internally consistent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DesktopControlsConfig {
+    /// Add Super+Ctrl+h/j/k/l and Super+Ctrl+Shift+h/l aliases for window,
+    /// strip and reorder navigation. The ordinary arrow bindings remain
+    /// available.
+    pub vim_mode: bool,
+}
+
+impl DesktopControlsConfig {
+    pub fn load() -> Self {
+        serde_json::from_value(serde_json::Value::Object(super::load_section(
+            "desktop_controls",
+        )))
+        .unwrap_or_default()
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the setting cannot be serialized or persisted.
+    pub fn save(&self) -> std::io::Result<()> {
+        let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
+        super::update_section(
+            "desktop_controls",
+            value.as_object().cloned().unwrap_or_default(),
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -731,10 +777,23 @@ impl KeyChord {
     }
 
     pub fn display(&self) -> String {
-        self.modifiers
-            .iter()
-            .cloned()
-            .chain(std::iter::once(self.key.clone()))
+        let key = match self.key.as_str() {
+            "left" => "Left",
+            "right" => "Right",
+            "up" => "Up",
+            "down" => "Down",
+            "tab" => "Tab",
+            "enter" => "Enter",
+            "escape" => "Escape",
+            "space" => "Space",
+            "f1" => "F1",
+            other => other,
+        };
+        ["Super", "Ctrl", "Alt", "Shift"]
+            .into_iter()
+            .filter(|modifier| self.modifiers.contains(*modifier))
+            .map(str::to_string)
+            .chain(std::iter::once(key.to_string()))
             .collect::<Vec<_>>()
             .join("+")
     }
@@ -756,11 +815,30 @@ impl Default for ShortcutConfig {
                 key: key.to_string(),
             }
         }
+        fn super_shift_chord(key: &str) -> KeyChord {
+            KeyChord {
+                modifiers: BTreeSet::from(["Shift".to_string(), "Super".to_string()]),
+                key: key.to_string(),
+            }
+        }
         let bindings = [
             (ShortcutAction::Search, super_chord("k")),
             (ShortcutAction::WorkspaceOverview, super_chord("tab")),
             (ShortcutAction::Lock, super_chord("l")),
             (ShortcutAction::QuickSettings, super_chord("q")),
+            (ShortcutAction::ShortcutHelp, super_chord("/")),
+            (ShortcutAction::FocusPreviousWindow, super_chord("left")),
+            (ShortcutAction::FocusNextWindow, super_chord("right")),
+            (ShortcutAction::PreviousTab, super_chord("[")),
+            (ShortcutAction::NextTab, super_chord("]")),
+            (ShortcutAction::PreviousStrip, super_shift_chord("up")),
+            (ShortcutAction::NextStrip, super_shift_chord("down")),
+            (ShortcutAction::PreviousWorkspace, super_chord("up")),
+            (ShortcutAction::NextWorkspace, super_chord("down")),
+            (ShortcutAction::MoveGroupLeft, super_shift_chord("left")),
+            (ShortcutAction::MoveGroupRight, super_shift_chord("right")),
+            (ShortcutAction::ResizeNarrower, super_chord("-")),
+            (ShortcutAction::ResizeWider, super_chord("=")),
         ]
         .into_iter()
         .collect();
@@ -785,8 +863,16 @@ impl ShortcutConfig {
         Ok(())
     }
     pub fn load() -> Self {
-        serde_json::from_value(serde_json::Value::Object(super::load_section("shortcuts")))
-            .unwrap_or_default()
+        let mut loaded: Self =
+            serde_json::from_value(serde_json::Value::Object(super::load_section("shortcuts")))
+                .unwrap_or_default();
+        // Settings written by an older release contain a valid but partial
+        // map. Merge newly introduced actions without overwriting any chord
+        // the user already chose.
+        for (action, chord) in Self::default().bindings {
+            loaded.bindings.entry(action).or_insert(chord);
+        }
+        loaded
     }
     /// # Errors
     ///
@@ -935,6 +1021,18 @@ mod tests {
             Err(ShortcutAction::Search)
         );
         assert_eq!(cfg.bindings[&ShortcutAction::Lock], old);
+    }
+
+    #[test]
+    fn desktop_navigation_defaults_are_complete_and_conflict_free() {
+        let cfg = ShortcutConfig::default();
+        assert_eq!(cfg.bindings.len(), 17);
+        let unique: BTreeSet<_> = cfg.bindings.values().collect();
+        assert_eq!(unique.len(), cfg.bindings.len());
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::FocusPreviousWindow].display(),
+            "Super+Left"
+        );
     }
 
     #[test]
