@@ -1597,6 +1597,79 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn host_address_refresh_reconnects_and_removal_stops_retrying() {
+        use rand_core::OsRng;
+        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
+        let a_public = a_key.verifying_key().to_bytes();
+        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+        let (relay, _state) =
+            spawn_pinned_relay_for_two_members(&root, a_public, b_key.verifying_key().to_bytes())
+                .await;
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let identity = |key, cert| HostIdentity {
+            device_cert: cert,
+            device_signing_key: key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let (cmd_a, mut rx_a, _cmd_b, _rx_b) = join_workspace_and_await_host_ready(
+            a,
+            lookup_a,
+            identity(a_key, a_cert),
+            b,
+            lookup_b,
+            identity(b_key, b_cert),
+            &relay,
+        )
+        .await;
+
+        // Same certified node, refreshed dialing hints. There is no periodic
+        // HostReady at this test's timescale, so the next event proves the old
+        // session was replaced and the refreshed address was dialled.
+        let refreshed = relay
+            .node_addr()
+            .with_ip_addr("127.0.0.1:9".parse().unwrap());
+        cmd_a
+            .send(NetCmd::ConnectHost {
+                addr: refreshed,
+                expectation: None,
+            })
+            .await
+            .unwrap();
+        loop {
+            let event = timeout(Duration::from_secs(15), rx_a.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(event, NetEvent::HostReady { .. }) {
+                break;
+            }
+        }
+
+        cmd_a
+            .send(NetCmd::DisconnectHost {
+                id: relay.node_addr().id,
+            })
+            .await
+            .unwrap();
+        for _ in 0..100 {
+            if !relay.is_subscribed(42, &a_public).await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!relay.is_subscribed(42, &a_public).await);
+        tokio::time::sleep(HEARTBEAT_INTERVAL + Duration::from_millis(250)).await;
+        assert!(
+            !relay.is_subscribed(42, &a_public).await,
+            "a removed host must not be redialled by the heartbeat retry loop"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn host_replays_the_latest_personal_continuity_checkpoint_after_close() {
         use rand_core::OsRng;
         let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
