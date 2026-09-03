@@ -1036,6 +1036,12 @@ COPY os/etc/containers/registries.d/code.sandbox.example.yaml /etc/containers/re
 COPY os/usr/lib/systemd/system/shell-firstboot.service /usr/lib/systemd/system/shell-firstboot.service
 COPY os/usr/lib/systemd/system/qos-power.service /usr/lib/systemd/system/qos-power.service
 
+# Grow the real filesystem at /sysroot. The stock systemd-growfs-root.service
+# targets `/`, which is a composefs overlay here and cannot be grown; the
+# drop-in stands it down on this layout so the two never both apply.
+COPY os/usr/lib/systemd/system/qos-growfs-sysroot.service /usr/lib/systemd/system/qos-growfs-sysroot.service
+COPY os/usr/lib/systemd/system/systemd-growfs-root.service.d/10-qos-composefs.conf /usr/lib/systemd/system/systemd-growfs-root.service.d/10-qos-composefs.conf
+
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
 # this is the only sanctioned way to materialise persistent dirs.
@@ -1531,7 +1537,7 @@ RUN cp -a /etc/selinux/targeted /var/tmp/qos-sestore \
 RUN systemctl enable greetd.service && \
     systemctl set-default graphical.target && \
     systemctl enable shell-firstboot.service && \
-    systemctl mask systemd-growfs-root.service && \
+    systemctl enable qos-growfs-sysroot.service && \
     systemctl enable fs.service fs-identity.path && \
     systemctl --global enable qos-identity.service && \
     systemctl --global enable qos-ush.service && \
