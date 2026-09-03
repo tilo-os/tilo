@@ -36,6 +36,28 @@ enum BrokerCommand {
         #[arg(long)]
         expected_service: Option<String>,
     },
+    /// Receive an existing identity on this new personal device.
+    PairDevice {
+        #[arg(long)]
+        identity_root: PathBuf,
+        #[arg(long)]
+        identity_dir: PathBuf,
+        #[arg(long)]
+        label: String,
+        #[arg(long)]
+        status_file: PathBuf,
+    },
+    /// Approve an ordinary nearby personal device.
+    ApproveDevice {
+        #[arg(long)]
+        identity_root: PathBuf,
+        #[arg(long)]
+        identity_dir: PathBuf,
+        #[arg(long)]
+        expected_device: String,
+        #[arg(long)]
+        expected_service: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -408,6 +430,61 @@ fn approve_enrollment(
     Ok(())
 }
 
+fn validate_identity_dir(path: &Path, uid: u32, home: &Path) -> anyhow::Result<PathBuf> {
+    let canonical_home = home.canonicalize().context("user home does not exist")?;
+    let canonical = path
+        .canonicalize()
+        .context("identity directory does not exist")?;
+    let metadata = std::fs::metadata(&canonical)?;
+    if !canonical.starts_with(canonical_home)
+        || metadata.uid() != uid
+        || metadata.mode() & 0o022 != 0
+    {
+        bail!("identity directory must be the requesting user's private data directory");
+    }
+    Ok(canonical)
+}
+
+fn validate_peer_ids(device: &str, service: &str) -> anyhow::Result<()> {
+    if device.len() != 64
+        || service.len() != 64
+        || hex::decode(device)
+            .ok()
+            .is_none_or(|bytes| bytes.len() != 32)
+        || hex::decode(service)
+            .ok()
+            .is_none_or(|bytes| bytes.len() != 32)
+    {
+        bail!("invalid nearby device identity");
+    }
+    Ok(())
+}
+
+fn personal_device_command(
+    operation: &str,
+    identity_root: PathBuf,
+    identity_dir: PathBuf,
+    extra: impl FnOnce(&mut Command),
+) -> anyhow::Result<()> {
+    let uid = invoking_uid()?;
+    let home = home_for_uid(uid)?;
+    let identity_root = validate_identity_root(&identity_root, uid, &home)?;
+    let identity_dir = validate_identity_dir(&identity_dir, uid, &home)?;
+    let mut command = Command::new("/usr/bin/qos-enroll");
+    command
+        .arg(operation)
+        .arg("--identity-root")
+        .arg(identity_root)
+        .arg("--identity-dir")
+        .arg(identity_dir);
+    extra(&mut command);
+    let status = command.status()?;
+    if !status.success() {
+        bail!("personal-device enrollment was not completed");
+    }
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     require_root()?;
     match Cli::parse().command {
@@ -423,6 +500,35 @@ fn main() -> anyhow::Result<()> {
             expected_device,
             expected_service,
         ),
+        BrokerCommand::PairDevice {
+            identity_root,
+            identity_dir,
+            label,
+            status_file,
+        } => {
+            let status_parent = status_file.parent().context("status file has no parent")?;
+            if status_parent != identity_dir {
+                bail!("pairing status must be stored in the identity directory");
+            }
+            personal_device_command("pair-device", identity_root, identity_dir, |command| {
+                command
+                    .args(["--label", &label, "--status-file"])
+                    .arg(status_file);
+            })
+        }
+        BrokerCommand::ApproveDevice {
+            identity_root,
+            identity_dir,
+            expected_device,
+            expected_service,
+        } => {
+            validate_peer_ids(&expected_device, &expected_service)?;
+            personal_device_command("approve-device", identity_root, identity_dir, |command| {
+                command
+                    .args(["--expected-device", &expected_device])
+                    .args(["--expected-service", &expected_service]);
+            })
+        }
     }
 }
 
