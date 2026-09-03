@@ -16,8 +16,8 @@ and never writes that seed into either output.
 cargo run -p local-model-service --bin qos-model-catalog -- \
   --source release/local-models.json \
   --signing-key /run/secrets/qos-model-release-key \
-  --catalog-out dist/etc/qos/models/catalog.json \
-  --trust-out dist/etc/qos/models/keys.json
+  --catalog-out dist/usr/share/qos/system-extensions/local-model-catalog.json \
+  --trust-out dist/usr/share/qos/system-extensions/local-model-keys.json
 ```
 
 The source must point at regular files already fetched by the release job.
@@ -27,6 +27,13 @@ commit hashes and the immutable revision must occur in the HTTPS artifact URL.
 Runtime container identities must end in `@sha256:<64 lowercase hex>`. Floating
 branches, tags, `latest`, redirects encoded as query strings, symlinks, empty
 artifacts, and production `.invalid` URLs are rejected.
+
+Each model must explicitly declare `"artifact_format"`. Production Hugging
+Face/vLLM releases use `"hf_snapshot_tar_zst"`: the signed compressed object
+is verified first, then extracted into a content-addressed directory only
+after rejecting traversal, links, special files, excessive entry counts, and
+expansion beyond `installed_size_bytes`. `"vllm_gguf"` is the sole explicit
+single-file option; no model is treated as a single file by inference.
 
 The catalog signature covers:
 
