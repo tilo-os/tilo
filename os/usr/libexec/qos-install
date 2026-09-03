@@ -24,6 +24,17 @@
 #                                     and reuse (never format) its existing ESP
 #     --confirm-erase <dev>           required for whole-disk installs and must
 #                                     exactly match --disk
+#     --confirm-root <partition>      required for alongside installs and must
+#                                     exactly match --root-partition
+#     --expect-disk-size-bytes N --expect-disk-devnum MAJ:MIN
+#                                     bind the reviewed disk to its discovered
+#                                     size and kernel device number
+#     --expect-disk-wwn ID            also bind its WWN when hardware exposes it
+#     --expect-disk-serial ID         also bind its serial when exposed
+#     --expect-root-partuuid UUID --expect-root-size-bytes N
+#     --expect-efi-partuuid UUID --expect-efi-size-bytes N
+#                                     bind both alongside partitions to their
+#                                     discovered GPT identities and sizes
 #
 # An older UI may omit `--encrypt`, but the backend still encrypts. It must
 # provide `--pin`; otherwise installation fails closed. We:
@@ -262,6 +273,15 @@ ALONGSIDE=0
 ROOT_PARTITION=""
 EFI_PARTITION=""
 CONFIRM_ERASE=""
+CONFIRM_ROOT=""
+EXPECT_DISK_SIZE_BYTES=""
+EXPECT_DISK_DEVNUM=""
+EXPECT_DISK_WWN=""
+EXPECT_DISK_SERIAL=""
+EXPECT_ROOT_PARTUUID=""
+EXPECT_ROOT_SIZE_BYTES=""
+EXPECT_EFI_PARTUUID=""
+EXPECT_EFI_SIZE_BYTES=""
 PIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -281,6 +301,15 @@ while [ $# -gt 0 ]; do
     --root-partition) ROOT_PARTITION="${2:-}"; shift 2 ;;
     --efi-partition) EFI_PARTITION="${2:-}"; shift 2 ;;
     --confirm-erase) CONFIRM_ERASE="${2:-}"; shift 2 ;;
+    --confirm-root) CONFIRM_ROOT="${2:-}"; shift 2 ;;
+    --expect-disk-size-bytes) EXPECT_DISK_SIZE_BYTES="${2:-}"; shift 2 ;;
+    --expect-disk-devnum) EXPECT_DISK_DEVNUM="${2:-}"; shift 2 ;;
+    --expect-disk-wwn) EXPECT_DISK_WWN="${2:-}"; shift 2 ;;
+    --expect-disk-serial) EXPECT_DISK_SERIAL="${2:-}"; shift 2 ;;
+    --expect-root-partuuid) EXPECT_ROOT_PARTUUID="${2:-}"; shift 2 ;;
+    --expect-root-size-bytes) EXPECT_ROOT_SIZE_BYTES="${2:-}"; shift 2 ;;
+    --expect-efi-partuuid) EXPECT_EFI_PARTUUID="${2:-}"; shift 2 ;;
+    --expect-efi-size-bytes) EXPECT_EFI_SIZE_BYTES="${2:-}"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) sed -n '2,49p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -289,16 +318,43 @@ done
 
 [ -n "$DISK" ] || die "missing --disk <device>"
 [ -n "$USERNAME" ] || die "missing --user <name>"
+case "$EXPECT_DISK_SIZE_BYTES" in
+  ''|*[!0-9]*|0) die "missing or invalid --expect-disk-size-bytes" ;;
+esac
+[[ "$EXPECT_DISK_DEVNUM" =~ ^[0-9]+:[0-9]+$ ]] \
+  || die "missing or invalid --expect-disk-devnum (expected MAJ:MIN)"
+[ "${#EXPECT_DISK_WWN}" -le 256 ] || die "expected disk WWN is too long"
+[ "${#EXPECT_DISK_SERIAL}" -le 256 ] || die "expected disk serial is too long"
+[ -n "$EXPECT_DISK_WWN$EXPECT_DISK_SERIAL" ] \
+  || die "missing stable disk identity (expected WWN or serial)"
+if printf '%s%s' "$EXPECT_DISK_WWN" "$EXPECT_DISK_SERIAL" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+  die "expected disk identity contains control characters"
+fi
 
 if [ "$ALONGSIDE" -eq 1 ]; then
   [ -n "$ROOT_PARTITION" ] && [ -n "$EFI_PARTITION" ] \
     || die "--alongside requires --root-partition and --efi-partition"
   [ -z "$CONFIRM_ERASE" ] || die "--confirm-erase cannot be used with --alongside"
+  [ "$CONFIRM_ROOT" = "$ROOT_PARTITION" ] \
+    || die "alongside install requires --confirm-root matching --root-partition"
+  case "$EXPECT_ROOT_SIZE_BYTES" in
+    ''|*[!0-9]*|0) die "missing or invalid --expect-root-size-bytes" ;;
+  esac
+  case "$EXPECT_EFI_SIZE_BYTES" in
+    ''|*[!0-9]*|0) die "missing or invalid --expect-efi-size-bytes" ;;
+  esac
+  [[ "$EXPECT_ROOT_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+    || die "missing or invalid --expect-root-partuuid"
+  [[ "$EXPECT_EFI_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+    || die "missing or invalid --expect-efi-partuuid"
 else
   [ -z "$ROOT_PARTITION" ] && [ -z "$EFI_PARTITION" ] \
     || die "partition arguments require --alongside"
+  [ -z "$CONFIRM_ROOT" ] || die "--confirm-root requires --alongside"
   [ "$CONFIRM_ERASE" = "$DISK" ] \
     || die "whole-disk install requires --confirm-erase matching --disk"
+  [ -z "$EXPECT_ROOT_PARTUUID$EXPECT_ROOT_SIZE_BYTES$EXPECT_EFI_PARTUUID$EXPECT_EFI_SIZE_BYTES" ] \
+    || die "expected partition identity arguments require --alongside"
 fi
 
 # Use the portable Linux login-name subset accepted consistently by useradd
@@ -404,6 +460,47 @@ DTYPE="$(lsblk -dno TYPE "$DISK" 2>/dev/null || true)"
 TARGET_MAJ_MIN="$(lsblk -dno MAJ:MIN "$DISK" 2>/dev/null || true)"
 [ -n "$TARGET_MAJ_MIN" ] || die "could not resolve the target disk identity"
 
+trim_identity() {
+  sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+# Bind the privileged operation to exactly the block device the UI reviewed.
+# Paths alone are insufficient: hotplug can reuse /dev/sdX while the person is
+# reading the Review screen. Size + device number are always required, with
+# immutable hardware identifiers layered on whenever the device exposes them.
+validate_disk_identity() {
+  local actual_size actual_devnum actual_wwn actual_serial
+  actual_size="$(blockdev --getsize64 "$DISK" 2>/dev/null || true)"
+  actual_devnum="$(lsblk -dno MAJ:MIN "$DISK" 2>/dev/null | trim_identity)"
+  [ "$actual_size" = "$EXPECT_DISK_SIZE_BYTES" ] \
+    || die "$DISK size changed after selection; refresh disks and review again"
+  [ "$actual_devnum" = "$EXPECT_DISK_DEVNUM" ] \
+    || die "$DISK device identity changed after selection; refresh disks and review again"
+  if [ -n "$EXPECT_DISK_WWN" ]; then
+    actual_wwn="$(lsblk -dno WWN "$DISK" 2>/dev/null | trim_identity)"
+    [ "$actual_wwn" = "$EXPECT_DISK_WWN" ] \
+      || die "$DISK WWN changed after selection; refusing destructive work"
+  fi
+  if [ -n "$EXPECT_DISK_SERIAL" ]; then
+    actual_serial="$(lsblk -dno SERIAL "$DISK" 2>/dev/null | trim_identity)"
+    [ "$actual_serial" = "$EXPECT_DISK_SERIAL" ] \
+      || die "$DISK serial changed after selection; refusing destructive work"
+  fi
+}
+
+validate_partition_identity() {
+  local partition="$1" expected_uuid="$2" expected_size="$3" label="$4"
+  local actual_uuid actual_size
+  actual_uuid="$(lsblk -dno PARTUUID "$partition" 2>/dev/null | trim_identity)"
+  actual_size="$(blockdev --getsize64 "$partition" 2>/dev/null || true)"
+  [ "${actual_uuid,,}" = "${expected_uuid,,}" ] \
+    || die "$label PARTUUID changed after selection; refresh disks and review again"
+  [ "$actual_size" = "$expected_size" ] \
+    || die "$label size changed after selection; refresh disks and review again"
+}
+
+validate_disk_identity
+
 # Never target the disk the live medium itself is running from. The root may
 # be overlayfs, so inspect every mounted block source and reduce partitions,
 # dm-crypt and aliases to their whole-disk ancestor. Fail closed if the live
@@ -438,6 +535,8 @@ validate_alongside() {
     || die "$ROOT_PARTITION is not a partition"
   [ -b "$EFI_PARTITION" ] && [ "$(lsblk -dno TYPE "$EFI_PARTITION" 2>/dev/null)" = part ] \
     || die "$EFI_PARTITION is not a partition"
+  validate_partition_identity "$ROOT_PARTITION" "$EXPECT_ROOT_PARTUUID" "$EXPECT_ROOT_SIZE_BYTES" "qOS root partition"
+  validate_partition_identity "$EFI_PARTITION" "$EXPECT_EFI_PARTUUID" "$EXPECT_EFI_SIZE_BYTES" "EFI partition"
   root_parent="$(lsblk -no PKNAME "$ROOT_PARTITION" 2>/dev/null | head -1)"
   efi_parent="$(lsblk -no PKNAME "$EFI_PARTITION" 2>/dev/null | head -1)"
   [ -n "$root_parent" ] && [ -n "$efi_parent" ] \
@@ -532,6 +631,11 @@ step "Copying the running qOS image into local container storage"
 bootc image copy-to-storage
 log "  -> $LOCAL_IMG"
 
+# Image staging can take minutes. Revalidate at the last common point before
+# either install mode formats or repartitions anything, closing the hotplug
+# race between Review and destructive work.
+validate_disk_identity
+
 # --- 2. install the base system ----------------------------------------------
 # Unencrypted: `bootc install to-disk` owns the whole layout.
 # Encrypted: we build the layout ourselves (qos-disk-encrypt prepare) and hand
@@ -569,7 +673,12 @@ if [ "$ENCRYPT" -eq 1 ]; then
   # the installer exits without reaching `finish`, so close them on the way out —
   # otherwise a retry finds a mounted disk it refuses to touch. Key slots are
   # left alone; only `finish` removes the install key.
-  trap '"$DISK_ENCRYPT" teardown "$DISK" --mnt "$ENC_MNT" >/dev/null 2>&1 || true' EXIT
+  # Alongside cleanup is intentionally scoped to the one qOS root. Passing
+  # the parent disk would make the helper inspect and try to close unrelated
+  # sibling LUKS mappings belonging to the existing OS.
+  ENC_CLEANUP_TARGET="$DISK"
+  [ "$ALONGSIDE" -eq 0 ] || ENC_CLEANUP_TARGET="$ROOT_PARTITION"
+  trap '"$DISK_ENCRYPT" teardown "$ENC_CLEANUP_TARGET" --mnt "$ENC_MNT" >/dev/null 2>&1 || true' EXIT
 
   # --skip-finalize because bootc's finalize step remounts the target READ-ONLY,
   # and the account/hostname/keyboard seeding below writes into the deployment's
@@ -603,6 +712,17 @@ if [ "$ENCRYPT" -eq 1 ]; then
   /usr/libexec/qos-uki-cmdline replace \
     qos.luks=000000000000000000000000000000000000000000000 \
     "rd.luks.uuid=luks-$LUKS_UUID" "$TARGET_UKI"
+  # systemd-cryptenroll stores the TPM2/FIDO2 material in LUKS2 JSON metadata,
+  # but the initramfs still needs the matching auto-discovery options before it
+  # can use either token. This placeholder is signed into the installer UKI and
+  # replaced without changing the PE section geometry; verified-boot installs
+  # re-sign the resulting target below.
+  UNLOCK_PLACEHOLDER=qos.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000
+  UNLOCK_OPTIONS="rd.luks.options=$LUKS_UUID=tpm2-device=auto,fido2-device=auto"
+  [ "${#UNLOCK_PLACEHOLDER}" -eq "${#UNLOCK_OPTIONS}" ] \
+    || die "internal error: encrypted-boot option does not fit its sealed UKI slot"
+  /usr/libexec/qos-uki-cmdline replace \
+    "$UNLOCK_PLACEHOLDER" "$UNLOCK_OPTIONS" "$TARGET_UKI"
   /usr/libexec/qos-uki-cmdline remove qos.install "$TARGET_UKI"
 elif [ "$ALONGSIDE" -eq 1 ]; then
   validate_alongside

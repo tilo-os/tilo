@@ -55,22 +55,69 @@ sign_linux_artifact() {
     "$QOS_LINUX_SIGNER" "$artifact" "$artifact.asc"
     [ -s "$artifact.asc" ] \
       || { printf 'external Linux signer did not create %s.asc\n' "$artifact" >&2; exit 1; }
-    signer_fingerprint="$(gpg --batch --with-colons --fingerprint "$QOS_LINUX_VERIFY_KEY" \
-      | awk -F: '$1 == "fpr" { print $10; exit }')"
-    [ -n "$signer_fingerprint" ] \
-      || { printf 'QOS_LINUX_VERIFY_KEY is not in the release keyring\n' >&2; exit 1; }
-    verified_fingerprint="$(gpg --batch --status-fd 1 --verify "$artifact.asc" "$artifact" 2>/dev/null \
-      | awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print $3; exit }')"
-    [ "$verified_fingerprint" = "$signer_fingerprint" ] \
-      || { printf 'Linux signature was not made by QOS_LINUX_VERIFY_KEY\n' >&2; exit 1; }
+    signature_identity="$(gpg --batch --status-fd 1 \
+      --verify "$artifact.asc" "$artifact" 2>/dev/null \
+      | awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print $3 " " $NF; exit }')"
+    read -r signing_fingerprint primary_fingerprint <<<"$signature_identity"
+    if [ "$signing_fingerprint" != "$linux_release_fingerprint" ] \
+       && [ "$primary_fingerprint" != "$linux_release_fingerprint" ]; then
+      printf 'Linux signature was not made by the expected release key %s\n' \
+        "$linux_release_fingerprint" >&2
+      exit 1
+    fi
   elif [ -n "${QOS_LINUX_SIGNING_KEY:-}" ]; then
     gpg --batch --yes --local-user "$QOS_LINUX_SIGNING_KEY" \
       --armor --detach-sign "$artifact"
-    gpg --batch --verify "$artifact.asc" "$artifact"
+    signature_identity="$(gpg --batch --status-fd 1 \
+      --verify "$artifact.asc" "$artifact" 2>/dev/null \
+      | awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print $3 " " $NF; exit }')"
+    read -r signing_fingerprint primary_fingerprint <<<"$signature_identity"
+    if [ "$signing_fingerprint" != "$linux_release_fingerprint" ] \
+       && [ "$primary_fingerprint" != "$linux_release_fingerprint" ]; then
+      printf 'Linux signature was not made by the expected release key %s\n' \
+        "$linux_release_fingerprint" >&2
+      exit 1
+    fi
   elif [ "$require_signing" = 1 ]; then
     printf 'Linux signing credentials are required for a release build\n' >&2
     exit 1
   fi
+}
+
+prepare_linux_release_identity() {
+  local selector expected key_file fingerprint_file
+  local -a fingerprints
+  selector="${QOS_LINUX_VERIFY_KEY:-${QOS_LINUX_SIGNING_KEY:-}}"
+  [ -n "$selector" ] \
+    || { printf 'no Linux release-key selector was configured\n' >&2; exit 1; }
+
+  mapfile -t fingerprints < <(
+    gpg --batch --with-colons --fingerprint "$selector" 2>/dev/null \
+      | awk -F: '$1 == "pub" { want = 1; next }
+                   want && $1 == "fpr" { print toupper($10); want = 0 }'
+  )
+  [ "${#fingerprints[@]}" -eq 1 ] \
+    || { printf 'Linux release-key selector must resolve to exactly one primary key\n' >&2; exit 1; }
+  linux_release_fingerprint="${fingerprints[0]}"
+  [[ "$linux_release_fingerprint" =~ ^([A-F0-9]{40}|[A-F0-9]{64})$ ]] \
+    || { printf 'Linux release key has an invalid OpenPGP fingerprint\n' >&2; exit 1; }
+
+  expected="${QOS_LINUX_EXPECTED_FINGERPRINT:-}"
+  expected="${expected^^}"
+  expected="${expected//[[:space:]]/}"
+  [[ "$expected" =~ ^([A-F0-9]{40}|[A-F0-9]{64})$ ]] \
+    || { printf 'QOS_LINUX_EXPECTED_FINGERPRINT must be a full OpenPGP fingerprint\n' >&2; exit 1; }
+  [ "$linux_release_fingerprint" = "$expected" ] \
+    || { printf 'Linux release key fingerprint does not match protected release policy\n' >&2; exit 1; }
+
+  key_file="$out/qos-release-key.asc"
+  fingerprint_file="$out/qos-release-key.fingerprint"
+  gpg --batch --armor --export "$linux_release_fingerprint" >"$key_file"
+  [ -s "$key_file" ] \
+    || { printf 'could not export the Linux release public key\n' >&2; exit 1; }
+  printf '%s\n' "$linux_release_fingerprint" >"$fingerprint_file"
+  write_digest "$key_file"
+  write_digest "$fingerprint_file"
 }
 
 case "$host" in
@@ -145,6 +192,10 @@ case "$host" in
     fi
     ;;
   Linux)
+    if [ "$require_signing" = 1 ] || [ -n "${QOS_LINUX_SIGNER:-}" ] \
+       || [ -n "${QOS_LINUX_SIGNING_KEY:-}" ]; then
+      prepare_linux_release_identity
+    fi
     artifact_base="qos-imager-linux-$package_arch"
     bundle="$out/$artifact_base"
     mkdir -p "$bundle"

@@ -54,7 +54,7 @@ apps/git_client/src/history.rs white_or_black 2
 apps/git_client/src/panels.rs white_or_black 1
 apps/hex_editor/src/view.rs literal_color 1
 apps/hex_editor/src/view.rs white_or_black 1
-apps/imager/src/app.rs white_or_black 11
+apps/imager/src/app.rs white_or_black 10
 apps/logs/src/app.rs literal_color 1
 apps/logs/src/app.rs white_or_black 6
 apps/mail/src/app.rs literal_color 2

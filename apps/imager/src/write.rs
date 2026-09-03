@@ -12,12 +12,10 @@
 //!    name. [`begin_job`] re-checks that token against the target before it
 //!    returns [`JobStart::Started`].
 //!
-//! 2. **An env allow-gate.** Even with a matching confirmation, the *real*
-//!    block-device backend is selected only when
-//!    `QOS_IMAGER_ALLOW_WRITE=1` is set (mirroring the VPN app's
-//!    `QOS_VPN_ALLOW_EXEC` precedent) **and** the target is a real device.
-//!    Tests, `--shots`, and normal dev runs leave it unset, so starting a write
-//!    is refused and no device is opened.
+//! 2. **Write-time privilege.** The wizard always runs as the signed-in user.
+//!    Only after confirmation does it ask the host to authenticate a short-
+//!    lived helper mode of this executable. The helper receives a secret-free
+//!    request, repeats every target check, writes, verifies, and exits.
 //!
 //! 3. **Capacity + fit checks** ([`WriteRequest`] / [`TargetDrive::fits`]).
 //!
@@ -26,9 +24,11 @@
 //! proven without any risk to hardware.
 
 use std::fs::OpenOptions;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::Duration;
 
 use crate::model::{Action, InstallProfile, JobPhase, Progress, Source, TargetDrive};
 use sha2::{Digest, Sha256};
@@ -58,26 +58,36 @@ pub enum JobStart {
     Incomplete,
     /// Refused — the image is larger than the target drive.
     TooSmall,
+    /// Refused because desktop imaging is restricted to external media. The
+    /// booted qOS installer owns internal-disk and dual-boot installation.
+    UnsafeTarget,
+    /// Refused before any I/O because an installable image's embedded profile
+    /// would be rejected by the live installer.
+    InvalidProfile(String),
 }
 
 /// Which engine actually performs the write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteBackend {
-    /// Raw-device effects are unavailable in this process.
+    /// Raw-device effects are unavailable in this process (tests and shots).
     Disabled,
     /// Real raw write via a direct block-device open. Selecting this is itself
     /// gated (see [`WriteBackend::system`]); it is never the default.
     System,
+    /// The unprivileged live UI will authenticate a short-lived platform
+    /// helper at write time.
+    PrivilegedHelper,
 }
 
 impl WriteBackend {
-    /// Choose the backend for the running process. The real backend is only
-    /// ever returned when an operator has explicitly opted in via the
-    /// `QOS_IMAGER_ALLOW_WRITE=1` environment variable. In every other case
-    /// (tests, `--shots`, normal dev runs) this is [`WriteBackend::Disabled`].
+    /// Choose the backend for the running process. The allow gate is retained
+    /// for deliberate root-side diagnostics; normal live UI uses the narrow
+    /// helper, while tests and shots remain disabled.
     pub fn system() -> Self {
         if allow_write() {
             WriteBackend::System
+        } else if std::env::var("IMAGER_LIVE").as_deref() == Ok("1") {
+            WriteBackend::PrivilegedHelper
         } else {
             WriteBackend::Disabled
         }
@@ -93,12 +103,22 @@ pub fn allow_write() -> bool {
 
 /// A validated request to write `source` to `target` using `action`
 /// (+ profile when pre-configuring). Construction does not start anything.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WriteRequest {
     pub source: Source,
     pub target: TargetDrive,
     pub action: Action,
     pub profile: InstallProfile,
+}
+
+impl WriteRequest {
+    /// Drop values which are intentionally never transported to installation
+    /// media before this request crosses the privilege boundary.
+    fn without_secrets(mut self) -> Self {
+        self.profile.user.password.clear();
+        self.profile.encryption_passphrase.clear();
+        self
+    }
 }
 
 impl WriteRequest {
@@ -124,6 +144,9 @@ pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
     if req.source.size == 0 || req.target.name.is_empty() {
         return JobStart::Incomplete;
     }
+    if !req.target.is_media_target() {
+        return JobStart::UnsafeTarget;
+    }
     let required = if req.source.installable {
         req.source.size.saturating_add(PROFILE_BLOCK_SIZE as u64)
     } else {
@@ -131,6 +154,11 @@ pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
     };
     if !req.target.fits(required) {
         return JobStart::TooSmall;
+    }
+    if req.source.installable
+        && let Err(message) = req.profile.validate_media_profile()
+    {
+        return JobStart::InvalidProfile(message);
     }
     if !req.confirmation_matches(typed_confirmation) {
         return JobStart::ConfirmationMismatch;
@@ -148,6 +176,9 @@ pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
 /// Returns an error if the profile cannot be serialized or does not fit in the
 /// reserved block.
 pub fn encode_profile_block(profile: &InstallProfile) -> io::Result<Vec<u8>> {
+    profile
+        .validate_media_profile()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let payload = profile
         .to_media_profile_json()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -386,15 +417,11 @@ pub fn run_job_paths(
         });
     });
     match verify {
-        Ok(None) => {
-            on_progress(Progress {
-                phase: JobPhase::Success,
-                write_frac: 1.0,
-                verify_frac: 1.0,
-                rate_bps: 0,
-            });
-            JobResult::Verified
-        }
+        // This is not yet the user-visible terminal success: installable media
+        // still needs its profile block written and read back, and the device
+        // still needs platform finalisation. `run_system_job` publishes the
+        // single terminal event only after all of those operations finish.
+        Ok(None) => JobResult::Verified,
         Ok(Some(off)) => JobResult::VerifyMismatch(off),
         Err(e) => JobResult::VerifyFailed(e.to_string()),
     }
@@ -403,7 +430,7 @@ pub fn run_job_paths(
 /// Run the real job for `req` (source file → target device), streaming
 /// [`Progress`] over `tx`. Only ever called on a worker thread when the
 /// allow-gate selected [`WriteBackend::System`].
-fn run_system_job(req: &WriteRequest, tx: &Sender<Progress>) -> JobResult {
+fn run_system_job(req: &WriteRequest, mut on_progress: impl FnMut(Progress)) -> JobResult {
     let src = std::path::PathBuf::from(&req.source.path);
     let dst = std::path::PathBuf::from(req.target.dev_path());
     if let Err(error) = revalidate_target(&req.target) {
@@ -412,9 +439,7 @@ fn run_system_job(req: &WriteRequest, tx: &Sender<Progress>) -> JobResult {
     if let Err(error) = prepare_target(&req.target) {
         return JobResult::WriteFailed(format!("could not safely unmount target: {error}"));
     }
-    let mut result = run_job_paths(&src, &dst, req.source.size, |p| {
-        let _ = tx.send(p);
-    });
+    let mut result = run_job_paths(&src, &dst, req.source.size, &mut on_progress);
     if result.is_success()
         && req.source.installable
         && let Err(error) = write_profile_block(&dst, req.target.size, &req.profile)
@@ -422,15 +447,319 @@ fn run_system_job(req: &WriteRequest, tx: &Sender<Progress>) -> JobResult {
         result = JobResult::VerifyFailed(format!(
             "could not embed and verify installation profile: {error}"
         ));
-        let _ = tx.send(Progress {
-            phase: JobPhase::Failed,
-            write_frac: 1.0,
-            verify_frac: 1.0,
-            rate_bps: 0,
-        });
     }
     finish_target(&req.target);
+    on_progress(Progress {
+        phase: if result.is_success() {
+            JobPhase::Success
+        } else {
+            JobPhase::Failed
+        },
+        write_frac: 1.0,
+        verify_frac: if matches!(result, JobResult::WriteFailed(_)) {
+            0.0
+        } else {
+            1.0
+        },
+        rate_bps: 0,
+    });
     result
+}
+
+const WRITE_HELPER_ARG: &str = "--qos-write-helper";
+
+/// Execute the privileged helper mode when `args` requests it. This is called
+/// before the windowing runtime is initialized.
+///
+/// The request is deserialized from a user-private temporary file, then fully
+/// validated and its live target identity is checked again by
+/// [`run_system_job`]. Progress is append-only JSON so the unprivileged window
+/// can remain responsive while the platform authentication broker waits.
+///
+/// # Errors
+///
+/// Returns a descriptive error for malformed arguments/request data or an I/O
+/// failure in the helper protocol.
+pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn std::error::Error>> {
+    let Some(at) = args.iter().position(|arg| arg == WRITE_HELPER_ARG) else {
+        return Ok(None);
+    };
+    let request_path = args
+        .get(at + 1)
+        .ok_or("write helper request path is missing")?;
+    let progress_path = args
+        .get(at + 2)
+        .ok_or("write helper progress path is missing")?;
+    let expected_digest = args
+        .get(at + 3)
+        .ok_or("write helper request digest is missing")?;
+    if args.get(at + 4).is_some() {
+        return Err("write helper received unexpected arguments".into());
+    }
+    validate_helper_paths(Path::new(request_path), Path::new(progress_path))?;
+    let request_bytes = std::fs::read(request_path)?;
+    if request_bytes.len() > 1024 * 1024 {
+        return Err("write helper request is unexpectedly large".into());
+    }
+    let actual_digest = format!("{:x}", Sha256::digest(&request_bytes));
+    if expected_digest.len() != 64
+        || !expected_digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || !actual_digest.eq_ignore_ascii_case(expected_digest)
+    {
+        return Err("write helper request changed after authorization".into());
+    }
+    let request: WriteRequest = serde_json::from_slice(&request_bytes)?;
+    if begin_job(&request, &request.target.dev_path()) != JobStart::Started {
+        return Err("write helper rejected an invalid or unsafe request".into());
+    }
+    // The privileged process creates the progress inode itself. `create_new`
+    // refuses a pre-planted symlink instead of letting a user-writable path
+    // redirect root's append into an arbitrary file.
+    let mut progress_file = create_progress_output(Path::new(progress_path))?;
+    let mut terminal_sent = false;
+    let result = run_system_job(&request, |progress| {
+        terminal_sent |= matches!(progress.phase, JobPhase::Success | JobPhase::Failed);
+        if serde_json::to_writer(&mut progress_file, &progress).is_ok() {
+            let _ = progress_file.write_all(b"\n");
+            let _ = progress_file.flush();
+        }
+    });
+    if !terminal_sent {
+        serde_json::to_writer(
+            &mut progress_file,
+            &Progress {
+                phase: JobPhase::Failed,
+                ..Progress::default()
+            },
+        )?;
+        progress_file.write_all(b"\n")?;
+        progress_file.flush()?;
+    }
+    Ok(Some(i32::from(!result.is_success())))
+}
+
+fn validate_helper_paths(request: &Path, progress: &Path) -> io::Result<()> {
+    let request_parent = request
+        .parent()
+        .ok_or_else(|| io::Error::other("write helper request has no parent directory"))?;
+    if progress.parent() != Some(request_parent)
+        || request.file_name().and_then(|name| name.to_str()) != Some("request.json")
+        || progress.file_name().and_then(|name| name.to_str()) != Some("progress.jsonl")
+        || !request_parent
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("qos-imager-write-"))
+    {
+        return Err(io::Error::other(
+            "write helper paths are outside its private job directory",
+        ));
+    }
+    let metadata = request.symlink_metadata()?;
+    if !metadata.file_type().is_file() {
+        return Err(io::Error::other(
+            "write helper request is not a regular file",
+        ));
+    }
+    Ok(())
+}
+
+fn create_progress_output(path: &Path) -> io::Result<std::fs::File> {
+    OpenOptions::new().write(true).create_new(true).open(path)
+}
+
+fn spawn_privileged_helper(req: WriteRequest, tx: &Sender<Progress>) {
+    let result = run_privileged_helper(req, tx);
+    if result.is_err() {
+        let _ = tx.send(Progress {
+            phase: JobPhase::Failed,
+            ..Progress::default()
+        });
+    }
+}
+
+fn run_privileged_helper(req: WriteRequest, tx: &Sender<Progress>) -> io::Result<()> {
+    let work = tempfile::Builder::new()
+        .prefix("qos-imager-write-")
+        .tempdir()?;
+    let request_path = work.path().join("request.json");
+    let progress_path = work.path().join("progress.jsonl");
+    let mut request_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&request_path)?;
+    let request_bytes = serde_json::to_vec(&req.without_secrets())?;
+    request_file.write_all(&request_bytes)?;
+    request_file.flush()?;
+    request_file.sync_all()?;
+    drop(request_file);
+    let request_digest = format!("{:x}", Sha256::digest(&request_bytes));
+    let executable = helper_executable()?;
+    let mut child =
+        elevated_helper_command(&executable, &request_path, &progress_path, &request_digest)?
+            .spawn()?;
+    relay_helper_progress(&mut child, &progress_path, tx)
+}
+
+fn helper_executable() -> io::Result<std::path::PathBuf> {
+    #[cfg(target_os = "linux")]
+    if let Some(appimage) = std::env::var_os("QOS_IMAGER_APPIMAGE") {
+        let path = std::path::PathBuf::from(appimage);
+        if path.is_absolute() && path.is_file() {
+            return Ok(path);
+        }
+    }
+    std::env::current_exe()
+}
+
+fn relay_helper_progress(
+    child: &mut Child,
+    progress_path: &Path,
+    tx: &Sender<Progress>,
+) -> io::Result<()> {
+    let file = loop {
+        match OpenOptions::new().read(true).open(progress_path) {
+            Ok(file) => break file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if let Some(status) = child.try_wait()? {
+                    let _ = tx.send(Progress {
+                        phase: JobPhase::Failed,
+                        ..Progress::default()
+                    });
+                    return if status.success() {
+                        Err(io::Error::other(
+                            "writer exited without creating its progress channel",
+                        ))
+                    } else {
+                        Ok(())
+                    };
+                }
+                std::thread::sleep(Duration::from_millis(80));
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    let mut reader = BufReader::new(file);
+    let mut terminal = false;
+    loop {
+        let mut line = String::new();
+        while reader.read_line(&mut line)? != 0 {
+            if let Ok(progress) = serde_json::from_str::<Progress>(line.trim_end()) {
+                terminal |= matches!(progress.phase, JobPhase::Success | JobPhase::Failed);
+                let _ = tx.send(progress);
+            }
+            line.clear();
+        }
+        if let Some(status) = child.try_wait()? {
+            // Consume bytes written between the last EOF observation and exit.
+            while reader.read_line(&mut line)? != 0 {
+                if let Ok(progress) = serde_json::from_str::<Progress>(line.trim_end()) {
+                    terminal |= matches!(progress.phase, JobPhase::Success | JobPhase::Failed);
+                    let _ = tx.send(progress);
+                }
+                line.clear();
+            }
+            if !terminal || !status.success() {
+                let _ = tx.send(Progress {
+                    phase: JobPhase::Failed,
+                    ..Progress::default()
+                });
+            }
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(80));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "all platform implementations share one fallible command-builder signature"
+)]
+fn elevated_helper_command(
+    exe: &Path,
+    request: &Path,
+    progress: &Path,
+    digest: &str,
+) -> io::Result<Command> {
+    let mut command = Command::new("pkexec");
+    command
+        .arg(exe)
+        .arg(WRITE_HELPER_ARG)
+        .arg(request)
+        .arg(progress)
+        .arg(digest)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    Ok(command)
+}
+
+#[cfg(target_os = "macos")]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "all platform implementations share one fallible command-builder signature"
+)]
+fn elevated_helper_command(
+    exe: &Path,
+    request: &Path,
+    progress: &Path,
+    digest: &str,
+) -> io::Result<Command> {
+    const SCRIPT: &str = r#"on run argv
+set helperCommand to quoted form of item 1 of argv & " --qos-write-helper " & quoted form of item 2 of argv & " " & quoted form of item 3 of argv & " " & quoted form of item 4 of argv
+do shell script helperCommand with administrator privileges
+end run"#;
+    let mut command = Command::new("osascript");
+    command
+        .arg("-e")
+        .arg(SCRIPT)
+        .arg(exe)
+        .arg(request)
+        .arg(progress)
+        .arg(digest)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    Ok(command)
+}
+
+#[cfg(target_os = "windows")]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "all platform implementations share one fallible command-builder signature"
+)]
+fn elevated_helper_command(
+    exe: &Path,
+    request: &Path,
+    progress: &Path,
+    digest: &str,
+) -> io::Result<Command> {
+    // Values are positional PowerShell arguments, never interpolated into the
+    // script. ArgumentList receives individually quoted native arguments.
+    const SCRIPT: &str = r#"$p = Start-Process -FilePath $args[0] -Verb RunAs -Wait -PassThru -ArgumentList @('--qos-write-helper', ('\"' + $args[1].Replace('\"','\\\"') + '\"'), ('\"' + $args[2].Replace('\"','\\\"') + '\"'), $args[3]); exit $p.ExitCode"#;
+    let mut command = Command::new("powershell.exe");
+    command
+        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+        .arg(exe)
+        .arg(request)
+        .arg(progress)
+        .arg(digest)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    Ok(command)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn elevated_helper_command(
+    _exe: &Path,
+    _request: &Path,
+    _progress: &Path,
+    _digest: &str,
+) -> io::Result<Command> {
+    Err(io::Error::other(
+        "raw media writing is unsupported on this platform",
+    ))
 }
 
 fn revalidate_target(selected: &TargetDrive) -> io::Result<()> {
@@ -503,9 +832,10 @@ fn prepare_target(target: &TargetDrive) -> io::Result<()> {
     let status = std::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .status()?;
-    status.success().then_some(()).ok_or_else(|| {
-        io::Error::other("Windows could not take the disk offline; run qOS Imager as Administrator")
-    })
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| io::Error::other("Windows could not take the selected disk offline"))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -540,23 +870,30 @@ fn finish_target(_target: &TargetDrive) {}
 /// per frame. The returned [`JobStart`] is the validation result; a channel is
 /// only returned when it is [`JobStart::Started`].
 ///
-/// * Allow-gate **off** (default) → the request is refused and no worker is
-///   created.
-/// * Allow-gate **on** → the *real* [`run_system_job`] streams a byte-for-byte
-///   copy + read-back verify of the device.
+/// * Tests/shots → the request is refused and no worker is created.
+/// * Live UI → platform authentication starts the narrow helper.
+/// * Deliberate allow-gated root diagnostics → [`run_system_job`] runs in the
+///   current process.
 pub fn spawn_job(req: WriteRequest, typed: &str) -> (JobStart, Option<Receiver<Progress>>) {
     let start = begin_job(&req, typed);
     if start != JobStart::Started {
         return (start, None);
     }
-    if WriteBackend::system() == WriteBackend::Disabled {
+    let backend = WriteBackend::system();
+    if backend == WriteBackend::Disabled {
         return (JobStart::WriteDisabled, None);
     }
     let (tx, rx) = std::sync::mpsc::channel();
     let _ = std::thread::Builder::new()
         .name("imager-write".into())
-        .spawn(move || {
-            let _ = run_system_job(&req, &tx);
+        .spawn(move || match backend {
+            WriteBackend::System => {
+                let _ = run_system_job(&req, |p| {
+                    let _ = tx.send(p);
+                });
+            }
+            WriteBackend::PrivilegedHelper => spawn_privileged_helper(req, &tx),
+            WriteBackend::Disabled => {}
         });
     (JobStart::Started, Some(rx))
 }
@@ -567,8 +904,8 @@ mod tests {
     use crate::model::{sample_source, sample_targets};
     use std::sync::Mutex;
 
-    /// Serialises the tests that read/write `QOS_IMAGER_ALLOW_WRITE`, since the
-    /// process environment is shared across the parallel test threads.
+    /// Serialises tests which change process environment, since it is shared
+    /// across parallel test threads.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn req() -> WriteRequest {
@@ -585,8 +922,18 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         // No opt-in env var set → unavailable, never a fake success.
         unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        unsafe { std::env::remove_var("IMAGER_LIVE") };
         assert_eq!(WriteBackend::system(), WriteBackend::Disabled);
         assert!(!allow_write());
+    }
+
+    #[test]
+    fn live_ui_uses_short_lived_privileged_helper() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        unsafe { std::env::set_var("IMAGER_LIVE", "1") };
+        assert_eq!(WriteBackend::system(), WriteBackend::PrivilegedHelper);
+        unsafe { std::env::remove_var("IMAGER_LIVE") };
     }
 
     #[test]
@@ -600,6 +947,70 @@ mod tests {
         assert_eq!(WriteBackend::system(), WriteBackend::System);
         unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
         assert_eq!(WriteBackend::system(), WriteBackend::Disabled);
+    }
+
+    #[test]
+    fn privileged_request_never_contains_user_or_encryption_secrets() {
+        let mut request = req();
+        request.profile.user.password = "account-secret".into();
+        request.profile.encryption_passphrase = "encryption-secret".into();
+        let encoded = serde_json::to_string(&request.without_secrets()).unwrap();
+        assert!(!encoded.contains("account-secret"));
+        assert!(!encoded.contains("encryption-secret"));
+        assert!(encoded.contains("\"password\":\"\""));
+        assert!(encoded.contains("\"encryption_passphrase\":\"\""));
+    }
+
+    #[test]
+    fn helper_rejects_a_request_changed_after_authorization() {
+        let work = tempfile::Builder::new()
+            .prefix("qos-imager-write-")
+            .tempdir()
+            .unwrap();
+        let request_path = work.path().join("request.json");
+        let progress_path = work.path().join("progress.jsonl");
+        std::fs::write(&request_path, serde_json::to_vec(&req()).unwrap()).unwrap();
+        std::fs::write(&progress_path, []).unwrap();
+        let args = vec![
+            "imager".into(),
+            WRITE_HELPER_ARG.into(),
+            request_path.display().to_string(),
+            progress_path.display().to_string(),
+            "0".repeat(64),
+        ];
+        let error = maybe_run_write_helper(&args).unwrap_err();
+        assert!(error.to_string().contains("changed after authorization"));
+        assert!(std::fs::read(progress_path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn helper_never_follows_or_overwrites_a_planted_progress_path() {
+        let work = tempfile::Builder::new()
+            .prefix("qos-imager-write-")
+            .tempdir()
+            .unwrap();
+        let progress_path = work.path().join("progress.jsonl");
+        std::fs::write(&progress_path, b"keep-me").unwrap();
+        let error = create_progress_output(&progress_path).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(progress_path).unwrap(), b"keep-me");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_elevates_only_the_hidden_helper_mode() {
+        let command = elevated_helper_command(
+            Path::new("/opt/qos-imager-bin"),
+            Path::new("/tmp/request"),
+            Path::new("/tmp/progress"),
+            &"a".repeat(64),
+        )
+        .unwrap();
+        assert_eq!(command.get_program(), "pkexec");
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args[0], "/opt/qos-imager-bin");
+        assert_eq!(args[1], WRITE_HELPER_ARG);
+        assert_eq!(args.len(), 5);
     }
 
     #[test]
@@ -624,6 +1035,27 @@ mod tests {
         let mut r = req();
         r.source.size = 40_000_000_000; // bigger than the 30 GB stick
         assert_eq!(begin_job(&r, "sdb"), JobStart::TooSmall);
+    }
+
+    #[test]
+    fn begin_refuses_internal_and_system_targets() {
+        let mut r = req();
+        r.target.removable = false;
+        r.target.tran = Some("sata".into());
+        assert_eq!(begin_job(&r, "sdb"), JobStart::UnsafeTarget);
+        r.target.removable = true;
+        r.target.is_system = true;
+        assert_eq!(begin_job(&r, "sdb"), JobStart::UnsafeTarget);
+    }
+
+    #[test]
+    fn begin_refuses_invalid_profile_before_worker_start() {
+        let mut r = req();
+        r.profile.keyboard = "not-a-layout".into();
+        assert!(matches!(
+            begin_job(&r, "sdb"),
+            JobStart::InvalidProfile(message) if message.contains("Keyboard")
+        ));
     }
 
     #[test]
@@ -658,6 +1090,17 @@ mod tests {
         write_profile_block(target.path(), PROFILE_BLOCK_SIZE as u64 * 2, &profile).unwrap();
         let bytes = std::fs::read(target.path()).unwrap();
         assert_eq!(&bytes[PROFILE_BLOCK_SIZE..], block.as_slice());
+    }
+
+    #[test]
+    fn invalid_media_profile_is_rejected_before_a_block_is_encoded() {
+        let profile = InstallProfile {
+            hostname: "bad host".into(),
+            ..InstallProfile::default()
+        };
+        let error = encode_profile_block(&profile).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("Hostname"));
     }
 
     /// Exercise the real Rust encoder/tail writer against the exact live-media
@@ -711,6 +1154,7 @@ mod tests {
         // Validation remains pure, but the live start refuses rather than
         // reporting synthetic progress and success.
         unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        unsafe { std::env::remove_var("IMAGER_LIVE") };
         let r = req();
         assert_eq!(begin_job(&r, "sdb"), JobStart::Started);
         let (start, rx) = spawn_job(r, "sdb");
@@ -794,12 +1238,11 @@ mod tests {
         });
         assert_eq!(result, JobResult::Verified);
         assert!(result.is_success());
-        // It really wrote the bytes and drove both phases to completion.
+        // It really wrote the bytes and drove both non-terminal phases to
+        // completion. Only `run_system_job` may announce terminal success,
+        // after the optional profile write and device finalisation.
         assert_eq!(std::fs::read(dst.path()).unwrap(), data);
-        assert_eq!(
-            phases,
-            vec![JobPhase::Writing, JobPhase::Verifying, JobPhase::Success]
-        );
+        assert_eq!(phases, vec![JobPhase::Writing, JobPhase::Verifying]);
         assert!((last.write_frac - 1.0).abs() < 1e-9);
         assert!((last.verify_frac - 1.0).abs() < 1e-9);
     }

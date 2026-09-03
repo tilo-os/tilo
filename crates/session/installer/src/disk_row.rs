@@ -61,7 +61,7 @@ impl DiskRow {
     }
 
     fn disabled(&self) -> bool {
-        self.disk.is_system || self.disk.read_only
+        self.disk.is_system || self.disk.read_only || !self.disk.identity_ready()
     }
 }
 
@@ -166,6 +166,10 @@ impl Widget for DiskRow {
         }
         if self.disk.read_only {
             details.push("read-only".to_string());
+            details.push("not selectable".to_string());
+        }
+        if !self.disk.identity_ready() {
+            details.push("identity unavailable".to_string());
             details.push("not selectable".to_string());
         }
         if !details.is_empty() {
@@ -280,6 +284,9 @@ mod tests {
             size: "40.0 GiB".into(),
             model: String::new(),
             size_bytes: 40 * 1024 * 1024 * 1024,
+            major_minor: "252:16".into(),
+            wwn: String::new(),
+            serial: "qos-test-target".into(),
             removable: false,
             read_only: false,
             is_system: false,
@@ -337,5 +344,13 @@ mod tests {
     fn enter_and_space_select_a_focused_disk() {
         assert_key_selects(NamedKey::Enter);
         assert_key_selects(NamedKey::Space);
+    }
+
+    #[test]
+    fn disk_without_a_live_identity_is_not_selectable() {
+        let mut target = disk();
+        target.major_minor.clear();
+        let row = DiskRow::new(target, "select", false);
+        assert!(!row.is_focusable());
     }
 }

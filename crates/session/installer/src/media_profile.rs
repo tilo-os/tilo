@@ -140,4 +140,40 @@ mod tests {
         std::fs::write(file.path(), bad).unwrap();
         assert!(load_from(file.path()).is_err());
     }
+
+    #[test]
+    fn rejects_each_invalid_field_independently() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let good = serde_json::json!({
+            "schema": 1,
+            "hostname": "studio",
+            "username": "quinten",
+            "full_name": "Quinten",
+            "locale": "en_US.UTF-8",
+            "keyboard": "de",
+            "timezone": "Europe/Berlin",
+            "filesystem": "btrfs",
+        });
+        let cases = [
+            ("schema", "version", serde_json::json!(2)),
+            ("hostname", "hostname", serde_json::json!("bad host")),
+            ("username", "username", serde_json::json!("root")),
+            ("full_name", "full name", serde_json::json!("Bad:Name")),
+            ("locale", "locale", serde_json::json!("../../etc")),
+            ("keyboard", "keyboard", serde_json::json!("not-a-layout")),
+            ("timezone", "time zone", serde_json::json!("../../etc")),
+            ("filesystem", "filesystem", serde_json::json!("zfs")),
+        ];
+        for (field, error_fragment, value) in cases {
+            let mut candidate = good.clone();
+            candidate[field] = value;
+            std::fs::write(file.path(), serde_json::to_vec(&candidate).unwrap()).unwrap();
+            let error = load_from(file.path())
+                .expect_err("one invalid consumer field must reject the entire profile");
+            assert!(
+                error.contains(error_fragment),
+                "{field} produced an unhelpful error: {error}"
+            );
+        }
+    }
 }

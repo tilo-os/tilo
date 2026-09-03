@@ -114,8 +114,11 @@ require_text /usr/share/qos/selinux/qos-base.cil "(allow xdm_t qos_session_unit_
 require_line /usr/share/wayland-sessions/shell.desktop "Exec=/usr/libexec/qos-session --backend drm"
 require_line /usr/share/wayland-sessions/shell-peer-sync.desktop "Exec=/usr/libexec/qos-session --backend drm --enable-peer-sync"
 require_text /usr/libexec/qos-session '"$SYSTEMCTL" --user start "$SESSION_TARGET"'
-require_text /usr/libexec/qos-session 'run_managed "$CAGE_BIN" -s -- "$SHELL_BIN" --provision-identity'
-require_text /usr/libexec/qos-session '"$SHELL_BIN" --verify-collaboration-identity'
+require_text /usr/libexec/qos-session 'run_managed "$SHELL_BIN" "$@"'
+if grep -Fq -- '--provision-identity' "$(at /usr/libexec/qos-session)" \
+   || grep -Fq -- '--verify-collaboration-identity' "$(at /usr/libexec/qos-session)"; then
+  die "session wrapper must let the trusted native compositor own first-login OOBE"
+fi
 require_text /usr/lib/tmpfiles.d/qos.conf "d  /var/workspace"
 require_text /usr/lib/tmpfiles.d/qos.conf "d  /var/cache/quick-fs"
 require_text /usr/lib/tmpfiles.d/qos.conf "C  /var/lib/qos/fs-capabilities.json"

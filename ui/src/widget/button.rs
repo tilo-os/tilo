@@ -38,6 +38,10 @@ pub struct Button {
     icon: Option<crate::icons::Icon>,
     /// Defaults to 120×40.
     size: Option<(f32, f32)>,
+    /// Stretch to the containing column while retaining an explicit height.
+    /// This is distinct from `fit_content`, which derives a compact width
+    /// from the label.
+    fill_width: bool,
     /// Drives the fill / border / label colours via [`face_colors`], the
     /// same source of truth the immediate-mode [`Button::paint`] face uses.
     style: ButtonStyle,
@@ -94,6 +98,7 @@ impl Button {
             is_focused: false,
             icon: None,
             size: None,
+            fill_width: false,
             style: ButtonStyle::Neutral,
             on_click_path: on_click_path.map(std::string::ToString::to_string),
             click_value: None,
@@ -244,6 +249,16 @@ impl Button {
     #[must_use]
     pub fn with_size(mut self, width: f32, height: f32) -> Self {
         self.size = Some((width, height));
+        self.fill_width = false;
+        self
+    }
+
+    /// Fill the available parent width at the supplied height.
+    #[must_use]
+    pub fn fill_width(mut self, height: f32) -> Self {
+        self.size = Some((0.0, height));
+        self.fill_width = true;
+        self.fit_content = false;
         self
     }
 
@@ -255,6 +270,7 @@ impl Button {
     #[must_use]
     pub fn fit_content(mut self, height: f32) -> Self {
         self.fit_content = true;
+        self.fill_width = false;
         self.size = Some((0.0, height));
         self
     }
@@ -796,7 +812,11 @@ impl Widget for Button {
         let node = taffy.leaf_node(Style {
             flex_shrink: 0.0,
             size: Size {
-                width: Dimension::length(w),
+                width: if self.fill_width {
+                    Dimension::percent(1.0)
+                } else {
+                    Dimension::length(w)
+                },
                 height: Dimension::length(h),
             },
             ..Default::default()

@@ -1143,6 +1143,7 @@ async fn replica_workspace(
         history.clone(),
     ));
     materializer.reconcile_repository(&record_services.repository)?;
+    let replica_repository = Arc::clone(&record_services.repository);
     record_services.mutation_sink = Some(materializer.clone());
     record_services.materializer = Some(Arc::clone(&materializer));
     let workspace = Workspace::join_with_records(
@@ -1165,6 +1166,20 @@ async fn replica_workspace(
     let mut hydrated_namespace = None;
     let mut last_status = fs::full_replica::FullReplicaStatus::syncing();
     loop {
+        // Namespace anti-entropy and signed-record anti-entropy are separate
+        // authenticated exchanges. Project the durable record truth before
+        // selecting a generation, so a namespace that arrived a few
+        // milliseconds earlier can never be advertised as ready with stale
+        // record metadata behind it.
+        if let Err(error) = materializer.reconcile_repository(&replica_repository) {
+            let mut failed = fs::full_replica::FullReplicaStatus::syncing();
+            failed.state = "failed".into();
+            failed.error = Some(format!("reconcile signed replica projection: {error}"));
+            let _ = status_tx.send((index, failed.clone())).await;
+            last_status = failed;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            continue;
+        }
         let before = replica_namespace_fingerprint(&namespace);
         if hydrated_namespace.as_ref() == Some(&before) {
             // Keep the proof fresh without re-reading the full content set on
@@ -1209,6 +1224,19 @@ async fn replica_workspace(
             }
         }
         if status.full_content_replication {
+            if let Err(error) = materializer.reconcile_repository(&replica_repository) {
+                status = fs::full_replica::FullReplicaStatus::syncing();
+                status.state = "failed".into();
+                status.error = Some(format!("verify signed replica projection: {error}"));
+            } else if replica_namespace_fingerprint(&namespace) != after {
+                // Signed records changed (or corrected a namespace-first
+                // arrival) during hydration. Verify and hydrate that exact
+                // projection on the next pass.
+                hydrated_namespace = None;
+                continue;
+            }
+        }
+        if status.full_content_replication {
             // Do not advertise a content-complete generation until its
             // namespace roots are durable too.  The blob store survives a
             // restart already; without this checkpoint it could not prove
@@ -1223,7 +1251,9 @@ async fn replica_workspace(
                 continue;
             };
             match persist_namespace_generation(&namespace, path) {
-                Ok(persisted) if persisted == after => {}
+                Ok(persisted) if persisted == after => {
+                    status.namespace_generation = Some(hex::encode(persisted));
+                }
                 Ok(_) => {
                     // A namespace delta raced this pass.  Its checkpoint is
                     // durable, but it has not yet had its blobs verified.
@@ -2934,9 +2964,17 @@ async fn run_mount(
             println!("{}", fs::recipient_mount::RECIPIENT_MOUNT_READY_LINE);
             std::io::stdout().flush()?;
         }
-        match unmount_rx.recv() {
-            Ok(()) => session.umount_and_join(),
-            Err(_) => session.join(),
+        loop {
+            if session.guard.is_finished() {
+                return session.join();
+            }
+            match unmount_rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(()) => return session.umount_and_join(),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return session.join();
+                }
+            }
         }
     });
     println!("Mounting QuickFS at {}", mount_point.display());
