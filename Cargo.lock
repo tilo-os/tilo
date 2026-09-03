@@ -8128,7 +8128,10 @@ version = "0.1.0"
 dependencies = [
  "agent-provider-config",
  "atomic-file",
+ "clap",
+ "ed25519-dalek 2.2.0",
  "hex",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2 0.10.9",
