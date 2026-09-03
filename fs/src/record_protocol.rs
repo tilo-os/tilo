@@ -506,15 +506,26 @@ impl RecordProtocol {
                 ) else {
                     return RecordProtocolResponseV1::Denied;
                 };
-                let result = availability
+                let mut availability = availability
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .observe_replica(
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let parent = availability
+                    .get(receipt.revision.record_id)
+                    .and_then(|record| record.parent);
+                let tracked = availability.track_current_revision(
+                    receipt.revision,
+                    crate::availability::RecordKind::File,
+                    parent,
+                    observed_at,
+                );
+                let result = tracked.and_then(|_| {
+                    availability.observe_replica(
                         key.record_id,
                         collab_types::Ed25519PublicKey(self.credentials.device_public_key()),
                         observation,
                         observed_at,
-                    );
+                    )
+                });
                 match result {
                     Ok(()) => RecordProtocolResponseV1::ReplicaAcknowledged {
                         session: binding.into(),
