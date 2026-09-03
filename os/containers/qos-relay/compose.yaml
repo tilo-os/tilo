@@ -1,23 +1,25 @@
 # Composite relay and complete filesystem replica for a user-owned qOS home peer.
 #
-# Copy relay.toml.example to relay.toml, provide the enrolled host identity
-# under ./identity, then run `podman compose up -d` (or Docker Compose).
-# See README.md for the required identity artifacts and home-peer bundle.
+# Put a short-lived host enrollment token in enrollment-token.txt, create the
+# identity/config directories, then run `podman compose up -d`. Pair from qOS
+# Settings; identity and the signed home-peer bundle are provisioned over LAN.
 services:
   qos-relay:
     image: ${QOS_RELAY_IMAGE:-code.sandbox.example/qos/qos-relay:latest}
     command: ["--config", "/etc/qos/relay.toml", "run"]
     restart: unless-stopped
+    environment:
+      QOS_DEVICE_NAME: ${QOS_DEVICE_NAME:-Home server}
     ports:
       # Keep this aligned with `iroh_listen` in relay.toml.
       - "${QOS_RELAY_PORT:-4433}:4433/udp"
     volumes:
-      # The config has no secret material and may remain read-only.
-      - ./relay.toml:/etc/qos/relay.toml:ro,Z
-      - ./home-peer.toml:/etc/qos/home-peer.toml:ro,Z
+      # Enrollment writes the full-sync bundle here on first start.
+      - ./config:/etc/qos:Z
+      - ./enrollment-token.txt:/run/secrets/qos-enrollment-token:ro,Z
       # A pre-enrolled, host-capable device identity. Never put a user-root
       # private key in this directory or image.
-      - ./identity:/var/lib/qos:ro,Z
+      - ./identity:/var/lib/qos:Z
       # CRDT snapshots, offline pending queues, metrics, and the stable Iroh
       # endpoint secret. Back this volume up as relay state.
       - qos-relay-state:/var/lib/qos-relay:Z
