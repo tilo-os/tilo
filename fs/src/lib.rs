@@ -58,6 +58,7 @@ pub mod syncstate;
 pub mod thumbs;
 pub mod transaction_coordinator;
 pub mod transport_gate;
+pub mod workspace_authority;
 
 #[cfg(test)]
 mod tests;

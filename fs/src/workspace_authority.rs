@@ -1,0 +1,528 @@
+//! Signed, monotonic workspace-wide ACL state.
+//!
+//! This is intentionally separate from a host-local capability file: the
+//! envelope is verified against the workspace governor, persists its revision,
+//! and can only narrow or replace authority through a newer signed revision.
+
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+use collab_types::{CapOverride, Principal};
+use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
+use serde::{Deserialize, Serialize};
+
+use crate::{AclHandle, IdentityKey, WorkspaceAcl};
+
+pub const QOS_FS_AUTHORITY_ALPN: &[u8] = b"qos-fs-workspace-authority/1";
+const MAX_AUTHORITY_FRAME: usize = 256 * 1024;
+/// Local, group-restricted control socket used by the desktop authority
+/// publisher. It avoids self-dialling an Iroh node while the filesystem
+/// daemon owns that node's UDP socket.
+pub const LOCAL_AUTHORITY_SOCKET: &str = "workspace-authority.sock";
+
+/// The stable local control path for a workspace. `/run/qos` is created
+/// root:qos-identity by the service unit, so no root-owned cache directory is
+/// exposed to the desktop publisher.
+pub fn local_authority_socket_path(workspace: uuid::Uuid) -> PathBuf {
+    std::env::var_os("QOS_AUTHORITY_SOCKET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/run/qos"))
+        .join(format!("workspace-authority-{workspace}.sock"))
+}
+
+/// Stable, workspace-scoped handoff for a direct endpoint returned by the
+/// authenticated relay discovery ALPN.
+pub fn local_content_socket_path(workspace: uuid::Uuid) -> PathBuf {
+    std::env::var_os("QOS_AUTHORITY_SOCKET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/run/qos"))
+        .join(format!("workspace-content-{workspace}.sock"))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceAuthorityEnvelope {
+    pub workspace: uuid::Uuid,
+    pub revision: u64,
+    pub capabilities: Vec<CapOverride>,
+    pub tombstoned: bool,
+    pub governor: [u8; 32],
+    #[serde(with = "serde_bytes_64")]
+    pub signature: [u8; 64],
+}
+
+mod serde_bytes_64 {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(value: &[u8; 64], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serde_bytes::Bytes::new(value).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 64], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_bytes::ByteBuf::deserialize(deserializer)?;
+        value
+            .as_ref()
+            .try_into()
+            .map_err(|_| serde::de::Error::invalid_length(value.len(), &"64 bytes"))
+    }
+}
+
+impl WorkspaceAuthorityEnvelope {
+    pub fn sign(
+        workspace: uuid::Uuid,
+        revision: u64,
+        capabilities: Vec<CapOverride>,
+        tombstoned: bool,
+        governor: &ed25519_dalek::SigningKey,
+    ) -> anyhow::Result<Self> {
+        let mut envelope = Self {
+            workspace,
+            revision,
+            capabilities,
+            tombstoned,
+            governor: governor.verifying_key().to_bytes(),
+            signature: [0; 64],
+        };
+        envelope.signature = governor.sign(&envelope.payload()?).to_bytes();
+        Ok(envelope)
+    }
+
+    pub fn verify(&self, expected_workspace: uuid::Uuid, governor: [u8; 32]) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.workspace == expected_workspace,
+            "authority workspace mismatch"
+        );
+        anyhow::ensure!(self.governor == governor, "authority governor mismatch");
+        VerifyingKey::from_bytes(&governor)?
+            .verify(&self.payload()?, &Signature::from_bytes(&self.signature))?;
+        Ok(())
+    }
+
+    fn payload(&self) -> anyhow::Result<Vec<u8>> {
+        Ok(postcard::to_allocvec(&(
+            self.workspace,
+            self.revision,
+            &self.capabilities,
+            self.tombstoned,
+            self.governor,
+        ))?)
+    }
+}
+
+/// Durable authority projection for one workspace. The ACL handle is shared
+/// with every filesystem protocol, so applying a newer envelope changes the
+/// verdict for the next request without restarting the home peer.
+pub struct WorkspaceAuthority {
+    path: PathBuf,
+    workspace: uuid::Uuid,
+    governor: [u8; 32],
+    subject: IdentityKey,
+    principals: Vec<Principal>,
+    handle: AclHandle,
+    current: Mutex<Option<WorkspaceAuthorityEnvelope>>,
+}
+
+impl WorkspaceAuthority {
+    pub fn open(
+        path: impl Into<PathBuf>,
+        workspace: uuid::Uuid,
+        governor: [u8; 32],
+        subject: IdentityKey,
+        principals: Vec<Principal>,
+    ) -> anyhow::Result<Self> {
+        let path = path.into();
+        let current = match std::fs::read(&path) {
+            Ok(bytes) => {
+                let envelope: WorkspaceAuthorityEnvelope = postcard::from_bytes(&bytes)?;
+                envelope.verify(workspace, governor)?;
+                Some(envelope)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let handle = AclHandle::new(project(subject, &principals, current.as_ref()));
+        Ok(Self {
+            path,
+            workspace,
+            governor,
+            subject,
+            principals,
+            handle,
+            current: Mutex::new(current),
+        })
+    }
+
+    pub fn handle(&self) -> AclHandle {
+        self.handle.clone()
+    }
+
+    pub const fn workspace(&self) -> uuid::Uuid {
+        self.workspace
+    }
+
+    pub const fn governor(&self) -> [u8; 32] {
+        self.governor
+    }
+
+    pub fn current(&self) -> Option<WorkspaceAuthorityEnvelope> {
+        self.current.lock().ok().and_then(|current| current.clone())
+    }
+
+    /// Load an atomically-published signed revision written by the local
+    /// governor process. This is the bridge from a desktop capability change
+    /// into the already-running network authority service.
+    pub fn reload(&self) -> anyhow::Result<bool> {
+        let bytes = std::fs::read(&self.path)?;
+        let envelope: WorkspaceAuthorityEnvelope = postcard::from_bytes(&bytes)?;
+        self.apply(envelope)
+    }
+
+    /// Verify, durably replace, and publish a strictly newer authority state.
+    /// Equal revisions are accepted only when byte-identical, making retries
+    /// idempotent while refusing equivocation at one revision.
+    pub fn apply(&self, next: WorkspaceAuthorityEnvelope) -> anyhow::Result<bool> {
+        next.verify(self.workspace, self.governor)?;
+        let mut current = self
+            .current
+            .lock()
+            .map_err(|_| anyhow::anyhow!("authority lock poisoned"))?;
+        if let Some(previous) = current.as_ref() {
+            anyhow::ensure!(
+                next.revision >= previous.revision,
+                "authority revision regressed"
+            );
+            if next.revision == previous.revision {
+                anyhow::ensure!(
+                    postcard::to_allocvec(&next)? == postcard::to_allocvec(previous)?,
+                    "authority equivocated at one revision"
+                );
+                return Ok(false);
+            }
+        }
+        let bytes = postcard::to_allocvec(&next)?;
+        atomic_file::write(&self.path, &bytes)?;
+        self.handle
+            .replace(project(self.subject, &self.principals, Some(&next)));
+        *current = Some(next);
+        Ok(true)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorityRequest {
+    pub workspace: uuid::Uuid,
+    #[serde(default)]
+    pub publish: Option<WorkspaceAuthorityEnvelope>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorityResponse {
+    pub authority: Option<WorkspaceAuthorityEnvelope>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContentPeerRequest {
+    pub endpoint: iroh_base::EndpointAddr,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContentPeerResponse {
+    pub accepted: bool,
+}
+
+#[cfg(unix)]
+pub async fn serve_local_content_peer(
+    socket: PathBuf,
+    hydrator: std::sync::Arc<crate::Hydrator>,
+) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if socket.exists() {
+        std::fs::remove_file(&socket)?;
+    }
+    let listener = tokio::net::UnixListener::bind(&socket)?;
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o660))?;
+    Ok(tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let hydrator = hydrator.clone();
+            tokio::spawn(async move {
+                let accepted = match read_frame::<_, ContentPeerRequest>(&mut stream).await {
+                    Ok(request) => {
+                        hydrator.add_peer(request.endpoint);
+                        true
+                    }
+                    Err(_) => false,
+                };
+                let _ = write_frame(&mut stream, &ContentPeerResponse { accepted }).await;
+            });
+        }
+    }))
+}
+
+#[cfg(unix)]
+pub async fn register_local_content_peer(
+    socket: &std::path::Path,
+    endpoint: iroh_base::EndpointAddr,
+) -> anyhow::Result<()> {
+    let mut stream = tokio::net::UnixStream::connect(socket).await?;
+    write_frame(&mut stream, &ContentPeerRequest { endpoint }).await?;
+    anyhow::ensure!(
+        read_frame::<_, ContentPeerResponse>(&mut stream)
+            .await?
+            .accepted,
+        "filesystem daemon rejected content endpoint"
+    );
+    Ok(())
+}
+
+/// Start the local authority publisher service. The caller is responsible for
+/// placing the socket in a `root:qos-identity` directory; the socket itself is
+/// group writable so an enrolled desktop can submit a governor-signed update
+/// without being able to alter the root-owned durable cache directly.
+#[cfg(unix)]
+pub async fn serve_local_authority(
+    socket: PathBuf,
+    authority: std::sync::Arc<WorkspaceAuthority>,
+) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if socket.exists() {
+        std::fs::remove_file(&socket)?;
+    }
+    let listener = tokio::net::UnixListener::bind(&socket)?;
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o660))?;
+    Ok(tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let authority = authority.clone();
+            tokio::spawn(async move {
+                let request: anyhow::Result<AuthorityRequest> = read_frame(&mut stream).await;
+                let response = match request {
+                    Ok(request) if request.workspace == authority.workspace() => {
+                        if let Some(envelope) = request.publish {
+                            // `apply` verifies both the workspace governor and
+                            // strict revision monotonicity before replacing ACL.
+                            let _ = authority.apply(envelope);
+                        }
+                        AuthorityResponse {
+                            authority: authority.current(),
+                        }
+                    }
+                    _ => AuthorityResponse { authority: None },
+                };
+                let _ = write_frame(&mut stream, &response).await;
+            });
+        }
+    }))
+}
+
+/// Submit or query a local authority service.  The Unix permissions are the
+/// first gate; the signed envelope remains the authority gate.
+#[cfg(unix)]
+pub async fn local_authority_request(
+    socket: &std::path::Path,
+    request: AuthorityRequest,
+) -> anyhow::Result<AuthorityResponse> {
+    let mut stream = tokio::net::UnixStream::connect(socket).await?;
+    write_frame(&mut stream, &request).await?;
+    read_frame(&mut stream).await
+}
+
+pub async fn write_frame<W: tokio::io::AsyncWrite + Unpin, T: Serialize>(
+    writer: &mut W,
+    value: &T,
+) -> anyhow::Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let bytes = postcard::to_allocvec(value)?;
+    anyhow::ensure!(
+        bytes.len() <= MAX_AUTHORITY_FRAME,
+        "authority frame too large"
+    );
+    writer.write_u32_le(u32::try_from(bytes.len())?).await?;
+    writer.write_all(&bytes).await?;
+    Ok(())
+}
+
+pub async fn read_frame<R: tokio::io::AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
+    reader: &mut R,
+) -> anyhow::Result<T> {
+    use tokio::io::AsyncReadExt;
+    let len = usize::try_from(reader.read_u32_le().await?)?;
+    anyhow::ensure!(len <= MAX_AUTHORITY_FRAME, "authority frame too large");
+    let mut bytes = vec![0; len];
+    reader.read_exact(&mut bytes).await?;
+    Ok(postcard::from_bytes(&bytes)?)
+}
+
+fn project(
+    subject: IdentityKey,
+    principals: &[Principal],
+    envelope: Option<&WorkspaceAuthorityEnvelope>,
+) -> WorkspaceAcl {
+    match envelope {
+        Some(envelope) if !envelope.tombstoned => {
+            WorkspaceAcl::from_capabilities(subject, &envelope.capabilities, principals, None)
+        }
+        _ => WorkspaceAcl::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Access;
+    use collab_types::{Effect, Scope, Subject, Verb};
+    use std::sync::Arc;
+
+    #[test]
+    fn newer_tombstone_replaces_live_acl_and_rejects_replay() {
+        let temp = tempfile::tempdir().unwrap();
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let workspace = uuid::Uuid::new_v4();
+        let subject = [4; 32];
+        let authority = WorkspaceAuthority::open(
+            temp.path().join("authority.bin"),
+            workspace,
+            governor.verifying_key().to_bytes(),
+            subject,
+            Vec::new(),
+        )
+        .unwrap();
+        let grant = CapOverride::new(
+            Subject::User(collab_types::Ed25519PublicKey(subject)),
+            Scope::FsPath("/".into()),
+            Effect::Grant,
+            Verb::Read,
+        );
+        assert!(
+            authority
+                .apply(
+                    WorkspaceAuthorityEnvelope::sign(workspace, 1, vec![grant], false, &governor)
+                        .unwrap()
+                )
+                .unwrap()
+        );
+        assert!(authority.handle().permits(&subject, "/file", Access::Read));
+        assert!(
+            authority
+                .apply(
+                    WorkspaceAuthorityEnvelope::sign(workspace, 2, Vec::new(), true, &governor)
+                        .unwrap()
+                )
+                .unwrap()
+        );
+        assert!(!authority.handle().permits(&subject, "/file", Access::Read));
+        assert!(
+            authority
+                .apply(
+                    WorkspaceAuthorityEnvelope::sign(workspace, 1, Vec::new(), true, &governor)
+                        .unwrap()
+                )
+                .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_publisher_serializes_concurrent_revisions() {
+        let temp = tempfile::tempdir().unwrap();
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+        let workspace = uuid::Uuid::new_v4();
+        let authority = Arc::new(
+            WorkspaceAuthority::open(
+                temp.path().join("authority.bin"),
+                workspace,
+                governor.verifying_key().to_bytes(),
+                [1; 32],
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let socket = temp.path().join(LOCAL_AUTHORITY_SOCKET);
+        let task = serve_local_authority(socket.clone(), authority.clone())
+            .await
+            .unwrap();
+        let first =
+            WorkspaceAuthorityEnvelope::sign(workspace, 1, Vec::new(), false, &governor).unwrap();
+        let first_response = local_authority_request(
+            &socket,
+            AuthorityRequest {
+                workspace,
+                publish: Some(first.clone()),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(first_response.authority, Some(first));
+
+        // Two desktop mutations raced after seeing revision 1. Exactly one
+        // may become revision 2; the loser receives the winning envelope and
+        // must retry from that revision rather than claiming success.
+        let left =
+            WorkspaceAuthorityEnvelope::sign(workspace, 2, Vec::new(), false, &governor).unwrap();
+        let right =
+            WorkspaceAuthorityEnvelope::sign(workspace, 2, Vec::new(), true, &governor).unwrap();
+        let (left_response, right_response) = tokio::join!(
+            local_authority_request(
+                &socket,
+                AuthorityRequest {
+                    workspace,
+                    publish: Some(left.clone())
+                },
+            ),
+            local_authority_request(
+                &socket,
+                AuthorityRequest {
+                    workspace,
+                    publish: Some(right.clone())
+                },
+            )
+        );
+        let left_response = left_response.unwrap().authority.unwrap();
+        let right_response = right_response.unwrap().authority.unwrap();
+        assert!(left_response == left || right_response == right);
+        assert_eq!(left_response, right_response);
+        task.abort();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn authenticated_discovery_handoff_updates_live_hydrator() {
+        let temp = tempfile::tempdir().unwrap();
+        let endpoint = iroh::endpoint::Endpoint::bind(iroh::endpoint::presets::N0)
+            .await
+            .unwrap();
+        let hydrator = Arc::new(crate::Hydrator::new(
+            endpoint.clone(),
+            Arc::new(crate::ContentStore::memory()),
+        ));
+        let socket = temp.path().join("content.sock");
+        let task = serve_local_content_peer(socket.clone(), hydrator.clone())
+            .await
+            .unwrap();
+        let discovered =
+            iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x42; 32]).public())
+                .with_ip_addr("127.0.0.1:45454".parse().unwrap());
+        register_local_content_peer(&socket, discovered.clone())
+            .await
+            .unwrap();
+        assert!(hydrator.known_peers().contains(&discovered));
+        task.abort();
+        endpoint.close().await;
+    }
+}

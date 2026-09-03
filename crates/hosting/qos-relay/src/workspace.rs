@@ -83,6 +83,8 @@ pub struct WorkspaceRuntime {
     /// join this workspace. Enabled automatically for matching-user home hosts;
     /// shared/multi-tenant hosts use an explicit membership list.
     pub admit_authenticated: bool,
+    /// Cross-user roots admitted by the signed authority for this exact room.
+    pub admitted_users: HashSet<[u8; 32]>,
     /// Current live subscribers keyed by device pubkey.
     pub subscribers: HashMap<[u8; 32], Subscriber>,
     /// Device pubkeys of peer relays this workspace has federated
@@ -133,6 +135,7 @@ impl WorkspaceRuntime {
             doc,
             membership,
             admit_authenticated: false,
+            admitted_users: HashSet::new(),
             subscribers: HashMap::new(),
             known_peer_relays: HashSet::new(),
         })
