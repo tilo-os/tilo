@@ -46,6 +46,7 @@ need "$readme" "filesystem peer"
 need "$readme" "selected workspace IDs"
 need "$readme" "Pair home server"
 need "$containerfile" "target/release/fs"
+need "$containerfile" "rust cargo sccache capnproto"
 need "$containerfile" 'ENTRYPOINT ["/usr/bin/qos-home-peer"]'
 need "$compose" "./config:/etc/qos:Z"
 need "$compose" "qos-full-replica"
