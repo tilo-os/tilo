@@ -7,7 +7,8 @@
 //         cage -s -- /usr/bin/qos-greeter
 //     The event-loop proxy is captured via `run_with_setup` so the
 //     background auth worker can pump prompts/results back into the UI.
-//   * `--shots <PATH> [--scenario <name>]` — render one login-card state
+//   * `--shots <PATH> [--scenario <name>] [--viewport <WIDTH>x<HEIGHT>]`
+//     — render one login-card state
 //     into a PNG at `<PATH>` and exit. No window, no event loop. Headless
 //     snapshot for CI / visual inspection (identical output to the live
 //     binary). Scenarios: `form`, `hint`, `error`, `authenticating`,
@@ -57,13 +58,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
         let scenario = parse_scenario_arg(&args).unwrap_or(AuthScenario::Form);
+        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let widget = GreeterApp::for_shot(scenario);
-        render_shot_to_png(
-            Box::new(widget),
-            DEFAULT_SHOTS_VIEWPORT,
-            &out,
-            shot_credentials(scenario),
-        )?;
+        render_shot_to_png(Box::new(widget), viewport, &out, shot_credentials(scenario))?;
         return Ok(());
     }
 
@@ -88,6 +85,25 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = proxy_slot.set(proxy);
     });
     Ok(())
+}
+
+/// Returns the optional logical-pixel viewport supplied to the headless
+/// renderer. Malformed or zero-sized values are ignored, preserving the
+/// stable default used by existing visual baselines.
+fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
+    let mut iter = args.iter().skip(1);
+    let raw = loop {
+        let arg = iter.next()?;
+        if arg == "--viewport" {
+            break iter.next()?.as_str();
+        }
+        if let Some(rest) = arg.strip_prefix("--viewport=") {
+            break rest;
+        }
+    };
+    let (width, height) = raw.split_once(['x', 'X'])?;
+    let viewport = (width.parse().ok()?, height.parse().ok()?);
+    (viewport.0 > 0 && viewport.1 > 0).then_some(viewport)
 }
 
 /// Returns `Some(path)` if `--shots <path>` (or `--shots=<path>`) appears
@@ -249,4 +265,36 @@ fn render_shot_to_png(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("qos-greeter: wrote shot to {}", out.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn viewport_accepts_separate_and_equals_forms() {
+        assert_eq!(
+            parse_viewport_arg(&args(&["qos-greeter", "--viewport", "640x480"])),
+            Some((640, 480))
+        );
+        assert_eq!(
+            parse_viewport_arg(&args(&["qos-greeter", "--viewport=360X640"])),
+            Some((360, 640))
+        );
+    }
+
+    #[test]
+    fn viewport_rejects_malformed_or_empty_dimensions() {
+        for raw in ["", "640", "x480", "640x", "0x480", "640x0", "-1x480"] {
+            assert_eq!(
+                parse_viewport_arg(&args(&["qos-greeter", "--viewport", raw])),
+                None,
+                "accepted malformed viewport {raw:?}"
+            );
+        }
+    }
 }

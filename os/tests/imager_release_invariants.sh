@@ -13,6 +13,7 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
   "$repo/apps/imager/packaging/macos/qos-imager" \
   "$repo/apps/imager/packaging/package-install-medium.sh" \
   "$repo/apps/imager/packaging/build-release-catalog.sh" \
+  "$repo/apps/imager/packaging/verify-linux-release.sh" \
   "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
   "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   "$repo/apps/imager/packaging/publish-site-release.sh" \
@@ -42,17 +43,52 @@ else
 fi
 
 grep -Fq 'id-token: write' "$workflow" \
-  && grep -Fq 'IMAGER_CREDENTIAL_BROKER' "$workflow" \
+  && [ "$(grep -Fc 'enable-openid-connect: true' "$workflow")" -eq 6 ] \
+  && grep -Fq 'IMAGER_LINUX_CREDENTIAL_BROKER' "$workflow" \
+  && grep -Fq 'IMAGER_WINDOWS_CREDENTIAL_BROKER' "$workflow" \
+  && grep -Fq 'IMAGER_MACOS_CREDENTIAL_BROKER' "$workflow" \
+  && grep -Fq 'IMAGER_HOMEBREW_CREDENTIAL_BROKER' "$workflow" \
+  && grep -Fq 'IMAGER_WINGET_CREDENTIAL_BROKER' "$workflow" \
+  && grep -Fq 'IMAGER_SITE_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'QOS_LINUX_SIGNER' "$repo/apps/imager/packaging/package-host.sh" \
   && grep -Fq 'QOS_NOTARY_KEYCHAIN_PROFILE' "$repo/apps/imager/packaging/package-host.sh" \
   && grep -Fq 'QOS_WINDOWS_SIGNER' "$repo/apps/imager/packaging/package-host.ps1" \
-  && ok 'native jobs use OIDC-backed signing without exported platform keys' \
-  || bad 'short-lived signing path is not wired into native release jobs'
+  && ok 'all credentialed jobs enable Forgejo OIDC with platform-specific brokers' \
+  || bad 'short-lived credential path is not wired into every release job'
 
 grep -Fq 'AppImage.asc' "$workflow" \
+  && grep -Fq 'qos-release-key.asc' "$workflow" \
+  && grep -Fq 'IMAGER_LINUX_SIGNING_FINGERPRINT' "$workflow" \
+  && grep -Fq 'verify-linux-release.sh release-assets' "$workflow" \
+  && grep -Fq 'verify-linux-release.sh" "$asset_root"' \
+    "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
   && ! grep -Fqi 'qos-imager-linux-*.flatpak' "$workflow" \
-  && ok 'every Linux download is signed and insecure Flatpak flashing is absent' \
-  || bad 'Linux release artifacts are unsigned or still include privileged Flatpak flashing'
+  && ok 'Linux signatures, release key, and protected fingerprint are a fail-closed publication gate' \
+  || bad 'Linux release trust bundle is incomplete or bypassable'
+
+grep -Fq 'bash os/tests/imager_linux_release_trust.sh' \
+    "$repo/.forgejo/workflows/check.yml" \
+  && ok 'Linux release trust tamper test runs in required checks' \
+  || bad 'Linux release trust tamper test is not wired into CI'
+
+linux_launcher="$repo/apps/imager/packaging/linux/qos-imager"
+mac_launcher="$repo/apps/imager/packaging/macos/qos-imager"
+windows_launcher="$repo/apps/imager/packaging/windows/Start-qOS-Imager.ps1"
+writer="$repo/apps/imager/src/write.rs"
+if grep -Fq 'exec pkexec' "$linux_launcher" \
+  || grep -Fq 'with administrator privileges' "$mac_launcher" \
+  || grep -Fq -- '-Verb RunAs' "$windows_launcher"; then
+  bad 'a native launcher still elevates the complete Imager GUI'
+elif grep -Fq 'WriteBackend::PrivilegedHelper' "$writer" \
+  && grep -Fq 'Command::new("pkexec")' "$writer" \
+  && grep -Fq 'with administrator privileges' "$writer" \
+  && grep -Fq -- '-Verb RunAs' "$writer" \
+  && grep -Fq 'without_secrets' "$writer" \
+  && grep -Fq 'write helper request changed after authorization' "$writer"; then
+  ok 'native GUIs stay unprivileged and authenticate only a digest-bound secret-free writer'
+else
+  bad 'write-time least-privilege helper is incomplete for a native platform'
+fi
 
 for artifact in \
   'qos-imager-linux-*.AppImage' \
@@ -106,6 +142,9 @@ grep -Fq 'qos/homebrew-qos' "$repo/apps/imager/packaging/publish-homebrew-tap.sh
 
 grep -Fq 'site-downloads:' "$workflow" \
   && grep -Fq 'test:release' "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq "jq -r '.tag // empty'" "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq '.linuxSigningFingerprint = $fingerprint' "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq 'QOS_LINUX_SIGNING_FINGERPRINT: ${{ vars.IMAGER_LINUX_SIGNING_FINGERPRINT }}' "$workflow" \
   && ok 'landing-page manifest advances only through the gated release workflow' \
   || bad 'landing-page release publication is not wired'
 
@@ -116,7 +155,7 @@ grep -Fq 'qos-installer-medium-${{ matrix.arch }}' "$workflow" \
   && ok 'native live media is catalogued and verified before writing' \
   || bad 'end-user install medium publication or verification is missing'
 
-grep -Fq 'key: imager-medium-inputs-' "$workflow" \
+grep -Fq 'key: github-assets-all-v1-' "$workflow" \
   && grep -Fq './os/dev/cache-github-assets.sh' "$workflow" \
   && grep -Fq 'podman login code.podesta.ai' "$workflow" \
   && grep -Fq 'sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9' "$workflow" \

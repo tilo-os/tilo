@@ -187,6 +187,8 @@ pub fn pump(relay: &mut MemoryRelay) {
             }
             CollabRequest::Hello { .. }
             | CollabRequest::PublishActions { .. }
+            | CollabRequest::ReportContinuation { .. }
+            | CollabRequest::ClearContinuation { .. }
             | CollabRequest::CompleteInvocation { .. }
             | CollabRequest::UpdateInvocation { .. }
             | CollabRequest::InvokePublishedAction { .. }
@@ -195,7 +197,8 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::ReportContinuation { .. }
             | CollabRequest::ClearContinuation { .. }
             | CollabRequest::LaunchPublishedApplication { .. } => {
-                // The memory relay has no fan-out or shell-owned action directory.
+                // Shell-owned control-plane reports are consumed locally and
+                // never fan out to another application's document channel.
             }
         }
     }

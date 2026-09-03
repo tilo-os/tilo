@@ -164,6 +164,7 @@ fn capture_lines(child: &mut Child) -> (Receiver<String>, Arc<Mutex<Vec<String>>
 fn spawn_host(
     binary: &Path,
     identity: &Path,
+    authority_sockets: &Path,
     mount: &Path,
     cache: &Path,
     seed: &Path,
@@ -171,6 +172,7 @@ fn spawn_host(
 ) -> MountedProcess {
     let mut child = Command::new(binary)
         .env(fs::identity::IDENTITY_ROOT_ENV, identity)
+        .env("QOS_AUTHORITY_SOCKET_DIR", authority_sockets)
         .env("QOS_FS_FUSE_OWNER_ONLY", "1")
         .arg("--test-clock-file")
         .arg(clock)
@@ -387,6 +389,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     let viewer_mount = temp.path().join("viewer-mount");
     let loss_mount = temp.path().join("loss-mount");
     let host_cache = temp.path().join("host-cache");
+    let authority_sockets = temp.path().join("authority-sockets");
     let viewer_cache = temp.path().join("viewer-cache");
     let loss_cache = temp.path().join("loss-cache");
     let seed = temp.path().join("seed");
@@ -397,7 +400,13 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     write_clock(&host_clock, clock_now);
     write_clock(&viewer_clock, clock_now);
     write_clock(&loss_clock, clock_now);
-    for path in [&host_mount, &viewer_mount, &loss_mount, &seed] {
+    for path in [
+        &host_mount,
+        &viewer_mount,
+        &loss_mount,
+        &seed,
+        &authority_sockets,
+    ] {
         std::fs::create_dir_all(path).unwrap();
     }
     std::fs::write(seed.join("shared.bin"), PAYLOAD).unwrap();
@@ -412,6 +421,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     let mut host = spawn_host(
         binary,
         &host_identity,
+        &authority_sockets,
         &host_mount,
         &host_cache,
         &seed,

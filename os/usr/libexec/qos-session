@@ -6,7 +6,6 @@ set -euo pipefail
 
 readonly SYSTEMCTL=/usr/bin/systemctl
 readonly SHELL_BIN=/usr/bin/shell
-readonly CAGE_BIN=/usr/bin/cage
 readonly SESSION_TARGET=qos-graphical-session.target
 
 target_started=0
@@ -47,20 +46,11 @@ run_managed() {
   return "$status"
 }
 
-# First login needs a display for the explicit no-recovery acknowledgement,
-# but the qOS compositor must not start before identity exists. Cage provides
-# one temporary single-client Wayland session after greetd authentication and
-# releases DRM/seat ownership when the ceremony exits. Existing complete
-# identities skip it; partial legacy state takes the same idempotent provision
-# path and is still verified afterward.
-if ! "$SHELL_BIN" --verify-collaboration-identity >/dev/null 2>&1; then
-  run_managed "$CAGE_BIN" -s -- "$SHELL_BIN" --provision-identity
-  "$SHELL_BIN" --verify-collaboration-identity
-fi
-
 # This blocks until graphical-session-pre.target (whose identity unit performs
-# idempotent migration/repair) and graphical-session.target complete. Starting the
-# qOS-owned target is necessary because the standard graphical targets carry
+# idempotent migration/repair) and graphical-session.target complete. A missing
+# identity is intentionally a no-op here: the native compositor owns first-login
+# OOBE because it is the first trusted display surface. Starting the qOS-owned
+# target is necessary because the standard graphical targets carry
 # RefuseManualStart=yes.
 "$SYSTEMCTL" --user start "$SESSION_TARGET"
 target_started=1

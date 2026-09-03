@@ -64,6 +64,9 @@ extern crate runtime_dylib;
 /// offscreen layout for a scenario, or writing its PNG to disk.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
+    if let Some(code) = imager::write::maybe_run_write_helper(&args)? {
+        std::process::exit(code);
+    }
     let viewport = parse_value_arg(&args, "--viewport")
         .and_then(|s| parse_viewport(&s))
         .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
