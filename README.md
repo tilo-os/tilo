@@ -66,8 +66,9 @@ Full OS image — `./os/build.sh` produces a qcow2 (rootless podman; the disk-im
 sudo), and `./os/test-vm.sh` boots it under QEMU.
 
 Host-session packages for Ubuntu/Debian, Fedora, Arch, and NixOS are documented
-in [`docs/packaging.md`](docs/packaging.md). CI builds and install-tests both
-x86-64/amd64 and AArch64/arm64 before publishing a tagged release.
+in [`docs/packaging.md`](docs/packaging.md). The current release gate builds and
+install-tests x86-64/amd64. ARM64 packaging is implemented but not a release
+target until a native runner can validate the Nix closure.
 
 ## Testing
 
@@ -94,6 +95,7 @@ The required application-facing resource/action contract is documented in
 
 ## Where to read first
 
+- [`docs/getting-started.md`](docs/getting-started.md) — choose a VM, Linux desktop session, or complete-system install
 - [`docs/architecture.md`](docs/architecture.md) — component overview
 - [`plan/`](plan/) — design intent for the compositor, collaboration, security, distribution
 - [`DEVELOPMENT.md`](DEVELOPMENT.md) — build environment and running qOS on your own machine
@@ -109,6 +111,11 @@ produces the same pixels as the live binary.
 Collaboration between different people works today. Syncing your own devices to each other is
 the part that is not finished. Also outstanding for daily-driver use: multi-monitor, the
 AT-SPI accessibility tree, audio routing, notifications, session lock and power management.
+
+Release packaging covers the platform matrix in `docs/install-contract.json`,
+but the first public Imager, installer image, and Linux package registries have
+not yet been promoted. The website must not expose download commands until the
+release promotion workflow marks them published.
 
 ## License
 

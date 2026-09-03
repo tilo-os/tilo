@@ -1897,6 +1897,11 @@ impl InstallerApp {
                 .with_placeholder("Select a keyboard layout"),
         ));
         children.push(Box::new(KeyboardView::new(KEYMAP_PATH)));
+        children.push(Box::new(
+            Text::new("Need files from this computer, or removing an alongside qOS install? Press Ctrl+Alt+F2 for recovery tools; Ctrl+Alt+F1 returns here.")
+                .with_size(sm)
+                .with_color(dim),
+        ));
         children.push(nav_row(Step::Keyboard, NEXT_PATH, "Next", false));
     }
 

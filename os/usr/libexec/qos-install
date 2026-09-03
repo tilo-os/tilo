@@ -665,6 +665,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
   ENC_LUKS="$(printf '%s\n' "$PREP" | sed -n 's/^LUKS_PART=//p')"
   ENC_KEYFILE="$(printf '%s\n' "$PREP" | sed -n 's/^KEY_FILE=//p')"
   ENC_ROOT_UUID="$(printf '%s\n' "$PREP" | sed -n 's/^ROOT_FS_UUID=//p')"
+  ROOT_FS_UUID="$ENC_ROOT_UUID"
   ENC_KARGS="$(printf '%s\n' "$PREP" | sed -n 's/^KARGS=//p')"
   [ -n "$ENC_MNT" ] && [ -n "$ENC_LUKS" ] && [ -n "$ENC_ROOT_UUID" ] && [ -n "$ENC_KARGS" ] \
     || die "encryption: qos-disk-encrypt prepare did not report the volume it made"
@@ -913,6 +914,32 @@ if [ "$COPIED_CONNECTIONS" -gt 0 ]; then
 fi
 
 install -d -m 0755 "$DEPLOY_ETC/qos"
+# Leave a machine-readable ownership receipt for live-media recovery. Removal
+# never infers ownership from a generic Linux partition type or filesystem
+# label: it requires this receipt, verifies the selected filesystem UUID, and
+# removes only EFI artifacts whose embedded command line names this exact root.
+# A full-disk install is recorded too, but the recovery tool deliberately will
+# not dismantle it partition-by-partition; whole disks belong in Disks.
+INSTALL_MARKER="$DEPLOY_ETC/qos/install-marker"
+INSTALL_MODE=full-disk
+[ "$ALONGSIDE" -eq 1 ] && INSTALL_MODE=alongside
+{
+  ROOT_PARTITION_UUID=""
+  [ "$ALONGSIDE" -eq 1 ] && ROOT_PARTITION_UUID="$(blkid -s UUID -o value "$ROOT_PARTITION" 2>/dev/null || true)"
+  printf 'version=1\nmode=%s\nroot_partition_uuid=%s\nroot_filesystem_uuid=%s\n' \
+    "$INSTALL_MODE" "$ROOT_PARTITION_UUID" "${ROOT_FS_UUID:-}"
+  if [ "$ALONGSIDE" -eq 1 ]; then
+    EFI_UUID="$(blkid -s UUID -o value "$EFI_PARTITION" 2>/dev/null || true)"
+    printf 'efi_uuid=%s\n' "$EFI_UUID"
+    while IFS= read -r EFI_FILE; do
+      RELATIVE_EFI="${EFI_FILE#"$MNT/boot/efi/"}"
+      case "$RELATIVE_EFI" in EFI/Linux/*.efi|loader/entries/*.conf) printf 'efi_artifact=%s\n' "$RELATIVE_EFI";; esac
+    done < <(grep -aFl -- "root=UUID=${ROOT_FS_UUID:-no-root-uuid}" \
+      "$MNT"/boot/efi/EFI/Linux/*.efi "$MNT"/boot/efi/loader/entries/*.conf 2>/dev/null || true)
+  fi
+} > "$INSTALL_MARKER"
+chmod 0600 "$INSTALL_MARKER"
+log "  wrote qOS recovery ownership marker"
 CONF="$DEPLOY_ETC/qos/install-user.conf"
 CONF_TMP="$(mktemp "$DEPLOY_ETC/qos/.install-user.XXXXXX")"
 chmod 0600 "$CONF_TMP"
