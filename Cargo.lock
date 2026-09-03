@@ -4639,6 +4639,7 @@ dependencies = [
  "thiserror 2.0.18",
  "thumbnail",
  "tokio",
+ "toml 0.8.23",
  "uuid",
 ]
 

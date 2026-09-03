@@ -14,6 +14,9 @@
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use collab_types::Principal;
+use fs::full_replica::{
+    HomePeerBundle, HomePeerSet, aggregate_status, hydrate_full_workspace, save_status,
+};
 use fs::namespace::ROOT_INO;
 use fs::sync::{self, SyncHandle};
 use fs::{
@@ -368,6 +371,33 @@ enum Command {
         #[arg(long)]
         fs_binary: Option<PathBuf>,
     },
+    /// Keep a complete, authenticated workspace replica without mounting FUSE.
+    Replica {
+        /// A home-peer bundle exported by an existing workspace member.
+        #[arg(long)]
+        config: PathBuf,
+    },
+    /// Export the one-file home-peer bundle for an always-on qOS host.
+    ExportHomePeer {
+        /// Cache directory of the workspace currently served by this device.
+        #[arg(long)]
+        cache_dir: PathBuf,
+        /// Existing capability list which the home peer must enforce.
+        #[arg(long)]
+        acl: PathBuf,
+        /// Destination bundle to transfer to the home peer.
+        #[arg(long)]
+        output: PathBuf,
+        /// Persistent cache directory on the home peer.
+        #[arg(long, default_value = "/var/lib/qos/full-replica")]
+        replica_cache_dir: PathBuf,
+        /// Atomic readiness proof read by qos-relay.
+        #[arg(long, default_value = "/var/lib/qos/full-replica/status.json")]
+        status_file: PathBuf,
+        /// Additional capability principals held by the host identity.
+        #[arg(long = "principal")]
+        principals: Vec<String>,
+    },
 }
 
 #[tokio::main]
@@ -455,6 +485,22 @@ async fn main() -> Result<()> {
             cache_root,
             fs_binary,
         } => recipient_service(socket, mounts_root, cache_root, fs_binary).await,
+        Command::Replica { config } => replica(config).await,
+        Command::ExportHomePeer {
+            cache_dir,
+            acl,
+            output,
+            replica_cache_dir,
+            status_file,
+            principals,
+        } => export_home_peer(
+            cache_dir,
+            acl,
+            output,
+            replica_cache_dir,
+            status_file,
+            principals,
+        ),
     }
 }
 
@@ -657,6 +703,200 @@ async fn open_store(cache_dir: Option<PathBuf>) -> Result<ContentStore> {
     }
 }
 
+fn workspace_ticket_path(cache_dir: &Path) -> PathBuf {
+    cache_dir.join("workspace-ticket")
+}
+
+/// Export a transfer-ready home-peer bundle from the workspace this device is
+/// already serving. The ticket is written by `fs serve`, so no terminal ticket
+/// or per-file configuration needs to be copied by hand.
+fn export_home_peer(
+    cache_dir: PathBuf,
+    acl: PathBuf,
+    output: PathBuf,
+    replica_cache_dir: PathBuf,
+    status_file: PathBuf,
+    principals: Vec<String>,
+) -> Result<()> {
+    let ticket_path = workspace_ticket_path(&cache_dir);
+    let ticket = std::fs::read_to_string(&ticket_path)
+        .with_context(|| format!("read active workspace ticket {}", ticket_path.display()))?;
+    let decoded_ticket =
+        Ticket::decode(ticket.trim()).context("active workspace ticket is invalid")?;
+    if !acl.is_file() {
+        bail!("capability list {} is not a regular file", acl.display());
+    }
+    let capability_json = std::fs::read_to_string(&acl)
+        .with_context(|| format!("read capability list {}", acl.display()))?;
+    let _: serde_json::Value =
+        serde_json::from_str(&capability_json).context("capability list is not valid JSON")?;
+    let workspace = HomePeerBundle {
+        ticket: ticket.trim().to_owned(),
+        cache_dir: replica_cache_dir.join(decoded_ticket.workspace_id().to_string()),
+        capability_json,
+        principals,
+    };
+    let mut bundle = if output.exists() {
+        toml::from_str::<HomePeerSet>(&std::fs::read_to_string(&output)?)
+            .context("parse existing home-peer bundle")?
+    } else {
+        HomePeerSet {
+            status_file,
+            workspaces: Vec::new(),
+        }
+    };
+    // Re-exporting refreshes the ticket, ACL and cache assignment for this
+    // workspace instead of leaving duplicate workers in the bundle.
+    bundle.workspaces.retain(|entry| {
+        Ticket::decode(&entry.ticket)
+            .map(|ticket| ticket.workspace != decoded_ticket.workspace)
+            .unwrap_or(true)
+    });
+    bundle.workspaces.push(workspace);
+    atomic_file::write(&output, toml::to_string_pretty(&bundle)?.as_bytes())?;
+    println!("exported home-peer bundle to {}", output.display());
+    Ok(())
+}
+
+/// Join a workspace as a durable, serving peer without a FUSE mount. The
+/// normal workspace router keeps the supplied live capability policy in front
+/// of its blob provider, so a home peer never becomes an unenforced source.
+#[allow(clippy::too_many_lines)]
+async fn replica(config_path: PathBuf) -> Result<()> {
+    let config_text = std::fs::read_to_string(&config_path)
+        .with_context(|| format!("read home-peer bundle {}", config_path.display()))?;
+    let bundle: HomePeerSet = toml::from_str(&config_text)
+        .with_context(|| format!("parse home-peer bundle {}", config_path.display()))?;
+    if bundle.workspaces.is_empty() {
+        bail!("home-peer bundle contains no workspaces");
+    }
+    save_status(
+        &bundle.status_file,
+        &fs::full_replica::FullReplicaStatus::syncing(),
+    )?;
+    let workspace_count = bundle.workspaces.len();
+    let (status_tx, mut status_rx) = tokio::sync::mpsc::channel(workspace_count.saturating_mul(2));
+    for (index, workspace) in bundle.workspaces.into_iter().enumerate() {
+        let status_tx = status_tx.clone();
+        tokio::spawn(async move {
+            if let Err(error) = replica_workspace(workspace, index, status_tx.clone()).await {
+                let mut failed = fs::full_replica::FullReplicaStatus::syncing();
+                failed.state = "failed".into();
+                failed.error = Some(error.to_string());
+                let _ = status_tx.send((index, failed)).await;
+            }
+        });
+    }
+    drop(status_tx);
+    let mut states = vec![fs::full_replica::FullReplicaStatus::syncing(); workspace_count];
+    loop {
+        let Some((index, status)) = status_rx.recv().await else {
+            bail!("all home-peer workspace workers exited");
+        };
+        states[index] = status;
+        let aggregate = aggregate_status(&states);
+        save_status(&bundle.status_file, &aggregate)?;
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn replica_workspace(
+    bundle: HomePeerBundle,
+    index: usize,
+    status_tx: tokio::sync::mpsc::Sender<(usize, fs::full_replica::FullReplicaStatus)>,
+) -> Result<()> {
+    let ticket = Ticket::decode(&bundle.ticket).context("decode home-peer ticket")?;
+    std::fs::create_dir_all(&bundle.cache_dir)?;
+    let local_acl = bundle.cache_dir.join("capabilities.json");
+    atomic_file::write(&local_acl, bundle.capability_json.as_bytes())?;
+
+    let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
+    let paths = identity_paths();
+    let certified = load_certified_mount_identity(&paths, now_ns())?;
+    let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
+    let (device, credentials) = certified.into_parts();
+    let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
+        .with_transport_gate(transport_gate);
+    let caps = resolve_acl(
+        &AclArgs {
+            acl: Some(local_acl),
+            identity: None,
+            principals: bundle.principals.clone(),
+            acl_reload_secs: 1,
+        },
+        credentials.user_public_key(),
+    )?
+    .context("home-peer bundle requires a capability list")?;
+    let acl = (caps.handle(), caps.identity());
+    let _reload = spawn_acl_reload(caps, 1);
+    let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret).await?;
+    let store = Arc::new(open_store(Some(bundle.cache_dir.clone())).await?);
+    let hydrator = Arc::new(Hydrator::new(endpoint.clone(), Arc::clone(&store)));
+    let namespace_path = namespace_path(Some(&bundle.cache_dir));
+    let namespace = Arc::new(Mutex::new(
+        open_namespace_mount(
+            endpoint.id().to_string(),
+            namespace_path.as_deref(),
+            &endpoint,
+            ticket.node.clone(),
+            &transport_identity,
+        )
+        .await?,
+    ));
+    let workspace = Workspace::join(
+        endpoint.clone(),
+        lookup,
+        store,
+        Arc::clone(&hydrator),
+        Arc::clone(&namespace),
+        ticket,
+        transport_identity,
+        Some(acl.0),
+    )
+    .await?;
+    let _persist = namespace_path.map(|path| spawn_persist(Arc::clone(&namespace), path));
+    println!("Home peer joined workspace; hydrating complete content replica.");
+    let mut hydrated_namespace = None;
+    let mut last_status = fs::full_replica::FullReplicaStatus::syncing();
+    loop {
+        let before = replica_namespace_fingerprint(&namespace);
+        if hydrated_namespace.as_ref() == Some(&before) {
+            // Keep the proof fresh without re-reading the full content set on
+            // every heartbeat. Any namespace delta below clears this fast path.
+            let _ = status_tx.send((index, last_status.clone())).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            continue;
+        }
+        // Withdraw first. A partial or stalled pass must never leave the
+        // previous workspace revision advertised as a complete replica.
+        let _ = status_tx
+            .send((index, fs::full_replica::FullReplicaStatus::syncing()))
+            .await;
+        let status = hydrate_full_workspace(&namespace, &hydrator).await;
+        let after = replica_namespace_fingerprint(&namespace);
+        if status.full_content_replication && before != after {
+            // A reconciliation landed while blobs were downloading. Start a
+            // fresh pass against that exact namespace rather than claiming a
+            // hybrid of two revisions.
+            hydrated_namespace = None;
+            continue;
+        }
+        let _ = status_tx.send((index, status.clone())).await;
+        hydrated_namespace = status.full_content_replication.then_some(after);
+        last_status = status;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let _ = &workspace;
+    }
+}
+
+fn replica_namespace_fingerprint(namespace: &Arc<Mutex<Namespace>>) -> [u8; 32] {
+    let bytes = namespace
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .save();
+    *blake3::hash(&bytes).as_bytes()
+}
+
 #[allow(clippy::too_many_lines)] // Linear CLI assembly keeps resource lifetimes explicit.
 async fn serve(
     mount_point: PathBuf,
@@ -829,6 +1069,10 @@ async fn serve(
         "Hosting workspace — share this ticket to invite peers:\n{}",
         ticket.encode()?
     );
+    if let Some(cache_dir) = &cache_dir {
+        let encoded = ticket.encode()?;
+        atomic_file::write(&workspace_ticket_path(cache_dir), encoded.as_bytes())?;
+    }
     // Owner operations require the certified human root. Secondary devices
     // never substitute their device key and recipient mounts never host this
     // service.
@@ -965,6 +1209,12 @@ async fn mount(
 ) -> Result<()> {
     let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
     let ticket = Ticket::decode(&ticket)?;
+    if let Some(cache_dir) = &cache_dir {
+        atomic_file::write(
+            &workspace_ticket_path(cache_dir),
+            ticket.encode()?.as_bytes(),
+        )?;
+    }
     let np = namespace_path(cache_dir.as_deref());
     let replacement_transactions = cache_dir
         .as_ref()

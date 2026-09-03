@@ -61,6 +61,12 @@ pub struct RelayConfig {
     #[serde(default = "default_state_root")]
     pub state_root: PathBuf,
 
+    /// Atomic readiness proof produced by `fs replica`.  Content-replication
+    /// capacity is advertised only while this says the complete current
+    /// namespace (manifests, chunks, and thumbnails) is resident.
+    #[serde(default = "default_full_replica_status")]
+    pub full_replica_status: PathBuf,
+
     /// Iroh endpoint bind hint. `0.0.0.0:0` = OS-chosen port.
     #[serde(default = "default_iroh_listen")]
     pub iroh_listen: SocketAddr,
@@ -77,10 +83,9 @@ pub struct RelayConfig {
     #[serde(default = "default_device_role")]
     pub device_role: DeviceRole,
 
-    /// Services requested by the operator. The standalone relay clamps this
-    /// to services it actually starts; in particular it cannot advertise
-    /// content residency, app serving, compute, or remote-control tunnelling
-    /// without their corresponding host planes.
+    /// Services requested by the operator. Runtime advertisement is clamped
+    /// to the planes started by the composite home peer and its live residency
+    /// proof.
     #[serde(default = "default_services")]
     pub services: ServiceCapabilities,
 
@@ -172,6 +177,10 @@ fn default_state_root() -> PathBuf {
     PathBuf::from("/var/lib/qos-relay")
 }
 
+fn default_full_replica_status() -> PathBuf {
+    PathBuf::from("/var/lib/qos/full-replica/status.json")
+}
+
 fn default_iroh_listen() -> SocketAddr {
     // Constructed directly rather than parsed — `0.0.0.0:0` is
     // infallible either way, but this has no panic path to document.
@@ -183,6 +192,7 @@ impl Default for RelayConfig {
         Self {
             identity_root: default_identity_root(),
             state_root: default_state_root(),
+            full_replica_status: default_full_replica_status(),
             iroh_listen: default_iroh_listen(),
             trust_policy: TrustPolicy::default(),
             device_role: default_device_role(),
