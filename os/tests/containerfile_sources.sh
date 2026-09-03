@@ -36,6 +36,7 @@ staged_at_build_time() {
 # Containerfile:context — the source paths are relative to the build context, which
 # is not the same for all of them.
 for spec in "os/Containerfile:$REPO" \
+            "os/Containerfile.wpe-buildroot:$REPO" \
             "os/Containerfile.installer:$REPO/os" \
             "os/Containerfile.test:$REPO/os" \
             "os/Containerfile.host:$REPO"; do
