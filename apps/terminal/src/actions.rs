@@ -375,15 +375,17 @@ mod tests {
         send(&mut widget, &mut doc, &left_press());
 
         let resources = Widget::resources(&widget, &doc);
-        assert_eq!(resources.len(), 1);
-        let ids: Vec<_> = resources[0]
+        assert_eq!(resources.len(), 1, "one terminal-session root");
+        let terminal = &resources[0];
+        assert_eq!(terminal.kind, "terminal.session");
+        let ids: Vec<_> = terminal
             .actions
             .iter()
             .map(|action| action.id.as_str())
             .collect();
         assert_eq!(ids, vec!["send", "interrupt", "clear"]);
         assert!(
-            resources[0]
+            terminal
                 .actions
                 .iter()
                 .all(|action| action.kind == ui::qos_actions::OperationKind::Effect)

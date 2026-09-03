@@ -13,6 +13,15 @@ DefaultDependencies=no
 # Hard-fail the unit when the FUSE module isn't loadable so we don't
 # silently boot the compositor with an empty mount.
 ConditionPathExists=/dev/fuse
+# A fresh user's certified device identity is created by the graphical OOBE.
+# Starting before that ceremony is expected to fail, so skip cleanly here;
+# fs-identity.path starts us as soon as cert.bin is created. Keeping this unit
+# enabled preserves the Before=greetd ordering on later boots, when it exists.
+ConditionPathExists=/var/lib/qos/device/cert.bin
+# The disposable installer has no durable device certificate. Starting the
+# collaborative mount there can only enter a restart loop; qos-install removes
+# this kernel marker from the target UKI, so installed systems remain enabled.
+ConditionKernelCommandLine=!qos.install
 
 [Service]
 Type=simple

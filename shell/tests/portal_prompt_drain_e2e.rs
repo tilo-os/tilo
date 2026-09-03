@@ -37,7 +37,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use shell::portal::{
-    self, CallerMap, FilePickerQueue, FilePickerSpawnerHandle, GrantStoreHandle,
+    self, CallerMap, CapabilityKind, FilePickerQueue, FilePickerSpawnerHandle, GrantStoreHandle,
     MockScreenCastProvisioner, NullFilePickerSpawner, OBJECT_PATH, PortalCaller, PortalContext,
     PromptQueueHandle, PromptResolver, RemoteInputInjectorHandle,
     ScreenCastStreamProvisionerHandle,
@@ -98,6 +98,7 @@ async fn access_proxy(ctx: PortalContext) -> (Connection, Connection, Proxy<'sta
 fn context(grants: GrantStoreHandle, prompts: PromptQueueHandle, ws: WorkspaceId) -> PortalContext {
     let caller_map = CallerMap::new();
     caller_map.force_caller_for_tests(PortalCaller::new(ws, APP));
+    let resolver_map = caller_map.clone();
     PortalContext {
         grants,
         prompts,
@@ -107,8 +108,19 @@ fn context(grants: GrantStoreHandle, prompts: PromptQueueHandle, ws: WorkspaceId
             MockScreenCastProvisioner::new_with_node(1, "t"),
         )),
         remote_input_injector: RemoteInputInjectorHandle::null(),
+        input_capture: shell::portal::InputCaptureCompositorHandle::unavailable(),
         print_spooler: shell::portal::PrintSpoolerHandle::null(),
         documents: portal::documents_for_session(),
+        notifications: shell::notifications::NotificationBridge::new(),
+        desktop_services: shell::portal::DesktopPortalServices::default(),
+        authenticator: Some(shell::portal::PortalAuthenticator::fixed_for_tests(
+            ":1.0".try_into().expect("fixed p2p owner"),
+            Arc::new(move |app_id: &str, _: Option<&str>| {
+                resolver_map
+                    .lookup("")
+                    .filter(|caller| caller.app_id == app_id)
+            }),
+        )),
     }
 }
 
@@ -245,8 +257,8 @@ async fn denying_a_prompt_releases_the_portal_call_too() {
     );
 }
 
-/// Session-scoped approval answers the call and persists, so the next
-/// request for the same capability does not ask again.
+/// Session-scoped approval answers the call and persists locally, so the next
+/// request does not ask again without leaking the choice to workspace peers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_session_grant_answers_and_persists() {
     let prompts = PromptQueueHandle::new(PromptResolver::Channel);
@@ -259,8 +271,12 @@ async fn a_session_grant_answers_and_persists() {
     let (code, _) = await_response(&mut host, call).await;
     assert_eq!(code, 0);
 
+    assert_eq!(
+        grants.lookup(&PortalCaller::new(ws, APP), CapabilityKind::Camera),
+        Some(shell::shell::state::GRANT_SESSION)
+    );
     let tree = grants.tree_handle();
-    let has_camera = {
+    let has_replicated_camera = {
         let guard = tree.read();
         guard
             .workspaces
@@ -277,8 +293,8 @@ async fn a_session_grant_answers_and_persists() {
             })
     };
     assert!(
-        has_camera,
-        "a Session answer must persist the capability on the workspace"
+        !has_replicated_camera,
+        "a private portal decision must not enter the collaborative workspace"
     );
 }
 

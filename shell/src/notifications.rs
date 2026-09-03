@@ -95,7 +95,9 @@ pub struct IncomingNotification {
     pub contact_endpoint: Option<String>,
 }
 
-#[derive(Default, Debug)]
+type ActionTap = Arc<dyn Fn(u32, &str) + Send + Sync + 'static>;
+
+#[derive(Default)]
 struct BridgeInner {
     /// `Notify` → compositor toast pump.
     incoming: Vec<IncomingNotification>,
@@ -105,6 +107,23 @@ struct BridgeInner {
     closed_events: Vec<(u32, CloseReason)>,
     /// Toast action activated in the compositor → `ActionInvoked` signal.
     action_events: Vec<(u32, String)>,
+    /// Additional protocol-specific consumers. The freedesktop notification
+    /// service still drains `action_events`; taps receive a copy at write time
+    /// so a portal backend never races it for the same toast click.
+    action_taps: Vec<ActionTap>,
+}
+
+impl std::fmt::Debug for BridgeInner {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BridgeInner")
+            .field("incoming", &self.incoming.len())
+            .field("close_requests", &self.close_requests.len())
+            .field("closed_events", &self.closed_events.len())
+            .field("action_events", &self.action_events.len())
+            .field("action_taps", &self.action_taps.len())
+            .finish()
+    }
 }
 
 /// Thread-safe mailbox between the async D-Bus service and the
@@ -182,7 +201,20 @@ impl NotificationBridge {
     /// compositor → app: record that a toast action was activated, to be emitted as `ActionInvoked`.
     pub fn note_action(&self, id: u32, action_key: impl Into<String>) {
         if let Ok(mut g) = self.inner.lock() {
-            g.action_events.push((id, action_key.into()));
+            let action_key = action_key.into();
+            g.action_events.push((id, action_key.clone()));
+            for tap in &g.action_taps {
+                tap(id, &action_key);
+            }
+        }
+    }
+
+    /// Subscribe a protocol-specific action observer. Observers are invoked
+    /// while the bridge lock is held, so they must only enqueue/copy data and
+    /// never re-enter `NotificationBridge`.
+    pub fn add_action_tap(&self, tap: ActionTap) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.action_taps.push(tap);
         }
     }
 

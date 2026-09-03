@@ -100,6 +100,10 @@ pub fn run_with_full_options(opts: HostedOptions) {
         enable_peer_sync,
         crate::shell::session_record_store(),
     );
+    let notification_bridge = crate::notifications::NotificationBridge::new();
+    chrome
+        .borrow_mut()
+        .set_notification_bridge(notification_bridge.clone());
     if let Some(notice) = &state_notice {
         crate::shell::notification::announce_state_notice(&chrome, notice);
     }
@@ -161,6 +165,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
         tree_handle.clone(),
         portal_prompts,
         portal_pickers,
+        notification_bridge,
     ) {
         PortalBringup::Disabled => (None, None),
         PortalBringup::RuntimeUnavailable => {
@@ -474,6 +479,7 @@ fn bring_up_portal(
     tree_handle: crate::shell::state::WorkspaceTreeHandle,
     portal_prompts: crate::portal::PromptQueueHandle,
     portal_pickers: crate::portal::FilePickerQueue,
+    notifications: crate::notifications::NotificationBridge,
 ) -> PortalBringup {
     if !enable_portals {
         return PortalBringup::Disabled;
@@ -494,6 +500,7 @@ fn bring_up_portal(
     };
     // The portal's grant store shares the same `WorkspaceTreeHandle` as chrome + peer-sync: an
     // `Allow` outcome flips a workspace grant on the same tree the Permissions tab reads, and `doc_insert_grant` mirrors it into the automerge doc so peer-sync ships it next tick.
+    let desktop_services = crate::portal::DesktopPortalServices::for_session(tree_handle.clone());
     let grants = crate::portal::GrantStoreHandle::new(tree_handle);
     let ctx = crate::portal::PortalContext {
         grants,
@@ -509,8 +516,12 @@ fn bring_up_portal(
             )),
         ),
         remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+        input_capture: crate::portal::InputCaptureCompositorHandle::unavailable(),
         documents: crate::portal::documents_for_session(),
         print_spooler: crate::portal::PrintSpoolerHandle::cups(),
+        notifications,
+        desktop_services,
+        authenticator: None,
     };
     let serve_result: Result<crate::portal::ServerHandle, zbus::Error> =
         rt_handle.block_on(async move {

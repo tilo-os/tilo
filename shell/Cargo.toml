@@ -64,12 +64,17 @@ atomic-file = { path = "../crates/system/atomic-file" }
 settings-store = { path = "../crates/system/settings-store" }
 desktop-policy = { path = "../crates/system/desktop-policy" }
 tokio = { workspace = true, features = ["full"] }
+# qOS owns the producer side of portal ScreenCast streams.  `pipewire-rs`
+# talks to the session daemon directly; sandboxed apps only receive a remote
+# after the portal has granted a session.
+pipewire = "0.10.1"
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zeroize.workspace = true
+chacha20poly1305.workspace = true
 chrono = { workspace = true, default-features = true }
 uuid.workspace = true
 # `dirs-next` is deprecated; `dirs` 6 is the maintained drop-in. The
@@ -210,6 +215,9 @@ ffmpeg-next = { version = "8", optional = true, default-features = false, featur
 # 4.4.x — staying on the same major avoids a duplicate compile + runtime
 # copy of the entire async-task stack zbus drags in.
 zbus = { workspace = true, features = ["tokio", "p2p"] }
+# EIS is the protocol transport required by InputCapture.  The calloop
+# feature lets its socket state live beside the compositor event loop.
+reis = { version = "0.7.1", features = ["calloop"] }
 # BlueZ over D-Bus. The compositor owns the pairing agent because answering
 # "do these six digits match?" decides whether a nearby device may inject
 # keystrokes — not a dialog an application may draw.
@@ -220,6 +228,7 @@ qos-bluez = { path = "../crates/system/qos-bluez" }
 # the runtime path so we promote it. Cargo collapses to a single copy
 # either way — moving the entry is zero compile-time cost.
 png.workspace = true
+image = { workspace = true, features = ["jpeg", "png", "webp"] }
 # Phase 3 of `2026-06-29-spaces-channels-and-cryptographic-roles.md`:
 # the broker validates inbound `SignedOp` envelopes against the
 # channel's role table before fan-out; the Iroh actor carries them

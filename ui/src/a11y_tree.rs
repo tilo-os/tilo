@@ -387,10 +387,6 @@ impl SemanticTree {
     /// qOS resource/action surface. Bespoke app actions remain preferable for
     /// domain operations; this projection closes the driveability gap for
     /// ordinary controls such as buttons, fields, tabs, toggles, and sliders.
-    #[expect(
-        clippy::expect_used,
-        reason = "the framework-owned semantic operation contains only serializable strings"
-    )]
     pub(crate) fn action_resources(&self) -> Vec<Resource> {
         self.iter()
             .filter(|node| node.id != self.root && !node.id.0.starts_with("r:"))
@@ -442,8 +438,22 @@ impl SemanticTree {
                                     action: operation.action.clone(),
                                     value: Some(value.to_string()),
                                 };
-                                EncodedAction::encode_operation(SEMANTIC_OPERATION_TYPE, &operation)
-                                    .expect("semantic operation is serializable")
+                                match EncodedAction::encode_operation(
+                                    SEMANTIC_OPERATION_TYPE,
+                                    &operation,
+                                ) {
+                                    Ok(action) => action,
+                                    Err(error) => {
+                                        tracing::error!(
+                                            %error,
+                                            "semantic operation could not be serialized"
+                                        );
+                                        EncodedAction {
+                                            type_id: SEMANTIC_OPERATION_TYPE.to_string(),
+                                            payload: Vec::new(),
+                                        }
+                                    }
+                                }
                             },
                         ),
                         _ => match ActionSpec::operation(

@@ -1072,15 +1072,15 @@ mod tests {
 
         // The newest history entry is a node whose 'delete' affordance carries
         // the exact EncodedAction the on-screen delete control dispatches.
-        let history_id = resources[0]
+        let history_id = resources
+            .first()
+            .expect("calculator workspace resource")
             .children
             .iter()
             .find(|resource| resource.kind == "calculator.history_entry")
-            .map(|resource| format!("r:{}", resource.id.0))
-            .expect("published history entry");
-        let entry = tree
-            .node(&ui::SemanticId(history_id))
-            .expect("history entry node");
+            .map(|resource| ui::SemanticId(format!("r:{}", resource.id.as_str())))
+            .expect("published history entry resource");
+        let entry = tree.node(&history_id).expect("history entry node");
         let exposed = match &entry.action("delete").expect("delete affordance").kind {
             ui::SemanticActionKind::App(enc) => enc.clone(),
             other => panic!("expected an app action, got {other:?}"),

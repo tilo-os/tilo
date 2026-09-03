@@ -14,6 +14,7 @@
 
 use regex::Regex;
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -276,7 +277,8 @@ fn write_baseline(path: &Path, counts: &BTreeMap<(String, String), usize>) {
          # This is a ratchet, not approval: counts may only move down.\n",
     );
     for ((path, pattern), count) in counts {
-        output.push_str(&format!("{path} {pattern} {count}\n"));
+        writeln!(&mut output, "{path} {pattern} {count}")
+            .expect("writing a baseline line to a String is infallible");
     }
     fs::write(path, output).unwrap_or_else(|e| panic!("could not write {}: {e}", path.display()));
 }

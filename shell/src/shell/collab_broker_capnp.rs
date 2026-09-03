@@ -363,6 +363,8 @@ struct ChannelSubscribers {
     context: Vec<ContextSub>,
 }
 
+type ActionCatalogueSubscriber = (String, String, mpsc::UnboundedSender<String>);
+
 /// Shared typed broker state, attached to the transport-neutral fanout core.
 pub struct CapnpBrokerState {
     /// Keyed by `join_channel`'s `channel_id`; lazily inserted on first join.
@@ -386,8 +388,7 @@ pub struct CapnpBrokerState {
     archived_surfaces: Mutex<HashMap<(String, String, String), PublishedSurface>>,
     /// Directed invocation stream registered by each application connection.
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
-    action_catalogue_subscribers:
-        Mutex<HashMap<u64, (String, String, mpsc::UnboundedSender<String>)>>,
+    action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
     completed_invocations: Mutex<HashMap<u64, (String, qos_actions::InvocationUpdate)>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
@@ -546,6 +547,10 @@ impl CapnpBrokerState {
         result
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "catalogue projection applies one ordered authorization and serialization pass"
+    )]
     fn action_catalogue_json(&self, cluster_id: &str, actor: &str) -> Result<String, String> {
         let membership = self
             .membership
@@ -556,7 +561,9 @@ impl CapnpBrokerState {
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == cluster_id)
-            .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
+            .ok_or_else(|| "the application workspace is no longer hosted".to_string())?
+            .clone();
+        drop(tree);
         let caller = workspace.actor_for_person(&actor.to_string());
         let live_apps = self
             .published_surfaces()
@@ -706,6 +713,11 @@ impl CapnpBrokerState {
     /// Address one operation back to the exact connection that published it.
     /// The returned receiver resolves only after the application reports a
     /// structured completion; dropping the connection resolves as a refusal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the surface or action is unavailable or the
+    /// invocation cannot be sent to its owning connection.
     pub fn invoke(
         &self,
         peer_id: u64,
@@ -718,6 +730,11 @@ impl CapnpBrokerState {
             .map(|job| job.completion)
     }
 
+    /// Start an unconfirmed invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the action is unavailable or cannot be delivered.
     pub fn start_invocation(
         &self,
         peer_id: u64,
@@ -729,6 +746,11 @@ impl CapnpBrokerState {
         self.start_invocation_confirmed(peer_id, resource, action, argument, actor, None)
     }
 
+    /// Prepare a one-use confirmation token bound to this exact invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the action, phrase, or confirmation registry is invalid.
     pub fn prepare_confirmation(
         &self,
         peer_id: u64,
@@ -775,13 +797,25 @@ impl CapnpBrokerState {
                 action: action.to_string(),
                 argument_digest: argument_digest(argument),
                 actor: actor.to_string(),
-                expires: std::time::Instant::now() + std::time::Duration::from_secs(60),
+                expires: std::time::Instant::now()
+                    .checked_add(std::time::Duration::from_secs(60))
+                    .ok_or_else(|| "confirmation expiry overflowed".to_string())?,
             },
         );
+        drop(grants);
         Ok(token)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "invocation admission validates one complete broker protocol transaction"
+    )]
+    /// Start an invocation with optional broker confirmation evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when admission, authorization, confirmation, or delivery fails.
     pub fn start_invocation_confirmed(
         &self,
         peer_id: u64,
@@ -955,14 +989,22 @@ impl CapnpBrokerState {
             })
             .unwrap_or_default();
         if let Ok(completed) = self.completed_invocations.lock() {
-            jobs.extend(completed.iter().filter_map(|(id, (owner, update))| {
-                (owner == actor).then(|| (*id, update.clone()))
-            }));
+            jobs.extend(
+                completed
+                    .iter()
+                    .filter(|(_, (owner, _))| owner == actor)
+                    .map(|(id, (_, update))| (*id, update.clone())),
+            );
         }
         jobs.sort_by_key(|(id, _)| *id);
         jobs
     }
 
+    /// Request cooperative cancellation for an actor-owned invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the invocation is unknown, foreign, or non-cancellable.
     pub fn request_cancellation(&self, id: u64, actor: &str) -> Result<(), String> {
         self.expire_stale_invocations();
         let mut pending = self
@@ -1201,11 +1243,8 @@ impl CapnpBrokerState {
                     "capnp fanout: no action stream yet, action dropped"
                 );
             }
-            CollabEvent::ScrollbackBatch { .. } => {
-                // Per-request in the capnp schema, not a stream; apps
-                // wanting late history repeat `fetchScrollbackFor`.
-            }
-            CollabEvent::Invocation { .. }
+            CollabEvent::ScrollbackBatch { .. }
+            | CollabEvent::Invocation { .. }
             | CollabEvent::InvocationCancellation { .. }
             | CollabEvent::ActionCatalogue { .. }
             | CollabEvent::PublishedInvocationResult { .. } => {
@@ -1635,6 +1674,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the RPC validates and installs one complete published action surface"
+    )]
     fn publish_actions(
         self: Rc<Self>,
         params: channel_handle::PublishActionsParams,
@@ -1731,7 +1774,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                     },
                     input,
                 });
-                let published = actions.last().expect("published action was just appended");
+                let published = actions.last().ok_or_else(|| {
+                    capnp::Error::failed("published action disappeared during validation".into())
+                })?;
                 if published.resource_kind.trim().is_empty()
                     || published.resource_label.trim().is_empty()
                     || published.action_label.trim().is_empty()
@@ -1861,7 +1906,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             if completion.code.is_empty() {
                 registry
                     .get(&id)
-                    .expect("owned pending invocation was just checked")
+                    .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?
                     .result
                     .validate(&qos_actions::ActionOutput::default())
                     .map_err(|error| {
@@ -1900,6 +1945,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the RPC validates the complete invocation lifecycle state machine"
+    )]
     fn update_invocation(
         self: Rc<Self>,
         params: channel_handle::UpdateInvocationParams,
@@ -2018,10 +2067,6 @@ impl channel_handle::Server for CapnpChannelHandle {
             }
             pending.update = update.clone();
             if update.is_terminal() {
-                let pending = registry
-                    .remove(&id)
-                    .expect("pending invocation was just resolved");
-                drop(registry);
                 let completion = match &update {
                     qos_actions::InvocationUpdate::Succeeded { .. } => InvocationCompletion {
                         code: String::new(),
@@ -2037,8 +2082,16 @@ impl channel_handle::Server for CapnpChannelHandle {
                             message: message.clone().unwrap_or_default(),
                         }
                     }
-                    _ => unreachable!("terminal update checked above"),
+                    _ => {
+                        return Err(capnp::Error::failed(
+                            "nonterminal invocation reached terminal handling".into(),
+                        ));
+                    }
                 };
+                let pending = registry
+                    .remove(&id)
+                    .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
+                drop(registry);
                 state.record_completion(id, pending.actor.clone(), update);
                 if let Ok(mut requests) = state.cancellation_requests.lock() {
                     requests.remove(&id);
@@ -2073,8 +2126,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             .state
             .cancellation_requests
             .lock()
-            .map(|requests| requests.contains(&id))
-            .unwrap_or(false);
+            .is_ok_and(|requests| requests.contains(&id));
         results.get().set_cancelled(cancelled);
         Promise::ok(())
     }
@@ -2140,6 +2192,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         Promise::ok(())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the RPC performs one complete authorized invocation admission transaction"
+    )]
     fn invoke_published_action(
         self: Rc<Self>,
         params: channel_handle::InvokePublishedActionParams,
@@ -2334,9 +2390,8 @@ impl channel_handle::Server for CapnpChannelHandle {
         if let Err(error) = self.state.request_cancellation(id, &current.principal_id) {
             return Promise::err(capnp::Error::failed(error));
         }
-        let update = match self.state.invocation_status(id) {
-            Some(update) => update,
-            None => return Promise::err(capnp::Error::failed("unknown invocation id".into())),
+        let Some(update) = self.state.invocation_status(id) else {
+            return Promise::err(capnp::Error::failed("unknown invocation id".into()));
         };
         match serde_json::to_string(&update) {
             Ok(json) => {
@@ -2359,20 +2414,21 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(current) => current,
             Err(error) => return Promise::err(error),
         };
-        let app_id = match params.get().and_then(|request| request.get_app_id()) {
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let app_id = match request.get_app_id() {
             Ok(value) => match value.to_str() {
                 Ok(value) => value.to_owned(),
                 Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
             },
             Err(error) => return Promise::err(error),
         };
-        let membership = match self.state.membership.as_ref() {
-            Some(membership) => membership,
-            None => {
-                return Promise::err(capnp::Error::failed(
-                    "the action broker has no workspace authority".into(),
-                ));
-            }
+        let Some(membership) = self.state.membership.as_ref() else {
+            return Promise::err(capnp::Error::failed(
+                "the action broker has no workspace authority".into(),
+            ));
         };
         let workspace = {
             let tree = membership.read();
@@ -2385,6 +2441,8 @@ impl channel_handle::Server for CapnpChannelHandle {
                     "the application workspace is no longer hosted".into(),
                 ));
             };
+            let workspace = workspace.clone();
+            drop(tree);
             let caller = workspace.actor_for_person(&current.principal_id);
             if workspace.decide(&caller, &ResourceRef::App(app_id.clone()), Verb::Write)
                 != CapDecision::Allow
@@ -2393,7 +2451,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     "the caller is not allowed to launch that application".into(),
                 ));
             }
-            workspace.clone()
+            workspace
         };
         let id = self.state.invocation_id.fetch_add(1, Ordering::Relaxed);
         let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
@@ -3797,6 +3855,64 @@ mod tests {
                 .is_err(),
             "a signed envelope cannot be replayed through another record route"
         );
+    }
+
+    #[test]
+    fn record_scoped_document_fanout_reaches_only_its_targeted_subscriber() {
+        let fanout = Arc::new(FanoutState::new());
+        let state = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        fanout.attach_capnp(Arc::clone(&state));
+
+        let target = CrdtRoute::record("dev.qos.notes", "room-1", "note-a");
+        let other_record = CrdtRoute::record("dev.qos.notes", "room-1", "note-b");
+        let other_app = CrdtRoute::record("dev.qos.files", "room-1", "note-a");
+        let other_room = CrdtRoute::record("dev.qos.notes", "room-2", "note-a");
+        let mut target_rx = state.subscribe_ops(&target.channel_key(), 2);
+        let mut other_record_rx = state.subscribe_ops(&other_record.channel_key(), 3);
+        let mut other_app_rx = state.subscribe_ops(&other_app.channel_key(), 4);
+        let mut other_room_rx = state.subscribe_ops(&other_room.channel_key(), 5);
+
+        let (_signing, author) = collab_types::generate_keypair();
+        let envelope = SignedOp::new_unsigned(
+            DocumentMutation::Incremental(vec![7, 9])
+                .encode()
+                .expect("typed incremental mutation"),
+            document_artifact_id(&target.app_id, &target.cluster_id, &target.record_id),
+            author,
+            document_attestation_id(&target.app_id, &target.cluster_id, &target.record_id),
+            collab_types::OpClass::Splice,
+            SystemTime::now(),
+            1,
+        );
+        state.fanout_to_route(
+            &CollabEvent::Document {
+                envelope: Box::new(envelope),
+                from_user_id: "peer@42".into(),
+            },
+            1,
+            &target,
+        );
+
+        assert!(
+            target_rx.try_recv().is_ok(),
+            "the addressed record receives the op"
+        );
+        for (label, received) in [
+            ("another record", other_record_rx.try_recv()),
+            ("another app", other_app_rx.try_recv()),
+            ("another room", other_room_rx.try_recv()),
+        ] {
+            assert!(
+                matches!(received, Err(tokio::sync::mpsc::error::TryRecvError::Empty)),
+                "{label} must not receive a record-directed document",
+            );
+        }
     }
 
     #[test]

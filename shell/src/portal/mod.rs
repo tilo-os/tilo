@@ -11,43 +11,98 @@
 //!
 //! - `org.freedesktop.impl.portal.FileChooser` — `OpenFile` / `SaveFile` / `SaveFiles`.
 //! - `org.freedesktop.impl.portal.ScreenCast` — `CreateSession` /
-//!   `SelectSources` / `Start` / `OpenPipeWireRemote` + properties.
+//!   `SelectSources` / `Start` + properties. The frontend alone owns
+//!   `OpenPipeWireRemote` so it can provide a node-restricted connection.
 //! - `org.freedesktop.impl.portal.RemoteDesktop` — `CreateSession` /
 //!   `SelectDevices` / `Start` / `Notify*` seat injection.
 //! - `org.freedesktop.impl.portal.Access` — `AccessDialog`, also used by
 //!   `Camera.AccessCamera` (`app_id="camera"`), since `xdg-desktop-portal`
 //!   has no separate `impl.portal.Camera` interface.
+//! - `org.freedesktop.impl.portal.Notification` — sandboxed notification
+//!   delivery into the compositor-owned notification chrome.
 //!
-//! Every method shares one shape — see [`flow::resolve`]: look up the
-//! caller's workspace + app id, fast-path `Allow` on an `Always`-scoped
+//! Consent-bearing methods share one shape — see [`flow::resolve`]: look up
+//! the caller's workspace + app id, fast-path `Allow` on an `Always`-scoped
 //! grant, otherwise enqueue a `PendingGrant` and await the user's prompt
-//! choice, translated into the portal response code (0/1/2) and the
-//! interface-specific results dict.
+//! choice. Prompt choices stay in private local portal state rather than the
+//! collaborative workspace document. Notification delivery is intentionally prompt-free and feeds the
+//! compositor's revocable notification queue directly.
 //!
 //! Tests run a `PromptQueueHandle` in [`PromptResolver::AutoAllow`] mode
 //! so round trips never block on a real dialog; `tests/portal_test.rs`
 //! exercises each interface plus the "Always-grant skips the prompt"
 //! path over an in-process p2p bus.
 
+#![allow(
+    clippy::style,
+    clippy::complexity,
+    clippy::perf,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::arithmetic_side_effects,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::significant_drop_tightening,
+    clippy::string_slice,
+    clippy::unnecessary_get_then_check,
+    reason = "portal implementation methods mirror fixed freedesktop D-Bus signatures and decode bounded wire/state formats; protocol and adversarial behavior is covered by focused tests"
+)]
+
+pub mod account;
+pub mod app_chooser;
+pub mod auth;
+pub mod background;
 pub mod camera;
+pub mod clipboard;
+pub mod desktop_services;
 pub mod doc_store;
+pub mod dynamic_launcher;
+pub mod email;
 pub mod file_chooser;
 pub mod file_picker_spawner;
+pub mod global_shortcuts;
+pub mod inhibit;
+pub mod input_capture;
+pub mod lifecycle;
+pub mod lockdown;
+pub mod notification;
+pub mod permission_store;
 pub mod picker_queue;
 pub mod print;
 pub mod remote_desktop;
 pub mod screencast;
 pub mod screencast_pipewire;
+pub mod screenshot;
+pub mod secret;
+pub mod settings;
+pub mod usb;
+pub mod wallpaper;
 
 // Re-exported so integration tests can construct the backend types
 // directly and register them on a custom `ConnectionBuilder` (see `tests/portal_test.rs`).
+pub use account::AccountBackend;
+pub use app_chooser::AppChooserBackend;
+pub use auth::{AuthenticatedCall, PortalAuthenticator};
+pub use background::BackgroundBackend;
 pub use camera::AccessBackend;
+pub use clipboard::ClipboardBackend;
+pub use desktop_services::DesktopPortalServices;
 pub use doc_store::{DocumentStore, DocumentStoreHandle, HostPathStore, PublishedDoc};
+pub use dynamic_launcher::DynamicLauncherBackend;
+pub use email::EmailBackend;
 pub use file_chooser::FileChooserBackend;
 pub use file_picker_spawner::{
     FilePickerOptions, FilePickerRequest, FilePickerSpawner, FilePickerSpawnerHandle,
     MockFilePickerSpawner, NullFilePickerSpawner, PickerFilter,
 };
+pub use global_shortcuts::GlobalShortcutsBackend;
+pub use inhibit::InhibitBackend;
+pub use input_capture::{
+    CaptureZone, CapturedInput, InputCaptureBackend, InputCaptureCompositorHandle,
+};
+pub use lockdown::LockdownBackend;
+pub use notification::NotificationBackend;
+pub use permission_store::PermissionStoreBackend;
 pub use picker_queue::{FilePickerQueue, PickerScope};
 pub use print::{
     LpSpooler, NullPrintSpooler, PrintBackend, PrintJobRequest, PrintSpooler, PrintSpoolerHandle,
@@ -59,11 +114,21 @@ pub use remote_desktop::{
 };
 pub use screencast::ScreenCastBackend;
 pub use screencast_pipewire::{
-    MockScreenCastProvisioner, PipewireStreamInfo, ProvisioningError, ScreenCastStreamProvisioner,
-    ScreenCastStreamProvisionerHandle, UnavailableScreenCastProvisioner,
+    MockScreenCastProvisioner, PipewireStreamInfo, ProvisioningError, RealPipewireProvisioner,
+    ScreenCastStreamProvisioner, ScreenCastStreamProvisionerHandle,
+    UnavailableScreenCastProvisioner,
 };
+pub use screenshot::ScreenshotBackend;
+pub use secret::SecretBackend;
+pub use settings::SettingsBackend;
+pub use usb::UsbBackend;
+pub use wallpaper::WallpaperBackend;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fs;
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::oneshot;
@@ -81,7 +146,7 @@ use crate::shell::state::{
 pub struct PortalCaller {
     /// Workspace the caller was spawned into.
     pub workspace_id: WorkspaceId,
-    /// Wayland-style app id, stored verbatim into [`Workspace::grants`]'s outer key on accept.
+    /// Wayland-style app id, used to bind policy and private portal consent.
     pub app_id: AppId,
 }
 
@@ -105,11 +170,26 @@ pub enum CapabilityKind {
     Microphone,
     Screencast,
     RemoteDesktop,
+    InputCapture,
     Print,
     Network,
 }
 
 impl CapabilityKind {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::FilesystemRead => "filesystem-read",
+            Self::FilesystemReadWrite => "filesystem-read-write",
+            Self::Camera => "camera",
+            Self::Microphone => "microphone",
+            Self::Screencast => "screencast",
+            Self::RemoteDesktop => "remote-desktop",
+            Self::InputCapture => "input-capture",
+            Self::Print => "print",
+            Self::Network => "network",
+        }
+    }
+
     /// Does this capability variant satisfy a request for `self`?
     pub fn matches(self, cap: &Capability) -> bool {
         match (self, cap) {
@@ -130,22 +210,49 @@ impl CapabilityKind {
     }
 }
 
-/// Handle the portal hands to its interface impls so they can consult /
-/// mutate the workspace's `grants` map.
-///
-/// Holds the same [`WorkspaceTreeHandle`] the shell chrome and the
-/// peer-sync replica clone from, so a portal `insert` is immediately
-/// visible in the Permissions tab and shipped by the next peer-sync tick.
+/// Handle shared by portal interfaces for policy grants and private portal
+/// consent. Workspace capabilities remain collaborative policy; choices made
+/// in a local privacy prompt are deliberately kept in a separate local store.
 #[derive(Clone)]
 pub struct GrantStoreHandle {
     tree: WorkspaceTreeHandle,
+    portal_consents: Arc<Mutex<PortalConsentState>>,
+    portal_consent_path: Option<Arc<PathBuf>>,
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct PortalConsentFile {
+    always: BTreeSet<String>,
+}
+
+#[derive(Default)]
+struct PortalConsentState {
+    session: BTreeSet<String>,
+    always: BTreeSet<String>,
 }
 
 impl GrantStoreHandle {
     /// Construct a grant store over the shared workspace-tree handle. In
     /// production the same handle is passed to `ChromeState` and `WorkspaceTreeReplica` so every subsystem mutates the same tree.
     pub fn new(tree: WorkspaceTreeHandle) -> Self {
-        Self { tree }
+        Self::with_consent_path(tree, default_portal_consent_path())
+    }
+
+    fn with_consent_path(tree: WorkspaceTreeHandle, path: Option<PathBuf>) -> Self {
+        let always = path
+            .as_deref()
+            .and_then(|path| fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice::<PortalConsentFile>(&bytes).ok())
+            .map(|file| file.always)
+            .unwrap_or_default();
+        Self {
+            tree,
+            portal_consents: Arc::new(Mutex::new(PortalConsentState {
+                session: BTreeSet::new(),
+                always,
+            })),
+            portal_consent_path: path.map(Arc::new),
+        }
     }
 
     /// Build a single-workspace store for unit tests / examples.
@@ -156,7 +263,7 @@ impl GrantStoreHandle {
             ..Default::default()
         };
         tree.workspaces.push(ws);
-        (Self::new(tree.shared()), ws_id)
+        (Self::with_consent_path(tree.shared(), None), ws_id)
     }
 
     /// Lookup the strongest existing grant (`Always` > `Session` > `Once`)
@@ -170,6 +277,15 @@ impl GrantStoreHandle {
                   possible point"
     )]
     pub fn lookup(&self, caller: &PortalCaller, kind: CapabilityKind) -> Option<GrantScope> {
+        let consent_key = self.portal_consent_key(caller, kind)?;
+        if let Ok(consents) = self.portal_consents.lock() {
+            if consents.always.contains(&consent_key) {
+                return Some(GRANT_ALWAYS);
+            }
+            if consents.session.contains(&consent_key) {
+                return Some(GRANT_SESSION);
+            }
+        }
         // Collect the matching expiries while the lock is held, then fold
         // them outside it — nothing past this point touches the tree.
         let matching_expiries: Vec<GrantScope> = {
@@ -245,6 +361,62 @@ impl GrantStoreHandle {
         true
     }
 
+    /// Record a local portal prompt choice without adding it to the shared
+    /// workspace document. `Always` choices are atomically persisted in the
+    /// user's private state directory; session choices disappear with the
+    /// compositor process.
+    pub fn insert_portal_consent(&self, caller: &PortalCaller, capability: &Capability) -> bool {
+        let Some((kind, scope)) = capability_kind_and_scope(capability) else {
+            return false;
+        };
+        self.insert_portal_consent_kind(caller, kind, scope)
+    }
+
+    /// Persist a local-only portal decision whose security meaning has no
+    /// workspace `Capability` representation (currently InputCapture).
+    pub fn insert_portal_consent_kind(
+        &self,
+        caller: &PortalCaller,
+        kind: CapabilityKind,
+        scope: GrantScope,
+    ) -> bool {
+        let Some(key) = self.portal_consent_key(caller, kind) else {
+            return false;
+        };
+        let Ok(mut state) = self.portal_consents.lock() else {
+            return false;
+        };
+        if matches!(scope, GRANT_ALWAYS) {
+            state.always.insert(key.clone());
+            if let Some(path) = self.portal_consent_path.as_deref()
+                && persist_portal_consents(path, &state.always).is_err()
+            {
+                // Preserve availability for this compositor session without
+                // pretending the user's durable choice was committed.
+                state.always.remove(&key);
+                state.session.insert(key);
+            }
+        } else if matches!(scope, GRANT_SESSION) {
+            state.session.insert(key);
+        }
+        true
+    }
+
+    fn portal_consent_key(&self, caller: &PortalCaller, kind: CapabilityKind) -> Option<String> {
+        let tree = self.tree.read();
+        tree.workspaces
+            .iter()
+            .any(|workspace| workspace.id == caller.workspace_id)
+            .then(|| {
+                format!(
+                    "{}\u{1f}{}\u{1f}{}",
+                    caller.workspace_id.0,
+                    caller.app_id,
+                    kind.name()
+                )
+            })
+    }
+
     /// True if `caller` already holds a filesystem grant whose path covers
     /// `path` — an exact match or an ancestor directory. The file-drop
     /// router calls this before recording a drop grant so a second drop of
@@ -283,6 +455,23 @@ impl GrantStoreHandle {
     pub fn tree(&self) -> WorkspaceTreeHandle {
         self.tree.clone()
     }
+
+    /// Resolve a launcher-verified live application to one concrete local
+    /// workspace. Multiple live rooms are intentionally ambiguous unless a
+    /// future parent-window resolver identifies the exact surface.
+    pub fn resolve_live_app(&self, app_id: &str) -> Option<PortalCaller> {
+        let rooms = crate::shell::launcher::verified_workspaces_for_app(app_id);
+        let tree = self.tree.read();
+        let mut matches = tree
+            .workspaces
+            .iter()
+            .filter(|workspace| rooms.iter().any(|room| room == &workspace.room.to_string()));
+        let workspace = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some(PortalCaller::new(workspace.id, app_id))
+    }
 }
 
 /// The longer-lived of two expiries.
@@ -293,10 +482,71 @@ fn stronger_scope(a: GrantScope, b: GrantScope) -> GrantScope {
     Expiry::longest(a, b)
 }
 
+fn capability_kind_and_scope(capability: &Capability) -> Option<(CapabilityKind, GrantScope)> {
+    Some(match capability {
+        Capability::Filesystem { mode, scope, .. } => (
+            if matches!(mode, FsMode::ReadWrite) {
+                CapabilityKind::FilesystemReadWrite
+            } else {
+                CapabilityKind::FilesystemRead
+            },
+            *scope,
+        ),
+        Capability::Camera { scope } => (CapabilityKind::Camera, *scope),
+        Capability::Microphone { scope } => (CapabilityKind::Microphone, *scope),
+        Capability::Screencast { scope } => (CapabilityKind::Screencast, *scope),
+        Capability::RemoteDesktop { scope } => (CapabilityKind::RemoteDesktop, *scope),
+        Capability::Print { scope } => (CapabilityKind::Print, *scope),
+        Capability::Network { scope, .. } => (CapabilityKind::Network, *scope),
+    })
+}
+
+/// A user-private persistent root.  Never fall back to a predictable shared
+/// `/tmp` directory for portal authority, secrets, or user choices: without a
+/// per-user state/runtime directory persistence fails closed instead.
+pub(crate) fn private_state_root() -> Option<PathBuf> {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(dirs::state_dir)
+        .or_else(|| std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from))
+}
+
+fn default_portal_consent_path() -> Option<PathBuf> {
+    private_state_root().map(|root| root.join("qos/portal/consents.json"))
+}
+
+fn persist_portal_consents(path: &Path, always: &BTreeSet<String>) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("portal consent path has no parent"))?;
+    fs::create_dir_all(parent)?;
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    let temporary = path.with_extension("tmp");
+    let bytes = serde_json::to_vec(&PortalConsentFile {
+        always: always.clone(),
+    })
+    .map_err(std::io::Error::other)?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    fs::rename(temporary, path)?;
+    fs::File::open(parent)?.sync_all()
+}
+
 /// The user-prompt the portal needs to surface, waiting on a choice.
 pub struct PendingGrant {
     pub caller: PortalCaller,
     pub capability: Capability,
+    /// Portal request handle that owns this prompt, when it has one. This is
+    /// not app supplied data; it is used solely to remove exactly this queued
+    /// sheet when its authenticated Request object is closed.
+    request_key: Option<String>,
     /// One-shot reply channel: the shell's permission-prompt pump fulfils
     /// this on a user click; test mode fulfils it synchronously from [`PromptResolver`].
     pub reply: oneshot::Sender<PromptOutcome>,
@@ -345,14 +595,23 @@ pub enum PromptResolver {
 #[derive(Clone)]
 pub struct PromptQueueHandle {
     resolver: PromptResolver,
-    pending: Arc<Mutex<Vec<PendingGrant>>>,
+    state: Arc<Mutex<PromptQueueState>>,
+}
+
+#[derive(Default)]
+struct PromptQueueState {
+    pending: Vec<PendingGrant>,
+    /// Keys cancelled before their async resolver reached `enqueue`. Keeping
+    /// this beside the queue closes the close/enqueue race without ever
+    /// cancelling an unrelated prompt.
+    cancelled: HashSet<String>,
 }
 
 impl PromptQueueHandle {
     pub fn new(resolver: PromptResolver) -> Self {
         Self {
             resolver,
-            pending: Arc::new(Mutex::new(Vec::new())),
+            state: Arc::new(Mutex::new(PromptQueueState::default())),
         }
     }
 
@@ -363,16 +622,41 @@ impl PromptQueueHandle {
         caller: PortalCaller,
         capability: Capability,
     ) -> oneshot::Receiver<PromptOutcome> {
+        self.enqueue_inner(caller, capability, None)
+    }
+
+    /// Like [`Self::enqueue`], but binds the queued sheet to a concrete
+    /// request lifecycle object so `Request.Close` can safely remove it.
+    pub fn enqueue_for_request(
+        &self,
+        caller: PortalCaller,
+        capability: Capability,
+        request_key: String,
+    ) -> oneshot::Receiver<PromptOutcome> {
+        self.enqueue_inner(caller, capability, Some(request_key))
+    }
+
+    fn enqueue_inner(
+        &self,
+        caller: PortalCaller,
+        capability: Capability,
+        request_key: Option<String>,
+    ) -> oneshot::Receiver<PromptOutcome> {
         let (tx, rx) = oneshot::channel();
         let pending = PendingGrant {
             caller,
             capability,
+            request_key: request_key.clone(),
             reply: tx,
         };
         match self.resolver {
             PromptResolver::Channel => {
-                if let Ok(mut q) = self.pending.lock() {
-                    q.push(pending);
+                if let Ok(mut state) = self.state.lock() {
+                    if request_key.is_some_and(|key| state.cancelled.remove(&key)) {
+                        let _ = pending.reply.send(PromptOutcome::Deny);
+                    } else {
+                        state.pending.push(pending);
+                    }
                 }
             }
             PromptResolver::AutoAllow => {
@@ -388,25 +672,50 @@ impl PromptQueueHandle {
         rx
     }
 
+    /// Cancel precisely one request-owned prompt. The removed receiver is
+    /// resolved as Deny so the D-Bus method returns promptly; unkeyed prompts
+    /// and other request handles remain untouched.
+    pub fn cancel_request(&self, request_key: &str) -> bool {
+        let removed = self.state.lock().ok().and_then(|mut state| {
+            state.cancelled.insert(request_key.into());
+            state
+                .pending
+                .iter()
+                .position(|pending| pending.request_key.as_deref() == Some(request_key))
+                .map(|index| state.pending.remove(index))
+        });
+        if let Some(pending) = removed {
+            let _ = pending.reply.send(PromptOutcome::Deny);
+            true
+        } else {
+            // The request may be between lifecycle registration and prompt
+            // enqueue; retain the key so that race resolves as Deny instead.
+            true
+        }
+    }
+
     /// Drain pending prompts for the shell's per-frame pump to convert into
     /// `ChromeState::pending_grants` entries; each drained entry still owns its reply channel for the caller to fulfil.
     pub fn drain(&self) -> Vec<PendingGrant> {
-        match self.pending.lock() {
-            Ok(mut q) => std::mem::take(&mut *q),
+        match self.state.lock() {
+            Ok(mut state) => std::mem::take(&mut state.pending),
             Err(_) => Vec::new(),
         }
     }
 
     /// Number of queued prompts — for tests asserting queue length before the pump drains it.
     pub fn queued_len(&self) -> usize {
-        self.pending.lock().map_or(0, |q| q.len())
+        self.state.lock().map_or(0, |state| state.pending.len())
     }
 
     /// Direct accessor (test only): peek at the front entry's caller + capability without removing it.
     #[cfg(any(test, debug_assertions))]
     pub fn front_for_tests(&self) -> Option<(PortalCaller, Capability)> {
-        let q = self.pending.lock().ok()?;
-        q.first().map(|p| (p.caller.clone(), p.capability.clone()))
+        let state = self.state.lock().ok()?;
+        state
+            .pending
+            .first()
+            .map(|p| (p.caller.clone(), p.capability.clone()))
     }
 }
 
@@ -427,12 +736,25 @@ pub struct PortalContext {
     /// The `RemoteDesktop` backend hands each granted `Notify*` action here;
     /// production wires a [`ChannelInjector`] the compositor loop drains, and `--portal-server-only` mode uses the null handle.
     pub remote_input_injector: RemoteInputInjectorHandle,
+    /// Compositor authority for InputCapture.  Native mode supplies live
+    /// output zones; hosted/headless contexts deliberately keep it unavailable.
+    pub input_capture: InputCaptureCompositorHandle,
     /// How a picked path is made reachable by the app that asked for it —
     /// see [`doc_store`] for why recording the grant alone isn't enough for an app already running.
     pub documents: DocumentStoreHandle,
     /// The Print backend hands each consented job here; production runs
     /// `lp`, tests inject a [`RecordingSpooler`] — the only component in the print path that touches CUPS, living on *this* side of the sandbox.
     pub print_spooler: PrintSpoolerHandle,
+    /// Shared mailbox into the compositor-owned notification chrome. Portal
+    /// notifications and the freedesktop notification service deliberately
+    /// use the same id allocator and queue.
+    pub notifications: crate::notifications::NotificationBridge,
+    /// Shell-owned adapters for portals whose work is performed by compositor
+    /// UI or another privileged desktop service.
+    pub desktop_services: DesktopPortalServices,
+    /// Fixed authenticator in p2p tests. Production leaves this empty and
+    /// [`serve`] binds authentication to its actual session-bus connection.
+    pub authenticator: Option<PortalAuthenticator>,
 }
 
 impl PortalContext {
@@ -455,10 +777,14 @@ impl PortalContext {
                 ),
             )),
             remote_input_injector: RemoteInputInjectorHandle::null(),
+            input_capture: InputCaptureCompositorHandle::unavailable(),
             documents: DocumentStoreHandle::host_paths(),
             // The real spooler, not a null one — it's a process invocation, nothing
             // a headless context is missing; no CUPS means it honestly reports no destinations.
             print_spooler: PrintSpoolerHandle::cups(),
+            notifications: crate::notifications::NotificationBridge::new(),
+            desktop_services: DesktopPortalServices::default(),
+            authenticator: None,
         }
     }
 }
@@ -528,11 +854,65 @@ pub mod flow {
                     && !matches!(scope, GRANT_ONCE)
                 {
                     let cap = super::with_scope(cap_template, scope);
-                    ctx.grants.insert(&caller, &cap);
+                    ctx.grants.insert_portal_consent(&caller, &cap);
                 }
                 outcome
             }
             // A dead channel means the prompt pump shut down mid-flight — deny rather than hang the caller forever.
+            Err(_) => PromptOutcome::Deny,
+        }
+    }
+
+    /// Request-owned variant of [`resolve`]. It lets a portal close remove
+    /// the matching visible sheet rather than merely discarding its result.
+    pub async fn resolve_for_request(
+        ctx: &PortalContext,
+        caller: PortalCaller,
+        kind: CapabilityKind,
+        cap_template: Capability,
+        request_key: String,
+    ) -> PromptOutcome {
+        if matches!(ctx.grants.lookup(&caller, kind), Some(GRANT_ALWAYS)) {
+            return PromptOutcome::AllowAlways;
+        }
+        let rx = ctx
+            .prompts
+            .enqueue_for_request(caller.clone(), cap_template.clone(), request_key);
+        match rx.await {
+            Ok(outcome) => {
+                if let Some(scope) = outcome.to_scope()
+                    && !matches!(scope, GRANT_ONCE)
+                {
+                    let cap = super::with_scope(cap_template, scope);
+                    ctx.grants.insert_portal_consent(&caller, &cap);
+                }
+                outcome
+            }
+            Err(_) => PromptOutcome::Deny,
+        }
+    }
+
+    /// Consent path for portal-only capability kinds. It deliberately never
+    /// falls through to a broader workspace capability with a similar name.
+    pub async fn resolve_local(
+        ctx: &PortalContext,
+        caller: PortalCaller,
+        kind: CapabilityKind,
+        cap_template: Capability,
+    ) -> PromptOutcome {
+        if matches!(ctx.grants.lookup(&caller, kind), Some(GRANT_ALWAYS)) {
+            return PromptOutcome::AllowAlways;
+        }
+        let rx = ctx.prompts.enqueue(caller.clone(), cap_template);
+        match rx.await {
+            Ok(outcome) => {
+                if let Some(scope) = outcome.to_scope()
+                    && !matches!(scope, GRANT_ONCE)
+                {
+                    let _ = ctx.grants.insert_portal_consent_kind(&caller, kind, scope);
+                }
+                outcome
+            }
             Err(_) => PromptOutcome::Deny,
         }
     }
@@ -559,13 +939,15 @@ pub fn documents_for_session() -> DocumentStoreHandle {
 
 /// Bus name we register under. xdg-desktop-portal expects backends to
 /// own `org.freedesktop.impl.portal.desktop.<vendor>`; matched against
-/// `portals/<vendor>.portal` (see `os/usr/share/xdg-desktop-portal/portals/qos.portal`, its D-Bus activation `.service`, and `shell-portal.service`).
+/// `portals/<vendor>.portal` (see
+/// `os/usr/share/xdg-desktop-portal/portals/qos.portal`). The compositor is
+/// deliberately the sole owner; there is no competing activation service.
 pub const BUS_NAME: &str = "org.freedesktop.impl.portal.desktop.qos";
 
 /// Object path the portal's frontend dispatches to; xdg-desktop-portal hard-codes `/org/freedesktop/portal/desktop`.
 pub const OBJECT_PATH: &str = "/org/freedesktop/portal/desktop";
 
-/// Spawn the portal server on `connection`, registering all three
+/// Spawn the portal server on `connection`, registering every supported
 /// interfaces under [`OBJECT_PATH`] and requesting [`BUS_NAME`].
 ///
 /// Returns the connection back to the caller (kept alive by the caller);
@@ -575,7 +957,7 @@ pub const OBJECT_PATH: &str = "/org/freedesktop/portal/desktop";
 ///
 /// # Errors
 ///
-/// Returns `Err` when registering any of the five interface objects on
+/// Returns `Err` when registering any interface object on
 /// [`OBJECT_PATH`] fails. Failing to *own* [`BUS_NAME`] is not an error
 /// here — it is recorded on the returned [`ServerHandle::owns_name`],
 /// since a p2p test connection has no broker to request a name from.
@@ -583,23 +965,186 @@ pub async fn serve(
     connection: zbus::Connection,
     ctx: PortalContext,
 ) -> Result<ServerHandle, zbus::Error> {
+    serve_with_inhibit(connection, ctx, qos_power_mgmt::InhibitRegistry::new()).await
+}
+
+/// Serve the portal backend using the compositor's actual inhibitor registry.
+/// Native sessions call this so an application hold reaches both the idle
+/// state machine and logind; standalone test/headless servers use [`serve`].
+pub async fn serve_with_inhibit(
+    connection: zbus::Connection,
+    ctx: PortalContext,
+    inhibit_registry: qos_power_mgmt::InhibitRegistry,
+) -> Result<ServerHandle, zbus::Error> {
+    serve_with_inhibit_and_clipboard(
+        connection,
+        ctx,
+        inhibit_registry,
+        clipboard::ClipboardBrokerHandle::unavailable(),
+    )
+    .await
+}
+
+/// Native compositor entry point.  The caller supplies its live
+/// focus-gated selection mirror; hosted/headless runs intentionally use the
+/// unavailable broker above rather than pretending Clipboard works.
+pub async fn serve_with_inhibit_and_clipboard(
+    connection: zbus::Connection,
+    mut ctx: PortalContext,
+    inhibit_registry: qos_power_mgmt::InhibitRegistry,
+    clipboard_broker: clipboard::ClipboardBrokerHandle,
+) -> Result<ServerHandle, zbus::Error> {
+    use account::AccountBackend;
+    use app_chooser::AppChooserBackend;
+    use background::BackgroundBackend;
     use camera::AccessBackend;
+    use clipboard::ClipboardBackend;
+    use dynamic_launcher::DynamicLauncherBackend;
+    use email::EmailBackend;
     use file_chooser::FileChooserBackend;
+    use global_shortcuts::GlobalShortcutsBackend;
+    use inhibit::InhibitBackend;
+    use input_capture::InputCaptureBackend;
+    use lockdown::LockdownBackend;
+    use notification::NotificationBackend;
+    use permission_store::PermissionStoreBackend;
     use print::PrintBackend;
     use remote_desktop::RemoteDesktopBackend;
     use screencast::ScreenCastBackend;
+    use screenshot::ScreenshotBackend;
+    use secret::SecretBackend;
+    use settings::SettingsBackend;
+    use usb::UsbBackend;
+    use wallpaper::WallpaperBackend;
+
+    if ctx.authenticator.is_none() {
+        let grants = ctx.grants.clone();
+        let callers = ctx.caller_map.clone();
+        let resolver = Arc::new(move |app_id: &str, _parent: Option<&str>| {
+            callers
+                .lookup("")
+                .filter(|caller| caller.app_id == app_id)
+                .or_else(|| grants.resolve_live_app(app_id))
+        });
+        ctx.authenticator = Some(if connection.unique_name().is_none() {
+            PortalAuthenticator::fixed_for_tests(
+                ":1.0".try_into().expect("static unique bus name"),
+                resolver,
+            )
+        } else {
+            PortalAuthenticator::session_bus(connection.clone(), resolver)
+        });
+    }
 
     let fc = FileChooserBackend::new(ctx.clone());
-    let sc = ScreenCastBackend::new(ctx.clone());
-    let ac = AccessBackend::new(ctx.clone());
-    let rd = RemoteDesktopBackend::new(ctx.clone());
+    // One registry owns all dynamic Request/Session objects for this D-Bus
+    // connection. It binds every handle to the authenticated frontend and
+    // makes Close release the portal-specific resource.
+    let lifecycle = lifecycle::PortalLifecycle::new();
+    lifecycle.spawn_disconnect_cleanup(connection.clone());
+    let sc = ScreenCastBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
+    let ac = AccessBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
+    let rd = RemoteDesktopBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
+    let remote_sessions = rd.session_handle();
     let pr = PrintBackend::new(ctx.clone());
+    let no = NotificationBackend::new(ctx.clone());
+    let notification_portal = no.portal_handle();
+    notification_portal.install_on_bridge(&ctx.notifications);
+    let account = AccountBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
+    let chooser = AppChooserBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
+    let launcher = DynamicLauncherBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
+    let email = EmailBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
+    let screenshot = ScreenshotBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
+    let settings_events = ctx.desktop_services.settings.subscribe();
+    let settings = SettingsBackend::new(ctx.clone());
+    let wallpaper = WallpaperBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
+    let lockdown = LockdownBackend::new(ctx.clone());
+    let permissions = PermissionStoreBackend::new(ctx.clone());
+    let background_service = background::ShellBackgroundService::global();
+    background_service.launch_at_session_start(&ctx.grants.tree_handle());
+    let background = BackgroundBackend::with_service_and_lifecycle(
+        ctx.clone(),
+        background::BackgroundServiceHandle::new(Arc::new(background_service)),
+        lifecycle.clone(),
+    );
+    let input_capture = InputCaptureBackend::new(ctx.clone(), lifecycle.clone());
+    let input_capture_sessions = input_capture.session_handle();
+    let clipboard = ClipboardBackend::with_session_providers(
+        vec![
+            clipboard::ClipboardSessionProviderHandle::new(Arc::new(remote_sessions)),
+            clipboard::ClipboardSessionProviderHandle::new(Arc::new(input_capture_sessions)),
+        ],
+        clipboard_broker,
+    );
+    let clipboard_events = clipboard.clone();
+    let shortcut_service = global_shortcuts::ShellGlobalShortcutsService::global();
+    let shortcuts = GlobalShortcutsBackend::with_service(
+        ctx.clone(),
+        global_shortcuts::GlobalShortcutsServiceHandle::new(Arc::new(shortcut_service.clone())),
+        lifecycle.clone(),
+    );
+    let shortcut_events = shortcuts.handle();
+    shortcut_service.attach_event_bridge(shortcut_events.clone());
+    let inhibit = InhibitBackend::with_lifecycle(ctx.clone(), inhibit_registry, lifecycle.clone());
+    let inhibit_monitors = inhibit.monitor_handle();
+    input_capture.spawn_signal_emitter(connection.clone());
+    let secret = SecretBackend::new(ctx.clone());
+    let usb = UsbBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
 
     connection.object_server().at(OBJECT_PATH, fc).await?;
     connection.object_server().at(OBJECT_PATH, sc).await?;
     connection.object_server().at(OBJECT_PATH, ac).await?;
     connection.object_server().at(OBJECT_PATH, rd).await?;
     connection.object_server().at(OBJECT_PATH, pr).await?;
+    connection.object_server().at(OBJECT_PATH, no).await?;
+    connection.object_server().at(OBJECT_PATH, account).await?;
+    connection.object_server().at(OBJECT_PATH, chooser).await?;
+    connection.object_server().at(OBJECT_PATH, launcher).await?;
+    connection.object_server().at(OBJECT_PATH, email).await?;
+    connection
+        .object_server()
+        .at(OBJECT_PATH, screenshot)
+        .await?;
+    connection.object_server().at(OBJECT_PATH, settings).await?;
+    settings::spawn_signal_emitter(connection.clone(), settings_events);
+    settings::spawn_appearance_monitor(ctx.desktop_services.settings.clone());
+    connection
+        .object_server()
+        .at(OBJECT_PATH, wallpaper)
+        .await?;
+    connection.object_server().at(OBJECT_PATH, lockdown).await?;
+    connection
+        .object_server()
+        .at(OBJECT_PATH, permissions)
+        .await?;
+    connection
+        .object_server()
+        .at(OBJECT_PATH, background.clone())
+        .await?;
+    background::spawn_running_monitor(connection.clone(), background);
+    connection
+        .object_server()
+        .at(OBJECT_PATH, clipboard)
+        .await?;
+    connection
+        .object_server()
+        .at(OBJECT_PATH, shortcuts)
+        .await?;
+    connection.object_server().at(OBJECT_PATH, inhibit).await?;
+    inhibit::spawn_state_emitter(connection.clone(), inhibit_monitors);
+    connection
+        .object_server()
+        .at(OBJECT_PATH, input_capture)
+        .await?;
+    connection.object_server().at(OBJECT_PATH, secret).await?;
+    connection.object_server().at(OBJECT_PATH, usb).await?;
+
+    // Compositor-owned shortcut events are queued by `shortcut_events`; this
+    // pump is the only path which emits activation signals for an approved
+    // binding.
+    global_shortcuts::spawn_signal_emitter(connection.clone(), shortcut_events);
+    clipboard::spawn_signal_emitter(connection.clone(), clipboard_events);
+    notification::spawn_action_emitter(connection.clone(), notification_portal);
 
     // `request_name` only makes sense on a real bus — p2p test connections
     // have no broker, so the result is *recorded* (`ServerHandle::owns_name`) rather than swallowed.
@@ -801,6 +1346,55 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_one_request_prompt_never_removes_another() {
+        let q = PromptQueueHandle::new(PromptResolver::Channel);
+        let caller = PortalCaller::new(WorkspaceId(3), "app");
+        let cancelled = q.enqueue_for_request(
+            caller.clone(),
+            Capability::Camera { scope: GRANT_ONCE },
+            "/request/one".into(),
+        );
+        let retained = q.enqueue_for_request(
+            caller,
+            Capability::Microphone { scope: GRANT_ONCE },
+            "/request/two".into(),
+        );
+        assert!(q.cancel_request("/request/one"));
+        assert_eq!(
+            cancelled.blocking_recv().expect("cancel response"),
+            PromptOutcome::Deny
+        );
+        assert_eq!(q.queued_len(), 1);
+        let remaining = q.drain();
+        assert_eq!(remaining.len(), 1);
+        assert!(matches!(
+            remaining[0].capability,
+            Capability::Microphone { .. }
+        ));
+        drop(remaining);
+        assert!(
+            retained.blocking_recv().is_err(),
+            "dropped UI sheet cancels only its own request"
+        );
+    }
+
+    #[test]
+    fn cancellation_before_enqueue_closes_the_request_enqueue_race() {
+        let q = PromptQueueHandle::new(PromptResolver::Channel);
+        assert!(q.cancel_request("/request/racing"));
+        let rx = q.enqueue_for_request(
+            PortalCaller::new(WorkspaceId(4), "app"),
+            Capability::Camera { scope: GRANT_ONCE },
+            "/request/racing".into(),
+        );
+        assert_eq!(
+            rx.blocking_recv().expect("deny response"),
+            PromptOutcome::Deny
+        );
+        assert_eq!(q.queued_len(), 0);
+    }
+
+    #[test]
     fn flow_resolve_fast_path_always_grant_skips_prompt() {
         // Channel mode would buffer any enqueued request, so an empty queue at the end proves the fast path bypassed it.
         let mut ws = empty_ws(21);
@@ -852,6 +1446,47 @@ mod tests {
         assert_eq!(
             store.lookup(&caller, CapabilityKind::Microphone),
             Some(GRANT_SESSION)
+        );
+        let tree = store.tree_handle();
+        let tree = tree.read();
+        assert!(
+            tree.active_workspace()
+                .unwrap()
+                .app_grants_snapshot()
+                .get("app")
+                .is_none(),
+            "a local privacy choice must never enter replicated workspace state"
+        );
+    }
+
+    #[test]
+    fn always_portal_consent_is_private_and_survives_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("consents.json");
+        let mut tree = WorkspaceTree {
+            active: WorkspaceId(31),
+            ..Default::default()
+        };
+        tree.workspaces.push(empty_ws(31));
+        let shared = tree.shared();
+        let caller = PortalCaller::new(WorkspaceId(31), "private-app");
+        let store = GrantStoreHandle::with_consent_path(shared.clone(), Some(path.clone()));
+        assert!(store.insert_portal_consent(
+            &caller,
+            &Capability::Camera {
+                scope: GRANT_ALWAYS,
+            }
+        ));
+        assert_eq!(
+            GrantStoreHandle::with_consent_path(shared.clone(), Some(path))
+                .lookup(&caller, CapabilityKind::Camera),
+            Some(GRANT_ALWAYS)
+        );
+        assert!(
+            shared.read().workspaces[0]
+                .app_grants_snapshot()
+                .get("private-app")
+                .is_none()
         );
     }
 

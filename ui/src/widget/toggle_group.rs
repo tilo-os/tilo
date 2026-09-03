@@ -113,6 +113,11 @@ impl ToggleGroup {
     /// Publish segment selection as a transient view action while preserving
     /// the familiar closure API. UI, accessibility, search, and agents all
     /// enter through the same typed `index` operation.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the framework-generated integer action contract cannot
+    /// encode its own generated payload.
     #[must_use]
     #[expect(
         clippy::expect_used,

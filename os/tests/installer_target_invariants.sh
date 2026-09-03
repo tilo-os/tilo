@@ -10,26 +10,63 @@ encryptor="$repo_root/os/usr/libexec/qos-disk-encrypt"
 containerfile="$repo_root/os/Containerfile.installer"
 builder="$repo_root/os/dev/build-custom-installer.sh"
 firstboot_user="$repo_root/os/usr/libexec/qos-firstboot-user"
+profile_extractor="$repo_root/os/usr/libexec/qos-installer-profile-extract"
 preflight="$repo_root/os/usr/libexec/qos-verified-boot-install-preflight"
 fail=0
 
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
-karg_deletes="$(grep -c -- '--karg-delete qos.installer=1' "$backend" || true)"
-if [ "$karg_deletes" -eq 3 ]; then
-  ok "encrypted, erase, and alongside installs remove qos.installer=1"
+karg_deletes="$(grep -c -- '--karg-delete qos.install' "$backend" || true)"
+if [ "$karg_deletes" -eq 2 ] \
+   && grep -Fq 'qos.root=0000000000000000000000000000000000000' "$backend" \
+   && grep -Fq 'qos.luks=000000000000000000000000000000000000000000000' "$backend" \
+   && grep -Fq 'remove qos.install "$TARGET_UKI"' "$backend"; then
+  ok "sealed encrypted installs specialize UUID slots and remove the live marker"
 else
-  bad "expected three target karg deletions, found $karg_deletes"
+  bad "sealed target UKI handoff is incomplete (legacy deletions: $karg_deletes)"
 fi
 
-if grep -Fq 'COPY etc/greetd/config.toml /usr/share/qos/greetd-config.toml' "$containerfile" \
+if grep -Fq 'qos-uki-cmdline remove systemd.show_status' "$containerfile" \
+   && grep -Fq 'qos-uki-cmdline remove rd.udev.log_level' "$containerfile" \
+   && grep -Fq 'qos-uki-cmdline remove loglevel' "$containerfile" \
+   && grep -Fq 'qos-uki-cmdline remove vt.global_cursor_default' "$containerfile" \
+   && grep -Fq 'qos-uki-cmdline show | grep -qw qos.mode=normal' "$containerfile" \
+   && grep -Fq 'qos-uki-cmdline show | grep -qw qos.install' "$containerfile"; then
+  ok "installer reserves measured UKI cmdline space without losing splash or mode"
+else
+  bad "installer UKI cmdline headroom or required boot markers are incomplete"
+fi
+
+if grep -Fq '"$INSTALLER_CONTEXT/rootfs/usr/share/qos/greetd-config.toml"' "$builder" \
+   && grep -Fq 'COPY rootfs/ /' "$containerfile" \
    && grep -Fq 'greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"' "$backend" \
    && grep -Fq '[initial_session]' "$backend" \
    && grep -Fq 'user = "%s"' "$backend"; then
   ok "encrypted startup hands off directly to the installed user's session"
 else
   bad "installed system would ask for a second login after disk authentication"
+fi
+
+if grep -Fq ': "${TMPDIR:=${QOS_INSTALLER_OUTPUT}/.tmp}"' "$builder" \
+   && grep -Fq 'export TMPDIR' "$builder" \
+   && grep -Fq 'INSTALLER_SCRATCH="$TMPDIR"' "$builder" \
+   && grep -Fq 'mktemp -d "$INSTALLER_SCRATCH/qos-installer-context.XXXXXX"' "$builder" \
+   && ! grep -Fq 'mktemp -d /tmp/qos-installer-context' "$builder"; then
+  ok "large installer staging stays on the output filesystem"
+else
+  bad "installer staging can exhaust a small system temporary filesystem"
+fi
+
+if grep -Fq 'root_gib=$(((image_bytes * 3 + gib - 1) / gib))' "$builder" \
+   && grep -Fq '[ "$root_gib" -ge 40 ] || root_gib=40' "$builder" \
+   && grep -Fq -- '--root-min "${root_gib}G"' "$builder" \
+   && grep -Fq 'QOS_INSTALLER_WORK_DISK=' "$repo_root/os/dev/_common.sh" \
+   && grep -Fq "qemu-img create -f qcow2 -F qcow2 -b '\$disk' '\$work_disk'" "$repo_root/os/dev/vm.sh" \
+   && grep -Fq -- '-drive file=$work_disk,format=qcow2,if=virtio' "$repo_root/os/dev/vm.sh"; then
+  ok "live media is capacity-sized and VM cycles preserve the release artifact"
+else
+  bad "live-media capacity or pristine-artifact VM isolation regressed"
 fi
 
 if grep -Fq 'rm -f "$DEPLOY_ETC/sudoers.d/qos-installer"' "$backend"; then
@@ -54,11 +91,20 @@ fi
 
 if grep -Fq 'TARGET_MAJ_MIN=' "$backend" \
    && grep -Fq 'LIVE_MAJ_MIN=' "$backend" \
-   && grep -Fq 'lsblk -spno NAME,TYPE' "$backend" \
+   && grep -Fq 'lsblk -srpno NAME,TYPE' "$backend" \
    && grep -Fq "could not resolve the live medium's physical disk" "$backend"; then
   ok "live-medium refusal compares stable block identities and fails closed"
 else
   bad "live-medium disk guard still relies on path-string equality"
+fi
+
+if grep -Fq -- '--confirm-erase)' "$backend" \
+   && grep -Fq '[ "$CONFIRM_ERASE" = "$DISK" ]' "$backend" \
+   && grep -Fq 'whole-disk install requires --confirm-erase matching --disk' "$backend" \
+   && grep -Fq -- '--confirm-erase cannot be used with --alongside' "$backend"; then
+  ok "whole-disk erasure requires an exact device confirmation at the privileged boundary"
+else
+  bad "whole-disk erasure can proceed without an exact privileged confirmation"
 fi
 
 if grep -Fq 'ENCRYPT=1' "$backend" \
@@ -96,6 +142,7 @@ else
 fi
 
 if grep -Fq 'CONF_TMP="$(mktemp ' "$backend" \
+   && grep -Fq 'find "$MNT/state/deploy"' "$backend" \
    && grep -Fq 'chmod 0600 "$CONF_TMP"' "$backend" \
    && grep -Fq 'mv -f "$CONF_TMP" "$CONF"' "$backend"; then
   ok "account password hash is created privately and published atomically"
@@ -105,10 +152,25 @@ fi
 
 if grep -Fq 'systemctl mask sshd.service' "$containerfile" \
    && ! grep -Fq 'quickuser:quickdesktop:wheel' "$builder" \
-   && grep -Fq -- '--dev-login requires a non-empty QOS_INSTALLER_DEV_PASSWORD' "$builder"; then
+   && grep -Fq -- '--dev-login requires a non-empty QOS_INSTALLER_DEV_PASSWORD' "$builder" \
+   && grep -Fq 'append qos.install' "$containerfile" \
+   && grep -Fq 'show | grep -qw qos.mode=normal' "$containerfile" \
+   && grep -Fq 'show | grep -qw qos.install' "$containerfile"; then
   ok "release installer has no public debug credential and masks SSH"
 else
   bad "release installer still exposes a known debug login or SSH"
+fi
+
+if grep -Fq 'StandardInput=file:$INPUT' "$backend" \
+   && grep -Fq 'StandardOutput=append:$OUTPUT' "$backend" \
+   && grep -Fq 'tail --pid="$RUNNER"' "$backend" \
+   && grep -Fq 'mktemp -d /run/qos-installer/bridge/run.XXXXXX' "$backend" \
+   && grep -Fq 'chcon --reference=/run/qos-installer/bridge "$BRIDGE" "$INPUT" "$OUTPUT"' "$backend" \
+   && grep -Fq 'ExecStart=/usr/bin/install -d -m 0700 /run/qos-installer/bridge' "$repo_root/os/usr/lib/systemd/system/qos-installer-setup.service" \
+   && ! grep -Fq -- '--pipe --collect' "$backend"; then
+  ok "privileged handoff keeps secrets out of D-Bus fd passing and journald"
+else
+  bad "privileged handoff does not use the tested root-only file bridge"
 fi
 
 if grep -Fq "refusing to modify pre-existing account" "$firstboot_user" \
@@ -118,6 +180,32 @@ else
   bad "installer can reset a privileged or pre-existing account"
 fi
 
+if [ -x "$profile_extractor" ] \
+   && grep -Fq 'QOS_INSTALL_PROFILE_V1' "$profile_extractor" \
+   && grep -Fq 'sha256sum "$payload"' "$profile_extractor" \
+   && grep -Fq 'ExecStart=/usr/libexec/qos-installer-profile-extract' \
+      "$repo_root/os/usr/lib/systemd/system/qos-installer-setup.service"; then
+  ok "live installer extracts and verifies the embedded setup profile before greetd"
+else
+  bad "host setup profile is not securely transported into the live installer"
+fi
+
+if grep -Fq "grep -q '^video:' /etc/group" "$repo_root/os/Containerfile" \
+   && grep -Fq "grep -q '^input:' /etc/group" "$repo_root/os/Containerfile" \
+   && ! grep -Fq 'getent group video' "$repo_root/os/Containerfile"; then
+  ok "hardware-access groups are materialised instead of trusting synthesized NSS records"
+else
+  bad "hardware-access groups must be real /etc/group records for first-boot useradd"
+fi
+
+if grep -Fq -- '--full-name' "$backend" \
+   && grep -Fq -- '--locale' "$backend" \
+   && grep -Fq 'install-user-full-name' "$firstboot_user"; then
+  ok "preconfigured identity and locale reach the installed account"
+else
+  bad "profile identity or locale is dropped before first boot"
+fi
+
 if grep -Fq '"$DEPLOY_ETC/systemd/system/sshd.service"' "$backend" \
    && grep -Fq 'multi-user.target.wants/sshd.service' "$backend"; then
   ok "live-only SSH state is removed from the installed target"
@@ -125,14 +213,37 @@ else
   bad "live-medium SSH mask/enablement can leak into the target"
 fi
 
+if grep -Fq 'chcon --reference=/etc/greetd/config.toml "$DEPLOY_ETC/greetd/config.toml"' "$backend"; then
+  ok "installed greeter configuration receives an enforcing-compatible /etc label"
+else
+  bad "installed greeter configuration can retain a transient /run SELinux label"
+fi
+
+if grep -Fq 'ConditionKernelCommandLine=!qos.install' \
+      "$repo_root/os/usr/lib/systemd/system/qos-rollback-harden.service" \
+   && grep -Fq 'ConditionKernelCommandLine=!qos.install' \
+      "$repo_root/os/usr/lib/systemd/system/shell-firstboot.service"; then
+  ok "disposable live boots cannot consume first-boot state or mutate TPM lockout policy"
+else
+  bad "live installer can run installed-system first-boot or TPM-hardening services"
+fi
+
 if grep -Fq -- '--alongside' "$backend" \
    && grep -Fq 'signature_types="$(wipefs --noheadings --no-act --output TYPE "$ROOT_PARTITION")"' "$backend" \
    && [ "$(grep -c '^[[:space:]]*validate_alongside$' "$backend" || true)" -eq 3 ] \
    && grep -Fq 'signature_types="$(wipefs --noheadings --no-act --output TYPE "$part")"' "$encryptor" \
    && grep -Fq 'root and EFI partitions are not on the same disk' "$encryptor" \
+   && grep -Fq 'MIN_ALONGSIDE_ESP_BYTES=2147483648' "$backend" \
+   && grep -Fq 'MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824' "$backend" \
+   && grep -Fq 'MIN_ALONGSIDE_ESP_BYTES=2147483648' "$encryptor" \
+   && grep -Fq 'MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824' "$encryptor" \
+   && grep -Fq 'fsck.fat -n "$EFI_PARTITION"' "$backend" \
+   && grep -Fq 'fsck.fat -n "$esp"' "$encryptor" \
+   && grep -Fq 'mount -o ro,nosuid,nodev,noexec "$EFI_PARTITION" "$efi_probe"' "$backend" \
+   && grep -Fq 'mount -o ro,nosuid,nodev,noexec "$esp" "$esp_probe"' "$encryptor" \
    && grep -Fq 'existing OS partitions are preserved' "$backend" \
    && ! grep -Fq 'mkfs.vfat -n EFI-SYSTEM "$EFI_PARTITION"' "$backend"; then
-  ok "alongside install fails closed on signed roots and never formats the shared ESP"
+  ok "alongside install fails closed on signed roots or undersized ESPs and never formats the shared ESP"
 else
   bad "alongside install can overwrite an occupied root or shared ESP"
 fi
@@ -142,6 +253,12 @@ if grep -Fq 'prepare-partition "$ROOT_PARTITION" --efi "$EFI_PARTITION"' "$backe
   ok "encrypted and unencrypted alongside paths preserve the partition table"
 else
   bad "alongside mode is not wired through both encryption paths"
+fi
+
+if bash "$repo_root/os/tests/live_installer_service_invariants.sh"; then
+  ok "durable-identity services stay quiet only on disposable installer media"
+else
+  bad "a durable-identity service has an incorrect live-installer gate"
 fi
 
 exit "$fail"

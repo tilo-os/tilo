@@ -292,6 +292,7 @@ futures-util = "0.3"
 # Defaults off keeps the native-tls/OpenSSL backend out of the tree; every
 # member picks rustls explicitly.
 reqwest = { version = "0.12", default-features = false }
+zstd = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 url = "2"
 

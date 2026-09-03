@@ -1,0 +1,29 @@
+#!/bin/sh
+# apt-key's temporary-home checks are incompatible with PRoot's fake-root
+# access emulation. APT only invokes this CI helper for detached verification;
+# preserve that operation and pass its keyring and status fd directly to gpgv.
+set -eu
+
+keyring=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --keyring)
+            keyring=$2
+            shift 2
+            ;;
+        --quiet|--readonly)
+            shift
+            ;;
+        verify)
+            shift
+            test -n "$keyring"
+            exec gpgv --keyring "$keyring" "$@"
+            ;;
+        *)
+            echo "unsupported proot apt-key argument: $1" >&2
+            exit 2
+            ;;
+    esac
+done
+
+exit 2

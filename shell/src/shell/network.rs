@@ -3,8 +3,10 @@
 //! `NetEvent`s into replica replies re-published as `NetCmd::Publish`s.
 //! Started by default in normal sessions; recovery sessions may disable it.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
@@ -21,8 +23,62 @@ use crate::network::replica::WorkspaceTreeReplica;
 use crate::shell::state::WorkspaceTree;
 use crate::shell::state::{RoomId, WorkspaceTreeHandle};
 
+pub use crate::network::actor::PeerDepartureCause;
+use crate::shell::collab_broker::CrdtRoute;
+
 /// Compatibility/control topic used only when a message has no room identity.
 pub const DEFAULT_WS_TOPIC: u64 = 0;
+
+/// Maximum number of recent transport departures retained for diagnostics.
+///
+/// A session can repeatedly lose and regain a peer, so this is a ring rather
+/// than a once-per-peer map. The history is session-local and intentionally
+/// contains no application payload.
+const PEER_DEPARTURE_HISTORY_CAPACITY: usize = 64;
+
+/// A transport peer leaving one collaboration route.
+///
+/// `endpoint_id` is the authenticated transport identity; `user_public_key`
+/// is present only after the peer completed identity admission. Keeping both
+/// lets diagnostics distinguish an unnamed device from an admitted person's
+/// second device without retaining any message contents.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerDeparture {
+    pub endpoint_id: iroh::EndpointId,
+    pub session_handle: u64,
+    pub route: CrdtRoute,
+    pub cause: PeerDepartureCause,
+    pub user_public_key: Option<[u8; 32]>,
+    pub participant_name: Option<String>,
+    pub observed_at: SystemTime,
+}
+
+/// Shared, bounded departure history. It is intentionally independent of
+/// the actor event channel so a reader exit can still be recorded if a later
+/// roster or identity cleanup step cannot acquire its own lock.
+#[derive(Default)]
+pub(crate) struct PeerDepartureHistory {
+    entries: Mutex<VecDeque<PeerDeparture>>,
+}
+
+impl PeerDepartureHistory {
+    fn record(&self, departure: PeerDeparture) {
+        let Ok(mut entries) = self.entries.lock() else {
+            return;
+        };
+        if entries.len() >= PEER_DEPARTURE_HISTORY_CAPACITY {
+            entries.pop_front();
+        }
+        entries.push_back(departure);
+    }
+
+    pub(crate) fn snapshot(&self) -> Vec<PeerDeparture> {
+        self.entries
+            .lock()
+            .map(|entries| entries.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
 
 /// Stable transport/host shard for a durable room. Local workspace handles are
 /// deliberately not used: they differ between devices.
@@ -469,7 +525,26 @@ pub struct ShellNetwork {
     /// Inbound cooperative-scrollback *responses*, forwarded by the
     /// broker's drainer to the local app that asked.
     inbound_scrollback_response: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
+    /// Authenticated legacy-surface control, frame, and input messages.
+    /// Frames are coalesced per surface when the render loop falls behind,
+    /// keeping network jitter from turning into unbounded compositor memory.
+    inbound_legacy: Arc<Mutex<std::collections::VecDeque<InboundLegacyEvent>>>,
+    /// Recent reader/transport exits, retained independently of mutable room
+    /// state so cleanup cannot erase the evidence it needs to diagnose.
+    peer_departures: Arc<PeerDepartureHistory>,
 }
+
+/// A live legacy-app message after transport identity and room capability
+/// checks have passed. `workspace_topic` is retained so a viewer's input is
+/// always sent back to the room the stream arrived on, even after a local
+/// workspace switch.
+#[derive(Debug, Clone)]
+pub struct InboundLegacyEvent {
+    pub workspace_topic: u64,
+    pub message: NeighbourMsg,
+}
+
+const LEGACY_INBOX_CAP: usize = 256;
 
 /// One received app-presence frame, fanned to local apps by the
 /// `collab_broker` drainer. Carries no record id: presence is fanned
@@ -749,6 +824,8 @@ impl ShellNetwork {
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
+            inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+            peer_departures: Arc::new(PeerDepartureHistory::default()),
         })
     }
 
@@ -779,6 +856,16 @@ impl ShellNetwork {
         };
 
         replica.tree.read().room_peer_labels(room)
+    }
+
+    /// Snapshot recent transport departures, oldest first. This is bounded
+    /// session diagnostics, not a durable participant roster.
+    pub fn peer_departures(&self) -> Vec<PeerDeparture> {
+        self.peer_departures.snapshot()
+    }
+
+    pub(crate) fn peer_departure_history(&self) -> Arc<PeerDepartureHistory> {
+        Arc::clone(&self.peer_departures)
     }
 
     /// Workspace topic for session traffic associated with the active room.
@@ -858,6 +945,101 @@ impl ShellNetwork {
         }
         let ws = self.topic_for_message(&msg);
         self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok()
+    }
+
+    /// Publish live legacy-app traffic on an explicit authenticated room
+    /// route. Unlike ordinary shell messages this must not follow a later
+    /// active-workspace switch: remote input belongs to the stream's room.
+    pub fn publish_legacy_message(&self, workspace_topic: u64, msg: NeighbourMsg) -> bool {
+        if !matches!(
+            msg,
+            NeighbourMsg::SurfaceStreamStart { .. }
+                | NeighbourMsg::SurfaceFrame { .. }
+                | NeighbourMsg::SurfaceStreamEnd { .. }
+                | NeighbourMsg::RemoteInput { .. }
+        ) {
+            return false;
+        }
+        self.join_topic(workspace_topic)
+            && self
+                .cmd_tx
+                .try_send(NetCmd::Publish {
+                    ws: workspace_topic,
+                    msg,
+                })
+                .is_ok()
+    }
+
+    /// Publish owner-side stream traffic to the room currently being viewed.
+    /// The receiver retains that concrete topic and uses
+    /// [`Self::publish_legacy_message`] for all input replies.
+    pub fn publish_legacy_active(&self, msg: NeighbourMsg) -> bool {
+        let workspace_topic = self.active_ws_for_publish();
+        self.publish_legacy_message(workspace_topic, msg)
+    }
+
+    /// Drain authenticated live legacy-app traffic without holding the queue
+    /// while decoders or the compositor do work.
+    pub fn take_inbound_legacy(&self) -> Vec<InboundLegacyEvent> {
+        let Ok(mut queue) = self.inbound_legacy.lock() else {
+            return Vec::new();
+        };
+        queue.drain(..).collect()
+    }
+
+    fn queue_legacy_message(&self, workspace_topic: u64, message: NeighbourMsg) {
+        // Never reflect a host's own gossip echo into a decoder or seat.
+        if Self::claimed_publisher(&message) == Some(self.local_peer_hash) {
+            return;
+        }
+        let Ok(mut queue) = self.inbound_legacy.lock() else {
+            return;
+        };
+        if let NeighbourMsg::SurfaceFrame {
+            surface,
+            source_peer,
+            ts,
+            ..
+        } = &message
+        {
+            // Video is drop-oldest/latest-wins. Control and input retain
+            // ordering; only an older frame for this exact stream is removed.
+            if let Some((index, queued_ts)) =
+                queue
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, event)| match &event.message {
+                        NeighbourMsg::SurfaceFrame {
+                            surface: queued_surface,
+                            source_peer: queued_peer,
+                            ts: queued_ts,
+                            ..
+                        } if queued_surface == surface && queued_peer == source_peer => {
+                            Some((index, *queued_ts))
+                        }
+                        _ => None,
+                    })
+            {
+                if queued_ts >= *ts {
+                    return;
+                }
+                queue.remove(index);
+            }
+        }
+        while queue.len() >= LEGACY_INBOX_CAP {
+            let frame_index = queue
+                .iter()
+                .position(|event| matches!(event.message, NeighbourMsg::SurfaceFrame { .. }));
+            if let Some(index) = frame_index {
+                queue.remove(index);
+            } else {
+                queue.pop_front();
+            }
+        }
+        queue.push_back(InboundLegacyEvent {
+            workspace_topic,
+            message,
+        });
     }
 
     fn publish_shell_checkpoint(&self, msg: NeighbourMsg) -> bool {
@@ -1316,6 +1498,11 @@ impl ShellNetwork {
 
     /// Export the selected person identity as a non-secret card another qOS
     /// user can paste into the recipient-bound invite composer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workspace is unknown, replica state is
+    /// unavailable, or no selected device certificate can be produced.
     pub fn person_identity_card(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -1402,6 +1589,10 @@ impl ShellNetwork {
     /// admission unless the joining device presents a certificate for the
     /// selected person identity. This is the safe form for offline hosted
     /// admission.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::issue_invite`].
     pub fn issue_invite_bound_with_role(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -1546,6 +1737,11 @@ impl ShellNetwork {
     /// List live invitations for a locally governed workspace. Only
     /// non-secret metadata is returned through this API; the private bearer
     /// remains available through the explicit resend action.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workspace is unknown, replica state is
+    /// unavailable, or the local user may not administer the workspace.
     pub fn pending_invites(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -1567,7 +1763,10 @@ impl ShellNetwork {
                     "only the governing workspace administrator can inspect invites".into(),
                 );
             }
-            workspace.room
+            let room = workspace.room;
+            drop(tree);
+            drop(replica);
+            room
         };
         Ok(self
             .pending_invitations(room)
@@ -1584,6 +1783,11 @@ impl ShellNetwork {
 
     /// Revoke a pending invite by the digest returned from
     /// [`Self::pending_invites`]. A digest from another room is never removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workspace or invite id is invalid, state is
+    /// unavailable, or the local user may not administer the workspace.
     pub fn revoke_pending_invite(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -1604,7 +1808,10 @@ impl ShellNetwork {
             if !tree.governs_room(workspace.room) || !workspace.may_administer(&actor) {
                 return Err("only the governing workspace administrator can revoke invites".into());
             }
-            workspace.room
+            let room = workspace.room;
+            drop(tree);
+            drop(replica);
+            room
         };
         let bytes =
             hex::decode(invite_id).map_err(|_| "invite id is not hexadecimal".to_string())?;
@@ -1615,13 +1822,14 @@ impl ShellNetwork {
             .pending_identity_admissions
             .lock()
             .map_err(|_| "invite admission state is unavailable".to_string())?;
-        if !pending.get(&id).is_some_and(|invite| invite.room == room) {
+        if pending.get(&id).is_none_or(|invite| invite.room != room) {
             return Ok(false);
         }
         pending.remove(&id);
         if let Some(path) = self.pending_invitations_path.as_deref() {
             persist_pending_invitations(path, &pending);
         }
+        drop(pending);
         Ok(true)
     }
 
@@ -1964,7 +2172,8 @@ impl ShellNetwork {
             NetEvent::PeerJoined { .. } => self.publish_sync_requests(),
             // Without this the roster only ever grows: nothing else
             // tells it a session went quiet.
-            NetEvent::PeerLeft { peer, .. } => {
+            NetEvent::PeerLeft { ws, peer, cause } => {
+                self.record_peer_departure(ws, peer, cause);
                 let handle = crate::network::behaviour::peer_liveness_handle(&peer);
                 self.peer_identities
                     .remove(&crate::shell::state::PeerOrigin::peer(&peer));
@@ -1974,6 +2183,49 @@ impl ShellNetwork {
             }
             NetEvent::Msg { ws, peer, msg } => self.dispatch_neighbour_msg(ws, peer, msg),
         }
+    }
+
+    /// Capture departure evidence before identity and roster cleanup. Every
+    /// lock is best-effort: a poisoned diagnostic/replica lock must never turn
+    /// a reader exit into a shell panic or keep a stale session alive.
+    fn record_peer_departure(&self, ws: u64, peer: iroh::EndpointId, cause: PeerDepartureCause) {
+        let session_handle = crate::network::behaviour::peer_liveness_handle(&peer);
+        let route = self
+            .replica
+            .lock()
+            .ok()
+            .and_then(|replica| {
+                replica
+                    .tree
+                    .read()
+                    .rooms()
+                    .into_iter()
+                    .find(|room| room_topic_id(*room) == ws)
+            })
+            .map_or_else(
+                || CrdtRoute::cluster(""),
+                |room| CrdtRoute::cluster(room.to_string()),
+            );
+        let participant_name = (!route.cluster_id.is_empty())
+            .then(|| {
+                self.peer_labels(&route.cluster_id)
+                    .get(&session_handle)
+                    .cloned()
+            })
+            .flatten();
+        let user_public_key = self
+            .peer_identities
+            .get(&crate::shell::state::PeerOrigin::peer(&peer))
+            .map(|identity| identity.user_pubkey);
+        self.peer_departures.record(PeerDeparture {
+            endpoint_id: peer,
+            session_handle,
+            route,
+            cause,
+            user_public_key,
+            participant_name,
+            observed_at: SystemTime::now(),
+        });
     }
 
     /// Seed a durable host's checkpoint once it finishes subscribing to
@@ -2185,6 +2437,10 @@ impl ShellNetwork {
                 // per-op indirection once it's off the wire.
                 ops.into_iter().map(|op| *op).collect(),
             ),
+            message @ (NeighbourMsg::SurfaceStreamStart { .. }
+            | NeighbourMsg::SurfaceFrame { .. }
+            | NeighbourMsg::SurfaceStreamEnd { .. }
+            | NeighbourMsg::RemoteInput { .. }) => self.queue_legacy_message(ws, message),
             other => self.dispatch_to_replica(peer, &other),
         }
     }
@@ -2614,6 +2870,7 @@ impl ShellNetwork {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn redeem_invited_identity(
         &self,
         workspace_topic: u64,
@@ -2960,6 +3217,8 @@ pub(crate) fn shell_network_for_test(
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
+        inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+        peer_departures: Arc::new(PeerDepartureHistory::default()),
     };
     (net, cmd_rx)
 }
@@ -3575,6 +3834,88 @@ mod tests {
             adopted.strips.is_empty(),
             "receiving a continuation must not recreate applications"
         );
+    }
+
+    #[test]
+    fn legacy_inbox_coalesces_frames_but_keeps_control_order() {
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, _commands) = shell_network_for_test(tree, 99);
+        let start = NeighbourMsg::SurfaceStreamStart {
+            surface: 7,
+            source_peer: 5,
+            app_id: "org.example.Editor".into(),
+            width: 64,
+            height: 48,
+            codec: "h264".into(),
+            ts: 1,
+            sender_monotonic_ns_at_send: 1,
+            colorimetry: None,
+            hdr_static_metadata: None,
+            bit_depth: 8,
+        };
+        net.queue_legacy_message(42, start);
+        for ts in 2..=20 {
+            net.queue_legacy_message(
+                42,
+                NeighbourMsg::SurfaceFrame {
+                    surface: 7,
+                    source_peer: 5,
+                    encoded_h264: vec![u8::try_from(ts).unwrap_or_default()],
+                    ts,
+                },
+            );
+        }
+        // Separate QUIC uni streams may complete out of order, and the host
+        // fallback may deliver an older duplicate after the direct path.
+        net.queue_legacy_message(
+            42,
+            NeighbourMsg::SurfaceFrame {
+                surface: 7,
+                source_peer: 5,
+                encoded_h264: vec![19],
+                ts: 19,
+            },
+        );
+        net.queue_legacy_message(
+            42,
+            NeighbourMsg::SurfaceStreamEnd {
+                surface: 7,
+                source_peer: 5,
+                ts: 21,
+            },
+        );
+
+        let drained = net.take_inbound_legacy();
+        assert_eq!(drained.len(), 3);
+        assert_eq!(drained[0].workspace_topic, 42);
+        assert!(matches!(
+            drained[0].message,
+            NeighbourMsg::SurfaceStreamStart { .. }
+        ));
+        assert!(matches!(
+            drained[1].message,
+            NeighbourMsg::SurfaceFrame { ts: 20, .. }
+        ));
+        assert!(matches!(
+            drained[2].message,
+            NeighbourMsg::SurfaceStreamEnd { .. }
+        ));
+    }
+
+    #[test]
+    fn legacy_inbox_drops_local_gossip_echo() {
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, _commands) = shell_network_for_test(tree, 99);
+        net.queue_legacy_message(
+            42,
+            NeighbourMsg::SurfaceFrame {
+                surface: 7,
+                source_peer: 99,
+                encoded_h264: vec![1],
+                ts: 1,
+            },
+        );
+        assert!(net.take_inbound_legacy().is_empty());
     }
 
     #[test]
@@ -4562,6 +4903,77 @@ mod tests {
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
         net.tick();
+    }
+
+    #[test]
+    fn peer_departure_retains_identity_route_and_cause_before_cleanup() {
+        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let room = tree.read().rooms()[0];
+        {
+            let mut tree = tree.write();
+            tree.adopt_roomless_workspaces();
+            let local_user = crate::shell::state::local_user_id();
+            for workspace in &mut tree.workspaces {
+                workspace.set_owner(local_user.clone());
+            }
+        }
+        let (net, _cmd_rx) = shell_network_for_test(tree.clone(), 0xD3E0_7A7E);
+        let authority_key = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
+        let peer = iroh::SecretKey::from_bytes(&[83; 32]).public();
+        let mut cert = DeviceCert {
+            user_public_key: authority_key.verifying_key().to_bytes(),
+            device_public_key: *peer.as_bytes(),
+            device_label: "Vera's device".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &authority_key).expect("certificate");
+        let origin = crate::shell::state::PeerOrigin::peer(&peer);
+        let now_ns = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
+            .unwrap_or(u64::MAX);
+        net.peer_identities
+            .insert(origin.clone(), cert.clone(), now_ns)
+            .expect("admitted peer identity");
+        tree.write()
+            .room_peer_names
+            .entry(room)
+            .or_default()
+            .insert(peer.to_string(), "Vera".into());
+
+        net.event_tx
+            .try_send(NetEvent::PeerLeft {
+                ws: room_topic_id(room),
+                peer,
+                cause: PeerDepartureCause::LivenessTimedOut,
+            })
+            .expect("queue peer departure");
+        net.tick();
+
+        let departures = net.peer_departures();
+        let [departure] = departures.as_slice() else {
+            panic!("one departure should be retained: {departures:?}");
+        };
+        assert_eq!(departure.endpoint_id, peer);
+        assert_eq!(
+            departure.session_handle,
+            crate::network::behaviour::peer_liveness_handle(&peer)
+        );
+        assert_eq!(departure.route, CrdtRoute::cluster(room.to_string()));
+        assert_eq!(departure.cause, PeerDepartureCause::LivenessTimedOut);
+        assert_eq!(departure.user_public_key, Some(cert.user_public_key));
+        assert_eq!(departure.participant_name.as_deref(), Some("Vera"));
+        assert!(departure.observed_at <= SystemTime::now());
+        assert!(
+            net.peer_identities.get(&origin).is_none(),
+            "identity cleanup happens only after departure diagnostics are captured"
+        );
     }
 
     #[test]

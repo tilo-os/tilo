@@ -9,6 +9,12 @@
 # saves any existing config and puts it back on the way out.
 set -uo pipefail
 
+# The production wrapper deliberately rejects group-writable configuration
+# directories. Distro defaults vary between 0022 and user-private-group 0002,
+# so make the accepting fixture private instead of inheriting the test host's
+# policy.
+umask 0077
+
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 wrapper=$here/../qos-session-dev
 home=$(getent passwd "$(id -u)" | cut -d: -f6)
@@ -96,8 +102,8 @@ refuse "target carries no dev-session build marker"
 echo "$marked" >"$conf"
 err=$scratch/accept.err
 out=$("$wrapper" 2>"$err"); rc=$?
-if (( rc == 0 )) && [[ $out == "started --firstboot --backend drm" ]]; then
-    echo "ok: a marked, privately-owned build starts, with --firstboot --backend drm"
+if (( rc == 0 )) && [[ $out == "started --host-desktop-session --firstboot --backend drm" ]]; then
+    echo "ok: a marked, privately-owned build starts, with host-session identity setup"
     pass=$((pass + 1))
 else
     echo "FAIL: expected the marked build to start; rc=$rc out=<$out>"
