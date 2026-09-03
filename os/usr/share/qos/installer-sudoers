@@ -22,4 +22,4 @@ Defaults env_keep += "QOS_TARGET_IMGREF"
 # path, so the pty hardening buys little here).
 Defaults:greetd !use_pty
 
-greetd ALL=(root) NOPASSWD: /usr/libexec/qos-install, /usr/libexec/qos-power
+greetd ALL=(root) NOPASSWD: /usr/libexec/qos-install, /usr/libexec/qos-power, /usr/libexec/qos-recovery
