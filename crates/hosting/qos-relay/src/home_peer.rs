@@ -13,6 +13,11 @@ pub struct HomePeerRegistration {
     pub device_node_id: String,
     /// Domain-separated relay service endpoint key, lowercase hex.
     pub relay_service_node_id: String,
+    /// Last authenticated, network-addressable endpoint advertisement for
+    /// the relay service. The service id alone is insufficient without an
+    /// address lookup service; legacy registrations omit this hint.
+    #[serde(default)]
+    pub relay_endpoint: Option<iroh_base::EndpointAddr>,
     /// User-visible device name.
     pub label: String,
     /// Root identity key, lowercase hex.
@@ -31,7 +36,7 @@ const fn legacy_version() -> u16 {
 
 impl HomePeerRegistration {
     /// Schema version written by this build.
-    pub const CURRENT_SCHEMA: u16 = 2;
+    pub const CURRENT_SCHEMA: u16 = 3;
 }
 
 /// Whether an operator-facing device label is safe to render as one line.
