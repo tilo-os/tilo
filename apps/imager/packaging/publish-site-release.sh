@@ -27,14 +27,18 @@ GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone \
   "$GITHUB_SERVER_URL/qos/website.git" "$work/site"
 manifest="$work/site/src/data/imager-release.json"
 test -f "$manifest"
-current_tag="$(jq -er '.tag' "$manifest")"
+# A freshly deployed landing page deliberately starts unpublished with a null
+# tag. Treat that as "no previous release" instead of making the first real
+# promotion impossible.
+current_tag="$(jq -r '.tag // empty' "$manifest")"
 current_version="${current_tag#imager-v}"
 if [[ "$current_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
    && [ "$(printf '%s\n%s\n' "$current_version" "$version" | sort -V | tail -1)" != "$version" ]; then
   printf 'refusing to replace newer landing-page release %s with %s\n' "$current_version" "$version" >&2
   exit 1
 fi
-jq --arg tag "$GITHUB_REF_NAME" '.tag = $tag' "$manifest" >"$manifest.next"
+jq --arg tag "$GITHUB_REF_NAME" \
+  '.tag = $tag | .published = true' "$manifest" >"$manifest.next"
 mv "$manifest.next" "$manifest"
 
 npm --prefix "$work/site" ci
