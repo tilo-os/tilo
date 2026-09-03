@@ -856,7 +856,7 @@ async fn refresh_home_peer_authority_once(
     state: &mut AuthorityRefreshState,
     now: u64,
 ) -> bool {
-    let refresh = || -> Result<
+    let mut refresh = || -> Result<
         (
             Vec<String>,
             HashMap<u64, std::collections::HashSet<[u8; 32]>>,
