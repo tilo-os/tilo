@@ -39,6 +39,13 @@ impl SharedSurfaces {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// Iterate the surfaces and their explicit recipients. The compositor
+    /// uses this read-only view to reconcile live encoder sessions with the
+    /// replicated workspace state.
+    pub fn iter(&self) -> impl Iterator<Item = (u64, &HashSet<u64>)> {
+        self.0.iter().map(|(surface, peers)| (*surface, peers))
+    }
 }
 
 #[cfg(test)]

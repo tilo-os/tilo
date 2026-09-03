@@ -26,27 +26,36 @@ pub use qos_callstream::throttle::StreamingThrottle;
 /// follow-up), riding inside
 /// [`crate::network::NeighbourMsg::RemoteInput::event`].
 ///
-/// `PointerEnter`/`PointerLeave` grab/release keyboard focus onto the
-/// peer's virtual seat. Two peers with overlapping shares typing
-/// concurrently interleave at the kernel-input level with no
-/// session-level lock — callers needing determinism must serialise upstream.
+/// `PointerEnter`/`PointerLeave` scope the peer's virtual-seat bookkeeping;
+/// keyboard/text-input focus remains on the active legacy tab so ordinary
+/// clients see one stable seat. Two peers typing concurrently interleave at
+/// event order, while held keys are reference-counted across peers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum InputEvent {
     /// Pointer moved to logical `(x, y)`, surface-local; [`crate::network::input_firewall`] translates it into the owner's output space.
     PointerMotion { x: f64, y: f64 },
     /// Mouse button transitioned to `pressed`; `button` mirrors smithay's libinput-style codes (e.g. 272 = `BTN_LEFT`).
     PointerButton { button: u32, pressed: bool },
-    /// Peer's pointer entered `surface` — grabs keyboard focus onto the peer's virtual seat, emitted once on hover/click into the `PeerView`.
+    /// Peer's pointer entered `surface`, emitted once on hover into the `PeerView`.
     PointerEnter { surface: SurfaceIdWire },
-    /// Peer's pointer left `surface` — releases the keyboard grab; subsequent `Key` events fall on the floor until another `PointerEnter`.
+    /// Peer's pointer left `surface`. This does not clear keyboard focus:
+    /// moving a mouse out of a text field must not destroy its caret or IME.
     PointerLeave { surface: SurfaceIdWire },
-    /// Key press/release. `keysym` is the raw `xkbcommon::xkb::Keysym` u32;
-    /// `modifiers` is xkbcommon's `Mods` bitfield, set on the seat's keyboard before delivery so held modifiers survive the network.
+    /// Key press/release. The historical `keysym` field carries a Linux
+    /// evdev keycode (for example 30 = A); it is translated to XKB space at
+    /// the owner. `modifiers` is an untrusted xkb-style diagnostic bitfield;
+    /// held modifiers are reconstructed from each peer's key transitions.
     Key {
         keysym: u32,
         pressed: bool,
         #[serde(default)]
         modifiers: u32,
+    },
+    /// Explicit keyboard-focus transition, driven by clicks rather than hover.
+    /// Kept last for compatibility with the existing serde enum ordering.
+    KeyboardFocus {
+        surface: SurfaceIdWire,
+        focused: bool,
     },
 }
 
@@ -137,6 +146,14 @@ impl ShareRegistry {
     /// Borrow the share record, if any.
     pub fn get(&self, peer: PeerId, surface: SurfaceId) -> Option<&StreamingShare> {
         self.shares.get(&(peer, surface))
+    }
+
+    /// Snapshot the peers currently registered for one surface.
+    pub fn peers_for(&self, surface: SurfaceId) -> Vec<PeerId> {
+        self.shares
+            .keys()
+            .filter_map(|(peer, candidate)| (*candidate == surface).then_some(*peer))
+            .collect()
     }
 
     /// Flip the `read_only` flag on an existing share; no-op if absent — callers needing creation-on-toggle should `insert` first.
@@ -331,6 +348,10 @@ mod tests {
             },
             InputEvent::PointerEnter { surface: 42 },
             InputEvent::PointerLeave { surface: 42 },
+            InputEvent::KeyboardFocus {
+                surface: 42,
+                focused: true,
+            },
         ];
         for ev in events {
             let bytes = serde_json::to_vec(&ev).expect("serialize");
@@ -516,6 +537,14 @@ mod tests {
             .insert(peer, surface, StreamingShare::new());
         // The scrubber's focus guard mutes a guest's keystrokes unless the shared surface holds keyboard focus.
         stage_shared_surface(&mut state, surface);
+        assert!(state.apply_remote_input(
+            peer,
+            surface,
+            InputEvent::KeyboardFocus {
+                surface,
+                focused: true,
+            },
+        ));
 
         // Baseline: no keys pressed.
         {
@@ -526,7 +555,8 @@ mod tests {
             );
         }
 
-        let keysym: u32 = 30; /* A on a US keymap */
+        let keysym: u32 = 30; /* evdev A on a US keymap */
+        let xkb_keycode = keysym + 8;
         let routed = state.apply_remote_input(
             peer,
             surface,
@@ -543,7 +573,7 @@ mod tests {
             let kb = state.seat.get_keyboard().expect("keyboard on seat");
             let pressed = kb.pressed_keys();
             assert!(
-                pressed.iter().any(|k| u32::from(*k) == keysym),
+                pressed.iter().any(|k| u32::from(*k) == xkb_keycode),
                 "keyboard did not observe key press; observed {pressed:?}",
             );
         }
@@ -561,7 +591,9 @@ mod tests {
         {
             let kb = state.seat.get_keyboard().expect("keyboard on seat");
             assert!(
-                !kb.pressed_keys().iter().any(|k| u32::from(*k) == keysym),
+                !kb.pressed_keys()
+                    .iter()
+                    .any(|k| u32::from(*k) == xkb_keycode),
                 "keyboard still holds the released keycode",
             );
         }
@@ -571,9 +603,10 @@ mod tests {
         assert_eq!(*last_peer, peer, "origin peer tag lost");
     }
 
-    /// `PointerEnter` auto-grabs the peer's keyboard focus on `RemoteSeat`; `PointerLeave` releases it (headless tests stub `surface_resolver`).
+    /// Hover and click focus are independent: pointer leave preserves the
+    /// caret, while an explicit blur releases keyboard focus.
     #[test]
-    fn pointer_enter_grabs_and_leave_releases_remote_seat_focus() {
+    fn pointer_leave_preserves_focus_until_explicit_blur() {
         use crate::compositor::state::State;
         use crate::network::streaming::{InputEvent, StreamingShare};
         use smithay::reexports::calloop::EventLoop;
@@ -595,22 +628,44 @@ mod tests {
         // No seat entry yet — the peer hasn't emitted any input.
         assert!(state.remote_seats.seat(peer).is_none());
 
-        // Enter grabs focus.
+        // PointerEnter remains a compatibility focus handshake for older
+        // viewers; importantly, leaving no longer clears that focus.
         let routed = state.apply_remote_input(peer, surface, InputEvent::PointerEnter { surface });
         assert!(routed);
         let seat = state
             .remote_seats
             .seat(peer)
             .expect("peer's remote seat exists after enter");
+        assert_eq!(seat.pointer_surface, Some(surface));
         assert_eq!(seat.focused_surface, Some(surface));
 
-        // Leave releases.
+        assert!(state.apply_remote_input(
+            peer,
+            surface,
+            InputEvent::KeyboardFocus {
+                surface,
+                focused: true,
+            },
+        ));
+
+        // Leaving the tile preserves the app caret/focus.
         let _ = state.apply_remote_input(peer, surface, InputEvent::PointerLeave { surface });
         let seat = state
             .remote_seats
             .seat(peer)
             .expect("peer's remote seat still exists");
-        assert_eq!(seat.focused_surface, None);
+        assert_eq!(seat.pointer_surface, None);
+        assert_eq!(seat.focused_surface, Some(surface));
+
+        assert!(state.apply_remote_input(
+            peer,
+            surface,
+            InputEvent::KeyboardFocus {
+                surface,
+                focused: false,
+            },
+        ));
+        assert_eq!(state.remote_seats.seat(peer).unwrap().focused_surface, None);
     }
 
     #[test]
