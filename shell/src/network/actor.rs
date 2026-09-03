@@ -139,6 +139,10 @@ pub enum NetCmd {
         addr: EndpointAddr,
         expectation: Option<HomePeerExpectation>,
     },
+    /// Stop using a host removed from the authenticated local registry.
+    DisconnectHost {
+        id: EndpointId,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -178,6 +182,7 @@ enum InternalEvent {
     HostConnected {
         ws: WorkspaceId,
         peer: EndpointId,
+        addr: EndpointAddr,
         // Boxed: `RelayCoeditSession` (an authenticated relay client plus
         // its subscription state) is far larger than every sibling variant,
         // so an unboxed `Result` here would size the whole enum to fit it.
@@ -310,6 +315,13 @@ impl ActorState {
             }
             Some(NetCmd::ConnectHost { addr, expectation }) => {
                 let id = addr.id;
+                let changed = self
+                    .hosts
+                    .get(&id)
+                    .is_some_and(|known| known != &(addr.clone(), expectation.clone()));
+                if changed {
+                    self.disconnect_host(id);
+                }
                 self.lookup.add_endpoint_info(addr.clone());
                 self.hosts.insert(id, (addr.clone(), expectation.clone()));
                 let Some(identity) = self.host_identity.as_ref() else {
@@ -330,9 +342,37 @@ impl ActorState {
                     );
                 }
             }
+            Some(NetCmd::DisconnectHost { id }) => self.disconnect_host(id),
             None => return false,
         }
         true
+    }
+
+    fn disconnect_host(&mut self, id: EndpointId) {
+        self.hosts.remove(&id);
+        self.connecting_hosts.retain(|(_, host)| *host != id);
+        let sessions: Vec<_> = self
+            .host_sessions
+            .keys()
+            .filter(|(_, host)| *host == id)
+            .copied()
+            .collect();
+        for key in sessions {
+            if let Some(runtime) = self.host_sessions.remove(&key) {
+                runtime.pump.abort();
+            }
+        }
+        let discoveries: Vec<_> = self
+            .content_discovery_tasks
+            .keys()
+            .filter(|(_, host)| *host == id)
+            .copied()
+            .collect();
+        for key in discoveries {
+            if let Some(task) = self.content_discovery_tasks.remove(&key) {
+                task.abort();
+            }
+        }
     }
 
     /// [`NetCmd::JoinWorkspace`] arm of [`Self::handle_command`], split out
@@ -372,7 +412,7 @@ impl ActorState {
                     &self.endpoint,
                     identity,
                     ws,
-                    addr,
+                    addr.clone(),
                     expectation,
                     &self.internal_tx,
                     &self.host_sessions,
@@ -393,8 +433,13 @@ impl ActorState {
             Some(InternalEvent::Closed { ws }) => {
                 self.topics.remove(&ws);
             }
-            Some(InternalEvent::HostConnected { ws, peer, result }) => {
-                self.handle_host_connected(ws, peer, result);
+            Some(InternalEvent::HostConnected {
+                ws,
+                peer,
+                addr,
+                result,
+            }) => {
+                self.handle_host_connected(ws, peer, &addr, result);
             }
             Some(InternalEvent::Host { ws, peer, event }) => {
                 self.handle_host_event(ws, peer, event).await;
@@ -463,10 +508,16 @@ impl ActorState {
         &mut self,
         ws: WorkspaceId,
         peer: EndpointId,
+        attempted_addr: &EndpointAddr,
         result: Box<Result<RelayCoeditSession, String>>,
     ) {
         self.connecting_hosts.remove(&(ws, peer));
-        if !self.topics.contains_key(&ws) {
+        if !self.topics.contains_key(&ws)
+            || !self
+                .hosts
+                .get(&peer)
+                .is_some_and(|(current, _)| current == attempted_addr)
+        {
             return;
         }
         match *result {
@@ -815,18 +866,20 @@ fn schedule_host_topic(
     {
         let discovery_endpoint = endpoint.clone();
         let discovery_addr = addr.clone();
-        let discovery_cert = identity.material_for(ws).0;
-        let discovery_signing_key = identity.device_signing_key.clone();
-        let mut discovery_revocations = RevocationList::new();
-        for entry in identity.material_for(ws).1 {
-            if discovery_revocations.insert(entry).is_err() {
-                tracing::warn!(ws, "workspace identity has an invalid revocation entry");
-                return;
-            }
-        }
+        let discovery_identity = identity.clone();
         let task = tokio::spawn(async move {
             let mut retry = Duration::from_secs(1);
             loop {
+                let (discovery_cert, entries) = discovery_identity.material_for(ws);
+                let mut discovery_revocations = RevocationList::new();
+                if entries
+                    .into_iter()
+                    .any(|entry| discovery_revocations.insert(entry).is_err())
+                {
+                    tracing::warn!(ws, "workspace identity has an invalid revocation entry");
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    continue;
+                }
                 let discovered = tokio::time::timeout(
                     Duration::from_secs(10),
                     RelayClient::discover_content_peer(
@@ -836,7 +889,7 @@ fn schedule_host_topic(
                         expectation.user_public_key,
                         expectation.device_public_key,
                         discovery_cert.clone(),
-                        discovery_signing_key.clone(),
+                        discovery_identity.device_signing_key.clone(),
                         discovery_revocations.clone(),
                     ),
                 )
@@ -886,7 +939,7 @@ fn schedule_host_topic(
                 Duration::from_secs(10),
                 RelayClient::connect_to_pinned_host(
                     endpoint,
-                    addr,
+                    addr.clone(),
                     device_cert,
                     identity.device_signing_key.clone(),
                     revocations,
@@ -907,6 +960,7 @@ fn schedule_host_topic(
                 .send(InternalEvent::HostConnected {
                     ws,
                     peer: host,
+                    addr,
                     result: Box::new(result),
                 })
                 .await;
@@ -919,7 +973,7 @@ fn schedule_host_topic(
             Duration::from_secs(10),
             RelayClient::connect_to_pinned_host(
                 endpoint,
-                addr,
+                addr.clone(),
                 device_cert,
                 identity.device_signing_key.clone(),
                 revocations,
@@ -940,6 +994,7 @@ fn schedule_host_topic(
             .send(InternalEvent::HostConnected {
                 ws,
                 peer: host,
+                addr,
                 result: Box::new(result),
             })
             .await;
