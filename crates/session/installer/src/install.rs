@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! /usr/libexec/qos-install \
-//!     --disk <dev> --user <name> \
+//!     --disk <dev> --confirm-erase <dev> --user <name> \
 //!     --filesystem <btrfs|ext4|xfs> \
 //!     --hostname <name> [--timezone <tz>] \
 //!     --keymap <xkb-layout> [--keyvariant <xkb-variant>] \
@@ -167,7 +167,13 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
     if !opts.locale.trim().is_empty() {
         cmd.arg("--locale").arg(opts.locale.trim());
     }
-    if !opts.alongside_root.is_empty() {
+    if opts.alongside_root.is_empty() {
+        // The graphical UI has already required the person to type this exact
+        // device name. Repeat that decision at the privileged boundary so an
+        // older or accidentally scripted caller cannot erase with `--yes`
+        // alone.
+        cmd.arg("--confirm-erase").arg(disk);
+    } else {
         cmd.arg("--alongside")
             .arg("--root-partition")
             .arg(&opts.alongside_root)
@@ -361,6 +367,8 @@ mod tests {
                 "ada Example",
                 "--locale",
                 "nl_NL.UTF-8",
+                "--confirm-erase",
+                "/dev/sda",
                 "--timezone",
                 "Europe/Amsterdam",
                 "--keymap",
@@ -397,6 +405,8 @@ mod tests {
                 "btrfs",
                 "--hostname",
                 "qos",
+                "--confirm-erase",
+                "/dev/vda",
                 "--keymap",
                 "us",
                 "--keyvariant",
@@ -425,6 +435,7 @@ mod tests {
                 .any(|pair| pair == ["--efi-partition", "/dev/nvme0n1p1"])
         );
         assert!(args.contains(&"--alongside"));
+        assert!(!args.contains(&"--confirm-erase"));
     }
 
     #[test]
@@ -452,6 +463,8 @@ mod tests {
                 "btrfs",
                 "--hostname",
                 "qos",
+                "--confirm-erase",
+                "/dev/vda",
                 "--encrypt",
                 "--yes",
             ]
@@ -505,6 +518,8 @@ mod tests {
                 "btrfs",
                 "--hostname",
                 "qos",
+                "--confirm-erase",
+                "/dev/vda",
                 "--keymap",
                 "us",
                 "--encrypt",
@@ -549,6 +564,8 @@ mod tests {
                 "btrfs",
                 "--hostname",
                 "qos",
+                "--confirm-erase",
+                "/dev/vda",
                 "--keymap",
                 "us",
                 "--encrypt",
