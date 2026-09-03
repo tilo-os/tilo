@@ -1027,14 +1027,17 @@ impl Widget for OnboardingView {
                         let _ = std::fs::remove_file(status_path);
                         let label =
                             std::env::var("HOSTNAME").unwrap_or_else(|_| "qOS device".into());
+                        let identity_root = std::env::var_os("QOS_IDENTITY_ROOT")
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|| PathBuf::from("/var/lib/qos"));
                         match Command::new("pkexec")
                             .args([
                                 "/usr/libexec/qos-home-peer-control",
                                 "pair-device",
                                 "--identity-root",
-                                "/var/lib/qos",
-                                "--identity-dir",
                             ])
+                            .arg(identity_root)
+                            .arg("--identity-dir")
                             .arg(identity_dir)
                             .args(["--label", &label, "--status-file"])
                             .arg(status_path)
