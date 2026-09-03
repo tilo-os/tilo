@@ -1691,6 +1691,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn restored_launch_keeps_the_source_crdt_record_identity() {
+        let room = RoomId::new();
+        clear_pending_placements();
+        lock(&PENDING_CONTINUATION_RESUME).clear();
+        set_pending_placement(
+            "dev.qos.browser",
+            crate::compositor::tab_binding::Placement::IntoTab(77),
+        );
+        stage_continuation_record(room, 77, 0xdead_beef);
+        assert_eq!(
+            take_staged_resume_for_package("dev.qos.browser", room),
+            Some((None, 0xdead_beef))
+        );
+        clear_pending_placements();
+    }
+
+    #[test]
     fn untrusted_app_log_lines_are_memory_bounded_and_stream_label_safe() {
         let input = vec![b'x'; APP_LOG_LINE_BYTES.saturating_mul(3)];
         let mut lines = Vec::new();
