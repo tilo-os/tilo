@@ -305,6 +305,12 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
             # of a genuine pointer-leave transition.
             control.send({"op": "click_at", "x": click_x, "y": click_y})
             frame = wait_for_frame_after(control, case.app_id, frame["frame_seq"])
+            # Some toolkits use the first click to activate a newly mapped
+            # window and only the next click to place the caret. Repeat the
+            # click after the activation repaint so the first typed character
+            # is never racing that focus handshake (notably LibreOffice).
+            control.send({"op": "click_at", "x": click_x, "y": click_y})
+            frame = wait_for_frame_after(control, case.app_id, frame["frame_seq"])
             control.chord("a")
             control.send({"op": "key", "key": "Backspace"})
             time.sleep(0.1)
