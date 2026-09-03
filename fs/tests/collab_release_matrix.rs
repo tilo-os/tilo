@@ -170,9 +170,12 @@ fn spawn_fs(
 ) -> MountProcess {
     std::fs::create_dir_all(cache).unwrap();
     std::fs::set_permissions(cache, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let authority_sockets = cache.join("authority-sockets");
+    std::fs::create_dir_all(&authority_sockets).unwrap();
     let mut command = Command::new(binary);
     command
         .env(fs::identity::IDENTITY_ROOT_ENV, identity)
+        .env("QOS_AUTHORITY_SOCKET_DIR", authority_sockets)
         .env("QOS_FS_FUSE_OWNER_ONLY", "1")
         .env(fs::transport_gate::TRANSPORT_GATE_SOCKET_ENV, gate)
         .args(mode)
@@ -229,6 +232,25 @@ fn export_home_peer_bundle(
         .status()
         .unwrap();
     assert!(status.success(), "home-peer bundle export failed: {status}");
+}
+
+fn publish_authority(binary: &Path, identity: &Path, workspace_cache: &Path, acl: &Path) {
+    let status = Command::new(binary)
+        .env(fs::identity::IDENTITY_ROOT_ENV, identity)
+        .env(
+            "QOS_AUTHORITY_SOCKET_DIR",
+            workspace_cache.join("authority-sockets"),
+        )
+        .args([
+            "publish-authority",
+            "--cache-dir",
+            workspace_cache.to_str().unwrap(),
+            "--acl",
+            acl.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "authority publication failed: {status}");
 }
 
 fn spawn_replica(binary: &Path, identity: &Path, config: &Path) -> Child {
@@ -870,11 +892,12 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     let owner_identity = temp.path().join("owner");
     let nas_identity = temp.path().join("nas");
     let reader_identity = temp.path().join("reader");
-    let denied_identity = temp.path().join("denied");
+    let offline_reader_identity = temp.path().join("offline-reader");
     let (owner, _) = install_identity(&owner_identity, [0xa1; 32], [0xa2; 32], true);
     let (_, _) = install_identity(&nas_identity, [0xa1; 32], [0xa3; 32], false);
     let (reader, _) = install_identity(&reader_identity, [0xa4; 32], [0xa5; 32], false);
-    let (_, _) = install_identity(&denied_identity, [0xa6; 32], [0xa7; 32], false);
+    let (offline_reader, _) =
+        install_identity(&offline_reader_identity, [0xa6; 32], [0xa7; 32], false);
     let acl = temp.path().join("acl.json");
     let caps = vec![
         collab_types::CapOverride::new(
@@ -891,6 +914,12 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
         ),
         collab_types::CapOverride::new(
             collab_types::Subject::User(collab_types::Ed25519PublicKey(reader)),
+            collab_types::Scope::FsPath("/".into()),
+            collab_types::Effect::Grant,
+            collab_types::Verb::Read,
+        ),
+        collab_types::CapOverride::new(
+            collab_types::Subject::User(collab_types::Ed25519PublicKey(offline_reader)),
             collab_types::Scope::FsPath("/".into()),
             collab_types::Effect::Grant,
             collab_types::Verb::Read,
@@ -919,6 +948,14 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     owner_process.wait_line("Hosting workspace");
     let owner_ticket = owner_process.wait_ticket();
     owner_process.wait_line("Mounting QuickFS");
+    let deleted_manifest_bytes: [u8; 32] = get_xattr(
+        &owner_mount.join("deleted.txt"),
+        fs::syncstate::CONTENT_HASH_XATTR,
+    )
+    .unwrap()
+    .try_into()
+    .unwrap();
+    let deleted_manifest = Hash::from(deleted_manifest_bytes);
 
     let bundle = temp.path().join("home-peer.toml");
     let replica_cache = temp.path().join("nas-cache");
@@ -940,7 +977,6 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     std::fs::write(owner_mount.join("survivor.txt"), b"updated-through-nas").unwrap();
     std::fs::remove_file(owner_mount.join("deleted.txt")).unwrap();
     std::thread::sleep(Duration::from_secs(5));
-    owner_process.stop();
 
     let original = fs::Ticket::decode(&owner_ticket).unwrap();
     let nas_ticket = fs::Ticket {
@@ -975,6 +1011,51 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     assert!(!reader_mount.join("deleted.txt").exists());
     reader_process.stop();
 
+    let revoked_acl = temp.path().join("revoked-acl.json");
+    let revoked_caps = vec![
+        collab_types::CapOverride::new(
+            collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
+            collab_types::Scope::FsPath("/".into()),
+            collab_types::Effect::Grant,
+            collab_types::Verb::Read,
+        ),
+        collab_types::CapOverride::new(
+            collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
+            collab_types::Scope::FsPath("/".into()),
+            collab_types::Effect::Grant,
+            collab_types::Verb::Write,
+        ),
+        collab_types::CapOverride::new(
+            collab_types::Subject::User(collab_types::Ed25519PublicKey(offline_reader)),
+            collab_types::Scope::FsPath("/".into()),
+            collab_types::Effect::Grant,
+            collab_types::Verb::Read,
+        ),
+    ];
+    std::fs::write(&revoked_acl, serde_json::to_vec(&revoked_caps).unwrap()).unwrap();
+    publish_authority(binary, &owner_identity, &owner_cache, &revoked_acl);
+    std::thread::sleep(Duration::from_secs(5));
+    let revoked_mount = temp.path().join("revoked-reader-mount");
+    std::fs::create_dir(&revoked_mount).unwrap();
+    let revoked_cache = temp.path().join("revoked-reader-cache");
+    let revoked_gate = revoked_cache.join("gate.sock");
+    let mut revoked = spawn_fs(
+        binary,
+        &reader_identity,
+        &revoked_mount,
+        &revoked_cache,
+        &revoked_gate,
+        &acl,
+        &["mount", "--ticket", &nas_ticket],
+        false,
+    );
+    let revoked_status = wait_for(PROCESS_TIMEOUT, || revoked.child.try_wait().unwrap());
+    assert!(
+        !revoked_status.success(),
+        "a newer signed authority revision revokes the previously granted collaborator"
+    );
+    owner_process.stop();
+
     // Crash/restart the NAS while the owner remains offline. The second fresh
     // collaborator reads the same retained namespace and bytes from its
     // durable cache, proving startup does not require the owner endpoint.
@@ -994,7 +1075,7 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     let restart_gate = restart_cache.join("gate.sock");
     let mut restarted = spawn_fs(
         binary,
-        &reader_identity,
+        &offline_reader_identity,
         &restart_mount,
         &restart_cache,
         &restart_gate,
@@ -1013,24 +1094,29 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     });
     restarted.stop();
 
-    let denied_mount = temp.path().join("denied-mount");
-    std::fs::create_dir(&denied_mount).unwrap();
-    let denied_cache = temp.path().join("denied-cache");
-    let denied_gate = denied_cache.join("gate.sock");
-    let mut denied = spawn_fs(
-        binary,
-        &denied_identity,
-        &denied_mount,
-        &denied_cache,
-        &denied_gate,
-        &acl,
-        &["mount", "--ticket", &restart_ticket],
-        false,
-    );
-    let denied_status = wait_for(PROCESS_TIMEOUT, || denied.child.try_wait().unwrap());
-    assert!(!denied_status.success(), "NAS denies an ungranted user");
     nas.kill().unwrap();
     nas.wait().unwrap();
+    // Inspect the stopped daemon's real durable store: removal from the
+    // namespace is insufficient if obsolete manifests/chunks still consume a
+    // home peer's bounded disk indefinitely.
+    let replica_workspace_cache = replica_cache.join(original.workspace_id().to_string());
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let store = fs::ContentStore::open(replica_workspace_cache)
+            .await
+            .unwrap();
+        let deleted_chunk = Hash::new(b"delete-me");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if !store.has(deleted_manifest).await && !store.has(deleted_chunk).await {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("replica GC reclaims deleted manifest and chunk");
+        store.store().shutdown().await.unwrap();
+    });
 }
 
 // The skew matrix spells out receipt and grant behavior at every clock edge.
