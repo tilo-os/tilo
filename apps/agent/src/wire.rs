@@ -43,7 +43,8 @@ impl Link {
         record: Option<String>,
         handle: Option<String>,
     ) -> Result<Self> {
-        let manager = CollaborationManager::for_route(app_id, cluster_id, record, handle)
+        let agent_id = handle.ok_or_else(|| anyhow::anyhow!("agent connection needs an id"))?;
+        let manager = CollaborationManager::for_agent_route(app_id, cluster_id, record, agent_id)
             .context("connect through QOS_SVC_COLLAB_FD")?;
         Ok(Self {
             manager,
@@ -71,11 +72,14 @@ impl Link {
         let stream = UnixStream::connect(path)
             .with_context(|| format!("connect to typed endpoint at {}", path.display()))?;
         let fd = stream.into_raw_fd();
+        let agent_id = handle.ok_or_else(|| anyhow::anyhow!("agent connection needs an id"))?;
         let manager = match identity {
-            Some(identity) => CollaborationManager::for_route_fd_with_identity(
-                fd, app_id, cluster_id, record, handle, identity,
+            Some(identity) => CollaborationManager::for_agent_route_fd_with_identity(
+                fd, app_id, cluster_id, record, agent_id, identity,
             ),
-            None => CollaborationManager::for_route_fd(fd, app_id, cluster_id, record, handle),
+            None => {
+                CollaborationManager::for_agent_route_fd(fd, app_id, cluster_id, record, agent_id)
+            }
         }
         .context("start typed collaboration client")?;
         Ok(Self {
