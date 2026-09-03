@@ -10,6 +10,7 @@
 //! Automerge object ids — independently-created docs would fork on
 //! merge. The bootstrap exchange guarantees that shared history.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -20,6 +21,7 @@ use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh_base::EndpointAddr;
+use iroh_blobs::Hash;
 use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
 use iroh_gossip::net::{GOSSIP_ALPN, Gossip};
 use iroh_gossip::proto::TopicId;
@@ -51,9 +53,16 @@ use crate::replica_ack::{
 use crate::share_authority::ShareAuthority;
 use crate::share_session::LiveActorCertification;
 use crate::store::ContentStore;
+use crate::workspace_authority::{
+    AuthorityRequest, AuthorityResponse, QOS_FS_AUTHORITY_ALPN, WorkspaceAuthority,
+    read_frame as read_authority_frame, write_frame as write_authority_frame,
+};
 
 /// Custom ALPN for the document exchange (bootstrap + incremental sync).
 pub const QOS_FS_SYNC_ALPN: &[u8] = b"qos-fs-sync/0";
+/// Interactive peers always retain small previews when metadata changes, but
+/// never fetch a file manifest/chunks merely to populate a directory view.
+const MAX_INTERACTIVE_THUMBNAIL_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Certified local identity and live revocation state required by every
 /// workspace-sync connection.
@@ -352,7 +361,7 @@ pub async fn sync_with_peer(
     peer: EndpointAddr,
     namespace: &Arc<Mutex<Namespace>>,
     identity: &FsTransportIdentity,
-) -> Result<()> {
+) -> Result<bool> {
     if identity.partitioned() {
         anyhow::bail!("transport partition gate is closed");
     }
@@ -364,6 +373,7 @@ pub async fn sync_with_peer(
         send.write_all(&[MODE_SYNC]).await?;
         let mut state = automerge::sync::State::new();
         // Initiator: write-then-read each round; the responder mirrors.
+        let mut received_change = false;
         for _ in 0..200 {
             let msg = {
                 namespace
@@ -374,6 +384,7 @@ pub async fn sync_with_peer(
             write_frame(&mut send, msg.as_deref().unwrap_or(&[])).await?;
             let peer_msg = read_frame(&mut recv).await?;
             if !peer_msg.is_empty() {
+                received_change = true;
                 let _ = namespace
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -384,10 +395,85 @@ pub async fn sync_with_peer(
             }
         }
         let _ = send.finish();
-        Ok::<(), anyhow::Error>(())
+        Ok::<bool, anyhow::Error>(received_change)
     })
     .await
     .map_err(|_| anyhow::anyhow!("sync exchange timed out"))?
+}
+
+/// Fetch only preview blobs newly referenced by the namespace. This makes a
+/// normal desktop immediately useful offline for browsing while keeping
+/// manifests and file bytes strictly on-demand. Callers invoke it only after
+/// a successful namespace/record change, never on the reconciliation timer.
+async fn prefetch_namespace_thumbnails(
+    namespace: &Arc<Mutex<Namespace>>,
+    hydrator: &Hydrator,
+    pending: &mut HashMap<Hash, (u8, tokio::time::Instant)>,
+    refresh_roots: bool,
+) -> Result<()> {
+    if refresh_roots {
+        let thumbnails = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .live_record_blob_roots(crate::namespace::MAX_LIVE_RECORD_BLOB_SCAN)?
+            .into_iter()
+            .filter_map(|roots| roots.thumbnail)
+            .collect::<HashSet<Hash>>();
+        pending.retain(|hash, _| thumbnails.contains(hash));
+        let now = tokio::time::Instant::now();
+        for thumbnail in thumbnails {
+            pending.entry(thumbnail).or_insert((0, now));
+        }
+    }
+    let now = tokio::time::Instant::now();
+    let due = pending
+        .iter()
+        .filter_map(|(hash, (_, retry_at))| (*retry_at <= now).then_some(*hash))
+        .collect::<Vec<_>>();
+    for thumbnail in due {
+        if hydrator.store.has(thumbnail).await {
+            pending.remove(&thumbnail);
+            continue;
+        }
+        let result = hydrator
+            .read_blob(
+                thumbnail,
+                0,
+                MAX_INTERACTIVE_THUMBNAIL_BYTES.saturating_add(1),
+            )
+            .await
+            .and_then(|bytes| {
+                anyhow::ensure!(
+                    u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+                        <= MAX_INTERACTIVE_THUMBNAIL_BYTES,
+                    "interactive thumbnail exceeds byte budget"
+                );
+                Ok(())
+            });
+        if result.is_ok() {
+            pending.remove(&thumbnail);
+            continue;
+        }
+        // A certificate/authority refresh or a temporarily offline owner must
+        // not make the rest of the preview queue fail. Retry each pending
+        // thumbnail independently with a capped 3/6/12/24/30 second backoff.
+        if let Some((attempts, retry_at)) = pending.get_mut(&thumbnail) {
+            *attempts = attempts.saturating_add(1).min(4);
+            let delay = 3_u64.saturating_mul(1_u64 << u32::from(*attempts));
+            *retry_at = now + Duration::from_secs(delay.min(30));
+        }
+    }
+    Ok(())
+}
+
+fn namespace_generation(namespace: &Arc<Mutex<Namespace>>) -> [u8; 32] {
+    let bytes = {
+        let mut namespace = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        namespace.save()
+    };
+    *blake3::hash(&bytes).as_bytes()
 }
 
 /// The policy the network planes serve through, or `None` for an
@@ -526,6 +612,13 @@ impl ProtocolHandler for SyncProtocol {
                     // Responder: read-then-write each round (mirrors the initiator).
                     let mut state = automerge::sync::State::new();
                     for _ in 0..200 {
+                        // The authority handle is live. A newer signed
+                        // tombstone/revocation cuts an already-connected
+                        // writer off at the next protocol round.
+                        if !authenticated_peer_may_write_whole_workspace(&self.policy, &peer) {
+                            let _ = send.finish();
+                            break;
+                        }
                         let peer_msg =
                             read_frame(&mut recv).await.map_err(AcceptError::from_err)?;
                         if !peer_msg.is_empty() {
@@ -913,6 +1006,8 @@ pub struct RecordServices {
     /// Durable verified remote-replica receipts. `None` preserves ephemeral
     /// test/workspace construction but cannot ever produce eviction proof.
     pub availability: Option<Arc<Mutex<crate::availability::AvailabilityRegistry>>>,
+    /// Signed workspace ACL state shared through the authority ALPN.
+    pub workspace_authority: Option<Arc<WorkspaceAuthority>>,
 }
 
 #[derive(Clone)]
@@ -924,6 +1019,62 @@ struct RecordPlane {
     materializer: Option<Arc<crate::record_materializer::RecordMaterializer>>,
     workspace_id: uuid::Uuid,
     availability: Option<Arc<Mutex<crate::availability::AvailabilityRegistry>>>,
+    workspace_authority: Option<Arc<WorkspaceAuthority>>,
+}
+
+#[derive(Clone)]
+struct AuthorityProtocol {
+    endpoint: Endpoint,
+    identity: FsTransportIdentity,
+    policy: PeerPolicy,
+    authority: Arc<WorkspaceAuthority>,
+    workspace_id: uuid::Uuid,
+}
+
+impl std::fmt::Debug for AuthorityProtocol {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AuthorityProtocol")
+    }
+}
+
+impl ProtocolHandler for AuthorityProtocol {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let (mut send, mut recv) = connection.accept_bi().await?;
+        let peer = authenticate_connection(
+            &self.endpoint,
+            &connection,
+            &mut recv,
+            &mut send,
+            &self.identity,
+        )
+        .await
+        .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        let request: AuthorityRequest = read_authority_frame(&mut recv)
+            .await
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        let authority = if request.workspace == self.workspace_id {
+            let governor = peer.user_public_key == self.authority.governor();
+            if let Some(published) = request.publish
+                && governor
+            {
+                let _ = self.authority.apply(published);
+            }
+            (governor || authenticated_peer_may_read_whole_workspace(&self.policy, &peer))
+                .then(|| self.authority.current())
+                .flatten()
+        } else {
+            None
+        };
+        write_authority_frame(&mut send, &AuthorityResponse { authority })
+            .await
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        send.finish().map_err(AcceptError::from_err)?;
+        // Keep the protocol handler alive until the client has consumed the
+        // final authority frame; dropping immediately can race QUIC stream
+        // delivery and turn a valid publish into `connection lost`.
+        connection.closed().await;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -1151,6 +1302,7 @@ fn build_record_plane(
         materializer: records.materializer,
         workspace_id,
         availability: records.availability,
+        workspace_authority: records.workspace_authority,
     }))
 }
 
@@ -1403,6 +1555,24 @@ impl Workspace {
                 .accept(QOS_FS_REPLICA_ACK_ALPN, replica_ack),
             _ => builder,
         };
+        let builder = if let Some(records) = &record_plane {
+            if let Some(authority) = &records.workspace_authority {
+                builder.accept(
+                    QOS_FS_AUTHORITY_ALPN,
+                    AuthorityProtocol {
+                        endpoint: endpoint.clone(),
+                        identity: identity.clone(),
+                        policy: policy.clone(),
+                        authority: Arc::clone(authority),
+                        workspace_id: records.workspace_id,
+                    },
+                )
+            } else {
+                builder
+            }
+        } else {
+            builder
+        };
         // A gossip message records only the peer that relayed it, not the
         // original author, so a receiver cannot enforce a writer capability.
         // Enforced workspaces use the authenticated sync ALPN exclusively.
@@ -1577,6 +1747,51 @@ async fn record_mesh_request(
     Ok((peer, response))
 }
 
+async fn pull_workspace_authority_from_peer(
+    endpoint: &Endpoint,
+    remote: EndpointAddr,
+    identity: &FsTransportIdentity,
+    authority: &WorkspaceAuthority,
+    workspace_id: uuid::Uuid,
+) -> Result<()> {
+    let connection = endpoint.connect(remote, QOS_FS_AUTHORITY_ALPN).await?;
+    let (mut send, mut recv) = connection.open_bi().await?;
+    let _peer =
+        authenticate_connection(endpoint, &connection, &mut recv, &mut send, identity).await?;
+    write_authority_frame(
+        &mut send,
+        &AuthorityRequest {
+            workspace: workspace_id,
+            publish: None,
+        },
+    )
+    .await?;
+    send.finish()?;
+    let response: AuthorityResponse = read_authority_frame(&mut recv).await?;
+    if let Some(envelope) = response.authority {
+        authority.apply(envelope)?;
+    }
+    connection.close(0u32.into(), b"");
+    Ok(())
+}
+
+pub async fn submit_workspace_authority(
+    endpoint: &Endpoint,
+    remote: EndpointAddr,
+    identity: &FsTransportIdentity,
+    workspace: uuid::Uuid,
+    publish: Option<crate::workspace_authority::WorkspaceAuthorityEnvelope>,
+) -> Result<Option<crate::workspace_authority::WorkspaceAuthorityEnvelope>> {
+    let connection = endpoint.connect(remote, QOS_FS_AUTHORITY_ALPN).await?;
+    let (mut send, mut recv) = connection.open_bi().await?;
+    let _ = authenticate_connection(endpoint, &connection, &mut recv, &mut send, identity).await?;
+    write_authority_frame(&mut send, &AuthorityRequest { workspace, publish }).await?;
+    send.finish()?;
+    let response: AuthorityResponse = read_authority_frame(&mut recv).await?;
+    connection.close(0u32.into(), b"");
+    Ok(response.authority)
+}
+
 #[allow(clippy::too_many_lines)]
 async fn pull_record_mesh_from_peer(
     endpoint: &Endpoint,
@@ -1584,7 +1799,8 @@ async fn pull_record_mesh_from_peer(
     identity: &FsTransportIdentity,
     policy: &PeerPolicy,
     records: &RecordPlane,
-) -> Result<()> {
+) -> Result<bool> {
+    let mut changed = false;
     let mut after_inventory = None;
     // One pass is deliberately finite even for a maliciously fragmented
     // repository. Subsequent anti-entropy passes resume from the beginning;
@@ -1611,7 +1827,7 @@ async fn pull_record_mesh_from_peer(
                 cursors,
                 next,
             } if workspace_id == records.workspace_id => (cursors, next),
-            RecordMeshResultV1::Denied => return Ok(()),
+            RecordMeshResultV1::Denied => return Ok(false),
             _ => anyhow::bail!("record mesh returned an invalid inventory response"),
         };
         let direct_actor = collab_types::FileActor {
@@ -1699,6 +1915,7 @@ async fn pull_record_mesh_from_peer(
                         policy,
                     },
                 )?;
+                changed |= !envelopes.is_empty();
                 local_sequence = records
                     .repository
                     .highest_sequence(key, &remote_cursor.actor)
@@ -1715,7 +1932,7 @@ async fn pull_record_mesh_from_peer(
     if let Some(materializer) = &records.materializer {
         materializer.reconcile_repository(&records.repository)?;
     }
-    Ok(())
+    Ok(changed)
 }
 
 async fn request_replica_ack(
@@ -1786,16 +2003,43 @@ async fn collect_replica_acks_from_peer(
             continue;
         };
         let observed_at = observation.observed_at_ms;
-        let _ = registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .observe_replica(
-                revision.record_id,
-                collab_types::Ed25519PublicKey(identity.device_public_key()),
-                observation,
-                observed_at,
-            );
+        let _ = persist_workspace_replica_observation(
+            registry,
+            revision,
+            collab_types::Ed25519PublicKey(identity.device_public_key()),
+            observation,
+            observed_at,
+        );
     }
+}
+
+#[allow(clippy::significant_drop_tightening)]
+fn persist_workspace_replica_observation(
+    registry: &Arc<Mutex<crate::availability::AvailabilityRegistry>>,
+    revision: collab_types::ContentRevisionV1,
+    local_device: collab_types::Ed25519PublicKey,
+    observation: crate::availability::ReplicaObservation,
+    observed_at: u64,
+) -> Result<(), crate::availability::AvailabilityError> {
+    let mut registry = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Whole-workspace records historically never created availability rows,
+    // so valid NAS receipts were silently rejected as `UnknownRecord`.
+    let parent = registry
+        .get(revision.record_id)
+        .and_then(|record| record.parent);
+    let metadata_observed = registry
+        .get(revision.record_id)
+        .and_then(|record| record.freshness.metadata_observed_at_ms)
+        .unwrap_or(observed_at);
+    registry.track_current_revision(
+        revision,
+        crate::availability::RecordKind::File,
+        parent,
+        metadata_observed,
+    )?;
+    registry.observe_replica(revision.record_id, local_device, observation, observed_at)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1810,6 +2054,10 @@ async fn reconcile_loop(
 ) {
     let may_write = peer_may_write_whole_workspace(&policy, &identity.user_public_key())
         || peer_may_write_whole_workspace(&policy, &identity.device_public_key());
+    let mut pending_thumbnails = HashMap::new();
+    // `mount` bootstraps a namespace before this task starts, so schedule its
+    // previews once even if the first anti-entropy exchange is clean.
+    let mut refresh_thumbnails = true;
     loop {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
@@ -1817,6 +2065,7 @@ async fn reconcile_loop(
             hydrator.add_peer(peer);
         }
         let known_peers = hydrator.known_peers();
+        let mut namespace_changed = false;
         for peer in known_peers {
             let remote_may_write = policy.is_none()
                 || identity
@@ -1831,10 +2080,10 @@ async fn reconcile_loop(
                 // authorised writer's reconciliation request.
                 // Only a workspace-wide writer may send Automerge sync
                 // messages. The responder independently checks the same fact.
-                if sync_with_peer(&endpoint, peer.clone(), &namespace, &identity)
-                    .await
-                    .is_ok()
+                if let Ok(received_change) =
+                    sync_with_peer(&endpoint, peer.clone(), &namespace, &identity).await
                 {
+                    namespace_changed |= received_change;
                     let resolve_delta = {
                         namespace
                             .lock()
@@ -1853,11 +2102,16 @@ async fn reconcile_loop(
                 // Read-only peers pull a full snapshot and never upload local
                 // changes. Full snapshots are safe here because the remote
                 // serves them only to workspace-root readers.
+                let before_merge = namespace_generation(&namespace);
                 let resolve_delta = namespace
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .merge_remote_and_resolve(&doc)
                     .unwrap_or_default();
+                // A clean merge commonly needs no conflict-resolution delta;
+                // compare the document generation so its previews are still
+                // scheduled on a fresh collaborator.
+                namespace_changed |= before_merge != namespace_generation(&namespace);
                 if !resolve_delta.is_empty()
                     && let Some(sender) = &sender
                 {
@@ -1865,12 +2119,33 @@ async fn reconcile_loop(
                 }
             }
             if let Some(records) = &records {
-                if let Err(error) =
-                    pull_record_mesh_from_peer(&endpoint, peer.clone(), &identity, &policy, records)
-                        .await
+                if let Some(authority) = &records.workspace_authority
+                    && let Err(error) = pull_workspace_authority_from_peer(
+                        &endpoint,
+                        peer.clone(),
+                        &identity,
+                        authority,
+                        records.workspace_id,
+                    )
+                    .await
                     && !identity.partitioned()
                 {
-                    eprintln!("record mesh reconciliation failed: {error}");
+                    eprintln!("workspace authority reconciliation failed: {error}");
+                }
+                match pull_record_mesh_from_peer(
+                    &endpoint,
+                    peer.clone(),
+                    &identity,
+                    &policy,
+                    records,
+                )
+                .await
+                {
+                    Ok(changed) => namespace_changed |= changed,
+                    Err(error) if !identity.partitioned() => {
+                        eprintln!("record mesh reconciliation failed: {error}");
+                    }
+                    Err(_) => {}
                 }
                 collect_replica_acks_from_peer(
                     &endpoint,
@@ -1881,6 +2156,18 @@ async fn reconcile_loop(
                 )
                 .await;
             }
+        }
+
+        if let Err(error) = prefetch_namespace_thumbnails(
+            &namespace,
+            &hydrator,
+            &mut pending_thumbnails,
+            namespace_changed || std::mem::take(&mut refresh_thumbnails),
+        )
+        .await
+            && !identity.partitioned()
+        {
+            eprintln!("thumbnail metadata prefetch failed: {error}");
         }
 
         if !may_write {
@@ -2021,6 +2308,78 @@ mod tests {
         bind_certified_test_endpoint().await
     }
 
+    #[tokio::test]
+    async fn thumbnail_prefetch_isolated_retries_without_another_namespace_change() {
+        let source_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let source_store = ContentStore::memory();
+        let ready_thumbnail = source_store.ingest("ready preview").await.unwrap();
+        let source_router = Router::builder(source_endpoint.clone())
+            .accept(iroh_blobs::ALPN, source_store.blobs_protocol(None))
+            .spawn();
+
+        // This hash is real but its serving endpoint is intentionally absent
+        // during the first pass, modelling an auth warm-up/offline source.
+        let late_store = ContentStore::memory();
+        let late_thumbnail = late_store.ingest("late preview").await.unwrap();
+        let client_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let local_store = Arc::new(ContentStore::memory());
+        let hydrator = Hydrator::new(client_endpoint.clone(), Arc::clone(&local_store));
+        hydrator.add_peer(source_endpoint.addr());
+        let mut namespace = Namespace::new("preview-retry").unwrap();
+        let ready = namespace
+            .create_file(ROOT_INO, "ready.png", None, 0, 0)
+            .unwrap();
+        let late = namespace
+            .create_file(ROOT_INO, "late.png", None, 0, 0)
+            .unwrap();
+        assert!(namespace.set_thumb(ready, &ready_thumbnail));
+        assert!(namespace.set_thumb(late, &late_thumbnail));
+        let namespace = Arc::new(Mutex::new(namespace));
+        let mut pending = HashMap::new();
+
+        prefetch_namespace_thumbnails(&namespace, &hydrator, &mut pending, true)
+            .await
+            .unwrap();
+        assert!(local_store.has(ready_thumbnail).await);
+        assert!(pending.contains_key(&late_thumbnail));
+
+        let late_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let late_router = Router::builder(late_endpoint.clone())
+            .accept(iroh_blobs::ALPN, late_store.blobs_protocol(None))
+            .spawn();
+        hydrator.add_peer(late_endpoint.addr());
+        pending.insert(late_thumbnail, (0, tokio::time::Instant::now()));
+        prefetch_namespace_thumbnails(&namespace, &hydrator, &mut pending, false)
+            .await
+            .unwrap();
+        assert!(local_store.has(late_thumbnail).await);
+        assert!(pending.is_empty());
+
+        late_router.shutdown().await.unwrap();
+        source_router.shutdown().await.unwrap();
+        late_endpoint.close().await;
+        source_endpoint.close().await;
+        client_endpoint.close().await;
+    }
+
+    #[test]
+    fn clean_remote_merge_changes_generation_even_without_resolution_delta() {
+        let mut owner = Namespace::new("owner-preview").unwrap();
+        owner
+            .create_file(ROOT_INO, "preview.png", None, 0, 1)
+            .unwrap();
+        let document = owner.save();
+        let joined = Arc::new(Mutex::new(Namespace::new("joined-preview").unwrap()));
+        let before = namespace_generation(&joined);
+        let resolve = joined
+            .lock()
+            .unwrap()
+            .merge_remote_and_resolve(&document)
+            .unwrap();
+        assert!(resolve.is_empty(), "ordinary merge needs no repair delta");
+        assert_ne!(before, namespace_generation(&joined));
+    }
+
     /// The workspace's policy: `entitled` get the run of the tree, nothing
     /// said about anybody else. Direct entries rather than capabilities so
     /// the test states its grant outright; `reads_anything` is asked the
@@ -2042,6 +2401,346 @@ mod tests {
             acl.grant_read(*id, "/");
         }
         AclHandle::new(acl)
+    }
+
+    #[tokio::test]
+    async fn signed_authority_alpn_updates_nas_and_targeted_revoke_keeps_owner() {
+        use crate::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
+        use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+
+        let (nas_endpoint, _lookup, nas_identity) = bind_certified_endpoint().await;
+        let (owner_endpoint, _lookup, owner_identity, owner_root, _owner_device) =
+            bind_certified_test_endpoint_with_root().await;
+        let (_collab_endpoint, _lookup, collab_identity, collab_root, _collab_device) =
+            bind_certified_test_endpoint_with_root().await;
+        let workspace = uuid::Uuid::new_v4();
+        let temp = tempfile::tempdir().unwrap();
+        let nas_authority = Arc::new(
+            WorkspaceAuthority::open(
+                temp.path().join("nas-authority.bin"),
+                workspace,
+                owner_root.verifying_key().to_bytes(),
+                collab_root.verifying_key().to_bytes(),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let router = Router::builder(nas_endpoint.clone())
+            .accept(
+                QOS_FS_AUTHORITY_ALPN,
+                AuthorityProtocol {
+                    endpoint: nas_endpoint.clone(),
+                    identity: nas_identity,
+                    policy: None,
+                    authority: nas_authority.clone(),
+                    workspace_id: workspace,
+                },
+            )
+            .spawn();
+        let owner = owner_root.verifying_key().to_bytes();
+        let collaborator = collab_root.verifying_key().to_bytes();
+        let grant = WorkspaceAuthorityEnvelope::sign(
+            workspace,
+            1,
+            vec![
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(owner)),
+                    Scope::FsPath("/".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                ),
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                    Scope::FsPath("/".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                ),
+            ],
+            false,
+            &owner_root,
+        )
+        .unwrap();
+        let accepted = submit_workspace_authority(
+            &owner_endpoint,
+            nas_endpoint.addr(),
+            &owner_identity,
+            workspace,
+            Some(grant),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(accepted.revision, 1);
+        assert!(
+            nas_authority
+                .handle()
+                .permits(&collaborator, "/shared", crate::Access::Read)
+        );
+
+        let revoked = WorkspaceAuthorityEnvelope::sign(
+            workspace,
+            2,
+            vec![
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(owner)),
+                    Scope::FsPath("/".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                ),
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                    Scope::FsPath("/".into()),
+                    Effect::Restrict,
+                    Verb::Read,
+                ),
+            ],
+            false,
+            &owner_root,
+        )
+        .unwrap();
+        submit_workspace_authority(
+            &owner_endpoint,
+            nas_endpoint.addr(),
+            &owner_identity,
+            workspace,
+            Some(revoked.clone()),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !nas_authority
+                .handle()
+                .permits(&collaborator, "/shared", crate::Access::Read)
+        );
+        let owner_view = WorkspaceAuthority::open(
+            temp.path().join("owner-view.bin"),
+            workspace,
+            owner,
+            owner,
+            Vec::new(),
+        )
+        .unwrap();
+        owner_view.apply(revoked).unwrap();
+        assert!(
+            owner_view
+                .handle()
+                .permits(&owner, "/shared", crate::Access::Read)
+        );
+        router.shutdown().await.unwrap();
+        nas_endpoint.close().await;
+        owner_endpoint.close().await;
+        drop(collab_identity);
+    }
+
+    /// A content request is not trusted merely because its hash is known.
+    /// The collaborator first bootstraps through the authenticated
+    /// filesystem protocol; its subsequent blob request is served by that
+    /// workspace's guarded iroh-blobs handler. Replacing the signed
+    /// authority while that certified relationship is live must deny the
+    /// collaborator's *next* request while preserving governor access.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn signed_targeted_revoke_denies_an_authenticated_collaborator_blob_request() {
+        use crate::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
+        use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+
+        let temp = tempfile::tempdir().unwrap();
+        let (nas_endpoint, nas_lookup, nas_identity) = bind_certified_endpoint().await;
+        let (owner_endpoint, _owner_lookup, owner_identity, owner_root, _owner_device) =
+            bind_certified_test_endpoint_with_root().await;
+        let (collab_endpoint, _collab_lookup, collab_identity, collab_root, _collab_device) =
+            bind_certified_test_endpoint_with_root().await;
+        let workspace_id = Ticket::workspace_id_for_topic(*nas_endpoint.id().as_bytes());
+        let owner = owner_root.verifying_key().to_bytes();
+        let collaborator = collab_root.verifying_key().to_bytes();
+
+        let authority = Arc::new(
+            WorkspaceAuthority::open(
+                temp.path().join("nas-authority.bin"),
+                workspace_id,
+                owner,
+                collaborator,
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let mut services = record_services(temp.path());
+        services.workspace_authority = Some(authority.clone());
+        let nas_store = Arc::new(ContentStore::memory());
+        let nas_hydrator = Arc::new(Hydrator::new(nas_endpoint.clone(), nas_store.clone()));
+        let nas_namespace = Arc::new(Mutex::new(Namespace::new("nas").unwrap()));
+        let first = b"collaborator is initially entitled";
+        let first_hash = nas_store.write_content(first).await.unwrap().unwrap();
+        nas_namespace
+            .lock()
+            .unwrap()
+            .create_file(
+                ROOT_INO,
+                "before-revoke.txt",
+                Some(&first_hash),
+                first.len() as u64,
+                1,
+            )
+            .unwrap();
+        let (_nas_workspace, ticket) = Workspace::host_with_records(
+            nas_endpoint.clone(),
+            nas_lookup,
+            nas_store.clone(),
+            nas_hydrator,
+            nas_namespace.clone(),
+            nas_identity,
+            Some(authority.handle()),
+            services,
+        )
+        .await
+        .unwrap();
+
+        let grant = WorkspaceAuthorityEnvelope::sign(
+            workspace_id,
+            1,
+            vec![
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(owner)),
+                    Scope::FsPath("/".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                ),
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                    Scope::FsPath("/".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                ),
+            ],
+            false,
+            &owner_root,
+        )
+        .unwrap();
+        assert_eq!(
+            submit_workspace_authority(
+                &owner_endpoint,
+                nas_endpoint.addr(),
+                &owner_identity,
+                workspace_id,
+                Some(grant.clone()),
+            )
+            .await
+            .unwrap(),
+            Some(grant),
+        );
+
+        // Bootstrap over QOS_FS_SYNC_ALPN before the content request. This
+        // gives the server the certificate-to-device association that its
+        // guarded blob protocol requires; a bare hash-only endpoint cannot
+        // obtain that association.
+        let document = tokio::time::timeout(
+            Duration::from_secs(12),
+            fetch_remote_doc(&collab_endpoint, ticket.node.clone(), &collab_identity),
+        )
+        .await
+        .expect("authenticated collaborator bootstrap timed out")
+        .expect("signed collaborator bootstraps through the filesystem protocol");
+        let collab_namespace = Namespace::from_bytes("collab", &document).unwrap();
+        assert!(collab_namespace.entry_at("before-revoke.txt").is_some());
+        let collab_store = Arc::new(ContentStore::memory());
+        let collab_hydrator = Hydrator::new(collab_endpoint.clone(), collab_store.clone());
+        collab_hydrator.add_peer(ticket.node.clone());
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(12),
+                collab_hydrator.read(first_hash, 0, first.len() as u64),
+            )
+            .await
+            .expect("authenticated collaborator blob request timed out")
+            .unwrap()
+            .as_slice(),
+            first,
+        );
+
+        let revoke = WorkspaceAuthorityEnvelope::sign(
+            workspace_id,
+            2,
+            vec![
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(owner)),
+                    Scope::FsPath("/".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                ),
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                    Scope::FsPath("/".into()),
+                    Effect::Restrict,
+                    Verb::Read,
+                ),
+            ],
+            false,
+            &owner_root,
+        )
+        .unwrap();
+        assert_eq!(
+            submit_workspace_authority(
+                &owner_endpoint,
+                nas_endpoint.addr(),
+                &owner_identity,
+                workspace_id,
+                Some(revoke.clone()),
+            )
+            .await
+            .unwrap(),
+            Some(revoke),
+        );
+
+        let after = b"this remains available only to the owner";
+        let after_hash = nas_store.write_content(after).await.unwrap().unwrap();
+        {
+            let mut namespace = nas_namespace.lock().unwrap();
+            namespace
+                .create_file(
+                    ROOT_INO,
+                    "after-revoke.txt",
+                    Some(&after_hash),
+                    after.len() as u64,
+                    2,
+                )
+                .unwrap();
+            namespace.save_incremental();
+        }
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(12),
+                collab_hydrator.read(after_hash, 0, after.len() as u64),
+            )
+            .await
+            .expect("revoked collaborator blob request timed out")
+            .is_err(),
+            "an already-authenticated collaborator is denied by the revised authority"
+        );
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(12),
+                fetch_remote_doc(&collab_endpoint, ticket.node.clone(), &collab_identity),
+            )
+            .await
+            .expect("revoked collaborator namespace request timed out")
+            .is_err(),
+            "the same authenticated collaborator loses its next namespace request too"
+        );
+
+        let owner_store = Arc::new(ContentStore::memory());
+        let owner_hydrator = Hydrator::new(owner_endpoint.clone(), owner_store);
+        owner_hydrator.add_peer(nas_endpoint.addr());
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(12),
+                owner_hydrator.read(after_hash, 0, after.len() as u64),
+            )
+            .await
+            .expect("owner blob request timed out")
+            .unwrap()
+            .as_slice(),
+            after,
+            "targeted revocation leaves the governor's authenticated content access intact"
+        );
     }
 
     /// The identity an endpoint authenticates as — the same 32 bytes an ACL
@@ -2068,6 +2767,7 @@ mod tests {
             mutation_sink: None,
             materializer: None,
             availability: None,
+            workspace_authority: None,
         }
     }
 
@@ -2160,21 +2860,23 @@ mod tests {
         .unwrap();
 
         let path = temp.path().join("availability.json");
-        let mut registry = crate::availability::AvailabilityRegistry::open(&path).unwrap();
-        let mut availability = crate::availability::RecordAvailability::new(
-            record_id,
-            crate::availability::RecordKind::File,
+        let registry = Arc::new(Mutex::new(
+            crate::availability::AvailabilityRegistry::open(&path).unwrap(),
+        ));
+        persist_workspace_replica_observation(
+            &registry,
+            revision,
+            Ed25519PublicKey(client_identity.device_public_key()),
+            observation.clone(),
+            observation.observed_at_ms,
+        )
+        .unwrap();
+        let mut registry = registry.lock().unwrap();
+        assert_eq!(
+            registry.get(record_id).unwrap().current_version,
+            Some(version_id),
+            "the shipped whole-workspace ACK path creates the ordinary record row first"
         );
-        availability.current_version = Some(version_id);
-        registry.put(availability).unwrap();
-        registry
-            .observe_replica(
-                record_id,
-                Ed25519PublicKey(client_identity.device_public_key()),
-                observation.clone(),
-                observation.observed_at_ms,
-            )
-            .unwrap();
         assert!(matches!(
             registry.observe_replica(
                 record_id,
@@ -2871,6 +3573,7 @@ mod tests {
                 mutation_sink: None,
                 materializer: Some(Arc::clone(&client_materializer)),
                 availability: None,
+                workspace_authority: None,
             };
             let client_records = build_record_plane(
                 &client_ep,
@@ -3039,6 +3742,7 @@ mod tests {
                 mutation_sink: None,
                 materializer: Some(Arc::clone(&restarted_materializer)),
                 availability: None,
+                workspace_authority: None,
             };
             let restarted_records = build_record_plane(
                 &client_ep,
@@ -3405,6 +4109,7 @@ mod tests {
             mutation_sink: None,
             materializer: None,
             availability: None,
+            workspace_authority: None,
         };
         let store = Arc::new(ContentStore::memory());
         let records = build_record_plane(

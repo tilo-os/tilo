@@ -11,8 +11,8 @@ Back up the computer. For a Windows dual boot, save the BitLocker recovery key,
 turn off Fast Startup, and use Windows Disk Management to shrink Windows. Leave
 the result unallocated. Then use a trusted partition editor that can assign GPT
 partition types to create one **unformatted Linux filesystem partition of at
-least 32 GiB** in that space. (Windows Disk Management cannot assign that Linux
-GPT type.) qOS intentionally does not resize NTFS: Windows understands
+least 32 GiB** and one **2 GiB FAT32 EFI System Partition** in that space.
+(Windows Disk Management cannot assign the Linux GPT type.) qOS intentionally does not resize NTFS: Windows understands
 BitLocker, hibernation, and its recovery partitions better than an offline
 Linux tool can.
 
@@ -86,21 +86,26 @@ is required: installation uses the signed image on the medium.
 
 This removes every partition and operating system on the selected disk. The
 review page names the exact disk and repeats the impact. Use this for an empty
-computer or when qOS will be its only operating system.
+computer or when qOS will be its only operating system. Installation remains
+disabled until you type the displayed device name exactly; changing the disk or
+switching install methods clears that confirmation.
 
 ### Install alongside
 
 This preserves the GPT and existing OS partitions. It is offered only when the
 selected disk has both:
 
-1. an existing EFI System Partition; and
+1. an unmounted FAT32 EFI System Partition of at least 2 GiB, with at least
+   1 GiB currently available for qOS's signed boot images; and
 2. an unmounted, signature-free Linux partition of at least 32 GiB.
 
 The review page names both partitions. The privileged backend independently
-checks their device ancestry, GPT types, size, mount state, and signatures just
-before formatting. It formats only the named qOS root and mounts the shared EFI
-partition without formatting it. If anything changed since discovery, install
-stops. Automatic NTFS shrinking and ambiguous “free” partitions are rejected.
+checks their device ancestry, GPT types, size, mount state, signatures, FAT
+filesystem health, and EFI free space just before formatting. It formats only the named qOS root and
+mounts the EFI partition without formatting it. Small Windows/Linux EFI
+partitions are deliberately ignored: they cannot hold qOS's rollback, staged
+update, and repair boot images safely. If anything changed since discovery,
+install stops. Automatic NTFS shrinking and ambiguous “free” partitions are rejected.
 
 Encryption remains available in alongside mode. qOS uses LUKS2 for its root;
 Windows/macOS partitions retain their own protection. A recovery key is always

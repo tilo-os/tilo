@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -eu
+
+if [ -e /var/lib/qos-relay/decommissioned ]; then
+    echo "qOS home peer is decommissioned; services remain stopped"
+    exec sleep infinity
+fi
+
+if [ ! -s /var/lib/qos/device/cert.bin ]; then
+    enrollment_source="${QOS_ENROLLMENT_TOKEN_FILE:-/run/secrets/qos-enrollment-token}"
+    if [ -s "$enrollment_source" ]; then
+        token_file=/var/lib/qos/enrollment-token.txt
+        umask 077
+        tr -d '[:space:]' < "$enrollment_source" > "$token_file"
+        /usr/bin/qos-enroll join --token-file "$token_file" \
+            --identity-root /var/lib/qos --home-peer-output /etc/qos/home-peer.toml \
+            --label "${QOS_DEVICE_NAME:-Home server}" --timeout 270
+        rm -f "$token_file"
+    else
+        /usr/bin/qos-enroll pair --identity-root /var/lib/qos \
+            --home-peer-output /etc/qos/home-peer.toml \
+            --label "${QOS_DEVICE_NAME:-Home server}" --timeout 270
+    fi
+fi
+
+if [ ! -s /etc/qos/relay.toml ]; then
+    umask 022
+    printf '%s\n' \
+        'identity_root = "/var/lib/qos"' \
+        'state_root = "/var/lib/qos-relay"' \
+        'full_replica_status = "/var/lib/qos/full-replica/status.json"' \
+        'home_peer_bundle = "/etc/qos/home-peer.toml"' \
+        'iroh_listen = "0.0.0.0:4433"' \
+        'trust_policy = { kind = "allow_matching_user" }' \
+        'device_role = "always_on_server"' \
+        > /etc/qos/relay.toml
+fi
+
+/usr/bin/fs replica --config /etc/qos/home-peer.toml &
+replica_pid=$!
+/usr/bin/qos-relay "$@" &
+relay_pid=$!
+
+shutdown() {
+    trap - EXIT INT TERM
+    kill "$replica_pid" "$relay_pid" 2>/dev/null || true
+    wait "$replica_pid" 2>/dev/null || true
+    wait "$relay_pid" 2>/dev/null || true
+}
+trap 'shutdown; exit 143' INT TERM
+trap shutdown EXIT
+
+# The container is one service: if either half exits, stop the other so the
+# restart policy brings the complete home peer back together.
+set +e
+wait -n "$replica_pid" "$relay_pid"
+status=$?
+set -e
+exit "$status"

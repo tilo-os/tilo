@@ -14,6 +14,7 @@
 //! ([`ui::record::RecordId::for_file`]) against the window each launch
 //! produced, and a record whose window has since closed is not "open".
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -262,7 +263,7 @@ fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Op
 
     // Before the launch: the window can arrive and claim the note as
     // soon as the launch thread starts.
-    note_opening(&record, &app.package_id);
+    note_opening(&record, path, &app.package_id);
 
     let launched = {
         let st = chrome.borrow();
@@ -336,6 +337,9 @@ pub fn report_open_failure(chrome: &Chrome, path: &Path, detail: &str, surface: 
 #[derive(Debug, Clone)]
 struct OpenDocument {
     record: RecordId,
+    /// Kept only in the local process so continuation can read the FUSE
+    /// record projection. It is never serialized into a checkpoint.
+    path: PathBuf,
     /// Correlates the launch with the window it produces.
     package_id: String,
     /// The wayland surface that arrived, once one has. `None` while starting.
@@ -376,11 +380,12 @@ enum Existing {
 
 /// Keyed by record, so re-noting the same document replaces rather
 /// than duplicates.
-fn note_opening(record: &RecordId, package_id: &str) {
+fn note_opening(record: &RecordId, path: &Path, package_id: &str) {
     let mut open = lock_open_documents();
     open.retain(|d| &d.record != record);
     open.push(OpenDocument {
         record: record.clone(),
+        path: path.to_path_buf(),
         package_id: package_id.to_string(),
         surface: None,
     });
@@ -392,6 +397,126 @@ fn forget_document(record: &RecordId) {
 
 pub fn clear_open_documents() {
     lock_open_documents().clear();
+}
+
+/// Return a privacy-safe continuation reference for a document surface.  The
+/// ordinary `RecordId::for_file` embeds an absolute local path and must never
+/// leave this device; continuity therefore carries only a stable hash-derived
+/// reference (and the same hash as its content/reference fingerprint).
+pub fn continuation_file_reference_for_surface(
+    surface_id: u64,
+) -> Option<crate::shell::personal_continuity::LaunchIntent> {
+    let open = lock_open_documents();
+    let path = &open
+        .iter()
+        .find(|document| document.surface == Some(surface_id))?
+        .path;
+    let record_id = xattr::get(path, "user.qos.record-id")
+        .ok()
+        .flatten()
+        .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+        .or_else(|| {
+            // Some filesystems do not expose per-file xattrs even though the
+            // mounted workspace root exposes the bounded record catalog.
+            // Match the already-open projected path there rather than losing
+            // the document and falling back to an app-only continuation.
+            let wanted = path.canonicalize().unwrap_or_else(|_| path.clone());
+            file_explorer::model::read_workspace_record_index(
+                &file_explorer::model::workspace_roots(),
+            )
+            .records
+            .into_iter()
+            .find(|entry| entry.path.canonicalize().unwrap_or(entry.path.clone()) == wanted)
+            .map(|entry| *entry.record_id.as_bytes())
+        })?;
+    let content_hash = xattr::get(path, "user.qos.content-hash")
+        .ok()
+        .flatten()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
+    // FUSE exposes preview bytes, never a path. Persist only their hash so
+    // the receiver can request/cache its own projected thumbnail.
+    let thumbnail_hash = xattr::get(path, "user.qos.thumb")
+        .ok()
+        .flatten()
+        .map(|bytes| *blake3::hash(&bytes).as_bytes());
+    crate::shell::personal_continuity::LaunchIntent::file_reference(
+        format!("file-record-{}", hex::encode(record_id)),
+        content_hash,
+        thumbnail_hash,
+    )
+    .ok()
+}
+
+/// Resolve a same-identity file continuation through the mounted Files record
+/// catalog. The incoming reference names a collaborative `FileRecordId`, not
+/// a source pathname. Opening one byte is deliberate: on a projected FUSE
+/// record it begins normal on-demand hydration, while local files are cheap.
+pub fn open_continuity_file_reference(
+    reference: &crate::shell::personal_continuity::LaunchIntent,
+) -> Option<PathBuf> {
+    let path = resolve_continuity_file_reference_in_roots(
+        reference,
+        &file_explorer::model::workspace_roots(),
+    )?;
+    let mut file = std::fs::File::open(&path).ok()?;
+    let mut first_byte = [0_u8; 1];
+    let _ = file.read(&mut first_byte).ok()?;
+    Some(path)
+}
+
+/// A human label for a continuation file card. The record id is deliberately
+/// never user-facing: it is a transport identity, not a filename.
+pub fn continuity_file_reference_label(
+    reference: &crate::shell::personal_continuity::LaunchIntent,
+) -> String {
+    resolve_continuity_file_reference_in_roots(reference, &file_explorer::model::workspace_roots())
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "File".to_string())
+}
+
+/// Production activation for a synchronized file-reference tab.  Resolution
+/// stays record-id based, then the ordinary document launcher grants the
+/// projected path and chooses the registered app exactly as for a local open.
+pub fn activate_continuity_file_tab(chrome: &Chrome, tab: TabId) -> bool {
+    let reference = chrome
+        .borrow()
+        .tree()
+        .continuation_file_references
+        .get(&tab)
+        .cloned();
+    let Some(reference) = reference else {
+        return false;
+    };
+    let Some(path) = open_continuity_file_reference(&reference) else {
+        return false;
+    };
+    open_in_workspace(&path, chrome).is_ok()
+}
+
+fn resolve_continuity_file_reference_in_roots(
+    reference: &crate::shell::personal_continuity::LaunchIntent,
+    roots: &[PathBuf],
+) -> Option<PathBuf> {
+    let crate::shell::personal_continuity::LaunchIntent::FileReference { record_id, .. } =
+        reference
+    else {
+        return None;
+    };
+    let encoded = record_id.strip_prefix("file-record-")?;
+    let bytes = hex::decode(encoded).ok()?;
+    let record_id: [u8; 16] = bytes.try_into().ok()?;
+    let entry = file_explorer::model::read_workspace_record_index(roots)
+        .records
+        .into_iter()
+        .find(|entry| entry.record_id.as_bytes() == &record_id)?;
+    // Hashes describe the capture-time content/preview and may seed a cache,
+    // but they must never turn a normal edit into a failed reopen. The stable
+    // collaborative FileRecordId above is the sole routing authority.
+    Some(entry.path)
 }
 
 /// Matches by wayland app-id; the oldest unclaimed note wins (launch
@@ -594,9 +719,56 @@ mod tests {
             std::env::remove_var("QOS_APPS_DATA_DIR");
             std::env::remove_var("QOS_LAUNCHER_BIN");
             std::env::remove_var("XDG_RUNTIME_DIR");
+            std::env::remove_var("QOS_WORKSPACE_ROOTS");
         }
         launcher::set_wayland_socket_path(None);
         reset_session_state();
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn continuation_uses_root_catalog_when_file_xattr_is_unavailable() {
+        let root = tempfile::tempdir().unwrap();
+        let document = root.path().join("deep/report.pdf");
+        std::fs::create_dir_all(document.parent().unwrap()).unwrap();
+        std::fs::write(&document, b"report").unwrap();
+        let record_id = uuid::Uuid::from_u128(0x5151);
+        let projection = serde_json::json!({
+            "schema_version": 1,
+            "truncated": false,
+            "records": [{
+                "record_id": record_id,
+                "path": "/deep/report.pdf",
+                "is_dir": false
+            }]
+        });
+        xattr::set(
+            root.path(),
+            file_explorer::model::RECORD_INDEX_XATTR,
+            &serde_json::to_vec(&projection).unwrap(),
+        )
+        .unwrap();
+        // SAFETY: guarded by the process_env serial group.
+        unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", root.path()) };
+        clear_open_documents();
+        note_opening(
+            &RecordId::for_file(&document),
+            &document,
+            "dev.qos.pdf-viewer",
+        );
+        claim_surface_for_document("dev.qos.pdf-viewer", 77);
+
+        let reference = continuation_file_reference_for_surface(77)
+            .expect("the root catalog supplies stable identity without a file xattr");
+        assert!(matches!(
+            reference,
+            crate::shell::personal_continuity::LaunchIntent::FileReference {
+                record_id: ref id,
+                content_hash: None,
+                ..
+            } if id == &format!("file-record-{}", hex::encode(record_id.as_bytes()))
+        ));
+        clear_launch_env();
     }
 
     /// Three formats, three owning packages. Asserted against the
@@ -1145,5 +1317,88 @@ mod tests {
         );
 
         clear_launch_env();
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn remote_file_reference_resolves_a_projected_record_without_source_path() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("hydrated-on-read.md");
+        std::fs::write(&path, b"hydrated content").unwrap();
+        let record = [0x71; 16];
+        let content = [0x42; 32];
+        let thumbnail = b"projected thumbnail";
+        xattr::set(&path, "user.qos.record-id", &record).unwrap();
+        xattr::set(&path, "user.qos.content-hash", &content).unwrap();
+        xattr::set(&path, "user.qos.thumb", thumbnail).unwrap();
+        let uuid = uuid::Uuid::from_bytes(record);
+        let index = serde_json::json!({
+            "schema_version": 1,
+            "truncated": false,
+            "records": [{
+                "record_id": uuid,
+                "path": "/hydrated-on-read.md",
+                "is_dir": false,
+            }],
+        });
+        xattr::set(
+            root.path(),
+            "user.qos.record-index",
+            &serde_json::to_vec(&index).unwrap(),
+        )
+        .unwrap();
+        let reference = crate::shell::personal_continuity::LaunchIntent::file_reference(
+            format!("file-record-{}", hex::encode(record)),
+            Some(content),
+            Some(*blake3::hash(thumbnail).as_bytes()),
+        )
+        .unwrap();
+
+        // A change after capture must not make the record unopenable: the
+        // FileRecordId, rather than stale content/preview hashes, routes it.
+        xattr::set(&path, "user.qos.content-hash", &[0x43; 32]).unwrap();
+        xattr::set(&path, "user.qos.thumb", b"fresh preview").unwrap();
+
+        let previous = std::env::var_os("QOS_WORKSPACE_ROOTS");
+        // SAFETY: guarded by the process_env serial group.
+        unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", root.path()) };
+        let resolved = open_continuity_file_reference(&reference)
+            .expect("the mounted Files record catalog resolves and hydrates the remote reference");
+        assert_eq!(resolved, path);
+        assert_eq!(std::fs::read(resolved).unwrap(), b"hydrated content");
+        assert!(
+            !serde_json::to_string(&reference)
+                .unwrap()
+                .contains(root.path().to_str().unwrap())
+        );
+        install(root.path(), "dev.qos.text-editor", "Text Editor", &["md"]);
+        // SAFETY: guarded by the process_env serial group.
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", root.path()) };
+        let log = install_recording_launcher(root.path());
+        reset_session_state();
+        let chrome = chrome_with_workspace();
+        {
+            let state = chrome.borrow_mut();
+            state
+                .tree_mut()
+                .continuation_file_references
+                .insert(0x77, reference.clone());
+        }
+        assert!(activate_continuity_file_tab(&chrome, 0x77));
+        let launch = launched_commands(&log, 1);
+        assert!(
+            launch
+                .iter()
+                .any(|command| command.contains("hydrated-on-read.md")),
+            "activation must use the normal document launcher: {launch:?}"
+        );
+        clear_launch_env();
+        // SAFETY: restore the process-global environment under the same lock.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("QOS_WORKSPACE_ROOTS", value),
+                None => std::env::remove_var("QOS_WORKSPACE_ROOTS"),
+            }
+        }
     }
 }

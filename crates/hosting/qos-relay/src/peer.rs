@@ -46,6 +46,11 @@ pub enum PeerError {
 
 /// Handle to the set of workspaces the daemon owns.
 pub type WorkspaceRegistry = Arc<AsyncMutex<HashMap<u64, SharedWorkspace>>>;
+const MAX_AUTOBOUND_WORKSPACES: usize = 4096;
+
+const fn autobind_has_capacity(current: usize) -> bool {
+    current < MAX_AUTOBOUND_WORKSPACES
+}
 
 /// Optional on-demand workspace creation used by a same-owner home host.
 /// Shared/provider hosts leave this disabled and pre-bind their tenant
@@ -80,6 +85,8 @@ pub struct PeerContext {
     pub autobind: Option<WorkspaceAutobind>,
     /// Live revocation list, refreshed independently of this session.
     pub revocations: Arc<std::sync::RwLock<qos_user_identity::RevocationList>>,
+    /// Live signed-workspace-derived collaborator admission policy.
+    pub trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     /// The user pubkey this relay itself chains to.
     pub own_user_public_key: [u8; 32],
     /// Metrics — cheap counters.
@@ -96,6 +103,7 @@ struct SessionCtx<'a> {
     outbound: &'a mpsc::Sender<Envelope>,
     own_user_public_key: &'a [u8; 32],
     metrics: &'a crate::metrics::Metrics,
+    trust_policy: &'a Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     disconnect: &'a mpsc::Sender<()>,
 }
 
@@ -126,6 +134,7 @@ where
         workspaces,
         autobind,
         revocations,
+        trust_policy,
         own_user_public_key,
         metrics,
     } = ctx;
@@ -147,6 +156,7 @@ where
         outbound: &tx,
         own_user_public_key: &own_user_public_key,
         metrics: &metrics,
+        trust_policy: &trust_policy,
         disconnect: &disconnect_tx,
     };
 
@@ -221,6 +231,16 @@ async fn audit_subscriber_access(
             "authenticated device was revoked".into(),
         ));
     }
+    if !session
+        .trust_policy
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .admits(&peer.cert, session.own_user_public_key)
+    {
+        return Err(PeerError::Protocol(
+            "collaborator was removed from signed workspace authority".into(),
+        ));
+    }
     for workspace_id in subscribed {
         let Some(workspace) = session.workspaces.lock().await.get(workspace_id).cloned() else {
             continue;
@@ -234,6 +254,7 @@ async fn audit_subscriber_access(
                 .known_peer_relays
                 .contains(&peer.device_public_key);
         if !workspace.admit_authenticated
+            && !workspace.admitted_users.contains(&peer.user_public_key)
             && !workspace.membership.contains(&peer.device_public_key)
             && !is_federated
         {
@@ -358,7 +379,10 @@ async fn handle_subscribe(
     let is_federated = peer.role == crate::auth::PeerRole::PeerRelay
         && peer.user_public_key == *session.own_user_public_key
         && wr.known_peer_relays.contains(&peer.device_public_key);
-    if !wr.membership.contains(&peer.device_public_key) && !is_federated {
+    if !wr.membership.contains(&peer.device_public_key)
+        && !wr.admitted_users.contains(&peer.user_public_key)
+        && !is_federated
+    {
         if wr.admit_authenticated {
             wr.admit_device(peer.device_public_key)?;
         } else {
@@ -655,7 +679,10 @@ async fn handle_sync_request(
     let is_federated = peer.role == crate::auth::PeerRole::PeerRelay
         && peer.user_public_key == *session.own_user_public_key
         && wr.known_peer_relays.contains(&peer.device_public_key);
-    if !wr.membership.contains(&peer.device_public_key) && !is_federated && !wr.admit_authenticated
+    if !wr.membership.contains(&peer.device_public_key)
+        && !wr.admitted_users.contains(&peer.user_public_key)
+        && !is_federated
+        && !wr.admit_authenticated
     {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
@@ -677,7 +704,7 @@ async fn handle_sync_request(
               devices racing to autobind the same workspace can't create two \
               independent runtimes"
 )]
-async fn get_or_autobind_workspace(
+pub(crate) async fn get_or_autobind_workspace(
     workspaces: &WorkspaceRegistry,
     autobind: Option<&WorkspaceAutobind>,
     workspace_id: u64,
@@ -689,6 +716,11 @@ async fn get_or_autobind_workspace(
     let Some(autobind) = autobind else {
         return Ok(None);
     };
+    if !autobind_has_capacity(map.len()) {
+        return Err(StoreError::Io(std::io::Error::other(
+            "home peer workspace limit reached",
+        )));
+    }
 
     // Holding the registry lock across the synchronous open makes first
     // subscribe atomic: two devices racing to introduce a room cannot create
@@ -704,4 +736,16 @@ async fn get_or_autobind_workspace(
     map.insert(workspace_id, workspace.clone());
     tracing::info!(workspace_id, "auto-bound same-owner workspace");
     Ok(Some(workspace))
+}
+
+#[cfg(test)]
+mod autobind_tests {
+    use super::*;
+
+    #[test]
+    fn automatic_workspace_creation_has_a_hard_capacity_bound() {
+        assert!(autobind_has_capacity(MAX_AUTOBOUND_WORKSPACES - 1));
+        assert!(!autobind_has_capacity(MAX_AUTOBOUND_WORKSPACES));
+        assert!(!autobind_has_capacity(usize::MAX));
+    }
 }

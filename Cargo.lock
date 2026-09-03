@@ -4635,6 +4635,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "fuser",
  "futures-lite",
+ "futures-util",
  "getrandom 0.2.17",
  "hex",
  "image",
@@ -4651,11 +4652,13 @@ dependencies = [
  "rand 0.8.8",
  "runtime-fs",
  "serde",
+ "serde_bytes",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "thumbnail",
  "tokio",
+ "toml 0.8.23",
  "uuid",
 ]
 
@@ -11511,14 +11514,19 @@ dependencies = [
  "atomic-file",
  "automerge",
  "blake3",
+ "chacha20poly1305",
  "clap",
+ "collab-types",
  "ed25519-dalek 2.2.0",
+ "fs",
  "hex",
  "iroh",
  "iroh-base",
+ "libc",
  "postcard",
  "qos-user-identity",
  "rand 0.8.8",
+ "runtime-identity",
  "sd-notify",
  "serde",
  "serde_bytes",
@@ -11530,6 +11538,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "x25519-dalek 2.0.1",
 ]
 
 [[package]]
@@ -13335,9 +13344,11 @@ name = "settings"
 version = "0.1.0"
 dependencies = [
  "accounts",
+ "atomic-file",
  "automerge",
  "collab-types",
  "desktop-policy",
+ "dirs 6.0.0",
  "launcher",
  "mail",
  "media",
@@ -13591,6 +13602,7 @@ dependencies = [
  "windows-vm",
  "winit",
  "word-processor",
+ "xattr",
  "zbus 4.4.0",
  "zeroize",
 ]

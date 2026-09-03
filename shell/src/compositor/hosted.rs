@@ -12,14 +12,15 @@ use ui::presence::PresenceKey;
 use ui::widget::Widget;
 use ui::{App, State};
 
-/// Boot the shell with legacy v1 behaviour — peer-sync OFF, portals OFF. Thin alias of
-/// [`run_with_options`] for callers that hard-code the no-arg entry point (mainly integration tests).
+/// Boot the hosted test/development shell with optional services disabled.
+/// Production entry points resolve their default-on sync policy before calling
+/// [`run_with_options`].
 pub fn run() {
     run_with_options(false);
 }
 
 /// Aggregated boot-time toggles for the hosted entry point, held by value so a new flag is one
-/// struct-field edit, not a fan-out across `main.rs` and every test fixture. v1: two fields, default OFF.
+/// struct-field edit, not a fan-out across `main.rs` and every test fixture.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HostedOptions {
     pub enable_peer_sync: bool,
@@ -72,6 +73,9 @@ pub fn run_with_full_options(opts: HostedOptions) {
     tree.fs_acl_path = Some(persist::fs_capability_export_path());
 
     adopt_tree_ownership(&mut tree);
+    // Replay a persisted ACL after restart even when no capability changes in
+    // this session; the asynchronous publisher retries until FS is ready.
+    tree.export_fs_capabilities();
 
     // One `WorkspaceTreeHandle` shared across compositor / portal / peer-sync — chrome, the portal's `GrantStoreHandle`, and the peer-sync replica each hold a clone, so every mutation lands on the same tree.
     let tree_handle: crate::shell::state::WorkspaceTreeHandle = tree.shared();
