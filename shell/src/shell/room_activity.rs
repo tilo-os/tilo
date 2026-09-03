@@ -171,7 +171,7 @@ impl TaskAction {
     fn label(self) -> &'static str {
         match self {
             Self::OpenResource => "Open resource",
-            Self::Start => "Start",
+            Self::Start => "Mark started",
             Self::Complete => "Mark done",
             Self::Cancel => "Cancel task",
         }
@@ -2737,9 +2737,15 @@ impl RoomActivityPane {
         for task in &self.tasks {
             let selected = self.selected_task.as_deref() == Some(task.id.as_str());
             let audit_rows = if selected { task.audit.len().min(3) } else { 0 };
+            let execution_notice = selected.then(|| task_execution_notice(task)).flatten();
             let height = 82.0
                 + if selected {
                     72.0 + 18.0 * audit_rows as f64
+                        + if execution_notice.is_some() {
+                            18.0
+                        } else {
+                            0.0
+                        }
                 } else {
                     0.0
                 };
@@ -2757,6 +2763,7 @@ impl RoomActivityPane {
                 rect,
                 selected,
                 self.now(),
+                execution_notice,
             );
             if selected {
                 let actions = task_actions(task);
@@ -3269,6 +3276,16 @@ impl RoomActivityPane {
         let Some(task_id) = self.selected_task.clone() else {
             return handled_outcome();
         };
+        let Some(task) = self.tasks.iter().find(|task| task.id == task_id) else {
+            return handled_outcome();
+        };
+        // Starting a manual task is a human-authored state transition. Model
+        // and rules-only tasks need an admitted runtime run before their state
+        // may advance; presenting the same transition as "Start" would claim
+        // execution that never happened.
+        if !task_actions(task).contains(&action) {
+            return handled_outcome();
+        }
         if action == TaskAction::OpenResource {
             let open_target = self
                 .tasks
@@ -4495,7 +4512,9 @@ fn task_actions(task: &WorkspaceTask) -> Vec<TaskAction> {
     }
     match task.status {
         WorkspaceTaskStatus::Queued | WorkspaceTaskStatus::Waiting => {
-            actions.push(TaskAction::Start);
+            if task.route == WorkspaceTaskRoute::Manual {
+                actions.push(TaskAction::Start);
+            }
             actions.push(TaskAction::Cancel);
         }
         WorkspaceTaskStatus::InProgress => {
@@ -4505,6 +4524,15 @@ fn task_actions(task: &WorkspaceTask) -> Vec<TaskAction> {
         WorkspaceTaskStatus::Done | WorkspaceTaskStatus::Cancelled => {}
     }
     actions
+}
+
+fn task_execution_notice(task: &WorkspaceTask) -> Option<&'static str> {
+    (task.route != WorkspaceTaskRoute::Manual
+        && matches!(
+            task.status,
+            WorkspaceTaskStatus::Queued | WorkspaceTaskStatus::Waiting
+        ))
+    .then_some("Agent runtime not connected · this task has not started")
 }
 
 fn draw_task_button(
@@ -4553,6 +4581,7 @@ fn draw_task_card(
     rect: Rect,
     selected: bool,
     now: SystemTime,
+    execution_notice: Option<&str>,
 ) {
     scene.fill(
         Fill::NonZero,
@@ -4636,6 +4665,17 @@ fn draw_task_card(
     );
     if selected {
         let mut audit_y = rect.y0 + 80.0;
+        if let Some(notice) = execution_notice {
+            tr.draw_text(
+                scene,
+                notice,
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.accent[4],
+                at(transform, rect.x0 + 12.0, audit_y),
+                Some(text_width(rect.width() - 24.0)),
+            );
+            audit_y += 18.0;
+        }
         tr.draw_text_weighted(
             scene,
             "AUDIT TRAIL",
@@ -5911,6 +5951,84 @@ mod tests {
         assert!(debug.contains("Prepare screenshots"));
         assert!(debug.contains("rules only"));
         assert!(debug.contains("1 audit events"));
+    }
+
+    #[test]
+    fn only_manual_tasks_offer_a_human_started_transition() {
+        let (mut tree, workspace, _) = busy_room();
+        let manual_id = tree
+            .create_workspace_task(
+                workspace,
+                "Review the brief",
+                "ada",
+                None,
+                WorkspaceTaskRoute::Manual,
+                None,
+            )
+            .expect("manual task is created");
+        let automated_id = tree
+            .create_workspace_task(
+                workspace,
+                "Prepare screenshots",
+                "ada",
+                Some("studio-agent".into()),
+                WorkspaceTaskRoute::RulesOnly,
+                None,
+            )
+            .expect("automated task is created");
+        let tasks = &tree
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.id == workspace)
+            .expect("workspace remains available")
+            .tasks;
+        let manual = tasks
+            .iter()
+            .find(|task| task.id == manual_id)
+            .expect("manual task is stored");
+        let automated = tasks
+            .iter()
+            .find(|task| task.id == automated_id)
+            .expect("automated task is stored");
+
+        assert!(task_actions(manual).contains(&TaskAction::Start));
+        assert!(!task_actions(automated).contains(&TaskAction::Start));
+        assert_eq!(
+            task_execution_notice(automated),
+            Some("Agent runtime not connected · this task has not started")
+        );
+    }
+
+    #[test]
+    fn automated_task_cannot_be_marked_running_without_a_runtime_run() {
+        let (mut tree, workspace, _) = busy_room();
+        let task_id = tree
+            .create_workspace_task(
+                workspace,
+                "Prepare screenshots",
+                "ada",
+                Some("studio-agent".into()),
+                WorkspaceTaskRoute::Model,
+                None,
+            )
+            .expect("task is created");
+        let mut pane = RoomActivityPane::new();
+        pane.set_view(ActivityView::Tasks);
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        pane.refresh(&mut tree);
+        pane.selected_task = Some(task_id.clone());
+
+        let outcome = pane.apply_task_action(TaskAction::Start, &mut tree);
+
+        assert!(!outcome.task_changed);
+        let task = tree
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.id == workspace)
+            .and_then(|workspace| workspace.tasks.iter().find(|task| task.id == task_id))
+            .expect("task remains stored");
+        assert_eq!(task.status, WorkspaceTaskStatus::Queued);
+        assert_eq!(task.audit.len(), 1, "no synthetic start audit was added");
     }
 
     #[test]
