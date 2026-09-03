@@ -1,0 +1,214 @@
+//! `org.freedesktop.impl.portal.AppChooser` backend.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use zbus::interface;
+use zbus::names::OwnedUniqueName;
+use zbus::zvariant::{ObjectPath, OwnedValue};
+
+use super::desktop_services::{ApplicationChoiceRequest, PortalResult};
+use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+use super::{PortalContext, auth::authenticate_call, lockdown};
+
+pub struct AppChooserBackend {
+    ctx: PortalContext,
+    pending: Arc<Mutex<HashMap<String, ApplicationChoiceRequest>>>,
+    lifecycle: PortalLifecycle,
+}
+impl AppChooserBackend {
+    pub fn new(ctx: PortalContext) -> Self {
+        Self::with_lifecycle(ctx, PortalLifecycle::new())
+    }
+
+    pub fn with_lifecycle(ctx: PortalContext, lifecycle: PortalLifecycle) -> Self {
+        Self {
+            ctx,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            lifecycle,
+        }
+    }
+}
+fn str_opt(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+    options
+        .get(key)?
+        .try_clone()
+        .ok()
+        .and_then(|v| String::try_from(v).ok())
+        .filter(|v| v.len() <= 4096 && !v.chars().any(char::is_control))
+}
+fn valid_choices(choices: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    choices
+        .into_iter()
+        .filter(|v| {
+            !v.is_empty()
+                && v.len() <= 255
+                && !v.chars().any(char::is_control)
+                && seen.insert(v.clone())
+        })
+        .collect()
+}
+#[interface(name = "org.freedesktop.impl.portal.AppChooser")]
+impl AppChooserBackend {
+    async fn choose_application(
+        &self,
+        #[zbus(header)] hdr: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+        handle: ObjectPath<'_>,
+        app_id: String,
+        parent_window: String,
+        choices: Vec<String>,
+        options: HashMap<String, OwnedValue>,
+    ) -> (u32, HashMap<String, OwnedValue>) {
+        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
+        let Ok(auth) =
+            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
+        else {
+            return (2, HashMap::new());
+        };
+        if lockdown::current_policy().disable_application_handlers {
+            return (1, HashMap::new());
+        }
+        let request = ApplicationChoiceRequest {
+            handle: handle.to_string(),
+            app_id: auth.caller.app_id.clone(),
+            choices: valid_choices(choices),
+            last_choice: str_opt(&options, "last_choice"),
+            content_type: str_opt(&options, "content_type"),
+            uri: str_opt(&options, "uri"),
+            filename: str_opt(&options, "filename"),
+            activation_token: str_opt(&options, "activation_token"),
+        };
+        if request.choices.is_empty() {
+            return (1, HashMap::new());
+        }
+        let entry = LifecycleEntry {
+            owner: auth.owner.to_string(),
+            app_id: auth.caller.app_id,
+            resource: LifecycleResource::Prompt,
+        };
+        let pending = self.pending.clone();
+        let chooser = self.ctx.desktop_services.app_chooser.clone();
+        let cleanup_handle = request.handle.clone();
+        let registered = self
+            .lifecycle
+            .register_request(connection, &request.handle, entry, move |_| {
+                if let Ok(mut pending) = pending.lock() {
+                    pending.remove(&cleanup_handle);
+                }
+                chooser.cancel(&cleanup_handle);
+            })
+            .await;
+        if !matches!(registered, Ok(true)) {
+            return (2, HashMap::new());
+        }
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.insert(request.handle.clone(), request.clone());
+        }
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        let queued = self
+            .ctx
+            .desktop_services
+            .app_chooser
+            .enqueue(request.clone(), reply);
+        let outcome = match queued {
+            PortalResult::Success(()) => rx.await.unwrap_or(PortalResult::Cancelled),
+            PortalResult::Cancelled => PortalResult::Cancelled,
+            PortalResult::Unavailable(error) => PortalResult::Unavailable(error),
+            PortalResult::Failed(error) => PortalResult::Failed(error),
+        };
+        let live_choices = self
+            .pending
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.remove(&request.handle))
+            .map(|request| request.choices)
+            .unwrap_or_default();
+        self.lifecycle
+            .complete_request_object(connection, &request.handle)
+            .await;
+        match outcome {
+            PortalResult::Success(choice) if live_choices.iter().any(|id| id == &choice.choice) => {
+                let mut out = HashMap::new();
+                out.insert(
+                    "choice".into(),
+                    OwnedValue::from(zbus::zvariant::Str::from(choice.choice)),
+                );
+                if let Some(token) = choice.activation_token {
+                    out.insert(
+                        "activation_token".into(),
+                        OwnedValue::from(zbus::zvariant::Str::from(token)),
+                    );
+                }
+                (0, out)
+            }
+            PortalResult::Success(_) => (2, HashMap::new()),
+            other => (other.response_code(), HashMap::new()),
+        }
+    }
+    async fn update_choices(
+        &self,
+        #[zbus(header)] hdr: zbus::message::Header<'_>,
+        handle: ObjectPath<'_>,
+        choices: Vec<String>,
+    ) -> zbus::fdo::Result<()> {
+        let choices = valid_choices(choices);
+        let key = handle.to_string();
+        let app_id = self
+            .pending
+            .lock()
+            .map_err(|_| zbus::fdo::Error::Failed("chooser state unavailable".into()))?
+            .get(&key)
+            .map(|request| request.app_id.clone())
+            .ok_or_else(|| {
+                zbus::fdo::Error::InvalidArgs("unknown or completed chooser request".into())
+            })?;
+        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
+        // UpdateChoices has no app-id argument.  Reauthenticate against the
+        // id bound by ChooseApplication, then prove the request is owned by
+        // that same frontend generation.
+        let auth = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None)
+            .await
+            .map_err(|_| zbus::fdo::Error::AccessDenied("untrusted portal frontend".into()))?;
+        if !self.lifecycle.has_request(&key, auth.owner.as_str()) {
+            return Err(zbus::fdo::Error::AccessDenied(
+                "request is not owned by this portal frontend".into(),
+            ));
+        }
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| zbus::fdo::Error::Failed("chooser state unavailable".into()))?;
+        let request = pending.get_mut(&key).ok_or_else(|| {
+            zbus::fdo::Error::InvalidArgs("unknown or completed chooser request".into())
+        })?;
+        request.choices = choices.clone();
+        drop(pending);
+        match self
+            .ctx
+            .desktop_services
+            .app_chooser
+            .update_choices(&key, &choices)
+        {
+            PortalResult::Success(()) => Ok(()),
+            PortalResult::Cancelled => {
+                Err(zbus::fdo::Error::Failed("chooser was cancelled".into()))
+            }
+            PortalResult::Unavailable(e) | PortalResult::Failed(e) => {
+                Err(zbus::fdo::Error::Failed(e))
+            }
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn choices_are_deduplicated_and_bounded() {
+        assert_eq!(
+            valid_choices(vec!["a".into(), "a".into(), "".into(), "b".into()]),
+            vec!["a", "b"]
+        );
+    }
+}

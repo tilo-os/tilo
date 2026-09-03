@@ -943,6 +943,13 @@ impl FrameBuilder {
         self.host.take_capture_intents()
     }
 
+    /// Whether the compositor-owned Capture Studio is still awaiting a
+    /// selection.  Portal cancellation uses this to resolve its request when
+    /// the user dismisses the trusted selector without creating an intent.
+    pub fn capture_studio_open(&self) -> bool {
+        self.host.capture_studio_open()
+    }
+
     /// Drain app-originated call/navigation/media handoffs. The app keeps
     /// producing the source; the compositor chooses the shell presentation.
     pub fn take_floating_surface_requests(

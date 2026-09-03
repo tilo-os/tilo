@@ -1,8 +1,9 @@
 //! Integration tests for the permission-prompt pump (chrome <-> overlay-host
 //! wiring, no render loop): queue a pending grant, tick to latch a
 //! `PermissionPrompt`, click through the widget's own `handle_event`, tick
-//! again to drain. Asserts queue state and the workspace `grants` map
-//! (Once doesn't persist; Session/Always do).
+//! again to drain. Asserts queue state and, critically, that portal choices
+//! never enter the collaborative workspace grant map. The portal backend owns
+//! private Session/Always persistence after it receives the UI decision.
 
 #![allow(
     clippy::unwrap_used,
@@ -20,10 +21,7 @@ use std::time::Duration;
 
 use shell::shell::chrome_state::{ChromeState, OverlayFlags, PendingPrompt};
 use shell::shell::overlay_host::ShellOverlayHost;
-use shell::shell::state::{
-    Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Workspace, WorkspaceId,
-    WorkspaceTree,
-};
+use shell::shell::state::{Capability, GRANT_ONCE, Workspace, WorkspaceId, WorkspaceTree};
 use ui::widget::{PermissionPrompt, PromptChoice, Widget};
 
 use automerge::AutoCommit;
@@ -208,7 +206,7 @@ fn pump_drains_pending_grant_after_choice() {
     reason = "the pending_grants assert and tree() both need st held; there is nothing \
               to narrow between them"
 )]
-fn pump_persists_session_grant_to_workspace_grants_map() {
+fn pump_keeps_session_choice_out_of_the_shared_workspace() {
     let (chrome, _ws_id) =
         chrome_with_pending_grant("org.example.app", Capability::Camera { scope: GRANT_ONCE });
     let mut host = host_with_chrome(chrome.clone());
@@ -231,38 +229,16 @@ fn pump_persists_session_grant_to_workspace_grants_map() {
     assert!(st.pending_grants.is_empty(), "queue must drain");
     let tree = st.tree();
     let ws = tree.active_workspace().expect("active workspace");
-    let view = ws.app_grants_snapshot();
-    let caps = view
-        .get("org.example.app")
-        .expect("Session click must persist a grant on the active workspace");
-    assert_eq!(caps.len(), 1);
-    // Scope must be `Session`, not the pre-prompt `Once` — the pump upgrades it.
     assert!(
-        matches!(
-            &caps[0],
-            Capability::Camera {
-                scope: GRANT_SESSION
-            }
-        ),
-        "session grant scope must be Session, got {:?}",
-        caps[0],
+        !ws.app_grants_snapshot().contains_key("org.example.app"),
+        "a local portal consent must not be replicated to workspace peers",
     );
 }
 
 #[test]
-fn pump_persists_always_grant_with_filesystem_capability() {
-    // Filesystem carries `path` + `mode` the pump must preserve across the flip.
-    let granted_path = PathBuf::from("/home/u/work");
-    let (chrome, _ws_id) = chrome_with_pending_grant(
-        "org.gnome.gedit",
-        Capability::Filesystem {
-            path: granted_path.clone(),
-            mode: FsMode::ReadWrite,
-            scope: GRANT_ONCE,
-        },
-    );
-    // "Always" means "still granted after a reboot", so read the state file back
-    // — otherwise this only proves the grant reached memory.
+fn pump_keeps_always_choice_out_of_workspace_persistence() {
+    let (chrome, _ws_id) =
+        chrome_with_pending_grant("org.gnome.gedit", Capability::Camera { scope: GRANT_ONCE });
     let state_file = scratch_dir().join("state.json");
     chrome.borrow().tree_mut().persist_path = Some(state_file.clone());
 
@@ -283,46 +259,22 @@ fn pump_persists_always_grant_with_filesystem_capability() {
     }
     host.tick_permission_prompt_for_tests();
 
-    let expect_grant = |ws: &Workspace, where_: &str| {
-        let view = ws.app_grants_snapshot();
-        let caps = view
-            .get("org.gnome.gedit")
-            .unwrap_or_else(|| panic!("no grant {where_}"));
-        assert_eq!(caps.len(), 1, "one grant {where_}, got {caps:?}");
-        assert!(
-            matches!(
-                &caps[0],
-                Capability::Filesystem {
-                    path,
-                    mode: FsMode::ReadWrite,
-                    scope: GRANT_ALWAYS,
-                } if path == &granted_path
-            ),
-            "filesystem always grant must preserve mode + path while \
-             flipping scope ({where_}) — got {:?}",
-            caps[0],
-        );
-    };
-
-    {
+    let has_shared_grant = {
         let st = chrome.borrow();
         let tree = st.tree();
-        expect_grant(
-            tree.active_workspace().expect("active workspace"),
-            "on the active workspace",
-        );
-    }
-
-    // The write is eager because the compositor can be killed rather than asked
-    // to exit; reload the way the boot path does.
-    let reloaded = shell::shell::persist::load_tree_from(&state_file)
-        .expect("the pump must have written the state file");
-    let ws = reloaded
-        .workspaces
-        .iter()
-        .find(|w| w.id == WorkspaceId::from(1))
-        .expect("the workspace survives the reload");
-    expect_grant(ws, "after reloading the state file");
+        let ws = tree.active_workspace().expect("active workspace");
+        let has = ws.app_grants_snapshot().contains_key("org.gnome.gedit");
+        drop(tree);
+        has
+    };
+    assert!(
+        !has_shared_grant,
+        "durable portal consent is private device state, not room state",
+    );
+    assert!(
+        !state_file.exists(),
+        "the UI pump must not persist the collaborative workspace merely because a portal prompt was answered",
+    );
 }
 
 /// Per-test scratch dir under `target/`, off the user's real config dir.

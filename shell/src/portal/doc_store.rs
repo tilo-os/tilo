@@ -25,12 +25,13 @@
 //! narrower than the portal it replaces, which granted
 //! `Scope::FsPath("/")` permanently on one *Always* click.
 //!
-//! FUSE may be unavailable (no `/dev/fuse`, no permission, no
-//! `fusermount3`). [`HostPathStore`] serves callers sharing the
-//! compositor's own namespace (built-in apps, dev runs, tests) by
-//! handing back the real path; it does **not** pretend to serve a
-//! confined caller — `documents_reach_confined_apps()` is what the
-//! compositor logs at startup, so a silent failure is a journal line, not a mystery.
+//! The backend side of the standard portal protocol returns host paths to
+//! `xdg-desktop-portal`. The trusted frontend publishes them through
+//! `xdg-document-portal` before returning a URI to a confined application.
+//! [`HostPathStore`] therefore deliberately preserves host paths here; it is
+//! also useful directly for built-in apps, development runs, and tests. The
+//! `reaches_confined_apps` flag describes *direct* reachability only and must
+//! not be confused with the frontend's document export step.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -123,9 +124,10 @@ impl Default for DocumentStoreHandle {
 
 /// The identity store: a picked path is published as itself.
 ///
-/// The truthful answer for every caller sharing the compositor's mount
-/// namespace (built-in app, dev run, test) — the *wrong* answer for a
-/// bwrap'd app, which is why it reports [`DocumentStore::reaches_confined_apps`] as `false` rather than quietly succeeding.
+/// This is also the required backend-side representation for the standard
+/// portal frontend: `xdg-desktop-portal` consumes the host path and exports it
+/// through `xdg-document-portal` for a confined caller. It reports direct
+/// sandbox reachability as `false`, because that export is a separate step.
 pub struct HostPathStore;
 
 impl DocumentStore for HostPathStore {
