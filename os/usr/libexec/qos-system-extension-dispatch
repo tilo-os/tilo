@@ -1,0 +1,59 @@
+#!/bin/sh
+# Socket-activated, fixed-verb extension request boundary.
+#
+# Desktop Settings and agents may connect only to the root-owned Unix socket
+# and submit one of the two literal lines below. No request contains a path,
+# URL, model id, package tag, command, or restart instruction. The service
+# process is short-lived and backgrounded by systemd's Accept=yes socket unit,
+# so clients enqueue by writing then closing; they do not wait for downloads or
+# image composition.
+set -eu
+
+api_dir=/run/qos/system-extension-api
+status=$api_dir/status.json
+
+die() { printf '%s\n' "qos-system-extension-dispatch: $*" >&2; exit 1; }
+
+IFS= read -r verb || die "missing fixed request verb"
+case "$verb" in
+    userspace-stage)
+        /usr/libexec/qos-system-extension-activate userspace
+        activation_class=userspace
+        reboot_required=false
+        ;;
+    boot-stage)
+        /usr/libexec/qos-system-extension-activate boot
+        activation_class=boot
+        reboot_required=true
+        ;;
+    *) die "unsupported fixed request verb" ;;
+esac
+
+# Reject a second line. This makes a request one fixed verb, rather than a
+# convenient protocol tunnel that a later caller could turn into root argv.
+if IFS= read -r extra; then
+    die "request must contain exactly one line"
+fi
+
+marker=/run/qos/system-extensions/userspace-ready
+[ "$activation_class" = boot ] && marker=/var/lib/qos/system-extensions/reboot-required
+revision=$(sed -n 's/^revision=\([0-9][0-9]*\)$/\1/p' "$marker")
+[ -n "$revision" ] || die "activation marker has no valid revision"
+
+# Status is intentionally a projection, not desired state. The desktop may
+# read it as qos-identity without root; it never gains access to state.json or
+# artifact locations. Write before rename so readers never observe a partial
+# status document.
+[ -d "$api_dir" ] && [ ! -L "$api_dir" ] || die "status directory is unsafe"
+tmp=$(mktemp "$api_dir/.status.XXXXXX") || die "cannot create status"
+trap 'rm -f "$tmp"' EXIT HUP INT TERM
+umask 027
+printf '{"schema_version":1,"revision":%s,"activation_class":"%s","reboot_required":%s}\n' \
+    "$revision" "$activation_class" "$reboot_required" > "$tmp"
+chown root:qos-identity "$tmp"
+chmod 0640 "$tmp"
+mv -f "$tmp" "$status"
+trap - EXIT HUP INT TERM
+
+# A response is optional. Callers may close immediately after enqueueing.
+printf '{"accepted":true}\n'
