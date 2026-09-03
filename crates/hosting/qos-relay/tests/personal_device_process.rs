@@ -65,6 +65,7 @@ fn write_approver_fixture(
     root: &SigningKey,
     approver: &SigningKey,
     home: &SigningKey,
+    relay_endpoint: Option<iroh::EndpointAddr>,
 ) -> HomePeerRegistration {
     let paths = IdentityPaths::under(root_dir);
     paths.ensure_directories().unwrap();
@@ -106,6 +107,7 @@ fn write_approver_fixture(
         schema_version: HomePeerRegistration::CURRENT_SCHEMA,
         device_node_id: hex::encode(home_cert.device_public_key),
         relay_service_node_id: hex::encode(qos_relay::daemon::relay_service_node_id(home)),
+        relay_endpoint,
         label: "Home peer".into(),
         user_public_key: hex::encode(user),
         device_cert: Some(home_cert),
@@ -135,12 +137,29 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     let root = SigningKey::from_bytes(&[0x11; 32]);
     let approver = SigningKey::from_bytes(&[0x12; 32]);
     let home = SigningKey::from_bytes(&[0x13; 32]);
+    let state = tempfile::tempdir().unwrap();
+    let home_cert = signed_cert(&root, &home, "Home peer", DeviceCapabilities::host());
+    let relay = Relay::start(
+        RelayConfig {
+            state_root: state.path().to_path_buf(),
+            ..RelayConfig::default()
+        },
+        RelayIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: home.clone(),
+            device_cert: home_cert,
+            revocations: RevocationList::new(),
+        },
+    )
+    .await
+    .unwrap();
     let source_registration = write_approver_fixture(
         &approver_root,
         &approver_identities,
         &root,
         &approver,
         &home,
+        Some(relay.node_addr()),
     );
 
     // Seed the recipient key before starting either process so approval pins
@@ -255,24 +274,8 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         &qos_relay::personal_continuity_workspace_id(&root.verifying_key().to_bytes())
     ));
 
-    // The approver process has exited. Start only the transferred home peer.
-    // The shell's registry resolver dials an id-only EndpointAddr, so use that
-    // exact representation rather than carrying the approver's live address.
-    let state = tempfile::tempdir().unwrap();
-    let relay = Relay::start(
-        RelayConfig {
-            state_root: state.path().to_path_buf(),
-            ..RelayConfig::default()
-        },
-        RelayIdentity {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_signing_key: home.clone(),
-            device_cert: source_registration.device_cert.clone().unwrap(),
-            revocations: RevocationList::new(),
-        },
-    )
-    .await
-    .unwrap();
+    // The approver process has exited; the transferred, authenticated relay
+    // address remains enough to reach the home peer without DNS/lookup.
     assert_eq!(
         hex::encode(relay.node_addr().id.as_bytes()),
         transferred[0].relay_service_node_id,
@@ -287,12 +290,10 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         )
         .await
         .unwrap();
-    let service_id: [u8; 32] = hex::decode(&transferred[0].relay_service_node_id)
-        .unwrap()
-        .try_into()
-        .unwrap();
-    let transferred_addr =
-        iroh::EndpointAddr::new(iroh::EndpointId::from_bytes(&service_id).unwrap());
+    let transferred_addr = transferred[0]
+        .relay_endpoint
+        .clone()
+        .expect("enrollment must transfer the relay address hint");
     let client = RelayClient::connect(
         client_endpoint().await,
         transferred_addr,
@@ -374,6 +375,7 @@ fn privileged_helper_preserves_user_owned_personal_device_projection() {
             &root,
             &approver,
             &home,
+            None,
         );
         std::fs::set_permissions(&approver_root, std::fs::Permissions::from_mode(0o700)).unwrap();
 

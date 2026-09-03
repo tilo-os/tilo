@@ -256,6 +256,7 @@ impl Relay {
             }),
         };
         let management = ManagementProtocol {
+            endpoint: endpoint.clone(),
             own_user_pk: identity.user_public_key,
             own_cert: identity.device_cert.clone(),
             own_sk: identity.device_signing_key.clone(),
@@ -1103,6 +1104,7 @@ struct DiscoveryProtocol {
 
 #[derive(Clone)]
 struct ManagementProtocol {
+    endpoint: Endpoint,
     own_user_pk: [u8; 32],
     own_cert: DeviceCert,
     own_sk: ed25519_dalek::SigningKey,
@@ -1231,6 +1233,7 @@ impl ProtocolHandler for ManagementProtocol {
             &mut send,
             &postcard::to_allocvec(&HomePeerManagementResponse {
                 device_public_key: self.own_cert.device_public_key,
+                relay_endpoint: self.endpoint.addr(),
                 label: label.trim().to_string(),
                 files_ready,
                 services: self.mesh_profile.services.clone(),
