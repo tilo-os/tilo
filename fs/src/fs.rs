@@ -36,6 +36,7 @@ use fuser::{
 use libc::{EBUSY, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY, EROFS};
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::future::Future;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -3686,6 +3687,7 @@ async fn reconcile_pinned_hydration(
         in_flight.spawn(hydrate_pinned_candidate(
             candidate,
             Arc::clone(&hydrator),
+            Arc::clone(namespace),
             Arc::clone(&registry),
             wakes.clone(),
         ));
@@ -3700,6 +3702,7 @@ async fn reconcile_pinned_hydration(
 async fn hydrate_pinned_candidate(
     candidate: PinnedCandidate,
     hydrator: Arc<Hydrator>,
+    namespace: Arc<Mutex<Namespace>>,
     registry: Arc<Mutex<AvailabilityRegistry>>,
     mut wakes: tokio::sync::watch::Receiver<u64>,
 ) {
@@ -3723,14 +3726,9 @@ async fn hydrate_pinned_candidate(
             });
         });
     });
-    tokio::pin!(hydration);
-    let result = tokio::select! {
-        result = &mut hydration => Some(result),
-        changed = wakes.changed() => {
-            let _ = changed;
-            None
-        }
-    };
+    let result =
+        await_current_pinned_hydration(hydration, &candidate, &namespace, &registry, &mut wakes)
+            .await;
     match result {
         Some(Ok(true)) => update_candidate_state(&registry, &candidate, |record| {
             record.residency = Residency::Resident {
@@ -3761,6 +3759,69 @@ async fn hydrate_pinned_candidate(
             record.transfer = crate::availability::TransferState::default();
         }),
     }
+}
+
+/// Await one fetch while only cancelling it for a change that invalidates its
+/// own residency promise.  The global generation is still useful to coalesce
+/// namespace reconciliation, but unrelated writes must not starve a large
+/// pinned download.
+async fn await_current_pinned_hydration<T>(
+    hydration: impl Future<Output = T>,
+    candidate: &PinnedCandidate,
+    namespace: &Arc<Mutex<Namespace>>,
+    registry: &Arc<Mutex<AvailabilityRegistry>>,
+    wakes: &mut tokio::sync::watch::Receiver<u64>,
+) -> Option<T> {
+    tokio::pin!(hydration);
+    // The worker cannot observe a remote namespace change while this batch is
+    // active, so periodically validate the candidate as well as validating on
+    // every local wake.
+    let mut repair = tokio::time::interval(PINNED_HYDRATION_INTERVAL);
+    repair.tick().await;
+    loop {
+        tokio::select! {
+            result = &mut hydration => return Some(result),
+            changed = wakes.changed() => {
+                if changed.is_err() || !pinned_candidate_is_current(candidate, namespace, registry) {
+                    return None;
+                }
+            }
+            _ = repair.tick() => {
+                if !pinned_candidate_is_current(candidate, namespace, registry) {
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+fn pinned_candidate_is_current(
+    candidate: &PinnedCandidate,
+    namespace: &Arc<Mutex<Namespace>>,
+    registry: &Arc<Mutex<AvailabilityRegistry>>,
+) -> bool {
+    let pinned = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .effective_policy(candidate.record_id)
+        .is_ok_and(|policy| policy == Some(AvailabilityPolicy::Pinned));
+    if !pinned {
+        return false;
+    }
+    let namespace = namespace
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(ino) = namespace.ino_for_record_id(candidate.record_id) else {
+        return false;
+    };
+    namespace
+        .content_revision_for(ino)
+        .map(|revision| revision.version_id)
+        == candidate.version
+        && namespace.hash_for(ino) == candidate.hash
+        && namespace
+            .getattr(ino)
+            .is_some_and(|attr| attr.size == candidate.size)
 }
 
 /// `offset`/`size` cross the FUSE boundary as untrusted request values,
@@ -4739,6 +4800,106 @@ mod availability_control_tests {
         })
         .await
         .expect("availability state barrier");
+    }
+
+    fn current_pinned_candidate(
+        namespace: &Arc<Mutex<Namespace>>,
+        registry: &Arc<Mutex<AvailabilityRegistry>>,
+    ) -> PinnedCandidate {
+        let hash = Hash::from([0x7a; 32]);
+        let (record_id, parent) = {
+            let mut namespace = namespace.lock().unwrap();
+            let ino = namespace
+                .create_file(ROOT_INO, "pinned.bin", Some(&hash), 1, 1)
+                .unwrap();
+            (
+                namespace.record_id_for(ino).unwrap(),
+                namespace.record_id_for(ROOT_INO),
+            )
+        };
+        let root = parent.unwrap();
+        registry
+            .lock()
+            .unwrap()
+            .put(RecordAvailability::new(root, RecordKind::Directory))
+            .unwrap();
+        let mut record = RecordAvailability::new(record_id, RecordKind::File);
+        record.parent = parent;
+        record.policy = AvailabilityPolicy::Pinned;
+        registry.lock().unwrap().put(record).unwrap();
+        PinnedCandidate {
+            record_id,
+            parent,
+            kind: RecordKind::File,
+            version: None,
+            hash: Some(hash),
+            size: 1,
+            path: "/pinned.bin".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn unrelated_wakes_do_not_cancel_a_delayed_pinned_hydration() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = Arc::new(Mutex::new(Namespace::new("wake-test").unwrap()));
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+        ));
+        let candidate = current_pinned_candidate(&namespace, &registry);
+        assert!(pinned_candidate_is_current(
+            &candidate, &namespace, &registry
+        ));
+        let (wake, mut wakes) = tokio::sync::watch::channel(0_u64);
+        let writer_wake = wake.clone();
+        let noisy_writer = tokio::spawn(async move {
+            for _ in 0..5 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                writer_wake.send_modify(|generation| *generation = generation.wrapping_add(1));
+            }
+        });
+
+        let completed = await_current_pinned_hydration(
+            tokio::time::sleep(Duration::from_millis(75)),
+            &candidate,
+            &namespace,
+            &registry,
+            &mut wakes,
+        )
+        .await;
+        noisy_writer.await.unwrap();
+        assert!(completed.is_some(), "unrelated wakes must not starve a pin");
+    }
+
+    #[tokio::test]
+    async fn unpin_wake_cancels_a_delayed_pinned_hydration() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = Arc::new(Mutex::new(Namespace::new("unpin-wake-test").unwrap()));
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+        ));
+        let candidate = current_pinned_candidate(&namespace, &registry);
+        let (wake, mut wakes) = tokio::sync::watch::channel(0_u64);
+        let cancellation_registry = Arc::clone(&registry);
+        let record_id = candidate.record_id;
+        let unpin = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let mut registry = cancellation_registry.lock().unwrap();
+            let mut record = registry.get(record_id).unwrap().clone();
+            record.policy = AvailabilityPolicy::Automatic;
+            registry.put(record).unwrap();
+            wake.send_modify(|generation| *generation = generation.wrapping_add(1));
+        });
+
+        let cancelled = await_current_pinned_hydration(
+            tokio::time::sleep(Duration::from_secs(1)),
+            &candidate,
+            &namespace,
+            &registry,
+            &mut wakes,
+        )
+        .await;
+        unpin.await.unwrap();
+        assert!(cancelled.is_none(), "unpin must cancel an active transfer");
     }
 
     #[tokio::test]
