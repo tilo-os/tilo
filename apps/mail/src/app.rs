@@ -2894,6 +2894,289 @@ impl Widget for MailApp {
             .flatten()
     }
 
+    /// The mailbox is painted by three custom panes, so expose their actual
+    /// visible composition here rather than leaving assistive technology with
+    /// one opaque canvas.  This deliberately follows the shell's compact
+    /// state: a narrow drawer hides the list, and a pushed reader hides both
+    /// the list and drawer.  It also builds only from the loaded mailbox -- a
+    /// live account with no fetched mail is described as empty, never filled
+    /// with sample content.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the synthetic mailbox tree keeps the sidebar, list, and reader state together so their responsive visibility remains auditable"
+    )]
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+
+        if self.is_first_run() {
+            // `first_run` remains a real child widget, which supplies the
+            // onboarding action and its existing activation path.
+            return Some(AccessNode::new(Role::Window).with_name("Mail"));
+        }
+
+        let st = self.shared.borrow();
+        let compact = st.narrow;
+        let drawer_visible = !compact || st.sidebar_open;
+        // The drawer is an overlay on compact layouts, so the covered message
+        // list must not remain in the AT traversal while it is open.
+        let overview_visible =
+            !compact || (self.nav.pane() == NavPane::Overview && !st.sidebar_open);
+        let reader_visible = !compact || (self.nav.pane() == NavPane::Detail && !st.sidebar_open);
+        let mut children = Vec::new();
+
+        if self.awaiting_engine {
+            children.push(
+                AccessNode::new(Role::Spinner)
+                    .with_name("Syncing mail")
+                    .with_state(AccessState::new().busy(true)),
+            );
+        }
+        if let Some(status) = &st.status {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(status.clone())
+                    .with_live(Politeness::Polite),
+            );
+        }
+
+        if drawer_visible {
+            let account_children = st
+                .accounts
+                .accounts
+                .iter()
+                .enumerate()
+                .map(|(account_index, account)| {
+                    let folders = if account.collapsed {
+                        Vec::new()
+                    } else {
+                        AccountStore::folders_for(account)
+                            .into_iter()
+                            .map(|folder| {
+                                AccessNode::new(Role::TreeItem)
+                                    .with_name(folder.title())
+                                    .with_action_target(format!(
+                                        "mail.folder:{account_index}:{}",
+                                        folder.as_key()
+                                    ))
+                                    .with_state(AccessState::new().focusable(true).selected(
+                                        st.accounts.active == account_index && st.folder == folder,
+                                    ))
+                            })
+                            .collect()
+                    };
+                    AccessNode::new(Role::TreeItem)
+                        .with_name(account.label())
+                        .with_action_target(format!("mail.account:{account_index}"))
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .selected(st.accounts.active == account_index)
+                                .expanded(!account.collapsed),
+                        )
+                        .with_children(folders)
+                })
+                .collect();
+            children.push(
+                AccessNode::new(Role::Tree)
+                    .with_name("Mail folders")
+                    .with_children(account_children),
+            );
+        }
+
+        if overview_visible {
+            let rows = st.list_rows();
+            let total = rows.len();
+            let message_children = rows
+                .iter()
+                .enumerate()
+                .filter_map(|(index, (id, thread_len))| {
+                    let message = st.mailbox.get(*id)?;
+                    let sender = message.from.display();
+                    let title = if message.folder == Folder::Drafts {
+                        format!("Draft: {}", message.subject)
+                    } else {
+                        format!("{sender}: {}", message.subject)
+                    };
+                    let snippet = message.snippet();
+                    let mut node = AccessNode::new(Role::ListItem)
+                        .with_name(title)
+                        .with_optional_value((!snippet.is_empty()).then_some(snippet))
+                        .with_action_target(format!("mail.message:{id}"))
+                        .with_position(index + 1, total)
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .selected(st.selected == Some(*id)),
+                        );
+                    if *thread_len > 1 {
+                        node = node.with_description(format!(
+                            "{thread_len} messages in this conversation"
+                        ));
+                    }
+                    Some(node)
+                })
+                .collect();
+            let list_name = if st.search.trim().is_empty() {
+                format!("{} messages", st.folder.title())
+            } else {
+                format!("Search results in {}", st.folder.title())
+            };
+            let mut list = AccessNode::new(Role::List)
+                .with_name(list_name)
+                .with_children(message_children);
+            if total == 0 {
+                let description = if st.search.trim().is_empty() {
+                    format!("No messages in {}", st.folder.title())
+                } else {
+                    "No matching messages".to_string()
+                };
+                list = list.with_description(description);
+            }
+            children.push(list);
+        }
+
+        if reader_visible {
+            let thread = st.selected_thread_messages();
+            if let Some(current) = st.selected.and_then(|id| st.mailbox.get(id)) {
+                let message_count = thread.len();
+                let thread_children = thread
+                    .iter()
+                    .map(|message| {
+                        AccessNode::new(Role::Paragraph)
+                            .with_name(format!("From {}", message.from.display()))
+                            .with_value(message.body.clone())
+                    })
+                    .collect();
+                children.push(
+                    AccessNode::new(Role::Document)
+                        .with_name(format!("Reading: {}", current.subject))
+                        .with_description(format!(
+                            "Current message from {}; {message_count} message{} in this conversation",
+                            current.from.display(),
+                            if message_count == 1 { "" } else { "s" }
+                        ))
+                        .with_children(thread_children),
+                );
+            } else {
+                children.push(
+                    AccessNode::new(Role::Group)
+                        .with_name("No conversation selected")
+                        .with_description("Select a conversation to read"),
+                );
+            }
+        }
+
+        let composition = if compact {
+            if st.sidebar_open {
+                "folder drawer"
+            } else if self.nav.pane() == NavPane::Detail {
+                "reading pane"
+            } else {
+                "message list"
+            }
+        } else {
+            "folders, message list, and reading pane"
+        };
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name("Mail")
+                .with_description(format!("Current view: {composition}"))
+                .with_children(children),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        use ui::a11y::Action;
+
+        if let Some(raw) = target.strip_prefix("mail.account:") {
+            let Ok(account_index) = raw.parse::<usize>() else {
+                return false;
+            };
+            let mut st = self.shared.borrow_mut();
+            if account_index >= st.accounts.accounts.len() {
+                return false;
+            }
+            match action {
+                Action::Activate => {
+                    st.set_active_account(state, account_index);
+                    st.select_folder(state, Folder::Inbox);
+                    st.push_intent(Intent::CloseDrawer);
+                }
+                Action::Expand if st.accounts.accounts[account_index].collapsed => {
+                    st.toggle_account_collapsed(account_index);
+                }
+                Action::Collapse if !st.accounts.accounts[account_index].collapsed => {
+                    st.toggle_account_collapsed(account_index);
+                }
+                _ => return false,
+            }
+            drop(st);
+            self.process_intents();
+            return true;
+        }
+
+        if let Some(raw) = target.strip_prefix("mail.folder:") {
+            let Some((account_raw, folder_raw)) = raw.split_once(':') else {
+                return false;
+            };
+            let (Ok(account_index), Some(folder)) =
+                (account_raw.parse::<usize>(), Folder::from_key(folder_raw))
+            else {
+                return false;
+            };
+            if !matches!(action, Action::Activate) {
+                return false;
+            }
+            let mut st = self.shared.borrow_mut();
+            let Some(account) = st.accounts.accounts.get(account_index) else {
+                return false;
+            };
+            if account.collapsed || !AccountStore::folders_for(account).contains(&folder) {
+                return false;
+            }
+            st.set_active_account(state, account_index);
+            st.select_folder(state, folder);
+            st.push_intent(Intent::CloseDrawer);
+            drop(st);
+            self.process_intents();
+            return true;
+        }
+
+        let Some(raw) = target.strip_prefix("mail.message:") else {
+            return false;
+        };
+        if !matches!(action, Action::Activate) {
+            return false;
+        }
+        let Ok(id) = raw.parse::<MessageId>() else {
+            return false;
+        };
+        let mut st = self.shared.borrow_mut();
+        // A stale accessibility row must not open a message that is no longer
+        // visible in the current folder/search result.
+        if !st.list_rows().iter().any(|(row_id, _)| *row_id == id) {
+            return false;
+        }
+        let is_draft = st
+            .mailbox
+            .get(id)
+            .is_some_and(|message| message.folder == Folder::Drafts);
+        if is_draft {
+            st.push_intent(Intent::EditDraft(id));
+        } else {
+            st.select_message(state, id);
+        }
+        drop(st);
+        self.process_intents();
+        true
+    }
+
     fn modal_capture(&self) -> Option<Rect> {
         if self.compose.open {
             Some(self.compose.window_rect())
@@ -3328,6 +3611,91 @@ mod tests {
             app.nav_pane(),
             NavPane::Overview,
             "Back returns to the list"
+        );
+    }
+
+    #[test]
+    fn accessibility_tracks_compact_panes_and_routes_mailbox_activation() {
+        use ui::a11y::{Action, Role as A11yRole};
+
+        let (mut app, mut doc) = app();
+        app.layout_for_test(560.0, 860.0);
+
+        let overview = app.accessibility().expect("mailbox semantics");
+        assert!(
+            overview
+                .children
+                .iter()
+                .any(|node| node.role == A11yRole::List),
+            "the compact overview exposes its visible message list"
+        );
+        assert!(
+            !overview
+                .children
+                .iter()
+                .any(|node| node.role == A11yRole::Tree || node.role == A11yRole::Document),
+            "covered drawer and reader panes are omitted in compact overview"
+        );
+        let message_target = overview
+            .children
+            .iter()
+            .find(|node| node.role == A11yRole::List)
+            .and_then(|list| list.children.first())
+            .and_then(|row| row.action_target.clone())
+            .expect("visible message row has a stable activation target");
+
+        assert!(app.perform_semantic_action(
+            &message_target,
+            &Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            app.nav_pane(),
+            NavPane::Detail,
+            "semantic open pushes reader"
+        );
+        let reader = app.accessibility().expect("reader semantics");
+        assert!(
+            reader
+                .children
+                .iter()
+                .any(|node| node.role == A11yRole::Document),
+            "the pushed compact reader exposes the selected conversation"
+        );
+        assert!(
+            !reader
+                .children
+                .iter()
+                .any(|node| node.role == A11yRole::List),
+            "the covered compact overview is absent from AT traversal"
+        );
+
+        app.layout_for_test(1280.0, 800.0);
+        let wide = app.accessibility().expect("wide mailbox semantics");
+        let archive_target = wide
+            .children
+            .iter()
+            .find(|node| node.role == A11yRole::Tree)
+            .and_then(|tree| tree.children.first())
+            .and_then(|account| {
+                account.children.iter().find_map(|folder| {
+                    (folder.name.as_deref() == Some("Archive"))
+                        .then(|| folder.action_target.clone())
+                        .flatten()
+                })
+            })
+            .expect("visible Archive folder has a stable activation target");
+        assert!(app.perform_semantic_action(
+            &archive_target,
+            &Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            app.shared.borrow().folder,
+            Folder::Archive,
+            "semantic folder activation uses the same selection state as the sidebar"
         );
     }
 
