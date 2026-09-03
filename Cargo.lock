@@ -423,6 +423,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "annotate-snippets"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "710e8eae58854cdc1790fcb56cca04d712a17be849eeb81da2a724bf4bae2bc4"
+dependencies = [
+ "anstyle",
+ "unicode-width 0.2.2",
+]
+
+[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1317,6 +1327,7 @@ version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
 dependencies = [
+ "annotate-snippets",
  "bitflags 2.11.0",
  "cexpr",
  "clang-sys",
@@ -2565,6 +2576,12 @@ checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
 dependencies = [
  "unicode-segmentation",
 ]
+
+[[package]]
+name = "cookie-factory"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9885fa71e26b8ab7855e2ec7cae6e9b380edff76cd052e07c683a0319d51b3a2"
 
 [[package]]
 name = "cordyceps"
@@ -6647,13 +6664,16 @@ dependencies = [
  "automerge",
  "qos-actions",
  "qos-app",
+ "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "taffy",
  "tempfile",
  "vello",
  "winit",
+ "zstd",
 ]
 
 [[package]]
@@ -6797,8 +6817,10 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "os-actions",
+ "serde",
  "serde_json",
  "taffy",
+ "tempfile",
  "tracing-subscriber",
  "ui",
  "vello",
@@ -7961,6 +7983,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8a484fa48be5f62a8d3ffed767779d0ab808cfead91de98ef4362d469097dfb"
 dependencies = [
  "pkg-config",
+]
+
+[[package]]
+name = "libspa"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "882f7427e7989dcc9d388b7f05c4630390a1d7696f9ffa469cd4a7a48f0b4c40"
+dependencies = [
+ "bitflags 2.11.0",
+ "cc",
+ "cookie-factory",
+ "libc",
+ "libspa-sys",
+ "nom 8.0.0",
+ "rustix 1.1.4",
+ "system-deps",
+]
+
+[[package]]
+name = "libspa-sys"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b6e17bdaf63ed0d5e4144022624032b41fd9733112e8c74ac26fc9bf1291924"
+dependencies = [
+ "bindgen",
+ "cc",
+ "system-deps",
 ]
 
 [[package]]
@@ -10516,6 +10565,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "pipewire"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bde71084c4e25959d68f1ea54daa75e5ecdb338e5caf0b5510143b79baa32d5c"
+dependencies = [
+ "bitflags 2.11.0",
+ "libc",
+ "libspa",
+ "libspa-sys",
+ "pipewire-sys",
+ "rustix 1.1.4",
+]
+
+[[package]]
+name = "pipewire-sys"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ce653f53e63e5b93853218092ee9a8906a5d082c92f3f1db26316955dd63ce0"
+dependencies = [
+ "bindgen",
+ "libspa-sys",
+ "system-deps",
+]
+
+[[package]]
 name = "piston-float"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12108,6 +12182,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "reis"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b967ec6489a42067a20724f11987bb96178ea796873cbe1afd25fb93ee6f85f"
+dependencies = [
+ "calloop 0.14.4",
+ "enumflags2",
+ "log",
+ "rustix 1.1.4",
+]
+
+[[package]]
 name = "remote"
 version = "0.1.0"
 dependencies = [
@@ -13423,6 +13509,7 @@ dependencies = [
  "bytes",
  "capnp",
  "capnp-rpc",
+ "chacha20poly1305",
  "channel-crypto",
  "chrono",
  "cli",
@@ -13439,6 +13526,7 @@ dependencies = [
  "futures-util",
  "greeter",
  "hex",
+ "image",
  "iroh",
  "iroh-base",
  "iroh-gossip",
@@ -13452,6 +13540,7 @@ dependencies = [
  "openh264",
  "os-actions",
  "parking_lot",
+ "pipewire",
  "png 0.18.1",
  "pollster",
  "postcard",
@@ -13469,6 +13558,7 @@ dependencies = [
  "rand 0.8.8",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
+ "reis",
  "runtime-collab",
  "runtime-identity",
  "seccompiler",
