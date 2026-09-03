@@ -40,4 +40,3 @@ SystemCallFilter=~@mount @swap @reboot @raw-io @obsolete @cpu-emulation @module 
 SystemCallErrorNumber=EPERM
 ReadWritePaths=/var/lib/qos/system-extensions
 ReadOnlyPaths=/usr/share/qos/system-extensions
-
