@@ -3724,15 +3724,32 @@ fn completed_primary_frame_gates(
         .collect()
 }
 
+/// The first surface submission may race a Wayland compositor's initial
+/// configure. In that case wgpu reports `Reconfigured`, but no input or frame
+/// callback exists yet to trigger the redraw that can consume that result.
+/// Pump only until one primary frame is actually presented; steady-state apps
+/// remain event-driven and idle at zero wakeups.
+const fn primary_startup_pump_needed(frames_sent: u64, last_presented: u64) -> bool {
+    frames_sent > 0 && last_presented == 0
+}
+
 #[cfg(test)]
 mod generic_floating_activity_tests {
     use super::{
         completed_primary_frame_gates, generic_floating_ids_to_dismiss,
-        native_floating_logical_size,
+        native_floating_logical_size, primary_startup_pump_needed,
     };
     use crate::floating_surface::FloatingSurfacePresentation;
     use std::collections::{HashMap, HashSet};
     use vello::kurbo::Rect;
+
+    #[test]
+    fn primary_surface_pumps_only_until_its_first_presented_frame() {
+        assert!(!primary_startup_pump_needed(0, 0));
+        assert!(primary_startup_pump_needed(1, 0));
+        assert!(primary_startup_pump_needed(3, 0));
+        assert!(!primary_startup_pump_needed(3, 1));
+    }
 
     #[test]
     fn generic_pip_activity_edge_dismisses_without_touching_native_surfaces() {
@@ -5931,6 +5948,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 surface.window.request_redraw();
             }
         }
+        let awaiting_primary_first_present = primary_startup_pump_needed(
+            self.primary_frames_sent,
+            self.last_primary_frame_presented,
+        );
+        if awaiting_primary_first_present {
+            window.request_redraw();
+        }
         if self.app.root_widget.needs_animation_frame() {
             for surface in &self.floating_windows {
                 surface.window.request_redraw();
@@ -6081,6 +6105,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             || tooltip_pending
             || typing_active
             || awaiting_floating_pixels
+            || awaiting_primary_first_present
             || scheduled_due;
         match (fast_pump, scheduled_deadline) {
             (true, _) => {

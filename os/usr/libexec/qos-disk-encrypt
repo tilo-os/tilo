@@ -349,6 +349,9 @@ cmd_enrol() {
     log "   It unlocks the disk when no other factor can."
     log ""
     log "       $rec_key"
+    # The graphical installer consumes this into a persistent recovery-key
+    # card, so verbose image-copy output cannot scroll the only backup away.
+    log "::qos-recovery-key::$rec_key"
     log ""
     if command -v qrencode >/dev/null 2>&1; then
       qrencode -t ANSIUTF8 "$rec_key" 2>/dev/null || true
