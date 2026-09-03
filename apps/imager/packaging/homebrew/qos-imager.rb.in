@@ -19,7 +19,7 @@ class QosImager < Formula
   end
 
   def caveats
-    "qOS Imager asks polkit for raw removable-drive access when it starts."
+    "qOS Imager asks polkit for write access only after you confirm a removable drive."
   end
 
   test do

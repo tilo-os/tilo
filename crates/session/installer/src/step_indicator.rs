@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke, Vec2};
+use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
@@ -36,6 +36,9 @@ const LABEL_TOP: f64 = 33.0;
 const NUMBER_SIZE: f32 = 13.0;
 /// Caption glyph size.
 const LABEL_SIZE: f32 = 11.0;
+/// Below this width seven independent captions cannot remain legible. Use a
+/// single current-step label and determinate progress bar instead.
+const COMPACT_WIDTH: f64 = 400.0;
 
 pub struct StepIndicator {
     steps: Vec<String>,
@@ -57,6 +60,63 @@ impl StepIndicator {
         let n = ui::num::f64_of_usize(self.steps.len().max(1));
         let w = self.rect.width();
         self.rect.x0 + (ui::num::f64_of_usize(i) + 0.5) * (w / n)
+    }
+
+    fn draw_compact(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let current = self.current.min(self.steps.len().saturating_sub(1));
+        let summary = format!(
+            "Step {} of {}  ·  {}",
+            current.saturating_add(1),
+            self.steps.len(),
+            self.steps.get(current).map_or("Setup", String::as_str)
+        );
+        let (summary_width, _) = text_renderer.measure(&summary, NUMBER_SIZE, None);
+        text_renderer.draw_text(
+            scene,
+            &summary,
+            NUMBER_SIZE,
+            theme.text_primary,
+            transform.pre_translate(Vec2::new(
+                self.rect.x0 + (self.rect.width() - f64::from(summary_width)) / 2.0,
+                self.rect.y0 + 7.0,
+            )),
+            None,
+        );
+
+        let track = Rect::new(
+            self.rect.x0,
+            self.rect.y0 + 37.0,
+            self.rect.x1,
+            self.rect.y0 + 43.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.border_standard,
+            None,
+            &RoundedRect::from_rect(track, 3.0),
+        );
+        let fraction = ui::num::f64_of_usize(current.saturating_add(1))
+            / ui::num::f64_of_usize(self.steps.len());
+        let completed = Rect::new(
+            track.x0,
+            track.y0,
+            track.x0 + track.width() * fraction,
+            track.y1,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.accent_primary,
+            None,
+            &RoundedRect::from_rect(completed, 3.0),
+        );
     }
 }
 
@@ -116,6 +176,11 @@ impl Widget for StepIndicator {
         let cy = self.rect.y0 + CIRCLE_CY;
         let accent = theme.accent_primary;
         let upcoming_bg = theme.bg_primary;
+
+        if self.rect.width() < COMPACT_WIDTH {
+            self.draw_compact(scene, transform, text_renderer, theme);
+            return;
+        }
 
         // 1. Connectors (drawn first, behind the circles). A segment is
         //    "done" if the step to its left is completed.
@@ -229,5 +294,33 @@ impl Widget for StepIndicator {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, Role};
+
+        let count = self.steps.len();
+        let current = self.current.min(count.saturating_sub(1));
+        let label = self.steps.get(current).map_or("Setup", String::as_str);
+        Some(
+            AccessNode::new(Role::ProgressBar)
+                .with_name(format!("Installation setup: {label}"))
+                .with_value(format!("step {} of {count}", current.saturating_add(1))),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progress_semantics_name_the_current_step_and_position() {
+        let indicator =
+            StepIndicator::new(vec!["Keyboard".into(), "Network".into(), "Disk".into()], 1);
+        let node = indicator.accessibility().expect("progress semantics");
+        assert_eq!(node.role, ui::a11y::Role::ProgressBar);
+        assert_eq!(node.name.as_deref(), Some("Installation setup: Network"));
+        assert_eq!(node.value.as_deref(), Some("step 2 of 3"));
     }
 }
