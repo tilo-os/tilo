@@ -638,6 +638,7 @@ async fn register_content_peer(cache_dir: PathBuf, endpoint_stdin: bool) -> Resu
         &local_content_socket_path(ticket.workspace_id()),
         registration.endpoint,
         registration.ticket,
+        Some(registration.relay_service_id),
     )
     .await?;
     if response.rebind_required && !response.restart_scheduled {
