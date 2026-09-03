@@ -319,6 +319,9 @@ pub struct PresenceUser {
     pub id: String,
     pub name: String,
     pub color: (u8, u8, u8),
+    /// Principal kind supplied by the collaboration context, never guessed
+    /// from the display name.
+    pub is_agent: bool,
 }
 
 impl PresenceUser {
@@ -329,6 +332,7 @@ impl PresenceUser {
             id,
             name: name.into(),
             color,
+            is_agent: false,
         }
     }
 
@@ -431,6 +435,9 @@ pub struct PresenceCtx {
     /// (`CollabEvent::Context`). A peer with no entry falls back to its raw
     /// id via [`PresenceCtx::display_name`], so a caret chip is never blank.
     pub names: HashMap<UserId, String>,
+    /// Participants whose signed collaboration context identifies them as
+    /// agents. Kept separately from names so renaming cannot erase kind.
+    agents: std::collections::HashSet<UserId>,
     /// Per-user "just typed" highlight spans, keyed by presence scope and
     /// faded out by [`PresenceCtx::active_typing`] over [`TYPING_FADE`].
     /// Not serialised — purely a local render effect.
@@ -781,22 +788,52 @@ impl PresenceCtx {
     /// Seeded from the collab roster. Overwrites any prior name.
     pub fn set_display_name(&mut self, user: UserId, name: impl Into<String>) {
         let name = name.into();
+        let shown = if self.is_agent(&user) {
+            format!("{name} · Agent")
+        } else {
+            name.clone()
+        };
         // Relabel any already-drawn pill too, in case the pointer arrived first.
         for cursor in &mut self.remote_cursors {
             if cursor.user_id == user.0 {
-                cursor.label.clone_from(&name);
+                cursor.label.clone_from(&shown);
             }
         }
         self.names.insert(user, name);
     }
 
+    /// Preserve the principal kind carried by `CollabEvent::Context`.
+    pub fn set_participant_kind(&mut self, user: &UserId, is_agent: bool) {
+        if is_agent {
+            self.agents.insert(user.clone());
+        } else {
+            self.agents.remove(user);
+        }
+        let shown = self.display_name(user);
+        for cursor in &mut self.remote_cursors {
+            if cursor.user_id == user.0 {
+                cursor.label.clone_from(&shown);
+            }
+        }
+    }
+
+    pub fn is_agent(&self, user: &UserId) -> bool {
+        self.agents.contains(user)
+    }
+
     /// The friendly name to show for `user`, falling back to the raw id
     /// when the roster hasn't announced one. Never blank.
     pub fn display_name(&self, user: &UserId) -> String {
-        self.names
+        let name = self
+            .names
             .get(user)
             .cloned()
-            .unwrap_or_else(|| user.0.clone())
+            .unwrap_or_else(|| user.0.clone());
+        if self.is_agent(user) {
+            format!("{name} · Agent")
+        } else {
+            name
+        }
     }
 
     pub fn user(&self, user: &UserId) -> PresenceUser {
@@ -804,6 +841,7 @@ impl PresenceCtx {
             id: user.0.clone(),
             name: self.display_name(user),
             color: self.color_for(user),
+            is_agent: self.is_agent(user),
         }
     }
 
@@ -1245,6 +1283,7 @@ impl PresenceCtx {
         self.typing.retain(|(u, _), _| u != &uid);
         self.views.remove(&uid);
         self.names.remove(&uid);
+        self.agents.remove(&uid);
         self.remove_remote_cursor(user_id);
     }
 }
@@ -1538,6 +1577,7 @@ mod string_id_wrapper_tests {
             id: "x".into(),
             name: "x".into(),
             color: (255, 128, 0),
+            is_agent: false,
         };
         let c = u.color_rgba(0.5);
         assert!((c[0] - 1.0).abs() < 1e-6);
@@ -1558,6 +1598,26 @@ mod string_id_wrapper_tests {
         let pu = ctx.user(&alice);
         assert_eq!(pu.name, "Alice Smith");
         assert_eq!(pu.color, user_color("alice"));
+    }
+
+    #[test]
+    fn participant_kind_survives_name_resolution() {
+        let mut ctx = PresenceCtx::empty();
+        let scribe = UserId("agent-scribe".into());
+        ctx.set_display_name(scribe.clone(), "Scribe");
+        ctx.set_participant_kind(&scribe, true);
+        assert!(ctx.is_agent(&scribe));
+        assert!(ctx.user(&scribe).is_agent);
+        assert_eq!(ctx.display_name(&scribe), "Scribe · Agent");
+        ctx.set_display_name(scribe.clone(), "Editorial helper");
+        assert!(
+            ctx.user(&scribe).is_agent,
+            "renaming cannot turn software into a person"
+        );
+        assert_eq!(ctx.display_name(&scribe), "Editorial helper · Agent");
+        ctx.set_participant_kind(&scribe, false);
+        assert!(!ctx.user(&scribe).is_agent);
+        assert_eq!(ctx.display_name(&scribe), "Editorial helper");
     }
 
     /// Labelled with the raw id, never blank and never a stand-in name — a

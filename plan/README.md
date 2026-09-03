@@ -61,6 +61,7 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `rooms.md` | workspaces, hosts, membership |
 | `security.md` | sandbox, permissions, capability grants |
 | `search.md` | providers and per-resource-type rendering |
+| `agents.md` | agent identity, access, tasks, providers, local models and MCP |
 | `distribution.md` | how software, settings and content reach a machine |
 | `accounts.md` | identity |
 | `language-checking.md` | spelling, grammar, text actions |
