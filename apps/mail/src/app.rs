@@ -2908,6 +2908,70 @@ impl Widget for MailApp {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
+        if self.compose.open {
+            return Some(
+                AccessNode::new(Role::Dialog)
+                    .with_name("Compose email")
+                    .with_description("Email composer")
+                    .with_state(AccessState::new().modal(true))
+                    .with_children(vec![
+                        AccessNode::new(Role::Button)
+                            .with_name("Send")
+                            .with_action_target("mail.compose:send")
+                            .with_state(AccessState::new().focusable(true)),
+                        AccessNode::new(Role::Button)
+                            .with_name("Save draft")
+                            .with_action_target("mail.compose:save")
+                            .with_state(AccessState::new().focusable(true)),
+                        AccessNode::new(Role::Button)
+                            .with_name("Discard")
+                            .with_action_target("mail.compose:discard")
+                            .with_state(AccessState::new().focusable(true)),
+                    ]),
+            );
+        }
+        if self.setup_open {
+            let mut controls = vec![
+                AccessNode::new(Role::ToggleButton)
+                    .with_name("IMAP TLS")
+                    .with_action_target("mail.setup:imap-tls")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.setup_imap_tls),
+                    ),
+                AccessNode::new(Role::ToggleButton)
+                    .with_name("SMTP TLS")
+                    .with_action_target("mail.setup:smtp-tls")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.setup_smtp_tls),
+                    ),
+                AccessNode::new(Role::Button)
+                    .with_name("Save and verify")
+                    .with_action_target("mail.setup:save")
+                    .with_state(AccessState::new().focusable(true)),
+                AccessNode::new(Role::Button)
+                    .with_name("Cancel")
+                    .with_action_target("mail.setup:cancel")
+                    .with_state(AccessState::new().focusable(true)),
+            ];
+            if self.setup_editing.is_some() {
+                controls.push(
+                    AccessNode::new(Role::Button)
+                        .with_name("Remove account")
+                        .with_action_target("mail.setup:remove")
+                        .with_state(AccessState::new().focusable(true)),
+                );
+            }
+            return Some(
+                AccessNode::new(Role::Dialog)
+                    .with_name("Mail account setup")
+                    .with_state(AccessState::new().modal(true))
+                    .with_children(controls),
+            );
+        }
         if self.is_first_run() {
             // `first_run` remains a real child widget, which supplies the
             // onboarding action and its existing activation path.
@@ -3039,7 +3103,7 @@ impl Widget for MailApp {
             let thread = st.selected_thread_messages();
             if let Some(current) = st.selected.and_then(|id| st.mailbox.get(id)) {
                 let message_count = thread.len();
-                let thread_children = thread
+                let thread_children: Vec<_> = thread
                     .iter()
                     .map(|message| {
                         AccessNode::new(Role::Paragraph)
@@ -3055,7 +3119,29 @@ impl Widget for MailApp {
                             current.from.display(),
                             if message_count == 1 { "" } else { "s" }
                         ))
-                        .with_children(thread_children),
+                        .with_children({
+                            let mut reader_children = vec![
+                                AccessNode::new(Role::Toolbar)
+                                    .with_name("Message actions")
+                                    .with_children([
+                                        ("Reply", "reply"),
+                                        ("Archive", "archive"),
+                                        ("Delete", "delete"),
+                                        ("Toggle star", "star"),
+                                        ("Toggle read", "read"),
+                                    ]
+                                    .into_iter()
+                                    .map(|(name, action)| {
+                                        AccessNode::new(Role::Button)
+                                            .with_name(name)
+                                            .with_action_target(format!("mail.reader:{action}"))
+                                            .with_state(AccessState::new().focusable(true))
+                                    })
+                                    .collect()),
+                            ];
+                            reader_children.extend(thread_children);
+                            reader_children
+                        }),
                 );
             } else {
                 children.push(
@@ -3094,6 +3180,66 @@ impl Widget for MailApp {
     ) -> bool {
         use ui::a11y::Action;
 
+        if let Some(control) = target.strip_prefix("mail.compose:") {
+            if !self.compose.open || !matches!(action, Action::Activate) {
+                return false;
+            }
+            match control {
+                "send" => self.send_compose(state),
+                "save" => self.save_compose_draft(state),
+                "discard" => {
+                    self.compose.close();
+                    self.persist_compose_format(state);
+                    self.dirty = true;
+                }
+                _ => return false,
+            }
+            return true;
+        }
+        if let Some(control) = target.strip_prefix("mail.setup:") {
+            if !self.setup_open {
+                return false;
+            }
+            match (control, action) {
+                ("imap-tls", Action::Activate | Action::ToggleCheck) => {
+                    self.setup_imap_tls = !self.setup_imap_tls;
+                    self.set_setup_input(5, if self.setup_imap_tls { "993" } else { "143" });
+                }
+                ("smtp-tls", Action::Activate | Action::ToggleCheck) => {
+                    self.setup_smtp_tls = !self.setup_smtp_tls;
+                    self.set_setup_input(7, if self.setup_smtp_tls { "465" } else { "587" });
+                }
+                ("save", Action::Activate) => self.save_setup(state),
+                ("cancel", Action::Activate) => self.close_setup(),
+                ("remove", Action::Activate) if self.setup_editing.is_some() => {
+                    self.remove_editing_account(state);
+                }
+                _ => return false,
+            }
+            self.dirty = true;
+            return true;
+        }
+        if let Some(control) = target.strip_prefix("mail.reader:") {
+            if !matches!(action, Action::Activate) {
+                return false;
+            }
+            let Some(message) = self.shared.borrow().selected else {
+                return false;
+            };
+            let action = match control {
+                "reply" => CtxAction::Reply,
+                "archive" => CtxAction::Archive,
+                "delete" => CtxAction::Delete,
+                "star" => CtxAction::ToggleStar,
+                "read" => CtxAction::ToggleRead,
+                _ => return false,
+            };
+            self.shared
+                .borrow_mut()
+                .apply_message_action(state, message, action);
+            self.process_intents();
+            return true;
+        }
         if let Some(raw) = target.strip_prefix("mail.account:") {
             let Ok(account_index) = raw.parse::<usize>() else {
                 return false;
@@ -3697,6 +3843,65 @@ mod tests {
             Folder::Archive,
             "semantic folder activation uses the same selection state as the sidebar"
         );
+    }
+
+    #[test]
+    fn accessibility_routes_reader_and_modal_controls_to_existing_actions() {
+        use ui::a11y::{Action, Role as A11yRole};
+
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        let selected = app.shared.borrow().selected.expect("sample selection");
+        let before_star = app.shared.borrow().mailbox.get(selected).unwrap().starred;
+        let reader = app.accessibility().expect("reader semantics");
+        let star_target = reader
+            .children
+            .iter()
+            .find(|node| node.role == A11yRole::Document)
+            .and_then(|document| document.children.first())
+            .and_then(|toolbar| {
+                toolbar
+                    .children
+                    .iter()
+                    .find(|node| node.name.as_deref() == Some("Toggle star"))
+            })
+            .and_then(|button| button.action_target.clone())
+            .expect("reader star control");
+        assert!(app.perform_semantic_action(
+            &star_target,
+            &Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert_eq!(
+            app.shared.borrow().mailbox.get(selected).unwrap().starred,
+            !before_star
+        );
+
+        app.compose.open_blank();
+        let compose = app.accessibility().expect("compose dialog semantics");
+        assert_eq!(compose.role, A11yRole::Dialog);
+        assert!(app.perform_semantic_action(
+            "mail.compose:discard",
+            &Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert!(
+            !app.compose.open,
+            "semantic discard uses compose close path"
+        );
+
+        app.open_setup_edit(None);
+        let setup = app.accessibility().expect("setup dialog semantics");
+        assert_eq!(setup.role, A11yRole::Dialog);
+        assert!(app.perform_semantic_action(
+            "mail.setup:cancel",
+            &Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert!(!app.setup_open, "semantic cancel closes account setup");
     }
 
     #[test]
