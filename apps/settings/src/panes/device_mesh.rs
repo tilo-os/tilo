@@ -1,13 +1,11 @@
-//! Devices & Sync — real configuration for the qOS device mesh.
+//! Devices & Sync — configure seamless continuation and always-on sync.
 //!
-//! The pane reads and writes the same `RelayConfig` consumed by `qos-relay`.
-//! It does not invent discovered peers or claim a route is online: until the
-//! running service exposes reachability over IPC, runtime status is explicitly
-//! reported as unavailable. Shared `Dropdown` and `Toggle` widgets provide
-//! pointer, keyboard, focus and assistive semantics.
+//! The pane reads and writes the same `RelayConfig` consumed by `qos-relay`
+//! and reads the daemon's once-per-second metrics snapshot for live status.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::{Duration, Instant, SystemTime};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use qos_relay::{DeviceRole, RelayConfig, ReplicationIntent};
@@ -31,18 +29,17 @@ const APP_SERVING_KEY: &str = "device_mesh.app_serving";
 const COMPUTE_KEY: &str = "device_mesh.compute";
 
 const ROLE_OPTIONS: &[&str] = &[
-    "Personal device",
-    "Available while active",
-    "Always-on server",
+    "Use normally",
+    "Sync while awake",
+    "Keep everything available",
 ];
 const REPLICATION_OPTIONS: &[&str] = &[
+    "Continue without files",
     "Download files when opened",
-    "Workspace state only",
-    "Keep all files here",
+    "Keep all files synced",
 ];
-const RUNTIME_STATUS_UNAVAILABLE: &str = "Not reported by the running service";
-const ON_DEMAND_DESCRIPTION: &str = "File names, metadata, and small preview thumbnails stay visible. Full file bytes download when you open them.";
-const FULL_COPY_DESCRIPTION: &str = "Keeping all files here is an explicit request for this device to retain full content. Settings cannot yet verify that every byte has arrived.";
+const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+const STATUS_FRESHNESS: Duration = Duration::from_secs(5);
 
 fn role_label(role: DeviceRole) -> &'static str {
     match role {
@@ -54,32 +51,110 @@ fn role_label(role: DeviceRole) -> &'static str {
 
 fn role_from_label(label: &str) -> Option<DeviceRole> {
     match label {
-        "Personal device" => Some(DeviceRole::Interactive),
-        "Available while active" => Some(DeviceRole::Hybrid),
-        "Always-on server" => Some(DeviceRole::AlwaysOnServer),
+        "Use normally" => Some(DeviceRole::Interactive),
+        "Sync while awake" => Some(DeviceRole::Hybrid),
+        "Keep everything available" => Some(DeviceRole::AlwaysOnServer),
         _ => None,
     }
 }
 
 fn replication_label(intent: &ReplicationIntent) -> &'static str {
     match intent {
-        ReplicationIntent::WorkspaceOnly => REPLICATION_OPTIONS[1],
+        ReplicationIntent::WorkspaceOnly => REPLICATION_OPTIONS[0],
         ReplicationIntent::FullWorkspace => REPLICATION_OPTIONS[2],
-        ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => REPLICATION_OPTIONS[0],
+        ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => REPLICATION_OPTIONS[1],
     }
 }
 
 fn replication_from_label(label: &str) -> Option<ReplicationIntent> {
     match label {
+        "Continue without files" => Some(ReplicationIntent::WorkspaceOnly),
         "Download files when opened" => Some(ReplicationIntent::OnDemand),
-        "Workspace state only" => Some(ReplicationIntent::WorkspaceOnly),
-        "Keep all files here" => Some(ReplicationIntent::FullWorkspace),
+        "Keep all files synced" => Some(ReplicationIntent::FullWorkspace),
         _ => None,
+    }
+}
+
+fn replication_description(intent: &ReplicationIntent) -> &'static str {
+    match intent {
+        ReplicationIntent::WorkspaceOnly => {
+            "Open workspaces and app progress sync here without keeping workspace files."
+        }
+        ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => {
+            "File names, metadata, and preview thumbnails stay ready. File contents download when opened."
+        }
+        ReplicationIntent::FullWorkspace => {
+            "Open workspaces, app progress, and full file copies stay synced on this device."
+        }
     }
 }
 
 fn shows_advanced_services(role: DeviceRole) -> bool {
     role.can_serve()
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RelayRuntimeStatus {
+    #[default]
+    Offline,
+    Online,
+    Syncing,
+    Ready,
+}
+
+impl RelayRuntimeStatus {
+    fn read(config: &RelayConfig, now: SystemTime) -> Self {
+        let metrics_path = config.state_root.join(qos_relay::store::METRICS_FILE);
+        let fresh = std::fs::metadata(metrics_path)
+            .and_then(|metadata| metadata.modified())
+            .map(|modified| {
+                now.duration_since(modified).unwrap_or(Duration::ZERO) <= STATUS_FRESHNESS
+            })
+            .unwrap_or(false);
+        if !fresh {
+            return Self::Offline;
+        }
+        match qos_relay::store::load_metrics(&config.state_root) {
+            Ok(Some(_))
+                if config.device_role == DeviceRole::AlwaysOnServer
+                    && config.services.full_content_replication =>
+            {
+                let ready = std::fs::read(&config.full_replica_status)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .is_some_and(|proof| {
+                        let updated = proof
+                            .get("updated_at_ms")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0);
+                        let now_ms = now
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .map_or(0, |duration| {
+                                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+                            });
+                        proof.get("state").and_then(serde_json::Value::as_str) == Some("ready")
+                            && proof
+                                .get("full_content_replication")
+                                .and_then(serde_json::Value::as_bool)
+                                == Some(true)
+                            && now_ms.saturating_sub(updated)
+                                <= u64::try_from(STATUS_FRESHNESS.as_millis()).unwrap_or(u64::MAX)
+                    });
+                if ready { Self::Ready } else { Self::Syncing }
+            }
+            Ok(Some(_)) => Self::Online,
+            Ok(None) | Err(_) => Self::Offline,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Offline => "Offline",
+            Self::Online => "Online",
+            Self::Syncing => "Syncing",
+            Self::Ready => "Ready",
+        }
+    }
 }
 
 /// Editor for the daemon's real device-mesh configuration.
@@ -90,6 +165,8 @@ pub struct DeviceMeshPane {
     needs_seed: bool,
     commit_context_pending: bool,
     structure_dirty: bool,
+    runtime_status: RelayRuntimeStatus,
+    next_status_refresh: Instant,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -120,6 +197,7 @@ impl DeviceMeshPane {
                 format!("Configuration could not be read: {error}"),
             ),
         };
+        let runtime_status = RelayRuntimeStatus::read(&config, SystemTime::now());
         Self {
             config_path,
             config,
@@ -127,6 +205,8 @@ impl DeviceMeshPane {
             needs_seed: true,
             commit_context_pending: false,
             structure_dirty: false,
+            runtime_status,
+            next_status_refresh: Instant::now() + STATUS_REFRESH_INTERVAL,
             composed: None,
             rect: Rect::ZERO,
         }
@@ -141,9 +221,18 @@ impl DeviceMeshPane {
         self.config
             .workspaces
             .first()
-            .map_or(ReplicationIntent::FullWorkspace, |workspace| {
+            .map_or(ReplicationIntent::OnDemand, |workspace| {
                 workspace.replication.clone()
             })
+    }
+
+    fn refresh_runtime_status(&mut self) {
+        let status = RelayRuntimeStatus::read(&self.config, SystemTime::now());
+        if status != self.runtime_status {
+            self.runtime_status = status;
+            self.structure_dirty = true;
+        }
+        self.next_status_refresh = Instant::now() + STATUS_REFRESH_INTERVAL;
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -157,29 +246,14 @@ impl DeviceMeshPane {
         .with_id("device_mesh.role")
         .with_placeholder(role_label(self.config.device_role));
 
-        let continuity = card(
-            "Continuity status",
-            rows(vec![
-                value_row("Open workspaces and app state", RUNTIME_STATUS_UNAVAILABLE),
-                value_row("Configuration", &self.load_status),
-                value_row(
-                    "Configuration file",
-                    &self.config_path.display().to_string(),
-                ),
-                caption(
-                    "This page configures what the device should keep, but it does not yet receive live sync progress. It will not infer that your work is up to date from a saved configuration file.",
-                ),
-            ]),
-        );
-
-        let mut residency_rows = vec![value_row(
-            "Configured workspaces",
-            &self.config.workspaces.len().to_string(),
-        )];
+        let mut continuation_rows = vec![
+            value_row("Workspace and app activity", "Sync automatically"),
+            caption(
+                "Pick up your open workspaces, app tabs, reading position, and playback on any device signed in as you.",
+            ),
+        ];
         if self.config.workspaces.is_empty() {
-            residency_rows.push(caption(
-                "No workspace has a storage policy on this device yet. Settings will not fabricate an assignment.",
-            ));
+            continuation_rows.push(value_row("Files", "Download when opened"));
         } else {
             let replication = Dropdown::new(
                 REPLICATION_OPTIONS
@@ -190,56 +264,61 @@ impl DeviceMeshPane {
             )
             .with_id("device_mesh.replication")
             .with_placeholder(replication_label(&self.common_replication()));
-            residency_rows.push(choice_row_described(
-                "Files on this device",
-                "Choose whether full file bytes arrive on open or are explicitly kept here for every configured workspace.",
+            continuation_rows.push(choice_row_described(
+                "Files",
+                replication_description(&self.common_replication()),
                 Box::new(replication),
             ));
-            residency_rows.push(caption(ON_DEMAND_DESCRIPTION));
-            residency_rows.push(caption(FULL_COPY_DESCRIPTION));
         }
-        residency_rows.push(caption(
-            "Workspace and app records use signed replication. File content follows the policy above; a file already copied to another device cannot be cryptographically taken back.",
-        ));
+        if self.load_status.starts_with("Configuration could not")
+            || self.load_status.starts_with("Not saved")
+        {
+            continuation_rows.push(caption(&self.load_status));
+        }
 
-        let always_available_note = if shows_advanced_services(self.config.device_role) {
-            if self.config.workspaces.is_empty() {
-                "This device is configured to serve, but no workspace is assigned. Role alone does not make any workspace available."
-            } else {
-                "These assignments ask this device to retain workspace records. Full-file residency and durable availability still require proof from the running services, which Settings does not yet receive."
+        let mut availability_rows = vec![choice_row_described(
+            "This device",
+            "Use it normally, sync while it is awake, or make it the always-on home for your workspaces and files.",
+            Box::new(role),
+        )];
+        if shows_advanced_services(self.config.device_role) {
+            availability_rows.push(value_row("Home peer", self.runtime_status.label()));
+        }
+        availability_rows.push(value_row(
+            "Workspaces",
+            &self.config.workspaces.len().to_string(),
+        ));
+        availability_rows.push(caption(match self.config.device_role {
+            DeviceRole::Interactive => {
+                "Choose Keep everything available to make this device your always-on sync home."
             }
-        } else {
-            "This personal device is not configured as an availability host. A certified always-on server can keep assigned workspaces reachable while personal devices sleep."
-        };
-        let always_available = card(
-            "Always available",
-            rows(vec![
-                choice_row_described(
-                    "This device",
-                    "Available while active serves only while this device is awake; an always-on server is expected to stay connected. Neither choice proves reachability.",
-                    Box::new(role),
-                ),
-                value_row(
-                    "Workspace assignments",
-                    &self.config.workspaces.len().to_string(),
-                ),
-                value_row("Runtime availability", RUNTIME_STATUS_UNAVAILABLE),
-                caption(always_available_note),
-            ]),
-        );
+            DeviceRole::Hybrid => {
+                "Workspace updates stay available to your other devices while this device is awake."
+            }
+            DeviceRole::AlwaysOnServer if self.config.workspaces.is_empty() => {
+                "Workspaces added to this device stay available around the clock."
+            }
+            DeviceRole::AlwaysOnServer
+                if self.common_replication() == ReplicationIntent::FullWorkspace =>
+            {
+                "Open workspaces, app progress, and full file copies stay available from this device."
+            }
+            DeviceRole::AlwaysOnServer => {
+                "Open workspaces and app progress stay available from this device around the clock."
+            }
+        }));
 
         let mut sections = vec![
-            continuity,
-            card("What this device keeps", rows(residency_rows)),
-            always_available,
+            card("Continue across devices", rows(continuation_rows)),
+            card("Keep everything available", rows(availability_rows)),
         ];
         if shows_advanced_services(self.config.device_role) {
             sections.push(card(
-                "Advanced server services",
+                "Advanced",
                 rows(vec![
                     setting_row_described(
                         "Collaboration and chat relay",
-                        "Accept inbound encrypted workspace and chat traffic when this server is reachable",
+                        "Keep workspace updates and messages moving between devices",
                         Box::new(
                             Toggle::new("settings.device_mesh.inbound_relay", INBOUND_RELAY_KEY)
                                 .with_id("device_mesh.inbound_relay"),
@@ -247,16 +326,15 @@ impl DeviceMeshPane {
                     ),
                     setting_row_described(
                         "Remote-control relay",
-                        "Try the target directly first; if that fails, tunnel through this device",
+                        "Connect remote-control sessions through this device when needed",
                         Box::new(
                             Toggle::new("settings.device_mesh.remote_relay", REMOTE_RELAY_KEY)
                                 .with_id("device_mesh.remote_relay"),
                         ),
                     ),
-                    value_row("Current remote-control route", RUNTIME_STATUS_UNAVAILABLE),
                     setting_row_described(
                         "Serve app backends",
-                        "Allow compatible apps to request backend placement on this device",
+                        "Run compatible app services from this device",
                         Box::new(
                             Toggle::new("settings.device_mesh.app_serving", APP_SERVING_KEY)
                                 .with_id("device_mesh.app_serving"),
@@ -264,14 +342,11 @@ impl DeviceMeshPane {
                     ),
                     setting_row_described(
                         "Accept distributed jobs",
-                        "Advertise capacity for future sandboxed app jobs; this does not permit arbitrary host execution",
+                        "Run compatible background jobs from this device",
                         Box::new(
                             Toggle::new("settings.device_mesh.compute", COMPUTE_KEY)
                                 .with_id("device_mesh.compute"),
                         ),
-                    ),
-                    caption(
-                        "These are service claims, not live status. The device certificate, workspace membership, and app scope still bound every request.",
                     ),
                 ]),
             ));
@@ -312,7 +387,7 @@ impl DeviceMeshPane {
 
     fn persist(&mut self) {
         self.load_status = match self.config.save(&self.config_path) {
-            Ok(()) => "Saved; waiting for the device service to reload".to_string(),
+            Ok(()) => "Saved".to_string(),
             Err(error) => format!("Not saved: {error}"),
         };
     }
@@ -358,6 +433,26 @@ impl Widget for DeviceMeshPane {
                 self.structure_dirty = true;
             }
             self.config.device_role = role;
+            if role.can_serve() {
+                self.config.services.workspace_replication = true;
+                self.config.services.inbound_relay = true;
+                let _ = state.put(root, INBOUND_RELAY_KEY, true);
+                for workspace in &mut self.config.workspaces {
+                    workspace.pin = true;
+                }
+            }
+            if role == DeviceRole::AlwaysOnServer {
+                self.config.services.full_content_replication = true;
+                for workspace in &mut self.config.workspaces {
+                    workspace.replication = ReplicationIntent::FullWorkspace;
+                }
+                let _ = state.put(
+                    root,
+                    REPLICATION_KEY,
+                    replication_label(&ReplicationIntent::FullWorkspace),
+                );
+            }
+            self.next_status_refresh = Instant::now();
             changed = true;
         }
         if let Some(intent) = Self::read_str(state, root, REPLICATION_KEY)
@@ -372,6 +467,8 @@ impl Widget for DeviceMeshPane {
             for workspace in &mut self.config.workspaces {
                 workspace.replication = intent.clone();
             }
+            self.config.services.full_content_replication =
+                intent == ReplicationIntent::FullWorkspace;
             changed = true;
         }
         changed |= Self::apply_bool(
@@ -396,6 +493,9 @@ impl Widget for DeviceMeshPane {
         if changed {
             self.persist();
             self.structure_dirty = true;
+        }
+        if Instant::now() >= self.next_status_refresh {
+            self.refresh_runtime_status();
         }
         if let Some(composed) = &mut self.composed {
             composed.sync(state, root);
@@ -528,6 +628,10 @@ impl Widget for DeviceMeshPane {
             .is_some_and(|composed| composed.take_structure_dirty())
     }
 
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        shows_advanced_services(self.config.device_role).then_some(self.next_status_refresh)
+    }
+
     fn name(&self) -> &'static str {
         "DeviceMeshPane"
     }
@@ -557,9 +661,9 @@ mod tests {
         let mut pane = DeviceMeshPane::with_path(&path);
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
-        doc.put(&automerge::ROOT, ROLE_KEY, "Available while active")
+        doc.put(&automerge::ROOT, ROLE_KEY, "Sync while awake")
             .unwrap();
-        doc.put(&automerge::ROOT, REPLICATION_KEY, "Keep all files here")
+        doc.put(&automerge::ROOT, REPLICATION_KEY, "Keep all files synced")
             .unwrap();
         doc.put(&automerge::ROOT, REMOTE_RELAY_KEY, false).unwrap();
         pane.sync(&mut doc, &automerge::ROOT);
@@ -584,7 +688,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
         assert!(!path.exists());
-        doc.put(&automerge::ROOT, ROLE_KEY, "Available while active")
+        doc.put(&automerge::ROOT, ROLE_KEY, "Sync while awake")
             .unwrap();
         pane.sync(&mut doc, &automerge::ROOT);
         assert!(path.exists());
@@ -593,15 +697,15 @@ mod tests {
     #[test]
     fn file_policy_labels_map_to_the_existing_replication_intents() {
         assert_eq!(
+            replication_from_label("Continue without files"),
+            Some(ReplicationIntent::WorkspaceOnly)
+        );
+        assert_eq!(
             replication_from_label("Download files when opened"),
             Some(ReplicationIntent::OnDemand)
         );
         assert_eq!(
-            replication_from_label("Workspace state only"),
-            Some(ReplicationIntent::WorkspaceOnly)
-        );
-        assert_eq!(
-            replication_from_label("Keep all files here"),
+            replication_from_label("Keep all files synced"),
             Some(ReplicationIntent::FullWorkspace)
         );
         assert_eq!(
@@ -610,11 +714,14 @@ mod tests {
         );
         assert_eq!(
             replication_label(&ReplicationIntent::FullWorkspace),
-            "Keep all files here"
+            "Keep all files synced"
         );
-        assert!(ON_DEMAND_DESCRIPTION.contains("preview thumbnails"));
-        assert!(FULL_COPY_DESCRIPTION.contains("explicit request"));
-        assert!(FULL_COPY_DESCRIPTION.contains("cannot yet verify"));
+        assert!(
+            replication_description(&ReplicationIntent::OnDemand).contains("preview thumbnails")
+        );
+        assert!(
+            replication_description(&ReplicationIntent::FullWorkspace).contains("full file copies")
+        );
     }
 
     #[test]
@@ -638,11 +745,120 @@ mod tests {
         pane.sync(&mut doc, &automerge::ROOT);
         assert!(!pane.take_structure_dirty());
 
-        doc.put(&automerge::ROOT, ROLE_KEY, "Available while active")
+        doc.put(&automerge::ROOT, ROLE_KEY, "Sync while awake")
             .unwrap();
         pane.sync(&mut doc, &automerge::ROOT);
 
         assert!(pane.take_structure_dirty());
         assert_eq!(pane.config.device_role, DeviceRole::Hybrid);
+    }
+
+    #[test]
+    fn always_available_is_one_outcome_that_enables_full_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay.toml");
+        let mut config = RelayConfig {
+            device_role: DeviceRole::Interactive,
+            services: Default::default(),
+            ..RelayConfig::default()
+        };
+        config.workspaces.push(WorkspaceBinding {
+            id: 7,
+            pin: false,
+            replication: ReplicationIntent::OnDemand,
+        });
+        config.save(&path).unwrap();
+
+        let mut pane = DeviceMeshPane::with_path(&path);
+        let mut doc = AutoCommit::new();
+        pane.sync(&mut doc, &automerge::ROOT);
+        doc.put(&automerge::ROOT, ROLE_KEY, "Keep everything available")
+            .unwrap();
+        pane.sync(&mut doc, &automerge::ROOT);
+
+        let saved = RelayConfig::load(&path).unwrap();
+        assert_eq!(saved.device_role, DeviceRole::AlwaysOnServer);
+        assert!(saved.services.workspace_replication);
+        assert!(saved.services.full_content_replication);
+        assert!(saved.services.inbound_relay);
+        assert!(saved.workspaces[0].pin);
+        assert_eq!(
+            saved.workspaces[0].replication,
+            ReplicationIntent::FullWorkspace
+        );
+    }
+
+    #[test]
+    fn fresh_daemon_metrics_drive_online_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = RelayConfig {
+            state_root: dir.path().to_path_buf(),
+            device_role: DeviceRole::Hybrid,
+            ..RelayConfig::default()
+        };
+        let metrics = qos_relay::metrics::MetricsSnapshot {
+            deltas_received: 42,
+            ..Default::default()
+        };
+        qos_relay::store::save_metrics(&config.state_root, &metrics).unwrap();
+        let modified = std::fs::metadata(config.state_root.join(qos_relay::store::METRICS_FILE))
+            .unwrap()
+            .modified()
+            .unwrap();
+
+        assert_eq!(
+            RelayRuntimeStatus::read(&config, modified + Duration::from_secs(1)),
+            RelayRuntimeStatus::Online
+        );
+        assert_eq!(
+            RelayRuntimeStatus::read(
+                &config,
+                modified + STATUS_FRESHNESS + Duration::from_secs(1)
+            ),
+            RelayRuntimeStatus::Offline
+        );
+    }
+
+    #[test]
+    fn always_on_status_requires_fresh_complete_file_residency() {
+        let dir = tempfile::tempdir().unwrap();
+        let proof = dir.path().join("full-replica.json");
+        let config = RelayConfig {
+            state_root: dir.path().to_path_buf(),
+            full_replica_status: proof.clone(),
+            device_role: DeviceRole::AlwaysOnServer,
+            services: qos_relay::ServiceCapabilities::personal_server(),
+            ..RelayConfig::default()
+        };
+        qos_relay::store::save_metrics(
+            &config.state_root,
+            &qos_relay::metrics::MetricsSnapshot::default(),
+        )
+        .unwrap();
+        let now = SystemTime::now();
+        let now_ms = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        std::fs::write(
+            &proof,
+            format!(
+                r#"{{"state":"ready","full_content_replication":true,"updated_at_ms":{now_ms}}}"#
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            RelayRuntimeStatus::read(&config, now),
+            RelayRuntimeStatus::Ready
+        );
+        std::fs::write(
+            &proof,
+            r#"{"state":"syncing","full_content_replication":false,"updated_at_ms":0}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            RelayRuntimeStatus::read(&config, now),
+            RelayRuntimeStatus::Syncing
+        );
     }
 }
