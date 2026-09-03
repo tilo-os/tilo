@@ -158,7 +158,7 @@ pub enum Action {
     /// Pin the receipt-thumbnail-to-editor handoff for visual review.
     ScreenshotMarkupTransition(u16),
     /// Expose or hide real system-audio recording controls in deterministic
-    /// visuals without probing the host PipeWire session.
+    /// visuals without probing the host `PipeWire` session.
     CaptureAudioAvailable(bool),
     /// Run queued capture intents through the production compositor executor.
     /// Opt-in avoids filesystem work in unrelated deterministic scenarios.
@@ -455,6 +455,10 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
 /// to keep that dispatcher short. One arm per `Action` variant, matching
 /// [`apply`]'s own dispatch; every other variant is a no-op here since
 /// exactly one of the `apply_*` helpers owns it.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the deterministic scenario dispatcher keeps its action mapping explicit"
+)]
 fn apply_pointer_and_capture<S: SnapshotSink>(
     driver: &mut ShellDriver,
     action: &Action,

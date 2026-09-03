@@ -97,7 +97,10 @@ impl PasswordVerifier for FixedVerifier {
 pub const UNLOCK_HELPER_ENV: &str = "QOS_UNLOCK_HELPER";
 
 /// Where the helper is installed — by the OS image and the host session RPM (`dist/rpm/qos-session.spec`), at exactly this path so no override is needed on a non-qOS host.
-pub const DEFAULT_UNLOCK_HELPER: &str = "/usr/libexec/qos-unlock-helper";
+pub const DEFAULT_UNLOCK_HELPER: &str = match option_env!("QOS_UNLOCK_HELPER_PATH") {
+    Some(path) => path,
+    None => "/usr/libexec/qos-unlock-helper",
+};
 
 /// Upper bound on a single verify. Generous for a slow PAM stack (`pam_unix` fail delay is
 /// ~2s; a fingerprint prompt is longer) but bounded so a wedged helper can't pin the unlock path

@@ -1780,6 +1780,10 @@ async fn send_document_mutation(
     clippy::future_not_send,
     reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the request variants share one ordered dispatch boundary onto the SDK route"
+)]
 async fn dispatch_sdk_request(
     route: &SdkRoute,
     request: CollabRequest,
@@ -3038,7 +3042,12 @@ mod tests {
         };
         let (fd, _captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-        let events = drain_events(&mut mgr, Duration::from_secs(2));
+        let start = Instant::now();
+        let mut events = Vec::new();
+        while events.len() < 7 && start.elapsed() < Duration::from_secs(2) {
+            events.extend(mgr.poll());
+            thread::sleep(Duration::from_millis(5));
+        }
 
         let mut cursor_moves = Vec::new();
         let mut updates = Vec::new();

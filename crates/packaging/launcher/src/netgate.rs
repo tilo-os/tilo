@@ -896,6 +896,11 @@ fn is_assigned_to_this_host(addr: IpAddr) -> bool {
 /// post-DNS device-local protection used by [`NetGate`].  Other confined
 /// transports (such as the Windows guest lease relay) must use this rather
 /// than resolving a permitted name themselves.
+///
+/// # Errors
+///
+/// Returns an error if DNS resolution fails, every resolved address is
+/// rejected by policy, or no permitted address can be connected to.
 pub fn connect_upstream(dest: &Destination, policy: &EgressPolicy) -> io::Result<TcpStream> {
     let addrs: Vec<std::net::SocketAddr> = match dest {
         Destination::Domain(host, port) => (host.as_str(), *port).to_socket_addrs()?.collect(),

@@ -373,9 +373,7 @@ impl ShellDriver {
             [88, 142, 224, 255],
             [22, 24, 30, 255],
         ];
-        let pixels = (0..24)
-            .map(|index| palette[index % palette.len()])
-            .collect();
+        let pixels = palette.into_iter().cycle().take(24).collect();
         self.fb.set_capture_screenshot_finished(
             copied,
             1_584,

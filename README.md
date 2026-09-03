@@ -65,6 +65,10 @@ cargo build -p file-explorer
 Full OS image — `./os/build.sh` produces a qcow2 (rootless podman; the disk-image step needs
 sudo), and `./os/test-vm.sh` boots it under QEMU.
 
+Host-session packages for Ubuntu/Debian, Fedora, Arch, and NixOS are documented
+in [`docs/packaging.md`](docs/packaging.md). CI builds and install-tests both
+x86-64/amd64 and AArch64/arm64 before publishing a tagged release.
+
 ## Testing
 
 Scope tests to what you are changing; the compile dominates.

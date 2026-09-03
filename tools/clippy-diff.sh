@@ -20,14 +20,8 @@ shift
 root=$(cd "$(dirname "$0")/.." && pwd)
 
 if ! git -C "$root" cat-file -e "$base^{commit}" 2>/dev/null; then
-    # Affected jobs deliberately use a depth-one checkout. Fetch only the
-    # immutable comparison object selected by the planning job instead of
-    # deepening every checkout (a push may contain more than one commit).
-    if ! git -C "$root" fetch --no-tags --depth=1 origin "$base" >&2 ||
-        ! git -C "$root" cat-file -e "$base^{commit}" 2>/dev/null; then
-        echo "Clippy comparison base could not be fetched: $base" >&2
-        exit 2
-    fi
+    echo "Clippy comparison base is not available: $base" >&2
+    exit 2
 fi
 base=$(git -C "$root" rev-parse "$base^{commit}")
 
