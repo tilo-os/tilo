@@ -10,6 +10,7 @@
 //! system theme, focus order and accessibility like the rest of the desktop.
 
 use std::collections::HashMap;
+use std::fs::OpenOptions;
 use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -38,6 +39,122 @@ use crate::onboarding::{
 const PANEL_MAX_WIDTH: f32 = 720.0;
 const PANEL_MAX_HEIGHT: f32 = 620.0;
 const VIEWPORT_GUTTER: f32 = 32.0;
+const PROGRESS_FILE: &str = ".onboarding-progress.json";
+const PROGRESS_VERSION: u32 = 1;
+const PROGRESS_MAX_BYTES: u64 = 4096;
+
+/// Secret-free crash journal for the small interval between identity
+/// acquisition and explicit first-use completion. It lives beside the
+/// identity so it follows the same per-user lifecycle and trust boundary.
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum PersistedStage {
+    AcquiringIdentity,
+    IdentityReady,
+    TourNavigate,
+    TourOrganise,
+    TourCollaborate,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct PersistedProgress {
+    version: u32,
+    stage: PersistedStage,
+}
+
+fn progress_path(identity_dir: &std::path::Path) -> PathBuf {
+    identity_dir.join(PROGRESS_FILE)
+}
+
+/// Whether startup must retain trusted first-use chrome even though an
+/// identity already exists. Any object or unreadable entry at the journal
+/// path counts as pending: malformed recovery state must never become a
+/// shortcut around completion.
+pub fn has_pending_progress(identity_dir: &std::path::Path) -> bool {
+    match std::fs::symlink_metadata(progress_path(identity_dir)) {
+        Ok(_) => true,
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+fn load_progress(identity_dir: &std::path::Path) -> std::io::Result<Option<PersistedStage>> {
+    let path = progress_path(identity_dir);
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    }
+    let mut file = match options.open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() || metadata.len() > PROGRESS_MAX_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "onboarding progress must be a small regular file",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        if metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.permissions().mode() & 0o077 != 0
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "onboarding progress must be private and owned by this user",
+            ));
+        }
+    }
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(PROGRESS_MAX_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    let stored: PersistedProgress = serde_json::from_slice(&bytes).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid onboarding progress: {error}"),
+        )
+    })?;
+    if stored.version != PROGRESS_VERSION {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("unsupported onboarding progress version {}", stored.version),
+        ));
+    }
+    Ok(Some(stored.stage))
+}
+
+fn store_progress(identity_dir: &std::path::Path, stage: PersistedStage) -> std::io::Result<()> {
+    crate::firstboot::prepare_identity_directory(identity_dir)?;
+    let bytes = serde_json::to_vec_pretty(&PersistedProgress {
+        version: PROGRESS_VERSION,
+        stage,
+    })
+    .map_err(|error| std::io::Error::other(error.to_string()))?;
+    atomic_file::write_with_mode(&progress_path(identity_dir), &bytes, 0o600)
+}
+
+fn clear_progress(identity_dir: &std::path::Path) -> std::io::Result<()> {
+    let path = progress_path(identity_dir);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        // Still sync the directory after NotFound. A previous Finish attempt
+        // may have removed the entry but failed while making that removal
+        // durable; letting the retry finish without fsync could resurrect it
+        // after a power loss.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    // Make journal removal durable too. Otherwise a power loss immediately
+    // after Finish could resurrect a completed tour on the next login.
+    std::fs::File::open(identity_dir)?.sync_all()?;
+    Ok(())
+}
 
 /// Context for the compositor-owned identity ceremony. Both variants keep
 /// the same security gates; the host version only makes clear that qOS is not
@@ -197,6 +314,10 @@ pub struct OnboardingView {
     error: Option<String>,
     backup_error: Option<String>,
     backup_saved: Option<PathBuf>,
+    /// A persistence error is distinct from identity creation failure: the
+    /// current screen remains valid, but advancing is blocked until crash
+    /// recovery state can be written or removed safely.
+    progress_error: Option<String>,
     tour_page: Option<TourPage>,
     /// A tour reopened from the desktop has no identity ceremony behind it.
     /// Back on its first page and Done both dismiss the modal directly.
@@ -307,6 +428,7 @@ impl OnboardingView {
         );
         view.nearby_status_path = Some(identity_dir.join(".nearby-enrollment-status.json"));
         view.identity_dir = Some(identity_dir);
+        view.restore_pending_progress_from_disk();
         view
     }
 
@@ -350,6 +472,7 @@ impl OnboardingView {
             error: None,
             backup_error: None,
             backup_saved: None,
+            progress_error: None,
             tour_page: None,
             tour_only: false,
             finished: false,
@@ -384,6 +507,95 @@ impl OnboardingView {
         self.finished
     }
 
+    fn restore_pending_progress_from_disk(&mut self) {
+        let Some(identity_dir) = self.identity_dir.as_ref() else {
+            return;
+        };
+        if !has_pending_progress(identity_dir) {
+            return;
+        }
+
+        let (stage, load_error) = match load_progress(identity_dir) {
+            Ok(Some(stage)) => (stage, None),
+            Ok(None) => return,
+            Err(error) => (PersistedStage::IdentityReady, Some(error.to_string())),
+        };
+        let identity_path = runtime_identity::resolve_active_identity(identity_dir)
+            .unwrap_or_else(|| identity_dir.join("primary.json"));
+        match crate::onboarding::existing_identity_at(&identity_path) {
+            Ok(identity) => {
+                self.flow.resume_created(identity);
+                self.tour_page = match stage {
+                    PersistedStage::AcquiringIdentity | PersistedStage::IdentityReady => None,
+                    PersistedStage::TourNavigate => Some(TourPage::Navigate),
+                    PersistedStage::TourOrganise => Some(TourPage::Organise),
+                    PersistedStage::TourCollaborate => Some(TourPage::Collaborate),
+                };
+                if let Some(error) = load_error {
+                    self.progress_error = Some(format!(
+                        "The saved setup position could not be read ({error}). Your identity is safe; setup resumed at the completion step."
+                    ));
+                }
+            }
+            Err(error) => {
+                // A pre-acquisition journal with no identity is the expected
+                // result of a crash before the key transaction committed:
+                // restart the creation flow. Anything present-but-invalid was
+                // already rejected by normal startup and is surfaced here too.
+                if std::fs::symlink_metadata(&identity_path).is_ok() {
+                    self.progress_error = Some(format!(
+                        "Setup found unfinished progress but could not validate the existing identity: {error}"
+                    ));
+                }
+            }
+        }
+    }
+
+    fn persist_progress(&mut self, stage: PersistedStage) -> bool {
+        let Some(identity_dir) = self.identity_dir.as_ref() else {
+            return true;
+        };
+        match store_progress(identity_dir, stage) {
+            Ok(()) => {
+                self.progress_error = None;
+                true
+            }
+            Err(error) => {
+                self.progress_error = Some(format!(
+                    "Setup could not save its restart position: {error}. No identity action was repeated."
+                ));
+                self.invalidation.structure();
+                false
+            }
+        }
+    }
+
+    fn finish_persisted_progress(&mut self) -> bool {
+        let Some(identity_dir) = self.identity_dir.as_ref() else {
+            return true;
+        };
+        match clear_progress(identity_dir) {
+            Ok(()) => {
+                self.progress_error = None;
+                true
+            }
+            Err(error) => {
+                self.progress_error = Some(format!(
+                    "Setup finished, but its restart marker could not be removed: {error}. Try Finish again so this screen does not return next login."
+                ));
+                self.invalidation.structure();
+                false
+            }
+        }
+    }
+
+    fn progress_notice(&self) -> Option<Box<dyn Widget>> {
+        self.progress_error.as_ref().map(|error| {
+            Box::new(Banner::error("Setup progress needs attention").with_message(error.clone()))
+                as Box<dyn Widget>
+        })
+    }
+
     /// Put the entrance transition in its steady state for deterministic
     /// offscreen review. Production never calls this; the live compositor
     /// advances the exact same transition on animation frames.
@@ -395,7 +607,7 @@ impl OnboardingView {
 
     fn build_composition(&self, theme: &Theme, panel_height: f32) -> Box<dyn Widget> {
         if let Some(page) = self.tour_page {
-            return Self::build_tour_composition(theme, panel_height, page);
+            return self.build_tour_composition(theme, panel_height, page);
         }
         let (step, stage) = match self.flow.screen() {
             Screen::Intro => (1, "Choose"),
@@ -435,11 +647,14 @@ impl OnboardingView {
             .push(Box::new(ProgressBar::new(progress_value).with_label(
                 format!("Identity setup, step {step} of 3: {stage}"),
             )));
-        let content = Column::new()
+        let mut content = Column::new()
             .with_intrinsic_height()
             .with_gap(spacing.s6)
-            .push(Box::new(progress))
-            .push(body);
+            .push(Box::new(progress));
+        if let Some(notice) = self.progress_notice() {
+            content = content.push(notice);
+        }
+        content = content.push(body);
         if self.flow.screen() == Screen::Done {
             // The backup card can be taller than a laptop-height viewport,
             // especially with large text. Keep the only route into the
@@ -475,7 +690,12 @@ impl OnboardingView {
         )
     }
 
-    fn build_tour_composition(theme: &Theme, panel_height: f32, page: TourPage) -> Box<dyn Widget> {
+    fn build_tour_composition(
+        &self,
+        theme: &Theme,
+        panel_height: f32,
+        page: TourPage,
+    ) -> Box<dyn Widget> {
         let number = page.number();
         let stage = match page {
             TourPage::Navigate => "Move",
@@ -504,11 +724,14 @@ impl OnboardingView {
                 ProgressBar::new(f32::from(number) / 3.0)
                     .with_label(format!("Desktop tour, step {number} of 3: {stage}")),
             ));
-        let content = Column::new()
+        let mut content = Column::new()
             .with_intrinsic_height()
             .with_gap(theme.tokens.spacing.s6)
-            .push(Box::new(progress))
-            .push(Self::tour_page(theme, page));
+            .push(Box::new(progress));
+        if let Some(notice) = self.progress_notice() {
+            content = content.push(notice);
+        }
+        content = content.push(Self::tour_page(theme, page));
         // Keep navigation out of the scrolling lesson. On a compact laptop,
         // portrait display, or large-text setup the cards can be much taller
         // than the panel; making Continue part of that content forced people
@@ -1242,7 +1465,10 @@ impl Widget for OnboardingView {
 
         if read_bool(state, root, KEY_CONNECT_NEARBY) {
             let _ = state.put(root, KEY_CONNECT_NEARBY, ScalarValue::Boolean(false));
-            if self.flow.screen() == Screen::Connect && self.nearby_child.is_none() {
+            if self.flow.screen() == Screen::Connect
+                && self.nearby_child.is_none()
+                && self.persist_progress(PersistedStage::AcquiringIdentity)
+            {
                 match (&self.identity_dir, &self.nearby_status_path) {
                     (Some(identity_dir), Some(status_path)) => {
                         let _ = std::fs::remove_file(status_path);
@@ -1329,6 +1555,7 @@ impl Widget for OnboardingView {
                         let path = result.get("record_path").and_then(serde_json::Value::as_str).map(PathBuf::from);
                         if fingerprint.len() == 64 && path.is_some() {
                             self.flow.complete_connected(MintedIdentity { fingerprint, path: path.expect("checked") });
+                            let _ = self.persist_progress(PersistedStage::IdentityReady);
                             self.error = None;
                             self.nearby_status = Some("Connected. Your workspaces will appear automatically.".into());
                         } else {
@@ -1400,7 +1627,9 @@ impl Widget for OnboardingView {
         if read_bool(state, root, KEY_IMPORT) {
             let _ = state.put(root, KEY_IMPORT, ScalarValue::Boolean(false));
             let source = PathBuf::from(read_string(state, root, KEY_CONNECT_PATH));
-            if self.flow.screen() == Screen::Connect {
+            if self.flow.screen() == Screen::Connect
+                && self.persist_progress(PersistedStage::AcquiringIdentity)
+            {
                 let passphrase = Zeroizing::new(
                     self.connect_passphrase
                         .lock()
@@ -1412,6 +1641,7 @@ impl Widget for OnboardingView {
                     Ok(identity) => {
                         self.error = None;
                         self.flow.complete_connected(identity);
+                        let _ = self.persist_progress(PersistedStage::IdentityReady);
                         clear_secret(&self.connect_passphrase);
                     }
                     Err(error) => {
@@ -1433,11 +1663,12 @@ impl Widget for OnboardingView {
         if read_bool(state, root, KEY_CREATE) {
             let _ = state.put(root, KEY_CREATE, ScalarValue::Boolean(false));
             // `can_create` is checked inside `complete` too — this is the outer guard, that one is the invariant.
-            if self.flow.can_create() {
+            if self.flow.can_create() && self.persist_progress(PersistedStage::AcquiringIdentity) {
                 self.error = None;
                 match (self.minter)() {
                     Ok(minted) => {
                         self.flow.complete(minted);
+                        let _ = self.persist_progress(PersistedStage::IdentityReady);
                     }
                     Err(e) => {
                         tracing::error!(target: "qos::onboarding", error = %e, "identity minting failed");
@@ -1452,14 +1683,14 @@ impl Widget for OnboardingView {
 
         if read_bool(state, root, KEY_TOUR_START) {
             let _ = state.put(root, KEY_TOUR_START, ScalarValue::Boolean(false));
-            if self.flow.is_done() {
+            if self.flow.is_done() && self.persist_progress(PersistedStage::TourNavigate) {
                 self.tour_page = Some(TourPage::Navigate);
             }
         }
 
         if read_bool(state, root, KEY_TOUR_BACK) {
             let _ = state.put(root, KEY_TOUR_BACK, ScalarValue::Boolean(false));
-            self.tour_page = match self.tour_page {
+            let next = match self.tour_page {
                 Some(TourPage::Navigate) if self.tour_only => {
                     self.finished = true;
                     self.tour_page
@@ -1468,20 +1699,43 @@ impl Widget for OnboardingView {
                 Some(TourPage::Organise) => Some(TourPage::Navigate),
                 Some(TourPage::Collaborate) => Some(TourPage::Organise),
             };
+            let progress_stage = match next {
+                None => Some(PersistedStage::IdentityReady),
+                Some(TourPage::Navigate) => Some(PersistedStage::TourNavigate),
+                Some(TourPage::Organise) => Some(PersistedStage::TourOrganise),
+                Some(TourPage::Collaborate) => Some(PersistedStage::TourCollaborate),
+            };
+            if self.tour_only
+                || progress_stage.is_some_and(|progress| self.persist_progress(progress))
+            {
+                self.tour_page = next;
+            }
         }
 
         if read_bool(state, root, KEY_TOUR_NEXT) {
             let _ = state.put(root, KEY_TOUR_NEXT, ScalarValue::Boolean(false));
-            self.tour_page = match self.tour_page {
+            let next = match self.tour_page {
                 Some(TourPage::Navigate) => Some(TourPage::Organise),
                 Some(TourPage::Organise) => Some(TourPage::Collaborate),
                 page => page,
             };
+            let progress_stage = match next {
+                Some(TourPage::Navigate) => Some(PersistedStage::TourNavigate),
+                Some(TourPage::Organise) => Some(PersistedStage::TourOrganise),
+                Some(TourPage::Collaborate) => Some(PersistedStage::TourCollaborate),
+                None => None,
+            };
+            if self.tour_only
+                || progress_stage.is_none_or(|progress| self.persist_progress(progress))
+            {
+                self.tour_page = next;
+            }
         }
 
         if read_bool(state, root, KEY_FINISH) {
             let _ = state.put(root, KEY_FINISH, ScalarValue::Boolean(false));
-            self.finished = self.tour_only || self.flow.is_done();
+            self.finished =
+                self.tour_only || (self.flow.is_done() && self.finish_persisted_progress());
             if self.finished {
                 clear_secret(&self.connect_passphrase);
                 clear_secret(&self.backup_passphrase);
@@ -1769,7 +2023,10 @@ fn onboarding_picker_rect(viewport: Rect) -> Rect {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::TempDir;
+    use ui::widget::identity_flow::{IdentityRecord, SerializableIdentity};
 
     fn view() -> (OnboardingView, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -1786,6 +2043,202 @@ mod tests {
 
     fn press(doc: &mut AutoCommit, key: &str) {
         let _ = doc.put(&automerge::ROOT, key, ScalarValue::Boolean(true));
+    }
+
+    fn write_fixture_identity(directory: &std::path::Path) {
+        let record = IdentityRecord {
+            display_name: "Test user".into(),
+            avatar_color: [20, 120, 220],
+            threshold_identity: SerializableIdentity {
+                single_device: true,
+                group_public_key: [0xab; 32],
+                threshold: 1,
+                total_shares: 1,
+                share_index: 1,
+                secret_bytes: vec![0x42; 32],
+            },
+            created_at: "2026-01-01T00:00:00Z".into(),
+            schema_version: 1,
+            secret_ref: None,
+        };
+        atomic_file::write_with_mode(
+            &directory.join("primary.json"),
+            &record.to_json_bytes().expect("fixture identity JSON"),
+            0o600,
+        )
+        .expect("write fixture identity");
+    }
+
+    fn finish_identity(view: &mut OnboardingView, document: &mut AutoCommit) {
+        for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
+            press(document, key);
+            view.sync(document, &automerge::ROOT);
+        }
+        assert_eq!(view.flow().screen(), Screen::Done);
+    }
+
+    #[test]
+    fn journal_is_durable_before_identity_action_and_removed_only_after_finish() {
+        let directory = TempDir::new().expect("progress directory");
+        let identity_dir = directory.path().join("fresh").join("identity");
+        let observed_precommit = Arc::new(AtomicBool::new(false));
+        let observed_in_minter = Arc::clone(&observed_precommit);
+        let progress_dir = identity_dir.clone();
+        let mut view = OnboardingView::with_minter(Box::new(move || {
+            observed_in_minter.store(
+                matches!(
+                    load_progress(&progress_dir),
+                    Ok(Some(PersistedStage::AcquiringIdentity))
+                ),
+                Ordering::SeqCst,
+            );
+            Ok(MintedIdentity {
+                fingerprint: "ab".repeat(32),
+                path: progress_dir.join("primary.json"),
+            })
+        }));
+        view.identity_dir = Some(identity_dir.clone());
+        let mut document = AutoCommit::new();
+
+        finish_identity(&mut view, &mut document);
+        assert!(
+            observed_precommit.load(Ordering::SeqCst),
+            "the crash journal must reach disk before the minter can write an identity"
+        );
+        assert_eq!(
+            load_progress(&identity_dir).expect("load progress"),
+            Some(PersistedStage::IdentityReady)
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(progress_path(&identity_dir))
+                    .expect("progress metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(&identity_dir)
+                    .expect("identity directory metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
+
+        press(&mut document, KEY_FINISH);
+        view.sync(&mut document, &automerge::ROOT);
+        assert!(view.finished());
+        assert!(!has_pending_progress(&identity_dir));
+    }
+
+    #[test]
+    fn restart_resumes_done_and_exact_tour_page_without_recreating_identity() {
+        let directory = TempDir::new().expect("progress directory");
+        write_fixture_identity(directory.path());
+        store_progress(directory.path(), PersistedStage::IdentityReady).expect("ready journal");
+
+        let mut done = OnboardingView::new(directory.path().to_path_buf());
+        assert_eq!(done.flow().screen(), Screen::Done);
+        assert!(done.flow().is_done());
+        assert_eq!(
+            done.flow()
+                .minted()
+                .map(|identity| identity.fingerprint.as_str()),
+            Some("abababababababababababababababababababababababababababababababab")
+        );
+        assert!(!done.flow().can_create(), "resume never reopens creation");
+
+        let mut document = AutoCommit::new();
+        press(&mut document, KEY_TOUR_START);
+        done.sync(&mut document, &automerge::ROOT);
+        assert_eq!(done.tour_page, Some(TourPage::Navigate));
+        assert_eq!(
+            load_progress(directory.path()).expect("tour journal"),
+            Some(PersistedStage::TourNavigate)
+        );
+
+        let mut navigate_restart = OnboardingView::new(directory.path().to_path_buf());
+        assert_eq!(navigate_restart.tour_page, Some(TourPage::Navigate));
+        press(&mut document, KEY_TOUR_NEXT);
+        navigate_restart.sync(&mut document, &automerge::ROOT);
+        assert_eq!(navigate_restart.tour_page, Some(TourPage::Organise));
+
+        let mut organise_restart = OnboardingView::new(directory.path().to_path_buf());
+        assert_eq!(organise_restart.tour_page, Some(TourPage::Organise));
+        press(&mut document, KEY_TOUR_NEXT);
+        organise_restart.sync(&mut document, &automerge::ROOT);
+        assert_eq!(organise_restart.tour_page, Some(TourPage::Collaborate));
+
+        let mut collaborate_restart = OnboardingView::new(directory.path().to_path_buf());
+        assert_eq!(collaborate_restart.tour_page, Some(TourPage::Collaborate));
+        press(&mut document, KEY_FINISH);
+        collaborate_restart.sync(&mut document, &automerge::ROOT);
+        assert!(collaborate_restart.finished());
+        assert!(!has_pending_progress(directory.path()));
+
+        let established = OnboardingView::new(directory.path().to_path_buf());
+        assert_eq!(
+            established.flow().screen(),
+            Screen::Intro,
+            "without a pending journal startup leaves an established user alone"
+        );
+    }
+
+    #[test]
+    fn unsupported_or_unsafe_journal_stays_pending_instead_of_bypassing_setup() {
+        let directory = TempDir::new().expect("progress directory");
+        atomic_file::write_with_mode(
+            &progress_path(directory.path()),
+            br#"{"version":99,"stage":"identity-ready"}"#,
+            0o600,
+        )
+        .expect("future-version journal");
+        assert!(has_pending_progress(directory.path()));
+        assert!(load_progress(directory.path()).is_err());
+        write_fixture_identity(directory.path());
+        let resumed = OnboardingView::new(directory.path().to_path_buf());
+        assert_eq!(resumed.flow().screen(), Screen::Done);
+        assert!(resumed.progress_error.is_some());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            std::fs::remove_file(progress_path(directory.path())).expect("remove journal");
+            symlink("primary.json", progress_path(directory.path())).expect("journal symlink");
+            assert!(has_pending_progress(directory.path()));
+            assert!(load_progress(directory.path()).is_err());
+        }
+    }
+
+    #[test]
+    fn a_journal_write_failure_prevents_identity_creation() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let called = Arc::clone(&calls);
+        let mut view = OnboardingView::with_minter(Box::new(move || {
+            called.fetch_add(1, Ordering::SeqCst);
+            Ok(MintedIdentity {
+                fingerprint: "ab".repeat(32),
+                path: PathBuf::from("/identity/primary.json"),
+            })
+        }));
+        let directory = TempDir::new().expect("progress directory");
+        let blocked_parent = directory.path().join("not-a-directory");
+        std::fs::write(&blocked_parent, b"block directory creation").expect("write blocker");
+        view.identity_dir = Some(blocked_parent.join("identity"));
+        let mut document = AutoCommit::new();
+        for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
+            press(&mut document, key);
+            view.sync(&mut document, &automerge::ROOT);
+        }
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(view.flow().screen(), Screen::NoRecovery);
+        assert!(view.progress_error.is_some());
     }
 
     #[test]
@@ -2086,6 +2539,53 @@ mod tests {
         assert_eq!(imported.load(Ordering::SeqCst), 1);
         assert_eq!(view.flow().screen(), Screen::Done);
         assert!(view.flow().is_done());
+    }
+
+    #[test]
+    fn connect_journals_before_import_and_keeps_setup_pending_afterward() {
+        let directory = TempDir::new().expect("progress directory");
+        let identity_dir = directory.path().join("identity");
+        let observed_precommit = Arc::new(AtomicBool::new(false));
+        let observed_in_importer = Arc::clone(&observed_precommit);
+        let progress_dir = identity_dir.clone();
+        let mut view = OnboardingView::with_handlers(
+            Box::new(|| Err("create should not run".to_string())),
+            Box::new(move |_, _| {
+                observed_in_importer.store(
+                    matches!(
+                        load_progress(&progress_dir),
+                        Ok(Some(PersistedStage::AcquiringIdentity))
+                    ),
+                    Ordering::SeqCst,
+                );
+                Ok(MintedIdentity {
+                    fingerprint: "cd".repeat(32),
+                    path: progress_dir.join("primary.json"),
+                })
+            }),
+        );
+        view.identity_dir = Some(identity_dir.clone());
+        let mut document = AutoCommit::new();
+
+        press(&mut document, KEY_CONNECT);
+        let _ = document.put(
+            &automerge::ROOT,
+            KEY_CONNECT_PATH,
+            ScalarValue::Str("/media/backup/primary.json".into()),
+        );
+        view.sync(&mut document, &automerge::ROOT);
+        press(&mut document, KEY_IMPORT);
+        view.sync(&mut document, &automerge::ROOT);
+
+        assert!(
+            observed_precommit.load(Ordering::SeqCst),
+            "the crash journal must reach disk before an import can write the identity"
+        );
+        assert_eq!(
+            load_progress(&identity_dir).expect("load progress"),
+            Some(PersistedStage::IdentityReady)
+        );
+        assert_eq!(view.flow().screen(), Screen::Done);
     }
 
     #[test]
