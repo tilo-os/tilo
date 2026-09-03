@@ -1633,14 +1633,33 @@ mod tests {
             relay.node_addr(),
             0,
             user.public_key,
-            client_cert,
-            client_key,
+            host.public_key,
+            client_cert.clone(),
+            client_key.clone(),
             RevocationList::new(),
         )
         .await
         .unwrap();
         assert_eq!(discovered, filesystem);
         assert_ne!(discovered, relay.node_addr());
+        let wrong_device = [0x55; 32];
+        assert!(
+            crate::client::RelayClient::discover_content_endpoint(
+                &client_endpoint,
+                relay.node_addr(),
+                0,
+                user.public_key,
+                wrong_device,
+                // The client certificate remains valid; only the enrolled host
+                // device pin changes, proving discovery does not accept an
+                // arbitrary host certificate at the derived service NodeId.
+                client_cert.clone(),
+                client_key.clone(),
+                RevocationList::new(),
+            )
+            .await
+            .is_err()
+        );
         client_endpoint.close().await;
         relay.shutdown().await;
     }
