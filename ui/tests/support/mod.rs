@@ -185,6 +185,26 @@ pub fn pump(relay: &mut MemoryRelay) {
                     });
                 }
             }
+            CollabRequest::OpenWorkspaceControl { session_id, .. } => {
+                // This harness has no authenticated shell/network boundary;
+                // mirror production's fail-closed response to the requester
+                // instead of pretending a route or consent exists.
+                if let Some(inbox) = inboxes.get_mut(&from) {
+                    inbox.push_back(CollabEvent::WorkspaceControl {
+                        session_id,
+                        event: runtime_collab::WorkspaceControlEvent::Closed(
+                            runtime_collab::WorkspaceControlCloseReason::Denied(
+                                "memory relay has no workspace-control transport".into(),
+                            ),
+                        ),
+                    });
+                }
+            }
+            CollabRequest::WorkspaceControlInput { .. }
+            | CollabRequest::CloseWorkspaceControl { .. } => {
+                // Session-local commands never fan out through a document
+                // relay. With no session above, input is deliberately dropped.
+            }
             CollabRequest::Hello { .. }
             | CollabRequest::PublishActions { .. }
             | CollabRequest::ReportContinuation { .. }

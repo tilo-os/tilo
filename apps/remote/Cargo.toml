@@ -26,6 +26,9 @@ qos-actions = { path = "../../crates/collab/actions" }
 # qOS-device sessions consume the canonical direct-first mesh placement
 # decision; Remote does not maintain a second host-selection implementation.
 qos-relay = { path = "../../crates/hosting/qos-relay" }
+runtime-collab = { path = "../../crates/runtime/runtime-collab" }
+qos-callstream = { path = "../../crates/collab/qos-callstream" }
+iroh.workspace = true
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
