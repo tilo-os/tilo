@@ -1,7 +1,7 @@
 //! Polkit-facing, narrowly scoped home-peer configuration broker.
 
 use std::io::Read;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -37,6 +37,7 @@ enum BrokerCommand {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ApplyRequest {
+    identity_root: PathBuf,
     role: String,
     workspace_ids: Vec<u64>,
     inbound_relay: bool,
@@ -111,6 +112,56 @@ fn service(action: &str, unit: &str) -> anyhow::Result<()> {
         bail!("systemctl {action} {unit} failed");
     }
     Ok(())
+}
+
+fn export_local_home_peer(identity_root: &Path, workspace_ids: &[u64]) -> anyhow::Result<Vec<u8>> {
+    let mut random = [0_u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut random);
+    let temp_dir = PathBuf::from(format!(
+        "/etc/qos/.home-peer-export-{}-{}",
+        std::process::id(),
+        hex::encode(random)
+    ));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&temp_dir)
+        .context("create private full-sync export directory")?;
+    let output = temp_dir.join("bundle.toml");
+    let mut command = Command::new("/usr/bin/fs");
+    command
+        .env("QOS_IDENTITY_ROOT", identity_root)
+        .args([
+            "export-home-peer",
+            "--cache-dir",
+            "/var/cache/quick-fs",
+            "--acl",
+            "/var/lib/qos/fs-capabilities.json",
+            "--output",
+        ])
+        .arg(&output);
+    for id in workspace_ids {
+        command.args(["--relay-workspace-id", &id.to_string()]);
+    }
+    let bytes = match command.output() {
+        Ok(result) if result.status.success() => std::fs::read(&output),
+        Ok(result) => {
+            let detail = String::from_utf8_lossy(&result.stderr);
+            Err(std::io::Error::other(format!(
+                "could not prepare full workspace sync: {}",
+                detail.trim()
+            )))
+        }
+        Err(error) => Err(error),
+    };
+    let _ = std::fs::remove_file(&output);
+    let _ = std::fs::remove_dir(&temp_dir);
+    let bytes = bytes.context("prepare local full-sync export")?;
+    let _: fs::full_replica::HomePeerSet = toml::from_str(std::str::from_utf8(&bytes)?)?;
+    Ok(bytes)
+}
+
+fn needs_local_home_peer_export(config: &RelayConfig, home_peer_exists: bool) -> bool {
+    config.device_role == DeviceRole::AlwaysOnServer && !home_peer_exists
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,12 +247,11 @@ fn commit_transaction(
 
 fn apply(request: ApplyRequest) -> anyhow::Result<()> {
     std::fs::create_dir_all("/etc/qos")?;
+    let uid = invoking_uid()?;
+    let identity_root = validate_identity_root(&request.identity_root, uid, &home_for_uid(uid)?)?;
     let previous_relay_state = service_state("qos-relay.service")?;
     let previous_fs_state = service_state("qos-fs-replica.service")?;
     let config = desired_config(&request)?;
-    if config.device_role == DeviceRole::AlwaysOnServer && !Path::new(HOME_PEER_CONFIG).is_file() {
-        bail!("enroll this home server before enabling always-on sync");
-    }
     let bytes = toml::to_string_pretty(&config)?;
     let home_bytes = if Path::new(HOME_PEER_CONFIG).is_file() {
         let bytes = std::fs::read(HOME_PEER_CONFIG)?;
@@ -210,6 +260,11 @@ fn apply(request: ApplyRequest) -> anyhow::Result<()> {
         // enrollment-created per-bundle mapping instead of cross-binding every
         // filesystem workspace to every selected room.
         Some(bytes)
+    } else if needs_local_home_peer_export(&config, false) {
+        Some(export_local_home_peer(
+            &identity_root,
+            &request.workspace_ids,
+        )?)
     } else {
         None
     };
@@ -306,6 +361,7 @@ mod tests {
     #[test]
     fn request_projects_only_bounded_role_services_and_workspace_ids() {
         let request = ApplyRequest {
+            identity_root: PathBuf::from("/var/lib/qos"),
             role: "always-on".into(),
             workspace_ids: vec![9, 2, 9],
             inbound_relay: true,
@@ -389,5 +445,21 @@ mod tests {
         let outside = dir.path().join("outside/qos");
         std::fs::create_dir_all(&outside).unwrap();
         assert!(validate_identity_root(&outside, uid, &home).is_err());
+    }
+
+    #[test]
+    fn stock_desktop_always_on_selection_self_provisions_full_sync() {
+        let config = desired_config(&ApplyRequest {
+            identity_root: PathBuf::from("/var/lib/qos"),
+            role: "always-on".into(),
+            workspace_ids: vec![12],
+            inbound_relay: true,
+            remote_control_relay: false,
+            app_serving: false,
+            compute: false,
+        })
+        .unwrap();
+        assert!(needs_local_home_peer_export(&config, false));
+        assert!(!needs_local_home_peer_export(&config, true));
     }
 }
