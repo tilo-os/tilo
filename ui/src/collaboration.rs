@@ -123,6 +123,11 @@ pub enum CollabRequest {
         schema_version: u16,
         metadata: Vec<u8>,
     },
+    /// Remove the last continuation report after the app can no longer
+    /// produce a safe projection.
+    ClearContinuation {
+        app_id: String,
+    },
     /// Report the terminal result of a directed invocation.
     CompleteInvocation {
         id: u64,
@@ -1954,6 +1959,11 @@ async fn dispatch_sdk_request(
                 .await
             {
                 tracing::warn!(%error, "collab: reporting continuation metadata failed");
+            }
+        }
+        CollabRequest::ClearContinuation { app_id } => {
+            if let Err(error) = route.channel.clear_continuation(&app_id).await {
+                tracing::warn!(%error, "collab: clearing continuation metadata failed");
             }
         }
         CollabRequest::CompleteInvocation { id, code, message } => {

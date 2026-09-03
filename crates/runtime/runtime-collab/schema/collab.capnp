@@ -217,6 +217,11 @@ interface ChannelHandle {
   # continuation lane; it is neither relayed to collaborators nor an
   # instruction to restore/focus/play anything.
   reportContinuation @25 (appId :Text, schemaVersion :UInt16, metadata :Data) -> ();
+
+  # Level-triggered counterpart to reportContinuation. Apps send this when
+  # their current state no longer has a safe resume projection, so stale
+  # private metadata is not retained after serialization or policy changes.
+  clearContinuation @26 (appId :Text) -> ();
 }
 
 interface ActionCatalogueStream {
