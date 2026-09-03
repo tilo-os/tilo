@@ -865,10 +865,10 @@ impl ShellNetwork {
         self.local_peer_hash
     }
 
-    /// Resolve and open a qOS workspace-control session over the canonical
-    /// direct-first device-mesh policy. A successful route is transport
-    /// reachability only: the returned session still waits for the target's
-    /// authenticated SurfaceStreamStart before allowing input.
+    /// Resolve and open a qOS workspace-control session over an authenticated
+    /// exact-target device route. A successful route is transport reachability
+    /// only: the returned session still waits for the target's authenticated
+    /// SurfaceStreamStart before allowing input.
     pub fn open_workspace_control(
         &self,
         workspace: u64,
@@ -921,12 +921,15 @@ impl ShellNetwork {
                 WorkspaceControlRoute::Direct { target }
             }
             qos_relay::RemoteControlRoute::Relayed { via, .. } => {
-                let via = iroh::EndpointId::from_bytes(&via)
+                let _via = iroh::EndpointId::from_bytes(&via)
                     .map_err(|_| "mesh selected an invalid relay identity")?;
-                WorkspaceControlRoute::Relayed { via }
+                return Err(
+                    "workspace control needs an exact-target route; this relay only supports workspace-wide fan-out"
+                        .into(),
+                );
             }
             qos_relay::RemoteControlRoute::Unavailable => {
-                return Err("no direct path or eligible workspace-control relay is online".into());
+                return Err("no authenticated direct workspace-control path is online".into());
             }
         };
         Ok(crate::network::WorkspaceControlSession::new(
@@ -3414,7 +3417,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn workspace_control_uses_direct_then_selected_relay_and_fails_closed() {
+    fn workspace_control_uses_exact_target_direct_and_refuses_fanout_relay() {
         let (net, mut commands) = shell_network_for_test(WorkspaceTree::default().shared(), 0xCA11);
         let target = iroh::SecretKey::generate().public();
         let relay = iroh::SecretKey::generate().public();
@@ -3468,13 +3471,11 @@ mod tests {
             .lock()
             .expect("relay routes")
             .insert((DEFAULT_WS_TOPIC, relay));
-        let relayed = net
-            .open_workspace_control(DEFAULT_WS_TOPIC, target)
-            .expect("relay route");
-        assert!(matches!(
-            relayed.route(),
-            WorkspaceControlRoute::Relayed { via } if via == relay
-        ));
+        assert!(
+            net.open_workspace_control(DEFAULT_WS_TOPIC, target)
+                .is_err(),
+            "workspace-wide relay fan-out must not carry exact-target control"
+        );
 
         net.workspace_control_relays
             .lock()
