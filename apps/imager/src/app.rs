@@ -48,7 +48,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{TextInput, Widget};
 
-use crate::customize::CustomizePanel;
+use crate::customize::{CustomizePanel, CzField};
 use crate::doc::ImagerDoc;
 use crate::export_dialog::ExportDialog;
 use crate::model::{
@@ -316,6 +316,505 @@ impl ImagerApp {
             (Some(s), Some(t)) => t.fits(s.size),
             _ => false,
         }
+    }
+}
+
+// =========================================================================
+// Accessibility semantics for the immediate-mode canvas
+// =========================================================================
+impl ImagerApp {
+    fn accessible_step_copy(&self) -> (&'static str, String) {
+        match self.step {
+            Step::Source => (
+                "Choose the source image",
+                if self.releases().is_empty() {
+                    "Pick a local ISO or IMG file to write.".into()
+                } else {
+                    "Pick a local ISO or IMG file, or choose a qOS release.".into()
+                },
+            ),
+            Step::Drive => (
+                "Select the target drive",
+                "Only external installation media is available here. The selected drive will be erased."
+                    .into(),
+            ),
+            Step::Customize => (
+                "Prepare your setup",
+                if self.customizable() {
+                    "These non-secret choices travel with the installer and shorten setup on the device."
+                        .into()
+                } else {
+                    "This image will be written unchanged.".into()
+                },
+            ),
+            Step::Confirm => (
+                if self.action == Action::Install {
+                    "Confirm and install"
+                } else {
+                    "Confirm and write"
+                },
+                "Review the destructive operation, then type the drive name to unlock it."
+                    .into(),
+            ),
+            Step::Write => (
+                if self.progress.phase == JobPhase::Verifying {
+                    "Verifying the drive"
+                } else {
+                    "Writing the drive"
+                },
+                "Keep the drive connected until writing and verification finish.".into(),
+            ),
+            Step::Done => {
+                let success = self.progress.phase == JobPhase::Success;
+                (
+                    if success {
+                        "Drive is ready"
+                    } else {
+                        "Write failed"
+                    },
+                    if success {
+                        "The image was written and verified. You can safely remove the drive."
+                            .into()
+                    } else {
+                        "The drive may be incomplete. Retry before using it.".into()
+                    },
+                )
+            }
+        }
+    }
+
+    fn hit_target(hit: Hit) -> String {
+        match hit {
+            Hit::PickFile => "imager:hit:pick-file".into(),
+            Hit::Release(index) => format!("imager:hit:release:{index}"),
+            Hit::Recent(index) => format!("imager:hit:recent:{index}"),
+            Hit::Target(index) => format!("imager:hit:target:{index}"),
+            Hit::Rescan => "imager:hit:rescan".into(),
+            Hit::ConfirmField => "imager:hit:confirm-field".into(),
+            Hit::StepJump(step) => format!("imager:hit:step:{}", step.key()),
+            Hit::Back => "imager:hit:back".into(),
+            Hit::Next => "imager:hit:next".into(),
+            Hit::StartWrite => "imager:hit:start-write".into(),
+            Hit::WriteAnother => "imager:hit:write-another".into(),
+        }
+    }
+
+    fn hit_from_target(target: &str) -> Option<Hit> {
+        let suffix = target.strip_prefix("imager:hit:")?;
+        match suffix {
+            "pick-file" => Some(Hit::PickFile),
+            "rescan" => Some(Hit::Rescan),
+            "confirm-field" => Some(Hit::ConfirmField),
+            "back" => Some(Hit::Back),
+            "next" => Some(Hit::Next),
+            "start-write" => Some(Hit::StartWrite),
+            "write-another" => Some(Hit::WriteAnother),
+            _ => {
+                let (kind, value) = suffix.split_once(':')?;
+                match kind {
+                    "step" => match value {
+                        "source" => Some(Hit::StepJump(Step::Source)),
+                        "drive" => Some(Hit::StepJump(Step::Drive)),
+                        "customize" => Some(Hit::StepJump(Step::Customize)),
+                        "confirm" => Some(Hit::StepJump(Step::Confirm)),
+                        "write" => Some(Hit::StepJump(Step::Write)),
+                        "done" => Some(Hit::StepJump(Step::Done)),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
+        }
+    }
+
+    fn a11y_hit_enabled(&self, hit: Hit) -> bool {
+        match hit {
+            Hit::StepJump(step) => self.crumb_reachable(step),
+            Hit::Next => match self.step {
+                Step::Source | Step::Drive | Step::Customize => self.can_advance(self.step),
+                Step::Confirm | Step::Write | Step::Done => false,
+            },
+            Hit::StartWrite => self.can_advance(Step::Confirm),
+            Hit::Release(index) => self.releases.get(index).is_some(),
+            Hit::Recent(index) => self.recent.get(index).is_some(),
+            Hit::Target(index) => self
+                .targets
+                .get(index)
+                .is_some_and(TargetDrive::is_media_target),
+            Hit::PickFile | Hit::Rescan | Hit::ConfirmField | Hit::Back | Hit::WriteAnother => true,
+        }
+    }
+
+    fn focus_accessible_profile_slot(&mut self, slot: usize) {
+        let lay = self.compute_layout();
+        self.keyboard_hit = None;
+        self.confirm_input.set_focus(false);
+        self.customize.focus_keyboard_slot(slot);
+        if let Some(rect) = CustomizePanel::keyboard_slot_rect(lay.content, slot) {
+            self.ensure_visible(rect, lay.viewport_content);
+        }
+        self.dirty = true;
+    }
+
+    fn a11y_control(
+        &self,
+        role: ui::a11y::Role,
+        name: impl Into<String>,
+        rect: Rect,
+        hit: Hit,
+        disabled: bool,
+    ) -> ui::a11y::AccessNode {
+        ui::a11y::AccessNode::new(role)
+            .with_name(name)
+            .with_state(ui::a11y::AccessState {
+                focused: self.keyboard_hit == Some(hit)
+                    || (hit == Hit::ConfirmField && self.confirm_input.is_focused()),
+                focusable: !disabled,
+                disabled,
+                ..Default::default()
+            })
+            .with_bounds(rect)
+            .with_action_target(Self::hit_target(hit))
+    }
+
+    fn a11y_step_navigation(&self, lay: &Layout) -> ui::a11y::AccessNode {
+        let children = lay
+            .crumbs
+            .iter()
+            .map(|(rect, step)| {
+                let reachable = self.crumb_reachable(*step);
+                self.a11y_control(
+                    ui::a11y::Role::Button,
+                    format!("Step {} of 6: {}", step.index() + 1, step.title()),
+                    *rect,
+                    Hit::StepJump(*step),
+                    !reachable,
+                )
+                .with_state(ui::a11y::AccessState {
+                    focused: self.keyboard_hit == Some(Hit::StepJump(*step)),
+                    focusable: reachable,
+                    selected: *step == self.step,
+                    disabled: !reachable,
+                    ..Default::default()
+                })
+                .with_position(step.index() + 1, Step::all().len())
+            })
+            .collect();
+        ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+            .with_name("Setup steps")
+            .with_children(children)
+    }
+
+    fn a11y_source_controls(&self, lay: &Layout) -> Vec<ui::a11y::AccessNode> {
+        lay.hits
+            .iter()
+            .filter_map(|(rect, hit)| match *hit {
+                Hit::PickFile => Some(self.a11y_control(
+                    ui::a11y::Role::Button,
+                    "Browse for an image",
+                    *rect,
+                    *hit,
+                    false,
+                )),
+                Hit::Release(index) => self.releases.get(index).map(|release| {
+                    self.a11y_control(
+                        ui::a11y::Role::Button,
+                        format!("Download qOS {}", release.version),
+                        *rect,
+                        *hit,
+                        false,
+                    )
+                    .with_description(format!("{} image", fmt_size(release.size)))
+                    .with_action_target(format!("imager:release:{}", release.version))
+                }),
+                Hit::Recent(index) => self.recent.get(index).map(|source| {
+                    self.a11y_control(
+                        ui::a11y::Role::Button,
+                        format!("Use recent image {}", source.name),
+                        *rect,
+                        *hit,
+                        false,
+                    )
+                    .with_action_target(format!("imager:recent:{}", source.path))
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn a11y_drive_controls(&self, lay: &Layout) -> Vec<ui::a11y::AccessNode> {
+        lay.hits
+            .iter()
+            .filter_map(|(rect, hit)| match *hit {
+                Hit::Rescan => Some(self.a11y_control(
+                    ui::a11y::Role::Button,
+                    "Rescan drives",
+                    *rect,
+                    *hit,
+                    false,
+                )),
+                Hit::Target(index) => self.targets.get(index).map(|drive| {
+                    self.a11y_control(
+                        ui::a11y::Role::RadioButton,
+                        format!(
+                            "{} on {}, {}",
+                            drive.model,
+                            drive.dev_path(),
+                            fmt_size(drive.size)
+                        ),
+                        *rect,
+                        *hit,
+                        false,
+                    )
+                    .with_description(format!(
+                        "External drive. Erases {}",
+                        drive.contents_summary()
+                    ))
+                    .with_action_target(format!("imager:drive:{}", drive.name))
+                    .with_state(ui::a11y::AccessState {
+                        focused: self.keyboard_hit == Some(*hit),
+                        focusable: true,
+                        checked: Some(self.selected == Some(index)),
+                        selected: self.selected == Some(index),
+                        ..Default::default()
+                    })
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn a11y_footer_controls(&self, lay: &Layout) -> Vec<ui::a11y::AccessNode> {
+        let mut controls = Vec::new();
+        if let Some(rect) = lay.back {
+            controls.push(self.a11y_control(
+                ui::a11y::Role::Button,
+                "Back",
+                rect,
+                Hit::Back,
+                false,
+            ));
+        }
+        if let Some(rect) = lay.primary {
+            let (hit, name, disabled) = match self.step {
+                Step::Source => (
+                    Hit::Next,
+                    "Continue".into(),
+                    !self.can_advance(Step::Source),
+                ),
+                Step::Drive => (Hit::Next, "Continue".into(), !self.can_advance(Step::Drive)),
+                Step::Customize => (Hit::Next, "Continue".into(), false),
+                Step::Confirm => (
+                    Hit::StartWrite,
+                    self.target().map_or_else(
+                        || "Erase and write selected drive".into(),
+                        |drive| format!("Erase and write {}", drive.dev_path()),
+                    ),
+                    !self.can_advance(Step::Confirm),
+                ),
+                Step::Done => (
+                    Hit::WriteAnother,
+                    if self.progress.phase == JobPhase::Failed {
+                        "Try again".into()
+                    } else {
+                        "Start over".into()
+                    },
+                    false,
+                ),
+                Step::Write => return controls,
+            };
+            controls.push(self.a11y_control(ui::a11y::Role::Button, name, rect, hit, disabled));
+        }
+        controls
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the semantic tree mirrors the six mutually exclusive immediate-mode wizard screens in one auditable order"
+    )]
+    fn accessibility_tree(&self) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+
+        let lay = self.compute_layout();
+        let (title, description) = self.accessible_step_copy();
+        let status_lower = self.status.to_ascii_lowercase();
+        let status_is_error = self.progress.phase == JobPhase::Failed
+            || [
+                "failed",
+                "unavailable",
+                "invalid",
+                "refused",
+                "must ",
+                "larger",
+            ]
+            .iter()
+            .any(|word| status_lower.contains(word));
+        let mut children = vec![
+            self.a11y_step_navigation(&lay)
+                .with_hashed_key("step-navigation"),
+            AccessNode::new(Role::Heading { level: 1 })
+                .with_name(title)
+                .with_hashed_key("step-heading")
+                .with_bounds(Rect::new(
+                    lay.content.x0,
+                    lay.content.y0,
+                    lay.content.x1,
+                    lay.content.y0 + 24.0,
+                )),
+            AccessNode::new(Role::Paragraph)
+                .with_value(description)
+                .with_hashed_key("step-description")
+                .with_bounds(Rect::new(
+                    lay.content.x0,
+                    lay.content.y0 + 24.0,
+                    lay.content.x1,
+                    lay.content.y0 + 52.0,
+                )),
+        ];
+        if !self.status.is_empty() {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name("Status")
+                    .with_value(self.status.clone())
+                    .with_hashed_key("status")
+                    .with_live(if status_is_error {
+                        Politeness::Assertive
+                    } else {
+                        Politeness::Polite
+                    }),
+            );
+        }
+
+        match self.step {
+            Step::Source => {
+                if let Some(source) = &self.source {
+                    children.push(
+                        AccessNode::new(Role::StaticText)
+                            .with_name("Selected image")
+                            .with_value(format!("{}, {}", source.name, fmt_size(source.size)))
+                            .with_hashed_key("selected-image"),
+                    );
+                }
+                children.push(
+                    AccessNode::new(Role::Group)
+                        .with_name("Image sources")
+                        .with_hashed_key("source-controls")
+                        .with_children(self.a11y_source_controls(&lay)),
+                );
+            }
+            Step::Drive => children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("External destination drives")
+                    .with_hashed_key("drive-controls")
+                    .with_children(self.a11y_drive_controls(&lay)),
+            ),
+            Step::Customize if self.customizable() => children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Setup profile")
+                    .with_hashed_key("profile-controls")
+                    .with_children(self.customize.accessibility(lay.content)),
+            ),
+            Step::Customize => children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_value("Pre-configuration is only available for qOS images.")
+                    .with_hashed_key("profile-unavailable"),
+            ),
+            Step::Confirm => {
+                if let (Some(source), Some(target)) = (&self.source, self.target()) {
+                    children.push(
+                        AccessNode::new(Role::Group)
+                            .with_name("Write review")
+                            .with_hashed_key("write-review")
+                            .with_children(vec![
+                                AccessNode::new(Role::StaticText)
+                                    .with_name("Image")
+                                    .with_value(format!("{}, {}", source.name, fmt_size(source.size))),
+                                AccessNode::new(Role::StaticText)
+                                    .with_name("Drive")
+                                    .with_value(format!("{} on {}, {}", target.model, target.dev_path(), fmt_size(target.size))),
+                                AccessNode::new(Role::StaticText)
+                                    .with_name("Warning")
+                                    .with_value("This permanently erases the selected drive and cannot be undone."),
+                            ]),
+                    );
+                }
+                if let Some((rect, _)) = lay.hits.iter().find(|(_, hit)| *hit == Hit::ConfirmField)
+                {
+                    let expected = self
+                        .target()
+                        .map_or("the drive name", |drive| drive.name.as_str());
+                    children.push(
+                        AccessNode::new(Role::TextInput)
+                            .with_name("Confirm the target device")
+                            .with_description(format!(
+                                "Type {expected} to unlock the destructive write"
+                            ))
+                            .with_value(self.confirm_input.value())
+                            .with_state(AccessState {
+                                focused: self.confirm_input.is_focused(),
+                                focusable: true,
+                                required: true,
+                                invalid: !self.confirm_input.value().is_empty()
+                                    && !self.confirm_matches(),
+                                ..Default::default()
+                            })
+                            .with_bounds(*rect)
+                            .with_action_target(Self::hit_target(Hit::ConfirmField)),
+                    );
+                }
+            }
+            Step::Write => children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Write progress")
+                    .with_hashed_key("write-progress")
+                    .with_children(vec![
+                        AccessNode::new(Role::ProgressBar)
+                            .with_name(if self.progress.phase == JobPhase::Verifying {
+                                "Verifying image"
+                            } else {
+                                "Writing image"
+                            })
+                            .with_value(format!("{:.0} percent", self.progress.overall() * 100.0))
+                            .with_state(AccessState::new().busy(true))
+                            .with_hashed_key("overall")
+                            .with_live(Politeness::Polite),
+                        AccessNode::new(Role::ProgressBar)
+                            .with_name("Write phase")
+                            .with_value(format!("{:.0} percent", self.progress.write_frac * 100.0))
+                            .with_hashed_key("write"),
+                        AccessNode::new(Role::ProgressBar)
+                            .with_name("Verify phase")
+                            .with_value(format!("{:.0} percent", self.progress.verify_frac * 100.0))
+                            .with_hashed_key("verify"),
+                    ]),
+            ),
+            Step::Done => children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(if self.progress.phase == JobPhase::Success {
+                        "Write completed and verified"
+                    } else {
+                        "Write failed"
+                    })
+                    .with_hashed_key("write-result")
+                    .with_live(if self.progress.phase == JobPhase::Success {
+                        Politeness::Polite
+                    } else {
+                        Politeness::Assertive
+                    }),
+            ),
+        }
+        let footer = self.a11y_footer_controls(&lay);
+        if !footer.is_empty() {
+            children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Wizard actions")
+                    .with_hashed_key("wizard-actions")
+                    .with_children(footer),
+            );
+        }
+        AccessNode::new(Role::Window)
+            .with_name("Start Media Creator")
+            .with_children(children)
     }
 }
 
@@ -3625,7 +4124,147 @@ impl Widget for ImagerApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.export_dialog.accessibility()
+        self.export_dialog
+            .accessibility()
+            .or_else(|| Some(self.accessibility_tree()))
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "this is the single assistive-action router for canvas hits, editable profile fields, and peer-local destructive confirmation"
+    )]
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        use ui::a11y::Action as AccessAction;
+
+        if self.export_dialog.is_open() {
+            return false;
+        }
+        if let Some(field_key) = target.strip_prefix("imager:profile:") {
+            if self.step != Step::Customize || !self.customizable() {
+                return false;
+            }
+            if field_key == "preview" {
+                return match action {
+                    AccessAction::Focus => {
+                        self.focus_accessible_profile_slot(6);
+                        true
+                    }
+                    AccessAction::Activate => {
+                        self.export_config(state);
+                        true
+                    }
+                    _ => false,
+                };
+            }
+            let Some(field) = CzField::from_key(field_key) else {
+                return false;
+            };
+            let Some(slot) = [
+                CzField::Hostname,
+                CzField::FullName,
+                CzField::Username,
+                CzField::Locale,
+                CzField::Timezone,
+                CzField::Keyboard,
+            ]
+            .iter()
+            .position(|candidate| *candidate == field) else {
+                return false;
+            };
+            return match action {
+                AccessAction::Focus => {
+                    self.focus_accessible_profile_slot(slot);
+                    true
+                }
+                AccessAction::SetValue(value) => {
+                    let field_action = CustomizePanel::field_action(field, value.clone());
+                    self.actions.dispatch_with_context(
+                        state,
+                        crate::actions::IMAGER_ACTION_TYPE,
+                        &field_action,
+                        qos_actions::ActionContext::for_action(
+                            "org.qos.Imager",
+                            "Imager",
+                            &field_action,
+                        ),
+                    );
+                    self.focus_accessible_profile_slot(slot);
+                    true
+                }
+                _ => false,
+            };
+        }
+
+        let identity_hit = target
+            .strip_prefix("imager:release:")
+            .and_then(|version| {
+                self.releases
+                    .iter()
+                    .position(|release| release.version == version)
+                    .map(Hit::Release)
+            })
+            .or_else(|| {
+                target.strip_prefix("imager:recent:").and_then(|path| {
+                    self.recent
+                        .iter()
+                        .position(|source| source.path == path)
+                        .map(Hit::Recent)
+                })
+            })
+            .or_else(|| {
+                target.strip_prefix("imager:drive:").and_then(|name| {
+                    self.targets
+                        .iter()
+                        .position(|drive| drive.name == name)
+                        .map(Hit::Target)
+                })
+            });
+        let Some(hit) = identity_hit.or_else(|| Self::hit_from_target(target)) else {
+            return false;
+        };
+        if !self
+            .compute_layout()
+            .hits
+            .iter()
+            .any(|(_, candidate)| *candidate == hit)
+        {
+            return false;
+        }
+        if !self.a11y_hit_enabled(hit) {
+            return false;
+        }
+        match action {
+            AccessAction::Focus => {
+                let lay = self.compute_layout();
+                self.customize.clear_focus();
+                self.keyboard_hit = Some(hit);
+                self.confirm_input.set_focus(hit == Hit::ConfirmField);
+                if let Some((rect, _)) = lay.hits.iter().find(|(_, candidate)| *candidate == hit) {
+                    self.ensure_visible(*rect, lay.viewport_content);
+                }
+                self.dirty = true;
+                true
+            }
+            AccessAction::SetValue(value) if hit == Hit::ConfirmField => {
+                self.confirm_input.set_text(value);
+                self.confirm_input.set_focus(true);
+                self.keyboard_hit = Some(hit);
+                self.dirty = true;
+                true
+            }
+            AccessAction::Activate => {
+                self.dispatch_hit(state, hit);
+                self.dirty = true;
+                true
+            }
+            _ => false,
+        }
     }
 
     fn needs_redraw(&self) -> bool {
@@ -3989,6 +4628,175 @@ mod tests {
             .find(|(_, h)| pred(h))
             .unwrap_or_else(|| panic!("expected a matching hit target this frame"))
             .0
+    }
+
+    fn accessible_named<'a>(
+        node: &'a ui::a11y::AccessNode,
+        name: &str,
+    ) -> Option<&'a ui::a11y::AccessNode> {
+        if node.name.as_deref() == Some(name) {
+            return Some(node);
+        }
+        node.children
+            .iter()
+            .find_map(|child| accessible_named(child, name))
+    }
+
+    fn accessible_focus_order(node: &ui::a11y::AccessNode, names: &mut Vec<String>) {
+        if node.state.focusable {
+            names.push(node.name.clone().unwrap_or_default());
+        }
+        for child in &node.children {
+            accessible_focus_order(child, names);
+        }
+    }
+
+    #[test]
+    fn main_canvas_semantics_expose_heading_sources_and_keyboard_order() {
+        let (mut app, _doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+
+        let tree = app.accessibility_tree();
+        assert_eq!(tree.role, ui::a11y::Role::Window);
+        assert_eq!(tree.name.as_deref(), Some("Start Media Creator"));
+        let heading = accessible_named(&tree, "Choose the source image").expect("step heading");
+        assert_eq!(heading.role, ui::a11y::Role::Heading { level: 1 });
+        let selected = accessible_named(&tree, "Selected image").expect("selected image");
+        assert!(
+            selected
+                .value
+                .as_deref()
+                .is_some_and(|value| value.contains("qOS"))
+        );
+
+        let mut order = Vec::new();
+        accessible_focus_order(&tree, &mut order);
+        assert_eq!(
+            order.first().map(String::as_str),
+            Some("Step 1 of 6: Source")
+        );
+        let browse = order
+            .iter()
+            .position(|name| name == "Browse for an image")
+            .expect("browse in focus order");
+        let continue_button = order
+            .iter()
+            .position(|name| name == "Continue")
+            .expect("continue in focus order");
+        assert!(browse < continue_button);
+        assert!(
+            accessible_named(&tree, "Step 3 of 6: Customize")
+                .expect("future customize step")
+                .state
+                .disabled
+        );
+    }
+
+    #[test]
+    fn profile_and_confirmation_semantics_are_editable_and_focusable() {
+        use ui::a11y::Action as AccessAction;
+
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+        app.select_target(&mut doc, 0);
+        app.goto(&mut doc, Step::Customize);
+
+        let tree = app.accessibility_tree();
+        let mut order = Vec::new();
+        accessible_focus_order(&tree, &mut order);
+        let profile_order = [
+            "Hostname",
+            "Full name",
+            "Username",
+            "Language and locale",
+            "Time zone",
+            "Keyboard layout",
+            "Preview embedded setup",
+        ];
+        let positions = profile_order.map(|name| {
+            order
+                .iter()
+                .position(|candidate| candidate == name)
+                .unwrap_or_else(|| panic!("missing accessible profile control {name}"))
+        });
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+
+        assert!(app.perform_semantic_action(
+            "imager:profile:hostname",
+            &AccessAction::SetValue("accessible-host".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(ImagerDoc::profile(&doc).hostname, "accessible-host");
+
+        app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
+        app.scroll_y = 0.0;
+        assert!(app.perform_semantic_action(
+            "imager:profile:keyboard",
+            &AccessAction::Focus,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(app.scroll_y > 0.0, "assistive focus scrolls into view");
+
+        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+        app.goto(&mut doc, Step::Confirm);
+        let target_name = app.target().expect("target").name.clone();
+        let confirm = accessible_named(&app.accessibility_tree(), "Confirm the target device")
+            .expect("confirmation input")
+            .clone();
+        assert_eq!(confirm.role, ui::a11y::Role::TextInput);
+        assert!(confirm.state.required);
+        assert!(app.perform_semantic_action(
+            "imager:hit:confirm-field",
+            &AccessAction::SetValue(target_name),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(app.confirm_matches());
+        assert!(app.confirm_input.is_focused());
+    }
+
+    #[test]
+    fn write_progress_and_status_are_live_regions() {
+        let (mut app, _doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+        app.step = Step::Write;
+        app.status = "Verifying written data".into();
+        app.progress = Progress {
+            phase: JobPhase::Verifying,
+            write_frac: 1.0,
+            verify_frac: 0.4,
+            rate_bps: 1,
+        };
+
+        let tree = app.accessibility_tree();
+        let status = accessible_named(&tree, "Status").expect("live status");
+        assert_eq!(status.live, Some(ui::a11y::Politeness::Polite));
+        let progress = accessible_named(&tree, "Verifying image").expect("live progress");
+        assert_eq!(progress.role, ui::a11y::Role::ProgressBar);
+        assert!(progress.state.busy);
+        assert_eq!(progress.live, Some(ui::a11y::Politeness::Polite));
+        assert!(
+            progress
+                .value
+                .as_deref()
+                .is_some_and(|value| value.contains("percent"))
+        );
+        assert_eq!(
+            accessible_named(&tree, "Write phase")
+                .expect("write phase progress")
+                .value
+                .as_deref(),
+            Some("100 percent")
+        );
+        assert_eq!(
+            accessible_named(&tree, "Verify phase")
+                .expect("verify phase progress")
+                .value
+                .as_deref(),
+            Some("40 percent")
+        );
     }
 
     #[test]
