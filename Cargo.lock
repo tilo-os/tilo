@@ -293,6 +293,7 @@ dependencies = [
 name = "agent"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
  "anyhow",
  "automerge",
  "chat",
@@ -317,6 +318,17 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "word-processor",
+]
+
+[[package]]
+name = "agent-provider-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]
@@ -13345,6 +13357,7 @@ name = "settings"
 version = "0.1.0"
 dependencies = [
  "accounts",
+ "agent-provider-config",
  "atomic-file",
  "automerge",
  "collab-types",
