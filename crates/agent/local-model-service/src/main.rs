@@ -16,8 +16,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use agent_provider_config::local::{
-    Accelerator, HardwareSnapshot, LocalModelCatalog, LocalModelRelease, LocalModelStatus,
-    RuntimeDecision, RuntimeKind, select_runtime,
+    Accelerator, HardwareSnapshot, LocalEndpoint, LocalModelCatalog, LocalModelRelease,
+    LocalModelStatus, RuntimeDecision, RuntimeKind, select_runtime,
 };
 use clap::{Parser, Subcommand};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -199,6 +199,7 @@ enum LocalModelPhase {
     },
     Ready {
         running: bool,
+        endpoint: Option<LocalEndpoint>,
     },
     Error {
         message: String,
@@ -379,8 +380,9 @@ fn podman_vllm_argv(command: &VllmCommand) -> Vec<String> {
     argv.extend([
         "--mount".into(),
         format!(
-            "type=bind,src={},dst=/models/model,ro",
-            command.model_path.display()
+            "type=bind,src={},dst={},ro",
+            command.model_path.display(),
+            command.model_container_path
         ),
         "--security-opt".into(),
         "label=disable".into(),
@@ -792,12 +794,18 @@ fn phase(status: &LocalModelStatus) -> LocalModelPhase {
             percent: None,
             message: "Verifying download".into(),
         },
-        LocalModelStatus::Installed => LocalModelPhase::Ready { running: false },
+        LocalModelStatus::Installed => LocalModelPhase::Ready {
+            running: false,
+            endpoint: None,
+        },
         LocalModelStatus::Starting => LocalModelPhase::Installing {
             percent: None,
             message: "Starting local runtime".into(),
         },
-        LocalModelStatus::Ready { .. } => LocalModelPhase::Ready { running: true },
+        LocalModelStatus::Ready { endpoint } => LocalModelPhase::Ready {
+            running: true,
+            endpoint: Some(endpoint.clone()),
+        },
         LocalModelStatus::Failed { message } => LocalModelPhase::Error {
             message: message.clone(),
         },
@@ -1324,6 +1332,7 @@ mod tests {
             runtime_kind: RuntimeKind::Cpu,
             args: vec!["serve".into(), "/models/model".into()],
             model_path: PathBuf::from("/home/ada/.local/share/qos/models/sha256/abc"),
+            model_container_path: "/models/model".into(),
             endpoint: agent_provider_config::local::LocalEndpoint { url: "http://127.0.0.1:9000/v1".into(), model_id: "tiny".into() },
             runtime_extension_id: "runtime".into(),
         };
