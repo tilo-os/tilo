@@ -10,6 +10,10 @@ description = "Verified, content-addressed local-model runtime service for qOS."
 name = "local_model_service"
 path = "src/lib.rs"
 
+[[bin]]
+name = "qos-model-manager"
+path = "src/main.rs"
+
 [dependencies]
 agent-provider-config = { path = "../provider-config" }
 system-extension = { path = "../../system/system-extension" }
@@ -19,6 +23,9 @@ serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
 thiserror.workspace = true
+reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
+clap.workspace = true
+ed25519-dalek.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
