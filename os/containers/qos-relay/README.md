@@ -1,18 +1,10 @@
-# qOS relay-only home server
+# qOS composite home peer
 
 This Compose file runs the supported, headless `qos-relay` deployment on a NAS
-or home server. It is an always-on authenticated workspace relay: it keeps the
-workspace CRDT, forwards updates between connected peers, and persists updates
-for an offline peer until that peer returns.
-
-It is deliberately **not** a full NAS mirror. This image does not start the
-qOS filesystem/blob host plane, so it does not retain file bytes, ebook/media
-assets, or full-resolution previews. It also does not run app backends, compute
-jobs, or remote-control tunnelling. The relay does retain CRDT workspace state
-such as open workspace layout and app state that the existing collaboration
-replica publishes. File thumbnails and other file data are not promised by this
-deployment; they require the future filesystem host plane and an explicit
-residency policy.
+or home server. It is an always-on authenticated workspace relay and complete
+filesystem peer: it keeps the workspace CRDT, persists offline updates, and
+hydrates every manifest, chunk, and thumbnail in each `workspaces[]` entry of
+the transferred `/etc/qos/home-peer.toml` bundle.
 
 ## Before starting
 
@@ -42,6 +34,7 @@ currently incomplete and must not be used to fabricate an identity.
 
 ```sh
 cp relay.toml.example relay.toml
+# Transfer the exported bundle as ./home-peer.toml.
 podman compose up -d
 podman compose logs -f qos-relay
 ```
@@ -80,8 +73,7 @@ podman compose exec qos-relay qos-relay-admin --config /etc/qos/relay.toml statu
 podman compose restart qos-relay
 ```
 
-Do not configure `full_content_replication`, `app_serving`, `compute`, or
-`remote_control_relay` for this container. The standalone daemon clamps those
-advertisements off even if a hand-edited configuration requests them. A future
-composite NAS deployment will start and health-check the filesystem/blob host
-before enabling full file residency.
+The aggregate replica status is the content-capacity health check:
+`full_content_replication` is advertised only while every configured workspace
+has a fresh complete status. App, compute, and remote-control services remain
+separate from filesystem replication.

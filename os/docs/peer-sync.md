@@ -68,3 +68,24 @@ systemctl --user status shell-peer-sync.service
 
 An unreadable or mismatched key is not repaired by generating a replacement;
 restore or deliberately re-enrol the device instead.
+
+## Home peer replica
+
+On a workspace member, export the current workspace and its enforced access
+policy. Repeat this for each mounted workspace; the exporter appends or
+refreshes it in the same bundle automatically:
+
+```sh
+fs export-home-peer --cache-dir /var/cache/quick-fs \
+  --acl /var/lib/qos/fs-capabilities.json \
+  --output home-peer.toml
+```
+
+Transfer `home-peer.toml` to the host as `/etc/qos/home-peer.toml` and restart
+`qos-fs-replica.service`. The bundle's `workspaces` array is the home peer's
+complete set: it runs a durable worker for every entry using the enrolled
+device identity, keeps each namespace plus all manifests, chunks, and
+thumbnails under its configured cache, and serves them through the bundled
+capability policy. `qos-relay status` reports `full_content_replication: true`
+only after the atomic aggregate status confirms every configured workspace is
+complete.
