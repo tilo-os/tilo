@@ -345,12 +345,16 @@ pub async fn hydrate_full_workspace(
 /// Home-peer caches are per-workspace, so their blob store contains only this
 /// workspace's retained content. The live set includes manifests, chunks and
 /// thumbnails; every other owned blob is an obsolete version left by a
-/// replacement, deletion or rename. Callers invoke this only after a stable
-/// hydration pass and withdraw readiness if the pass changes underneath it.
+/// replacement, deletion or rename. Immutable history retains the signed
+/// version graph and metadata, but does not pin every historical payload on a
+/// bounded home server forever; an explicit retention/export feature can hold
+/// selected historical bytes separately. Callers invoke this only after a
+/// stable hydration pass and withdraw readiness if the pass changes
+/// underneath it.
 pub async fn prune_obsolete_workspace_content(
     namespace: &Arc<Mutex<Namespace>>,
     hydrator: &Hydrator,
-    history: Option<&crate::FileHistoryStore>,
+    _history: Option<&crate::FileHistoryStore>,
 ) -> Result<u64> {
     let (roots, generation) = {
         let mut namespace = namespace
@@ -367,11 +371,6 @@ pub async fn prune_obsolete_workspace_content(
         }
         if let Some(thumbnail_hash) = roots.thumbnail {
             live.insert(thumbnail_hash);
-        }
-    }
-    if let Some(history) = history {
-        for manifest_hash in history.retained_content_hashes() {
-            retain_manifest_tree(&mut live, hydrator, Hash::from(manifest_hash.0)).await?;
         }
     }
     let present = hydrator.store.store().blobs().list().hashes().await?;
