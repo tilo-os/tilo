@@ -1489,12 +1489,15 @@ fn availability_badge(state: &AvailabilityProjection, theme: &Theme) -> (Icon, C
         TransferPhase::Uploading => return (Icon::Send, accent),
         TransferPhase::Idle => {}
     }
-    if state.policy == AvailabilityPolicy::Pinned {
-        return (Icon::Star, accent);
-    }
     match state.residency {
         Residency::NotResident => (Icon::CloudDownload, theme.tokens.colors.text_dim),
         Residency::Partial { .. } => (Icon::Download, theme.tokens.colors.text_dim),
+        // The star means the keep-offline promise is actually satisfied. A
+        // desired pin that is still remote/partial is represented by its real
+        // transfer/residency state above, never as a completed outcome.
+        Residency::Resident { .. } if state.policy == AvailabilityPolicy::Pinned => {
+            (Icon::Star, accent)
+        }
         Residency::Resident { .. } if state.safely_replicated() => {
             (Icon::Shield, theme.tokens.colors.text_dim)
         }
@@ -2340,6 +2343,18 @@ mod tests {
             false,
         );
         assert_eq!(availability_badge(&pinned, &theme).0, Icon::Star);
+        let pending_pin = availability_with(
+            "idle",
+            &serde_json::json!({"state": "not_resident"}),
+            "pinned",
+            &serde_json::json!({"state": "unknown"}),
+            false,
+        );
+        assert_eq!(
+            availability_badge(&pending_pin, &theme).0,
+            Icon::CloudDownload,
+            "pin intent must not masquerade as verified local residency"
+        );
         let failed = availability_with(
             "idle",
             &serde_json::json!({"state": "not_resident"}),

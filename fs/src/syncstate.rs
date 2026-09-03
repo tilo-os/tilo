@@ -436,6 +436,8 @@ mod tests {
                     message: "peer became unavailable".into(),
                     occurred_at_ms: 8_000,
                 }),
+                retry_count: 1,
+                retry_at_ms: Some(9_000),
             },
             policy: AvailabilityPolicy::Automatic,
             replicas: ReplicaEvidence {
