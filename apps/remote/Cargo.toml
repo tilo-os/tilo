@@ -23,8 +23,8 @@ ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 # state, so add/edit/rename/favorite/delete of a profile are replayable actions
 # the shell's Ctrl+K palette dispatches — the same ones the on-screen affordances do.
 qos-actions = { path = "../../crates/collab/actions" }
-# qOS-device sessions consume the canonical direct-first mesh placement
-# decision; Remote does not maintain a second host-selection implementation.
+# qOS-device sessions consume the authenticated exact-target mesh placement;
+# Remote does not maintain a second host-selection implementation.
 qos-relay = { path = "../../crates/hosting/qos-relay" }
 runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 qos-callstream = { path = "../../crates/collab/qos-callstream" }

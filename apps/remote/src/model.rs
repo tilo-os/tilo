@@ -31,9 +31,8 @@ pub enum ConnectionKind {
     /// Remote Desktop Protocol — a streamed remote desktop.
     Rdp,
     /// A peer qOS device reached through the canonical device mesh. The shell
-    /// prefers an authenticated direct route and falls back to an eligible
-    /// encrypted relay, while reusing the target's consented surface stream
-    /// and input firewall.
+    /// requires an authenticated exact-target route while reusing the
+    /// target's consented surface stream and input firewall.
     Qos,
 }
 

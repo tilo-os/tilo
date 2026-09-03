@@ -97,10 +97,10 @@ fn connect_spec(connection: &Connection) -> ActionSpec {
         tags: vec!["network".into(), "session".into()],
         ..ActionContract::default()
     });
-    if !crate::session::live_sessions_enabled() {
+    if !crate::session::can_attempt_live(connection.kind) {
         spec.unavailable(
             "live_transport_disabled",
-            "Enable live remote sessions before connecting",
+            "This live transport is not enabled",
         )
     } else if connection.presence == Presence::Offline {
         spec.unavailable("host_offline", "The saved host is currently offline")
@@ -607,6 +607,20 @@ mod tests {
             "{labels:?}"
         );
         assert!(labels.iter().any(|l| l.contains("Delete")), "{labels:?}");
+    }
+
+    #[test]
+    fn qos_connect_action_is_available_without_the_ssh_vnc_dev_gate() {
+        let id = Uuid::new_v4();
+        let mut connection = sample(id, "qOS device");
+        connection.kind = ConnectionKind::Qos;
+        connection.presence = Presence::Online;
+        assert!(
+            connect_spec(&connection)
+                .contract
+                .availability
+                .is_available()
+        );
     }
 
     #[test]

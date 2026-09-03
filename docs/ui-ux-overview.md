@@ -68,9 +68,9 @@ to infer present product behaviour.
 ## Capability honesty
 
 - Remote Desktop offers SSH, VNC, and qOS device connections. qOS sessions use
-  the shell's authenticated direct-first device mesh with encrypted relay
-  fallback, stay waiting until the target shares a workspace surface, and fail
-  closed on denial, revocation, or route loss. Existing RDP profiles remain
+  the shell's authenticated exact-target device route, stay waiting until the
+  target shares a workspace surface, and fail closed on unavailable relays,
+  denial, revocation, or route loss. Existing RDP profiles remain
   preserved and editable, but visibly unavailable.
 - Device pairing is manual-copy today: the screen asks for the code and pairing
   payload supplied by the existing device. It does not advertise a scanner that
