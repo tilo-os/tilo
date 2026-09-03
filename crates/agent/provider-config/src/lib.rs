@@ -13,6 +13,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+pub mod local;
+
 /// The `settings.json` section owned by this crate.
 pub const SETTINGS_SECTION: &str = "agent_providers";
 const CONFIG_KEY: &str = "config";
