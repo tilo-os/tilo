@@ -345,14 +345,25 @@ hardware absence into no encryption at all — the opposite of what absence shou
 do. So qOS builds the layout itself (ESP + `/boot` + LUKS2 root) and installs
 `bootc ... to-filesystem` into the opened mapping.
 
-The volume is always created with a **recovery key**, shown once during install.
-Everything else is a slot layered on top of it:
+The volume is always created with a **recovery key**, shown once during install
+and verified against the finished LUKS header before the temporary install key
+may be removed. If that value cannot be shown and verified, installation stops
+while the temporary key still exists. Everything else is a slot layered on top
+of it:
 
 | Machine | Slots after install | Boot experience |
 |---|---|---|
 | TPM + continuous target verified-boot preflight | recovery key, TPM2+PIN | type the PIN |
 | TPM without verified boot | recovery key, passphrase | type the passphrase |
 | No TPM | recovery key, passphrase | type the passphrase |
+
+An optional FIDO2 security key adds another slot to any row. Selecting it is a
+requirement: enrollment failure stops installation with an actionable retry
+message rather than silently finishing without the requested factor. The sealed
+target UKI carries both `tpm2-device=auto` and `fido2-device=auto` in its
+per-volume `rd.luks.options=` token. LUKS2 metadata tells systemd-cryptsetup
+which of those handlers has enrolled material; without the FIDO2 boot option a
+security key could be successfully enrolled yet never tried by the initramfs.
 
 The installer and privileged backend both require a startup secret. A short PIN
 is accepted only when TPM2 and Secure Boot are active, the running kernel

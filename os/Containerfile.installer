@@ -50,6 +50,9 @@ RUN printf 'kargs = ["qos.install"]\n' \
     && /usr/libexec/qos-uki-cmdline remove vt.global_cursor_default \
     && /usr/libexec/qos-uki-cmdline append qos.root=0000000000000000000000000000000000000 \
     && /usr/libexec/qos-uki-cmdline append qos.luks=000000000000000000000000000000000000000000000 \
+    # Reserve one length-stable measured token for per-volume TPM2/FIDO2
+    # discovery. qos-install replaces it after the target LUKS UUID exists.
+    && /usr/libexec/qos-uki-cmdline append qos.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000 \
     && /usr/libexec/qos-uki-cmdline append qos.install \
     && /usr/libexec/qos-uki-cmdline show | grep -qw qos.mode=normal \
     && /usr/libexec/qos-uki-cmdline show | grep -qw qos.install \
