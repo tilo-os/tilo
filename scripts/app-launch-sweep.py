@@ -34,6 +34,9 @@ Examples:
 
     # One app, quickly.
     scripts/app-launch-sweep.py --out target/one --only calculator
+
+    # Continue an interrupted sweep with the exact same options.
+    scripts/app-launch-sweep.py --out target/sweep --shots --resume
 """
 from __future__ import annotations
 
@@ -79,6 +82,146 @@ ERROR_HINTS = (
     "bwrap:", "error", "panic", "refuse", "failed", "cannot",
     "no such", "warning:", "denied",
 )
+
+# A full sweep is deliberately slow: each package gets its own compositor so
+# one app's GPU work cannot affect another's result. Keep a separate
+# checkpoint rather than treating results.json as an in-progress file. That
+# leaves the latter as the complete, shareable report it has always been.
+PROGRESS_FILENAME = ".app-launch-sweep-progress.json"
+PROGRESS_VERSION = 1
+
+
+class SweepStateError(RuntimeError):
+    """A checkpoint cannot safely be used for the requested run."""
+
+
+def atomic_write_json(path: pathlib.Path, value: object) -> None:
+    """Durably replace a JSON file without exposing a partial document.
+
+    The temporary file is created beside the destination, so ``os.replace``
+    is atomic even when ``--out`` is on another filesystem. Syncing both the
+    file and containing directory makes a just-recorded package survive a
+    power loss as well as an ordinary Ctrl-C.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = pathlib.Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(value, f, indent=2, sort_keys=True)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, path)
+        try:
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def checkpoint_config(args, packages: list[str]) -> dict:
+    """The inputs which must agree before one sweep can resume another."""
+    return {
+        "packages": packages,
+        "worktree": str(args.worktree.resolve()),
+        "data_dir": str(args.data_dir.resolve()),
+        "pin": args.pin,
+        "empty_workspace": args.empty_workspace,
+        "shots": args.shots,
+        "settle": args.settle,
+        "hold": args.hold,
+        "min_hold": args.min_hold,
+        "startup_timeout": args.startup_timeout,
+    }
+
+
+def valid_completed_result(value: object) -> bool:
+    """Whether a checkpoint record is safe for the reporting path to reuse."""
+    if not isinstance(value, dict) or not isinstance(value.get("gui"), bool):
+        return False
+    if "adopted" not in value or "errors" not in value:
+        return False
+    adopted = value["adopted"]
+    return (
+        (adopted is None or
+         (isinstance(adopted, list) and all(isinstance(tile, str) for tile in adopted)))
+        and isinstance(value["errors"], list)
+        and all(isinstance(error, str) for error in value["errors"])
+        and isinstance(value.get("compositor_started"), (bool, type(None)))
+        and isinstance(value.get("launched"), bool)
+        and isinstance(value.get("png"), (str, type(None)))
+    )
+
+
+def load_checkpoint(path: pathlib.Path, expected_config: dict) -> dict:
+    """Load a checkpoint only when it describes precisely this sweep."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise SweepStateError(
+            f"no checkpoint at {path}; run without --resume to start a new sweep"
+        ) from exc
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SweepStateError(
+            f"checkpoint {path} is unreadable or corrupt ({exc}); refusing to "
+            "guess which packages are complete. Run without --resume to start "
+            "a new sweep."
+        ) from exc
+
+    if not isinstance(raw, dict):
+        raise SweepStateError(f"checkpoint {path} is not a JSON object")
+    if raw.get("version") != PROGRESS_VERSION:
+        raise SweepStateError(
+            f"checkpoint {path} has incompatible version {raw.get('version')!r}"
+        )
+    if raw.get("configuration") != expected_config:
+        raise SweepStateError(
+            f"checkpoint {path} was made with different sweep options or packages; "
+            "run without --resume to start a new sweep"
+        )
+    completed = raw.get("completed")
+    if not isinstance(completed, dict):
+        raise SweepStateError(f"checkpoint {path} has no valid completed-results map")
+    package_ids = set(expected_config["packages"])
+    invalid = [key for key, value in completed.items()
+               if not isinstance(key, str) or key not in package_ids
+               or not valid_completed_result(value)]
+    if invalid:
+        raise SweepStateError(
+            f"checkpoint {path} contains invalid completed package records"
+        )
+    return completed
+
+
+def save_checkpoint(path: pathlib.Path, config: dict, completed: dict) -> None:
+    """Persist every finished package before the sweep proceeds to the next."""
+    atomic_write_json(path, {
+        "version": PROGRESS_VERSION,
+        "configuration": config,
+        "completed": completed,
+    })
+
+
+def prepare_checkpoint(out: pathlib.Path, config: dict,
+                       resume: bool) -> tuple[pathlib.Path, dict]:
+    """Start fresh by default, or return only a validated resume checkpoint."""
+    path = out / PROGRESS_FILENAME
+    if resume:
+        return path, load_checkpoint(path, config)
+    completed: dict = {}
+    save_checkpoint(path, config, completed)
+    return path, completed
 
 
 def call(sock_path: str, payload: dict, timeout: float = 30.0) -> dict:
@@ -407,6 +550,22 @@ def run_one(args, package_id: str, out: pathlib.Path, env_extra: dict) -> dict:
     }
 
 
+def print_result(package_id: str, result: dict, resumed: bool = False) -> None:
+    """Print a result in the same compact form for fresh and resumed work."""
+    if not result["gui"]:
+        print(f"NO-GUI   {package_id:<32} no graphical entrypoint — not launched",
+              flush=True)
+        return
+    if result["adopted"]:
+        detail = ", ".join(result["adopted"])
+        status = "RESUMED" if resumed else "ADOPTED"
+    else:
+        status = "NO-TAB "
+        errors = result.get("errors", [])
+        detail = errors[-1][:130] if errors else "(no output)"
+    print(f"{status}  {package_id:<32} {detail}", flush=True)
+
+
 def main() -> int:
     here = pathlib.Path(__file__).resolve().parent.parent
     p = argparse.ArgumentParser(description=__doc__,
@@ -417,6 +576,9 @@ def main() -> int:
                    help="directory for per-app logs, PNGs and results.json")
     p.add_argument("--only", default=None,
                    help="comma-separated substrings; only matching packages run")
+    p.add_argument("--resume", action="store_true",
+                   help="resume a compatible interrupted sweep in --out; without "
+                        "this option a new sweep replaces any old checkpoint")
     p.add_argument("--pin", action="store_true",
                    help="export the manual ICD variables (baseline comparison)")
     p.add_argument("--empty-workspace", action="store_true",
@@ -457,11 +619,19 @@ def main() -> int:
         return 1
 
     env_extra = dict(PIN_ENV) if args.pin else {}
+    config = checkpoint_config(args, packages)
+    try:
+        checkpoint, results = prepare_checkpoint(args.out, config, args.resume)
+    except SweepStateError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 2
     print(f"packages: {len(packages)}   manual-ICD-pin: {args.pin}   "
-          f"settle: {args.settle:.0f}s\n", flush=True)
+          f"settle: {args.settle:.0f}s   resume: {args.resume}\n", flush=True)
 
-    results = {}
     for package_id in packages:
+        if package_id in results:
+            print_result(package_id, results[package_id], resumed=True)
+            continue
         gui = has_gui_entrypoint(args.data_dir, package_id)
         if not gui:
             results[package_id] = {
@@ -472,19 +642,12 @@ def main() -> int:
                            "never offers it, so nothing is ever launched"],
                 "png": None,
             }
-            print(f"NO-GUI   {package_id:<32} no graphical entrypoint — not launched",
-                  flush=True)
-            continue
-        r = run_one(args, package_id, args.out, env_extra)
-        r["gui"] = True
-        results[package_id] = r
-        if r["adopted"]:
-            detail = ", ".join(r["adopted"])
-            status = "ADOPTED"
         else:
-            status = "NO-TAB "
-            detail = r["errors"][-1][:130] if r["errors"] else "(no output)"
-        print(f"{status}  {package_id:<32} {detail}", flush=True)
+            r = run_one(args, package_id, args.out, env_extra)
+            r["gui"] = True
+            results[package_id] = r
+        save_checkpoint(checkpoint, config, results)
+        print_result(package_id, results[package_id])
 
     gui_pkgs = [k for k, v in results.items() if v["gui"]]
     adopted = [k for k, v in results.items() if v["adopted"]]
@@ -503,7 +666,7 @@ def main() -> int:
     failed = [k for k in gui_pkgs if k not in adopted]
     if failed:
         print("failed: " + ", ".join(sorted(failed)))
-    (args.out / "results.json").write_text(json.dumps(results, indent=2))
+    atomic_write_json(args.out / "results.json", results)
     print(f"\nper-app logs + results.json in {args.out}")
     return 0
 
