@@ -1,8 +1,8 @@
 //! Pure data model for the Backups app.
 //!
 //! The *catalog* (sources, snapshots, destinations) represents the ground
-//! truth that, in the live app, comes from the storage backend — btrfs /
-//! snapper subvolume listings or a `restic snapshots` JSON dump. For the
+//! truth that, in the live app, comes from the local checksummed repository.
+//! Future providers can project btrfs or remote repositories here too. For the
 //! offline `--shots` build (and as the demo seed) we synthesise a realistic
 //! week of activity in [`Catalog::sample`].
 //!
@@ -68,6 +68,7 @@ pub enum SourceKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum Cadence {
+    OnDemand,
     Hourly,
     Daily,
     Weekly,
@@ -76,6 +77,7 @@ pub enum Cadence {
 impl Cadence {
     pub fn label(self) -> &'static str {
         match self {
+            Cadence::OnDemand => "On demand",
             Cadence::Hourly => "Hourly",
             Cadence::Daily => "Daily",
             Cadence::Weekly => "Weekly",
@@ -133,6 +135,7 @@ pub enum SnapStatus {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DestKind {
+    LocalFolder,
     LocalBtrfs,
     External,
     RemoteRestic,
@@ -141,6 +144,7 @@ pub enum DestKind {
 impl DestKind {
     pub fn label(self) -> &'static str {
         match self {
+            DestKind::LocalFolder => "Local folder",
             DestKind::LocalBtrfs => "Local · btrfs",
             DestKind::External => "External · USB",
             DestKind::RemoteRestic => "Offsite · restic",
@@ -239,9 +243,8 @@ pub struct Snapshot {
     pub files_changed: u32,
     pub status: SnapStatus,
     /// The snapshot's indexed contents, shown in the restore browser. Empty
-    /// until a real backend indexes the snapshot — the live app has no
-    /// indexer yet, so real snapshots present an "index unavailable" state
-    /// rather than fabricated files. The sample catalog fills this in.
+    /// until the repository manifest is read. The local engine records every
+    /// entry while copying, so its snapshots populate this list.
     pub files: Vec<SnapFile>,
 }
 
@@ -290,10 +293,79 @@ const MB: u64 = 1024 * 1024;
 const TB: u64 = 1024 * GB;
 
 impl Catalog {
+    /// Project a real local repository into the dashboard model.
+    pub fn from_local(
+        source: &std::path::Path,
+        destination: &std::path::Path,
+        manifests: &[crate::engine::BackupManifest],
+    ) -> Self {
+        let source_label = source.to_string_lossy().into_owned();
+        let destination_label = destination
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| destination.to_string_lossy().into_owned());
+        let snapshots = manifests
+            .iter()
+            .map(|manifest| Snapshot {
+                id: manifest.id.clone(),
+                source_id: "local-source".into(),
+                dest_id: "local-destination".into(),
+                day: 0,
+                time: "saved".into(),
+                kind: SnapType::Manual,
+                retention: Retention::Daily,
+                size_bytes: manifest.bytes,
+                delta_bytes: manifest.bytes,
+                files_changed: manifest.files.min(u64::from(u32::MAX)) as u32,
+                status: SnapStatus::Complete,
+                files: manifest
+                    .entries
+                    .iter()
+                    .map(|entry| SnapFile {
+                        depth: entry.path.components().count().saturating_sub(1),
+                        name: entry
+                            .path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                        size: if matches!(entry.kind, crate::engine::EntryKind::File) {
+                            ui::format::bytes(entry.size)
+                        } else {
+                            String::new()
+                        },
+                        is_dir: matches!(entry.kind, crate::engine::EntryKind::Directory),
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        let used = manifests.iter().map(|manifest| manifest.bytes).sum::<u64>();
+        Self {
+            sources: vec![Source {
+                id: "local-source".into(),
+                path: source_label,
+                kind: SourceKind::Custom,
+                cadence: Cadence::OnDemand,
+                enabled: true,
+                next_run: "On demand".into(),
+                health: Health::Ok,
+            }],
+            snapshots,
+            destinations: vec![Destination {
+                id: "local-destination".into(),
+                name: destination_label,
+                kind: DestKind::LocalFolder,
+                used_bytes: used,
+                total_bytes: used.saturating_mul(2).max(1),
+                encrypted: false,
+                last_sync: "local".into(),
+                health: Health::Ok,
+            }],
+        }
+    }
+
     /// An empty catalog — no sources, snapshots, or destinations. This is the
     /// real first-run state: the live app starts here and shows onboarding
-    /// until the user adds a source + destination (a real btrfs/restic backend
-    /// is a later task).
+    /// until the user selects a source and destination.
     pub fn empty() -> Self {
         Self {
             sources: Vec::new(),

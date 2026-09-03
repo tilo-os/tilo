@@ -1,8 +1,7 @@
 # Backups — qOS application manifest.
 #
-# Nothing beyond the GUI baseline. The snapshot/target paths the UI
-# lists are display strings held in the CRDT; no snapshot engine is
-# wired up yet, so the app opens no file and execs nothing.
+# Source, repository, and restore folders are selected through the host file
+# chooser. The app has no ambient access to the rest of the user's files.
 #
 # Pack and install:
 #
@@ -52,6 +51,7 @@ landlock   = "strict"
 mode = "off"
 
 [sandbox.portals]
+file-chooser = "via-host"
 
 [sandbox.services]
 collab = "optional@1"
