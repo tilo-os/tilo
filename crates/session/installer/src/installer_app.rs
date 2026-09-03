@@ -35,8 +35,10 @@
 //! the UI stays live and the log animates. If no proxy is wired (tests /
 //! no event loop) it falls back to a synchronous run.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::process::Command;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use automerge::{
@@ -58,7 +60,7 @@ use ui::app::UserEvent;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Dropdown, Row, Spinner, Text, TextInput, Widget};
+use ui::widget::{Dropdown, Row, Scrollable, Spacer, Spinner, Text, TextInput, Widget};
 
 use crate::action_button::ActionButton;
 use crate::disk_row::DiskRow;
@@ -224,6 +226,11 @@ const RECOVERY_KEY_PREFIX: &str = "::qos-recovery-key::";
 const CARD_WIDTH: f32 = 520.0;
 const CARD_PADDING: f32 = 28.0;
 const CARD_GAP: f32 = 12.0;
+/// Breathing room around the card on compact displays. The card itself can
+/// narrow to the remaining width rather than extending beyond the viewport.
+const VIEWPORT_PADDING: f32 = 16.0;
+/// Reserved lane for the always-visible compact-view scrollbar.
+const SCROLLBAR_GUTTER: f32 = 14.0;
 /// Height of the install status log box.
 const STATUS_LOG_HEIGHT: f32 = 200.0;
 
@@ -432,7 +439,7 @@ fn validate_startup_secret(secret: &str, tpm2: bool) -> Result<(), &'static str>
 }
 
 // ===================================================================
-// Card — a fixed-width, padded, vertically-stacked rounded container.
+// Card — a responsive, padded, vertically-stacked rounded container.
 // Its own `Widget` (not a bare taffy node) so the widget tree mirrors
 // the taffy tree for focus traversal. Mirrors greeter's `Card`.
 // ===================================================================
@@ -493,6 +500,10 @@ impl Widget for Card {
                         bottom: length(CARD_PADDING),
                     },
                     size: Size {
+                        width: percent(1.0_f32),
+                        height: Dimension::auto(),
+                    },
+                    max_size: Size {
                         width: length(CARD_WIDTH),
                         height: Dimension::auto(),
                     },
@@ -648,6 +659,206 @@ impl Widget for Card {
 }
 
 // ===================================================================
+// ViewportStage — centres short cards, then lets the spacers collapse before
+// a tall card overflows into the surrounding Scrollable. This keeps the
+// spacious desktop presentation while making every control reachable on a
+// small laptop panel, portrait screen, or large-text/high-DPI setup.
+// ===================================================================
+
+struct ViewportStage {
+    children: Vec<Box<dyn Widget>>,
+    rect: Rect,
+}
+
+impl ViewportStage {
+    fn new(card: Box<dyn Widget>) -> Self {
+        Self {
+            children: vec![Box::new(Spacer::new()), card, Box::new(Spacer::new())],
+            rect: Rect::ZERO,
+        }
+    }
+}
+
+impl Widget for ViewportStage {
+    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        for child in &mut self.children {
+            child.sync(state, root);
+        }
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let child_nodes: Vec<NodeId> = self
+            .children
+            .iter_mut()
+            .map(|child| child.build_layout(taffy, theme, node_map))
+            .collect();
+        #[allow(
+            clippy::unwrap_used,
+            reason = "every child node was just created in this same tree"
+        )]
+        let node = taffy
+            .new_with_children(
+                Style {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Column,
+                    align_items: Some(AlignItems::Center),
+                    padding: taffy::Rect {
+                        left: length(VIEWPORT_PADDING),
+                        right: length(VIEWPORT_PADDING),
+                        top: length(VIEWPORT_PADDING),
+                        bottom: length(VIEWPORT_PADDING),
+                    },
+                    size: Size {
+                        width: percent(1.0_f32),
+                        height: percent(1.0_f32),
+                    },
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                },
+                &child_nodes,
+            )
+            .unwrap();
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        self.rect = Rect::new(
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
+        );
+        let own_origin = Point::new(self.rect.x0, self.rect.y0);
+        if let Ok(child_nodes) = taffy.children(node) {
+            for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
+                child.apply_layout(taffy, child_node, own_origin);
+            }
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for child in &mut self.children {
+            child.draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        let Ok(child_nodes) = taffy.children(node_id) else {
+            return;
+        };
+        if let Some(index) = self
+            .children
+            .iter()
+            .position(|child| child.wants_pointer_capture())
+        {
+            if let (Some(child), Some(&child_node)) =
+                (self.children.get_mut(index), child_nodes.get(index))
+            {
+                child.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    root,
+                    handled,
+                    focus_target,
+                    child_node,
+                    taffy,
+                );
+            }
+            return;
+        }
+        for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
+            child.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                root,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            );
+            if *handled {
+                break;
+            }
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.children
+            .iter()
+            .map(std::convert::AsRef::as_ref)
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.children
+            .iter_mut()
+            .map(|child| child.as_mut() as &mut (dyn Widget + '_))
+            .collect()
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.children
+            .iter()
+            .any(|child| child.wants_pointer_capture())
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let mut dirty = false;
+        for child in &mut self.children {
+            dirty |= child.take_structure_dirty();
+        }
+        dirty
+    }
+
+    fn needs_commit(&self) -> bool {
+        self.children.iter().any(|child| child.needs_commit())
+    }
+
+    fn on_commit(&mut self) {
+        for child in &mut self.children {
+            child.on_commit();
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "InstallerViewportStage"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+// ===================================================================
 // InstallerApp
 // ===================================================================
 
@@ -731,6 +942,9 @@ pub struct InstallerApp {
     preconfigured: bool,
     /// Wired by `main` so the worker thread can pump progress back.
     proxy_slot: Option<ProxySlot>,
+    /// Scroll position survives incidental composition rebuilds (network
+    /// status, validation, progress). Deliberate step changes reset it.
+    viewport_offset: Rc<Cell<(f32, f32)>>,
 }
 
 impl Default for InstallerApp {
@@ -800,6 +1014,7 @@ impl InstallerApp {
             install_launched: false,
             preconfigured: false,
             proxy_slot: None,
+            viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
         }
     }
 
@@ -1034,6 +1249,10 @@ impl InstallerApp {
         }
     }
 
+    fn reset_viewport(&self) {
+        self.viewport_offset.set((0.0, 0.0));
+    }
+
     fn bootstrap_crdt(&self, state: &mut AutoCommit, root: &ObjId) {
         if state.get(root, USERNAME_PATH).ok().flatten().is_none()
             && let Ok(obj) = state.put_object(root, USERNAME_PATH, ObjType::Text)
@@ -1197,6 +1416,7 @@ impl InstallerApp {
                     // button (begin flag) is the only entry into install.
                     if n != Step::Install {
                         self.step = n;
+                        self.reset_viewport();
                         self.status.clear();
                         self.dirty_structure = true;
                         self.focus_reset = true;
@@ -1214,6 +1434,7 @@ impl InstallerApp {
         if self.step == Step::Install {
             if self.install_state == InstallState::Failed {
                 self.step = Step::Account;
+                self.reset_viewport();
                 self.install_state = InstallState::Idle;
                 self.install_launched = false;
                 self.status_lines.clear();
@@ -1232,6 +1453,7 @@ impl InstallerApp {
         };
         if let Some(p) = destination {
             self.step = p;
+            self.reset_viewport();
             self.status.clear();
             self.dirty_structure = true;
             self.focus_reset = true;
@@ -1284,6 +1506,7 @@ impl InstallerApp {
         clear_secret_buffer(&self.password_confirmation);
 
         self.step = Step::Install;
+        self.reset_viewport();
         self.install_state = InstallState::Running;
         self.install_launched = true;
         self.status_lines = vec![format!(
@@ -1335,6 +1558,7 @@ impl InstallerApp {
 
     fn mark_install_done(&mut self) {
         self.install_state = InstallState::Done;
+        self.reset_viewport();
         self.status_lines
             .push("Installed — remove the medium and reboot.".to_string());
         self.dirty_structure = true;
@@ -1346,6 +1570,7 @@ impl InstallerApp {
             self.status_lines.push(line);
         }
         self.install_state = InstallState::Failed;
+        self.reset_viewport();
         self.dirty_structure = true;
         self.focus_reset = true;
     }
@@ -1389,7 +1614,15 @@ impl InstallerApp {
             ));
         }
 
-        Box::new(Card::new(children))
+        let card: Box<dyn Widget> = Box::new(Card::new(children));
+        Box::new(
+            Scrollable::new_vertical()
+                .fill_parent_height()
+                .with_content_gutter(SCROLLBAR_GUTTER)
+                .with_persisted_offset(Rc::clone(&self.viewport_offset))
+                .always_visible()
+                .with_child(Box::new(ViewportStage::new(card))),
+        )
     }
 
     fn compose_network_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
@@ -2665,12 +2898,62 @@ mod tests {
         }
     }
 
+    fn find_named<'a>(widget: &'a dyn Widget, name: &str) -> Option<&'a dyn Widget> {
+        if widget.name() == name {
+            return Some(widget);
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| find_named(child, name))
+    }
+
     fn build(app: &mut InstallerApp) -> (TaffyTree<()>, NodeId) {
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let root = app.build_layout(&mut taffy, &theme, &mut node_map);
         (taffy, root)
+    }
+
+    fn layout_at(app: &mut InstallerApp, width: f32, height: f32) {
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let app_node = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let viewport = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: length(width),
+                        height: length(height),
+                    },
+                    ..Default::default()
+                },
+                &[app_node],
+            )
+            .expect("viewport node");
+        let measure_map = node_map.clone();
+        let mut text_renderer = TextRenderer::new();
+        taffy
+            .compute_layout_with_measure(
+                viewport,
+                Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::Definite(height),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&widget) = measure_map.get(&node_id) {
+                        // SAFETY: every pointer belongs to `app`, which remains
+                        // alive and stationary for this layout pass.
+                        unsafe { (*widget).measure(known, available, &mut text_renderer) }
+                    } else {
+                        Size::ZERO
+                    }
+                },
+            )
+            .expect("compute compact installer layout");
+        app.apply_layout(&taffy, app_node, Point::ORIGIN);
     }
 
     // --- pure state-machine ---------------------------------------
@@ -3157,7 +3440,7 @@ mod tests {
         app.kernel_lockdown = true;
         app.target_verified_boot = true;
         let _ = build(&mut app);
-        let card = app.children()[0];
+        let card = find_named(&app, "InstallerCard").expect("review card");
         let begin_disabled = card
             .children()
             .last()
@@ -3176,7 +3459,7 @@ mod tests {
         app2.erase_confirmation = "/dev/sda".to_string();
         *app2.password.lock().unwrap() = "246810".to_string();
         let _ = build(&mut app2);
-        let card2 = app2.children()[0];
+        let card2 = find_named(&app2, "InstallerCard").expect("review card");
         let begin_enabled = card2
             .children()
             .last()
@@ -3218,7 +3501,7 @@ mod tests {
             "typing the confirmation must rebuild the disabled Begin button"
         );
         let _ = build(&mut app);
-        let card = app.children()[0];
+        let card = find_named(&app, "InstallerCard").expect("review card");
         let begin_enabled = card
             .children()
             .last()
@@ -3249,7 +3532,7 @@ mod tests {
         let mut app = InstallerApp::with_disks(sample());
         app.step = Step::Options;
         let _ = build(&mut app);
-        let card = app.children()[0];
+        let card = find_named(&app, "InstallerCard").expect("options card");
         let has_fido2 = card
             .children()
             .iter()
@@ -3479,6 +3762,44 @@ mod tests {
         assert_tree_mirrors(&failed, &t, r);
     }
 
+    #[test]
+    fn compact_review_narrows_the_card_and_exposes_keyboard_scroll() {
+        let mut app = InstallerApp::for_shot(Step::Review);
+        layout_at(&mut app, 320.0, 480.0);
+
+        let card = find_named(&app, "InstallerCard").expect("review card");
+        assert!(
+            card.get_rect().width() <= 320.0 - 2.0 * f64::from(VIEWPORT_PADDING),
+            "responsive card escaped compact viewport: {:?}",
+            card.get_rect()
+        );
+        assert!(card.get_rect().x0 >= f64::from(VIEWPORT_PADDING));
+        assert!(
+            card.get_rect().height() > 480.0,
+            "representative Review must exercise vertical overflow"
+        );
+
+        let scroll = find_named(&app, "Scrollable").expect("installer scroll viewport");
+        assert!(
+            scroll.is_focusable(),
+            "overflowing installer must expose Page Up/Down, Home/End and arrow scrolling"
+        );
+    }
+
+    #[test]
+    fn step_changes_start_at_the_top_without_losing_incidental_scroll() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.step = Step::Disk;
+        app.selected_disk = Some(0);
+        app.viewport_offset.set((0.0, 144.0));
+        app.set_status("A transient message");
+        assert_eq!(app.viewport_offset.get(), (0.0, 144.0));
+
+        app.go_next();
+        assert_eq!(app.step, Step::Account);
+        assert_eq!(app.viewport_offset.get(), (0.0, 0.0));
+    }
+
     /// Count focusable widgets anywhere in the subtree (the Account step's
     /// nav buttons live nested inside a Row, not as direct card children).
     fn count_focusable(widget: &dyn Widget) -> usize {
@@ -3521,7 +3842,7 @@ mod tests {
         );
 
         // The visual preview is present as a card child.
-        let card = app.children()[0];
+        let card = find_named(&app, "InstallerCard").expect("keyboard card");
         assert!(
             card.children().iter().any(|c| c.name() == "KeyboardView"),
             "the Keyboard step renders the visual keyboard preview"
@@ -3536,7 +3857,7 @@ mod tests {
         let mut app = InstallerApp::with_disks(sample());
         app.step = Step::Disk;
         let _ = build(&mut app);
-        let card = app.children()[0];
+        let card = find_named(&app, "InstallerCard").expect("disk card");
         let next_disabled = card
             .children()
             .last()
@@ -3547,7 +3868,7 @@ mod tests {
         app2.step = Step::Disk;
         app2.selected_disk = Some(0);
         let _ = build(&mut app2);
-        let card2 = app2.children()[0];
+        let card2 = find_named(&app2, "InstallerCard").expect("disk card");
         let next_enabled = card2
             .children()
             .last()
@@ -3564,7 +3885,7 @@ mod tests {
         let mut app = InstallerApp::with_disks(sample());
         app.step = Step::Disk;
         let _ = build(&mut app);
-        let card = app.children()[0];
+        let card = find_named(&app, "InstallerCard").expect("disk card");
         let fields = card.children();
         let disk_rows = fields.iter().filter(|c| c.name() == "DiskRow").count();
         assert_eq!(disk_rows, 2, "both sample disks render as rows");
@@ -3582,7 +3903,7 @@ mod tests {
         let mut app = InstallerApp::with_disks(disks);
         app.step = Step::Disk;
         let _ = build(&mut app);
-        let card = app.children()[0];
+        let card = find_named(&app, "InstallerCard").expect("disk card");
         let disk_rows: Vec<_> = card
             .children()
             .into_iter()
