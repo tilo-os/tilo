@@ -1,0 +1,181 @@
+#!/bin/bash
+# Append qOS's dedicated ESP and root inside one already-unallocated GPT extent.
+# Existing entries are a reviewed input: their UUID/start/size map must match
+# exactly under the disk lock, and no command here deletes, moves, or resizes.
+set -euo pipefail
+
+die() { printf 'error: guided partitioning: %s\n' "$*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
+lower() { tr '[:upper:]' '[:lower:]'; }
+
+[ "$(id -u)" -eq 0 ] || die "must run as root"
+[ "${1:-}" = create ] || die "usage: $0 create [reviewed plan arguments]"
+shift
+
+DISK="" EXPECT_PTUUID="" EXPECT_SECTOR="" EXPECT_DISK_SIZE="" EXPECT_DEVNUM=""
+EXPECT_WWN="" EXPECT_SERIAL=""
+FREE_START="" FREE_SIZE="" EFI_START="" EFI_SIZE="" ROOT_START="" ROOT_SIZE=""
+EFI_UUID="" ROOT_UUID=""
+EXPECTED_PARTITIONS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --disk) DISK="${2:-}"; shift 2 ;;
+    --expect-disk-ptuuid) EXPECT_PTUUID="${2:-}"; shift 2 ;;
+    --expect-disk-size-bytes) EXPECT_DISK_SIZE="${2:-}"; shift 2 ;;
+    --expect-disk-devnum) EXPECT_DEVNUM="${2:-}"; shift 2 ;;
+    --expect-disk-wwn) EXPECT_WWN="${2:-}"; shift 2 ;;
+    --expect-disk-serial) EXPECT_SERIAL="${2:-}"; shift 2 ;;
+    --expect-logical-sector-size) EXPECT_SECTOR="${2:-}"; shift 2 ;;
+    --free-start-bytes) FREE_START="${2:-}"; shift 2 ;;
+    --free-size-bytes) FREE_SIZE="${2:-}"; shift 2 ;;
+    --efi-start-bytes) EFI_START="${2:-}"; shift 2 ;;
+    --efi-size-bytes) EFI_SIZE="${2:-}"; shift 2 ;;
+    --root-start-bytes) ROOT_START="${2:-}"; shift 2 ;;
+    --root-size-bytes) ROOT_SIZE="${2:-}"; shift 2 ;;
+    --new-efi-partuuid) EFI_UUID="${2:-}"; shift 2 ;;
+    --new-root-partuuid) ROOT_UUID="${2:-}"; shift 2 ;;
+    --expect-partition) EXPECTED_PARTITIONS+=("${2:-}"); shift 2 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+for tool in blockdev flock lsblk mkfs.vfat partx python3 readlink sfdisk sort; do need "$tool"; done
+case "$DISK" in /dev/*) : ;; *) die "disk must be an absolute /dev path" ;; esac
+[ -b "$DISK" ] || die "$DISK is not a block device"
+DISK="$(readlink -f "$DISK")"
+[ "$(lsblk -dno TYPE "$DISK" 2>/dev/null | xargs)" = disk ] || die "$DISK is not a whole disk"
+[[ "$EXPECT_PTUUID" =~ ^[0-9A-Fa-f-]{8,64}$ ]] || die "invalid expected GPT UUID"
+[[ "$EXPECT_DISK_SIZE" =~ ^[0-9]+$ ]] && [ "$EXPECT_DISK_SIZE" -gt 0 ] \
+  || die "invalid expected disk size"
+[[ "$EXPECT_DEVNUM" =~ ^[0-9]+:[0-9]+$ ]] || die "invalid expected disk device number"
+[ -n "$EXPECT_WWN$EXPECT_SERIAL" ] || die "missing stable disk identity"
+[[ "$EFI_UUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+  || die "invalid new EFI PARTUUID"
+[[ "$ROOT_UUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+  || die "invalid new root PARTUUID"
+[ "${EFI_UUID,,}" != "${ROOT_UUID,,}" ] || die "new partition UUIDs must be distinct"
+for value in EXPECT_SECTOR FREE_START FREE_SIZE EFI_START EFI_SIZE ROOT_START ROOT_SIZE; do
+  number="${!value}"
+  [[ "$number" =~ ^[0-9]+$ ]] && [ "$number" -gt 0 ] || die "missing or invalid $value"
+done
+[ "$EXPECT_SECTOR" -eq 512 ] || [ "$EXPECT_SECTOR" -eq 4096 ] \
+  || die "unsupported logical sector size $EXPECT_SECTOR"
+[ "$EFI_SIZE" -eq 2147483648 ] || die "guided EFI partition must be exactly 2 GiB"
+[ "$ROOT_SIZE" -ge 34359738368 ] || die "guided root must be at least 32 GiB"
+[ "$EFI_START" -eq "$FREE_START" ] || die "EFI does not start at the reviewed free extent"
+[ "$ROOT_START" -eq $((EFI_START + EFI_SIZE)) ] || die "root does not immediately follow EFI"
+[ $((ROOT_START + ROOT_SIZE)) -eq $((FREE_START + FREE_SIZE)) ] \
+  || die "new partitions do not exactly fill the reviewed free extent"
+for value in FREE_START FREE_SIZE EFI_START EFI_SIZE ROOT_START ROOT_SIZE; do
+  [ $(( ${!value} % EXPECT_SECTOR )) -eq 0 ] || die "$value is not sector-aligned"
+done
+
+canonical_expected() {
+  local item uuid start size
+  for item in "${EXPECTED_PARTITIONS[@]}"; do
+    IFS=: read -r uuid start size extra <<<"$item"
+    [ -z "${extra:-}" ] \
+      && [[ "$uuid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+      && [[ "$start" =~ ^[0-9]+$ ]] && [ "$start" -gt 0 ] \
+      && [[ "$size" =~ ^[0-9]+$ ]] && [ "$size" -gt 0 ] \
+      || die "invalid reviewed partition extent '$item'"
+    printf '%s:%s:%s\n' "${uuid,,}" "$start" "$size"
+  done | sort -t: -k2,2n
+}
+
+canonical_actual() {
+  sfdisk --json "$DISK" | python3 -c '
+import json, sys
+table = json.load(sys.stdin)["partitiontable"]
+sector = int(table["sectorsize"])
+for part in table.get("partitions", []):
+    uuid = str(part.get("uuid", "")).lower()
+    start = int(part.get("start", 0)) * sector
+    size = int(part.get("size", 0)) * sector
+    if not uuid or start <= 0 or size <= 0:
+        raise SystemExit("incomplete GPT partition identity")
+    print(f"{uuid}:{start}:{size}")
+'
+}
+
+EXPECTED_MAP="$(canonical_expected)"
+
+# Hold one exclusive advisory lock from the last validation through the GPT
+# write, kernel reread, formatting, and post-write identity checks.
+exec 9<>"$DISK"
+flock -x 9
+[ "$(blockdev --getsize64 "$DISK")" = "$EXPECT_DISK_SIZE" ] || die "disk size changed after review"
+[ "$(lsblk -dno MAJ:MIN "$DISK" | xargs)" = "$EXPECT_DEVNUM" ] || die "disk device identity changed after review"
+if [ -n "$EXPECT_WWN" ]; then
+  [ "$(lsblk -dno WWN "$DISK" | xargs)" = "$EXPECT_WWN" ] || die "disk WWN changed after review"
+fi
+if [ -n "$EXPECT_SERIAL" ]; then
+  [ "$(lsblk -dno SERIAL "$DISK" | xargs)" = "$EXPECT_SERIAL" ] || die "disk serial changed after review"
+fi
+[ "$(lsblk -dno PTTYPE "$DISK" | xargs | lower)" = gpt ] || die "disk is no longer GPT"
+[ "$(lsblk -dno PTUUID "$DISK" | xargs | lower)" = "${EXPECT_PTUUID,,}" ] \
+  || die "GPT UUID changed after review"
+[ "$(lsblk -dno LOG-SEC "$DISK" | xargs)" = "$EXPECT_SECTOR" ] \
+  || die "logical sector size changed after review"
+ACTUAL_MAP="$(canonical_actual | sort -t: -k2,2n)"
+[ "$ACTUAL_MAP" = "$EXPECTED_MAP" ] || die "partition map changed after review"
+
+# The complete-map equality above is the TOCTOU binding. Repeat the geometric
+# assertion explicitly so this safety property remains obvious and testable.
+while IFS=: read -r _ start size; do
+  [ -n "${start:-}" ] || continue
+  end=$((start + size))
+  free_end=$((FREE_START + FREE_SIZE))
+  [ "$end" -le "$FREE_START" ] || [ "$start" -ge "$free_end" ] \
+    || die "reviewed free extent now overlaps an existing partition"
+done <<<"$EXPECTED_MAP"
+
+disk_bytes="$(blockdev --getsize64 "$DISK")"
+[ $((FREE_START + FREE_SIZE)) -le $((disk_bytes - 1048576)) ] \
+  || die "reviewed extent no longer fits before backup GPT metadata"
+
+efi_sector=$((EFI_START / EXPECT_SECTOR))
+efi_sectors=$((EFI_SIZE / EXPECT_SECTOR))
+root_sector=$((ROOT_START / EXPECT_SECTOR))
+root_sectors=$((ROOT_SIZE / EXPECT_SECTOR))
+printf 'start=%s, size=%s, type=%s, uuid=%s, name="qOS EFI"\nstart=%s, size=%s, type=%s, uuid=%s, name="qOS root"\n' \
+  "$efi_sector" "$efi_sectors" c12a7328-f81f-11d2-ba4b-00a0c93ec93b "${EFI_UUID,,}" \
+  "$root_sector" "$root_sectors" 0fc63daf-8483-4772-8e79-3d69d8477de4 "${ROOT_UUID,,}" \
+  | sfdisk --append --no-reread --lock=no --wipe never --wipe-partitions never "$DISK"
+blockdev --rereadpt "$DISK"
+partx -u "$DISK"
+
+partition_by_uuid() {
+  sfdisk --json "$DISK" | python3 -c '
+import json, sys
+wanted = sys.argv[1].lower()
+for part in json.load(sys.stdin)["partitiontable"].get("partitions", []):
+    if str(part.get("uuid", "")).lower() == wanted:
+        print(part["node"])
+        raise SystemExit(0)
+raise SystemExit(1)
+' "${1,,}"
+}
+EFI_PARTITION="$(partition_by_uuid "$EFI_UUID")" || die "new EFI partition did not appear"
+ROOT_PARTITION="$(partition_by_uuid "$ROOT_UUID")" || die "new root partition did not appear"
+for _ in {1..50}; do
+  [ -b "$EFI_PARTITION" ] && [ -b "$ROOT_PARTITION" ] && break
+  sleep 0.1
+done
+[ -b "$EFI_PARTITION" ] && [ -b "$ROOT_PARTITION" ] \
+  || die "kernel did not expose the new partition devices"
+[ "$(blockdev --getsize64 "$EFI_PARTITION")" = "$EFI_SIZE" ] || die "new EFI size differs from plan"
+[ "$(blockdev --getsize64 "$ROOT_PARTITION")" = "$ROOT_SIZE" ] || die "new root size differs from plan"
+FINAL_EXPECTED_MAP="$({
+  [ -z "$EXPECTED_MAP" ] || printf '%s\n' "$EXPECTED_MAP"
+  printf '%s:%s:%s\n' "${EFI_UUID,,}" "$EFI_START" "$EFI_SIZE"
+  printf '%s:%s:%s\n' "${ROOT_UUID,,}" "$ROOT_START" "$ROOT_SIZE"
+} | sort -t: -k2,2n)"
+[ "$(canonical_actual | sort -t: -k2,2n)" = "$FINAL_EXPECTED_MAP" ] \
+  || die "final PARTUUID/geometry map differs from the reviewed plan"
+
+# Formatting is confined to the UUID-bound partition created above. The root
+# remains signature-free for qos-install's normal encrypted alongside path.
+mkfs.vfat -n QOS-EFI "$EFI_PARTITION" >/dev/null
+sync "$DISK" "$EFI_PARTITION"
+printf 'EFI_PARTITION=%s\nROOT_PARTITION=%s\n' "$EFI_PARTITION" "$ROOT_PARTITION"

@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Read as _;
+use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -28,7 +29,8 @@ use ui::widget::{
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::onboarding::{
@@ -807,6 +809,11 @@ impl OnboardingView {
             ("Continue", KEY_TOUR_NEXT)
         };
         actions(vec![
+            Box::new(Button::new(
+                "onboarding.tour.skip.button",
+                "Skip tour",
+                Some(KEY_FINISH),
+            )),
             Box::new(
                 Button::new("onboarding.tour.back.button", "Back", Some(KEY_TOUR_BACK))
                     .with_icon(ui::icons::Icon::ArrowLeft),
@@ -915,7 +922,16 @@ impl OnboardingView {
                 theme,
             ));
         if let Some(status) = &self.nearby_status {
-            nearby = nearby.push(paragraph(status, theme));
+            nearby = nearby.push(Box::new(
+                Text::new(status)
+                    // A stable semantic address lets the accessibility host
+                    // recognise verification-code and completion updates as
+                    // changes to one status region across composition rebuilds.
+                    .with_id("onboarding.nearby.status")
+                    .with_role(ui::tokens::typography::TextRole::Body)
+                    .with_color(theme.text_dim)
+                    .with_live(ui::a11y::Politeness::Polite),
+            ));
         }
         nearby = nearby.push(Box::new(nearby_action));
         let file_row = Row::new().push(Box::new(path)).push(Box::new(
@@ -1366,8 +1382,45 @@ impl OnboardingView {
     }
 }
 
+fn terminate_nearby_pairing(child: &mut Option<Child>) {
+    let Some(mut child) = child.take() else {
+        return;
+    };
+    let Ok(pid) = i32::try_from(child.id()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return;
+    };
+    let group = pid.saturating_neg();
+    // SAFETY: the process is spawned with `process_group(0)`, making its
+    // validated PID the process-group ID. A negative target is confined to
+    // that group and cannot signal the compositor's own group.
+    let _ = unsafe { libc::kill(group, libc::SIGTERM) };
+    let deadline = Instant::now() + Duration::from_millis(750);
+    loop {
+        let leader_finished = child.try_wait().ok().flatten().is_some();
+        // Signal 0 only checks whether any descendant still occupies the
+        // dedicated group. Do not return just because pkexec itself exited:
+        // qos-home-peer-control or qos-enroll may still be winding down.
+        let group_gone = unsafe { libc::kill(group, 0) } != 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if leader_finished && group_gone {
+            return;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // SAFETY: same dedicated process group as above. This is the bounded
+    // fallback for a broker or enrollment worker that ignored SIGTERM.
+    let _ = unsafe { libc::kill(group, libc::SIGKILL) };
+    let _ = child.wait();
+}
+
 impl Drop for OnboardingView {
     fn drop(&mut self) {
+        terminate_nearby_pairing(&mut self.nearby_child);
         clear_secret(&self.connect_passphrase);
         clear_secret(&self.backup_passphrase);
         clear_secret(&self.backup_confirmation);
@@ -1491,6 +1544,12 @@ impl Widget for OnboardingView {
                             .stdin(Stdio::null())
                             .stdout(Stdio::piped())
                             .stderr(Stdio::piped())
+                            // pkexec, the privileged broker and qos-enroll must
+                            // share a revocable lifetime.  A dedicated process
+                            // group lets Cancel, Back and compositor teardown
+                            // stop the whole transaction instead of merely
+                            // orphaning a privileged descendant.
+                            .process_group(0)
                             .spawn()
                         {
                             Ok(child) => {
@@ -1512,9 +1571,9 @@ impl Widget for OnboardingView {
 
         if read_bool(state, root, KEY_CONNECT_CANCEL) {
             let _ = state.put(root, KEY_CONNECT_CANCEL, ScalarValue::Boolean(false));
-            if let Some(mut child) = self.nearby_child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
+            terminate_nearby_pairing(&mut self.nearby_child);
+            if let Some(path) = &self.nearby_status_path {
+                let _ = std::fs::remove_file(path);
             }
             self.nearby_status =
                 Some("Nearby setup cancelled. Choose Connect nearby to try again.".into());
@@ -1616,10 +1675,7 @@ impl Widget for OnboardingView {
             let _ = state.put(root, KEY_BACK, ScalarValue::Boolean(false));
             self.error = None;
             clear_secret(&self.connect_passphrase);
-            if let Some(mut child) = self.nearby_child.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+            terminate_nearby_pairing(&mut self.nearby_child);
             self.nearby_status = None;
             self.flow.back();
         }
@@ -1864,6 +1920,18 @@ impl Widget for OnboardingView {
             *handled = true;
             return;
         }
+        if self.tour_page.is_some()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed
+                        && matches!(event.logical_key, Key::Named(NamedKey::Escape))
+            )
+        {
+            let _ = state.put(path, KEY_FINISH, ScalarValue::Boolean(true));
+            *handled = true;
+            return;
+        }
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
             && let Some(&cn) = children.first()
@@ -2041,8 +2109,52 @@ mod tests {
         (v, calls)
     }
 
+    #[test]
+    fn cancelling_nearby_pairing_revokes_the_entire_process_group() {
+        let child = Command::new("sh")
+            .args(["-c", "trap '' TERM; sleep 30 & wait"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("spawn pairing-shaped process tree");
+        let pgid = i32::try_from(child.id()).expect("test process ID");
+        // Give the shell enough time to create the descendant that used to
+        // survive when only the immediate pkexec process was killed.
+        std::thread::sleep(Duration::from_millis(40));
+        let mut child = Some(child);
+
+        terminate_nearby_pairing(&mut child);
+
+        assert!(child.is_none());
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            // SAFETY: this is the dedicated process group created above.
+            let result = unsafe { libc::kill(pgid.saturating_neg(), 0) };
+            if result != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "a descendant survived cancellation in process group {pgid}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     fn press(doc: &mut AutoCommit, key: &str) {
         let _ = doc.put(&automerge::ROOT, key, ScalarValue::Boolean(true));
+    }
+
+    fn accessibility_for_id(widget: &dyn Widget, id: &str) -> Option<ui::a11y::AccessNode> {
+        if widget.test_id() == Some(id) {
+            return widget.accessibility();
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| accessibility_for_id(child, id))
     }
 
     fn write_fixture_identity(directory: &std::path::Path) {
@@ -2382,6 +2494,33 @@ mod tests {
     }
 
     #[test]
+    fn every_tour_page_exposes_an_explicit_skip_action() {
+        let mut view = OnboardingView::new_tour();
+        let mut doc = AutoCommit::new();
+        view.sync(&mut doc, &automerge::ROOT);
+
+        for page in [
+            TourPage::Navigate,
+            TourPage::Organise,
+            TourPage::Collaborate,
+        ] {
+            assert_eq!(view.tour_page, Some(page));
+            let actions = OnboardingView::tour_actions(page);
+            let node = accessibility_for_id(actions.as_ref(), "onboarding.tour.skip.button")
+                .expect("tour page exposes Skip tour");
+            assert_eq!(node.name.as_deref(), Some("Skip tour"));
+            if page != TourPage::Collaborate {
+                press(&mut doc, KEY_TOUR_NEXT);
+                view.sync(&mut doc, &automerge::ROOT);
+            }
+        }
+
+        press(&mut doc, KEY_FINISH);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(view.finished(), "Skip tour dismisses a reopened tour");
+    }
+
+    #[test]
     fn reopened_tour_has_no_identity_gate_and_can_be_dismissed() {
         let mut view = OnboardingView::new_tour();
         let mut doc = AutoCommit::new();
@@ -2455,6 +2594,69 @@ mod tests {
             node.state.protected,
             "passphrases must be exposed as protected"
         );
+    }
+
+    #[test]
+    fn nearby_pairing_updates_share_one_polite_live_region() {
+        let (mut view, _) = view();
+        view.flow.begin_connect();
+        let theme = Theme::dark();
+
+        for status in [
+            "Looking for a trusted device nearby…",
+            "Code 123456 · waiting for approval on your trusted device",
+            "Connected. Your workspaces will appear automatically.",
+        ] {
+            view.nearby_status = Some(status.into());
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
+            let node = accessibility_for_id(&view, "onboarding.nearby.status")
+                .expect("nearby status accessibility node");
+
+            assert_eq!(node.role, ui::a11y::Role::StaticText);
+            assert_eq!(node.name.as_deref(), Some(status));
+            assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
+        }
+    }
+
+    #[test]
+    fn resumed_tour_preserves_focus_reset_and_reduced_motion_navigation() {
+        let directory = TempDir::new().expect("progress directory");
+        write_fixture_identity(directory.path());
+        store_progress(directory.path(), PersistedStage::TourOrganise).expect("organise journal");
+        let mut view = OnboardingView::new(directory.path().to_path_buf());
+
+        assert_eq!(view.tour_page, Some(TourPage::Organise));
+        assert!(
+            view.take_focus_reset(),
+            "a restored page must place keyboard focus inside its rebuilt controls"
+        );
+        assert!(!view.take_focus_reset(), "the focus edge is one-shot");
+
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
+        assert!(view.reduce_motion);
+        assert!(
+            !view.needs_animation_frame(),
+            "restoring a tour must not restart entrance animation under reduced motion"
+        );
+
+        let mut document = AutoCommit::new();
+        press(&mut document, KEY_TOUR_NEXT);
+        view.sync(&mut document, &automerge::ROOT);
+        assert_eq!(view.tour_page, Some(TourPage::Collaborate));
+        assert_eq!(
+            load_progress(directory.path()).expect("updated tour journal"),
+            Some(PersistedStage::TourCollaborate)
+        );
+        assert!(
+            view.take_focus_reset(),
+            "keyboard navigation must move focus into the newly restored stage"
+        );
+        assert!(!view.needs_animation_frame());
     }
 
     #[test]
