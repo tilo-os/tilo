@@ -54,7 +54,11 @@ to `OUTPUT_ENV`:
 - Linux: `QOS_LINUX_SIGNER=/absolute/root-owned/wrapper` and
   `QOS_LINUX_VERIFY_KEY=<public-key fingerprint>`; the broker imports only the
   public verification key into the job keyring. The wrapper receives input and
-  output-signature paths and emits an armored detached OpenPGP signature.
+  output-signature paths and emits an armored detached OpenPGP signature. Set
+  protected repository variable `IMAGER_LINUX_SIGNING_FINGERPRINT` to the same
+  full fingerprint. This policy value is deliberately supplied independently
+  of the broker: a broker returning a different public key cannot silently
+  rotate the release identity.
 - Windows: `QOS_WINDOWS_SIGNER=C:\absolute\root-owned\wrapper.exe`; it receives
   one artifact path and returns after Authenticode signing and timestamping.
 - macOS: `QOS_MAC_SIGNING_IDENTITY=<Developer ID Application identity>` and
@@ -81,7 +85,13 @@ a Forgejo secret:
 
 - Linux: use a KMS/HSM-backed OpenPGP key, or have the broker issue a short
   signing lease. The packaging job verifies each returned signature against the
-  configured public-key fingerprint before upload.
+  configured public-key fingerprint before upload. It exports that exact public
+  key and a machine-readable fingerprint as release attachments. The promotion
+  job uses a fresh keyring to verify both architecture's tarballs and AppImages
+  before it creates or changes a Forgejo release. Publish the same full
+  fingerprint independently on the HTTPS website (and preferably a second
+  authenticated channel); the release-hosted key alone cannot bootstrap trust
+  in the server that delivered it.
 - Windows: keep the EV/OV Authenticode certificate in Azure Trusted Signing or
   another PKCS#11/KMS service. Federate Forgejo OIDC into that service and
   install a small signer wrapper on the ephemeral runner image. Set repository
