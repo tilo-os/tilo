@@ -699,7 +699,7 @@ async fn handle_sync_request(
               devices racing to autobind the same workspace can't create two \
               independent runtimes"
 )]
-async fn get_or_autobind_workspace(
+pub(crate) async fn get_or_autobind_workspace(
     workspaces: &WorkspaceRegistry,
     autobind: Option<&WorkspaceAutobind>,
     workspace_id: u64,
