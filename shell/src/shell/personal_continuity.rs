@@ -297,6 +297,11 @@ pub struct AppInstanceState {
     pub placement: TabPlacement,
     pub launch: LaunchIntent,
     pub resume: Option<ResumeMetadata>,
+    /// The app's collaboration record identity.  This is distinct from the
+    /// durable shell tab id while a normal launch is waiting for toplevel
+    /// adoption; carrying it lets a restored process join the source CRDT
+    /// record instead of creating a lookalike empty document.
+    pub record_instance: Option<AppInstanceId>,
     pub stamp: ContinuityStamp,
 }
 
@@ -313,6 +318,7 @@ impl AppInstanceState {
             placement,
             launch,
             resume,
+            record_instance: None,
             stamp,
         }
     }
@@ -449,24 +455,33 @@ impl DeviceContinuationSnapshot {
             for (strip_index, strip) in workspace.strips.iter().enumerate() {
                 for (group_index, group) in strip.window_groups.iter().enumerate() {
                     for (tab_index, tab) in group.tabs.iter().enumerate() {
-                        let launch = match &tab.tile {
-                            TileContent::AppPlaceholder { kind, .. }
-                            | TileContent::Stub { kind, .. } => {
-                                LaunchIntent::app(kind.app_id()).ok()
-                            }
-                            // A locally-adopted foreign app is resumable by
-                            // its declared app id, but its compositor surface
-                            // id stays strictly local and is never serialized.
-                            TileContent::Foreign { app_id, .. } => {
-                                LaunchIntent::app(app_id.clone()).ok()
-                            }
-                            // Peer windows are another person's live session,
-                            // not our resumable app instance.
-                            TileContent::PeerWindow { .. } => {
-                                redacted_foreign_tabs += 1;
-                                None
-                            }
-                        };
+                        let launch = tree
+                            .continuation_file_references
+                            .get(&tab.id)
+                            .cloned()
+                            .or_else(|| match &tab.tile {
+                                TileContent::AppPlaceholder { kind, .. }
+                                | TileContent::Stub { kind, .. } => {
+                                    LaunchIntent::app(kind.app_id()).ok()
+                                }
+                                // A locally-adopted foreign app is resumable by
+                                // its declared app id, but its compositor surface
+                                // id stays strictly local and is never serialized.
+                                TileContent::Foreign {
+                                    app_id, surface_id, ..
+                                } => {
+                                    crate::shell::doc_open::continuation_file_reference_for_surface(
+                                        *surface_id,
+                                    )
+                                    .or_else(|| LaunchIntent::app(app_id.clone()).ok())
+                                }
+                                // Peer windows are another person's live session,
+                                // not our resumable app instance.
+                                TileContent::PeerWindow { .. } => {
+                                    redacted_foreign_tabs += 1;
+                                    None
+                                }
+                            });
                         let Some(launch) = launch else { continue };
                         let app_instance_id = AppInstanceId(tab.id);
                         let (Ok(strip), Ok(group), Ok(tab_index)) = (
@@ -520,9 +535,16 @@ impl DeviceContinuationSnapshot {
         counter: u64,
         registry: &crate::shell::personal_continuity_registry::ContinuationRegistry,
     ) -> CaptureReport {
-        Self::capture_with_resume(tree, device, counter, |room, tab, launch| {
+        let mut report = Self::capture_with_resume(tree, device, counter, |room, tab, launch| {
             registry.resume_for_tab(room, tab, launch)
-        })
+        });
+        for workspace in &mut report.snapshot.workspaces {
+            for app in &mut workspace.apps {
+                app.record_instance =
+                    registry.record_instance_for_tab(workspace.room, app.id, &app.launch);
+            }
+        }
+        report
     }
 }
 

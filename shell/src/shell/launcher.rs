@@ -412,8 +412,9 @@ static WORKSPACE_CAPABILITIES: Mutex<Vec<CapOverride>> = Mutex::new(Vec::new());
 /// toplevel in two trees and consuming here would desync them.
 static PENDING_PLACEMENT: Mutex<Vec<PendingPlacement>> = Mutex::new(Vec::new());
 /// Resume bytes waiting for the user-directed launch of one dormant tab.
-static PENDING_CONTINUATION_RESUME: LazyLock<Mutex<HashMap<(RoomId, u64), (u16, Vec<u8>)>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static PENDING_CONTINUATION_RESUME: LazyLock<
+    Mutex<HashMap<(RoomId, u64), (Option<(u16, Vec<u8>)>, u64)>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Locks `mutex`, recovering the guard instead of panicking a second time
 /// if some other thread poisoned it. None of this module's locked state
@@ -1219,13 +1220,19 @@ fn launch_with_context(
     // This id is a durable shell-id allocation, not a random process token.
     // The pending-placement claim binds it to whichever tab the launch
     // actually adopts; sibling windows cannot overwrite each other's report.
-    let continuity_instance = crate::shell::state::next_id();
+    let staged_resume = take_staged_resume_for_package(&app.package_id, room);
+    // A restored tab must reconnect to the source record.  A fresh launch
+    // still receives a newly allocated record identity until it adopts a tab.
+    let continuity_instance = staged_resume
+        .as_ref()
+        .map(|(_, record_instance)| *record_instance)
+        .unwrap_or_else(crate::shell::state::next_id);
     command.env.push((
         "QOS_CONTINUITY_INSTANCE".to_string(),
         continuity_instance.to_string(),
     ));
     attach_continuity_instance(&app.package_id, continuity_instance);
-    if let Some((schema, resume)) = take_staged_resume_for_package(&app.package_id, room) {
+    if let Some((Some((schema, resume)), _)) = staged_resume {
         command.env.push((
             "QOS_CONTINUITY_RESUME_SCHEMA".to_string(),
             schema.to_string(),
@@ -1611,21 +1618,38 @@ fn attach_continuity_instance(package_id: &str, instance: u64) {
 
 /// Carry a previously validated continuation projection into the next launch
 /// that binds `tab` in `room`. The payload is not acted on by the shell.
-pub fn stage_continuation_resume(room: RoomId, tab: u64, schema: u16, bytes: Vec<u8>) {
-    lock(&PENDING_CONTINUATION_RESUME).insert((room, tab), (schema, bytes));
+pub fn stage_continuation_resume(
+    room: RoomId,
+    tab: u64,
+    schema: u16,
+    bytes: Vec<u8>,
+    record_instance: u64,
+) {
+    lock(&PENDING_CONTINUATION_RESUME)
+        .insert((room, tab), (Some((schema, bytes)), record_instance));
+}
+
+/// Carry only the source CRDT record identity when an app has no transient
+/// resume projection.  Its document still synchronizes through the normal
+/// CRDT route once the process starts.
+pub fn stage_continuation_record(room: RoomId, tab: u64, record_instance: u64) {
+    lock(&PENDING_CONTINUATION_RESUME).insert((room, tab), (None, record_instance));
 }
 
 fn take_staged_resume(
     placement: crate::compositor::tab_binding::Placement,
     room: RoomId,
-) -> Option<(u16, Vec<u8>)> {
+) -> Option<(Option<(u16, Vec<u8>)>, u64)> {
     let crate::compositor::tab_binding::Placement::IntoTab(tab) = placement else {
         return None;
     };
     lock(&PENDING_CONTINUATION_RESUME).remove(&(room, tab))
 }
 
-fn take_staged_resume_for_package(package_id: &str, room: RoomId) -> Option<(u16, Vec<u8>)> {
+fn take_staged_resume_for_package(
+    package_id: &str,
+    room: RoomId,
+) -> Option<(Option<(u16, Vec<u8>)>, u64)> {
     let placement = lock(&PENDING_PLACEMENT)
         .iter()
         .rev()
