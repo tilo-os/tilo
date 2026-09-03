@@ -3046,6 +3046,265 @@ mod tests {
         assert_eq!(recovered.continuity.snapshot_for(&device), Some(&snapshot));
     }
 
+    /// Exercises the shipped continuation boundaries as one lifecycle: an
+    /// app report becomes a private Postcard checkpoint, a second shell
+    /// turns it into dormant cards, the normal launcher handoff receives the
+    /// exact resume record, and a source close removes only that card.  The
+    /// two shells share this test process, so clear the process-local report
+    /// cache between their halves just as separate shell processes do.
+    #[test]
+    #[serial_test::serial]
+    fn personal_continuity_app_report_checkpoint_restore_close_and_restart_lifecycle() {
+        use crate::shell::personal_continuity::{AppInstanceId, DeviceId, LaunchIntent};
+        use crate::shell::state::{AppKind, Tab, TileContent, WindowGroup, WindowWidth};
+
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xE1; 32]);
+        let user_public_key = root.verifying_key().to_bytes();
+        let source_endpoint = iroh::SecretKey::from_bytes(&[0xE2; 32]);
+        let source_device = DeviceId::new(hex::encode(source_endpoint.public().as_bytes()))
+            .expect("endpoint ids are portable device ids");
+        let room = RoomId::new();
+        let browser_tab = 0xC011_0001;
+        let ebook_tab = 0xC011_0002;
+        let music_tab = 0xC011_0003;
+        let file_tab = 0xC011_0004;
+        let file_reference =
+            LaunchIntent::file_reference("record:book-continue", Some([7; 32]), None)
+                .expect("portable record reference");
+
+        let mut source_tree = WorkspaceTree::bootstrap_default();
+        let source_workspace = source_tree
+            .workspaces
+            .first_mut()
+            .expect("bootstrap workspace");
+        source_workspace.room = room;
+        source_workspace.strips[0].window_groups.push(WindowGroup {
+            id: crate::shell::state::next_id(),
+            tabs: vec![
+                Tab {
+                    id: browser_tab,
+                    title: "Browser".into(),
+                    tile: TileContent::Foreign {
+                        app_id: "dev.qos.browser".into(),
+                        surface_id: 101,
+                    },
+                },
+                Tab {
+                    id: ebook_tab,
+                    title: "Ebook".into(),
+                    tile: TileContent::Foreign {
+                        app_id: "dev.qos.ebook".into(),
+                        surface_id: 102,
+                    },
+                },
+                Tab {
+                    id: music_tab,
+                    title: "Music".into(),
+                    tile: TileContent::Foreign {
+                        app_id: "dev.qos.music".into(),
+                        surface_id: 103,
+                    },
+                },
+                Tab {
+                    id: file_tab,
+                    title: "A book".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::FileExplorer,
+                        label: "A book".into(),
+                    },
+                },
+            ],
+            active_tab: browser_tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        source_tree
+            .continuation_file_references
+            .insert(file_tab, file_reference.clone());
+
+        // This is the shell-side endpoint of the app collaboration adapter:
+        // each metadata report is keyed by its launcher-issued record id.
+        let registry = crate::shell::personal_continuity_registry::global_registry();
+        {
+            let mut reports = registry.lock().expect("continuation registry");
+            for (tab, app_id, metadata) in [
+                (
+                    browser_tab,
+                    "dev.qos.browser",
+                    br#"{"url":"https://example.test/reading"}"#.to_vec(),
+                ),
+                (
+                    ebook_tab,
+                    "dev.qos.ebook",
+                    br#"{"book_id":"book-42","chapter":4,"page":9}"#.to_vec(),
+                ),
+                (
+                    music_tab,
+                    "dev.qos.music",
+                    br#"{"track_id":"track-42","position_ms":12345,"paused":true}"#
+                        .to_vec(),
+                ),
+            ] {
+                reports.bind_tab(AppInstanceId(tab), AppInstanceId(tab));
+                assert!(
+                    reports
+                        .report(room, app_id, AppInstanceId(tab), 1, metadata)
+                        .expect("shipped app metadata contract accepts the report")
+                );
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("continuity store");
+        let continuity_path = dir.path().join("personal-continuity.postcard");
+        let (mut source, _source_commands) = personal_continuity_network_for_test(user_public_key);
+        source.replica = Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, source_tree.shared())));
+        source.personal_continuity_device = Some(source_device.clone());
+        source.personal_continuity_path = Some(continuity_path.clone());
+        let checkpoint = source
+            .local_continuity_snapshot_bytes()
+            .expect("report registry is captured through the shell checkpoint");
+        let checkpoint_state = crate::shell::personal_continuity::decode_checkpoint(&checkpoint)
+            .expect("shipped Postcard checkpoint");
+        let offered = checkpoint_state
+            .snapshot_for(&source_device)
+            .expect("source snapshot");
+        assert_eq!(offered.workspaces[0].apps.len(), 4);
+        assert!(
+            offered.workspaces[0]
+                .apps
+                .iter()
+                .any(|app| { app.id == AppInstanceId(ebook_tab) && app.resume.is_some() })
+        );
+        assert!(
+            offered.workspaces[0]
+                .apps
+                .iter()
+                .any(|app| { app.id == AppInstanceId(music_tab) && app.resume.is_some() })
+        );
+
+        // A real second shell has a distinct process-local cache. Preserve
+        // only the encoded relay payload before crossing that boundary.
+        {
+            let mut reports = registry.lock().expect("continuation registry");
+            for tab in [browser_tab, ebook_tab, music_tab, file_tab] {
+                reports.forget_local_tab(AppInstanceId(tab));
+            }
+        }
+
+        let (target, _target_commands) = personal_continuity_network_for_test(user_public_key);
+        authenticated_personal_peer(&target, &root, &source_endpoint);
+        target.dispatch_neighbour_msg(
+            personal_continuity_topic_id(&user_public_key),
+            source_endpoint.public(),
+            NeighbourMsg::PersonalContinuityCheckpoint {
+                user_public_key,
+                publisher: crate::network::behaviour::peer_liveness_handle(
+                    &source_endpoint.public(),
+                ),
+                snapshot: checkpoint,
+            },
+        );
+        {
+            let replica = target.replica.lock().expect("target replica");
+            let tree = replica.tree.read();
+            for tab in [browser_tab, ebook_tab, music_tab, file_tab] {
+                assert!(tree.continuation_tabs.contains(&tab));
+            }
+            assert_eq!(
+                tree.continuation_file_references.get(&file_tab),
+                Some(&file_reference)
+            );
+            assert!(
+                tree.workspaces
+                    .iter()
+                    .any(|workspace| workspace.room == room)
+            );
+        }
+
+        // Model the exact peer-window -> launcher staging used before the
+        // restored toplevel adopts its remote tab. This verifies metadata and
+        // source CRDT record identity travel together without starting a GUI.
+        let browser_launch = LaunchIntent::app("dev.qos.browser").expect("known app id");
+        let browser_resume = registry
+            .lock()
+            .expect("continuation registry")
+            .continuation_for_tab(room, AppInstanceId(browser_tab), &browser_launch)
+            .expect("remote placeholder retains the app report");
+        crate::shell::launcher::clear_pending_placements();
+        crate::shell::launcher::set_pending_placement(
+            "dev.qos.browser",
+            crate::compositor::tab_binding::Placement::IntoTab(browser_tab),
+        );
+        crate::shell::launcher::stage_continuation_resume(
+            room,
+            browser_tab,
+            browser_resume.resume.schema_version(),
+            browser_resume.resume.bytes().to_vec(),
+            browser_resume.record_instance.0,
+        );
+        assert_eq!(
+            crate::shell::launcher::take_staged_resume_for_package("dev.qos.browser", room),
+            Some((
+                Some((1, br#"{"url":"https://example.test/reading"}"#.to_vec())),
+                browser_tab,
+            )),
+            "the real launcher consumption path receives exact resume metadata and record",
+        );
+        crate::shell::launcher::clear_pending_placements();
+
+        // Closing on the source passes through compositor tab removal, then
+        // a fresh checkpoint tombstones that durable tab. The target removes
+        // it while retaining the other independent offers.
+        {
+            let replica = source.replica.lock().expect("source replica");
+            assert!(crate::compositor::tab_binding::remove_tab(
+                &mut replica.tree.write(),
+                browser_tab,
+            ));
+        }
+        let closed_checkpoint = source
+            .local_continuity_snapshot_bytes()
+            .expect("close creates a newer checkpoint");
+        let closed_state = crate::shell::personal_continuity::decode_checkpoint(&closed_checkpoint)
+            .expect("closed checkpoint decodes");
+        let closed_source = closed_state
+            .snapshot_for(&source_device)
+            .expect("updated source snapshot");
+        assert!(closed_source.tombstones.iter().any(|tombstone| {
+            tombstone.room == room && tombstone.id == AppInstanceId(browser_tab)
+        }));
+        target.dispatch_neighbour_msg(
+            personal_continuity_topic_id(&user_public_key),
+            source_endpoint.public(),
+            NeighbourMsg::PersonalContinuityCheckpoint {
+                user_public_key,
+                publisher: crate::network::behaviour::peer_liveness_handle(
+                    &source_endpoint.public(),
+                ),
+                snapshot: closed_checkpoint,
+            },
+        );
+        let replica = target.replica.lock().expect("target replica");
+        let tree = replica.tree.read();
+        assert!(!tree.continuation_tabs.contains(&browser_tab));
+        assert!(tree.continuation_tabs.contains(&ebook_tab));
+        assert!(tree.continuation_tabs.contains(&music_tab));
+        assert!(tree.continuation_tabs.contains(&file_tab));
+        drop(tree);
+        drop(replica);
+
+        let restarted = load_personal_continuity(&continuity_path);
+        assert!(
+            restarted.counter >= closed_source.stamp.counter,
+            "restart must never reuse the close checkpoint's Lamport counter"
+        );
+        assert_eq!(
+            restarted.continuity.snapshot_for(&source_device),
+            Some(closed_source),
+            "the durable restart store retains the close tombstone"
+        );
+    }
+
     #[test]
     fn legacy_continuity_store_migrates_without_resetting_counter() {
         use crate::shell::personal_continuity::{

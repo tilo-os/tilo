@@ -11866,6 +11866,27 @@ mod interaction_tests {
     }
 
     #[test]
+    fn continuation_round_trip_reopens_the_same_book_and_reading_position() {
+        let mut sender = app_with_sample();
+        sender.book_idx = 1;
+        sender.chapter = 1;
+        sender.page = 7;
+        let source = AutoCommit::new();
+        let metadata = sender
+            .continuation_metadata(&source, &automerge::ROOT)
+            .expect("an open library book has a portable continuation");
+
+        let mut receiver = app_with_sample();
+        let mut target = AutoCommit::new();
+        assert!(receiver.restore_continuation_metadata(&metadata, &mut target, &automerge::ROOT,));
+        assert_eq!(
+            receiver.library[receiver.book_idx].id,
+            sender.library[sender.book_idx].id
+        );
+        assert_eq!((receiver.chapter, receiver.page), (1, 7));
+    }
+
+    #[test]
     fn type_popover_value_is_click_to_type() {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();

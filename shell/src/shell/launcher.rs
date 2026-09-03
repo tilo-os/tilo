@@ -1646,7 +1646,7 @@ fn take_staged_resume(
     lock(&PENDING_CONTINUATION_RESUME).remove(&(room, tab))
 }
 
-fn take_staged_resume_for_package(
+pub(crate) fn take_staged_resume_for_package(
     package_id: &str,
     room: RoomId,
 ) -> Option<(Option<(u16, Vec<u8>)>, u64)> {
