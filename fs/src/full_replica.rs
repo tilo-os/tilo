@@ -176,12 +176,10 @@ pub fn aggregate_status(states: &[FullReplicaStatus]) -> FullReplicaStatus {
                 }
             }
         }
-        // A content-ready claim without a serving endpoint is not useful to
-        // an offline collaborator and must not be advertised.
-        if aggregate.filesystem_endpoints.is_empty() {
-            aggregate.full_content_replication = false;
-            aggregate.state = "syncing".into();
-        }
+        // Residency and endpoint availability are distinct facts. A complete
+        // durable replica remains ready while its transport endpoint is
+        // restarting; relay advertisement separately requires a fresh,
+        // serving endpoint before it exposes full-content service.
     }
     aggregate
 }
@@ -463,11 +461,9 @@ mod tests {
         let reader_endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let reader_store = Arc::new(ContentStore::memory());
         let reader = Hydrator::new(reader_endpoint.clone(), reader_store);
-        let read = reader
-            .fetch_from(hash, discovered.filesystem_endpoints[0].clone())
-            .await
-            .unwrap();
-        assert_eq!(read.as_ref(), bytes);
+        reader.add_peer(discovered.filesystem_endpoints[0].clone());
+        let read = reader.read(hash, 0, bytes.len() as u64).await.unwrap();
+        assert_eq!(read.as_slice(), bytes);
 
         nas_router.shutdown().await.unwrap();
         nas_endpoint.close().await;
