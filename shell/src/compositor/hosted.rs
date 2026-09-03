@@ -96,6 +96,10 @@ pub fn run_with_full_options(opts: HostedOptions) {
         enable_peer_sync,
         crate::shell::session_record_store(),
     );
+    let notification_bridge = crate::notifications::NotificationBridge::new();
+    chrome
+        .borrow_mut()
+        .set_notification_bridge(notification_bridge.clone());
     if let Some(notice) = &state_notice {
         crate::shell::notification::announce_state_notice(&chrome, notice);
     }
@@ -157,6 +161,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
         tree_handle.clone(),
         portal_prompts,
         portal_pickers,
+        notification_bridge,
     ) {
         PortalBringup::Disabled => (None, None),
         PortalBringup::RuntimeUnavailable => {
@@ -470,6 +475,7 @@ fn bring_up_portal(
     tree_handle: crate::shell::state::WorkspaceTreeHandle,
     portal_prompts: crate::portal::PromptQueueHandle,
     portal_pickers: crate::portal::FilePickerQueue,
+    notifications: crate::notifications::NotificationBridge,
 ) -> PortalBringup {
     if !enable_portals {
         return PortalBringup::Disabled;
@@ -507,6 +513,7 @@ fn bring_up_portal(
         remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
         documents: crate::portal::documents_for_session(),
         print_spooler: crate::portal::PrintSpoolerHandle::cups(),
+        notifications,
     };
     let serve_result: Result<crate::portal::ServerHandle, zbus::Error> =
         rt_handle.block_on(async move {

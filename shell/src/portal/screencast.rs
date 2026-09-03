@@ -596,6 +596,7 @@ mod tests {
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
             print_spooler: crate::portal::PrintSpoolerHandle::null(),
+            notifications: crate::notifications::NotificationBridge::new(),
         };
         let req = PipewireStreamRequest {
             caller: PortalCaller::new(ws_id, "org.example"),
