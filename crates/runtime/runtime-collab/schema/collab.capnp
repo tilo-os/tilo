@@ -237,6 +237,9 @@ interface ChannelHandle {
                         resource :Text, action :Text, argument :Text,
                         hasArgument :Bool, confirmationJson :Text)
       -> (id :UInt64, updateJson :Text);
+  # Cooperative cancellation for a leased task. The broker reflects a Task
+  # Center cancellation; it never lets an agent cancel a task by itself.
+  taskRunCancelled @30 (runId :UInt64, lease :Text) -> (cancelled :Bool);
 }
 
 interface ActionCatalogueStream {
