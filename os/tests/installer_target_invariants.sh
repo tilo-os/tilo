@@ -98,6 +98,15 @@ else
   bad "live-medium disk guard still relies on path-string equality"
 fi
 
+if grep -Fq -- '--confirm-erase)' "$backend" \
+   && grep -Fq '[ "$CONFIRM_ERASE" = "$DISK" ]' "$backend" \
+   && grep -Fq 'whole-disk install requires --confirm-erase matching --disk' "$backend" \
+   && grep -Fq -- '--confirm-erase cannot be used with --alongside' "$backend"; then
+  ok "whole-disk erasure requires an exact device confirmation at the privileged boundary"
+else
+  bad "whole-disk erasure can proceed without an exact privileged confirmation"
+fi
+
 if grep -Fq 'ENCRYPT=1' "$backend" \
    && grep -Fq 'native qOS requires --pin' "$backend" \
    && grep -Fq 'if verified_tpm; then' "$backend" \
