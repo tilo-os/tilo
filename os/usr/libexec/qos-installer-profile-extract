@@ -33,14 +33,22 @@ while read -r source mountpoint; do
   [ -n "$disk" ] && candidates+=("$disk")
 done < <(findmnt -rn -o SOURCE,TARGET 2>/dev/null)
 
-# Some live-root overlay stacks hide their backing block source from findmnt.
-# In that case only inspect removable whole disks. A valid profile is accepted
-# only when exactly one candidate has a matching checksum.
-if [ "${#candidates[@]}" -eq 0 ]; then
-  while read -r disk type removable; do
-    [ "$type" = disk ] && [ "$removable" = 1 ] && candidates+=("$disk")
-  done < <(lsblk -dpno NAME,TYPE,RM 2>/dev/null)
-fi
+# Some live-root overlay stacks expose only a loop device (for example the
+# squashfs image mounted below /run/initramfs/live). That gives us a candidate,
+# but not the physical device whose *tail* the imager wrote. Consequently this
+# inventory must be merged even when findmnt produced something: making it a
+# fallback only for an empty list silently loses profiles on loop-backed boots.
+#
+# RM covers ordinary USB sticks and SD cards. Some USB bridges report RM=0, so
+# TRAN=usb is included as well. We still accept a profile only when exactly one
+# candidate has valid framing + checksum, and the de-duplication below collapses
+# the normal case where findmnt and this inventory identify the same disk.
+while read -r disk type removable transport; do
+  [ "$type" = disk ] || continue
+  if [ "$removable" = 1 ] || [ "$transport" = usb ]; then
+    candidates+=("$disk")
+  fi
+done < <(lsblk -dpno NAME,TYPE,RM,TRAN 2>/dev/null)
 
 declare -A seen=()
 declare -a unique_candidates=()
@@ -70,10 +78,19 @@ for disk in "${candidates[@]}"; do
   [ "$size" -ge "$block_size" ] || continue
   tail_file="$tmp_dir/tail-$valid"
   dd if="$disk" of="$tail_file" bs=1 skip="$((size - block_size))" count="$block_size" status=none 2>/dev/null || continue
-  magic="$(sed -n '1p' "$tail_file")"
+  # Do not pass an arbitrary binary media tail through command substitution:
+  # Bash cannot store NUL bytes and emits a warning for an ordinary unprofiled
+  # device. `read` consumes the three bounded framing lines without surfacing
+  # binary noise; all values are validated below before becoming offsets.
+  magic=""
+  digest=""
+  length=""
+  {
+    IFS= read -r magic || true
+    IFS= read -r digest || true
+    IFS= read -r length || true
+  } < "$tail_file"
   [ "$magic" = "$magic_expected" ] || continue
-  digest="$(sed -n '2p' "$tail_file")"
-  length="$(sed -n '3p' "$tail_file")"
   case "$digest" in ''|*[!0-9a-f]*) report_error "The installation profile checksum is malformed."; continue ;; esac
   [ "${#digest}" -eq 64 ] || { report_error "The installation profile checksum is malformed."; continue; }
   case "$length" in ''|*[!0-9]*) report_error "The installation profile length is malformed."; continue ;; esac
