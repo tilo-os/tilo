@@ -156,6 +156,12 @@ pub fn identity_socket() -> PathBuf {
 /// sandbox. The app cannot forge or race this first frame: the launcher writes
 /// the canonical package/app id on the connected descriptor before `fork`,
 /// and the compositor refuses lifecycle messages until it has consumed it.
+///
+/// # Errors
+///
+/// Returns [`ServiceError`] if the service descriptor cannot be duplicated,
+/// the authentication frame cannot be serialized, or the frame cannot be
+/// written and flushed to the shell-UI socket.
 pub fn authenticate_shell_ui_bind(
     resolved: &[ResolvedService],
     app_id: &str,

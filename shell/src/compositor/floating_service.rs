@@ -3,7 +3,7 @@
 //! The launcher opens the socket and writes the canonical app id before the
 //! sandbox starts. Only after that handshake is accepted do client lifecycle
 //! messages enter the compositor. This prevents a sandboxed app from naming a
-//! different app id and turning PiP into a cross-app capture primitive.
+//! different app id and turning `PiP` into a cross-app capture primitive.
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -21,6 +21,7 @@ use ui::floating_surface::{
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum FloatingServiceEvent {
     Connected {
         connection: u64,
@@ -49,6 +50,12 @@ pub struct FloatingSurfaceService {
 }
 
 impl FloatingSurfaceService {
+    /// Start the authenticated floating-surface lifecycle service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if its runtime directory, socket, or accept thread
+    /// cannot be created.
     pub fn start() -> Result<Self, String> {
         let root = launcher::services::ensure_services_root()
             .map_err(|error| format!("create shell-ui service directory: {error}"))?;
@@ -154,6 +161,9 @@ impl FloatingSurfaceService {
     }
 }
 
+// These channel handles are deliberately owned by the per-connection worker,
+// which can outlive the accept-loop stack frame.
+#[allow(clippy::needless_pass_by_value)]
 fn serve_connection(
     connection: u64,
     stream: UnixStream,

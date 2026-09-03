@@ -921,6 +921,11 @@ impl ShellNetwork {
 
     /// Export the selected person identity as a non-secret card another qOS
     /// user can paste into the recipient-bound invite composer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workspace is unknown, replica state is
+    /// unavailable, or no selected device certificate can be produced.
     pub fn person_identity_card(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -1007,6 +1012,10 @@ impl ShellNetwork {
     /// admission unless the joining device presents a certificate for the
     /// selected person identity. This is the safe form for offline hosted
     /// admission.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::issue_invite`].
     pub fn issue_invite_bound_with_role(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -1133,6 +1142,11 @@ impl ShellNetwork {
     /// List live invitations for a locally governed workspace. Only
     /// non-secret metadata is returned through this API; the private bearer
     /// remains available through the explicit resend action.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workspace is unknown, replica state is
+    /// unavailable, or the local user may not administer the workspace.
     pub fn pending_invites(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -1154,7 +1168,10 @@ impl ShellNetwork {
                     "only the governing workspace administrator can inspect invites".into(),
                 );
             }
-            workspace.room
+            let room = workspace.room;
+            drop(tree);
+            drop(replica);
+            room
         };
         Ok(self
             .pending_invitations(room)
@@ -1171,6 +1188,11 @@ impl ShellNetwork {
 
     /// Revoke a pending invite by the digest returned from
     /// [`Self::pending_invites`]. A digest from another room is never removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workspace or invite id is invalid, state is
+    /// unavailable, or the local user may not administer the workspace.
     pub fn revoke_pending_invite(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -1191,7 +1213,10 @@ impl ShellNetwork {
             if !tree.governs_room(workspace.room) || !workspace.may_administer(&actor) {
                 return Err("only the governing workspace administrator can revoke invites".into());
             }
-            workspace.room
+            let room = workspace.room;
+            drop(tree);
+            drop(replica);
+            room
         };
         let bytes =
             hex::decode(invite_id).map_err(|_| "invite id is not hexadecimal".to_string())?;
@@ -1202,13 +1227,14 @@ impl ShellNetwork {
             .pending_identity_admissions
             .lock()
             .map_err(|_| "invite admission state is unavailable".to_string())?;
-        if !pending.get(&id).is_some_and(|invite| invite.room == room) {
+        if pending.get(&id).is_none_or(|invite| invite.room != room) {
             return Ok(false);
         }
         pending.remove(&id);
         if let Some(path) = self.pending_invitations_path.as_deref() {
             persist_pending_invitations(path, &pending);
         }
+        drop(pending);
         Ok(true)
     }
 
@@ -1839,6 +1865,7 @@ impl ShellNetwork {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn redeem_invited_identity(
         &self,
         workspace_topic: u64,

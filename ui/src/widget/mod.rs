@@ -155,6 +155,12 @@ impl<I> ActionEmitter<I> {
         }
     }
 
+    /// Queues the typed invocation when the action is currently available.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `input` cannot be encoded against the action's
+    /// declared parameter contract.
     pub fn emit(&mut self, input: I) -> Result<(), qos_actions::ActionBindingError> {
         if self.available {
             self.pending.push_back(self.binding.invoke(input)?);
@@ -434,7 +440,7 @@ pub trait Widget {
         None
     }
 
-    /// One-shot request for the session shell's shared capture/PiP chooser.
+    /// One-shot request for the session shell's shared capture/`PiP` chooser.
     /// Apps request only the starting mode; the shell remains authoritative
     /// for targets, consent, capture execution, and the visible selector.
     fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
@@ -443,7 +449,7 @@ pub trait Widget {
 
     /// Rising-edge source-geometry updates for an already adopted generic
     /// floating surface. App-owned native call/navigation windows publish
-    /// complete presentation geometry below; browser media PiP instead keeps
+    /// complete presentation geometry below; browser media `PiP` instead keeps
     /// a shell mirror pointed at the current app-local element rectangle.
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
         Vec::new()
@@ -985,6 +991,11 @@ pub trait Widget {
     /// Containers inherit recursive routing; an application overrides only
     /// for the effect/view types it publishes and returns `Ok(true)` when it
     /// handled the payload. Document operations never enter this hook.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error reported while routing the operation through
+    /// the retained widget tree.
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,
@@ -1007,6 +1018,11 @@ pub trait Widget {
     /// V2 operation route with a typed result. Existing widgets inherit the
     /// legacy adapter; migrated operations override this method and return the
     /// output promised by their `ActionContract`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the legacy operation handler rejects the payload
+    /// or fails while routing it through the retained widget tree.
     fn invoke_resource_operation_v2(
         &mut self,
         kind: qos_actions::OperationKind,
@@ -1024,6 +1040,11 @@ pub trait Widget {
     /// Existing synchronous handlers inherit this adapter. A background or
     /// streaming handler overrides it, records `invocation`, and returns
     /// [`ResourceOperationStart::Accepted`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the first admission or synchronous-operation error reported
+    /// while routing the payload through the retained widget tree.
     fn start_resource_operation(
         &mut self,
         invocation: qos_actions::InvocationId,

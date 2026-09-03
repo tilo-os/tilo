@@ -631,6 +631,92 @@ fn looks_like_rfc3339(value: &str) -> bool {
     chrono::DateTime::parse_from_rfc3339(value).is_ok()
 }
 
+fn validate_string_schema(
+    text: &str,
+    schema: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let length = u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
+    if let Some(minimum) = schema.get("minLength").and_then(serde_json::Value::as_u64)
+        && length < minimum
+    {
+        return Err(format!("must contain at least {minimum} characters"));
+    }
+    if let Some(maximum) = schema.get("maxLength").and_then(serde_json::Value::as_u64)
+        && length > maximum
+    {
+        return Err(format!("must contain at most {maximum} characters"));
+    }
+    if let Some(pattern) = schema.get("pattern") {
+        let pattern = pattern
+            .as_str()
+            .ok_or_else(|| "has a non-string schema pattern".to_string())?;
+        let expression = regex::Regex::new(pattern)
+            .map_err(|error| format!("has an invalid schema pattern: {error}"))?;
+        if !expression.is_match(text) {
+            return Err(format!("must match pattern `{pattern}`"));
+        }
+    }
+    if let Some(format) = schema.get("format") {
+        let format = format
+            .as_str()
+            .ok_or_else(|| "has a non-string schema format".to_string())?;
+        let valid = match format {
+            "date-time" => looks_like_rfc3339(text),
+            "uuid" => uuid::Uuid::parse_str(text).is_ok(),
+            "uri" => text.split_once(':').is_some_and(|(scheme, rest)| {
+                !scheme.is_empty()
+                    && !rest.is_empty()
+                    && scheme
+                        .chars()
+                        .next()
+                        .is_some_and(|ch| ch.is_ascii_alphabetic())
+                    && scheme
+                        .chars()
+                        .skip(1)
+                        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
+                    && !text.chars().any(char::is_whitespace)
+            }),
+            _ => return Err(format!("uses unsupported schema format `{format}`")),
+        };
+        if !valid {
+            return Err(format!("must match format `{format}`"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_object_schema(
+    object: &serde_json::Map<String, serde_json::Value>,
+    schema: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
+        for key in required.iter().filter_map(serde_json::Value::as_str) {
+            if !object.contains_key(key) {
+                return Err(format!("must contain property `{key}`"));
+            }
+        }
+    }
+    if let Some(properties) = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    {
+        for (key, property_schema) in properties {
+            if let Some(property) = object.get(key) {
+                validate_schema(property, property_schema)
+                    .map_err(|reason| format!("property `{key}` {reason}"))?;
+            }
+        }
+        if schema.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
+            for key in object.keys() {
+                if !properties.contains_key(key) {
+                    return Err(format!("contains unknown property `{key}`"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Validate the commonly useful, deterministic JSON Schema vocabulary used by
 /// action inputs and outputs. Unknown annotations are intentionally ignored;
 /// all assertion keywords accepted here are enforced centrally.
@@ -723,53 +809,7 @@ fn validate_schema_string(
     schema: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
     if let Some(text) = value.as_str() {
-        let length = text.chars().count() as u64;
-        if let Some(minimum) = schema.get("minLength").and_then(serde_json::Value::as_u64)
-            && length < minimum
-        {
-            return Err(format!("must contain at least {minimum} characters"));
-        }
-        if let Some(maximum) = schema.get("maxLength").and_then(serde_json::Value::as_u64)
-            && length > maximum
-        {
-            return Err(format!("must contain at most {maximum} characters"));
-        }
-        if let Some(pattern) = schema.get("pattern") {
-            let pattern = pattern
-                .as_str()
-                .ok_or_else(|| "has a non-string schema pattern".to_string())?;
-            let expression = regex::Regex::new(pattern)
-                .map_err(|error| format!("has an invalid schema pattern: {error}"))?;
-            if !expression.is_match(text) {
-                return Err(format!("must match pattern `{pattern}`"));
-            }
-        }
-        if let Some(format) = schema.get("format") {
-            let format = format
-                .as_str()
-                .ok_or_else(|| "has a non-string schema format".to_string())?;
-            let valid = match format {
-                "date-time" => looks_like_rfc3339(text),
-                "uuid" => uuid::Uuid::parse_str(text).is_ok(),
-                "uri" => text.split_once(':').is_some_and(|(scheme, rest)| {
-                    !scheme.is_empty()
-                        && !rest.is_empty()
-                        && scheme
-                            .chars()
-                            .next()
-                            .is_some_and(|ch| ch.is_ascii_alphabetic())
-                        && scheme
-                            .chars()
-                            .skip(1)
-                            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
-                        && !text.chars().any(char::is_whitespace)
-                }),
-                _ => return Err(format!("uses unsupported schema format `{format}`")),
-            };
-            if !valid {
-                return Err(format!("must match format `{format}`"));
-            }
-        }
+        validate_string_schema(text, schema)?;
     }
     Ok(())
 }
@@ -805,31 +845,7 @@ fn validate_schema_object(
     schema: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
     if let Some(object) = value.as_object() {
-        if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
-            for key in required.iter().filter_map(serde_json::Value::as_str) {
-                if !object.contains_key(key) {
-                    return Err(format!("must contain property `{key}`"));
-                }
-            }
-        }
-        if let Some(properties) = schema
-            .get("properties")
-            .and_then(serde_json::Value::as_object)
-        {
-            for (key, property_schema) in properties {
-                if let Some(property) = object.get(key) {
-                    validate_schema(property, property_schema)
-                        .map_err(|reason| format!("property `{key}` {reason}"))?;
-                }
-            }
-            if schema.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
-                for key in object.keys() {
-                    if !properties.contains_key(key) {
-                        return Err(format!("contains unknown property `{key}`"));
-                    }
-                }
-            }
-        }
+        validate_object_schema(object, schema)?;
     }
     Ok(())
 }

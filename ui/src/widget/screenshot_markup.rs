@@ -5,6 +5,17 @@
 //! pixels; a 7,000px-tall full-app capture therefore never becomes a scaled
 //! screen grab merely because it was edited on a laptop display.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::iter_with_drain,
+    clippy::too_many_lines,
+    reason = "raster coordinates and fixed-size color/point buffers are locally bounded"
+)]
+
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -770,7 +781,7 @@ impl Widget for ScreenshotMarkup {
             let icon = match id {
                 "cancel" => Icon::X,
                 "undo" => Icon::ArrowLeft,
-                "redo" => Icon::ArrowRight,
+                "redo" | "tool-arrow" => Icon::ArrowRight,
                 "tool" => match self.tool {
                     MarkupTool::Pen => Icon::Pencil,
                     MarkupTool::Highlighter => Icon::PenTool,
@@ -780,7 +791,6 @@ impl Widget for ScreenshotMarkup {
                 },
                 "tool-pen" => Icon::Pencil,
                 "tool-highlighter" => Icon::PenTool,
-                "tool-arrow" => Icon::ArrowRight,
                 "tool-rectangle" => Icon::Square,
                 "tool-redact" => Icon::Ban,
                 "fit" => Icon::Maximize2,
@@ -938,10 +948,8 @@ impl Widget for ScreenshotMarkup {
                     *handled = true;
                 } else if self.viewport.contains(self.cursor) && self.canvas.contains(self.cursor) {
                     let (width_px, alpha) = match self.tool {
-                        MarkupTool::Pen => (4.0, 255),
                         MarkupTool::Highlighter => (18.0, 92),
-                        MarkupTool::Arrow => (4.0, 255),
-                        MarkupTool::Rectangle => (4.0, 255),
+                        MarkupTool::Pen | MarkupTool::Arrow | MarkupTool::Rectangle => (4.0, 255),
                         MarkupTool::Redact => (0.0, 255),
                     };
                     let mut color = self.color;

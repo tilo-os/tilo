@@ -50,6 +50,13 @@ pub enum WordProcessorOperation {
     ToggleHistory,
 }
 
+/// Decode an application-owned word-processor operation payload.
+///
+/// # Errors
+///
+/// Returns a message when a payload bearing
+/// [`WORD_PROCESSOR_OPERATION_TYPE`] is not valid JSON for
+/// [`WordProcessorOperation`].
 pub fn decode_operation(
     type_id: &str,
     payload: &[u8],
@@ -66,18 +73,24 @@ fn operation(
     id: &str,
     label: &str,
     kind: OperationKind,
-    value: WordProcessorOperation,
-) -> ActionSpec {
-    let spec = ActionSpec::operation(id, label, kind, WORD_PROCESSOR_OPERATION_TYPE, &value)
-        .expect("WordProcessorOperation is always serializable");
+    value: &WordProcessorOperation,
+) -> Option<ActionSpec> {
+    let Ok(spec) = ActionSpec::operation(id, label, kind, WORD_PROCESSOR_OPERATION_TYPE, value)
+    else {
+        // A malformed operation must not become an invokable catalogue
+        // entry. These variants contain only JSON-native values, but keep the
+        // fallible serializer boundary fail-closed rather than panicking.
+        return None;
+    };
     match value {
         WordProcessorOperation::Open { .. }
         | WordProcessorOperation::Save { .. }
-        | WordProcessorOperation::SaveAs { .. } => spec
-            .destructive()
-            .execution(ExecutionMode::Background { cancellable: false })
-            .returns(ResultSpec::Job),
-        _ => spec.with_contract(ActionContract::view()),
+        | WordProcessorOperation::SaveAs { .. } => Some(
+            spec.destructive()
+                .execution(ExecutionMode::Background { cancellable: false })
+                .returns(ResultSpec::Job),
+        ),
+        _ => Some(spec.with_contract(ActionContract::view())),
     }
 }
 
@@ -838,6 +851,10 @@ fn short(text: &str, fallback: &str) -> String {
 /// (exporting the structural inserts + paragraph alignment over the current
 /// target blocks) and a child resource per image, table and heading, each
 /// exporting the document-mutating operations the data model implies.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the resource catalogue is one ordered declaration of the live document surface"
+)]
 pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new(
         "word-processor.document",
@@ -941,7 +958,9 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
             WordProcessorOperation::ToggleHistory,
         ),
     ] {
-        root = root.with_action(operation(id, label, kind, value));
+        if let Some(spec) = operation(id, label, kind, &value) {
+            root = root.with_action(spec);
+        }
     }
 
     // Document-level structural inserts, anchored on the caret.

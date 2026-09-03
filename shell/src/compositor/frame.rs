@@ -40,6 +40,9 @@ struct FloatingTransferProxy {
     image: ImageData,
 }
 
+// The four flags are independent lifecycle signals from the handoff protocol;
+// wrapping them would only obscure the truth table at this private boundary.
+#[allow(clippy::fn_params_excessive_bools)]
 fn floating_transfer_proxy_needed(
     suspended: bool,
     native_presented: bool,

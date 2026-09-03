@@ -18,6 +18,7 @@
 # here as a tarball, and refuses to package anything it did not just build.
 
 %global qos_summary qOS compositor as a Wayland session
+%{!?qos_version:%global qos_version 0.1.2}
 
 # The payload is already built and stripped; there is no source to extract
 # debug symbols from, and an empty -debuginfo subpackage would just fail the
@@ -25,16 +26,16 @@
 %global debug_package %{nil}
 
 Name:           qos-session
-Version:        0.1.0
+Version:        %{qos_version}
 Release:        1%{?dist}
 Summary:        %{qos_summary}
 License:        AGPL-3.0-only
 URL:            https://code.podesta.ai/qos/qos
 Source0:        %{name}-%{version}.tar.gz
 
-# The payload is a set of x86-64 ELF binaries built for this host's
-# architecture. Nothing here is portable to another one.
-ExclusiveArch:  x86_64
+# The payload contains native ELF binaries. CI builds it natively on both
+# release architectures; rpmbuild rejects every other architecture.
+ExclusiveArch:  x86_64 aarch64
 
 # Everything below is dlopen()ed at runtime, so the automatic ELF dependency
 # scan cannot see any of it — `ldd` on the compositor lists the libinput/seat/
@@ -46,8 +47,10 @@ ExclusiveArch:  x86_64
 Requires:       pam
 # wgpu reaches Vulkan through ash, which dlopens libvulkan.so.1.
 Requires:       vulkan-loader
-# libEGL.so.1, for the DRM backend's buffer path.
-Requires:       libglvnd-egl
+# libEGL.so.1, for the DRM backend's buffer path. Require the ABI capability,
+# not Fedora's current provider package name, so RPM can select whichever
+# implementation supplies it without tripping explicit-library policy.
+Requires:       libEGL.so.1()(64bit)
 # An ICD for the loader to find. Recommends rather than Requires because the
 # driver is hardware-specific — a Mesa host wants this one, an NVIDIA host gets
 # its ICD from the proprietary or nvidia-open driver package instead, and
@@ -90,7 +93,7 @@ minutes ago can be logged into without reinstalling this package.
 
 Install this only on a machine you develop qOS on. It decides which program
 runs as a login session, from a file in the user's home directory. It is kept
-to a subpackage precisely so that decision is visible in `rpm -q` and absent
+to a sub-package precisely so that decision is visible in `rpm -q` and absent
 by default; see the header of /usr/libexec/qos-session-dev for the checks it
 makes before it execs anything, and DEVELOPMENT.md for the threat model.
 
@@ -117,10 +120,8 @@ install -Dpm 0644 wayland-sessions/qos.desktop \
 # inside a qOS session — under any other desktop these files sit inert.
 install -Dpm 0644 portal/qos.portal \
                   %{buildroot}%{_datadir}/xdg-desktop-portal/portals/qos.portal
-install -Dpm 0644 dbus/org.freedesktop.impl.portal.desktop.qos.service \
-                  %{buildroot}%{_datadir}/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service
-install -Dpm 0644 systemd-user/qos-portal.service \
-                  %{buildroot}%{_userunitdir}/qos-portal.service
+install -Dpm 0644 license/LICENSE \
+                  %{buildroot}%{_datadir}/licenses/%{name}/LICENSE
 
 install -Dpm 0755 libexec/qos-session-dev   %{buildroot}%{_libexecdir}/qos-session-dev
 install -Dpm 0644 wayland-sessions/qos-dev.desktop \
@@ -153,17 +154,13 @@ for wrapper in qos-session qos-session-dev; do
         exit 1
     }
 done
-# No *executable* line may name /usr/bin/shell: this package installs the
-# compositor as /usr/bin/qos-shell, and a portal unit pointing at a binary
-# that is not there fails at activation time with nothing to explain it.
-# Comments are allowed to mention the name — several explain the rename.
-if grep -rIn '/usr/bin/shell\b' %{buildroot} | grep -v ':[0-9]*:[[:space:]]*#'; then
-    echo "the lines above name /usr/bin/shell, which this package does not install" >&2
-    exit 1
-fi
 # The portal backend is only reachable if something claims the session's name.
 grep -q '^UseIn=nirios$' %{buildroot}%{_datadir}/xdg-desktop-portal/portals/qos.portal
 grep -q '^DesktopNames=nirios$' %{buildroot}%{_datadir}/wayland-sessions/qos.desktop
+# The compositor owns the portal bus name in-process. A separate activation
+# service would race it with a backend attached to an empty workspace.
+test ! -e %{buildroot}%{_datadir}/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service
+test ! -e %{buildroot}%{_userunitdir}/qos-portal.service
 
 %files
 %{_bindir}/qos-shell
@@ -173,14 +170,19 @@ grep -q '^DesktopNames=nirios$' %{buildroot}%{_datadir}/wayland-sessions/qos.des
 %config(noreplace) %{_sysconfdir}/pam.d/qos-unlock
 %{_datadir}/wayland-sessions/qos.desktop
 %{_datadir}/xdg-desktop-portal/portals/qos.portal
-%{_datadir}/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service
-%{_userunitdir}/qos-portal.service
+%license %{_datadir}/licenses/%{name}/LICENSE
 
 %files devel
 %{_libexecdir}/qos-session-dev
 %{_datadir}/wayland-sessions/qos-dev.desktop
 
 %changelog
+* Thu Sep 03 2026 qOS <qos@code.podesta.ai> - 0.1.2-1
+- Use a fully qualified Forgejo release action URL
+
+* Thu Sep 03 2026 qOS <qos@code.podesta.ai> - 0.1.1-1
+- Fix the Forgejo release action source for package publication.
+
 * Sat Aug 15 2026 qOS <qos@code.podesta.ai> - 0.1.0-1
 - First host session package: compositor, launcher, unlock helper, PAM stack
-  and session entry, plus an optional developer session entry.
+  portal and session entry, plus an optional developer session entry.
