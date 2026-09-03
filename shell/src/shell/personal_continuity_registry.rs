@@ -13,6 +13,73 @@ use crate::shell::personal_continuity::{
 };
 use crate::shell::state::RoomId;
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserResume {
+    url: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EbookResume {
+    book_id: String,
+    chapter: u64,
+    page: u64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MusicResume {
+    track_id: String,
+    position_ms: u64,
+    paused: bool,
+}
+
+fn portable_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':'))
+}
+
+fn portable_http_url(value: &str) -> bool {
+    let Some(rest) = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    !authority.is_empty()
+        && !authority.contains('@')
+        && !value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte == b'\\')
+}
+
+pub(crate) fn validate_app_metadata(app_id: &str, schema: u16, bytes: &[u8]) -> bool {
+    if schema == ui::app::GENERIC_VIEW_CONTINUATION_SCHEMA {
+        return ui::app::validate_generic_continuation_metadata(bytes);
+    }
+    if schema != 1 {
+        return false;
+    }
+    match app_id {
+        "dev.qos.browser" => serde_json::from_slice::<BrowserResume>(bytes)
+            .is_ok_and(|resume| portable_http_url(&resume.url)),
+        "dev.qos.ebook" => serde_json::from_slice::<EbookResume>(bytes).is_ok_and(|resume| {
+            let _ = (resume.chapter, resume.page);
+            portable_id(&resume.book_id)
+        }),
+        "dev.qos.music" => serde_json::from_slice::<MusicResume>(bytes).is_ok_and(|resume| {
+            let _ = resume.position_ms;
+            resume.paused && portable_id(&resume.track_id)
+        }),
+        _ => false,
+    }
+}
+
 /// Latest safe continuation projection for one native application in a room.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppContinuationReport {
@@ -59,6 +126,9 @@ impl ContinuationRegistry {
         // pathname into the registry key either.
         LaunchIntent::app(app_id.clone())?;
         let resume = ResumeMetadata::new(schema_version, ResumeSensitivity::Syncable, bytes)?;
+        if !validate_app_metadata(&app_id, schema_version, resume.bytes()) {
+            return Err(ContinuityError::InvalidResumePayload);
+        }
         let report = AppContinuationReport {
             room,
             app_id: app_id.clone(),
@@ -103,6 +173,24 @@ impl ContinuationRegistry {
     /// handshake; apps cannot choose a tab by reporting metadata.
     pub fn bind_tab(&mut self, tab: AppInstanceId, instance: AppInstanceId) {
         self.tab_instances.insert(tab, instance);
+        self.remove_remote_tab(tab);
+    }
+
+    /// Remove every process-local association owned by a closed tab.
+    pub fn forget_local_tab(&mut self, tab: AppInstanceId) {
+        if let Some(instance) = self.tab_instances.remove(&tab) {
+            self.reports
+                .retain(|(_, _, candidate), _| *candidate != instance);
+        }
+        self.remove_remote_tab(tab);
+    }
+
+    /// Level-triggered clear for an app which no longer has safe resume
+    /// metadata. The route supplies the exact room/app/instance tuple.
+    pub fn clear(&mut self, room: RoomId, app_id: &str, instance: AppInstanceId) -> bool {
+        self.reports
+            .remove(&(room, app_id.to_string(), instance))
+            .is_some()
     }
 
     /// Retain a validated remote checkpoint until the synchronized tab opens
@@ -224,7 +312,7 @@ mod tests {
                     "dev.qos.browser",
                     AppInstanceId(11),
                     1,
-                    br#"{\"url\":\"https://qos.dev\"}"#.to_vec()
+                    br#"{"url":"https://qos.dev"}"#.to_vec()
                 )
                 .unwrap()
         );
@@ -235,7 +323,7 @@ mod tests {
                     "dev.qos.browser",
                     AppInstanceId(11),
                     1,
-                    br#"{\"url\":\"https://qos.dev\"}"#.to_vec()
+                    br#"{"url":"https://qos.dev"}"#.to_vec()
                 )
                 .unwrap()
         );
@@ -262,6 +350,33 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unknown_opaque_and_structurally_invalid_app_metadata() {
+        let room = RoomId::new();
+        let mut reports = ContinuationRegistry::default();
+        assert_eq!(
+            reports.report(
+                room,
+                "dev.qos.mail",
+                AppInstanceId(1),
+                1,
+                br#"{"password":"secret"}"#.to_vec(),
+            ),
+            Err(ContinuityError::InvalidResumePayload)
+        );
+        assert_eq!(
+            reports.report(
+                room,
+                "dev.qos.browser",
+                AppInstanceId(2),
+                1,
+                br#"{"url":"https://alice:secret@example.test"}"#.to_vec(),
+            ),
+            Err(ContinuityError::InvalidResumePayload)
+        );
+        assert_eq!(reports.len(), 0);
+    }
+
+    #[test]
     fn two_browser_instances_keep_distinct_urls() {
         let room = RoomId::new();
         let mut reports = ContinuationRegistry::default();
@@ -271,7 +386,7 @@ mod tests {
                 "dev.qos.browser",
                 AppInstanceId(11),
                 1,
-                br#"{\"url\":\"https://a.test\"}"#.to_vec(),
+                br#"{"url":"https://a.test"}"#.to_vec(),
             )
             .unwrap();
         reports
@@ -280,7 +395,7 @@ mod tests {
                 "dev.qos.browser",
                 AppInstanceId(22),
                 1,
-                br#"{\"url\":\"https://b.test\"}"#.to_vec(),
+                br#"{"url":"https://b.test"}"#.to_vec(),
             )
             .unwrap();
         reports.bind_tab(AppInstanceId(101), AppInstanceId(11));
