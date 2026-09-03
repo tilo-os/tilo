@@ -291,6 +291,7 @@ mod tests {
     use crate::namespace::ROOT_INO;
     use iroh::endpoint::{Endpoint, presets};
     use iroh::protocol::Router;
+    use std::time::Duration;
 
     #[tokio::test]
     async fn readiness_requires_manifest_chunks_and_thumbnail() {
@@ -406,6 +407,154 @@ mod tests {
             .unwrap();
         assert_eq!(read.as_ref(), bytes);
 
+        nas_router.shutdown().await.unwrap();
+        nas_endpoint.close().await;
+        reader_endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn two_user_owner_offline_revoke_delete_and_restart_lifecycle() {
+        use crate::{Access, IdentityKey};
+        use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+
+        let temp = tempfile::tempdir().unwrap();
+        let owner_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let owner_store = ContentStore::memory();
+        let bytes = b"owner-created bytes";
+        let chunk = owner_store.ingest(bytes.as_slice()).await.unwrap();
+        let manifest = owner_store
+            .ingest(
+                Manifest {
+                    chunks: vec![ChunkRef {
+                        hash: *chunk.as_bytes(),
+                        len: u32::try_from(bytes.len()).unwrap(),
+                    }],
+                }
+                .encode()
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let owner_router = Router::builder(owner_endpoint.clone())
+            .accept(iroh_blobs::ALPN, owner_store.blobs_protocol(None))
+            .spawn();
+
+        let nas_store = Arc::new(
+            ContentStore::open_with_gc_interval(
+                temp.path().join("blobs"),
+                Duration::from_millis(10),
+            )
+            .await
+            .unwrap(),
+        );
+        let (nas_endpoint, _) = crate::sync::bind_ephemeral_endpoint().await.unwrap();
+        let nas_hydrator = Hydrator::new(nas_endpoint.clone(), nas_store.clone());
+        nas_hydrator.add_peer(owner_endpoint.addr());
+        let mut namespace = Namespace::new("lifecycle").unwrap();
+        let file = namespace
+            .create_file(
+                ROOT_INO,
+                "shared",
+                Some(&manifest),
+                u64::try_from(bytes.len()).unwrap(),
+                0,
+            )
+            .unwrap();
+        let namespace = Arc::new(Mutex::new(namespace));
+        assert!(
+            hydrate_full_workspace(&namespace, &nas_hydrator)
+                .await
+                .full_content_replication
+        );
+
+        let nas_router = Router::builder(nas_endpoint.clone())
+            .accept(iroh_blobs::ALPN, nas_store.blobs_protocol(None))
+            .spawn();
+        owner_router.shutdown().await.unwrap();
+        owner_endpoint.close().await;
+        let reader_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let reader = Hydrator::new(reader_endpoint.clone(), Arc::new(ContentStore::memory()));
+        assert_eq!(
+            reader
+                .fetch_from(chunk, nas_endpoint.addr())
+                .await
+                .unwrap()
+                .as_ref(),
+            bytes
+        );
+
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[0x71; 32]);
+        let collaborator: IdentityKey = [0x72; 32];
+        let workspace = uuid::Uuid::new_v4();
+        let authority = crate::workspace_authority::WorkspaceAuthority::open(
+            temp.path().join("authority.bin"),
+            workspace,
+            governor.verifying_key().to_bytes(),
+            collaborator,
+            Vec::new(),
+        )
+        .unwrap();
+        authority
+            .apply(
+                crate::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+                    workspace,
+                    1,
+                    vec![CapOverride::new(
+                        Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                        Scope::FsPath("/".into()),
+                        Effect::Grant,
+                        Verb::Read,
+                    )],
+                    false,
+                    &governor,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(
+            authority
+                .handle()
+                .permits(&collaborator, "/shared", Access::Read)
+        );
+        authority
+            .apply(
+                crate::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+                    workspace,
+                    2,
+                    Vec::new(),
+                    true,
+                    &governor,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(
+            !authority
+                .handle()
+                .permits(&collaborator, "/shared", Access::Read)
+        );
+
+        assert!(namespace.lock().unwrap().remove(file));
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            prune_obsolete_workspace_content(&namespace, &nas_hydrator),
+        )
+        .await
+        .expect("obsolete blob prune must be bounded")
+        .unwrap();
+        assert!(!nas_store.has(chunk).await);
+        assert!(!nas_store.has(manifest).await);
+        nas_store.store().shutdown().await.unwrap();
+        drop(nas_hydrator);
+        drop(nas_store);
+        let restarted = ContentStore::open_with_gc_interval(
+            temp.path().join("blobs"),
+            Duration::from_millis(10),
+        )
+        .await
+        .unwrap();
+        assert!(!restarted.has(chunk).await);
+        assert!(!restarted.has(manifest).await);
         nas_router.shutdown().await.unwrap();
         nas_endpoint.close().await;
         reader_endpoint.close().await;
