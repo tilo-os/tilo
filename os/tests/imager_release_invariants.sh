@@ -18,6 +18,9 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
   && ok 'imager release and promotion scripts parse' \
   || bad 'an imager release script does not parse'
 
+bash "$repo/os/tests/forgejo_release_publication.sh" \
+  || bad 'Forgejo release publication is not idempotent and immutable'
+
 grep -Fq 'QOS_REQUIRE_SIGNING=1' "$workflow" \
   && grep -Fq 'QOS_REQUIRE_NATIVE_PACKAGES=1' "$workflow" \
   && ok 'tag releases fail closed without signed native packages' \
@@ -42,6 +45,34 @@ grep -Fq 'AppImage.asc' "$workflow" \
   && ok 'every Linux download is signed and insecure Flatpak flashing is absent' \
   || bad 'Linux release artifacts are unsigned or still include privileged Flatpak flashing'
 
+for artifact in \
+  'qos-imager-linux-*.AppImage' \
+  'qos-imager-windows-x86_64.exe' \
+  'qos-imager-setup-windows-x86_64.exe' \
+  'qos-imager-macos-*.dmg'; do
+  grep -Fq "$artifact" "$workflow" \
+    && ok "$artifact is carried into the release" \
+    || bad "$artifact is absent from the release workflow"
+done
+grep -Fq 'runner: runner-arm64' "$workflow" \
+  && grep -Fq 'runner: macos-x64' "$workflow" \
+  && grep -Fq 'runner: macos-arm64' "$workflow" \
+  && grep -Fq 'runs-on: windows' "$workflow" \
+  && ok 'Linux ARM64, Windows x64, and both macOS architectures have native lanes' \
+  || bad 'the requested native release architecture matrix is incomplete'
+grep -Fq 'Require the complete native release matrix' "$workflow" \
+  && [ "$(grep -Fc 'if-no-files-found: error' "$workflow")" -ge 3 ] \
+  && ok 'publication fails closed on any missing native artifact or digest' \
+  || bad 'partial native artifact sets can reach publication'
+grep -Fq 'qos-imager-linux-aarch64.tar.gz' \
+    "$repo/apps/imager/packaging/homebrew/qos-imager.rb.in" \
+  && grep -Fq 'qos-imager-linux-x86_64.tar.gz' \
+    "$repo/apps/imager/packaging/homebrew/qos-imager.rb.in" \
+  && grep -Fq 'qos-imager-macos-#{arch}.dmg' \
+    "$repo/apps/imager/packaging/homebrew/qos-imager-cask.rb.in" \
+  && ok 'Homebrew selects native Linux and macOS artifacts by architecture' \
+  || bad 'Homebrew does not cover the requested Linux/macOS architectures'
+
 grep -Fq 'qos/homebrew-qos' "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   && grep -Fq 'microsoft/winget-pkgs/pulls' "$repo/apps/imager/packaging/publish-winget.sh" \
   && grep -Fq -- '--retry 6 --retry-all-errors --retry-max-time 180' "$repo/apps/imager/packaging/publish-winget.sh" \
@@ -63,6 +94,13 @@ grep -Fq 'qos-installer-medium-${{ matrix.arch }}' "$workflow" \
   && grep -Fq 'archive_sha256' "$repo/apps/imager/src/release.rs" \
   && ok 'native live media is catalogued and verified before writing' \
   || bad 'end-user install medium publication or verification is missing'
+
+grep -Fq 'key: imager-medium-inputs-' "$workflow" \
+  && grep -Fq './os/dev/cache-github-assets.sh' "$workflow" \
+  && grep -Fq 'podman login code.sandbox.example' "$workflow" \
+  && grep -Fq 'sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9' "$workflow" \
+  && ok 'installer media restores pinned inputs and can authenticate/verify frozen images' \
+  || bad 'installer-media release lane lacks immutable inputs or private-image prerequisites'
 
 grep -Fq 'group: release-imager-promotion' "$workflow" \
   && grep -Fq 'refusing to replace newer Homebrew release' "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \

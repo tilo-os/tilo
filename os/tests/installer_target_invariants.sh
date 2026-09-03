@@ -27,6 +27,15 @@ else
   bad "sealed target UKI handoff is incomplete (legacy deletions: $karg_deletes)"
 fi
 
+if grep -Fq 'qos-uki-cmdline remove systemd.show_status' "$containerfile" \
+   && grep -Fq 'qos-uki-cmdline remove rd.udev.log_level' "$containerfile" \
+   && grep -Fq 'qos-uki-cmdline show | grep -qw qos.mode=normal' "$containerfile" \
+   && grep -Fq 'qos-uki-cmdline show | grep -qw qos.install' "$containerfile"; then
+  ok "installer reserves measured UKI cmdline space without losing splash or mode"
+else
+  bad "installer UKI cmdline headroom or required boot markers are incomplete"
+fi
+
 if grep -Fq '"$INSTALLER_CONTEXT/rootfs/usr/share/qos/greetd-config.toml"' "$builder" \
    && grep -Fq 'COPY rootfs/ /' "$containerfile" \
    && grep -Fq 'greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"' "$backend" \
@@ -35,6 +44,27 @@ if grep -Fq '"$INSTALLER_CONTEXT/rootfs/usr/share/qos/greetd-config.toml"' "$bui
   ok "encrypted startup hands off directly to the installed user's session"
 else
   bad "installed system would ask for a second login after disk authentication"
+fi
+
+if grep -Fq ': "${TMPDIR:=${QOS_INSTALLER_OUTPUT}/.tmp}"' "$builder" \
+   && grep -Fq 'export TMPDIR' "$builder" \
+   && grep -Fq 'INSTALLER_SCRATCH="$TMPDIR"' "$builder" \
+   && grep -Fq 'mktemp -d "$INSTALLER_SCRATCH/qos-installer-context.XXXXXX"' "$builder" \
+   && ! grep -Fq 'mktemp -d /tmp/qos-installer-context' "$builder"; then
+  ok "large installer staging stays on the output filesystem"
+else
+  bad "installer staging can exhaust a small system temporary filesystem"
+fi
+
+if grep -Fq 'root_gib=$(((image_bytes * 3 + gib - 1) / gib))' "$builder" \
+   && grep -Fq '[ "$root_gib" -ge 40 ] || root_gib=40' "$builder" \
+   && grep -Fq -- '--root-min "${root_gib}G"' "$builder" \
+   && grep -Fq 'QOS_INSTALLER_WORK_DISK=' "$repo_root/os/dev/_common.sh" \
+   && grep -Fq "qemu-img create -f qcow2 -F qcow2 -b '\$disk' '\$work_disk'" "$repo_root/os/dev/vm.sh" \
+   && grep -Fq -- '-drive file=$work_disk,format=qcow2,if=virtio' "$repo_root/os/dev/vm.sh"; then
+  ok "live media is capacity-sized and VM cycles preserve the release artifact"
+else
+  bad "live-media capacity or pristine-artifact VM isolation regressed"
 fi
 
 if grep -Fq 'rm -f "$DEPLOY_ETC/sudoers.d/qos-installer"' "$backend"; then

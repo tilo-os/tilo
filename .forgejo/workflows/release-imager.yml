@@ -16,6 +16,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
+      - "os/external-assets/github-assets.tsv"
+      - "os/dev/cache-github-assets.sh"
       - ".forgejo/workflows/release-imager.yml"
   pull_request:
     branches: ["main"]
@@ -28,6 +30,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
+      - "os/external-assets/github-assets.tsv"
+      - "os/dev/cache-github-assets.sh"
       - ".forgejo/workflows/release-imager.yml"
   workflow_dispatch:
 
@@ -50,10 +54,29 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Restore checksum-verified GitHub build inputs
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: os/external-assets/cache
+          key: imager-medium-inputs-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+      - name: Materialize immutable build inputs
+        run: ./os/dev/cache-github-assets.sh
+      - name: Install the pinned image-signature verifier
+        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
+      - name: Authenticate the native image builder
+        env:
+          QOS_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          test -n "$QOS_REGISTRY_TOKEN"
+          printf '%s' "$QOS_REGISTRY_TOKEN" | podman login code.sandbox.example \
+            --username '${{ github.actor }}' --password-stdin
       - name: Build the tested qOS live installer
+        env:
+          QOS_REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
           export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          export QOS_REQUIRE_WPE_SIGNATURE=1
           ./os/dev/build-image.sh
           ./os/dev/build-custom-installer.sh
           apps/imager/packaging/package-install-medium.sh \
@@ -162,7 +185,7 @@ jobs:
             dist/qos-imager/qos-imager-linux-*.AppImage
             dist/qos-imager/qos-imager-linux-*.AppImage.sha256
             dist/qos-imager/qos-imager-linux-*.AppImage.asc
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   windows:
     needs: catalog
@@ -237,6 +260,7 @@ jobs:
             dist/qos-imager/qos-imager-setup-windows-x86_64.exe
             dist/qos-imager/qos-imager-setup-windows-x86_64.exe.sha256
             dist/qos-imager/winget/*.yaml
+          if-no-files-found: error
 
   macos:
     needs: catalog
@@ -321,6 +345,7 @@ jobs:
             dist/qos-imager/qos-imager-macos-*.zip.sha256
             dist/qos-imager/qos-imager-macos-*.dmg
             dist/qos-imager/qos-imager-macos-*.dmg.sha256
+          if-no-files-found: error
 
   publish:
     if: startsWith(github.ref, 'refs/tags/imager-v')
@@ -333,6 +358,33 @@ jobs:
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: release-assets
+      - name: Require the complete native release matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            qos-imager-linux-x86_64.AppImage
+            qos-imager-linux-aarch64.AppImage
+            qos-imager-linux-x86_64.tar.gz
+            qos-imager-linux-aarch64.tar.gz
+            qos-imager-windows-x86_64.exe
+            qos-imager-setup-windows-x86_64.exe
+            qos-imager-macos-x86_64.dmg
+            qos-imager-macos-aarch64.dmg
+          )
+          for name in "${required[@]}"; do
+            path="$(find release-assets -type f -name "$name" -print -quit)"
+            test -n "$path" || { printf 'missing release artifact: %s\n' "$name" >&2; exit 1; }
+            test -s "$path.sha256" || { printf 'missing release digest: %s.sha256\n' "$name" >&2; exit 1; }
+            case "$name" in
+              *.AppImage|*.tar.gz) test -s "$path.asc" \
+                || { printf 'missing release signature: %s.asc\n' "$name" >&2; exit 1; } ;;
+            esac
+          done
+          for name in qOS.Imager.installer.yaml qOS.Imager.yaml qOS.Imager.locale.en-US.yaml; do
+            test -n "$(find release-assets -type f -name "$name" -print -quit)" \
+              || { printf 'missing WinGet manifest: %s\n' "$name" >&2; exit 1; }
+          done
       - name: Publish signed downloads to the tag release
         env:
           FORGEJO_TOKEN: ${{ github.token }}

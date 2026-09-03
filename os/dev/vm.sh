@@ -136,6 +136,10 @@ cmd_boot_installer() {
   local disk="$QOS_INSTALLER_DISK"
   [ -f "$disk" ] || die "installer disk not found: $disk (run ./os/dev/build-custom-installer.sh)"
   vm_running && die "VM already running; stop it first"
+  local work_disk="$QOS_INSTALLER_WORK_DISK"
+  if [ ! -f "$work_disk" ]; then
+    inenv "qemu-img create -f qcow2 -F qcow2 -b '$disk' '$work_disk'" >/dev/null
+  fi
   local varstore display rn
   firmware_setup
   varstore="$(firmware_varstore)"
@@ -148,11 +152,11 @@ cmd_boot_installer() {
     window) display="-device virtio-vga-gl,$res -display gtk,gl=on";;
     *) display="-device virtio-vga,$res -display none";;
   esac
-  msg "boot-installer ($mode, ${QOS_XRES}x${QOS_YRES}) disk=$disk target=$target (/dev/vdb)"
+  msg "boot-installer ($mode, ${QOS_XRES}x${QOS_YRES}) medium=$disk work-overlay=$work_disk target=$target (/dev/vdb)"
   # First virtio disk = installer (/dev/vda); second = blank target (/dev/vdb).
   local args="$(machine_args) $(qemu_accel_args) -m $QOS_MEM -smp $QOS_SMP \
     $(pflash_args "$varstore") \
-    -drive file=$disk,format=qcow2,if=virtio \
+    -drive file=$work_disk,format=qcow2,if=virtio \
     -drive file=$target,format=qcow2,if=virtio \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
@@ -185,6 +189,10 @@ cmd_boot_target() {
     *) display="-device virtio-vga,$res -display none";;
   esac
   msg "boot-target ($mode, ${QOS_XRES}x${QOS_YRES}) disk=$disk (installed system)"
+  if [ "$mode" = 2d ]; then
+    warn "2D proves the boot/unlock path, but virtio-vga exposes no virgl GPU to the qOS compositor."
+    warn "The framebuffer can go black after Plymouth even when greetd and the session are healthy; use --gl to validate the desktop."
+  fi
   local args="$(machine_args) $(qemu_accel_args) -m $QOS_MEM -smp $QOS_SMP \
     $(pflash_args "$varstore") \
     -drive file=$disk,format=qcow2,if=virtio \
@@ -251,7 +259,11 @@ cmd_type() {
   for ((i=0; i<${#s}; i++)); do
     c="${s:$i:1}"
     hmp "sendkey $(char_key "$c") 20" >/dev/null
-    sleep 0.04
+    # The installer is intentionally software-rendered in the full-cycle gate;
+    # under load its event loop can miss the next key if the release gap is only
+    # 40 ms.  An 80 ms gap remains quick for credentials while making injected
+    # input match a human keyboard reliably.
+    sleep 0.08
   done
 }
 
