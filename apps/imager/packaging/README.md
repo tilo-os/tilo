@@ -43,7 +43,8 @@ macOS uses the platform `hdiutil`.
 An `imager-v*` release tag sets `QOS_REQUIRE_SIGNING=1`, so packaging fails
 closed unless the platform release credentials are configured:
 
-- Linux steady state: the OIDC credential broker installs the public verification
+- Linux steady state: `IMAGER_LINUX_CREDENTIAL_BROKER` names the native OIDC
+  credential broker. It installs the public verification
   key and exports `QOS_LINUX_SIGNER` plus `QOS_LINUX_VERIFY_KEY`; every tarball
   and AppImage receives an armored detached signature that is immediately
   verified. The protected repository variable
@@ -56,23 +57,26 @@ closed unless the platform release credentials are configured:
   `IMAGER_LINUX_SIGNING_KEY_B64` (armored
   private key, base64 encoded) and `IMAGER_LINUX_SIGNING_KEY_ID`, imported by CI
   as `QOS_LINUX_SIGNING_KEY`.
-- Windows steady state: repository variable `IMAGER_WINDOWS_SIGNER` names a
-  preinstalled signer wrapper. It receives the artifact path, uses the job's
-  federated short-lived signing lease, and returns only after timestamping.
+- Windows steady state: `IMAGER_WINDOWS_CREDENTIAL_BROKER` configures a signer
+  wrapper, or repository variable `IMAGER_WINDOWS_SIGNER` directly names a
+  preinstalled wrapper which performs its own OIDC exchange. It receives the
+  artifact path, uses the job's federated short-lived signing lease, and returns
+  only after timestamping.
   `signtool verify` independently checks its result. Bootstrap-only fallback:
   `IMAGER_WINDOWS_CERT_PFX_B64` and `IMAGER_WINDOWS_CERT_PASSWORD`.
-- macOS steady state: the OIDC credential broker leases the Developer ID signing
-  identity and a notarytool keychain profile. Bootstrap-only fallback:
+- macOS steady state: `IMAGER_MACOS_CREDENTIAL_BROKER` leases the Developer ID
+  signing identity and a notarytool keychain profile. Bootstrap-only fallback:
   `IMAGER_MAC_CERT_P12_B64`, `IMAGER_MAC_CERT_PASSWORD`,
   `IMAGER_MAC_SIGNING_IDENTITY`, `IMAGER_APPLE_ID`,
   `IMAGER_APPLE_TEAM_ID`, and `IMAGER_APPLE_APP_PASSWORD`. The app is signed
   with the hardened runtime; both the app and signed DMG are notarized and
   stapled before publication.
 
-The bootstrap credentials are protected Forgejo secrets. Broker paths and
-public-key identities are repository variables; private signing material and
-OIDC leases must never enter the repository, workflow environment files, or
-ordinary artifacts.
+The bootstrap credentials are protected Forgejo secrets. Native and promotion
+broker paths are separate protected repository variables because absolute paths
+are platform-specific; public-key identities are protected variables as well.
+Private signing material and OIDC leases must never enter the repository,
+workflow environment files, or ordinary artifacts.
 
 Linux users should download `qos-release-key.asc` and
 `qos-release-key.fingerprint`, compare the complete fingerprint through an

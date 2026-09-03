@@ -43,12 +43,18 @@ else
 fi
 
 grep -Fq 'id-token: write' "$workflow" \
-  && grep -Fq 'IMAGER_CREDENTIAL_BROKER' "$workflow" \
+  && [ "$(grep -Fc 'enable-openid-connect: true' "$workflow")" -eq 6 ] \
+  && grep -Fq 'IMAGER_LINUX_CREDENTIAL_BROKER' "$workflow" \
+  && grep -Fq 'IMAGER_WINDOWS_CREDENTIAL_BROKER' "$workflow" \
+  && grep -Fq 'IMAGER_MACOS_CREDENTIAL_BROKER' "$workflow" \
+  && grep -Fq 'IMAGER_HOMEBREW_CREDENTIAL_BROKER' "$workflow" \
+  && grep -Fq 'IMAGER_WINGET_CREDENTIAL_BROKER' "$workflow" \
+  && grep -Fq 'IMAGER_SITE_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'QOS_LINUX_SIGNER' "$repo/apps/imager/packaging/package-host.sh" \
   && grep -Fq 'QOS_NOTARY_KEYCHAIN_PROFILE' "$repo/apps/imager/packaging/package-host.sh" \
   && grep -Fq 'QOS_WINDOWS_SIGNER' "$repo/apps/imager/packaging/package-host.ps1" \
-  && ok 'native jobs use OIDC-backed signing without exported platform keys' \
-  || bad 'short-lived signing path is not wired into native release jobs'
+  && ok 'all credentialed jobs enable Forgejo OIDC with platform-specific brokers' \
+  || bad 'short-lived credential path is not wired into every release job'
 
 grep -Fq 'AppImage.asc' "$workflow" \
   && grep -Fq 'qos-release-key.asc' "$workflow" \
