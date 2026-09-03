@@ -105,6 +105,7 @@ impl RelayClient {
         relay_addr: EndpointAddr,
         workspace_id: u64,
         own_user_public_key: [u8; 32],
+        expected_server_device: [u8; 32],
         own_cert: DeviceCert,
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
@@ -113,7 +114,7 @@ impl RelayClient {
             endpoint,
             relay_addr,
             workspace_id,
-            Some(own_user_public_key),
+            Some((own_user_public_key, expected_server_device)),
             own_cert,
             own_sk,
             revocations,
@@ -128,6 +129,8 @@ impl RelayClient {
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
         workspace_id: u64,
+        expected_server_user: [u8; 32],
+        expected_server_device: [u8; 32],
         own_cert: DeviceCert,
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
@@ -136,7 +139,7 @@ impl RelayClient {
             endpoint,
             relay_addr,
             workspace_id,
-            None,
+            Some((expected_server_user, expected_server_device)),
             own_cert,
             own_sk,
             revocations,
@@ -148,7 +151,7 @@ impl RelayClient {
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
         workspace_id: u64,
-        expected_server_user: Option<[u8; 32]>,
+        expected_server: Option<([u8; 32], [u8; 32])>,
         own_cert: DeviceCert,
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
@@ -177,21 +180,19 @@ impl RelayClient {
         .await?;
         let ack: HelloAck = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
             .map_err(|error| ClientError::Codec(error.to_string()))?;
-        match expected_server_user.as_ref() {
-            Some(user) => auth::verify_hello_ack(
-                &ack,
-                user,
-                &revocations,
-                crate::peer::now_ns(),
-                &nonce,
-            )?,
-            None => auth::verify_pinned_host_ack(
-                &ack,
-                &revocations,
-                crate::peer::now_ns(),
-                &nonce,
-            )?,
+        match expected_server.as_ref() {
+            Some((user, _)) => {
+                auth::verify_hello_ack(&ack, user, &revocations, crate::peer::now_ns(), &nonce)?
+            }
+            None => {
+                auth::verify_pinned_host_ack(&ack, &revocations, crate::peer::now_ns(), &nonce)?
+            }
         };
+        if let Some((_, expected_device)) = expected_server
+            && ack.cert.device_public_key != expected_device
+        {
+            return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
+        }
         let ack2 = auth::build_hello_ack2(&own_sk, &ack.server_nonce);
         write_frame(
             &mut send,
