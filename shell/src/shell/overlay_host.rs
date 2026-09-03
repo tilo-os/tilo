@@ -8215,6 +8215,13 @@ impl ShellOverlayHost {
                     });
                 }
             }
+            WorkspaceSettingsOutcome::RemoveAgent(agent) => {
+                if is_owner && let Some(chrome) = self.chrome.clone() {
+                    edit_active_workspace_caps(&chrome, move |ws, actor| {
+                        crate::shell::workspace_settings::remove_agent(ws, actor, &agent)
+                    });
+                }
+            }
             WorkspaceSettingsOutcome::Revoke(cap_id) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
                     edit_active_workspace_caps(&chrome, move |ws, actor| {

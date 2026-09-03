@@ -1560,8 +1560,8 @@ async fn spawn_context_stream(
                         id: collaborator.user_id,
                         name: collaborator.display_name,
                         color: unpack_color(collaborator.color),
-                        is_agent: false,
-                        is_self: false,
+                        is_agent: collaborator.is_agent,
+                        is_self: collaborator.is_self,
                     })
                     .collect();
                 if tx

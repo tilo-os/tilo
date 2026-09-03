@@ -1283,6 +1283,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     let ws_tab = match st.ws_settings_tab {
         WsTab::General => "general",
         WsTab::Members => "members",
+        WsTab::Agents => "agents",
         WsTab::Permissions => "permissions",
         WsTab::Apps => "apps",
     };
