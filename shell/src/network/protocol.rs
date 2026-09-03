@@ -107,6 +107,10 @@ pub enum NeighbourMsg {
         /// Codec target bit depth; `0` means unspecified — receivers infer 8-bit
         /// from `codec = "h264"`, else 8 or 10 (HEVC Main10).
         bit_depth: u8,
+        /// Desktop app-id of the shared legacy window. Kept last so the
+        /// serde default accepts pre-field postcard payloads.
+        #[serde(default)]
+        app_id: String,
     },
     /// Explicit end-of-stream (owner tore down the share, or the surface
     /// unmapped). Receivers drop their `PeerView` + decoder on receipt, instead of
@@ -310,6 +314,7 @@ mod tests {
                 NeighbourMsg::SurfaceStreamStart {
                     surface: 7,
                     source_peer: 0xABCD,
+                    app_id: "org.example.Editor".into(),
                     width: 1280,
                     height: 720,
                     codec: "h264".into(),
@@ -325,6 +330,7 @@ mod tests {
                 NeighbourMsg::SurfaceStreamStart {
                     surface: 8,
                     source_peer: 0xABCD,
+                    app_id: "org.example.HdrEditor".into(),
                     width: 1920,
                     height: 1080,
                     codec: "hevc-main10".into(),

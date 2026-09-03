@@ -677,6 +677,10 @@ pub struct ShellOverlayHost {
     /// tab whose content changed without its id changing still gets
     /// rebuilt.
     tab_tiles: std::collections::HashMap<u64, String>,
+    /// Session-local bindings from `(owner, surface)` to the peer-window tab
+    /// whose runtime content was replaced by a `PeerView`. These never enter
+    /// `ChromeState` or its replicated workspace document.
+    peer_stream_tabs: std::collections::HashMap<(u64, u64), u64>,
     /// Quick-settings root-page presentation, geometry and input state.
     qs_root: QuickSettingsRoot,
     /// Side-effect dispatcher for quick-settings actions. Production
@@ -1348,6 +1352,7 @@ impl ShellOverlayHost {
             notification_stack: None,
             last_chrome_revision: u64::MAX,
             tab_tiles: std::collections::HashMap::new(),
+            peer_stream_tabs: std::collections::HashMap::new(),
             qs_root: QuickSettingsRoot::default(),
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
             qs_wifi_pane: QuickSettingsWifiPane::default(),
@@ -2446,6 +2451,174 @@ impl ShellOverlayHost {
             }
         }
         None
+    }
+
+    /// Replace one matching peer-window card with a live, session-local
+    /// decoder. Returns false when the remote app has no corresponding tab;
+    /// the caller may retry when the replicated window description arrives.
+    pub fn mount_peer_stream(
+        &mut self,
+        source_peer: u64,
+        surface_id: u64,
+        local_peer: u64,
+        app_id: &str,
+        codec: &str,
+        hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
+        input_sink: std::sync::Arc<dyn Fn(crate::network::streaming::InputEvent) + Send + Sync>,
+    ) -> bool {
+        let key = (source_peer, surface_id);
+        if let Some(tab_id) = self.peer_stream_tabs.get(&key).copied() {
+            for &row_ptr in self.group_row_ptrs.values() {
+                // SAFETY: rows are boxed by this host and `&mut self` makes
+                // the traversal exclusive, as in `foreign_surface_rect`.
+                let row: &mut GroupRow = unsafe { &mut *row_ptr };
+                for group in &mut row.groups {
+                    let Some(host) = group.host_for_tab_mut(tab_id) else {
+                        continue;
+                    };
+                    let ui::widget::TileContent::App(app) = host.content_mut() else {
+                        continue;
+                    };
+                    if app.as_any_mut().is_some_and(|any| {
+                        any.downcast_mut::<crate::shell::peer_view::PeerView>()
+                            .is_some()
+                    }) {
+                        return true;
+                    }
+                }
+            }
+            // A workspace/root rebuild invalidated the runtime widget while
+            // leaving the session alive. Forget only the runtime binding;
+            // the caller's retained start descriptor remounts it below.
+            self.peer_stream_tabs.remove(&key);
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let tab_id = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group.tabs.iter().find_map(|tab| match &tab.tile {
+                            crate::shell::state::TileContent::PeerWindow {
+                                app_id: candidate,
+                                ..
+                            } if candidate == app_id
+                                && !self.peer_stream_tabs.values().any(|id| *id == tab.id) =>
+                            {
+                                Some(tab.id)
+                            }
+                            _ => None,
+                        })
+                    })
+                })
+            })
+        };
+        let Some(tab_id) = tab_id else {
+            return false;
+        };
+        let mut peer_view = crate::shell::peer_view::PeerView::new_for_stream(
+            surface_id,
+            local_peer,
+            codec,
+            crate::diagnostics::PeerSurfaceMetrics::default(),
+            &crate::shell::hdr_display::DisplayCapabilities::sdr_default(),
+            hdr_static_metadata,
+        );
+        peer_view.set_input_sink(input_sink);
+        for &row_ptr in self.group_row_ptrs.values() {
+            // SAFETY: identical to `foreign_surface_rect`: rows are boxed by
+            // this host and `&mut self` makes this traversal exclusive.
+            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+            for group in &mut row.groups {
+                if let Some(host) = group.host_for_tab_mut(tab_id) {
+                    host.replace_content(ui::widget::TileContent::App(Box::new(peer_view)));
+                    self.peer_stream_tabs.insert(key, tab_id);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Decode the newest frame into the mounted peer view. The network inbox
+    /// already coalesces older frames, so this never accumulates video here.
+    pub fn push_peer_stream_frame(
+        &mut self,
+        source_peer: u64,
+        surface_id: u64,
+        encoded: &[u8],
+        latency_ns: Option<u64>,
+    ) -> bool {
+        let Some(tab_id) = self
+            .peer_stream_tabs
+            .get(&(source_peer, surface_id))
+            .copied()
+        else {
+            return false;
+        };
+        for &row_ptr in self.group_row_ptrs.values() {
+            // SAFETY: same row ownership invariant as `mount_peer_stream`.
+            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+            for group in &mut row.groups {
+                let Some(host) = group.host_for_tab_mut(tab_id) else {
+                    continue;
+                };
+                let ui::widget::TileContent::App(app) = host.content_mut() else {
+                    return false;
+                };
+                let Some(view) = app
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<crate::shell::peer_view::PeerView>())
+                else {
+                    return false;
+                };
+                return !matches!(
+                    view.push_encoded_with_latency(encoded, latency_ns),
+                    crate::shell::peer_view::PushOutcome::DecodeFailed
+                );
+            }
+        }
+        false
+    }
+
+    /// Drop a session-local peer decoder and restore the persisted
+    /// peer-window card underneath it.
+    pub fn unmount_peer_stream(&mut self, source_peer: u64, surface_id: u64) -> bool {
+        let Some(tab_id) = self.peer_stream_tabs.remove(&(source_peer, surface_id)) else {
+            return false;
+        };
+        let tile = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .find(|tab| tab.id == tab_id)
+                            .map(|tab| tab.tile.clone())
+                    })
+                })
+            })
+        });
+        let Some(tile) = tile else {
+            return false;
+        };
+        for &row_ptr in self.group_row_ptrs.values() {
+            // SAFETY: same row ownership invariant as `mount_peer_stream`.
+            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+            for group in &mut row.groups {
+                if let Some(host) = group.host_for_tab_mut(tab_id) {
+                    host.replace_content(crate::shell::to_ui_tile(&tile));
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Whether any tab on screen is still holding a place for an app that
