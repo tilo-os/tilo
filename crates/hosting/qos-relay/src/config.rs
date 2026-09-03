@@ -153,6 +153,11 @@ pub struct WorkspaceBinding {
     /// not run the filesystem/blob host plane.
     #[serde(default = "default_server_replication")]
     pub replication: ReplicationIntent,
+    /// Signed filesystem-authority users permitted to use this relay room.
+    /// Home-peer import maintains this from the bundle; it is intentionally
+    /// room-scoped rather than a relay-wide collaborator union.
+    #[serde(default)]
+    pub admitted_users: Vec<String>,
 }
 
 fn true_default() -> bool {
@@ -266,6 +271,7 @@ impl RelayConfig {
             id,
             pin,
             replication: default_server_replication(),
+            admitted_users: Vec::new(),
         });
         true
     }

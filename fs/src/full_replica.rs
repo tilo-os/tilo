@@ -31,6 +31,10 @@ pub struct HomePeerBundle {
     /// it in this one file means transferring a bundle never leaves a home
     /// peer with a host-local path back to the originating desktop.
     pub capability_json: String,
+    /// Governor-signed workspace authority. `capability_json` is retained
+    /// only to read legacy bundles; workers require this signed envelope.
+    #[serde(default)]
+    pub authority: Option<crate::workspace_authority::WorkspaceAuthorityEnvelope>,
     #[serde(default)]
     pub principals: Vec<String>,
     /// Shell/relay workspace shards backed by this filesystem workspace.

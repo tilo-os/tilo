@@ -40,6 +40,7 @@ async fn pinned_provider_host_serves_only_enrolled_cross_user_devices() {
             id: 77,
             pin: true,
             replication: qos_relay::ReplicationIntent::FullWorkspace,
+            admitted_users: Vec::new(),
         }],
         ..RelayConfig::default()
     };
@@ -145,6 +146,7 @@ async fn provider_membership_removal_closes_a_live_tenant_session() {
                 id: 78,
                 pin: true,
                 replication: qos_relay::ReplicationIntent::FullWorkspace,
+                admitted_users: Vec::new(),
             }],
             ..RelayConfig::default()
         },
