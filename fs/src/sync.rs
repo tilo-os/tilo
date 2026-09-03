@@ -1731,8 +1731,13 @@ struct DirectMeshAuthorizer<'a> {
 
 impl RecordAuthorizer for DirectMeshAuthorizer<'_> {
     fn actor_is_certified(&self, actor: &collab_types::FileActor) -> bool {
+        // A home peer is commonly a second device certified to the same
+        // human as the desktop which authored the record. The envelope still
+        // verifies the original device signature; the live transport cert
+        // permits that human's directly-connected sibling device to relay it.
+        // Never extend this across people: collaborator A cannot vouch for
+        // collaborator B's device or attribution.
         actor.person.as_bytes() == &self.peer.user_public_key
-            && actor.device.as_bytes() == &self.peer.device_public_key
             && crate::share_session::LiveActorCertification::certification_is_current(
                 self.identity,
                 self.peer,
@@ -1870,7 +1875,7 @@ async fn pull_record_mesh_from_peer(
         };
         for remote_cursor in cursors
             .into_iter()
-            .filter(|cursor| cursor.actor == direct_actor)
+            .filter(|cursor| cursor.actor.person == direct_actor.person)
         {
             let key = RecordRepositoryKey {
                 workspace_id: records.workspace_id,
@@ -4805,7 +4810,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[allow(clippy::too_many_lines)] // Live ACL and origin-validation scenario.
-    async fn record_mesh_enforces_live_root_acl_and_accepts_only_direct_origin_streams() {
+    async fn record_mesh_accepts_same_human_relays_but_rejects_other_people() {
         let server_temp = tempfile::tempdir().unwrap();
         let client_temp = tempfile::tempdir().unwrap();
         let (server_ep, server_lookup, server_identity, server_root, server_device) =
@@ -4828,9 +4833,27 @@ mod tests {
             41,
         );
 
-        // A peer may store another device's authenticated stream, but the
-        // direct-origin mesh deliberately refuses to relay it until actor
-        // certificate bundles are part of this protocol.
+        // A home peer certified to the same human must relay records signed
+        // by that person's other devices. The original device signature stays
+        // intact; only a different human remains outside the trust boundary.
+        let sibling_record = FileRecordId::new();
+        let sibling_device = ed25519_dalek::SigningKey::from_bytes(&[0x60; 32]);
+        let sibling_actor = FileActor {
+            person: server_actor.person,
+            device: Ed25519PublicKey(sibling_device.verifying_key().to_bytes()),
+        };
+        publish_record_metadata(
+            Arc::clone(&server_services.repository),
+            workspace_id,
+            sibling_record,
+            sibling_actor,
+            sibling_device,
+            73,
+        );
+
+        // A peer may also store a different person's authenticated stream,
+        // but transport certification does not authorize relaying across
+        // people.
         let relayed_record = FileRecordId::new();
         let relayed_person = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
         let relayed_device = ed25519_dalek::SigningKey::from_bytes(&[0x62; 32]);
@@ -4931,6 +4954,17 @@ mod tests {
                 .unwrap()
                 .byte_len,
             41
+        );
+        assert_eq!(
+            client_services.repository.highest_sequence(
+                RecordRepositoryKey {
+                    workspace_id,
+                    record_id: sibling_record,
+                },
+                &sibling_actor,
+            ),
+            Some(1),
+            "a home peer must relay a sibling device's signed stream"
         );
         assert!(
             !client_services.repository.contains(RecordRepositoryKey {
