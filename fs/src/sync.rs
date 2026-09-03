@@ -1498,21 +1498,28 @@ impl Workspace {
         // Pull that projection before exposing the mount: otherwise a fresh
         // collaborator can briefly observe real files as zero-byte entries,
         // and an eager application may cache that false empty state.
-        if let Some(records) = &record_plane
-            && let Err(error) = pull_record_mesh_from_peer(
-                &endpoint,
-                ticket.node.clone(),
-                &identity,
-                &policy,
-                records,
+        if let Some(records) = &record_plane {
+            let initial_mesh = tokio::time::timeout(
+                Duration::from_secs(10),
+                pull_record_mesh_from_peer(
+                    &endpoint,
+                    ticket.node.clone(),
+                    &identity,
+                    &policy,
+                    records,
+                ),
             )
             .await
-            && !identity.partitioned()
-        {
-            // Persisted/offline mounts remain available. The periodic mesh
-            // worker below keeps retrying a temporarily unavailable or older
-            // peer after startup.
-            eprintln!("initial record mesh reconciliation failed: {error}");
+            .map_err(|_| anyhow::anyhow!("initial record mesh timed out"))
+            .and_then(std::convert::identity);
+            if let Err(error) = initial_mesh
+                && !identity.partitioned()
+            {
+                // Persisted/offline mounts remain available. The periodic
+                // mesh worker below keeps retrying a temporarily unavailable
+                // or older peer after startup.
+                eprintln!("initial record mesh reconciliation failed: {error}");
+            }
         }
         Self::start(
             endpoint,
