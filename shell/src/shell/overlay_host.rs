@@ -2752,6 +2752,11 @@ impl ShellOverlayHost {
         // pill was clicked; stamp `active_strip`/`active_group` after the
         // writeback, or Ctrl+K's scope stays on the old group.
         let mut focus_writes: Vec<(WorkspaceId, StripId, GroupId)> = Vec::new();
+        // A FileReference card is inert until the person explicitly selects
+        // its tab.  Capture that activation while holding the tree, then
+        // resolve/open it after releasing chrome so the normal document
+        // launcher can apply its capability and hydration path.
+        let mut activated_file_tabs = Vec::new();
         {
             let mut tree = st.tree_mut();
             for w in &writes {
@@ -2773,6 +2778,7 @@ impl ShellOverlayHost {
                             }
                             group.active_tab = w.tab;
                             focus_writes.push((ws.id, w.strip, w.group));
+                            activated_file_tabs.push(w.tab);
                         }
                     }
                 }
@@ -2785,6 +2791,16 @@ impl ShellOverlayHost {
                 tree.active_strip.insert(ws_id, strip_id);
                 tree.active_group.insert(strip_id, group_id);
             }
+            let activated_file_tabs: Vec<_> = activated_file_tabs
+                .into_iter()
+                .filter(|tab| tree.continuation_file_references.contains_key(tab))
+                .collect();
+            drop(tree);
+            drop(st);
+            for tab in activated_file_tabs {
+                let _ = crate::shell::doc_open::activate_continuity_file_tab(&chrome, tab);
+            }
+            return;
         }
     }
 
