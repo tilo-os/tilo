@@ -201,8 +201,9 @@ impl Relay {
             ));
         }
         // A certificate authorises a service, but it cannot make a service
-        // exist. The composite process starts relay + filesystem planes; app,
-        // compute, and remote-control claims remain unavailable here.
+        // exist. The composite process starts relay + filesystem planes; live
+        // workspace control uses relay's non-retained presence plane, while
+        // app and compute claims remain unavailable here.
         cfg.services = cfg
             .services
             .authorized_by(&identity.device_cert.capabilities)

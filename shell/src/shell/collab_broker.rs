@@ -1084,6 +1084,7 @@ fn spawn_inner(
         Arc::clone(publisher),
         membership,
         trusted_devices,
+        peer_sync.cloned(),
         Arc::clone(&capnp_quit),
     )?;
 
