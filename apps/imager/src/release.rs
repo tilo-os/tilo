@@ -212,6 +212,10 @@ fn verified_image(release: &QosRelease) -> Result<Source, String> {
 fn source_for(release: &QosRelease, image: &Path) -> Source {
     let mut source = release.to_source();
     source.path = image.to_string_lossy().into_owned();
+    source.identity = image
+        .metadata()
+        .ok()
+        .and_then(|metadata| crate::model::SourceIdentity::from_metadata(&metadata));
     source
 }
 
@@ -241,5 +245,27 @@ mod tests {
         assert!(validate_digest(&"a".repeat(64)).is_ok());
         assert!(validate_digest(&"z".repeat(64)).is_err());
         assert!(validate_digest("abc").is_err());
+    }
+
+    #[test]
+    fn verified_release_source_keeps_catalog_digest_and_file_identity() {
+        let image = tempfile::NamedTempFile::new().unwrap();
+        let release = QosRelease {
+            name: "qOS".into(),
+            version: "1.0".into(),
+            size: 1,
+            channel: "stable".into(),
+            local_path: String::new(),
+            url: "https://code.podesta.ai/qos/qos/releases/download/imager-v1.0.0/qos.img.zst"
+                .into(),
+            archive_sha256: "a".repeat(64),
+            archive_size: 1,
+            image_sha256: "b".repeat(64),
+        };
+
+        let source = source_for(&release, image.path());
+        let expected = "b".repeat(64);
+        assert_eq!(source.expected_sha256.as_deref(), Some(expected.as_str()));
+        assert!(source.identity.is_some());
     }
 }
