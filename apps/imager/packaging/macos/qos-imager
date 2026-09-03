@@ -1,20 +1,4 @@
 #!/bin/sh
 set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-binary="$here/qos-imager-bin"
-for arg in "$@"; do
-  case "$arg" in
-    --shots|--shots=*|--shots-dir|--shots-dir=*) exec "$binary" "$@" ;;
-  esac
-done
-exec osascript - "$binary" "$@" <<'APPLESCRIPT'
-on run argv
-  set elevatedCommand to "QOS_IMAGER_ALLOW_WRITE=1 " & quoted form of item 1 of argv
-  if (count argv) > 1 then
-    repeat with argumentValue in items 2 thru (count argv) of argv
-      set elevatedCommand to elevatedCommand & " " & quoted form of argumentValue
-    end repeat
-  end if
-  do shell script elevatedCommand with administrator privileges
-end run
-APPLESCRIPT
+exec "$here/qos-imager-bin" "$@"

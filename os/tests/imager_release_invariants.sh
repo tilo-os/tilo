@@ -54,6 +54,25 @@ grep -Fq 'AppImage.asc' "$workflow" \
   && ok 'every Linux download is signed and insecure Flatpak flashing is absent' \
   || bad 'Linux release artifacts are unsigned or still include privileged Flatpak flashing'
 
+linux_launcher="$repo/apps/imager/packaging/linux/qos-imager"
+mac_launcher="$repo/apps/imager/packaging/macos/qos-imager"
+windows_launcher="$repo/apps/imager/packaging/windows/Start-qOS-Imager.ps1"
+writer="$repo/apps/imager/src/write.rs"
+if grep -Fq 'exec pkexec' "$linux_launcher" \
+  || grep -Fq 'with administrator privileges' "$mac_launcher" \
+  || grep -Fq -- '-Verb RunAs' "$windows_launcher"; then
+  bad 'a native launcher still elevates the complete Imager GUI'
+elif grep -Fq 'WriteBackend::PrivilegedHelper' "$writer" \
+  && grep -Fq 'Command::new("pkexec")' "$writer" \
+  && grep -Fq 'with administrator privileges' "$writer" \
+  && grep -Fq -- '-Verb RunAs' "$writer" \
+  && grep -Fq 'without_secrets' "$writer" \
+  && grep -Fq 'write helper request changed after authorization' "$writer"; then
+  ok 'native GUIs stay unprivileged and authenticate only a digest-bound secret-free writer'
+else
+  bad 'write-time least-privilege helper is incomplete for a native platform'
+fi
+
 for artifact in \
   'qos-imager-linux-*.AppImage' \
   'qos-imager-windows-x86_64.exe' \
