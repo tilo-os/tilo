@@ -3,29 +3,19 @@
 The collaborative session starts the shell's Iroh transport. It supports an
 ad-hoc direct invite and an optional always-on workspace host at the same time.
 
-The normal desktop remains conservative: peer sync is enabled by the
-`shell-peer-sync.desktop` session or `--enable-peer-sync`. Once enabled, the
-shell loads `/var/lib/qos/device/keypair.bin`, binds an Iroh endpoint, and
-joins a deterministic gossip topic for the workspace. Iroh attempts a direct
-path and falls back to its encrypted transport relay when necessary.
+Peer sync starts automatically in every normal desktop session. The shell
+loads the certified device identity, binds an Iroh endpoint, and joins the
+workspace mesh; Iroh attempts a direct path and falls back to its encrypted
+transport relay when necessary. Recovery and deliberately offline sessions
+can use `--disable-peer-sync`.
 
 Invites carry a signed Iroh `EndpointAddr`; no multicast discovery or fixed
 TCP port is required. The inviter and invitee authenticate the endpoint id
 embedded in the token before room state is accepted.
 
-For a persistent opt-in, enable the user marker unit and start a new desktop
-session:
-
-```sh
-systemctl --user enable --now shell-peer-sync.service
-```
-
-To return to the default-off posture, remove the marker and start a new
-session:
-
-```sh
-systemctl --user disable --now shell-peer-sync.service
-```
+The legacy `--enable-peer-sync`, peer-sync desktop entry, and marker unit are
+still accepted so upgraded installations keep working, but they are no longer
+required.
 
 ## Persistent host
 
@@ -35,13 +25,11 @@ authenticates with its device certificate and sends durable collaboration
 messages to the host in addition to the direct gossip path. The host pins
 configured workspaces and store-and-forwards updates to offline devices.
 
-The currently shippable standalone host is `qos-relay`: it retains the
-workspace CRDT, shell/app checkpoints, and pending collaboration updates. It
-does **not** itself retain file bytes or thumbnails, and it does not run app,
-compute, or remote-control host planes. Full file residency requires the
-separate authenticated filesystem/blob host to be configured. The Compose
-deployment and its identity prerequisites are documented in
-`os/containers/qos-relay/README.md`.
+The home-server deployment combines `qos-relay` with the authenticated
+filesystem replica. Pairing it in Settings transfers its certified identity,
+workspace bindings, and full-replication configuration; it then retains CRDT
+state, app checkpoints, file bytes, and thumbnails around the clock. The
+container deployment is documented in `os/containers/qos-relay/README.md`.
 
 The identity files are created together by `shell --provision-identity`:
 
@@ -71,9 +59,9 @@ restore or deliberately re-enrol the device instead.
 
 ## Home peer replica
 
-On a workspace member, export the current workspace and its enforced access
-policy. Repeat this for each mounted workspace; the exporter appends or
-refreshes it in the same bundle automatically:
+Settings → Devices & Sync → Home server or NAS is the normal setup path. For
+headless recovery or diagnostics, the equivalent workspace bundle can be
+exported manually:
 
 ```sh
 fs export-home-peer --cache-dir /var/cache/quick-fs \

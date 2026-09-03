@@ -1,7 +1,7 @@
 //! Shell-side bridge into the peer-sync [`Actor`]: owns the
 //! [`WorkspaceTreeReplica`], drives the actor's `tokio` runtime, and drains
 //! `NetEvent`s into replica replies re-published as `NetCmd::Publish`s.
-//! Wired in behind `--enable-peer-sync`.
+//! Started by default in normal sessions; recovery sessions may disable it.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -3148,8 +3148,7 @@ mod tests {
                 (
                     music_tab,
                     "dev.qos.music",
-                    br#"{"track_id":"track-42","position_ms":12345,"paused":true}"#
-                        .to_vec(),
+                    br#"{"track_id":"track-42","position_ms":12345,"paused":true}"#.to_vec(),
                 ),
             ] {
                 reports.bind_tab(AppInstanceId(tab), AppInstanceId(tab));
@@ -3164,7 +3163,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("continuity store");
         let continuity_path = dir.path().join("personal-continuity.postcard");
         let (mut source, _source_commands) = personal_continuity_network_for_test(user_public_key);
-        source.replica = Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, source_tree.shared())));
+        source.replica = Arc::new(Mutex::new(WorkspaceTreeReplica::new(
+            1,
+            source_tree.shared(),
+        )));
         source.personal_continuity_device = Some(source_device.clone());
         source.personal_continuity_path = Some(continuity_path.clone());
         let checkpoint = source
