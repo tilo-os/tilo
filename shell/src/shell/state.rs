@@ -1184,6 +1184,110 @@ pub enum Capability {
     },
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceTaskStatus {
+    Queued,
+    InProgress,
+    Waiting,
+    Done,
+    Cancelled,
+}
+
+impl WorkspaceTaskStatus {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Queued => "Queued",
+            Self::InProgress => "In progress",
+            Self::Waiting => "Waiting",
+            Self::Done => "Done",
+            Self::Cancelled => "Cancelled",
+        }
+    }
+
+    pub fn is_finished(&self) -> bool {
+        matches!(self, Self::Done | Self::Cancelled)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceTaskRoute {
+    /// A person advances the task from the native task surface. No model is
+    /// contacted, which keeps Task Center useful on an offline desktop.
+    Manual,
+    /// An agent may use exported actions and deterministic matching only.
+    RulesOnly,
+    /// An agent may ask its configured model before dispatching exported
+    /// actions. The resulting action trace remains the source of truth.
+    Model,
+}
+
+impl WorkspaceTaskRoute {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Manual => "Manual · no model",
+            Self::RulesOnly => "Agent · rules only",
+            Self::Model => "Agent · model assisted",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceTaskResource {
+    pub app_id: Option<String>,
+    pub app_label: Option<String>,
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceTaskAuditEvent {
+    pub at: i64,
+    pub actor: String,
+    pub summary: String,
+}
+
+/// A durable unit of work in a collaboration room.
+///
+/// Tasks are deliberately shell-owned rather than chat messages: every app
+/// can attach a resource, people can run them without a language model, and
+/// the workspace room CRDT carries the same record to every desktop.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceTask {
+    pub id: String,
+    pub title: String,
+    pub created_by: String,
+    pub assigned_agent: Option<String>,
+    pub route: WorkspaceTaskRoute,
+    pub status: WorkspaceTaskStatus,
+    pub resource: Option<WorkspaceTaskResource>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    #[serde(default)]
+    pub audit: Vec<WorkspaceTaskAuditEvent>,
+}
+
+impl WorkspaceTask {
+    pub fn action_context(&self) -> qos_actions::ActionContext {
+        let mut context = qos_actions::ActionContext::default()
+            .with_purpose(self.title.clone())
+            .with_group(self.id.clone(), self.title.clone(), "task");
+        if let Some(resource) = &self.resource {
+            context.resource = Some(qos_actions::ActionResource {
+                id: resource.id.clone(),
+                kind: resource.kind.clone(),
+                label: resource.label.clone(),
+            });
+            if let (Some(id), Some(label)) = (&resource.app_id, &resource.app_label) {
+                context = context.with_app(id.clone(), label.clone());
+            }
+        }
+        context
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Workspace {
     pub id: WorkspaceId,
@@ -1218,6 +1322,10 @@ pub struct Workspace {
     /// mutation goes through the authority-checked methods below.
     #[serde(default)]
     pub default_apps: desktop_policy::WorkspaceDefaults,
+    /// Work shared by the room independently of any one chat thread or app.
+    /// Values are projected as a CRDT map keyed by task id.
+    #[serde(default)]
+    pub tasks: Vec<WorkspaceTask>,
     /// Surfaces from this workspace being streamed to peers. Keys are
     /// wayland `wl_surface` ids; values are the target Iroh peers
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
@@ -1894,6 +2002,7 @@ impl Workspace {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
+            tasks: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         }
     }
@@ -1954,6 +2063,7 @@ impl Default for Workspace {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
+            tasks: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         }
     }
@@ -2749,6 +2859,7 @@ impl WorkspaceTree {
         let name = ws.name.clone();
         let owner = ws.owner.clone();
         let caps: Vec<CapOverride> = ws.capabilities.clone();
+        let tasks = ws.tasks.clone();
         let peer_names: std::collections::BTreeMap<String, String> =
             self.room_peer_names.get(&room).cloned().unwrap_or_default();
         let peer_identities = self
@@ -2817,6 +2928,7 @@ impl WorkspaceTree {
         // a guest can't bring a record — or a window — into isn't shared.
         Self::project_room_records(doc, &held);
         Self::project_owned_contents(doc, &strips, local_salt, share_floor);
+        Self::project_workspace_tasks(doc, &tasks);
 
         if !governs {
             let _ = qdoc::history::commit_stamped(doc);
@@ -2866,6 +2978,63 @@ impl WorkspaceTree {
     /// Key the room document stores its peers' names under.
     const ROOM_PEERS_KEY: &'static str = "peers";
     const ROOM_PEER_IDENTITIES_KEY: &'static str = "peer_identities_v1";
+    const ROOM_TASKS_KEY: &'static str = "tasks_v1";
+
+    /// Project durable tasks as independently mergeable values. Task ids are
+    /// stable, so two collaborators creating work concurrently add two map
+    /// keys instead of racing over a positional list.
+    fn project_workspace_tasks(doc: &mut AutoCommit, tasks: &[WorkspaceTask]) {
+        use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+
+        let tasks_id = match doc.get(&ROOT, Self::ROOM_TASKS_KEY).ok().flatten() {
+            Some((_, id)) => id,
+            None if tasks.is_empty() => return,
+            None => match doc.put_object(&ROOT, Self::ROOM_TASKS_KEY, ObjType::Map) {
+                Ok(id) => id,
+                Err(error) => {
+                    tracing::error!(?error, "room doc: tasks map");
+                    return;
+                }
+            },
+        };
+        for task in tasks {
+            let Ok(blob) = serde_json::to_vec(task) else {
+                continue;
+            };
+            let unchanged = matches!(
+                doc.get(&tasks_id, task.id.as_str()).ok().flatten(),
+                Some((Value::Scalar(value), _))
+                    if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
+            );
+            if !unchanged {
+                let _ = doc.put(&tasks_id, task.id.as_str(), ScalarValue::Bytes(blob));
+            }
+        }
+    }
+
+    fn workspace_tasks_of(doc: &AutoCommit) -> Vec<WorkspaceTask> {
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+
+        let Some((_, tasks_id)) = doc.get(&ROOT, Self::ROOM_TASKS_KEY).ok().flatten() else {
+            return Vec::new();
+        };
+        let mut tasks = Vec::new();
+        for key in doc.keys(&tasks_id) {
+            if let Some((Value::Scalar(value), _)) = doc.get(&tasks_id, key.as_str()).ok().flatten()
+                && let ScalarValue::Bytes(blob) = value.as_ref()
+                && let Ok(task) = serde_json::from_slice::<WorkspaceTask>(blob)
+            {
+                tasks.push(task);
+            }
+        }
+        tasks.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        tasks
+    }
 
     /// Project "who the peers in this room are", as Iroh `EndpointId`
     /// -> display name. Called only from the governing branch of
@@ -4149,6 +4318,7 @@ impl WorkspaceTree {
         }
 
         let (name, owner, caps) = Self::extract_governed_fields(&candidate);
+        let mut tasks = Self::workspace_tasks_of(&candidate);
         let records_changed = self.queue_inbound_records(room, &candidate);
 
         self.room_docs.insert(room, candidate);
@@ -4182,6 +4352,13 @@ impl WorkspaceTree {
         current.sort_by(|a, b| a.id.cmp(&b.id));
         if serde_json::to_vec(&current).ok() != serde_json::to_vec(&sorted).ok() {
             ws.capabilities = sorted;
+            fields_changed = true;
+        }
+        tasks.sort_by(|left, right| left.id.cmp(&right.id));
+        let mut current_tasks = ws.tasks.clone();
+        current_tasks.sort_by(|left, right| left.id.cmp(&right.id));
+        if current_tasks != tasks {
+            ws.tasks = tasks;
             fields_changed = true;
         }
 
@@ -4258,6 +4435,15 @@ impl WorkspaceTree {
                 for cap in &ws.capabilities {
                     if let Ok(blob) = serde_json::to_vec(cap) {
                         let _ = self.doc.put(&caps_id, &cap.id, ScalarValue::Bytes(blob));
+                    }
+                }
+            }
+            if let Ok(tasks_id) = self.doc.put_object(&entry, "tasks_v1", ObjType::Map) {
+                for task in &ws.tasks {
+                    if let Ok(blob) = serde_json::to_vec(task) {
+                        let _ = self
+                            .doc
+                            .put(&tasks_id, task.id.as_str(), ScalarValue::Bytes(blob));
                     }
                 }
             }
@@ -4447,6 +4633,7 @@ impl WorkspaceTree {
                     }
                     ws.capabilities = caps;
                 }
+                ws.tasks = self.doc_read_workspace_tasks(&entry_id);
                 new_workspaces.push(ws);
             }
             self.workspaces = new_workspaces;
@@ -5158,6 +5345,113 @@ impl WorkspaceTree {
         self.commit_room_change();
     }
 
+    /// Create a task in the workspace and mirror it immediately into both
+    /// durable state and the room document. Creation is data entry, not model
+    /// inference: `route` explicitly records whether later execution may use
+    /// a model.
+    pub fn create_workspace_task(
+        &mut self,
+        workspace_id: WorkspaceId,
+        title: impl Into<String>,
+        actor: impl Into<String>,
+        assigned_agent: Option<String>,
+        route: WorkspaceTaskRoute,
+        resource: Option<WorkspaceTaskResource>,
+    ) -> Option<String> {
+        let title = title.into().trim().to_string();
+        if title.is_empty() {
+            return None;
+        }
+        let actor = actor.into();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+            .unwrap_or_default();
+        let id = format!("task:{}", uuid::Uuid::new_v4());
+        let task = WorkspaceTask {
+            id: id.clone(),
+            title: title.clone(),
+            created_by: actor.clone(),
+            assigned_agent,
+            route,
+            status: WorkspaceTaskStatus::Queued,
+            resource,
+            created_at: now,
+            updated_at: now,
+            audit: vec![WorkspaceTaskAuditEvent {
+                at: now,
+                actor,
+                summary: format!("Created task · {title}"),
+            }],
+        };
+        self.workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)?
+            .tasks
+            .push(task.clone());
+        self.doc_upsert_workspace_task(workspace_id, &task);
+        self.flush_to_disk();
+        Some(id)
+    }
+
+    pub fn set_workspace_task_status(
+        &mut self,
+        workspace_id: WorkspaceId,
+        task_id: &str,
+        status: WorkspaceTaskStatus,
+        actor: &str,
+    ) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+            .unwrap_or_default();
+        let Some(task) = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)
+            .and_then(|workspace| workspace.tasks.iter_mut().find(|task| task.id == task_id))
+        else {
+            return false;
+        };
+        if task.status == status {
+            return false;
+        }
+        task.status = status;
+        task.updated_at = now;
+        task.audit.push(WorkspaceTaskAuditEvent {
+            at: now,
+            actor: actor.to_string(),
+            summary: format!("Status · {}", task.status.label()),
+        });
+        let task = task.clone();
+        self.doc_upsert_workspace_task(workspace_id, &task);
+        self.flush_to_disk();
+        true
+    }
+
+    fn doc_upsert_workspace_task(&mut self, workspace_id: WorkspaceId, task: &WorkspaceTask) {
+        use automerge::{ObjType, ReadDoc, ScalarValue, transaction::Transactable};
+        let Some(ws_entry) = self.locate_workspace(workspace_id) else {
+            return;
+        };
+        let tasks_id = match self.doc.get(&ws_entry, "tasks_v1").ok().flatten() {
+            Some((_, id)) => id,
+            None => match self.doc.put_object(&ws_entry, "tasks_v1", ObjType::Map) {
+                Ok(id) => id,
+                Err(_) => return,
+            },
+        };
+        let Ok(blob) = serde_json::to_vec(task) else {
+            return;
+        };
+        let _ = self
+            .doc
+            .put(&tasks_id, task.id.as_str(), ScalarValue::Bytes(blob));
+        self.commit_room_change();
+    }
+
     /// Mirror the room's owner into the doc.
     pub fn doc_set_owner(&mut self, workspace_id: WorkspaceId, owner: &str) {
         use automerge::transaction::Transactable;
@@ -5194,6 +5488,25 @@ impl WorkspaceTree {
             }
         }
         Some((owner, caps))
+    }
+
+    fn doc_read_workspace_tasks(&self, ws_entry: &automerge::ObjId) -> Vec<WorkspaceTask> {
+        use automerge::{ReadDoc, ScalarValue, Value};
+
+        let Some((_, tasks_id)) = self.doc.get(ws_entry, "tasks_v1").ok().flatten() else {
+            return Vec::new();
+        };
+        let mut tasks = Vec::new();
+        for key in self.doc.keys(&tasks_id) {
+            if let Some((Value::Scalar(value), _)) =
+                self.doc.get(&tasks_id, key.as_str()).ok().flatten()
+                && let ScalarValue::Bytes(blob) = value.as_ref()
+                && let Ok(task) = serde_json::from_slice::<WorkspaceTask>(blob)
+            {
+                tasks.push(task);
+            }
+        }
+        tasks
     }
 
     /// Walk the doc to the `Tab` map for `(strip_id, tab_id)`. Strip id
@@ -5606,6 +5919,7 @@ impl WorkspaceTree {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
+            tasks: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
 
@@ -5697,6 +6011,7 @@ impl WorkspaceTree {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
+            tasks: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
 
@@ -5758,6 +6073,7 @@ impl WorkspaceTree {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
+            tasks: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
         self.active_strip.insert(ws_id, strip_id);
@@ -8704,6 +9020,7 @@ mod active_group_tests {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
+            tasks: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
         let mut active_strip = HashMap::new();
@@ -9046,6 +9363,7 @@ mod active_workspace_peer_count_tests {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
+            tasks: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         };
         let mut active_strip = HashMap::new();
@@ -10136,5 +10454,77 @@ mod peer_window_merge_tests {
         };
         assert!(!label.contains(&source));
         assert!(!label.contains("private-id"));
+    }
+
+    #[test]
+    fn workspace_task_is_durable_and_carries_action_provenance() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let workspace = tree.active;
+        let id = tree
+            .create_workspace_task(
+                workspace,
+                "Review the release brief",
+                "quinten",
+                Some("review-agent".into()),
+                WorkspaceTaskRoute::RulesOnly,
+                Some(WorkspaceTaskResource {
+                    app_id: Some("org.qos.Writer".into()),
+                    app_label: Some("Writer".into()),
+                    id: "document:brief".into(),
+                    kind: "document".into(),
+                    label: "Release brief".into(),
+                }),
+            )
+            .expect("non-empty task is created");
+
+        let task = tree.active_workspace().unwrap().tasks.first().unwrap();
+        assert_eq!(task.id, id);
+        assert_eq!(task.route, WorkspaceTaskRoute::RulesOnly);
+        let context = task.action_context();
+        assert_eq!(
+            context.group.as_ref().map(|group| group.kind.as_str()),
+            Some("task")
+        );
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.label.as_str()),
+            Some("Release brief")
+        );
+
+        tree.resync_cache_from_doc();
+        assert_eq!(tree.active_workspace().unwrap().tasks.len(), 1);
+        assert_eq!(
+            tree.active_workspace().unwrap().tasks[0].title,
+            "Review the release brief"
+        );
+    }
+
+    #[test]
+    fn task_status_changes_append_a_truthful_audit_event() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let workspace = tree.active;
+        let id = tree
+            .create_workspace_task(
+                workspace,
+                "Publish notes",
+                "ada",
+                None,
+                WorkspaceTaskRoute::Manual,
+                None,
+            )
+            .unwrap();
+        assert!(tree.set_workspace_task_status(
+            workspace,
+            &id,
+            WorkspaceTaskStatus::InProgress,
+            "ada"
+        ));
+        assert!(tree.set_workspace_task_status(workspace, &id, WorkspaceTaskStatus::Done, "ada"));
+        let task = tree.active_workspace().unwrap().tasks.first().unwrap();
+        assert_eq!(task.status, WorkspaceTaskStatus::Done);
+        assert_eq!(task.audit.len(), 3);
+        assert_eq!(task.audit.last().unwrap().summary, "Status · Done");
     }
 }
