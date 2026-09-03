@@ -436,10 +436,7 @@ impl RemoteApp {
                 );
             }
             "session-qos" => {
-                self.dev_preview_session(
-                    ConnectionKind::Qos,
-                    SessionStatus::Failed("qOS Relay is not available in qOS yet".into()),
-                );
+                self.dev_preview_session(ConnectionKind::Qos, SessionStatus::Connecting);
             }
             // Preview-only session states (no transport) for `--shots` grading
             // of the composed status surfaces.
@@ -619,7 +616,7 @@ impl RemoteApp {
         let Some(c) = self.workspace.get(id).cloned() else {
             return;
         };
-        // Older documents may contain RDP or qOS Relay profiles. Keep them
+        // Older documents may contain unavailable RDP profiles. Keep them
         // editable, but never make an unavailable transport look connectable.
         if !c.kind.can_attempt() {
             self.selected = Some(id);
@@ -3715,6 +3712,17 @@ impl RemoteApp {
         // Live path: reflect the real transport state.
         match status {
             SessionStatus::Connecting => {
+                let (title, detail) = if c.kind == ConnectionKind::Qos {
+                    (
+                        "Waiting for consent…",
+                        "Selecting a direct route or encrypted relay, then waiting for the target to share a workspace surface…",
+                    )
+                } else {
+                    (
+                        "Connecting…",
+                        "Negotiating the transport and authenticating…",
+                    )
+                };
                 self.draw_status_session(
                     scene,
                     transform,
@@ -3722,8 +3730,8 @@ impl RemoteApp {
                     theme,
                     content,
                     &c,
-                    "Connecting…",
-                    &["Negotiating the transport and authenticating…".to_string()],
+                    title,
+                    &[detail.to_string()],
                     StatusTone::Pending,
                 );
             }
@@ -4237,7 +4245,7 @@ impl RemoteApp {
         x = disconnect.x0 - 10.0;
 
         // Framebuffer-only controls: fullscreen, scale, clipboard.
-        if c.kind.streams_framebuffer() || c.kind == ConnectionKind::Qos {
+        if c.kind.streams_framebuffer() {
             let fs = self.draw_tool(scene, transform, text_renderer, theme, x, bar, "Fullscreen");
             self.push_hit(fs, Action::ToggleFullscreen);
             x = fs.x0 - 8.0;
@@ -5153,6 +5161,13 @@ mod tests {
                 other => panic!("{which} did not open a session: {other:?}"),
             }
         }
+
+        let mut app = RemoteApp::new_demo();
+        app.dev_set_screen("session-qos");
+        assert!(matches!(
+            app.live,
+            Some(LiveSession::Preview(SessionStatus::Connecting))
+        ));
     }
 
     #[test]
