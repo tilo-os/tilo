@@ -59,7 +59,27 @@ pub const KEY_IMPORT: &str = "onboarding.import";
 pub const KEY_UNDERSTOOD: &str = "onboarding.understood";
 pub const KEY_CREATE: &str = "onboarding.create";
 pub const KEY_BACKUP_BROWSE: &str = "onboarding.backup.browse";
+pub const KEY_TOUR_START: &str = "onboarding.tour.start";
+pub const KEY_TOUR_BACK: &str = "onboarding.tour.back";
+pub const KEY_TOUR_NEXT: &str = "onboarding.tour.next";
 pub const KEY_FINISH: &str = "onboarding.finish";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TourPage {
+    Navigate,
+    Organise,
+    Collaborate,
+}
+
+impl TourPage {
+    fn number(self) -> u8 {
+        match self {
+            Self::Navigate => 1,
+            Self::Organise => 2,
+            Self::Collaborate => 3,
+        }
+    }
+}
 
 type Minter = Box<dyn Fn() -> Result<MintedIdentity, String> + Send>;
 type Importer = Box<dyn Fn(&PathBuf, &[u8]) -> Result<MintedIdentity, String> + Send>;
@@ -135,6 +155,7 @@ pub struct OnboardingView {
     error: Option<String>,
     backup_error: Option<String>,
     backup_saved: Option<PathBuf>,
+    tour_page: Option<TourPage>,
     /// Raised when the user has finished and the desktop may start.
     finished: bool,
     invalidation: Invalidation,
@@ -264,6 +285,7 @@ impl OnboardingView {
             error: None,
             backup_error: None,
             backup_saved: None,
+            tour_page: None,
             finished: false,
             invalidation: Invalidation::Focus,
             composed: None,
@@ -302,6 +324,9 @@ impl OnboardingView {
     }
 
     fn build_composition(&self, theme: &Theme, panel_height: f32) -> Box<dyn Widget> {
+        if let Some(page) = self.tour_page {
+            return Self::build_tour_composition(theme, panel_height, page);
+        }
         let (step, stage) = match self.flow.screen() {
             Screen::Intro => (1, "Choose"),
             Screen::Connect | Screen::NoRecovery => (2, "Protect"),
@@ -351,7 +376,14 @@ impl OnboardingView {
             // desktop outside that scroll region so setup never becomes a
             // visual dead end.
             let footer_height = 56.0;
-            let scroll_height = (panel_height - footer_height).max(120.0);
+            // The outer Column owns `padding_standard * 2` on both edges plus
+            // the gap between the scroll region and footer. Account for those
+            // explicitly; otherwise large text pushes the sticky actions below
+            // a laptop-height viewport even though the panel itself is bounded.
+            let outer_vertical_padding = theme.padding_standard * 4.0;
+            let footer_gap = spacing.s3;
+            let scroll_height =
+                (panel_height - footer_height - footer_gap - outer_vertical_padding).max(120.0);
             return Box::new(
                 Column::new()
                     .with_no_padding()
@@ -362,7 +394,7 @@ impl OnboardingView {
                             .with_content_gutter(spacing.s3)
                             .with_child(Box::new(content)),
                     ))
-                    .push(self.finish_action()),
+                    .push(Self::finish_action()),
             );
         }
         Box::new(
@@ -371,6 +403,137 @@ impl OnboardingView {
                 .with_content_gutter(spacing.s3)
                 .with_child(Box::new(content)),
         )
+    }
+
+    fn build_tour_composition(theme: &Theme, panel_height: f32, page: TourPage) -> Box<dyn Widget> {
+        let number = page.number();
+        let stage = match page {
+            TourPage::Navigate => "Move",
+            TourPage::Organise => "Arrange",
+            TourPage::Collaborate => "Share",
+        };
+        let progress = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(theme.tokens.spacing.s2)
+            .push(Box::new(
+                Row::new()
+                    .push(Box::new(
+                        Text::new("qOS  •  DESKTOP TOUR")
+                            .with_role(ui::tokens::typography::TextRole::Label)
+                            .with_color(theme.text_dim),
+                    ))
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(
+                        Text::new(&format!("{stage}  ·  {number} of 3"))
+                            .with_role(ui::tokens::typography::TextRole::Label)
+                            .with_color(theme.text_dim),
+                    )),
+            ))
+            .push(Box::new(
+                ProgressBar::new(f32::from(number) / 3.0)
+                    .with_label(format!("Desktop tour, step {number} of 3: {stage}")),
+            ));
+        let content = Column::new()
+            .with_intrinsic_height()
+            .with_gap(theme.tokens.spacing.s6)
+            .push(Box::new(progress))
+            .push(Self::tour_page(theme, page));
+        Box::new(
+            Scrollable::new_vertical()
+                .with_height(panel_height)
+                .with_content_gutter(theme.tokens.spacing.s3)
+                .with_child(Box::new(content)),
+        )
+    }
+
+    fn tour_page(theme: &Theme, page: TourPage) -> Box<dyn Widget> {
+        let (title, intro, cards): (&str, &str, &[(&str, &str)]) = match page {
+            TourPage::Navigate => (
+                "Everything is a gesture away",
+                "qOS keeps the desktop calm until you ask for something. These three moves are enough to get anywhere.",
+                &[
+                    (
+                        "Search  ·  Super",
+                        "Type to open apps, files, settings, or actions without hunting through menus.",
+                    ),
+                    (
+                        "Overview  ·  Super+W",
+                        "Swipe up with three fingers to see every workspace and window group.",
+                    ),
+                    (
+                        "Move  ·  three-finger swipe",
+                        "Travel horizontally along a strip. Windows tile instead of hiding underneath each other.",
+                    ),
+                ],
+            ),
+            TourPage::Organise => (
+                "A place for each kind of work",
+                "The layout is simple once its three levels have names. qOS remembers the arrangement for you.",
+                &[
+                    (
+                        "Workspace",
+                        "A durable place for a project, its people, permissions, apps, and history.",
+                    ),
+                    (
+                        "Strip",
+                        "A horizontal run of window groups inside a workspace. Add another strip when work needs a second lane.",
+                    ),
+                    (
+                        "Window group",
+                        "Tabs that belong together share one tiled frame. Drag a tab to reorganise without overlapping windows.",
+                    ),
+                ],
+            ),
+            TourPage::Collaborate => (
+                "Sharing stays deliberate",
+                "Collaboration is built into the workspace, not bolted onto individual apps. Nothing becomes shared merely because it is open.",
+                &[
+                    (
+                        "Invite from Workspace Settings",
+                        "Choose a role and review exactly which workspace the invitation opens.",
+                    ),
+                    (
+                        "Follow only when you choose",
+                        "People keep their own focus and view. Follow is an explicit, reversible action.",
+                    ),
+                    (
+                        "Undo and permissions are system features",
+                        "History follows authorship, and apps ask qOS for capabilities instead of receiving ambient access.",
+                    ),
+                ],
+            ),
+        };
+        let mut body = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(theme.tokens.spacing.s6)
+            .push(heading(title, theme))
+            .push(paragraph(intro, theme));
+        for (card_title, copy) in cards {
+            body = body.push(Box::new(Card::titled(*card_title, paragraph(copy, theme))));
+        }
+        let primary_label = if page == TourPage::Collaborate {
+            "Enter qOS"
+        } else {
+            "Continue"
+        };
+        let primary_key = if page == TourPage::Collaborate {
+            KEY_FINISH
+        } else {
+            KEY_TOUR_NEXT
+        };
+        Box::new(body.push(actions(vec![
+            Box::new(
+                Button::new("onboarding.tour.back.button", "Back", Some(KEY_TOUR_BACK))
+                    .with_icon(ui::icons::Icon::ArrowLeft),
+            ),
+            Box::new(
+                Button::new("onboarding.tour.next.button", primary_label, Some(primary_key))
+                    .with_icon(ui::icons::Icon::ArrowRight)
+                    .with_style(ui::widget::ButtonStyle::Primary),
+            ),
+        ])))
     }
 
     fn intro(&self, theme: &Theme) -> Box<dyn Widget> {
@@ -642,21 +805,19 @@ impl OnboardingView {
 
     /// Sticky final action, deliberately outside the Done screen's scrollable
     /// backup content so it remains visible at narrow and large-text sizes.
-    fn finish_action(&self) -> Box<dyn Widget> {
-        let finish_label = if self.backup_saved.is_some() {
-            match self.context {
-                OnboardingContext::FullSystem => "Enter qOS",
-                OnboardingContext::HostDesktop => "Open qOS desktop",
-            }
-        } else {
-            "Skip for now"
-        };
-        let mut finish = Button::new("onboarding.finish.button", finish_label, Some(KEY_FINISH))
-            .with_icon(ui::icons::Icon::ArrowRight);
-        if self.backup_saved.is_some() {
-            finish = finish.with_style(ui::widget::ButtonStyle::Primary);
-        }
-        actions(vec![Box::new(finish)])
+    fn finish_action() -> Box<dyn Widget> {
+        // The tour used to have a complete state machine but no UI route into
+        // it. Keep skipping possible, while making the helpful path the clear
+        // primary action at the moment setup hands over to the desktop.
+        let skip = Button::new("onboarding.finish.button", "Skip tour", Some(KEY_FINISH));
+        let tour = Button::new(
+            "onboarding.tour.start.button",
+            "Start tour",
+            Some(KEY_TOUR_START),
+        )
+        .with_icon(ui::icons::Icon::ArrowRight)
+        .with_style(ui::widget::ButtonStyle::Primary);
+        actions(vec![Box::new(skip), Box::new(tour)])
     }
 }
 
@@ -890,6 +1051,7 @@ impl Widget for OnboardingView {
     )]
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let before = self.flow.screen();
+        let tour_before = self.tour_page;
 
         // Pull widget-local edits (notably passphrases) into their process-local
         // buffers before interpreting action keys from the same input frame.
@@ -1067,6 +1229,31 @@ impl Widget for OnboardingView {
             }
         }
 
+        if read_bool(state, root, KEY_TOUR_START) {
+            let _ = state.put(root, KEY_TOUR_START, ScalarValue::Boolean(false));
+            if self.flow.is_done() {
+                self.tour_page = Some(TourPage::Navigate);
+            }
+        }
+
+        if read_bool(state, root, KEY_TOUR_BACK) {
+            let _ = state.put(root, KEY_TOUR_BACK, ScalarValue::Boolean(false));
+            self.tour_page = match self.tour_page {
+                Some(TourPage::Navigate) | None => None,
+                Some(TourPage::Organise) => Some(TourPage::Navigate),
+                Some(TourPage::Collaborate) => Some(TourPage::Organise),
+            };
+        }
+
+        if read_bool(state, root, KEY_TOUR_NEXT) {
+            let _ = state.put(root, KEY_TOUR_NEXT, ScalarValue::Boolean(false));
+            self.tour_page = match self.tour_page {
+                Some(TourPage::Navigate) => Some(TourPage::Organise),
+                Some(TourPage::Organise) => Some(TourPage::Collaborate),
+                page => page,
+            };
+        }
+
         if read_bool(state, root, KEY_FINISH) {
             let _ = state.put(root, KEY_FINISH, ScalarValue::Boolean(false));
             self.finished = self.flow.is_done();
@@ -1077,8 +1264,10 @@ impl Widget for OnboardingView {
             }
         }
 
-        if self.flow.screen() != before {
-            self.transition_direction = if screen_order(self.flow.screen()) < screen_order(before) {
+        if self.flow.screen() != before || self.tour_page != tour_before {
+            self.transition_direction = if view_order(self.flow.screen(), self.tour_page)
+                < view_order(before, tour_before)
+            {
                 -1.0
             } else {
                 1.0
@@ -1282,6 +1471,15 @@ fn screen_order(screen: Screen) -> u8 {
     }
 }
 
+fn view_order(screen: Screen, tour: Option<TourPage>) -> u8 {
+    match tour {
+        Some(TourPage::Navigate) => 3,
+        Some(TourPage::Organise) => 4,
+        Some(TourPage::Collaborate) => 5,
+        None => screen_order(screen),
+    }
+}
+
 /// OOBE is trusted compositor chrome, so its chooser follows the user rather
 /// than an application's capability scope. Keep roots narrow: the home tree
 /// plus conventional removable-media mount roots, never the whole filesystem.
@@ -1470,6 +1668,39 @@ mod tests {
         press(&mut doc, KEY_FINISH);
         v.sync(&mut doc, &automerge::ROOT);
         assert!(v.finished());
+    }
+
+    #[test]
+    fn desktop_tour_is_complete_backtrackable_and_finishes_only_at_the_end() {
+        let (mut view, _) = view();
+        let mut doc = AutoCommit::new();
+        press(&mut doc, KEY_BEGIN);
+        view.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_UNDERSTOOD);
+        view.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_CREATE);
+        view.sync(&mut doc, &automerge::ROOT);
+
+        press(&mut doc, KEY_TOUR_START);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(view.tour_page, Some(TourPage::Navigate));
+        assert!(!view.finished());
+
+        press(&mut doc, KEY_TOUR_NEXT);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(view.tour_page, Some(TourPage::Organise));
+        press(&mut doc, KEY_TOUR_NEXT);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(view.tour_page, Some(TourPage::Collaborate));
+
+        press(&mut doc, KEY_TOUR_BACK);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(view.tour_page, Some(TourPage::Organise));
+        press(&mut doc, KEY_TOUR_NEXT);
+        view.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_FINISH);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(view.finished());
     }
 
     #[test]
@@ -1732,16 +1963,18 @@ mod tests {
             .expect("large-text done layout");
         view.apply_layout(&taffy, node, Point::ZERO);
 
-        let finish = node_map
-            .values()
-            .find_map(|&ptr| unsafe {
-                ((*ptr).test_id() == Some("onboarding.finish.button")).then(|| (*ptr).get_rect())
-            })
-            .expect("Done screen exposes its exit action");
-        assert!(finish.area() > 0.0, "finish={finish:?}");
-        assert!(
-            finish.y0 >= 0.0 && finish.y1 <= 720.0,
-            "the exit action must stay in the viewport, finish={finish:?}"
-        );
+        for id in ["onboarding.finish.button", "onboarding.tour.start.button"] {
+            let action = node_map
+                .values()
+                .find_map(|&ptr| unsafe {
+                    ((*ptr).test_id() == Some(id)).then(|| (*ptr).get_rect())
+                })
+                .unwrap_or_else(|| panic!("Done screen exposes {id}"));
+            assert!(action.area() > 0.0, "action={action:?}");
+            assert!(
+                action.x0 >= 0.0 && action.x1 <= 1000.0 && action.y0 >= 0.0 && action.y1 <= 720.0,
+                "the action must stay fully in the viewport, id={id}, action={action:?}"
+            );
+        }
     }
 }

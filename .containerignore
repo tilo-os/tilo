@@ -14,6 +14,7 @@ target/
 
 # Image build outputs
 os/output*/
+os/external-assets/cache/
 
 # Stale host-built binaries (the multi-stage build compiles in-image now;
 # these are leftovers from the old host-build flow and must not shadow it).
@@ -24,6 +25,10 @@ os/file-explorer
 os/qos-greeter
 os/qos-installer
 os/browser
+# build-custom-installer.sh assembles this one-shot overlay in a temporary
+# context; it is a declared staged input for Containerfile.installer, not a
+# directory that belongs in the repository build context.
+os/rootfs/
 
 # Logs / scratch
 *.log
