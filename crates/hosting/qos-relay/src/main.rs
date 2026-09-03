@@ -242,3 +242,109 @@ async fn wait_for_shutdown() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iroh_base::EndpointAddr;
+    use qos_relay::mesh::{ReplicationIntent, ServiceCapabilities};
+    use qos_user_identity::{
+        DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
+        sign_device_cert,
+    };
+
+    /// Exercise the same stock init + config reload used by firstboot, then
+    /// start the daemon with the handoff bundle that firstboot writes. This
+    /// catches regressions where the NAS appears configured but silently
+    /// starts as a relay-only peer or forgets its workspace bindings.
+    #[tokio::test]
+    async fn init_reload_and_home_peer_handoff_enable_full_replication() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("relay.toml");
+        cmd_init(&config_path).unwrap();
+
+        let mut config = RelayConfig::load(&config_path).unwrap();
+        assert_eq!(
+            config.home_peer_bundle,
+            PathBuf::from("/etc/qos/home-peer.toml")
+        );
+        assert_eq!(
+            config.full_replica_status,
+            PathBuf::from("/var/lib/qos/full-replica/status.json")
+        );
+        assert!(!config.services.full_content_replication);
+
+        let (user_sk, user) = UserIdentity::generate("home owner", 1);
+        let (device_sk, device) = DeviceIdentity::generate("home server", 2);
+        let mut cert = DeviceCert {
+            user_public_key: user.public_key,
+            device_public_key: device.public_key,
+            device_label: device.label,
+            capabilities: DeviceCapabilities::host(),
+            issued_at_ns: 3,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &user_sk).unwrap();
+
+        let status_path = temp.path().join("full-replica/status.json");
+        std::fs::create_dir_all(status_path.parent().unwrap()).unwrap();
+        let filesystem_endpoint =
+            EndpointAddr::new(iroh::SecretKey::from_bytes(&device_sk.to_bytes()).public())
+                .with_ip_addr("127.0.0.1:43210".parse().unwrap());
+        let mut status = fs::full_replica::FullReplicaStatus::syncing();
+        status.state = "ready".into();
+        status.full_content_replication = true;
+        status.filesystem_endpoints.push(filesystem_endpoint);
+        fs::full_replica::save_status(&status_path, &status).unwrap();
+
+        let bundle_path = temp.path().join("home-peer.toml");
+        let bundle = fs::full_replica::HomePeerSet {
+            status_file: status_path.clone(),
+            workspaces: vec![fs::full_replica::HomePeerBundle {
+                ticket: fs::Ticket {
+                    node: EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
+                    workspace: [9; 32],
+                }
+                .encode()
+                .unwrap(),
+                cache_dir: temp.path().join("cache"),
+                capability_json: "[]".into(),
+                authority: None,
+                principals: Vec::new(),
+                relay_workspace_ids: vec![42],
+            }],
+        };
+        std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
+
+        // These paths model the firstboot-generated handoff while keeping the
+        // test hermetic instead of writing under /etc or /var/lib.
+        config.home_peer_bundle = bundle_path;
+        config.full_replica_status = status_path;
+        config.state_root = temp.path().join("relay-state");
+        config.identity_root = temp.path().join("identity");
+        config.services = ServiceCapabilities::home_peer();
+        config.save(&config_path).unwrap();
+        let config = RelayConfig::load(&config_path).unwrap();
+
+        let relay = Relay::start(
+            config,
+            RelayIdentity {
+                user_public_key: user.public_key,
+                device_signing_key: device_sk,
+                device_cert: cert,
+                revocations: RevocationList::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let profile = relay.handle().mesh_profile();
+        assert_eq!(
+            profile.replication.get(&42),
+            Some(&ReplicationIntent::FullWorkspace)
+        );
+        assert!(profile.services.full_content_replication);
+        assert_eq!(profile.filesystem_endpoints.len(), 1);
+        relay.shutdown().await;
+    }
+}
