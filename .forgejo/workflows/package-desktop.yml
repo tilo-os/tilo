@@ -106,6 +106,7 @@ jobs:
           key: desktop-external-inputs-${{ hashFiles('os/external-assets/github-assets.tsv') }}
           restore-keys: |
             github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+            github-assets-all-v1-
       - name: Materialize the architecture-specific compiler cache client
         shell: bash
         run: |
