@@ -10062,7 +10062,7 @@ mod peer_window_merge_tests {
             None,
             stamp,
         );
-        assert!(!tree.materialize_continuation_workspace(
+        assert!(tree.materialize_continuation_workspace(
             "Laptop",
             &WorkspaceContinuation {
                 room,
@@ -10070,6 +10070,20 @@ mod peer_window_merge_tests {
             },
         ));
         assert!(!tree.continuation_file_references.contains_key(&id.0));
+        let replacement = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .into_iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|tab| tab.id == id.0)
+            .expect("the newer app offer remains in the same logical tab");
+        assert!(matches!(
+            &replacement.tile,
+            TileContent::PeerWindow { app_id, .. } if app_id == "dev.qos.browser"
+        ));
     }
 
     #[test]
