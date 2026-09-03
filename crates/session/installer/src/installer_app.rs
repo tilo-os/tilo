@@ -76,9 +76,8 @@ const HOSTNAME_PATH: &str = "installer.hostname";
 const TIMEZONE_PATH: &str = "installer.timezone";
 /// CRDT path holding the selected keyboard layout's *display name*.
 const KEYMAP_PATH: &str = "installer.keymap";
-/// Typed confirmation for the destructive whole-disk path. Alongside installs
-/// never consult it because their privileged backend accepts prepared
-/// partitions only.
+/// Peer-local typed confirmation for the exact object that will be formatted:
+/// the whole disk for Erase, or the prepared root partition for Alongside.
 const ERASE_CONFIRM_PATH: &str = "installer.erase_confirmation";
 const NEXT_PATH: &str = "installer.next";
 const BACK_PATH: &str = "installer.back";
@@ -956,11 +955,19 @@ impl InstallerApp {
             && validate_startup_secret(&secret_copy(&self.password), self.verified_tpm()).is_ok()
     }
 
+    fn destructive_confirmation_target(&self) -> Option<String> {
+        match self.install_method {
+            InstallMethod::Erase => self.selected_dev(),
+            InstallMethod::Alongside => self
+                .selected_disk_ref()
+                .and_then(|disk| disk.alongside_root())
+                .map(|partition| partition.name.clone()),
+        }
+    }
+
     fn destructive_confirmation_ready(&self) -> bool {
-        self.install_method == InstallMethod::Alongside
-            || self
-                .selected_dev()
-                .is_some_and(|device| self.erase_confirmation.trim() == device)
+        self.destructive_confirmation_target()
+            .is_some_and(|device| self.erase_confirmation.trim() == device)
     }
 
     /// Human-readable summary of the encryption factors for the Review step.
@@ -987,26 +994,27 @@ impl InstallerApp {
 
     fn install_options(&self) -> InstallOptions {
         let layout = self.layout();
-        let (alongside_root, alongside_efi) = if self.install_method == InstallMethod::Alongside {
-            self.selected_disk_ref().map_or_else(
-                || (String::new(), String::new()),
-                |disk| {
-                    (
-                        disk.alongside_root()
-                            .map(|p| p.name.clone())
-                            .unwrap_or_default(),
-                        disk.efi_partition()
-                            .map(|p| p.name.clone())
-                            .unwrap_or_default(),
-                    )
-                },
-            )
+        let disk = self.selected_disk_ref();
+        let (root, efi) = if self.install_method == InstallMethod::Alongside {
+            disk.map_or((None, None), |disk| {
+                (disk.alongside_root(), disk.efi_partition())
+            })
         } else {
-            (String::new(), String::new())
+            (None, None)
         };
         InstallOptions {
-            alongside_root,
-            alongside_efi,
+            disk_size_bytes: disk.map_or(0, |disk| disk.size_bytes),
+            disk_major_minor: disk.map_or_else(String::new, |disk| disk.major_minor.clone()),
+            disk_wwn: disk.map_or_else(String::new, |disk| disk.wwn.clone()),
+            disk_serial: disk.map_or_else(String::new, |disk| disk.serial.clone()),
+            alongside_root: root.map_or_else(String::new, |partition| partition.name.clone()),
+            alongside_root_partuuid: root
+                .map_or_else(String::new, |partition| partition.part_uuid.clone()),
+            alongside_root_size_bytes: root.map_or(0, |partition| partition.size_bytes),
+            alongside_efi: efi.map_or_else(String::new, |partition| partition.name.clone()),
+            alongside_efi_partuuid: efi
+                .map_or_else(String::new, |partition| partition.part_uuid.clone()),
+            alongside_efi_size_bytes: efi.map_or(0, |partition| partition.size_bytes),
             filesystem: self.filesystem().to_string(),
             hostname: self.hostname.trim().to_string(),
             full_name: self.full_name.trim().to_string(),
@@ -1137,6 +1145,15 @@ impl InstallerApp {
                 self.set_status("This disk is read-only and cannot be used for installation");
                 return;
             }
+            if self
+                .selected_disk_ref()
+                .is_some_and(|disk| !disk.identity_ready())
+            {
+                self.set_status(
+                    "Could not establish a stable identity for this disk; reconnect it and refresh",
+                );
+                return;
+            }
         }
         if self.step == Step::Disk
             && self.install_method == InstallMethod::Alongside
@@ -1233,7 +1250,10 @@ impl InstallerApp {
             return;
         };
         if !self.destructive_confirmation_ready() {
-            self.set_status(&format!("Type {disk} exactly to confirm erasing it"));
+            let expected = self
+                .destructive_confirmation_target()
+                .unwrap_or_else(|| disk.clone());
+            self.set_status(&format!("Type {expected} exactly to confirm formatting it"));
             return;
         }
         // Encryption requires the recovery-key acknowledgement (defense in
@@ -1728,24 +1748,30 @@ impl InstallerApp {
         children.push(nav_row(Step::Options, NEXT_PATH, "Next", false));
     }
 
-    fn compose_erase_confirmation(
+    fn compose_destructive_confirmation(
         &self,
         theme: &Theme,
         children: &mut Vec<Box<dyn Widget>>,
-        dev: &str,
+        disk: &str,
     ) {
-        if self.install_method != InstallMethod::Erase {
-            return;
-        }
+        let (expected, operation) = match self.install_method {
+            InstallMethod::Erase => (disk, "whole-disk erase"),
+            InstallMethod::Alongside => (
+                self.selected_disk_ref()
+                    .and_then(|selected| selected.alongside_root())
+                    .map_or("<missing root>", |partition| partition.name.as_str()),
+                "qOS root format",
+            ),
+        };
         children.push(Box::new(
-            Text::new(&format!("Type {dev} to confirm the whole-disk erase"))
+            Text::new(&format!("Type {expected} to confirm the {operation}"))
                 .with_size(theme.tokens.typography.scale.sm)
                 .with_color(theme.text_dim),
         ));
         children.push(Box::new(
             TextInput::new(Vec::new())
                 .with_id("installer.erase_confirmation")
-                .with_placeholder(dev)
+                .with_placeholder(expected)
                 .with_on_change_path(ERASE_CONFIRM_PATH),
         ));
     }
@@ -1823,7 +1849,7 @@ impl InstallerApp {
         children.push(Box::new(
             Text::new(&impact).with_size(base).with_color(danger),
         ));
-        self.compose_erase_confirmation(theme, children, &dev);
+        self.compose_destructive_confirmation(theme, children, &dev);
 
         // Encryption generates a recovery key shown ONCE during the
         // install. Make the user explicitly acknowledge they'll save
@@ -2031,6 +2057,9 @@ fn sample_disks() -> Vec<Disk> {
             size: "238.5G".to_string(),
             model: "Samsung SSD 860 EVO".to_string(),
             size_bytes: 256_000_000_000,
+            major_minor: "8:0".to_string(),
+            wwn: "0x5002538e40abcdef".to_string(),
+            serial: "QOS-SAMPLE-SATA".to_string(),
             removable: false,
             read_only: false,
             is_system: false,
@@ -2038,6 +2067,7 @@ fn sample_disks() -> Vec<Disk> {
                 DiskPartition {
                     name: "/dev/sda1".to_string(),
                     size_bytes: 536_870_912,
+                    part_uuid: "00000000-0000-0000-0000-000000000001".to_string(),
                     filesystem: "vfat".to_string(),
                     label: "EFI".to_string(),
                     mountpoint: String::new(),
@@ -2046,6 +2076,7 @@ fn sample_disks() -> Vec<Disk> {
                 DiskPartition {
                     name: "/dev/sda2".to_string(),
                     size_bytes: 160_000_000_000,
+                    part_uuid: "00000000-0000-0000-0000-000000000002".to_string(),
                     filesystem: "ntfs".to_string(),
                     label: "Windows".to_string(),
                     mountpoint: String::new(),
@@ -2054,6 +2085,7 @@ fn sample_disks() -> Vec<Disk> {
                 DiskPartition {
                     name: "/dev/sda3".to_string(),
                     size_bytes: 64_000_000_000,
+                    part_uuid: "00000000-0000-0000-0000-000000000003".to_string(),
                     filesystem: String::new(),
                     label: String::new(),
                     mountpoint: String::new(),
@@ -2062,6 +2094,7 @@ fn sample_disks() -> Vec<Disk> {
                 DiskPartition {
                     name: "/dev/sda4".to_string(),
                     size_bytes: 2_147_483_648,
+                    part_uuid: "00000000-0000-0000-0000-000000000004".to_string(),
                     filesystem: "vfat".to_string(),
                     label: "qOS EFI".to_string(),
                     mountpoint: String::new(),
@@ -2074,6 +2107,9 @@ fn sample_disks() -> Vec<Disk> {
             size: "1T".to_string(),
             model: "WD Black SN770".to_string(),
             size_bytes: 1_000_000_000_000,
+            major_minor: "259:0".to_string(),
+            wwn: "eui.0000000000000001".to_string(),
+            serial: "QOS-SAMPLE-NVME".to_string(),
             removable: false,
             read_only: false,
             is_system: false,
@@ -3191,6 +3227,24 @@ mod tests {
     }
 
     #[test]
+    fn alongside_install_requires_exact_typed_root_confirmation() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.selected_disk = Some(0);
+        app.install_method = InstallMethod::Alongside;
+        let root = app
+            .selected_disk_ref()
+            .and_then(|disk| disk.alongside_root())
+            .map(|partition| partition.name.clone())
+            .expect("sample disk has one prepared alongside root");
+
+        assert!(!app.destructive_confirmation_ready());
+        app.erase_confirmation = app.selected_dev().expect("selected disk");
+        assert!(!app.destructive_confirmation_ready());
+        app.erase_confirmation = root;
+        assert!(app.destructive_confirmation_ready());
+    }
+
+    #[test]
     fn options_step_always_shows_encryption_factors() {
         let mut app = InstallerApp::with_disks(sample());
         app.step = Step::Options;
@@ -3218,6 +3272,30 @@ mod tests {
         assert_eq!(opts.hostname, "qos");
         assert_eq!(opts.timezone, "UTC");
         assert_eq!(opts.filesystem, "btrfs");
+    }
+
+    #[test]
+    fn install_options_bind_selected_disk_and_alongside_partition_identities() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.selected_disk = Some(0);
+        app.install_method = InstallMethod::Alongside;
+        let opts = app.install_options();
+        assert_eq!(opts.disk_size_bytes, 256_000_000_000);
+        assert_eq!(opts.disk_major_minor, "8:0");
+        assert_eq!(opts.disk_wwn, "0x5002538e40abcdef");
+        assert_eq!(opts.disk_serial, "QOS-SAMPLE-SATA");
+        assert_eq!(opts.alongside_root, "/dev/sda3");
+        assert_eq!(
+            opts.alongside_root_partuuid,
+            "00000000-0000-0000-0000-000000000003"
+        );
+        assert_eq!(opts.alongside_root_size_bytes, 64_000_000_000);
+        assert_eq!(opts.alongside_efi, "/dev/sda4");
+        assert_eq!(
+            opts.alongside_efi_partuuid,
+            "00000000-0000-0000-0000-000000000004"
+        );
+        assert_eq!(opts.alongside_efi_size_bytes, 2 * 1024 * 1024 * 1024);
     }
 
     #[test]

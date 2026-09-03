@@ -31,7 +31,7 @@ grep -Fqx 'Exec=/usr/libexec/qos-session --backend drm' \
   "$repo/os/usr/share/wayland-sessions/shell.desktop"
 grep -Fqx 'Exec=/usr/libexec/qos-session --backend drm --enable-peer-sync' \
   "$repo/os/usr/share/wayland-sessions/shell-peer-sync.desktop"
-grep -Fq "pgrep -f '^/usr/bin/shell --provision-identity$'" "$release_workflow"
+grep -Fq "pgrep -f '^/usr/bin/shell --backend drm( |$)'" "$release_workflow"
 grep -Fq './os/dev/vm.sh keys tab tab ret' "$release_workflow"
 grep -Fq './os/dev/vm.sh keys tab spc' "$release_workflow"
 grep -Fq './os/dev/vm.sh keys tab ret' "$release_workflow"
@@ -47,7 +47,6 @@ trap cleanup EXIT INT TERM
 log="$tmp/log"
 fake_systemctl="$tmp/systemctl"
 fake_shell="$tmp/shell"
-fake_cage="$tmp/cage"
 test_wrapper="$tmp/qos-session"
 
 cat >"$fake_systemctl" <<'SH'
@@ -80,18 +79,10 @@ if [ "${QOS_SESSION_HOLD:-0}" = 1 ]; then
 fi
 exit "${QOS_SESSION_DESKTOP_STATUS:-0}"
 SH
-cat >"$fake_cage" <<'SH'
-#!/bin/bash
-printf 'cage\n' >>"$QOS_SESSION_TEST_LOG"
-while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
-[ "${1:-}" != -- ] || shift
-exec "$@"
-SH
-chmod 0755 "$fake_systemctl" "$fake_shell" "$fake_cage"
+chmod 0755 "$fake_systemctl" "$fake_shell"
 sed \
   -e "s|readonly SYSTEMCTL=/usr/bin/systemctl|readonly SYSTEMCTL=$fake_systemctl|" \
   -e "s|readonly SHELL_BIN=/usr/bin/shell|readonly SHELL_BIN=$fake_shell|" \
-  -e "s|readonly CAGE_BIN=/usr/bin/cage|readonly CAGE_BIN=$fake_cage|" \
   "$wrapper" >"$test_wrapper"
 chmod 0755 "$test_wrapper"
 
@@ -104,44 +95,22 @@ status=$?
 set -e
 [ "$status" = 7 ]
 cat >"$tmp/expected" <<'EOF'
-verify
 systemctl --user start qos-graphical-session.target
 desktop --backend drm
 systemctl --user stop qos-graphical-session.target
 EOF
 cmp "$tmp/expected" "$log"
 
-# A missing identity completes the explicit ceremony and is verified before
-# either target activation or compositor startup.
+# A missing identity reaches the native compositor, which owns the interactive
+# first-login OOBE. The wrapper must not preflight an identity that only that
+# compositor can create.
 : >"$log"
-rm -f "$log.verify-count"
-QOS_SESSION_TEST_LOG="$log" QOS_SESSION_VERIFY_SEQUENCE=1,0 \
+QOS_SESSION_TEST_LOG="$log" QOS_SESSION_VERIFY_SEQUENCE=1 \
   "$test_wrapper" --backend drm
 cat >"$tmp/expected" <<'EOF'
-verify
-cage
-provision
-verify
 systemctl --user start qos-graphical-session.target
 desktop --backend drm
 systemctl --user stop qos-graphical-session.target
-EOF
-cmp "$tmp/expected" "$log"
-
-# A ceremony that exits without producing a valid chain never activates the
-# targets and never reaches the compositor.
-: >"$log"
-rm -f "$log.verify-count"
-if QOS_SESSION_TEST_LOG="$log" QOS_SESSION_VERIFY_SEQUENCE=1,1 \
-  "$test_wrapper" --backend drm; then
-  echo 'session opened despite failed identity verification' >&2
-  exit 1
-fi
-cat >"$tmp/expected" <<'EOF'
-verify
-cage
-provision
-verify
 EOF
 cmp "$tmp/expected" "$log"
 

@@ -19,6 +19,7 @@
 //!   * `greeter.username` — `Text`
 //!   * `greeter.password` — `Text` (rendered masked; value stays real)
 //!   * `greeter.submit`   — `bool` flag (Log-in / Enter rising edge)
+//!   * `greeter.fingerprint` — `bool` flag (explicit passwordless PAM attempt)
 //!   * `greeter.session`  — `Text` (the chosen session's label)
 
 use std::sync::{Arc, OnceLock};
@@ -53,6 +54,7 @@ use crate::sessions::{DEFAULT_SESSIONS_DIR, Session, read_sessions};
 const USERNAME_PATH: &str = "greeter.username";
 const PASSWORD_PATH: &str = "greeter.password";
 const SUBMIT_PATH: &str = "greeter.submit";
+const FINGERPRINT_PATH: &str = "greeter.fingerprint";
 /// The session picker's chosen label, as a CRDT `Text`. The picker writes
 /// its selection here; [`GreeterApp::sync`] mirrors it back onto the
 /// selected index.
@@ -63,6 +65,12 @@ const SESSION_PATH: &str = "greeter.session";
 /// user by os/etc/polkit-1/rules.d/49-qos-greeter-power.rules).
 const REBOOT_PATH: &str = "greeter.reboot";
 const POWEROFF_PATH: &str = "greeter.poweroff";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthMethod {
+    Password,
+    Fingerprint,
+}
 
 /// Card geometry (logical px).
 const CARD_WIDTH: f32 = 400.0;
@@ -712,13 +720,36 @@ impl GreeterApp {
         VStack::new(4.0, rows).with_min_height(STATUS_HEIGHT)
     }
 
+    fn build_auth_actions(&self, busy: bool, theme: &Theme) -> VStack {
+        VStack::new(
+            ACTION_STATUS_GAP,
+            vec![
+                Box::new(
+                    Button::new("greeter.login", self.login_label(), Some(SUBMIT_PATH))
+                        .primary()
+                        .with_size(CONTENT_WIDTH, ACTION_HEIGHT),
+                ),
+                Box::new(
+                    Button::new(
+                        "greeter.fingerprint",
+                        "Use fingerprint",
+                        Some(FINGERPRINT_PATH),
+                    )
+                    .with_enabled(!busy)
+                    .with_size(CONTENT_WIDTH, ACTION_HEIGHT),
+                ),
+                Box::new(self.build_status(theme)),
+            ],
+        )
+    }
+
     /// Build the composed card subtree from current state.
     ///
     /// Focus continuity contract: the focusable set is, in tree order, the
     /// username field, the password field, the session picker (present only
     /// when there is more than one session to choose between), the primary
-    /// action, and the two power actions. Labels, the Caps-Lock note, the
-    /// spinner, and the status line are all non-focusable, so an incidental
+    /// action, the fingerprint action, and the two power actions. Labels, the
+    /// Caps-Lock note, the spinner, and the status line are all non-focusable, so an incidental
     /// rebuild (a status change, a Caps-Lock flip, cycling the session)
     /// keeps keyboard focus AND the caret glued in place — see `main.rs`'s
     /// `autofocus_on_structure_change` and the App's `rebuild_structure`.
@@ -815,22 +846,12 @@ impl GreeterApp {
             )));
         }
 
-        // --- primary action + its status ----------------------------------
+        // --- authentication actions + status ------------------------------
         // The one accented, full-width control on the card — everything else
         // is quieter than this by construction — paired with the single
-        // status voice directly beneath it, so feedback lands where the eye
-        // already is after a click.
-        children.push(Box::new(VStack::new(
-            ACTION_STATUS_GAP,
-            vec![
-                Box::new(
-                    Button::new("greeter.login", self.login_label(), Some(SUBMIT_PATH))
-                        .primary()
-                        .with_size(CONTENT_WIDTH, ACTION_HEIGHT),
-                ),
-                Box::new(self.build_status(theme)),
-            ],
-        )));
+        // status voice beneath the explicit password and fingerprint actions,
+        // so feedback lands where the eye already is after a click.
+        children.push(Box::new(self.build_auth_actions(busy, theme)));
 
         // --- power strip ---------------------------------------------------
         // Below a rule, pushed to the trailing edge, ghost-styled and
@@ -867,6 +888,9 @@ impl GreeterApp {
         }
         if state.get(root, SUBMIT_PATH).ok().flatten().is_none() {
             let _ = state.put(root, SUBMIT_PATH, false);
+        }
+        if state.get(root, FINGERPRINT_PATH).ok().flatten().is_none() {
+            let _ = state.put(root, FINGERPRINT_PATH, false);
         }
         if state.get(root, SESSION_PATH).ok().flatten().is_none()
             && let Ok(obj) = state.put_object(root, SESSION_PATH, ObjType::Text)
@@ -926,12 +950,42 @@ impl GreeterApp {
         }
     }
 
+    fn auth_secret(
+        state: &AutoCommit,
+        root: &ObjId,
+        method: AuthMethod,
+    ) -> Result<String, &'static str> {
+        match method {
+            AuthMethod::Password => {
+                let password = Self::read_text(state, root, PASSWORD_PATH).unwrap_or_default();
+                if password.is_empty() {
+                    Err("Enter your password")
+                } else {
+                    Ok(password)
+                }
+            }
+            AuthMethod::Fingerprint => Ok(String::new()),
+        }
+    }
+
     fn read_flag(state: &AutoCommit, root: &ObjId, path: &str) -> bool {
         matches!(
             state.get(root, path),
             Ok(Some((Value::Scalar(s), _)))
                 if matches!(s.as_ref(), ScalarValue::Boolean(true))
         )
+    }
+
+    /// Whether keyboard focus currently belongs to a button in the composed
+    /// card. Buttons are activated by [`ui::App`] after widget dispatch, so the
+    /// form-level Enter fallback must leave their event unhandled.
+    fn focused_button_present(&self) -> bool {
+        fn walk(widget: &dyn Widget) -> bool {
+            (widget.name() == "Button" && widget.is_focused())
+                || widget.children().into_iter().any(walk)
+        }
+
+        self.composed.as_deref().is_some_and(walk)
     }
 
     /// Environment handed to greetd's `StartSession`. Mirrors the
@@ -952,23 +1006,28 @@ impl GreeterApp {
     /// [`UserEvent::External`]). Without an event-loop proxy (tests /
     /// headless), it falls back to a synchronous exchange so the path is
     /// still exercised.
-    fn attempt_login(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn attempt_login(&mut self, state: &mut AutoCommit, root: &ObjId, method: AuthMethod) {
         // Guard: never start a second attempt while one is in flight.
         if self.phase != AuthPhase::Idle {
             return;
         }
 
         let username = Self::read_text(state, root, USERNAME_PATH).unwrap_or_default();
-        let password = Self::read_text(state, root, PASSWORD_PATH).unwrap_or_default();
 
         if username.trim().is_empty() {
             self.set_status("Enter your username");
             return;
         }
-        if password.is_empty() {
-            self.set_status("Enter your password");
-            return;
-        }
+        // An explicit fingerprint attempt must not copy or submit a password
+        // that happens to remain in the field. PAM/fprintd owns the factor
+        // conversation and receives an empty response for secret prompts.
+        let password = match Self::auth_secret(state, root, method) {
+            Ok(secret) => secret,
+            Err(message) => {
+                self.set_status(message);
+                return;
+            }
+        };
         let Some(session) = self.sessions.get(self.selected_session) else {
             self.set_status("No session available");
             return;
@@ -1112,7 +1171,12 @@ impl Widget for GreeterApp {
         // single click fires exactly one attempt.
         if Self::read_flag(state, root, SUBMIT_PATH) {
             let _ = state.put(root, SUBMIT_PATH, false);
-            self.attempt_login(state, root);
+            self.attempt_login(state, root, AuthMethod::Password);
+        }
+
+        if Self::read_flag(state, root, FINGERPRINT_PATH) {
+            let _ = state.put(root, FINGERPRINT_PATH, false);
+            self.attempt_login(state, root, AuthMethod::Fingerprint);
         }
 
         // Power-action rising edges. Reset the flag first so a single click
@@ -1261,23 +1325,17 @@ impl Widget for GreeterApp {
             }
         }
 
-        // Enter submits from anywhere in the form. We mark the event
-        // handled so the App runs its post-event `sync` (which detects
-        // the rising edge and runs auth).
-        let mut enter_pressed = false;
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
+        let enter_pressed = matches!(
+            event,
+            WindowEvent::KeyboardInput {
+                event: KeyEvent {
                     logical_key: Key::Named(NamedKey::Enter),
                     state: ElementState::Pressed,
                     ..
                 },
-            ..
-        } = event
-        {
-            let _ = state.put(root, SUBMIT_PATH, true);
-            enter_pressed = true;
-        }
+                ..
+            }
+        );
 
         // Delegate to the composed card.
         if let Some(c) = &mut self.composed
@@ -1297,7 +1355,12 @@ impl Widget for GreeterApp {
             );
         }
 
-        if enter_pressed {
+        // A focused control owns Enter. Dropdown consumes it above; buttons
+        // deliberately leave it for App's standard focused-control activation.
+        // Only an otherwise-unhandled Enter (normally from either text field)
+        // acts as the form's default Log-in action.
+        if enter_pressed && !*handled && !self.focused_button_present() {
+            let _ = state.put(root, SUBMIT_PATH, true);
             *handled = true;
         }
     }
@@ -1414,6 +1477,69 @@ mod tests {
 
     fn card_of(app: &GreeterApp) -> Box<dyn Widget> {
         app.build_composition(&Theme::dark())
+    }
+
+    fn set_focus_by_id(widget: &mut dyn Widget, id: &str) {
+        widget.set_focus(widget.test_id() == Some(id));
+        for child in widget.children_mut() {
+            set_focus_by_id(child, id);
+        }
+    }
+
+    fn enter_event() -> WindowEvent {
+        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+
+        // winit intentionally keeps the platform-specific key field private;
+        // these are the same inert placeholders used by ui::App's key tests.
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = Key::Named(NamedKey::Enter);
+        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        event.location = KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        event.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event,
+            is_synthetic: false,
+        }
+    }
+
+    fn dispatch_enter(app: &mut GreeterApp, state: &mut AutoCommit, focused: &str) -> bool {
+        use std::collections::HashMap;
+        use taffy::AvailableSpace;
+
+        app.sync(state, &automerge::ROOT);
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = app.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: AvailableSpace::Definite(1280.0),
+                    height: AvailableSpace::Definite(800.0),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, node, Point::ZERO);
+        set_focus_by_id(app, focused);
+
+        let mut handled = false;
+        let mut focus_target = None;
+        app.handle_event(
+            &enter_event(),
+            1.0,
+            &winit::event::Modifiers::default(),
+            state,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        handled
     }
 
     /// How a widget identifies itself in a tree dump: its `test_id` when it
@@ -1548,6 +1674,7 @@ mod tests {
                 "greeter.username",
                 "greeter.password",
                 "greeter.login",
+                "greeter.fingerprint",
                 "greeter.reboot",
                 "greeter.poweroff",
             ],
@@ -1693,10 +1820,47 @@ mod tests {
                 "greeter.password",
                 "greeter.session",
                 "greeter.login",
+                "greeter.fingerprint",
                 "greeter.reboot",
                 "greeter.poweroff",
             ]
         );
+    }
+
+    #[test]
+    fn enter_defaults_to_login_only_from_text_fields() {
+        let mut app = GreeterApp::with_sessions(test_sessions());
+        let mut doc = AutoCommit::new();
+
+        assert!(dispatch_enter(&mut app, &mut doc, "greeter.username"));
+        assert!(GreeterApp::read_flag(&doc, &automerge::ROOT, SUBMIT_PATH));
+    }
+
+    #[test]
+    fn focused_alternate_controls_own_enter_instead_of_login() {
+        for control in [
+            "greeter.session",
+            "greeter.fingerprint",
+            "greeter.reboot",
+            "greeter.poweroff",
+        ] {
+            let mut app = GreeterApp::with_sessions(test_sessions());
+            let mut doc = AutoCommit::new();
+            let handled = dispatch_enter(&mut app, &mut doc, control);
+
+            assert!(
+                !GreeterApp::read_flag(&doc, &automerge::ROOT, SUBMIT_PATH),
+                "Enter on {control} must not submit the password form"
+            );
+            if control == "greeter.session" {
+                assert!(handled, "the focused dropdown consumes Enter itself");
+            } else {
+                assert!(
+                    !handled,
+                    "the focused {control} button must remain available to App activation"
+                );
+            }
+        }
     }
 
     // --- auth lifecycle ------------------------------------------------
@@ -1722,6 +1886,28 @@ mod tests {
         assert_eq!(app.status, "Enter your password");
         assert_eq!(app.status_kind, StatusKind::Hint);
         assert_eq!(app.phase, AuthPhase::Idle);
+    }
+
+    #[test]
+    fn fingerprint_auth_explicitly_uses_no_password() {
+        let mut app = GreeterApp::with_sessions(test_sessions());
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+
+        assert_eq!(
+            GreeterApp::auth_secret(&doc, &root, AuthMethod::Password),
+            Err("Enter your password")
+        );
+        assert_eq!(
+            GreeterApp::auth_secret(&doc, &root, AuthMethod::Fingerprint),
+            Ok(String::new()),
+            "fingerprint PAM conversation must begin without a dummy password"
+        );
+        assert!(
+            focusables(&app).contains(&"greeter.fingerprint".to_string()),
+            "the passwordless factor must be an explicit reachable action"
+        );
     }
 
     /// In flight, the button carries the sentence and nothing else is
@@ -2013,6 +2199,7 @@ mod tests {
                 "TextInput", // password
                 "Dropdown",  // session picker
                 "Button",    // log in
+                "Button",    // fingerprint
                 "Button",    // restart
                 "Button",    // shut down
             ]

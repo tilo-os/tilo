@@ -74,7 +74,7 @@ for disk in "${candidates[@]}"; do
   [ "$magic" = "$magic_expected" ] || continue
   digest="$(sed -n '2p' "$tail_file")"
   length="$(sed -n '3p' "$tail_file")"
-  case "$digest" in [0-9a-f][0-9a-f]*) ;; *) report_error "The installation profile checksum is malformed."; continue ;; esac
+  case "$digest" in ''|*[!0-9a-f]*) report_error "The installation profile checksum is malformed."; continue ;; esac
   [ "${#digest}" -eq 64 ] || { report_error "The installation profile checksum is malformed."; continue; }
   case "$length" in ''|*[!0-9]*) report_error "The installation profile length is malformed."; continue ;; esac
   header_size=$((${#magic} + ${#digest} + ${#length} + 3))

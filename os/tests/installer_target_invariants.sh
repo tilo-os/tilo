@@ -107,6 +107,53 @@ else
   bad "whole-disk erasure can proceed without an exact privileged confirmation"
 fi
 
+if grep -Fq -- '--confirm-root)' "$backend" \
+   && grep -Fq '[ "$CONFIRM_ROOT" = "$ROOT_PARTITION" ]' "$backend" \
+   && grep -Fq 'alongside install requires --confirm-root matching --root-partition' "$backend"; then
+  ok "alongside formatting requires an exact root-partition confirmation at the privileged boundary"
+else
+  bad "alongside formatting can proceed without an exact privileged root confirmation"
+fi
+
+if grep -Fq -- '--expect-disk-size-bytes)' "$backend" \
+   && grep -Fq -- '--expect-disk-devnum)' "$backend" \
+   && grep -Fq -- '--expect-disk-wwn)' "$backend" \
+   && grep -Fq -- '--expect-disk-serial)' "$backend" \
+   && grep -Fq -- '--expect-root-partuuid)' "$backend" \
+   && grep -Fq -- '--expect-root-size-bytes)' "$backend" \
+   && grep -Fq -- '--expect-efi-partuuid)' "$backend" \
+   && grep -Fq -- '--expect-efi-size-bytes)' "$backend" \
+   && grep -Fq 'missing stable disk identity (expected WWN or serial)' "$backend" \
+   && grep -Fq 'validate_partition_identity "$ROOT_PARTITION"' "$backend" \
+   && grep -Fq 'validate_partition_identity "$EFI_PARTITION"' "$backend" \
+   && [ "$(grep -c '^[[:space:]]*validate_disk_identity$' "$backend" || true)" -eq 2 ]; then
+  ok "reviewed disk and alongside partition identities are revalidated before destructive work"
+else
+  bad "installer target identity is not bound across discovery and destructive execution"
+fi
+
+identity_error="$(
+  id() { printf 0; }
+  export -f id
+  QOS_INSTALL_TRANSIENT=1 "$backend" \
+    --disk /dev/qos-test-missing --confirm-erase /dev/qos-test-missing \
+    --user identitytest --pin --yes </dev/null 2>&1 || true
+)"
+stable_error="$(
+  id() { printf 0; }
+  export -f id
+  QOS_INSTALL_TRANSIENT=1 "$backend" \
+    --disk /dev/qos-test-missing --confirm-erase /dev/qos-test-missing \
+    --expect-disk-size-bytes 68719476736 --expect-disk-devnum 252:0 \
+    --user identitytest --pin --yes </dev/null 2>&1 || true
+)"
+if grep -Fq 'missing or invalid --expect-disk-size-bytes' <<<"$identity_error" \
+   && grep -Fq 'missing stable disk identity (expected WWN or serial)' <<<"$stable_error"; then
+  ok "privileged installer rejects missing discovery identity before touching a block device"
+else
+  bad "privileged installer does not fail closed when discovery identity is omitted"
+fi
+
 if grep -Fq 'ENCRYPT=1' "$backend" \
    && grep -Fq 'native qOS requires --pin' "$backend" \
    && grep -Fq 'if verified_tpm; then' "$backend" \
@@ -249,7 +296,8 @@ else
 fi
 
 if grep -Fq 'prepare-partition "$ROOT_PARTITION" --efi "$EFI_PARTITION"' "$backend" \
-   && grep -Fq 'ROOT_FS_UUID=' "$backend"; then
+   && grep -Fq 'ROOT_FS_UUID=' "$backend" \
+   && grep -Fq 'ENC_CLEANUP_TARGET="$ROOT_PARTITION"' "$backend"; then
   ok "encrypted and unencrypted alongside paths preserve the partition table"
 else
   bad "alongside mode is not wired through both encryption paths"
