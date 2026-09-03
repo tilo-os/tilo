@@ -150,8 +150,11 @@ sizes in four modes: ordinary copy, expanded pseudo-localized copy, 200% text,
 and high contrast. It also runs the native semantic/accessibility audit at each
 of those sixteen app/mode/viewport combinations and saves the JSON beside the
 images. A failure is attributed to the app, mode, and viewport; artifacts are
-grouped by app instead of overwriting one global set. This is the release-surface
-acceptance run—not a substitute for scenario-specific interaction tests.
+grouped by app instead of overwriting one global set. Each PNG must have the
+requested dimensions and contain a materially painted frame; creating an empty
+or effectively single-colour image is a failure, not a golden candidate. This
+is the release-surface acceptance run—not a substitute for scenario-specific
+interaction tests.
 
 Every app using the shared `LaunchSpec` runner also gets a standard responsive
 acceptance capture without app-specific argument parsing:
