@@ -174,7 +174,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
 
     let enroll = std::path::PathBuf::from(env!("CARGO_BIN_EXE_qos-enroll"));
     let status_file = recipient_identities.join("pairing-status.json");
-    let mut recipient_process = Command::new(&enroll)
+    let recipient_process = Command::new(&enroll)
         .args(["pair-device", "--identity-root"])
         .arg(&recipient_root)
         .args(["--identity-dir"])
@@ -189,7 +189,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
 
     // The recipient's persisted waiting state is the barrier. It can safely
     // retry its authenticated solicitation until this approver binds UDP.
-    let mut approval = Command::new(&enroll)
+    let approval = Command::new(&enroll)
         .args(["approve-device", "--identity-root"])
         .arg(&approver_root)
         .args(["--identity-dir"])
