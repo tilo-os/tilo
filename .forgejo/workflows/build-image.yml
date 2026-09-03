@@ -66,6 +66,8 @@ jobs:
         with:
           path: os/external-assets/cache
           key: github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+          restore-keys: |
+            github-assets-all-v1-
 
       - name: Materialize immutable GitHub build inputs
         run: ./os/dev/cache-github-assets.sh
