@@ -70,8 +70,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let widget = GreeterApp::new().with_proxy_slot(proxy_slot.clone());
     let state = ui::State::new();
     let mut app = ui::App::new(state, Box::new(widget));
-    // Hand the keyboard to the username field at startup so the user can
-    // type credentials immediately, with no click required.
+    // On a personal machine with one unambiguous interactive account, the
+    // greeter hides the redundant username field and this lands on Passcode.
+    // Zero/multiple candidates retain the two-field fallback and autofocus
+    // lands on Username. Either way, typing can begin without a click.
     app.autofocus_first = true;
     // Preserve keyboard focus across the structural rebuilds triggered by
     // session, status, and Caps-Lock changes — without this the caret and
