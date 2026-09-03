@@ -19,10 +19,13 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Component, Path, PathBuf};
 
 use agent_provider_config::local::{
-    LocalEndpoint, LocalModelRelease, LocalModelStatus, PinnedArtifact, RuntimeRelease,
+    LocalEndpoint, LocalModelRelease, LocalModelStatus, ModelArtifactFormat, PinnedArtifact,
+    RuntimeRelease,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -30,6 +33,8 @@ use system_extension::{AcceptedExtension, ExtensionKind};
 use thiserror::Error;
 
 const STATE_FILE: &str = "state.json";
+const MAX_SNAPSHOT_FILES: u32 = 100_000;
+const MAX_SNAPSHOT_PATH_BYTES: usize = 1024;
 
 /// The transfer boundary. Implementations must use HTTPS and honour `start`;
 /// this crate validates the pinned HTTPS URL before invoking one. The caller
@@ -76,6 +81,8 @@ pub struct VllmCommand {
     pub runtime_kind: agent_provider_config::local::RuntimeKind,
     pub args: Vec<String>,
     pub model_path: PathBuf,
+    /// Fixed container-visible target generated from the signed model format.
+    pub model_container_path: String,
     pub endpoint: LocalEndpoint,
     pub runtime_extension_id: String,
 }
@@ -158,6 +165,8 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         let root = root.into();
         fs::create_dir_all(root.join("sha256"))?;
         fs::create_dir_all(root.join("partial"))?;
+        fs::create_dir_all(root.join("snapshots"))?;
+        fs::create_dir_all(root.join("snapshot-staging"))?;
         let state = load_state(&root.join(STATE_FILE))?;
         Ok(Self {
             root,
@@ -174,6 +183,18 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     pub fn object_path(&self, sha256: &str) -> Result<PathBuf, ServiceError> {
         validate_sha256(sha256)?;
         Ok(self.root.join("sha256").join(sha256))
+    }
+
+    fn snapshot_path(&self, sha256: &str) -> Result<PathBuf, ServiceError> {
+        validate_sha256(sha256)?;
+        Ok(self.root.join("snapshots").join(sha256))
+    }
+
+    fn model_path(&self, model: &LocalModelRelease) -> Result<PathBuf, ServiceError> {
+        match model.artifact_format {
+            ModelArtifactFormat::HfSnapshotTarZst => self.snapshot_path(&model.artifact.sha256),
+            ModelArtifactFormat::VllmGguf => self.object_path(&model.artifact.sha256),
+        }
     }
 
     /// Resumes a pinned artifact, verifies its exact digest and size, then
@@ -236,13 +257,59 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         }
     }
 
+    /// Turn a verified compressed Hugging Face snapshot into a private,
+    /// content-addressed directory. Archive paths, links, special files,
+    /// unexpected expansion, and duplicate names are refused before any
+    /// directory becomes visible to Podman.
+    fn materialize_model(&mut self, model: &LocalModelRelease) -> Result<PathBuf, ServiceError> {
+        let object = self.fetch_verified(&model.artifact)?;
+        match model.artifact_format {
+            ModelArtifactFormat::VllmGguf => Ok(object),
+            ModelArtifactFormat::HfSnapshotTarZst => self.extract_snapshot(&object, model),
+        }
+    }
+
+    fn extract_snapshot(
+        &self,
+        archive: &Path,
+        model: &LocalModelRelease,
+    ) -> Result<PathBuf, ServiceError> {
+        let final_path = self.snapshot_path(&model.artifact.sha256)?;
+        if final_path.exists() {
+            validate_snapshot_layout(&final_path)?;
+            return Ok(final_path);
+        }
+        let staging = self
+            .root
+            .join("snapshot-staging")
+            .join(format!("{}.extract", model.artifact.sha256));
+        remove_private_directory(&staging)?;
+        fs::create_dir(&staging)?;
+        set_private_directory_mode(&staging)?;
+        let outcome = extract_snapshot_into(archive, &staging, model.installed_size_bytes);
+        if let Err(error) = outcome {
+            let _ = remove_private_directory(&staging);
+            return Err(error);
+        }
+        validate_snapshot_layout(&staging)?;
+        match fs::rename(&staging, &final_path) {
+            Ok(()) => Ok(final_path),
+            Err(_error) if final_path.exists() => {
+                validate_snapshot_layout(&final_path)?;
+                remove_private_directory(&staging)?;
+                Ok(final_path)
+            }
+            Err(error) => Err(ServiceError::Io(error)),
+        }
+    }
+
     /// Record a catalog-verified model as available after placing its bytes.
     pub fn install_model(
         &mut self,
         model: &LocalModelRelease,
     ) -> Result<LocalModelStatus, ServiceError> {
         self.require_license_acceptance(model)?;
-        self.fetch_verified(&model.artifact)?;
+        self.materialize_model(model)?;
         self.state.models.insert(
             model.id.clone(),
             ManagedModel {
@@ -312,6 +379,10 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         transfer?;
         if let Some(error) = progress_error {
             return Err(error);
+        }
+        if matches!(model.artifact_format, ModelArtifactFormat::HfSnapshotTarZst) {
+            let archive = self.object_path(&model.artifact.sha256)?;
+            self.extract_snapshot(&archive, model)?;
         }
         if let Some(managed) = published.models.get_mut(&model_id) {
             managed.status = LocalModelStatus::Installed;
@@ -460,8 +531,16 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         if port == 0 {
             return Err(ServiceError::InvalidPort);
         }
-        let model_path = self.object_path(&model.artifact.sha256)?;
-        if !model_path.is_file() {
+        let model_path = self.model_path(model)?;
+        let model_container_path = match model.artifact_format {
+            ModelArtifactFormat::HfSnapshotTarZst if model_path.is_dir() => "/models/model",
+            ModelArtifactFormat::VllmGguf if model_path.is_file() => "/models/model.gguf",
+            _ => return Err(ServiceError::ModelNotInstalled(model.id.clone())),
+        };
+        if matches!(model.artifact_format, ModelArtifactFormat::HfSnapshotTarZst) {
+            validate_snapshot_layout(&model_path)?;
+        }
+        if !model_path.exists() {
             return Err(ServiceError::ModelNotInstalled(model.id.clone()));
         }
         let runtime_path = self.object_path(&runtime.release.artifact.sha256)?;
@@ -483,13 +562,14 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
                 // The supervisor mounts this verified host object at this
                 // stable, container-visible path. Never pass a host path to
                 // vLLM inside the OCI container.
-                "/models/model".into(),
+                model_container_path.into(),
                 "--host".into(),
                 "127.0.0.1".into(),
                 "--port".into(),
                 port.to_string(),
             ],
             model_path,
+            model_container_path: model_container_path.into(),
             endpoint: endpoint.clone(),
             runtime_extension_id: runtime.accepted.signed.manifest.id.clone(),
         };
@@ -534,6 +614,10 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         let path = self.object_path(&managed.model_sha256)?;
         if path.exists() {
             fs::remove_file(path)?;
+        }
+        let snapshot = self.snapshot_path(&managed.model_sha256)?;
+        if snapshot.exists() {
+            remove_private_directory(&snapshot)?;
         }
         self.state.models.remove(model_id);
         self.persist()
@@ -620,6 +704,167 @@ fn verify_file(path: &Path, artifact: &PinnedArtifact) -> Result<(), ServiceErro
     }
 }
 
+fn remove_private_directory(path: &Path) -> Result<(), ServiceError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            Err(ServiceError::UnsafeSnapshot)
+        }
+        Ok(_) => {
+            fs::remove_dir_all(path)?;
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(ServiceError::Io(error)),
+    }
+}
+
+fn safe_snapshot_path(path: &Path) -> Result<(), ServiceError> {
+    if path.as_os_str().is_empty()
+        || path.as_os_str().len() > MAX_SNAPSHOT_PATH_BYTES
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        Err(ServiceError::UnsafeSnapshot)
+    } else {
+        Ok(())
+    }
+}
+
+fn extract_snapshot_into(
+    archive: &Path,
+    destination: &Path,
+    maximum_bytes: u64,
+) -> Result<(), ServiceError> {
+    let file = File::open(archive)?;
+    let decoder = zstd::stream::read::Decoder::new(file)
+        .map_err(|error| ServiceError::Archive(error.to_string()))?;
+    let mut archive = tar::Archive::new(decoder);
+    let mut paths = std::collections::BTreeSet::new();
+    let mut files = 0_u32;
+    let mut extracted_bytes = 0_u64;
+    for entry in archive
+        .entries()
+        .map_err(|error| ServiceError::Archive(error.to_string()))?
+    {
+        let mut entry = entry.map_err(|error| ServiceError::Archive(error.to_string()))?;
+        let relative = entry
+            .path()
+            .map_err(|error| ServiceError::Archive(error.to_string()))?
+            .into_owned();
+        safe_snapshot_path(&relative)?;
+        if !paths.insert(relative.clone()) {
+            return Err(ServiceError::UnsafeSnapshot);
+        }
+        files = files.checked_add(1).ok_or(ServiceError::UnsafeSnapshot)?;
+        if files > MAX_SNAPSHOT_FILES {
+            return Err(ServiceError::UnsafeSnapshot);
+        }
+        let entry_type = entry.header().entry_type();
+        let path = destination.join(&relative);
+        if entry_type.is_dir() {
+            fs::create_dir_all(&path)?;
+            set_private_directory_mode(&path)?;
+            continue;
+        }
+        if !entry_type.is_file() {
+            return Err(ServiceError::UnsafeSnapshot);
+        }
+        let declared = entry
+            .header()
+            .size()
+            .map_err(|error| ServiceError::Archive(error.to_string()))?;
+        extracted_bytes = extracted_bytes
+            .checked_add(declared)
+            .ok_or(ServiceError::SnapshotTooLarge)?;
+        if extracted_bytes > maximum_bytes {
+            return Err(ServiceError::SnapshotTooLarge);
+        }
+        let parent = path.parent().ok_or(ServiceError::UnsafeSnapshot)?;
+        fs::create_dir_all(parent)?;
+        set_private_directory_mode(parent)?;
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        let written = std::io::copy(&mut entry, &mut output)?;
+        if written != declared {
+            return Err(ServiceError::Archive("truncated tar entry".into()));
+        }
+        output.sync_all()?;
+        drop(output);
+        set_private_file_mode(&path)?;
+    }
+    if files == 0 {
+        return Err(ServiceError::UnsafeSnapshot);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_directory_mode(path: &Path) -> Result<(), ServiceError> {
+    // The user service and rootless Podman share this UID. Keep the snapshot
+    // private to it while retaining owner write/search permission during
+    // extraction and future atomic cleanup.
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_private_directory_mode(_path: &Path) -> Result<(), ServiceError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_file_mode(path: &Path) -> Result<(), ServiceError> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o400))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_private_file_mode(_path: &Path) -> Result<(), ServiceError> {
+    Ok(())
+}
+
+fn validate_snapshot_layout(path: &Path) -> Result<(), ServiceError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(ServiceError::UnsafeSnapshot);
+    }
+    let config = path.join("config.json");
+    let tokenizer = path.join("tokenizer.json");
+    let tokenizer_config = path.join("tokenizer_config.json");
+    if !config.is_file() || (!tokenizer.is_file() && !tokenizer_config.is_file()) {
+        return Err(ServiceError::InvalidSnapshotLayout);
+    }
+    let mut stack = vec![path.to_path_buf()];
+    let mut has_weights = false;
+    while let Some(directory) = stack.pop() {
+        for item in fs::read_dir(directory)? {
+            let item = item?;
+            let metadata = fs::symlink_metadata(item.path())?;
+            if metadata.file_type().is_symlink() || !(metadata.is_file() || metadata.is_dir()) {
+                return Err(ServiceError::UnsafeSnapshot);
+            }
+            if metadata.is_dir() {
+                stack.push(item.path());
+            } else if item.file_name().to_string_lossy().ends_with(".safetensors")
+                || item
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("pytorch_model")
+                    && item.file_name().to_string_lossy().ends_with(".bin")
+            {
+                has_weights = true;
+            }
+        }
+    }
+    has_weights
+        .then_some(())
+        .ok_or(ServiceError::InvalidSnapshotLayout)
+}
+
 #[derive(Debug, Error)]
 pub enum ServiceError {
     #[error("backend error: {0}")]
@@ -634,6 +879,14 @@ pub enum ServiceError {
     IncompleteDownload { expected: u64, actual: u64 },
     #[error("artifact digest mismatch")]
     DigestMismatch,
+    #[error("unsafe model snapshot archive")]
+    UnsafeSnapshot,
+    #[error("model snapshot expands beyond its signed installed size")]
+    SnapshotTooLarge,
+    #[error("model snapshot is missing config, tokenizer, or weights")]
+    InvalidSnapshotLayout,
+    #[error("model snapshot archive error: {0}")]
+    Archive(String),
     #[error("runtime is not an accepted signed local-model extension")]
     RuntimeNotAccepted,
     #[error("runtime artifact is not installed")]
@@ -658,7 +911,7 @@ pub enum ServiceError {
 mod tests {
     use super::*;
     use agent_provider_config::local::RuntimeKind;
-    use std::io::Write as _;
+    use std::io::{Cursor, Write as _};
 
     fn artifact(bytes: &[u8]) -> PinnedArtifact {
         PinnedArtifact {
@@ -674,6 +927,7 @@ mod tests {
             description: "A tiny test model".into(),
             version: "1".into(),
             artifact: artifact(bytes),
+            artifact_format: ModelArtifactFormat::VllmGguf,
             license_id: "MIT".into(),
             license_url: "https://catalog.example.invalid/license".into(),
             requires_acceptance: false,
@@ -683,6 +937,33 @@ mod tests {
             required_accelerator_mib: 0,
             context_window: 1,
         }
+    }
+
+    fn snapshot(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let encoder = zstd::stream::write::Encoder::new(Vec::new(), 0).unwrap();
+        let mut tar = tar::Builder::new(encoder);
+        for (name, bytes) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, name, Cursor::new(*bytes))
+                .unwrap();
+        }
+        let encoder = tar.into_inner().unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn snapshot_with_symlink() -> Vec<u8> {
+        let encoder = zstd::stream::write::Encoder::new(Vec::new(), 0).unwrap();
+        let mut tar = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_size(0);
+        tar.append_link(&mut header, "config.json", "/etc/passwd")
+            .unwrap();
+        let encoder = tar.into_inner().unwrap();
+        encoder.finish().unwrap()
     }
     struct Transport {
         bytes: Vec<u8>,
@@ -804,6 +1085,108 @@ mod tests {
     }
 
     #[test]
+    fn verified_snapshot_is_safely_extracted_to_a_content_addressed_directory() {
+        let bytes = snapshot(&[
+            ("config.json", b"{}"),
+            ("tokenizer.json", b"{}"),
+            ("model-00001-of-00001.safetensors", b"weights"),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut release = model(&bytes);
+        release.artifact_format = ModelArtifactFormat::HfSnapshotTarZst;
+        release.installed_size_bytes = 1024;
+        let mut service = LocalModelService::open(
+            dir.path(),
+            Transport {
+                bytes: bytes.clone(),
+                starts: vec![],
+            },
+            Supervisor {
+                command: None,
+                stopped: vec![],
+            },
+        )
+        .unwrap();
+        service.install_model(&release).unwrap();
+        let materialized = service.model_path(&release).unwrap();
+        assert!(materialized.is_dir());
+        assert_eq!(fs::read(materialized.join("config.json")).unwrap(), b"{}");
+        assert!(
+            materialized
+                .join("model-00001-of-00001.safetensors")
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn snapshot_path_policy_refuses_traversal_and_absolute_names() {
+        assert!(matches!(
+            safe_snapshot_path(Path::new("../escape.safetensors")),
+            Err(ServiceError::UnsafeSnapshot)
+        ));
+        assert!(matches!(
+            safe_snapshot_path(Path::new("/etc/passwd")),
+            Err(ServiceError::UnsafeSnapshot)
+        ));
+    }
+
+    #[test]
+    fn snapshot_refuses_expansion_beyond_signed_installed_size() {
+        let bytes = snapshot(&[
+            ("config.json", b"{}"),
+            ("tokenizer.json", b"{}"),
+            ("model.safetensors", b"weights"),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut release = model(&bytes);
+        release.artifact_format = ModelArtifactFormat::HfSnapshotTarZst;
+        release.installed_size_bytes = 4;
+        let mut service = LocalModelService::open(
+            dir.path(),
+            Transport {
+                bytes,
+                starts: vec![],
+            },
+            Supervisor {
+                command: None,
+                stopped: vec![],
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            service.install_model(&release),
+            Err(ServiceError::SnapshotTooLarge)
+        ));
+        assert!(!service.model_path(&release).unwrap().exists());
+    }
+
+    #[test]
+    fn snapshot_refuses_symlinks_before_promotion() {
+        let bytes = snapshot_with_symlink();
+        let dir = tempfile::tempdir().unwrap();
+        let mut release = model(&bytes);
+        release.artifact_format = ModelArtifactFormat::HfSnapshotTarZst;
+        release.installed_size_bytes = 1024;
+        let mut service = LocalModelService::open(
+            dir.path(),
+            Transport {
+                bytes,
+                starts: vec![],
+            },
+            Supervisor {
+                command: None,
+                stopped: vec![],
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            service.install_model(&release),
+            Err(ServiceError::UnsafeSnapshot)
+        ));
+        assert!(!service.model_path(&release).unwrap().exists());
+    }
+
+    #[test]
     fn acceptance_is_pinned_to_the_exact_model_release() {
         let bytes = b"licensed";
         let dir = tempfile::tempdir().unwrap();
@@ -888,6 +1271,7 @@ mod tests {
                 "127.0.0.1".into(),
             ],
             model_path: PathBuf::from("/store/sha256/model"),
+            model_container_path: "/models/model.gguf".into(),
             endpoint: LocalEndpoint {
                 url: "http://127.0.0.1:8000/v1".into(),
                 model_id: "tiny".into(),

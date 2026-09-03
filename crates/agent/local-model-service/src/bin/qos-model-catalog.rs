@@ -29,7 +29,8 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use agent_provider_config::local::{
-    LocalModelRelease, PinnedArtifact as ModelArtifact, RuntimeKind, RuntimeRelease,
+    LocalModelRelease, ModelArtifactFormat, PinnedArtifact as ModelArtifact, RuntimeKind,
+    RuntimeRelease,
 };
 use clap::Parser;
 use ed25519_dalek::{Signer as _, SigningKey};
@@ -101,6 +102,7 @@ struct ModelSource {
     /// Immutable upstream commit/revision, never `main`, `latest`, or a tag.
     revision: String,
     artifact: ArtifactSource,
+    artifact_format: ModelArtifactFormat,
     license_id: String,
     license_url: String,
     requires_acceptance: bool,
@@ -307,6 +309,7 @@ fn compile(
                 sha256: receipt.sha256,
                 size_bytes: receipt.size_bytes,
             },
+            artifact_format: model.artifact_format,
             license_id: model.license_id,
             license_url: model.license_url,
             requires_acceptance: model.requires_acceptance,
@@ -562,6 +565,7 @@ mod tests {
                 description: "Deterministic test fixture".into(),
                 revision: revision.into(),
                 artifact: model_artifact,
+                artifact_format: ModelArtifactFormat::VllmGguf,
                 license_id: "Apache-2.0".into(),
                 license_url: format!(
                     "https://huggingface.example.invalid/acme/model/blob/{revision}/LICENSE"

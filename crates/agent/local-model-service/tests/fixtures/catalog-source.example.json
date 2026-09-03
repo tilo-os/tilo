@@ -33,6 +33,7 @@
         "sha256": "c1e3d7703bb12d93efc36db0cf4bb613214d7b08ab6f88903c2e5b4205b83b43",
         "size_bytes": 41
       },
+      "artifact_format": "vllm_gguf",
       "license_id": "Apache-2.0",
       "license_url": "https://huggingface.example.invalid/example/tiny-model/blob/0123456789abcdef0123456789abcdef01234567/LICENSE",
       "requires_acceptance": true,

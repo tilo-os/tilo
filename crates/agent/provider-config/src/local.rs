@@ -70,6 +70,20 @@ pub struct PinnedArtifact {
     pub size_bytes: u64,
 }
 
+/// The only model artifact layouts the local runtime understands. The format
+/// is signed catalog data, never guessed from a filename or HTTP header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelArtifactFormat {
+    /// A complete Hugging Face/vLLM snapshot packaged as a `.tar.zst` stream.
+    /// The service verifies the compressed object, then refuses unsafe archive
+    /// entries before atomically promoting the extracted directory.
+    HfSnapshotTarZst,
+    /// An explicit GGUF single-file release. This is intentionally not an
+    /// implicit fallback: catalog authors must assert vLLM compatibility.
+    VllmGguf,
+}
+
 impl PinnedArtifact {
     pub fn validate(&self) -> Result<(), ProvisionError> {
         if !self.url.starts_with("https://") {
@@ -100,6 +114,7 @@ pub struct LocalModelRelease {
     pub description: String,
     pub version: String,
     pub artifact: PinnedArtifact,
+    pub artifact_format: ModelArtifactFormat,
     /// SPDX license identifier where one exists (`Apache-2.0`, `MIT`, ...).
     pub license_id: String,
     /// Immutable model-card or license document for the pinned revision.
@@ -478,6 +493,7 @@ mod tests {
                 description: "A tiny test model".into(),
                 version: "1".into(),
                 artifact: artifact("model"),
+                artifact_format: ModelArtifactFormat::VllmGguf,
                 license_id: "Apache-2.0".into(),
                 license_url: "https://models.example.invalid/LICENSE".into(),
                 requires_acceptance: true,
