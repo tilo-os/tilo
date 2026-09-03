@@ -707,6 +707,22 @@ impl BrowserWidget {
         }
     }
 
+    fn continuation_url(state: &AutoCommit, root: &ObjId) -> Option<String> {
+        let url = Self::read_url(state, root)?;
+        let parsed = url::Url::parse(&url).ok()?;
+        if !matches!(parsed.scheme(), "http" | "https")
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+        {
+            return None;
+        }
+        // Query strings commonly carry one-shot invitation or login tokens.
+        // A path-only continuation reopens the page without exporting them.
+        let mut safe = parsed;
+        safe.set_query(None);
+        Some(safe.into())
+    }
+
     fn read_flag(state: &AutoCommit, root: &ObjId, path: &str) -> bool {
         matches!(
             state.get(root, path),
@@ -992,6 +1008,51 @@ fn default_engine() -> SharedEngine {
 }
 
 impl Widget for BrowserWidget {
+    fn continuation_metadata(
+        &self,
+        state: &AutoCommit,
+        root: &ObjId,
+    ) -> Option<ui::collaboration::ContinuationMetadata> {
+        let url = Self::continuation_url(state, root)?;
+        let bytes = serde_json::to_vec(&serde_json::json!({ "url": url })).ok()?;
+        Some(ui::collaboration::ContinuationMetadata {
+            schema_version: 1,
+            bytes,
+        })
+    }
+
+    fn restore_continuation_metadata(
+        &mut self,
+        metadata: &ui::collaboration::ContinuationMetadata,
+        state: &mut AutoCommit,
+        root: &ObjId,
+    ) -> bool {
+        if metadata.schema_version != 1 {
+            return false;
+        }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&metadata.bytes) else {
+            return false;
+        };
+        let Some(url) = value.get("url").and_then(serde_json::Value::as_str) else {
+            return false;
+        };
+        let Ok(parsed) = url::Url::parse(url) else {
+            return false;
+        };
+        if !matches!(parsed.scheme(), "http" | "https")
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+        {
+            return false;
+        }
+        ui::put_text_diffed(state, root, URL_PATH, url);
+        self.initial_url = url.to_owned();
+        if self.bootstrap_done {
+            self.engine.send(WebViewCommand::Navigate(url.to_owned()));
+        }
+        true
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[BROWSER_OPERATION_TYPE]
     }
@@ -1981,5 +2042,21 @@ mod tests {
             w.poll_resource_operation(invocation, false, &doc, &root),
             Some(ui::qos_actions::InvocationUpdate::Succeeded { .. })
         ));
+    }
+
+    #[test]
+    fn continuation_restore_navigates_the_matching_browser_instance() {
+        let engine = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        let (mut doc, root) = synced(&mut widget);
+        let metadata = ui::collaboration::ContinuationMetadata {
+            schema_version: 1,
+            bytes: br#"{"url":"https://example.test/reading"}"#.to_vec(),
+        };
+        assert!(widget.restore_continuation_metadata(&metadata, &mut doc, &root));
+        assert_eq!(
+            engine.current_uri().as_deref(),
+            Some("https://example.test/reading")
+        );
     }
 }

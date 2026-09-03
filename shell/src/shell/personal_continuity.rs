@@ -415,6 +415,23 @@ impl DeviceContinuationSnapshot {
 
     /// Capture only safe logical state from the shell's persisted tree.
     pub fn capture(tree: &WorkspaceTree, device: DeviceId, counter: u64) -> CaptureReport {
+        Self::capture_with_resume(tree, device, counter, |_, _, _| None)
+    }
+
+    /// Capture the shell topology and attach app-supplied safe metadata.
+    ///
+    /// The resolver is intentionally pull-only and gets no mutable tree
+    /// access. Receiving a remote checkpoint therefore cannot change local
+    /// focus, launch an app, or start media as a side effect of capture.
+    pub fn capture_with_resume<F>(
+        tree: &WorkspaceTree,
+        device: DeviceId,
+        counter: u64,
+        mut resume_for: F,
+    ) -> CaptureReport
+    where
+        F: FnMut(RoomId, AppInstanceId, &LaunchIntent) -> Option<ResumeMetadata>,
+    {
         let stamp = ContinuityStamp {
             counter,
             device: device.clone(),
@@ -437,10 +454,15 @@ impl DeviceContinuationSnapshot {
                             | TileContent::Stub { kind, .. } => {
                                 LaunchIntent::app(kind.app_id()).ok()
                             }
-                            // `surface_id` is meaningful only inside its
-                            // compositor. Peer windows are another person's
-                            // live session, not our resumable app instance.
-                            TileContent::Foreign { .. } | TileContent::PeerWindow { .. } => {
+                            // A locally-adopted foreign app is resumable by
+                            // its declared app id, but its compositor surface
+                            // id stays strictly local and is never serialized.
+                            TileContent::Foreign { app_id, .. } => {
+                                LaunchIntent::app(app_id.clone()).ok()
+                            }
+                            // Peer windows are another person's live session,
+                            // not our resumable app instance.
+                            TileContent::PeerWindow { .. } => {
                                 redacted_foreign_tabs += 1;
                                 None
                             }
@@ -454,6 +476,7 @@ impl DeviceContinuationSnapshot {
                         ) else {
                             continue;
                         };
+                        let resume = resume_for(workspace.room, app_instance_id, &launch);
                         apps.push(AppInstanceState::new(
                             app_instance_id,
                             TabPlacement {
@@ -462,7 +485,7 @@ impl DeviceContinuationSnapshot {
                                 tab: tab_index,
                             },
                             launch,
-                            None,
+                            resume,
                             stamp.clone(),
                         ));
                     }
@@ -487,6 +510,19 @@ impl DeviceContinuationSnapshot {
             snapshot,
             redacted_foreign_tabs,
         }
+    }
+
+    /// Capture using the authenticated app-report registry. The lookup is by
+    /// durable shell tab id and launch instance, never by app id alone.
+    pub fn capture_with_registry(
+        tree: &WorkspaceTree,
+        device: DeviceId,
+        counter: u64,
+        registry: &crate::shell::personal_continuity_registry::ContinuationRegistry,
+    ) -> CaptureReport {
+        Self::capture_with_resume(tree, device, counter, |room, tab, launch| {
+            registry.resume_for_tab(room, tab, launch)
+        })
     }
 }
 
@@ -528,9 +564,8 @@ impl<'de> Deserialize<'de> for DeviceContinuationSnapshot {
     }
 }
 
-/// Diagnostics from a capture. The number is useful to the future UI, which
-/// can say that a remote/native surface is ready to reopen rather than claim
-/// to have resumed it.
+/// Diagnostics from a capture. The number records windows whose app identity
+/// was not safe and portable enough to synchronize.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CaptureReport {
     pub snapshot: DeviceContinuationSnapshot,
@@ -983,8 +1018,21 @@ mod tests {
         };
 
         let report = DeviceContinuationSnapshot::capture(&tree, device("laptop-01"), 5);
-        assert_eq!(report.redacted_foreign_tabs, 1);
-        assert_eq!(report.snapshot.workspaces[0].apps.len(), 1);
+        assert_eq!(report.redacted_foreign_tabs, 0);
+        assert_eq!(report.snapshot.workspaces[0].apps.len(), 2);
+        assert_eq!(
+            report.snapshot.workspaces[0].apps[1].launch,
+            LaunchIntent::App {
+                app_id: "org.example.Foreign".into()
+            }
+        );
+        assert!(
+            !postcard::to_allocvec(&report.snapshot)
+                .unwrap()
+                .windows(std::mem::size_of::<u64>())
+                .any(|bytes| bytes == 0xfeed_beef_u64.to_le_bytes()),
+            "the compositor-local surface id must not enter continuation"
+        );
         assert_eq!(
             report.snapshot.focus.as_ref().unwrap().app,
             Some(AppInstanceId(11))
