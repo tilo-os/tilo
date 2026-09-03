@@ -19,6 +19,7 @@ use qos_user_identity::{
 };
 use rand::RngCore as _;
 use serde::{Deserialize, Serialize};
+use socket2::{Domain, Protocol, Socket, Type};
 
 const PORT: u16 = 45_831;
 const MAX_PACKET: usize = 60 * 1024;
@@ -1018,8 +1019,22 @@ fn valid_solicitation(solicitation: &PairSolicitation) -> bool {
         && qos_relay::valid_home_peer_label(&solicitation.label)
 }
 
+/// Bind the well-known LAN-discovery port without making an already-running
+/// discovery view or approval sheet prevent another qOS surface from joining
+/// the same nearby-device flow.  UDP broadcast is deliberately delivered to
+/// every reuse-port listener; each recipient still has to authenticate the
+/// encrypted offer or enrollment request before it can act on it.
+fn bind_pair_listener() -> anyhow::Result<UdpSocket> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    #[cfg(unix)]
+    socket.set_reuse_port(true)?;
+    socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, PORT).into())?;
+    Ok(socket.into())
+}
+
 fn discover(timeout: u64, kind: EnrollmentKind) -> anyhow::Result<()> {
-    let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, PORT))?;
+    let socket = bind_pair_listener()?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
     let deadline = std::time::Instant::now() + socket_timeout(timeout);
     let mut packet = [0_u8; MAX_PACKET];
@@ -1778,7 +1793,7 @@ fn approve(
     {
         bail!("this device is not authorised to approve enrollment");
     }
-    let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, PORT))?;
+    let socket = bind_pair_listener()?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
     if let Some(ready) = ready {
         let _ = ready.send(());
