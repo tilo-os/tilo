@@ -492,7 +492,10 @@ impl ExtensionStateStore {
         state.validate()?;
         let mut bytes = serde_json::to_vec_pretty(state)?;
         bytes.push(b'\n');
-        atomic_file::write_creating_parent(&self.path, &bytes)?;
+        // Desired state authorises a privileged image-build boundary.  Keep it
+        // owner-only before the atomic rename so a session cannot replace an
+        // accepted declaration between review and activation.
+        atomic_file::write_creating_parent_with_mode(&self.path, &bytes, 0o600)?;
         Ok(())
     }
 
@@ -838,6 +841,22 @@ mod tests {
         assert_eq!(state.revision, 1);
         assert!(state.pending.is_none());
         assert!(state.active.contains_key("local-model-runtime"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persisted_state_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = ExtensionStateStore::new(temp.path().join("state.json"));
+        store.save(&ExtensionState::default()).unwrap();
+        let mode = std::fs::metadata(store.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "desired extension state must be owner-only");
     }
 
     #[test]
