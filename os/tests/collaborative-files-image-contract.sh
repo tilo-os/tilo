@@ -79,10 +79,19 @@ require_file /usr/share/qos/fs-capabilities.json
 
 # The system host and per-user recipient must be enabled, not merely copied.
 require_link /etc/systemd/system/multi-user.target.wants/fs.service
+require_link /etc/systemd/system/multi-user.target.wants/qos-growfs-sysroot.service
 require_link /etc/systemd/system/multi-user.target.wants/fs-identity.path
 require_link /etc/systemd/user/graphical-session.target.wants/qos-fs-recipient.service
 require_link /etc/systemd/user/graphical-session-pre.target.wants/qos-identity.service
-require_mask /etc/systemd/system/systemd-growfs-root.service
+require_file /usr/lib/systemd/system/qos-growfs-sysroot.service
+require_file /usr/lib/systemd/system/systemd-growfs-root.service.d/10-qos-composefs.conf
+if [ -L "$(at /etc/systemd/system/systemd-growfs-root.service)" ] \
+   && [ "$(readlink "$(at /etc/systemd/system/systemd-growfs-root.service)")" = /dev/null ]; then
+  die "systemd-growfs-root.service is masked; its composefs layout drop-in cannot apply"
+fi
+require_line /usr/lib/systemd/system/qos-growfs-sysroot.service "ConditionPathIsMountPoint=/sysroot"
+require_line /usr/lib/systemd/system/qos-growfs-sysroot.service "ExecStart=/usr/lib/systemd/systemd-growfs /sysroot"
+require_line /usr/lib/systemd/system/systemd-growfs-root.service.d/10-qos-composefs.conf "ConditionPathIsMountPoint=!/sysroot"
 
 # Keep the unit/launcher protocol literal and paths tied together.  Exact-line
 # checks catch a continuation accidentally being dropped from ExecStart.
