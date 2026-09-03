@@ -557,6 +557,10 @@ impl SdkConnectSource {
 /// collaboration session.
 struct SdkJoinIdentity {
     presentation: Vec<u8>,
+    /// Requested broker principal kind. The broker only accepts `agent`
+    /// when the named agent is admitted and this certified user may operate
+    /// it; ordinary applications always leave this as `person`.
+    participant_kind: &'static str,
     /// Retained on the shovel thread so document signing stays off the UI
     /// thread and the workspace broker connection is not consumed at join.
     signer: SdkDocumentSigner,
@@ -628,6 +632,7 @@ fn sdk_join_identity(cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal
     })?;
     Ok(SdkJoinIdentity {
         presentation,
+        participant_kind: "person",
         signer: SdkDocumentSigner::Certified(identity),
     })
 }
@@ -663,6 +668,7 @@ impl CollaborationManager {
             record,
             handle,
             None,
+            "person",
         )
     }
 
@@ -689,6 +695,7 @@ impl CollaborationManager {
             record,
             handle,
             None,
+            "person",
         )
     }
 
@@ -715,8 +722,10 @@ impl CollaborationManager {
             handle,
             Some(SdkJoinIdentity {
                 presentation: identity.presentation,
+                participant_kind: "person",
                 signer: SdkDocumentSigner::Harness(identity.device_key),
             }),
+            "person",
         )
     }
 
@@ -727,15 +736,18 @@ impl CollaborationManager {
         record: Option<String>,
         handle: Option<String>,
         endpoint_identity: Option<SdkJoinIdentity>,
+        participant_kind: &'static str,
     ) -> Result<Self, runtime_portal::NotAvailable> {
-        let identity = match endpoint_identity {
+        let mut identity = match endpoint_identity {
             Some(identity) => identity,
             None if matches!(&source, SdkConnectSource::Env) => sdk_join_identity(cluster_id)?,
             None => SdkJoinIdentity {
                 presentation: Vec::new(),
+                participant_kind: "person",
                 signer: harness_document_signer(),
             },
         };
+        identity.participant_kind = participant_kind;
         let sdk = Self::spawn_sdk(source, identity)?;
         let mut manager = Self {
             backend: Backend::Sdk(sdk),
@@ -748,6 +760,72 @@ impl CollaborationManager {
             handle,
         });
         Ok(manager)
+    }
+
+    /// Connect a headless participant as a first-class workspace agent.
+    /// Its friendly id is both the visible handle and the principal whose
+    /// scoped capabilities the broker evaluates.
+    pub fn for_agent_route(
+        app_id: impl Into<String>,
+        cluster_id: Uuid,
+        record: Option<String>,
+        agent_id: impl Into<String>,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        Self::for_route_from(
+            SdkConnectSource::Env,
+            app_id.into(),
+            cluster_id,
+            record,
+            Some(agent_id.into()),
+            None,
+            "agent",
+        )
+    }
+
+    /// Explicit-socket counterpart to [`Self::for_agent_route`]. Production
+    /// still requires a certified endpoint identity; this method merely
+    /// preserves the agent principal kind for diagnostic transports.
+    pub fn for_agent_route_fd(
+        fd: RawFd,
+        app_id: impl Into<String>,
+        cluster_id: Uuid,
+        record: Option<String>,
+        agent_id: impl Into<String>,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        Self::for_route_from(
+            SdkConnectSource::Fd(fd),
+            app_id.into(),
+            cluster_id,
+            record,
+            Some(agent_id.into()),
+            None,
+            "agent",
+        )
+    }
+
+    /// Certified explicit-socket agent connection used by out-of-process
+    /// runtimes that do not inherit the launcher's service descriptor.
+    pub fn for_agent_route_fd_with_identity(
+        fd: RawFd,
+        app_id: impl Into<String>,
+        cluster_id: Uuid,
+        record: Option<String>,
+        agent_id: impl Into<String>,
+        identity: CertifiedEndpointIdentity,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        Self::for_route_from(
+            SdkConnectSource::Fd(fd),
+            app_id.into(),
+            cluster_id,
+            record,
+            Some(agent_id.into()),
+            Some(SdkJoinIdentity {
+                presentation: identity.presentation,
+                participant_kind: "agent",
+                signer: SdkDocumentSigner::Harness(identity.device_key),
+            }),
+            "agent",
+        )
     }
 
     /// Connects through `runtime_collab::try_connect()`, entering SDK mode on
@@ -848,6 +926,7 @@ impl CollaborationManager {
             SdkConnectSource::Fd(fd),
             SdkJoinIdentity {
                 presentation: identity_bytes,
+                participant_kind: "person",
                 signer: harness_document_signer(),
             },
         )
@@ -1361,6 +1440,7 @@ async fn drive_shovel(
 ) {
     let SdkJoinIdentity {
         presentation,
+        participant_kind,
         signer,
     } = identity;
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
@@ -1386,6 +1466,7 @@ async fn drive_shovel(
                     &client,
                     &presentation,
                     participant_handle.as_deref(),
+                    participant_kind,
                     &inbound_tx,
                     &mut routes,
                     &spec,
@@ -1407,6 +1488,7 @@ async fn drive_shovel(
                     &client,
                     &presentation,
                     participant_handle.as_deref(),
+                    participant_kind,
                     &inbound_tx,
                     &mut routes,
                     &spec,
@@ -1419,6 +1501,7 @@ async fn drive_shovel(
                     &client,
                     &presentation,
                     participant_handle.as_deref(),
+                    participant_kind,
                     &inbound_tx,
                     &mut routes,
                     &spec,
@@ -1450,6 +1533,7 @@ async fn ensure_sdk_route(
     client: &runtime_collab::CollabClient,
     identity_bytes: &[u8],
     participant_handle: Option<&str>,
+    participant_kind: &str,
     inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
     routes: &mut std::collections::HashMap<String, SdkRoute>,
     spec: &RouteSpec,
@@ -1459,10 +1543,11 @@ async fn ensure_sdk_route(
         return;
     }
     let channel = match client
-        .join_channel_as(
+        .join_channel_as_kind(
             &channel_id,
             identity_bytes,
             participant_handle.unwrap_or(""),
+            participant_kind,
         )
         .await
     {
