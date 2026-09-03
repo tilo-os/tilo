@@ -5375,7 +5375,7 @@ impl WorkspaceTree {
     /// learning that another device has a workspace open cannot publish an
     /// empty local layout into that room or pull the current session away.
     /// The room's authenticated sync response supplies its real name/layout.
-    pub fn adopt_continuation_room(&mut self, room: RoomId, source_device: &str) -> bool {
+    pub fn adopt_continuation_room(&mut self, room: RoomId, _source_device: &str) -> bool {
         if room.is_nil()
             || self
                 .workspaces
@@ -5385,7 +5385,7 @@ impl WorkspaceTree {
             return false;
         }
         let id = WorkspaceId::new();
-        let mut workspace = Workspace::new(id, format!("From {source_device}"));
+        let mut workspace = Workspace::new(id, "From another device");
         workspace.room = room;
         self.workspaces.push(workspace);
         self.room_authority.insert(room, RoomAuthority::Unpinned);
@@ -5401,11 +5401,12 @@ impl WorkspaceTree {
     /// opens the matching local apps through its normal authorized launch path.
     pub fn materialize_continuation_workspace(
         &mut self,
-        source_device: &str,
+        _source_device: &str,
         continuation: &crate::shell::personal_continuity::WorkspaceContinuation,
     ) -> bool {
-        let (changed, file_references, inserted_continuation_tabs) = {
+        let (changed, file_references, file_reference_removals, inserted_continuation_tabs) = {
             let mut file_references = Vec::new();
+            let mut file_reference_removals = Vec::new();
             let mut inserted_continuation_tabs = Vec::new();
             let Some(workspace) = self
                 .workspaces
@@ -5420,6 +5421,10 @@ impl WorkspaceTree {
             for app in apps {
                 let (title, tile) = match &app.launch {
                     crate::shell::personal_continuity::LaunchIntent::App { app_id } => {
+                        // A newer app winner may reuse the durable tab id of
+                        // an earlier file-reference card.  Do not let the
+                        // old reference override capture after that change.
+                        file_reference_removals.push(app.id.0);
                         if let Some(resume) = app.resume.clone()
                             && let Ok(mut registry) =
                                 crate::shell::personal_continuity_registry::global_registry().lock()
@@ -5442,24 +5447,27 @@ impl WorkspaceTree {
                             );
                         }
                         (
-                            app_id.clone(),
+                            crate::shell::launcher::installed_apps()
+                                .ok()
+                                .and_then(|apps| {
+                                    apps.into_iter()
+                                        .find(|installed| installed.package_id == *app_id)
+                                })
+                                .map_or_else(|| app_id.clone(), |installed| installed.display_name),
                             TileContent::PeerWindow {
                                 app_id: app_id.clone(),
-                                label: format!("Available from {source_device}"),
+                                label: "Available on another device".to_string(),
                                 note: String::new(),
                             },
                         )
                     }
-                    crate::shell::personal_continuity::LaunchIntent::FileReference {
-                        record_id,
-                        ..
-                    } => {
+                    crate::shell::personal_continuity::LaunchIntent::FileReference { .. } => {
                         file_references.push((app.id.0, app.launch.clone()));
                         (
-                            "File reference".to_string(),
+                            crate::shell::doc_open::continuity_file_reference_label(&app.launch),
                             TileContent::Stub {
                                 kind: AppKind::FileExplorer,
-                                label: format!("File available from {source_device}: {record_id}"),
+                                label: "Available on another device".to_string(),
                             },
                         )
                     }
@@ -5504,9 +5512,17 @@ impl WorkspaceTree {
                 }
                 changed = true;
             }
-            (changed, file_references, inserted_continuation_tabs)
+            (
+                changed,
+                file_references,
+                file_reference_removals,
+                inserted_continuation_tabs,
+            )
         };
         self.continuation_tabs.extend(inserted_continuation_tabs);
+        for tab in file_reference_removals {
+            self.continuation_file_references.remove(&tab);
+        }
         for (tab, reference) in file_references {
             self.continuation_file_references.insert(tab, reference);
         }
@@ -5542,6 +5558,13 @@ impl WorkspaceTree {
         self.continuation_tabs.retain(|tab| !stale.contains(tab));
         self.continuation_file_references
             .retain(|tab, _| !stale.contains(tab));
+        if let Ok(mut registry) =
+            crate::shell::personal_continuity_registry::global_registry().lock()
+        {
+            for tab in &stale {
+                registry.remove_remote_tab(crate::shell::personal_continuity::AppInstanceId(*tab));
+            }
+        }
         self.seed_doc_from_cache();
         self.flush_to_disk();
         true
@@ -9302,7 +9325,8 @@ mod peer_window_merge_tests {
             .iter()
             .find(|workspace| workspace.room == room)
             .expect("continuation workspace");
-        assert_eq!(adopted.name, "From Laptop");
+        assert_eq!(adopted.name, "From another device");
+        assert!(!adopted.name.contains("Laptop"));
         assert!(adopted.strips.is_empty());
         assert_eq!(tree.room_authority(room), RoomAuthority::Unpinned);
     }
@@ -9334,5 +9358,106 @@ mod peer_window_merge_tests {
         assert!(tree.continuation_tabs.contains(&0x99));
         assert!(tree.reconcile_continuation_tabs(&BTreeSet::new()));
         assert!(!tree.continuation_tabs.contains(&0x99));
+    }
+
+    #[test]
+    fn newer_app_winner_clears_an_old_file_reference_for_the_same_tab() {
+        use crate::shell::personal_continuity::{
+            AppInstanceId, AppInstanceState, ContinuityStamp, DeviceId, LaunchIntent, TabPlacement,
+            WorkspaceContinuation,
+        };
+
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = RoomId::new();
+        tree.adopt_continuation_room(room, "Laptop");
+        let id = AppInstanceId(0x55);
+        let placement = TabPlacement {
+            strip: 0,
+            group: 0,
+            tab: 0,
+        };
+        let stamp = ContinuityStamp {
+            counter: 1,
+            device: DeviceId::new("laptop").unwrap(),
+        };
+        let file = AppInstanceState::new(
+            id,
+            placement,
+            LaunchIntent::file_reference("record:book-55", Some([1; 32]), None).unwrap(),
+            None,
+            stamp.clone(),
+        );
+        assert!(tree.materialize_continuation_workspace(
+            "Laptop",
+            &WorkspaceContinuation {
+                room,
+                apps: vec![file],
+            },
+        ));
+        assert!(tree.continuation_file_references.contains_key(&id.0));
+
+        let app = AppInstanceState::new(
+            id,
+            placement,
+            LaunchIntent::app("dev.qos.browser").unwrap(),
+            None,
+            stamp,
+        );
+        assert!(!tree.materialize_continuation_workspace(
+            "Laptop",
+            &WorkspaceContinuation {
+                room,
+                apps: vec![app],
+            },
+        ));
+        assert!(!tree.continuation_file_references.contains_key(&id.0));
+    }
+
+    #[test]
+    fn continuation_placeholders_do_not_render_device_or_record_identifiers() {
+        use crate::shell::personal_continuity::{
+            AppInstanceId, AppInstanceState, ContinuityStamp, DeviceId, LaunchIntent, TabPlacement,
+            WorkspaceContinuation,
+        };
+
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = RoomId::new();
+        let source = "ab".repeat(32);
+        tree.adopt_continuation_room(room, &source);
+        let stamp = ContinuityStamp {
+            counter: 1,
+            device: DeviceId::new("laptop").unwrap(),
+        };
+        assert!(tree.materialize_continuation_workspace(
+            &source,
+            &WorkspaceContinuation {
+                room,
+                apps: vec![AppInstanceState::new(
+                    AppInstanceId(0x61),
+                    TabPlacement {
+                        strip: 0,
+                        group: 0,
+                        tab: 0,
+                    },
+                    LaunchIntent::file_reference("record:private-id", Some([2; 32]), None).unwrap(),
+                    None,
+                    stamp,
+                )],
+            },
+        ));
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .unwrap();
+        let tab = &workspace.strips[0].window_groups[0].tabs[0];
+        assert!(!workspace.name.contains(&source));
+        assert!(!tab.title.contains(&source));
+        assert!(!tab.title.contains("private-id"));
+        let TileContent::Stub { label, .. } = &tab.tile else {
+            panic!("continuation file remains a dormant file card");
+        };
+        assert!(!label.contains(&source));
+        assert!(!label.contains("private-id"));
     }
 }
