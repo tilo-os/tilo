@@ -663,6 +663,7 @@ jobs:
           ALLOW_STATIC_BOOTSTRAP: ${{ vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP }}
           BOOTSTRAP_SITE_TOKEN: ${{ secrets.SITE_RELEASE_TOKEN }}
           QOS_SITE_GIT_USER: ${{ vars.SITE_RELEASE_USER }}
+          QOS_LINUX_SIGNING_FINGERPRINT: ${{ vars.IMAGER_LINUX_SIGNING_FINGERPRINT }}
         run: |
           set -euo pipefail
           token_file="$RUNNER_TEMP/qos-site-release-token"
