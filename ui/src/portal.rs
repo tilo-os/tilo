@@ -177,6 +177,7 @@ impl FileFilter {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PickKind {
     Open { multiple: bool },
+    Directory,
     Save { suggested_name: String },
 }
 
@@ -207,6 +208,13 @@ impl PickRequest {
     /// at once and every local one comes back.
     pub fn open_multiple(title: &str, accept_label: &str) -> Self {
         Self::new(title, accept_label, PickKind::Open { multiple: true })
+    }
+
+    /// Pick one existing folder. Directory authority still comes from the
+    /// desktop portal; callers should not invent a path or build a private
+    /// filesystem browser.
+    pub fn directory(title: &str, accept_label: &str) -> Self {
+        Self::new(title, accept_label, PickKind::Directory)
     }
 
     /// A Save chooser, seeding the filename field with `suggested_name`.
@@ -270,7 +278,7 @@ impl PickRequest {
     pub fn suggested_name(&self) -> Option<&str> {
         match &self.kind {
             PickKind::Save { suggested_name } => Some(suggested_name.as_str()),
-            PickKind::Open { .. } => None,
+            PickKind::Open { .. } | PickKind::Directory => None,
         }
     }
 
@@ -664,6 +672,14 @@ async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
             }
             r.send().await.and_then(|r| r.response())
         }
+        PickKind::Directory => SelectedFiles::open_file()
+            .title(req.title.as_str())
+            .accept_label(req.accept_label.as_str())
+            .modal(true)
+            .directory(true)
+            .send()
+            .await
+            .and_then(|r| r.response()),
         PickKind::Save { suggested_name } => {
             let mut r = SelectedFiles::save_file()
                 .title(req.title.as_str())
@@ -711,6 +727,14 @@ mod tests {
 
     fn u(s: &str) -> url::Url {
         url::Url::parse(s).unwrap()
+    }
+
+    #[test]
+    fn directory_request_is_single_select_and_has_no_filename() {
+        let request = PickRequest::directory("Choose folder", "Choose");
+        assert!(!request.is_multiple());
+        assert_eq!(request.suggested_name(), None);
+        assert!(matches!(request.kind, PickKind::Directory));
     }
 
     // ---- the security rule -------------------------------------------
