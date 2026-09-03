@@ -448,6 +448,25 @@ pub fn open_continuity_file_reference(
     Some(path)
 }
 
+/// Production activation for a synchronized file-reference tab.  Resolution
+/// stays record-id based, then the ordinary document launcher grants the
+/// projected path and chooses the registered app exactly as for a local open.
+pub fn activate_continuity_file_tab(chrome: &Chrome, tab: TabId) -> bool {
+    let reference = chrome
+        .borrow()
+        .tree()
+        .continuation_file_references
+        .get(&tab)
+        .cloned();
+    let Some(reference) = reference else {
+        return false;
+    };
+    let Some(path) = open_continuity_file_reference(&reference) else {
+        return false;
+    };
+    open_in_workspace(&path, chrome).is_ok()
+}
+
 fn resolve_continuity_file_reference_in_roots(
     reference: &crate::shell::personal_continuity::LaunchIntent,
     roots: &[PathBuf],
@@ -1281,6 +1300,28 @@ mod tests {
                 .unwrap()
                 .contains(root.path().to_str().unwrap())
         );
+        install(root.path(), "dev.qos.text-editor", "Text Editor", &["md"]);
+        // SAFETY: guarded by the process_env serial group.
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", root.path()) };
+        let log = install_recording_launcher(root.path());
+        reset_session_state();
+        let chrome = chrome_with_workspace();
+        {
+            let mut state = chrome.borrow_mut();
+            state
+                .tree_mut()
+                .continuation_file_references
+                .insert(0x77, reference.clone());
+        }
+        assert!(activate_continuity_file_tab(&chrome, 0x77));
+        let launch = launched_commands(&log, 1);
+        assert!(
+            launch
+                .iter()
+                .any(|command| command.contains("hydrated-on-read.md")),
+            "activation must use the normal document launcher: {launch:?}"
+        );
+        clear_launch_env();
         // SAFETY: restore the process-global environment under the same lock.
         unsafe {
             match previous {
