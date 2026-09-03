@@ -712,6 +712,17 @@ if [ "$ENCRYPT" -eq 1 ]; then
   /usr/libexec/qos-uki-cmdline replace \
     qos.luks=000000000000000000000000000000000000000000000 \
     "rd.luks.uuid=luks-$LUKS_UUID" "$TARGET_UKI"
+  # systemd-cryptenroll stores the TPM2/FIDO2 material in LUKS2 JSON metadata,
+  # but the initramfs still needs the matching auto-discovery options before it
+  # can use either token. This placeholder is signed into the installer UKI and
+  # replaced without changing the PE section geometry; verified-boot installs
+  # re-sign the resulting target below.
+  UNLOCK_PLACEHOLDER=qos.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000
+  UNLOCK_OPTIONS="rd.luks.options=$LUKS_UUID=tpm2-device=auto,fido2-device=auto"
+  [ "${#UNLOCK_PLACEHOLDER}" -eq "${#UNLOCK_OPTIONS}" ] \
+    || die "internal error: encrypted-boot option does not fit its sealed UKI slot"
+  /usr/libexec/qos-uki-cmdline replace \
+    "$UNLOCK_PLACEHOLDER" "$UNLOCK_OPTIONS" "$TARGET_UKI"
   /usr/libexec/qos-uki-cmdline remove qos.install "$TARGET_UKI"
 elif [ "$ALONGSIDE" -eq 1 ]; then
   validate_alongside
