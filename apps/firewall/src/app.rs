@@ -24,6 +24,7 @@ use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::a11y::{AccessNode, Politeness, Role};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -1083,6 +1084,20 @@ impl Widget for FirewallApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn accessibility(&self) -> Option<AccessNode> {
+        let mut root = AccessNode::new(Role::Window)
+            .with_name("Firewall")
+            .with_bounds(self.rect);
+        if !self.status.is_empty() {
+            root.children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(self.status.clone())
+                    .with_live(Politeness::Polite),
+            );
+        }
+        Some(root)
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -3023,6 +3038,19 @@ mod tests {
             live.config,
             crate::sample::sample_config(),
             "live app must not start on the fabricated sample firewall"
+        );
+    }
+
+    #[test]
+    fn root_accessibility_announces_backend_status() {
+        let mut app = app_with_rect();
+        app.status = "Rules applied".into();
+        let node = app.accessibility().expect("firewall exports a window");
+        assert_eq!(node.role, Role::Window);
+        assert!(
+            node.children
+                .iter()
+                .any(|child| child.name.as_deref() == Some("Rules applied"))
         );
     }
 

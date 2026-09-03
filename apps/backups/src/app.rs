@@ -18,6 +18,7 @@ use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -3706,6 +3707,106 @@ impl Widget for BackupsApp {
         self.rect
     }
 
+    fn accessibility(&self) -> Option<AccessNode> {
+        let controls = self
+            .hits
+            .iter()
+            .filter_map(|(rect, hit)| {
+                let (name, role, state) = match hit {
+                    Hit::Tab(view) => (
+                        format!("{} view", view.title()),
+                        Role::RadioButton,
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.ui.view == *view),
+                    ),
+                    Hit::Source(Some(id)) => (
+                        format!("Select source {id}"),
+                        Role::Button,
+                        AccessState::new().focusable(true),
+                    ),
+                    Hit::Source(None) => (
+                        "All sources".into(),
+                        Role::Button,
+                        AccessState::new().focusable(true),
+                    ),
+                    Hit::Snap(id) => (
+                        format!("Open snapshot {id}"),
+                        Role::ListItem,
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(self.ui.sel_snapshot.as_deref() == Some(id)),
+                    ),
+                    Hit::Dest(id) => (
+                        format!("Select destination {id}"),
+                        Role::ListItem,
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(self.ui.sel_dest.as_deref() == Some(id)),
+                    ),
+                    Hit::Policy(field, delta) => (
+                        format!(
+                            "{} retention {}",
+                            field.label(),
+                            if *delta > 0 { "increase" } else { "decrease" }
+                        ),
+                        Role::Button,
+                        AccessState::new().focusable(true),
+                    ),
+                    Hit::ToggleRail => (
+                        "Show backup sources".into(),
+                        Role::ToggleButton,
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.drawer.is_open()),
+                    ),
+                    Hit::CloseRail => (
+                        "Close backup sources".into(),
+                        Role::Button,
+                        AccessState::new().focusable(true),
+                    ),
+                    Hit::FileRow(_) | Hit::RestoreConfirm | Hit::RestoreCancel => return None,
+                };
+                Some(
+                    AccessNode::new(role)
+                        .with_name(name)
+                        .with_state(state)
+                        .with_bounds(*rect)
+                        .with_action_target(format!("backups.hit:{hit:?}")),
+                )
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name("Backups")
+                .with_bounds(self.rect)
+                .with_children(controls),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &A11yAction,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if !matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
+            return false;
+        }
+        let hit = self
+            .hits
+            .iter()
+            .find(|(_, hit)| format!("backups.hit:{hit:?}") == target)
+            .map(|(_, hit)| hit.clone());
+        if let Some(hit) = hit {
+            self.dispatch(hit, state, path);
+            true
+        } else {
+            false
+        }
+    }
+
     fn needs_animation_frame(&self) -> bool {
         self.toast.is_some()
             || self.drawer.is_animating()
@@ -3983,6 +4084,20 @@ mod tests {
         // And a second tab confirms it is not a one-shot.
         f.click_hit(|h| matches!(h, Hit::Tab(View::Schedules)));
         assert_eq!(f.view(), View::Schedules);
+    }
+
+    #[test]
+    fn accessibility_tab_activation_reuses_the_hit_dispatcher() {
+        let mut f = Frame::demo();
+        let tree = f.app.accessibility().expect("backups exports a window");
+        assert_eq!(tree.role, Role::Window);
+        assert!(f.app.perform_semantic_action(
+            "backups.hit:Tab(Destinations)",
+            &A11yAction::Activate,
+            &mut f.state.doc,
+            &f.state.root,
+        ));
+        assert_eq!(f.view(), View::Destinations);
     }
 
     #[test]
