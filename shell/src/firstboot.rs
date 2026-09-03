@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use qos_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist};
 use rand_core::OsRng;
@@ -284,18 +284,40 @@ pub fn ensure_collaboration_identity_for_legacy_linux_host(
     )
 }
 
+/// Prepare the private per-user identity directory before either the key
+/// transaction or its first-use crash journal is written. Keeping this as one
+/// operation prevents the journal preflight and the identity writer from
+/// disagreeing about directory permissions.
+pub(crate) fn prepare_identity_directory(identity_dir: &Path) -> io::Result<()> {
+    fs::create_dir_all(identity_dir)?;
+    let metadata = fs::symlink_metadata(identity_dir)?;
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "identity directory must be a real directory",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        if metadata.uid() != unsafe { libc::geteuid() } {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "identity directory must be owned by this user",
+            ));
+        }
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(identity_dir, permissions)?;
+    }
+    Ok(())
+}
+
 fn ensure_collaboration_identity_in_context(
     identity_dir: &Path,
     paths: &IdentityPaths,
     context: IdentityProvisioningContext,
 ) -> Result<ProvisionOutcome, io::Error> {
-    fs::create_dir_all(identity_dir)?;
-    #[cfg(unix)]
-    {
-        let mut perm = fs::metadata(identity_dir)?.permissions();
-        perm.set_mode(0o700);
-        fs::set_permissions(identity_dir, perm)?;
-    }
+    prepare_identity_directory(identity_dir)?;
 
     let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
     let (selected_path, outcome) =
@@ -756,6 +778,19 @@ mod tests {
         std::fs::write(&identity_file, b"MARKER: hands off").unwrap();
         run_with_env(Some(OsString::from(tmp.path())), None).expect("firstboot ok");
         assert_eq!(std::fs::read(identity_file).unwrap(), b"MARKER: hands off");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_directory_preflight_refuses_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TmpDir::new("identity-dir-symlink");
+        let target = tmp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let linked = tmp.path().join("linked");
+        symlink(&target, &linked).unwrap();
+        assert!(prepare_identity_directory(&linked).is_err());
     }
 
     #[test]
