@@ -71,6 +71,44 @@ enum TourPage {
     Collaborate,
 }
 
+// Keep this copy beside the tour rather than duplicating a second conceptual
+// keyboard map in prose. These labels mirror `docs/shell-navigation-keyboard-map.md`
+// and the gesture contract in `compositor/backend/drm/gestures.rs`; in
+// particular, Super+W closes a tab and must never be advertised as Overview.
+const NAVIGATE_CARDS: &[(&str, &str)] = &[
+    (
+        "Search  ·  Super+K or Super+Space",
+        "Type to open apps, files, settings, or actions without hunting through menus.",
+    ),
+    (
+        "Overview  ·  Ctrl+Tab or four-finger swipe",
+        "See every workspace and window group, then use Up, Down, and Enter to choose one.",
+    ),
+    (
+        "Move  ·  Super+arrow keys or three-finger swipe",
+        "Up and down switch workspaces. Left and right step between tiled windows along the current strip.",
+    ),
+];
+
+const ORGANISE_CARDS: &[(&str, &str)] = &[
+    (
+        "Workspace",
+        "A durable place for a project, its people, permissions, apps, and history.",
+    ),
+    (
+        "Strip",
+        "A horizontal run of window groups inside a workspace. Add another strip when work needs a second lane.",
+    ),
+    (
+        "Window group",
+        "A tiled frame for tabs that belong together. Move between groups with Super+Left or Super+Right.",
+    ),
+    (
+        "Tab",
+        "An app or document inside a window group. Drag tabs to arrange them without overlapping windows.",
+    ),
+];
+
 impl TourPage {
     fn number(self) -> u8 {
         match self {
@@ -156,6 +194,9 @@ pub struct OnboardingView {
     backup_error: Option<String>,
     backup_saved: Option<PathBuf>,
     tour_page: Option<TourPage>,
+    /// A tour reopened from the desktop has no identity ceremony behind it.
+    /// Back on its first page and Done both dismiss the modal directly.
+    tour_only: bool,
     /// Raised when the user has finished and the desktop may start.
     finished: bool,
     invalidation: Invalidation,
@@ -181,6 +222,19 @@ impl OnboardingView {
     /// desktop session on an existing Linux host.
     pub fn new_for_host_desktop(identity_dir: PathBuf) -> Self {
         Self::new_in_context(identity_dir, OnboardingContext::HostDesktop)
+    }
+
+    /// Reopen the introduction after first login without repeating or
+    /// weakening any identity ceremony.
+    pub fn new_tour() -> Self {
+        let mut view = Self::with_all_handlers(
+            Box::new(|| Err("identity creation is unavailable in the desktop tour".into())),
+            Box::new(|_, _| Err("identity import is unavailable in the desktop tour".into())),
+            Box::new(|_, _, _| Err("identity backup is unavailable in the desktop tour".into())),
+        );
+        view.tour_page = Some(TourPage::Navigate);
+        view.tour_only = true;
+        view
     }
 
     fn new_in_context(identity_dir: PathBuf, context: OnboardingContext) -> Self {
@@ -286,6 +340,7 @@ impl OnboardingView {
             backup_error: None,
             backup_saved: None,
             tour_page: None,
+            tour_only: false,
             finished: false,
             invalidation: Invalidation::Focus,
             composed: None,
@@ -450,40 +505,14 @@ impl OnboardingView {
     fn tour_page(theme: &Theme, page: TourPage) -> Box<dyn Widget> {
         let (title, intro, cards): (&str, &str, &[(&str, &str)]) = match page {
             TourPage::Navigate => (
-                "Everything is a gesture away",
-                "qOS keeps the desktop calm until you ask for something. These three moves are enough to get anywhere.",
-                &[
-                    (
-                        "Search  ·  Super",
-                        "Type to open apps, files, settings, or actions without hunting through menus.",
-                    ),
-                    (
-                        "Overview  ·  Super+W",
-                        "Swipe up with three fingers to see every workspace and window group.",
-                    ),
-                    (
-                        "Move  ·  three-finger swipe",
-                        "Travel horizontally along a strip. Windows tile instead of hiding underneath each other.",
-                    ),
-                ],
+                "Everything is close at hand",
+                "qOS keeps the desktop calm until you ask for something. Every gesture here has a keyboard route too.",
+                NAVIGATE_CARDS,
             ),
             TourPage::Organise => (
                 "A place for each kind of work",
-                "The layout is simple once its three levels have names. qOS remembers the arrangement for you.",
-                &[
-                    (
-                        "Workspace",
-                        "A durable place for a project, its people, permissions, apps, and history.",
-                    ),
-                    (
-                        "Strip",
-                        "A horizontal run of window groups inside a workspace. Add another strip when work needs a second lane.",
-                    ),
-                    (
-                        "Window group",
-                        "Tabs that belong together share one tiled frame. Drag a tab to reorganise without overlapping windows.",
-                    ),
-                ],
+                "The layout is simple once its four levels have names. qOS remembers the arrangement for you.",
+                ORGANISE_CARDS,
             ),
             TourPage::Collaborate => (
                 "Sharing stays deliberate",
@@ -580,11 +609,13 @@ impl OnboardingView {
         let path = TextInput::new(Vec::new())
             .with_id("onboarding.connect.path.field")
             .with_on_change_path(KEY_CONNECT_PATH)
+            .with_accessible_name("Identity backup file")
             .with_placeholder("Choose an encrypted backup or legacy identity JSON")
             .with_font_size(theme.tokens.typography.scale.base);
         let passphrase = secret_input(
             "onboarding.connect.passphrase.field",
             &self.connect_passphrase,
+            "Backup passphrase",
             "Passphrase for encrypted backups",
         )
         .with_font_size(theme.tokens.typography.scale.base);
@@ -718,11 +749,13 @@ impl OnboardingView {
             .push(Box::new(secret_input(
                 "onboarding.backup.passphrase",
                 &self.backup_passphrase,
+                "New backup passphrase",
                 "Long, unique passphrase — 12+ characters",
             )))
             .push(Box::new(secret_input(
                 "onboarding.backup.confirmation",
                 &self.backup_confirmation,
+                "Confirm new backup passphrase",
                 "Confirm passphrase",
             )));
         let mut backup = Column::new()
@@ -876,10 +909,16 @@ fn read_string(state: &AutoCommit, root: &ObjId, key: &str) -> String {
     }
 }
 
-fn secret_input(id: &str, buffer: &Arc<Mutex<String>>, placeholder: &str) -> TextInput {
+fn secret_input(
+    id: &str,
+    buffer: &Arc<Mutex<String>>,
+    accessible_name: &str,
+    placeholder: &str,
+) -> TextInput {
     let input = TextInput::local()
         .with_id(id)
         .with_external_buffer(Arc::clone(buffer))
+        .with_accessible_name(accessible_name)
         .with_placeholder(placeholder)
         .with_secret(true);
     match buffer.lock() {
@@ -1239,6 +1278,10 @@ impl Widget for OnboardingView {
         if read_bool(state, root, KEY_TOUR_BACK) {
             let _ = state.put(root, KEY_TOUR_BACK, ScalarValue::Boolean(false));
             self.tour_page = match self.tour_page {
+                Some(TourPage::Navigate) if self.tour_only => {
+                    self.finished = true;
+                    self.tour_page
+                }
                 Some(TourPage::Navigate) | None => None,
                 Some(TourPage::Organise) => Some(TourPage::Navigate),
                 Some(TourPage::Collaborate) => Some(TourPage::Organise),
@@ -1256,7 +1299,7 @@ impl Widget for OnboardingView {
 
         if read_bool(state, root, KEY_FINISH) {
             let _ = state.put(root, KEY_FINISH, ScalarValue::Boolean(false));
-            self.finished = self.flow.is_done();
+            self.finished = self.tour_only || self.flow.is_done();
             if self.finished {
                 clear_secret(&self.connect_passphrase);
                 clear_secret(&self.backup_passphrase);
@@ -1701,6 +1744,82 @@ mod tests {
         press(&mut doc, KEY_FINISH);
         view.sync(&mut doc, &automerge::ROOT);
         assert!(view.finished());
+    }
+
+    #[test]
+    fn reopened_tour_has_no_identity_gate_and_can_be_dismissed() {
+        let mut view = OnboardingView::new_tour();
+        let mut doc = AutoCommit::new();
+        assert_eq!(view.tour_page, Some(TourPage::Navigate));
+        assert!(
+            !view.flow().is_done(),
+            "reopening must not forge identity state"
+        );
+
+        press(&mut doc, KEY_TOUR_BACK);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            view.finished(),
+            "Back on the first page closes a reopened tour"
+        );
+
+        let mut view = OnboardingView::new_tour();
+        press(&mut doc, KEY_TOUR_NEXT);
+        view.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_TOUR_NEXT);
+        view.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_FINISH);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(view.finished(), "Done closes the reopened tour");
+    }
+
+    #[test]
+    fn desktop_tour_teaches_the_real_keyboard_and_gesture_contract() {
+        let navigation = NAVIGATE_CARDS
+            .iter()
+            .flat_map(|(title, body)| [*title, *body])
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(navigation.contains("Super+K"));
+        assert!(navigation.contains("Super+Space"));
+        assert!(navigation.contains("Ctrl+Tab"));
+        assert!(navigation.contains("four-finger swipe"));
+        assert!(navigation.contains("Super+arrow keys"));
+        assert!(navigation.contains("three-finger swipe"));
+        assert!(navigation.contains("Up and down switch workspaces"));
+        assert!(navigation.contains("Left and right step between tiled windows"));
+        assert!(
+            !navigation.contains("Super+W"),
+            "Super+W closes the focused tab; teaching it as Overview would be destructive"
+        );
+
+        assert_eq!(
+            ORGANISE_CARDS
+                .iter()
+                .map(|(title, _)| *title)
+                .collect::<Vec<_>>(),
+            ["Workspace", "Strip", "Window group", "Tab"],
+            "the tour must name every level of the desktop hierarchy"
+        );
+    }
+
+    #[test]
+    fn onboarding_secret_fields_have_stable_spoken_names() {
+        let buffer = Arc::new(Mutex::new(String::new()));
+        let input = secret_input(
+            "onboarding.test.secret",
+            &buffer,
+            "Backup passphrase",
+            "Twelve or more characters",
+        );
+        let node = Widget::accessibility(&input).expect("text input accessibility node");
+
+        assert_eq!(node.name.as_deref(), Some("Backup passphrase"));
+        assert!(
+            node.state.protected,
+            "passphrases must be exposed as protected"
+        );
     }
 
     #[test]

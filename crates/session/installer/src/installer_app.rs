@@ -1121,7 +1121,7 @@ impl InstallerApp {
                 .selected_disk_ref()
                 .is_some_and(Disk::can_install_alongside)
         {
-            self.set_status("Alongside needs an empty, unmounted Linux partition of at least 32 GiB and an existing EFI System Partition");
+            self.set_status("Alongside needs an empty, unmounted Linux partition of at least 32 GiB and an unmounted EFI partition of at least 2 GiB");
             return;
         }
         match validate_step(
@@ -1492,7 +1492,7 @@ impl InstallerApp {
         let guidance = if self.install_method == InstallMethod::Erase {
             "Erase disk deletes every partition and operating system on the selected disk."
         } else {
-            "Alongside preserves existing partitions. For safety, qOS only uses an empty Linux partition (32 GiB+) you prepared beforehand; it never shrinks Windows or guesses that unknown data is disposable."
+            "Alongside preserves existing partitions. Prepare an empty Linux partition (32 GiB+) and a 2 GiB EFI partition for qOS first. qOS never shrinks Windows or guesses that unknown data is disposable."
         };
         children.push(Box::new(Text::new(guidance).with_size(sm).with_color(
             if self.install_method == InstallMethod::Erase {
@@ -1736,7 +1736,7 @@ impl InstallerApp {
             ));
             children.push(summary_row(
                 theme,
-                "Shared EFI partition",
+                "qOS EFI partition",
                 disk.efi_partition()
                     .map_or("<missing>", |p| p.name.as_str()),
             ));
@@ -2004,6 +2004,14 @@ fn sample_disks() -> Vec<Disk> {
                     label: String::new(),
                     mountpoint: String::new(),
                     part_type: LINUX_FILESYSTEM_GUID.to_string(),
+                },
+                DiskPartition {
+                    name: "/dev/sda4".to_string(),
+                    size_bytes: 2_147_483_648,
+                    filesystem: "vfat".to_string(),
+                    label: "qOS EFI".to_string(),
+                    mountpoint: String::new(),
+                    part_type: EFI_SYSTEM_GUID.to_string(),
                 },
             ],
         },
