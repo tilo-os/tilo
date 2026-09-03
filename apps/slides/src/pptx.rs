@@ -35,6 +35,10 @@ pub fn write_pptx(deck: &Deck) -> std::io::Result<Vec<u8>> {
             }
         }
     }
+    let has_notes = deck
+        .slides
+        .iter()
+        .any(|slide| !slide.notes.trim().is_empty());
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let opt = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
@@ -44,20 +48,27 @@ pub fn write_pptx(deck: &Deck) -> std::io::Result<Vec<u8>> {
     };
     put(
         "[Content_Types].xml",
-        &content_types(deck.slides.len(), &pictures),
+        &content_types(deck, &pictures, has_notes),
     )?;
     put("_rels/.rels", ROOT_RELS)?;
     put("docProps/core.xml", &core_xml(&deck.title))?;
-    put("ppt/presentation.xml", &presentation_xml(deck))?;
+    put("ppt/presentation.xml", &presentation_xml(deck, has_notes))?;
     put(
         "ppt/_rels/presentation.xml.rels",
-        &presentation_rels(deck.slides.len()),
+        &presentation_rels(deck.slides.len(), has_notes),
     )?;
     put("ppt/slideMasters/slideMaster1.xml", MASTER)?;
     put("ppt/slideMasters/_rels/slideMaster1.xml.rels", MASTER_RELS)?;
     put("ppt/slideLayouts/slideLayout1.xml", LAYOUT)?;
     put("ppt/slideLayouts/_rels/slideLayout1.xml.rels", LAYOUT_RELS)?;
     put("ppt/theme/theme1.xml", THEME)?;
+    if has_notes {
+        put("ppt/notesMasters/notesMaster1.xml", NOTES_MASTER)?;
+        put(
+            "ppt/notesMasters/_rels/notesMaster1.xml.rels",
+            NOTES_MASTER_RELS,
+        )?;
+    }
     for (idx, slide) in deck.slides.iter().enumerate() {
         let used: Vec<&Picture> = pictures
             .iter()
@@ -69,8 +80,18 @@ pub fn write_pptx(deck: &Deck) -> std::io::Result<Vec<u8>> {
         )?;
         put(
             &format!("ppt/slides/_rels/slide{}.xml.rels", idx + 1),
-            &slide_rels(&used),
+            &slide_rels(&used, (!slide.notes.trim().is_empty()).then_some(idx + 1)),
         )?;
+        if !slide.notes.trim().is_empty() {
+            put(
+                &format!("ppt/notesSlides/notesSlide{}.xml", idx + 1),
+                &notes_slide_xml(&slide.notes),
+            )?;
+            put(
+                &format!("ppt/notesSlides/_rels/notesSlide{}.xml.rels", idx + 1),
+                &notes_slide_rels(idx + 1),
+            )?;
+        }
     }
     drop(put);
     for picture in &pictures {
@@ -102,7 +123,14 @@ pub fn read_pptx(bytes: &[u8]) -> std::io::Result<Deck> {
         let rels = read_zip_text(&mut zip, &rel_name)
             .map(|x| parse_rels(&x))
             .unwrap_or_default();
-        slides.push(parse_slide(&xml, &rels, &mut zip));
+        let mut slide = parse_slide(&xml, &rels, &mut zip);
+        if let Some(target) = rels.values().find(|target| target.contains("notesSlides/")) {
+            let path = format!("ppt/{}", target.trim_start_matches("../"));
+            if let Some(notes_xml) = read_zip_text(&mut zip, &path) {
+                slide.notes = parse_notes(&notes_xml);
+            }
+        }
+        slides.push(slide);
     }
     if slides.is_empty() {
         slides.push(Slide::new(Layout::Blank));
@@ -567,6 +595,83 @@ fn push_pending(
     slide.elements.push(el);
 }
 
+/// A note slide contains several placeholders (date, footer, thumbnail) in a
+/// normal PowerPoint deck.  Export only the body placeholder, which is the
+/// model's speaker-notes text and the one PowerPoint presents to the speaker.
+fn notes_slide_xml(notes: &str) -> String {
+    let paragraphs = notes
+        .split('\n')
+        .map(|line| {
+            format!(
+                r#"<a:p><a:r><a:rPr lang="en-US"/><a:t>{}</a:t></a:r></a:p>"#,
+                xml(line)
+            )
+        })
+        .collect::<String>();
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:notes xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld name=""><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="Notes Placeholder 1"/><p:cNvSpPr/><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/>{paragraphs}</p:txBody></p:sp></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:notes>"#
+    )
+}
+
+/// Read only the note-body placeholder. This avoids accidentally importing
+/// page numbers, dates, footers, or the slide thumbnail from a foreign notes
+/// page as speaker text.
+fn parse_notes(xml: &str) -> String {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+    let mut in_shape = 0usize;
+    let mut body_placeholder = false;
+    let mut in_text = false;
+    let mut paragraph = false;
+    let mut notes = String::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => match local(e.name().as_ref()) {
+                b"sp" => {
+                    in_shape += 1;
+                    body_placeholder = false;
+                }
+                b"ph" if in_shape > 0 && attr(&e, b"type") == "body" => {
+                    body_placeholder = true;
+                }
+                b"p" if body_placeholder => {
+                    if paragraph {
+                        notes.push('\n');
+                    }
+                    paragraph = true;
+                }
+                b"t" if body_placeholder => in_text = true,
+                _ => {}
+            },
+            Ok(Event::Empty(e)) => {
+                if local(e.name().as_ref()) == b"ph" && in_shape > 0 && attr(&e, b"type") == "body"
+                {
+                    body_placeholder = true;
+                }
+            }
+            Ok(Event::Text(text)) if in_text => {
+                if let Ok(text) = text.xml10_content() {
+                    notes.push_str(&text);
+                }
+            }
+            Ok(Event::End(e)) => match local(e.name().as_ref()) {
+                b"t" => in_text = false,
+                b"sp" => {
+                    in_shape = in_shape.saturating_sub(1);
+                    if in_shape == 0 {
+                        body_placeholder = false;
+                        in_text = false;
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    notes
+}
+
 fn read_zip_text<R: Read + std::io::Seek>(
     z: &mut zip::ZipArchive<R>,
     name: &str,
@@ -644,7 +749,7 @@ fn image_ext(b: &[u8]) -> Option<&'static str> {
     }
 }
 
-fn content_types(n: usize, p: &[Picture]) -> String {
+fn content_types(deck: &Deck, p: &[Picture], has_notes: bool) -> String {
     let mut s = String::from(
         r#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>"#,
     );
@@ -657,37 +762,60 @@ fn content_types(n: usize, p: &[Picture]) -> String {
         }
     }
     s.push_str(r#"<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/><Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/><Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>"#);
-    for i in 1..=n {
+    for i in 1..=deck.slides.len() {
         s.push_str(&format!(r#"<Override PartName="/ppt/slides/slide{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>"#))
+    }
+    if has_notes {
+        s.push_str(r#"<Override PartName="/ppt/notesMasters/notesMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesMaster+xml"/>"#);
+        for (i, slide) in deck.slides.iter().enumerate() {
+            if !slide.notes.trim().is_empty() {
+                s.push_str(&format!(r#"<Override PartName="/ppt/notesSlides/notesSlide{}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>"#, i + 1));
+            }
+        }
     }
     s.push_str("</Types>");
     s
 }
-fn presentation_xml(d: &Deck) -> String {
+fn presentation_xml(d: &Deck, has_notes: bool) -> String {
     let ids = (1..=d.slides.len())
         .map(|i| format!(r#"<p:sldId id="{}" r:id="rId{}"/>"#, 255 + i, i + 2))
         .collect::<String>();
+    let notes_master = has_notes
+        .then_some(r#"<p:notesMasterIdLst><p:notesMasterId r:id="rId2"/></p:notesMasterIdLst>"#)
+        .unwrap_or_default();
     format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst><p:sldIdLst>{ids}</p:sldIdLst><p:sldSz cx="12192000" cy="6858000" type="screen16x9"/><p:notesSz cx="6858000" cy="9144000"/></p:presentation>"#
+        r#"<?xml version="1.0" encoding="UTF-8"?><p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst>{notes_master}<p:sldIdLst>{ids}</p:sldIdLst><p:sldSz cx="12192000" cy="6858000" type="screen16x9"/><p:notesSz cx="6858000" cy="9144000"/></p:presentation>"#
     )
 }
-fn presentation_rels(n: usize) -> String {
+fn presentation_rels(n: usize, has_notes: bool) -> String {
     let mut s = String::from(RELS_HEAD);
     s.push_str(r#"<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/>"#);
+    if has_notes {
+        s.push_str(r#"<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster" Target="notesMasters/notesMaster1.xml"/>"#);
+    }
     for i in 1..=n {
         s.push_str(&format!(r#"<Relationship Id="rId{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide{i}.xml"/>"#,i+2))
     }
     s.push_str("</Relationships>");
     s
 }
-fn slide_rels(p: &[&Picture]) -> String {
+fn slide_rels(p: &[&Picture], notes_slide: Option<usize>) -> String {
     let mut s = String::from(RELS_HEAD);
     s.push_str(r#"<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>"#);
     for (i, x) in p.iter().enumerate() {
         s.push_str(&format!(r#"<Relationship Id="rId{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/{}"/>"#,i+2,x.name))
     }
+    if let Some(idx) = notes_slide {
+        s.push_str(&format!(r#"<Relationship Id="rId{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide{idx}.xml"/>"#, p.len() + 2));
+    }
     s.push_str("</Relationships>");
     s
+}
+
+fn notes_slide_rels(slide: usize) -> String {
+    format!(
+        r#"{RELS_HEAD}<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="../slides/slide{slide}.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster" Target="../notesMasters/notesMaster1.xml"/></Relationships>"#
+    )
 }
 
 const RELS_HEAD: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#;
@@ -702,6 +830,8 @@ const MASTER: &str = r#"<?xml version="1.0" encoding="UTF-8"?><p:sldMaster xmlns
 const MASTER_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/></Relationships>"#;
 const LAYOUT: &str = r#"<?xml version="1.0" encoding="UTF-8"?><p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank"><p:cSld name="Blank"><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>"#;
 const LAYOUT_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/></Relationships>"#;
+const NOTES_MASTER: &str = r#"<?xml version="1.0" encoding="UTF-8"?><p:notesMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld name=""><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld><p:clrMap accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" bg1="lt1" bg2="lt2" folHlink="folHlink" hlink="hlink" tx1="dk1" tx2="dk2"/></p:notesMaster>"#;
+const NOTES_MASTER_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/></Relationships>"#;
 const THEME: &str = r#"<?xml version="1.0" encoding="UTF-8"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="qOS"><a:themeElements><a:clrScheme name="qOS"><a:dk1><a:srgbClr val="1F2937"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="334155"/></a:dk2><a:lt2><a:srgbClr val="F8FAFC"/></a:lt2><a:accent1><a:srgbClr val="5A60F0"/></a:accent1><a:accent2><a:srgbClr val="10B981"/></a:accent2><a:accent3><a:srgbClr val="F59E0B"/></a:accent3><a:accent4><a:srgbClr val="F43F5E"/></a:accent4><a:accent5><a:srgbClr val="0EA5E9"/></a:accent5><a:accent6><a:srgbClr val="8B5CF6"/></a:accent6><a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink></a:clrScheme><a:fontScheme name="qOS"><a:majorFont/><a:minorFont/></a:fontScheme><a:fmtScheme name="qOS"><a:fillStyleLst/><a:lnStyleLst/><a:effectStyleLst/><a:bgFillStyleLst/></a:fmtScheme></a:themeElements></a:theme>"#;
 
 #[cfg(test)]
@@ -794,6 +924,47 @@ mod tests {
         let got = read_pptx(&bytes).expect("pptx import");
         assert_eq!(got.slides[0].background, Background::Accent);
         assert_eq!(got.slides[1].background, Background::Deep);
+    }
+
+    #[test]
+    fn round_trips_speaker_notes_as_native_notes_slides() {
+        let mut with_notes = Slide::new(Layout::Blank);
+        with_notes.notes = "Open with the decision.\nPause for questions.".into();
+        let without_notes = Slide::new(Layout::Blank);
+        let deck = Deck {
+            title: "Notes fidelity".into(),
+            palette: PaletteKind::Indigo,
+            slides: vec![with_notes, without_notes],
+        };
+
+        let bytes = write_pptx(&deck).expect("pptx export");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).expect("pptx zip");
+        let types = read_zip_text(&mut archive, "[Content_Types].xml").expect("content types");
+        let notes =
+            read_zip_text(&mut archive, "ppt/notesSlides/notesSlide1.xml").expect("notes slide");
+        assert!(types.contains("presentationml.notesSlide+xml"));
+        assert!(notes.contains(r#"<p:ph type="body" idx="1"/>"#));
+        assert!(notes.contains("Open with the decision."));
+        assert!(
+            archive.by_name("ppt/notesSlides/notesSlide2.xml").is_err(),
+            "slides without notes do not gain empty note pages"
+        );
+        drop(archive);
+
+        let got = read_pptx(&bytes).expect("pptx import");
+        assert_eq!(
+            got.slides[0].notes,
+            "Open with the decision.\nPause for questions."
+        );
+        assert!(got.slides[1].notes.is_empty());
+    }
+
+    #[test]
+    fn notes_import_ignores_non_body_placeholders() {
+        let notes = parse_notes(
+            r#"<p:notes xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="dt"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>2026-01-01</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Keep this</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>"#,
+        );
+        assert_eq!(notes, "Keep this");
     }
 
     #[test]
