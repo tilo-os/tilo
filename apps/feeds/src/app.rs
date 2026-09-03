@@ -4016,7 +4016,7 @@ impl Widget for FeedsApp {
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
-        let toolbar = self
+        let mut toolbar: Vec<_> = self
             .toolbar_buttons
             .iter()
             .map(|button| {
@@ -4034,6 +4034,32 @@ impl Widget for FeedsApp {
                     .with_action_target(target)
             })
             .collect();
+        // Compact navigation belongs to the same action group as the regular
+        // feed controls. Keeping it in the toolbar also gives every synthetic
+        // toolbar child a stable action target without mixing keyed controls
+        // with position-addressed root regions.
+        if self.hamburger_rect.area() > 0.0 {
+            toolbar.push(
+                AccessNode::new(Role::ToggleButton)
+                    .with_name("Show subscriptions")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.sidebar.is_open(self.nav_layout())),
+                    )
+                    .with_bounds(self.hamburger_rect)
+                    .with_action_target("feeds.sidebar"),
+            );
+        }
+        if self.back_rect.area() > 0.0 {
+            toolbar.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Back to articles")
+                    .with_state(AccessState::new().focusable(true))
+                    .with_bounds(self.back_rect)
+                    .with_action_target("feeds.back"),
+            );
+        }
         let articles = self
             .list_rows
             .iter()
@@ -4072,28 +4098,6 @@ impl Widget for FeedsApp {
                 .with_bounds(self.list_rect)
                 .with_children(articles),
         ];
-        if self.hamburger_rect.area() > 0.0 {
-            children.push(
-                AccessNode::new(Role::ToggleButton)
-                    .with_name("Show subscriptions")
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(self.sidebar.is_open(self.nav_layout())),
-                    )
-                    .with_bounds(self.hamburger_rect)
-                    .with_action_target("feeds.sidebar"),
-            );
-        }
-        if self.back_rect.area() > 0.0 {
-            children.push(
-                AccessNode::new(Role::Button)
-                    .with_name("Back to articles")
-                    .with_state(AccessState::new().focusable(true))
-                    .with_bounds(self.back_rect)
-                    .with_action_target("feeds.back"),
-            );
-        }
         if self.refresh.visible() {
             children.push(
                 AccessNode::new(Role::ProgressBar)
@@ -4919,6 +4923,35 @@ mod tests {
             &automerge::ROOT,
         ));
         assert_eq!(a.selected_article(), Some(id));
+    }
+
+    #[test]
+    fn compact_navigation_is_grouped_with_keyed_toolbar_actions() {
+        let mut a = app();
+        lay_out(&mut a, 390.0, 844.0);
+        let tree = a.accessibility().expect("feeds exports a semantic window");
+        assert!(
+            tree.children.iter().all(|node| node.semantic_key.is_none()),
+            "root regions remain position-addressed"
+        );
+        let toolbar = tree
+            .children
+            .iter()
+            .find(|node| node.role == Role::Toolbar)
+            .expect("feed actions toolbar");
+        assert!(
+            toolbar
+                .children
+                .iter()
+                .all(|node| node.semantic_key.is_some()),
+            "all compact toolbar actions have stable identities"
+        );
+        assert!(
+            toolbar
+                .children
+                .iter()
+                .any(|node| { node.action_target.as_deref() == Some("feeds.sidebar") })
+        );
     }
 
     // --- responsive layout ------------------------------------------------
