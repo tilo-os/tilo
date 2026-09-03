@@ -128,6 +128,11 @@ pub struct ActivityFocus {
     pub author: Option<String>,
     pub group_id: Option<String>,
     pub entry_id: Option<[u8; 16]>,
+    /// Stable record/resource identity. Paths are deliberately excluded:
+    /// rename and move must not break a Files → Activity hand-off.
+    pub resource_id: Option<String>,
+    /// App-native immutable version identity, retained for detail renderers.
+    pub resource_version: Option<[u8; 16]>,
 }
 
 /// Seeded by which chord opened the palette: `Ctrl+K` →

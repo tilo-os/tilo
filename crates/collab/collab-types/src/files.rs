@@ -1125,6 +1125,10 @@ pub enum HistoryControlOperationV1 {
 
 pub const HISTORY_CONTROL_VERSION: u16 = 1;
 pub const MAX_HISTORY_CONTROL_BYTES: usize = 1_024;
+/// Read-only dynamic xattr: append a version UUID to request immutable bytes.
+pub const HISTORY_PREVIEW_XATTR_PREFIX: &str = "user.qos.history-preview.";
+/// Fits below Linux's 64 KiB xattr ceiling with room for transport overhead.
+pub const MAX_HISTORY_PREVIEW_BYTES: usize = 48 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum FileRecordError {

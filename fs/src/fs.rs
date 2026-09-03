@@ -1190,6 +1190,45 @@ impl QuickFS {
         Ok(())
     }
 
+    /// Read a bounded immutable version for an app-native history preview.
+    /// This never changes heads and is addressable only through a version id
+    /// already exposed by the caller's history projection.
+    fn history_version_preview(
+        &self,
+        ino: u64,
+        version_id: collab_types::FileVersionId,
+    ) -> Result<Vec<u8>, i32> {
+        self.check_access(ino, Access::Read)?;
+        let (history, _) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
+        let record_id = self.ns().record_id_for(ino).ok_or(ENOENT)?;
+        let version = history
+            .snapshot(record_id)
+            .and_then(|snapshot| {
+                snapshot
+                    .versions
+                    .into_iter()
+                    .find(|version| version.id == version_id)
+            })
+            .ok_or(EINVAL)?;
+        let Some(content_hash) = version.content_hash else {
+            return Ok(Vec::new());
+        };
+        let hydrator = self.hydrator.clone();
+        let runtime = hydrator.runtime_handle.clone();
+        let limit = u64::try_from(collab_types::MAX_HISTORY_PREVIEW_BYTES)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        let bytes = tokio::task::block_in_place(|| {
+            runtime
+                .block_on(async move { hydrator.read(Hash::from(content_hash.0), 0, limit).await })
+        })
+        .map_err(|_| EIO)?;
+        if bytes.len() > collab_types::MAX_HISTORY_PREVIEW_BYTES {
+            return Err(libc::E2BIG);
+        }
+        Ok(bytes)
+    }
+
     /// Resolve an open signed conflict by copying one exact immutable member
     /// into a new, attributed result version. The request always names the
     /// member it saw: `KeepCurrent` is rejected if that member stopped being the
@@ -4576,6 +4615,18 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(ENOENT));
             return;
         }
+        if let Some(version) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(collab_types::HISTORY_PREVIEW_XATTR_PREFIX))
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+            .map(collab_types::FileVersionId)
+        {
+            match self.history_version_preview(ino.0, version) {
+                Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
+                Err(errno) => reply.error(to_errno(errno)),
+            }
+            return;
+        }
         if name.to_str() == Some(crate::syncstate::SHARE_CONTROL_XATTR) {
             match (
                 ino.0 == crate::namespace::ROOT_INO,
@@ -6037,6 +6088,12 @@ mod history_integration_tests {
         let original_version = history.snapshot(record_id).unwrap().versions[0].id;
 
         fs.commit_content(ino, b"second revision").unwrap();
+        assert_eq!(
+            fs.history_version_preview(ino, original_version).unwrap(),
+            original,
+            "preview reads immutable bytes without restoring them"
+        );
+        assert_eq!(history.snapshot(record_id).unwrap().versions.len(), 2);
         fs.restore_version(ino, original_version).unwrap();
 
         assert_eq!(fs.read_full_blocking(ino).unwrap(), original);
