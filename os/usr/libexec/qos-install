@@ -67,6 +67,13 @@ LOCAL_IMG="localhost/bootc"
 # enrolment). Overridable so it can be driven directly in a test VM.
 DISK_ENCRYPT="${QOS_DISK_ENCRYPT:-/usr/libexec/qos-disk-encrypt}"
 
+# Alongside installs share a firmware-visible FAT ESP with qOS's retained,
+# staged, and repair UKIs. Six 160 MiB image slots plus filesystem slack need
+# 1 GiB available; requiring a 2 GiB partition also leaves room for firmware
+# metadata and any other vendor boot files already present.
+MIN_ALONGSIDE_ESP_BYTES=2147483648
+MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824
+
 log()  { printf '%s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -416,7 +423,8 @@ done < <(findmnt -rn -o SOURCE,TARGET 2>/dev/null)
 
 validate_alongside() {
   local root_parent efi_parent root_type efi_type efi_fs mountpoints signature_types tool
-  for tool in blockdev blkid lsblk wipefs "mkfs.$FILESYSTEM" mount; do
+  local efi_mountpoints efi_probe efi_available
+  for tool in blockdev blkid df fsck.fat lsblk wipefs "mkfs.$FILESYSTEM" mount umount; do
     command -v "$tool" >/dev/null 2>&1 || die "missing required tool for alongside install: $tool"
   done
   [ -b "$ROOT_PARTITION" ] && [ "$(lsblk -dno TYPE "$ROOT_PARTITION" 2>/dev/null)" = part ] \
@@ -437,6 +445,25 @@ validate_alongside() {
     || die "$EFI_PARTITION is not an EFI System Partition"
   efi_fs="$(blkid -s TYPE -o value "$EFI_PARTITION" 2>/dev/null || true)"
   [ "$efi_fs" = vfat ] || die "$EFI_PARTITION is not a FAT EFI System Partition"
+  [ "$(blockdev --getsize64 "$EFI_PARTITION")" -ge "$MIN_ALONGSIDE_ESP_BYTES" ] \
+    || die "$EFI_PARTITION is smaller than the 2 GiB qOS EFI minimum"
+  fsck.fat -n "$EFI_PARTITION" >/dev/null 2>&1 \
+    || die "$EFI_PARTITION is not a clean FAT filesystem; repair it before installing qOS"
+  efi_mountpoints="$(lsblk -nro MOUNTPOINT "$EFI_PARTITION")" \
+    || die "could not inspect $EFI_PARTITION mount state"
+  [ -z "$(printf '%s' "$efi_mountpoints" | tr -d '[:space:]')" ] \
+    || die "$EFI_PARTITION is mounted"
+  efi_probe="$(mktemp -d)"
+  if ! mount -o ro,nosuid,nodev,noexec "$EFI_PARTITION" "$efi_probe"; then
+    rmdir "$efi_probe"
+    die "could not inspect available space on $EFI_PARTITION"
+  fi
+  efi_available="$(df -B1 --output=avail "$efi_probe" 2>/dev/null | tail -n 1 | tr -d '[:space:]')"
+  umount "$efi_probe"
+  rmdir "$efi_probe"
+  case "$efi_available" in *[!0-9]*|'') die "could not read available space on $EFI_PARTITION" ;; esac
+  [ "$efi_available" -ge "$MIN_ALONGSIDE_ESP_FREE_BYTES" ] \
+    || die "$EFI_PARTITION has less than 1 GiB available for qOS boot images"
   [ "$(blockdev --getsize64 "$ROOT_PARTITION")" -ge 34359738368 ] \
     || die "$ROOT_PARTITION is smaller than the 32 GiB alongside minimum"
   mountpoints="$(lsblk -nro MOUNTPOINT "$ROOT_PARTITION")" \
