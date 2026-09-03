@@ -46,7 +46,14 @@ closed unless the platform release credentials are configured:
 - Linux steady state: the OIDC credential broker installs the public verification
   key and exports `QOS_LINUX_SIGNER` plus `QOS_LINUX_VERIFY_KEY`; every tarball
   and AppImage receives an armored detached signature that is immediately
-  verified. Bootstrap-only fallback: `IMAGER_LINUX_SIGNING_KEY_B64` (armored
+  verified. The protected repository variable
+  `IMAGER_LINUX_SIGNING_FINGERPRINT` must contain that key's full OpenPGP
+  fingerprint. Packaging refuses a different broker/imported key, exports the
+  exact public key as `qos-release-key.asc`, and publishes its fingerprint and
+  SHA-256 sidecars beside the artifacts. The final publication job imports only
+  that exported key into a fresh keyring and re-verifies every Linux signature
+  against the protected fingerprint. Bootstrap-only fallback:
+  `IMAGER_LINUX_SIGNING_KEY_B64` (armored
   private key, base64 encoded) and `IMAGER_LINUX_SIGNING_KEY_ID`, imported by CI
   as `QOS_LINUX_SIGNING_KEY`.
 - Windows steady state: repository variable `IMAGER_WINDOWS_SIGNER` names a
@@ -66,6 +73,22 @@ The bootstrap credentials are protected Forgejo secrets. Broker paths and
 public-key identities are repository variables; private signing material and
 OIDC leases must never enter the repository, workflow environment files, or
 ordinary artifacts.
+
+Linux users should download `qos-release-key.asc` and
+`qos-release-key.fingerprint`, compare the complete fingerprint through an
+independent qOS-controlled channel, and then verify a download, for example:
+
+```sh
+gpg --import qos-release-key.asc
+gpg --fingerprint "$(tr -d '[:space:]' < qos-release-key.fingerprint)"
+sha256sum --check qos-imager-linux-x86_64.AppImage.sha256
+gpg --verify qos-imager-linux-x86_64.AppImage.asc \
+  qos-imager-linux-x86_64.AppImage
+```
+
+The release attachment is the convenient key transport, not by itself the
+trust anchor: the full fingerprint must also be pinned on the qOS website or
+another independently authenticated channel before the first release.
 
 Publishing to Homebrew and WinGet is a separate credentialed promotion after
 the signed release exists. `publish-homebrew-tap.sh` creates/updates the
