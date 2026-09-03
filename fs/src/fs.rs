@@ -3540,6 +3540,13 @@ async fn reconcile_pinned_hydration(
     enforcement: Option<&(AclHandle, crate::acl::IdentityKey)>,
     wakes: tokio::sync::watch::Receiver<u64>,
 ) -> bool {
+    let has_pinned_policy = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .has_pinned_policy();
+    if !has_pinned_policy {
+        return false;
+    }
     let candidates = pinned_candidates(namespace, enforcement);
     let observed_at = now_ms();
 

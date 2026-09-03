@@ -162,15 +162,56 @@ const fn animation_pump_needed(needs_frame: bool, reduce_motion: bool) -> bool {
     needs_frame && !reduce_motion
 }
 
+fn continuation_publication(
+    app_id: String,
+    metadata: Option<&crate::collaboration::ContinuationMetadata>,
+    had_previous: bool,
+) -> Option<CollabRequest> {
+    match metadata {
+        Some(metadata) => Some(CollabRequest::ReportContinuation {
+            app_id,
+            schema_version: metadata.schema_version,
+            metadata: metadata.bytes.clone(),
+        }),
+        None if had_previous => Some(CollabRequest::ClearContinuation { app_id }),
+        None => None,
+    }
+}
+
 #[cfg(test)]
 mod animation_pump_tests {
-    use super::animation_pump_needed;
+    use super::{animation_pump_needed, continuation_publication};
+    use crate::collaboration::{CollabRequest, ContinuationMetadata};
 
     #[test]
     fn reduced_motion_does_not_keep_the_idle_loop_awake() {
         assert!(animation_pump_needed(true, false));
         assert!(!animation_pump_needed(true, true));
         assert!(!animation_pump_needed(false, false));
+    }
+
+    #[test]
+    fn continuation_disappearance_clears_the_durable_projection() {
+        let request = continuation_publication("ebook".into(), None, true);
+        assert!(matches!(
+            request,
+            Some(CollabRequest::ClearContinuation { app_id }) if app_id == "ebook"
+        ));
+
+        assert!(continuation_publication("ebook".into(), None, false).is_none());
+
+        let metadata = ContinuationMetadata {
+            schema_version: 3,
+            bytes: vec![1, 2, 3],
+        };
+        assert!(matches!(
+            continuation_publication("ebook".into(), Some(&metadata), false),
+            Some(CollabRequest::ReportContinuation {
+                app_id,
+                schema_version: 3,
+                metadata,
+            }) if app_id == "ebook" && metadata == vec![1, 2, 3]
+        ));
     }
 }
 
@@ -1260,12 +1301,12 @@ impl App {
         if metadata == self.last_published_continuation {
             return;
         }
-        if let Some(metadata) = metadata.clone() {
-            self.collab_manager.send(CollabRequest::ReportContinuation {
-                app_id: crate::collaboration::local_app_id(),
-                schema_version: metadata.schema_version,
-                metadata: metadata.bytes,
-            });
+        if let Some(request) = continuation_publication(
+            crate::collaboration::local_app_id(),
+            metadata.as_ref(),
+            self.last_published_continuation.is_some(),
+        ) {
+            self.collab_manager.send(request);
         }
         self.last_published_continuation = metadata;
     }

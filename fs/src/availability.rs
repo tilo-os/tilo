@@ -372,6 +372,16 @@ impl AvailabilityRegistry {
         self.records.values()
     }
 
+    /// Whether any record explicitly promises offline residency. Descendants
+    /// inherit that promise, so one explicit row is enough to require a
+    /// namespace reconciliation; with none, the periodic worker can stay
+    /// idle without walking and sorting the complete workspace.
+    pub fn has_pinned_policy(&self) -> bool {
+        self.records
+            .values()
+            .any(|record| record.policy == AvailabilityPolicy::Pinned)
+    }
+
     /// Install the authenticated current revision before accepting replica
     /// evidence for it. Ordinary whole-workspace records use the same durable
     /// availability path as record-scoped shares; without this row a valid NAS
@@ -993,6 +1003,26 @@ mod tests {
             ),
             EvictionDecision::AllowedDestructiveOverride
         );
+    }
+
+    #[test]
+    fn explicit_pin_presence_drives_periodic_namespace_reconciliation() {
+        let temp = TempDir::new().unwrap();
+        let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
+        assert!(!registry.has_pinned_policy());
+
+        let id = FileRecordId::new();
+        let mut record = file(id, FileVersionId::new());
+        registry.put(record.clone()).unwrap();
+        assert!(!registry.has_pinned_policy());
+
+        record.policy = AvailabilityPolicy::Pinned;
+        registry.put(record.clone()).unwrap();
+        assert!(registry.has_pinned_policy());
+
+        record.policy = AvailabilityPolicy::Automatic;
+        registry.put(record).unwrap();
+        assert!(!registry.has_pinned_policy());
     }
 
     #[test]
