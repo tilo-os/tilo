@@ -461,7 +461,7 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
                 })?,
             ]
         } else {
-            workspace.relay_workspace_ids
+            workspace.relay_workspace_ids.clone()
         };
         // An FS authority is deliberately *not* a relay-room membership
         // list.  In particular, an FsPath grant lets a collaborator read a
@@ -872,7 +872,7 @@ async fn refresh_home_peer_authority_once(
             .map_err(|error| format!("{} is invalid: {error}", bundle_path.display()))?;
         let global_namespace = bundle.workspaces.len() == 1;
         let mut users = vec![hex::encode(own_user)];
-        let mut room_users = HashMap::new();
+        let mut room_users: HashMap<u64, std::collections::HashSet<[u8; 32]>> = HashMap::new();
         let mut governed_rooms = std::collections::HashSet::new();
 
         for workspace in bundle.workspaces {
