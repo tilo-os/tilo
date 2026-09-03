@@ -56,21 +56,20 @@ jobs:
       - uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
       - name: Audit and sign the immutable buildroot
         env:
-          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
           DIGEST: ${{ steps.image.outputs.digest }}
         run: |
           set -euo pipefail
-          case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) printf 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key\n' >&2; exit 1 ;;
-          esac
+          test -n "$COSIGN_PRIVATE_KEY"
+          test -n "$COSIGN_PASSWORD"
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           ref="code.podesta.ai/qos/qos-wpe-buildroot@$DIGEST"
           actual_arch="$(docker run --rm --entrypoint cat "$ref" /usr/lib/qos/wpe-buildroot-arch)"
           test "$actual_arch" = '${{ matrix.arch }}'
           docker run --rm --entrypoint sh "$ref" -c \
             'test -s /usr/lib/qos/wpe-buildroot-packages.txt && ! find /etc/yum.repos.d -type f -print -quit | grep -q .'
-          cosign sign --yes --key "$COSIGN_KEY_REF" \
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY \
             "$ref"
           mkdir -p refs
           case '${{ matrix.arch }}' in

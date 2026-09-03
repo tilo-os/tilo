@@ -169,6 +169,8 @@ pub enum Action {
     SeedRoomActivity {
         explore: bool,
     },
+    /// Switch the seeded causal history into workspace replay.
+    ShowRoomActivityReplay,
     /// Narrow the open activity surface to Ada's real authored changes so a
     /// collaboration proof cannot accidentally show only the local author.
     FilterRoomActivityToAda,
@@ -584,6 +586,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::SeedRoomActivity { explore } => {
             driver.seed_room_activity_for_shots(*explore);
         }
+        Action::ShowRoomActivityReplay => driver.show_room_activity_replay_for_shots(),
         Action::FilterRoomActivityToAda => assert!(
             driver.filter_room_activity_to_ada_for_shots(),
             "scenario: attributed history requires a real change authored by Ada"
@@ -1318,6 +1321,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         match host.room_activity().view() {
             shell::shell::room_activity::ActivityView::CatchUp => "catch_up",
             shell::shell::room_activity::ActivityView::Explore => "explore",
+            shell::shell::room_activity::ActivityView::Replay => "replay",
         },
     );
     out.push(',');
@@ -1500,6 +1504,7 @@ pub fn catalogue() -> Vec<Scenario> {
         room_activity_catch_up_keyboard(),
         room_activity_explore_keyboard(),
         room_activity_explore_detail_compare(),
+        room_activity_replay(),
         window_open_beside_selection(),
         window_open_into_tabbed_group(),
         window_open_at_visible_seam(),
@@ -2250,6 +2255,23 @@ fn room_activity_explore_detail_compare() -> Scenario {
             Action::Key(Key::Named(NamedKey::Enter)),
             Action::Wait(2),
             Action::Snapshot("02-exact-comparison"),
+        ],
+    }
+}
+
+fn room_activity_replay() -> Scenario {
+    Scenario {
+        name: "room_activity_replay",
+        description: "Replay exact causal workspace layouts with checkpoint controls and presence trails.",
+        actions: vec![
+            Action::SeedRoomActivity { explore: true },
+            Action::ShowRoomActivityReplay,
+            Action::Relayout,
+            Action::Snapshot("01-replay-checkpoint"),
+            Action::Key(Key::Named(NamedKey::End)),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Wait(3),
+            Action::Snapshot("02-replay-playing"),
         ],
     }
 }

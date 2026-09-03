@@ -124,6 +124,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some("sync") => Some(seed_sync_demo()),
             Some("thumbnails") => Some(seed_thumbnails_demo()),
             Some("thumbnails-fs") => Some(seed_thumbnails_fs_demo()),
+            Some("history") => Some(seed_history_demo()),
             _ => None,
         };
         let mut widget = FileExplorerWidget::new();
@@ -288,6 +289,41 @@ fn seed_sync_demo() -> std::path::PathBuf {
     let _ = std::fs::create_dir_all(dir.join("shared-assets"));
     // SAFETY: called once at process startup on the main thread, before any
     // other thread exists, so there is no concurrent environment access.
+    unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", &dir) };
+    dir
+}
+
+fn seed_history_demo() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join("qos-files-history-demo");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("Launch brief.md");
+    let _ = std::fs::write(&path, b"# Launch brief\n\nCurrent plan\n");
+    let older = "11111111-1111-4111-8111-111111111111";
+    let current = "22222222-2222-4222-8222-222222222222";
+    let history = serde_json::to_vec(&serde_json::json!({
+        "schema_version": 1,
+        "record_id": "launch-brief-record",
+        "total_versions": 2,
+        "versions_truncated": false,
+        "heads": [current],
+        "versions": [
+            {"id": older, "record_id": "launch-brief-record", "parents": [],
+             "actor": {"person": vec![1; 32], "device": vec![2; 32]},
+             "timestamp_ms": 1_788_300_000_000_u64, "content_hash": vec![3; 32],
+             "metadata_hash": vec![4; 32], "provenance": "Create"},
+            {"id": current, "record_id": "launch-brief-record", "parents": [older],
+             "actor": {"person": vec![5; 32], "device": vec![6; 32]},
+             "timestamp_ms": 1_788_386_400_000_u64, "content_hash": vec![7; 32],
+             "metadata_hash": vec![8; 32], "provenance": "Edit"}
+        ],
+        "conflicts_truncated": false,
+        "conflicts": []
+    }))
+    .unwrap_or_default();
+    let _ = xattr::set(&path, file_explorer::model::HISTORY_XATTR, &history);
+    let _ = xattr::set(&path, "user.qos.sync", b"local");
+    // SAFETY: shots seed before the app or any worker thread is constructed.
     unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", &dir) };
     dir
 }
@@ -702,6 +738,9 @@ fn apply_post_layout_scenario(
                 child,
                 taffy,
             );
+        }
+        Some("history") => {
+            widget.debug_open_history_demo();
         }
         _ => {}
     }

@@ -17,7 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::rc::Rc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use automerge::{ChangeHash, Prop, ReadDoc, ScalarValue, Value};
 use collab_types::OpClass;
@@ -66,15 +66,18 @@ pub enum ActivityView {
     CatchUp,
     /// Full granular history with grouping, filters, rename and revert.
     Explore,
+    /// Causal workspace checkpoints played as layout + participant changes.
+    Replay,
 }
 
 impl ActivityView {
-    const ALL: [Self; 2] = [Self::CatchUp, Self::Explore];
+    const ALL: [Self; 3] = [Self::CatchUp, Self::Explore, Self::Replay];
 
     fn label(self) -> &'static str {
         match self {
             Self::CatchUp => "Catch up",
             Self::Explore => "Explore",
+            Self::Replay => "Replay",
         }
     }
 }
@@ -107,6 +110,41 @@ enum ActivityFocus {
     MoreLenses,
     Detail(DetailAction),
     ExplorerPane(ExplorerPane),
+    Timeline,
+    ReplayBack,
+    ReplayPlay,
+    ReplayForward,
+}
+
+#[derive(Clone, Debug)]
+struct ReplayGroup {
+    tabs: Vec<String>,
+    active: usize,
+    width_permille: u16,
+}
+
+#[derive(Clone, Debug)]
+struct ReplayWorkspace {
+    name: String,
+    groups: Vec<ReplayGroup>,
+}
+
+#[derive(Clone, Debug)]
+struct WorkspaceReplayFrame {
+    entry_id: HistoryEntryId,
+    author: ui::widget::HistoryAuthor,
+    summary: String,
+    timestamp: SystemTime,
+    workspaces: Vec<ReplayWorkspace>,
+    pointers: Vec<ReplayPointer>,
+}
+
+#[derive(Clone, Debug)]
+struct ReplayPointer {
+    name: String,
+    color: (u8, u8, u8),
+    point: (f32, f32),
+    desktop_space: bool,
 }
 
 struct AccessControl {
@@ -300,6 +338,10 @@ pub struct RoomActivityPane {
     scoped_tree_rows: Vec<HistoryEntry>,
     history_index: WorkspaceHistoryIndex,
     projected_origins: HashMap<HistoryEntryId, WorkspaceHistoryId>,
+    /// One app-native event supplied by an explicit handoff (for example a
+    /// signed Files version). It remains visible while underlying indexes
+    /// catch up, but is excluded from unseen counts and Catch up prose.
+    external_entry: Option<HistoryEntry>,
     feed_coverage: FeedCoverage,
     scope: RoomScope,
     scope_rects: Vec<(RoomScope, Rect)>,
@@ -351,7 +393,15 @@ pub struct RoomActivityPane {
     comparison_selection: Vec<HistoryEntryId>,
     explorer_pane: ExplorerPane,
     explorer_pane_rects: Vec<(ExplorerPane, Rect)>,
+    replay_frames: Vec<WorkspaceReplayFrame>,
+    replay_index: usize,
+    replay_playing: bool,
+    replay_last_advance: Instant,
+    replay_back_rect: Rect,
+    replay_play_rect: Rect,
+    replay_forward_rect: Rect,
     narrative: Option<ui::GroundedNarrative>,
+    narrative_request: Option<NarrativeRequest>,
 }
 
 impl Default for RoomActivityPane {
@@ -392,6 +442,10 @@ impl RoomActivityPane {
                     .on_clear_filters(move || ci.set(true))
                     .on_name_group(move |req| *ni.borrow_mut() = Some(req.clone()));
                 t.set_draws_own_surface(false);
+                // The shell owns the Everyone/person selector directly above
+                // the timeline. Keep the operation chips, but never repeat an
+                // `author:any` row inside the embedded widget.
+                t.set_show_author_pill(false);
                 t
             },
             // A workspace is a cluster of windows saved/reopened collaboratively.
@@ -407,6 +461,7 @@ impl RoomActivityPane {
             scoped_tree_rows: Vec::new(),
             history_index: WorkspaceHistoryIndex::new(),
             projected_origins: HashMap::new(),
+            external_entry: None,
             feed_coverage: FeedCoverage::default(),
             scope: RoomScope::default(),
             scope_rects: Vec::new(),
@@ -448,7 +503,15 @@ impl RoomActivityPane {
             comparison_selection: Vec::new(),
             explorer_pane: ExplorerPane::default(),
             explorer_pane_rects: Vec::new(),
+            replay_frames: Vec::new(),
+            replay_index: 0,
+            replay_playing: false,
+            replay_last_advance: Instant::now(),
+            replay_back_rect: Rect::ZERO,
+            replay_play_rect: Rect::ZERO,
+            replay_forward_rect: Rect::ZERO,
             narrative: None,
+            narrative_request: None,
         }
     }
 
@@ -485,6 +548,21 @@ impl RoomActivityPane {
         self.timeline.entries()
     }
 
+    /// Install the exact app-native event selected by another app before its
+    /// Workspace Activity deep link is applied.
+    pub fn open_external_entry(&mut self, entry: HistoryEntry) {
+        let old = self.external_entry.as_ref().map(|entry| entry.id);
+        let rows = self
+            .timeline
+            .entries()
+            .iter()
+            .filter(|candidate| Some(candidate.id) != old)
+            .cloned()
+            .collect();
+        self.external_entry = Some(entry);
+        self.install_rows(rows);
+    }
+
     pub fn visible_len(&self) -> usize {
         self.timeline.visible_len()
     }
@@ -517,6 +595,13 @@ impl RoomActivityPane {
         let frontier = self.seen_frontiers.entry(workspace).or_default();
         if self.history_index.entries().is_empty() {
             for entry in self.timeline.entries() {
+                if self
+                    .external_entry
+                    .as_ref()
+                    .is_some_and(|external| external.id == entry.id)
+                {
+                    continue;
+                }
                 frontier.acknowledge(&WorkspaceHistoryId {
                     origin: crate::shell::workspace_history::HistoryOrigin::WorkspaceTree,
                     change: entry.id,
@@ -605,8 +690,34 @@ impl RoomActivityPane {
     }
 
     pub fn set_view(&mut self, view: ActivityView) {
+        if view != ActivityView::Replay {
+            self.replay_playing = false;
+        }
         self.view = view;
         self.expanded_brief = None;
+    }
+
+    fn step_replay(&mut self, forward: bool) {
+        self.replay_playing = false;
+        self.replay_index = if forward {
+            self.replay_index
+                .saturating_add(1)
+                .min(self.replay_frames.len().saturating_sub(1))
+        } else {
+            self.replay_index.saturating_sub(1)
+        };
+        self.replay_last_advance = Instant::now();
+    }
+
+    fn toggle_replay(&mut self) {
+        if self.replay_frames.is_empty() {
+            return;
+        }
+        if self.replay_index.saturating_add(1) >= self.replay_frames.len() {
+            self.replay_index = 0;
+        }
+        self.replay_playing = !self.replay_playing;
+        self.replay_last_advance = Instant::now();
     }
 
     pub fn period(&self) -> Period {
@@ -632,6 +743,10 @@ impl RoomActivityPane {
 
     pub fn has_comparison(&self) -> bool {
         self.comparison.is_some()
+    }
+
+    pub fn replay_is_playing(&self) -> bool {
+        self.view == ActivityView::Replay && self.replay_playing
     }
 
     pub fn selection_detail(&self) -> Option<HistorySelectionDetail> {
@@ -864,7 +979,7 @@ impl RoomActivityPane {
             self.lens = LensSelection::WorkGroup(group);
             self.view = ActivityView::Explore;
         }
-        if let Some(raw) = focus.entry_id {
+        if let Some(raw) = focus.entry_id.or(focus.resource_version) {
             let id = HistoryEntryId::from_bytes(raw);
             if let Some(index) = self
                 .timeline
@@ -874,6 +989,30 @@ impl RoomActivityPane {
             {
                 self.timeline.set_selection(Some((index, index)));
                 self.view = ActivityView::Explore;
+            }
+        }
+        if let Some(resource) = focus.resource_id {
+            let matching = self.timeline.entries().iter().position(|entry| {
+                let context_match = entry.context.as_ref().is_some_and(|context| {
+                    context.resource.as_ref().is_some_and(|item| {
+                        item.id == resource
+                            || item.id.strip_prefix("file:") == Some(resource.as_str())
+                    })
+                });
+                let origin_match = self.projected_origins.get(&entry.id).is_some_and(|origin| {
+                    matches!(
+                        &origin.origin,
+                        crate::shell::workspace_history::HistoryOrigin::Record { id, .. }
+                            if id.as_str() == resource
+                    )
+                });
+                context_match || origin_match
+            });
+            self.lens = LensSelection::Resource(resource);
+            self.view = ActivityView::Explore;
+            if let Some(index) = matching {
+                self.timeline.set_selection(Some((index, index)));
+                self.explorer_pane = ExplorerPane::Details;
             }
         }
         self.reinstall_filter();
@@ -990,13 +1129,104 @@ impl RoomActivityPane {
                             .cloned()
                             .unwrap_or_else(|| "a removed workspace".to_string());
                         e.summary = format!("{label} \u{00b7} {}", e.summary);
+                        let mut context =
+                            e.context
+                                .take()
+                                .unwrap_or_else(|| ui::qos_actions::ActionContext {
+                                    action_label: e.summary.clone(),
+                                    ..ui::qos_actions::ActionContext::default()
+                                });
+                        context
+                            .facets
+                            .push(ui::qos_actions::ActionFacet::new("workspace", label));
+                        e.context = Some(context);
                     }
                     rows.push(e);
                 }
             }
         }
         self.scoped_tree_rows.clone_from(&rows);
+        self.rebuild_replay_frames(tree, &rows, active);
         self.install_rows(rows);
+    }
+
+    /// Build each replay checkpoint from the real causal document state.
+    /// Recent frames are bounded so a room with years of edits still opens
+    /// immediately; every retained frame remains an exact Automerge fork.
+    fn rebuild_replay_frames(
+        &mut self,
+        tree: &WorkspaceTree,
+        rows: &[HistoryEntry],
+        active_workspace: u64,
+    ) {
+        let mut ordered = rows.to_vec();
+        ordered.sort_by_key(|entry| entry.timestamp);
+        let skip = ordered.len().saturating_sub(120);
+        let mut baseline = tree.clone();
+        let retained_pointers: HashMap<HistoryEntryId, Vec<ReplayPointer>> = self
+            .replay_frames
+            .iter()
+            .map(|frame| (frame.entry_id, frame.pointers.clone()))
+            .collect();
+        let mut frames = Vec::with_capacity(ordered.len().min(120));
+        for entry in ordered.into_iter().skip(skip) {
+            let Some(heads) = ui::heads_for_entry(&mut baseline.doc, &entry.id) else {
+                continue;
+            };
+            let Ok(doc) = baseline.doc.fork_at(&heads) else {
+                continue;
+            };
+            let mut snapshot = baseline.clone();
+            snapshot.doc = doc;
+            snapshot.resync_cache_from_doc();
+
+            let mut workspaces = Vec::new();
+            for workspace in &snapshot.workspaces {
+                if self.scope == RoomScope::ThisRoom && workspace.id.raw() != active_workspace {
+                    continue;
+                }
+                let multiple_strips = workspace.strips.len() > 1;
+                for strip in &workspace.strips {
+                    let name = if multiple_strips {
+                        format!("{} · {}", workspace.name, strip.name)
+                    } else {
+                        workspace.name.clone()
+                    };
+                    let groups = strip
+                        .window_groups
+                        .iter()
+                        .map(|group| ReplayGroup {
+                            tabs: group.tabs.iter().map(|tab| tab.title.clone()).collect(),
+                            active: group
+                                .tabs
+                                .iter()
+                                .position(|tab| tab.id == group.active_tab)
+                                .unwrap_or(0),
+                            width_permille: group.width.permille(),
+                        })
+                        .collect();
+                    workspaces.push(ReplayWorkspace { name, groups });
+                }
+            }
+            frames.push(WorkspaceReplayFrame {
+                entry_id: entry.id,
+                author: entry.author,
+                summary: entry.summary,
+                timestamp: entry.timestamp,
+                workspaces,
+                pointers: retained_pointers
+                    .get(&entry.id)
+                    .cloned()
+                    .unwrap_or_default(),
+            });
+        }
+        self.replay_frames = frames;
+        self.replay_index = self
+            .replay_index
+            .min(self.replay_frames.len().saturating_sub(1));
+        if self.replay_frames.is_empty() {
+            self.replay_playing = false;
+        }
     }
 
     /// Join the room's shell history with every locally available record in
@@ -1017,6 +1247,7 @@ impl RoomActivityPane {
         self.refresh_records_inner(tree, records, Some(local));
     }
 
+    #[allow(clippy::too_many_lines)]
     fn refresh_records_inner(
         &mut self,
         tree: &mut WorkspaceTree,
@@ -1054,12 +1285,44 @@ impl RoomActivityPane {
         if changed {
             self.feed_coverage = self.history_index.coverage().clone();
             self.projected_origins.clear();
+            let record_workspaces: HashMap<String, Vec<String>> =
+                tree.workspaces
+                    .iter()
+                    .fold(HashMap::new(), |mut labels, workspace| {
+                        if let Some(records) = tree.room_records_held.get(&workspace.room) {
+                            for id in records.keys() {
+                                labels
+                                    .entry(id.clone())
+                                    .or_default()
+                                    .push(workspace.name.clone());
+                            }
+                        }
+                        labels
+                    });
             let rows: Vec<HistoryEntry> = self
                 .history_index
                 .entries()
                 .iter()
                 .map(|row| {
-                    let projected = row.timeline_entry();
+                    let mut projected = row.timeline_entry();
+                    if self.scope == RoomScope::AllWorkspaces
+                        && let crate::shell::workspace_history::HistoryOrigin::Record { id, .. } =
+                            &row.id.origin
+                        && let Some(labels) = record_workspaces.get(id.as_str())
+                    {
+                        let label = labels.join(" + ");
+                        projected.summary = format!("{label} \u{00b7} {}", projected.summary);
+                        let mut context = projected.context.take().unwrap_or_else(|| {
+                            ui::qos_actions::ActionContext {
+                                action_label: projected.summary.clone(),
+                                ..ui::qos_actions::ActionContext::default()
+                            }
+                        });
+                        context
+                            .facets
+                            .push(ui::qos_actions::ActionFacet::new("workspace", label));
+                        projected.context = Some(context);
+                    }
                     self.projected_origins.insert(projected.id, row.id.clone());
                     projected
                 })
@@ -1102,12 +1365,18 @@ impl RoomActivityPane {
         &self.feed_coverage
     }
 
-    fn install_rows(&mut self, rows: Vec<HistoryEntry>) {
+    fn install_rows(&mut self, mut rows: Vec<HistoryEntry>) {
         let prior_selection = self.selected_ids();
+        let digest_rows = rows.clone();
+        if let Some(entry) = self.external_entry.clone()
+            && !rows.iter().any(|candidate| candidate.id == entry.id)
+        {
+            rows.push(entry);
+        }
         self.total_entries = rows.len();
         self.facet_index = HistoryFacetIndex::from_entries(&rows);
-        self.digest = ActivityDigest::from_entries(&rows, SystemTime::UNIX_EPOCH, 5);
-        self.passive_unread = rows.len();
+        self.digest = ActivityDigest::from_entries(&digest_rows, SystemTime::UNIX_EPOCH, 5);
+        self.passive_unread = digest_rows.len();
         self.passive_digest = self.digest.clone();
         self.reset_narrative();
 
@@ -1134,18 +1403,26 @@ impl RoomActivityPane {
     }
 
     fn reset_narrative(&mut self) {
-        self.narrative = NarrativeRequest::from_digest(&self.digest)
-            .map(|request| ui::deterministic_narrative(&request));
+        let request = NarrativeRequest::from_digest(&self.digest);
+        if self.narrative_request == request {
+            return;
+        }
+        self.narrative = request.as_ref().map(ui::deterministic_narrative);
+        self.narrative_request = request;
+    }
+
+    pub fn narrative_request(&self) -> Option<NarrativeRequest> {
+        self.narrative_request.clone()
     }
 
     /// Install optional model prose only when every cited action belongs to
     /// the current digest. Invalid or stale output leaves the deterministic
     /// summary in place.
     pub fn apply_generated_narrative(&mut self, narrative: ui::GroundedNarrative) -> bool {
-        let Some(request) = NarrativeRequest::from_digest(&self.digest) else {
+        let Some(request) = self.narrative_request.as_ref() else {
             return false;
         };
-        let Some(valid) = ui::validate_narrative(&request, narrative) else {
+        let Some(valid) = ui::validate_narrative(request, narrative) else {
             return false;
         };
         self.narrative = Some(valid);
@@ -1175,7 +1452,8 @@ impl RoomActivityPane {
         let vw = viewport.width();
         let sheet_w = if vw < FULL_BLEED_UNDER {
             (vw - 2.0 * SHEET_INSET).max(0.0)
-        } else if self.view == ActivityView::Explore && vw >= 1_000.0 {
+        } else if matches!(self.view, ActivityView::Explore | ActivityView::Replay) && vw >= 1_000.0
+        {
             (vw - 2.0 * SHEET_INSET).min(1_100.0)
         } else {
             (vw * 0.34).clamp(SHEET_MIN_W, SHEET_MAX_W)
@@ -1263,8 +1541,35 @@ impl RoomActivityPane {
                     self.timeline.draw(scene, transform, tr, theme, presence);
                 }
             }
+            ActivityView::Replay => self.draw_replay(scene, transform, tr, theme),
         }
         self.draw_keyboard_focus(scene, transform, theme);
+    }
+
+    /// Presence is intentionally sampled only at durable action boundaries:
+    /// pointer motion remains ephemeral and cheap, while the latest exact
+    /// positions survive subsequent checkpoint rebuilds for this session.
+    pub fn observe_replay_presence(&mut self, presence: &PresenceCtx) {
+        let Some(frame) = self.replay_frames.last_mut() else {
+            return;
+        };
+        let mut pointers = Vec::new();
+        for (key, people) in &presence.pointers {
+            let desktop_space = key.scopes_a_desktop_pointer();
+            for (user, point) in people {
+                pointers.push(ReplayPointer {
+                    name: presence.display_name(user),
+                    color: presence.color_for(user),
+                    point: *point,
+                    desktop_space,
+                });
+            }
+        }
+        pointers.sort_by(|a, b| a.name.cmp(&b.name));
+        pointers.dedup_by(|a, b| a.name == b.name && a.desktop_space == b.desktop_space);
+        if !pointers.is_empty() {
+            frame.pointers = pointers;
+        }
     }
 
     fn draw_explorer_panel_tabs(
@@ -1863,6 +2168,54 @@ impl RoomActivityPane {
             );
             return;
         }
+        if let Some(narrative) = self.narrative.as_ref() {
+            let generated = narrative.generator != "qos-deterministic";
+            let card = Rect::new(x0, y, x1, y + 62.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.accent[5].with_alpha_factor(if generated {
+                    0.13
+                } else {
+                    0.07
+                }),
+                None,
+                &RoundedRect::from_rect(card, 8.0),
+            );
+            tr.draw_text(
+                scene,
+                if generated {
+                    "On-device summary"
+                } else {
+                    "At a glance"
+                },
+                (theme.tokens.typography.scale.sm - 1.0).max(10.0),
+                theme.tokens.colors.text_dim,
+                at(transform, card.x0 + 12.0, card.y0 + 7.0),
+                Some(text_width(card.width() - 24.0)),
+            );
+            let lines = tr.clamp_to_lines(
+                &narrative.text,
+                theme.tokens.typography.scale.sm,
+                text_width(card.width() - 24.0),
+                2,
+            );
+            for (line, text) in lines.iter().enumerate() {
+                tr.draw_text(
+                    scene,
+                    text,
+                    theme.tokens.typography.scale.sm,
+                    theme.tokens.colors.text_primary,
+                    at(
+                        transform,
+                        card.x0 + 12.0,
+                        card.y0 + 26.0 + line as f64 * 17.0,
+                    ),
+                    Some(text_width(card.width() - 24.0)),
+                );
+            }
+            y += 70.0;
+        }
         if self.brief_offset >= self.digest.briefs.len() {
             self.brief_offset = 0;
         }
@@ -1936,6 +2289,178 @@ impl RoomActivityPane {
         }
     }
 
+    fn draw_replay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.replay_back_rect = Rect::ZERO;
+        self.replay_play_rect = Rect::ZERO;
+        self.replay_forward_rect = Rect::ZERO;
+        if self.replay_frames.is_empty() {
+            tr.draw_text(
+                scene,
+                "No replayable workspace checkpoints yet",
+                theme.tokens.typography.scale.base,
+                theme.tokens.colors.text_primary,
+                at(
+                    transform,
+                    self.sheet.x0 + 16.0,
+                    self.sheet.y0 + self.chrome_height() + 24.0,
+                ),
+                Some(text_width(self.sheet.width() - 32.0)),
+            );
+            return;
+        }
+        if self.replay_playing && self.replay_last_advance.elapsed() >= Duration::from_millis(850) {
+            if self.replay_index + 1 < self.replay_frames.len() {
+                self.replay_index = self.replay_index.saturating_add(1);
+                self.replay_last_advance = Instant::now();
+            } else {
+                self.replay_playing = false;
+            }
+        }
+        self.replay_index = self
+            .replay_index
+            .min(self.replay_frames.len().saturating_sub(1));
+        let Some(frame) = self.replay_frames.get(self.replay_index) else {
+            return;
+        };
+        let top = self.sheet.y0 + self.chrome_height() + 10.0;
+        let controls = Rect::new(self.sheet.x0 + 12.0, top, self.sheet.x1 - 12.0, top + 34.0);
+        self.replay_back_rect =
+            Rect::new(controls.x0, controls.y0, controls.x0 + 36.0, controls.y1);
+        self.replay_play_rect = Rect::new(
+            self.replay_back_rect.x1 + 6.0,
+            controls.y0,
+            self.replay_back_rect.x1 + 82.0,
+            controls.y1,
+        );
+        self.replay_forward_rect = Rect::new(
+            self.replay_play_rect.x1 + 6.0,
+            controls.y0,
+            self.replay_play_rect.x1 + 42.0,
+            controls.y1,
+        );
+        for (rect, label, active) in [
+            (self.replay_back_rect, "←", false),
+            (
+                self.replay_play_rect,
+                if self.replay_playing { "Pause" } else { "Play" },
+                self.replay_playing,
+            ),
+            (self.replay_forward_rect, "→", false),
+        ] {
+            let shape = RoundedRect::from_rect(rect, 7.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if active {
+                    theme.tokens.colors.accent[5].with_alpha_factor(0.28)
+                } else {
+                    theme.tokens.colors.lift(0.35)
+                },
+                None,
+                &shape,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                if active {
+                    theme.tokens.colors.accent[4]
+                } else {
+                    theme.tokens.colors.border_standard
+                },
+                None,
+                &shape,
+            );
+            let (tw, th) = tr.measure(label, theme.tokens.typography.scale.sm, None);
+            tr.draw_text(
+                scene,
+                label,
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_primary,
+                at(
+                    transform,
+                    rect.center().x - f64::from(tw) / 2.0,
+                    rect.center().y - f64::from(th) / 2.0,
+                ),
+                None,
+            );
+        }
+        tr.draw_text(
+            scene,
+            &format!(
+                "Checkpoint {} of {} · {}",
+                self.replay_index.saturating_add(1),
+                self.replay_frames.len(),
+                format_relative_time(frame.timestamp, self.now())
+            ),
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_dim,
+            at(
+                transform,
+                self.replay_forward_rect.x1 + 12.0,
+                controls.y0 + 9.0,
+            ),
+            Some(text_width(controls.x1 - self.replay_forward_rect.x1 - 12.0)),
+        );
+
+        let info_h = 94.0;
+        let canvas = Rect::new(
+            self.sheet.x0 + 12.0,
+            controls.y1 + 10.0,
+            self.sheet.x1 - 12.0,
+            (self.sheet.y1 - info_h - 20.0).max(controls.y1 + 80.0),
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &RoundedRect::from_rect(canvas, 10.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &RoundedRect::from_rect(canvas, 10.0),
+        );
+        draw_replay_layout(scene, transform, tr, theme, canvas, frame);
+        draw_replay_pointers(scene, transform, tr, theme, canvas, frame, self.sheet);
+
+        let info = Rect::new(canvas.x0, canvas.y1 + 8.0, canvas.x1, self.sheet.y1 - 10.0);
+        let (r, g, b) = ui::widget::history::hue_to_rgb(frame.author.avatar_hue);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            vello::peniko::Color::from_rgba8(r, g, b, 255),
+            None,
+            &vello::kurbo::Circle::new(Point::new(info.x0 + 9.0, info.y0 + 11.0), 5.0),
+        );
+        tr.draw_text_weighted(
+            scene,
+            &format!("{} · {}", frame.author.name, frame.summary),
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_primary,
+            at(transform, info.x0 + 20.0, info.y0 + 4.0),
+            Some(text_width(info.width() - 24.0)),
+            ui::text_render::TextWeight::Medium,
+        );
+        draw_presence_trail(
+            scene,
+            transform,
+            tr,
+            theme,
+            Rect::new(info.x0, info.y0 + 34.0, info.x1, info.y1),
+            &self.replay_frames,
+            self.replay_index,
+        );
+    }
+
     /// Paint the sheet's title, factual scope/count, and latest outcome.
     fn draw_title_and_subtitle(
         &self,
@@ -1950,6 +2475,7 @@ impl RoomActivityPane {
         let title = match self.view {
             ActivityView::CatchUp => "Since you looked",
             ActivityView::Explore => "Workspace activity",
+            ActivityView::Replay => "Replay workspace",
         };
         tr.draw_text(
             scene,
@@ -1962,7 +2488,9 @@ impl RoomActivityPane {
         let sub_size = (tokens.typography.scale.sm - 1.0).max(10.0);
         let (change_count, contributor_count) = match self.view {
             ActivityView::CatchUp => (self.digest.total_changes, self.digest.people),
-            ActivityView::Explore => (self.total_entries, self.contributors.len()),
+            ActivityView::Explore | ActivityView::Replay => {
+                (self.total_entries, self.contributors.len())
+            }
         };
         let people = if contributor_count == 1 {
             "1 person".to_string()
@@ -2050,8 +2578,9 @@ impl RoomActivityPane {
         }
     }
 
-    /// Paint the "This room" / "All workspaces" scope pills and record
-    /// their rects for hit-testing. Not drawn at all if they wouldn't fit.
+    /// Paint the workspace scope pills and record their rects for hit-testing.
+    /// Labels progressively compact rather than disappearing: scope is a real
+    /// data boundary, so even the narrowest supported sheet must expose it.
     fn draw_scope_chips(
         &mut self,
         scene: &mut Scene,
@@ -2065,17 +2594,38 @@ impl RoomActivityPane {
         let size = (tokens.typography.scale.sm - 1.0).max(10.0);
         let h = 22.0_f64;
         let cy = self.sheet.y0 + 24.0;
-        let mut widths: Vec<f64> = Vec::with_capacity(2);
-        for sc in RoomScope::ALL {
-            widths.push(f64::from(tr.measure(sc.label(), size, None).0) + 16.0);
-        }
-        let total: f64 = widths.iter().sum::<f64>() + 4.0;
-        if total >= self.sheet.width() * 0.62 {
-            return;
-        }
+        let label_sets = [
+            ["This workspace", "All workspaces"],
+            ["Workspace", "All"],
+            ["Here", "All"],
+        ];
+        let available = (self.sheet.width() * 0.62).max(1.0);
+        let first_set = usize::from(self.sheet.width() < 520.0);
+        let (labels, widths, total) = label_sets
+            .iter()
+            .skip(first_set)
+            .map(|labels| {
+                let widths = labels
+                    .iter()
+                    .map(|label| f64::from(tr.measure(label, size, None).0) + 16.0)
+                    .collect::<Vec<_>>();
+                let total = widths.iter().sum::<f64>() + 4.0;
+                (labels, widths, total)
+            })
+            .find(|(_, _, total)| *total < available)
+            .unwrap_or_else(|| {
+                let labels = &label_sets[2];
+                let widths = labels
+                    .iter()
+                    .map(|label| f64::from(tr.measure(label, size, None).0) + 12.0)
+                    .collect::<Vec<_>>();
+                let total = widths.iter().sum::<f64>() + 4.0;
+                (labels, widths, total)
+            });
         let mut x = self.sheet.x1 - 16.0 - total;
         for (i, sc) in RoomScope::ALL.iter().enumerate() {
             let w = widths.get(i).copied().unwrap_or(0.0);
+            let label = labels.get(i).copied().unwrap_or_else(|| sc.label());
             let rect = Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0);
             self.scope_rects.push((*sc, rect));
             let active = self.scope == *sc;
@@ -2091,10 +2641,10 @@ impl RoomActivityPane {
                 None,
                 &shape,
             );
-            let (lw, lh) = tr.measure(sc.label(), size, None);
+            let (lw, lh) = tr.measure(label, size, None);
             tr.draw_text(
                 scene,
-                sc.label(),
+                label,
                 size,
                 if active {
                     colors.text_primary
@@ -2224,6 +2774,7 @@ impl RoomActivityPane {
         let view_outcome = match self.view {
             ActivityView::CatchUp => self.handle_catchup_click(point),
             ActivityView::Explore => self.handle_explore_click(point, tree, records),
+            ActivityView::Replay => self.handle_replay_click(point),
         };
         if view_outcome.is_some() {
             return view_outcome;
@@ -2268,6 +2819,22 @@ impl RoomActivityPane {
             return Some(handled_outcome());
         }
         None
+    }
+
+    fn handle_replay_click(&mut self, point: Point) -> Option<RoomActivityOutcome> {
+        if self.replay_back_rect.contains(point) {
+            self.keyboard_focus = Some(ActivityFocus::ReplayBack);
+            self.step_replay(false);
+        } else if self.replay_play_rect.contains(point) {
+            self.keyboard_focus = Some(ActivityFocus::ReplayPlay);
+            self.toggle_replay();
+        } else if self.replay_forward_rect.contains(point) {
+            self.keyboard_focus = Some(ActivityFocus::ReplayForward);
+            self.step_replay(true);
+        } else {
+            return None;
+        }
+        Some(handled_outcome())
     }
 
     fn handle_explore_click(
@@ -2355,9 +2922,6 @@ impl RoomActivityPane {
         tree: &mut WorkspaceTree,
         records: Option<&RecordStore>,
     ) -> Option<RoomActivityOutcome> {
-        if self.timeline_is_visible() && self.timeline.wants_keyboard() {
-            return None;
-        }
         let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -2371,6 +2935,18 @@ impl RoomActivityPane {
             return None;
         };
         let state = modifiers.state();
+        if self.timeline_is_visible() && self.timeline.wants_keyboard() {
+            return None;
+        }
+        if self.timeline_is_visible() && self.timeline.is_focused() {
+            if matches!(logical_key, Key::Named(NamedKey::Tab)) {
+                self.timeline.set_focus(false);
+                self.keyboard_focus = Some(ActivityFocus::Timeline);
+                self.move_focus(state.shift_key(), None);
+                return Some(handled_outcome());
+            }
+            return None;
+        }
         if state.control_key() || state.super_key() || state.alt_key() {
             return None;
         }
@@ -2431,6 +3007,10 @@ impl RoomActivityPane {
             node,
             &scratch,
         );
+        if focus_target.is_some() {
+            self.timeline.set_focus(true);
+            self.keyboard_focus = Some(ActivityFocus::Timeline);
+        }
         out.handled = handled;
 
         if let Some(id) = self.revert_intent.take() {
@@ -2487,6 +3067,9 @@ impl RoomActivityPane {
                         .iter()
                         .map(|(pane, _)| ActivityFocus::ExplorerPane(*pane)),
                 );
+                if self.timeline_is_visible() && self.timeline.visible_len() > 0 {
+                    order.push(ActivityFocus::Timeline);
+                }
                 if self.author_more_rect.is_some() {
                     order.push(ActivityFocus::MorePeople);
                 }
@@ -2513,6 +3096,15 @@ impl RoomActivityPane {
                         .iter()
                         .map(|(action, _)| ActivityFocus::Detail(*action)),
                 );
+            }
+            ActivityView::Replay => {
+                if !self.replay_frames.is_empty() {
+                    order.extend([
+                        ActivityFocus::ReplayBack,
+                        ActivityFocus::ReplayPlay,
+                        ActivityFocus::ReplayForward,
+                    ]);
+                }
             }
         }
         if self.view == ActivityView::CatchUp && self.brief_more_rect.is_some() {
@@ -2558,6 +3150,10 @@ impl RoomActivityPane {
                 .explorer_pane_rects
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::Timeline => Some(self.timeline.rect()),
+            ActivityFocus::ReplayBack => Some(self.replay_back_rect),
+            ActivityFocus::ReplayPlay => Some(self.replay_play_rect),
+            ActivityFocus::ReplayForward => Some(self.replay_forward_rect),
         }
     }
 
@@ -2589,6 +3185,8 @@ impl RoomActivityPane {
             0
         };
         self.keyboard_focus = order.get(next).cloned();
+        self.timeline
+            .set_focus(self.keyboard_focus == Some(ActivityFocus::Timeline));
     }
 
     fn activate_focus(
@@ -2659,6 +3257,10 @@ impl RoomActivityPane {
                 outcome.named = self.merge_selection_groups(tree);
             }
             ActivityFocus::ExplorerPane(pane) => self.explorer_pane = pane,
+            ActivityFocus::Timeline => self.timeline.set_focus(true),
+            ActivityFocus::ReplayBack => self.step_replay(false),
+            ActivityFocus::ReplayPlay => self.toggle_replay(),
+            ActivityFocus::ReplayForward => self.step_replay(true),
         }
         outcome
     }
@@ -2726,6 +3328,14 @@ impl RoomActivityPane {
             ActivityFocus::MoreLenses => Some("More lenses".to_string()),
             ActivityFocus::Detail(action) => Some(self.detail_action_label(*action).to_string()),
             ActivityFocus::ExplorerPane(pane) => Some(pane.label().to_string()),
+            ActivityFocus::Timeline => Some("History entries".to_string()),
+            ActivityFocus::ReplayBack => Some("Previous checkpoint".to_string()),
+            ActivityFocus::ReplayPlay => Some(if self.replay_playing {
+                "Pause replay".to_string()
+            } else {
+                "Play replay".to_string()
+            }),
+            ActivityFocus::ReplayForward => Some("Next checkpoint".to_string()),
         }
     }
 
@@ -2810,6 +3420,24 @@ impl RoomActivityPane {
                 None,
                 "Explorer panel",
             ),
+            ActivityFocus::Timeline => control(
+                Role::List,
+                true,
+                None,
+                "History entries; use arrow keys to navigate",
+            ),
+            ActivityFocus::ReplayBack | ActivityFocus::ReplayForward => control(
+                Role::Button,
+                false,
+                None,
+                "Move through workspace checkpoints",
+            ),
+            ActivityFocus::ReplayPlay => control(
+                Role::Button,
+                self.replay_playing,
+                None,
+                "Play or pause the workspace replay",
+            ),
         })
     }
 
@@ -2820,6 +3448,10 @@ impl RoomActivityPane {
         set_size: usize,
     ) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
+
+        if *focus == ActivityFocus::Timeline {
+            return self.timeline.accessibility();
+        }
 
         let label = self.focus_label(focus)?;
         let control = self.access_control(focus)?;
@@ -2860,6 +3492,9 @@ impl RoomActivityPane {
                 ActivityView::Explore => {
                     "The complete workspace history with filters and provenance"
                 }
+                ActivityView::Replay => {
+                    "A causal replay of workspace layout and participant activity"
+                }
             })
             .with_state(AccessState::new().modal(true));
         let order = self.focus_order();
@@ -2869,18 +3504,6 @@ impl RoomActivityPane {
             .enumerate()
             .filter_map(|(index, focus)| self.accessibility_control_node(focus, index, set_size))
             .collect();
-        if self.timeline_is_visible() {
-            let mut history = AccessNode::new(Role::List).with_name("History entries");
-            history.children = (0..self.timeline.visible_len().min(100))
-                .filter_map(|index| self.timeline.visible_entry(index))
-                .map(|entry| {
-                    AccessNode::new(Role::ListItem)
-                        .with_name(entry.summary.clone())
-                        .with_description(format!("By {}", entry.author.name))
-                })
-                .collect();
-            root.children.push(history);
-        }
         if let Some(detail) = self.selection_detail() {
             root.children.push(
                 AccessNode::new(Role::Group)
@@ -2904,11 +3527,21 @@ impl RoomActivityPane {
                 .focus_order()
                 .get(*index)
                 .and_then(|focus| self.rect_for_focus(focus)),
+            [0, index, row] if self.focus_order().get(*index) == Some(&ActivityFocus::Timeline) => {
+                self.timeline.accessibility_row_rect(*row)
+            }
             _ => None,
         }
     }
 
     pub fn focus_accessibility_path(&mut self, path: &[usize]) -> bool {
+        if let [0, index, row] = path
+            && self.focus_order().get(*index) == Some(&ActivityFocus::Timeline)
+        {
+            self.keyboard_focus = Some(ActivityFocus::Timeline);
+            self.timeline.set_focus(true);
+            return self.timeline.focus_row(*row);
+        }
         let [0, index] = path else {
             return false;
         };
@@ -2916,6 +3549,8 @@ impl RoomActivityPane {
             return false;
         };
         self.keyboard_focus = Some(focus);
+        self.timeline
+            .set_focus(self.keyboard_focus == Some(ActivityFocus::Timeline));
         true
     }
 
@@ -2956,6 +3591,10 @@ impl RoomActivityPane {
                 .explorer_pane_rects
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::Timeline => Some(self.timeline.rect()),
+            ActivityFocus::ReplayBack => Some(self.replay_back_rect),
+            ActivityFocus::ReplayPlay => Some(self.replay_play_rect),
+            ActivityFocus::ReplayForward => Some(self.replay_forward_rect),
         }
     }
 
@@ -3252,6 +3891,252 @@ fn humanize_field(field: &str) -> String {
         "content".to_string()
     } else {
         words
+    }
+}
+
+fn draw_replay_layout(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    bounds: Rect,
+    frame: &WorkspaceReplayFrame,
+) {
+    let shown = frame.workspaces.len().min(4);
+    if shown == 0 {
+        tr.draw_text(
+            scene,
+            "The workspace did not exist at this checkpoint",
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_dim,
+            at(transform, bounds.x0 + 16.0, bounds.y0 + 16.0),
+            Some(text_width(bounds.width() - 32.0)),
+        );
+        return;
+    }
+    let gap = 10.0;
+    let row_h =
+        ((bounds.height() - 20.0 - gap * shown.saturating_sub(1) as f64) / shown as f64).max(54.0);
+    let mut y = bounds.y0 + 10.0;
+    for workspace in frame.workspaces.iter().take(shown) {
+        let row = Rect::new(
+            bounds.x0 + 10.0,
+            y,
+            bounds.x1 - 10.0,
+            (y + row_h).min(bounds.y1 - 8.0),
+        );
+        tr.draw_text_weighted(
+            scene,
+            &workspace.name,
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_primary,
+            at(transform, row.x0 + 6.0, row.y0 + 5.0),
+            Some(text_width(row.width() - 12.0)),
+            ui::text_render::TextWeight::Medium,
+        );
+        let groups = Rect::new(row.x0 + 4.0, row.y0 + 26.0, row.x1 - 4.0, row.y1 - 4.0);
+        let total = workspace
+            .groups
+            .iter()
+            .map(|group| u32::from(group.width_permille.max(1)))
+            .sum::<u32>()
+            .max(1);
+        let mut x = groups.x0;
+        for (index, group) in workspace.groups.iter().enumerate() {
+            let share = f64::from(group.width_permille.max(1)) / f64::from(total);
+            let x1 = if index + 1 == workspace.groups.len() {
+                groups.x1
+            } else {
+                (x + groups.width() * share).min(groups.x1)
+            };
+            let rect = Rect::new(x, groups.y0, x1 - 4.0, groups.y1);
+            if rect.width() > 6.0 {
+                let group_card = RoundedRect::from_rect(rect, 6.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.lift(0.35),
+                    None,
+                    &group_card,
+                );
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    theme.tokens.colors.border_standard,
+                    None,
+                    &group_card,
+                );
+                let title = group
+                    .tabs
+                    .get(group.active)
+                    .or_else(|| group.tabs.first())
+                    .map_or("Empty window", String::as_str);
+                tr.draw_text(
+                    scene,
+                    title,
+                    theme.tokens.typography.scale.sm,
+                    theme.tokens.colors.text_primary,
+                    at(transform, rect.x0 + 8.0, rect.y0 + 8.0),
+                    Some(text_width(rect.width() - 16.0)),
+                );
+                if group.tabs.len() > 1 && rect.height() >= 54.0 {
+                    let mut tab_x = rect.x0 + 8.0;
+                    let tab_y = rect.y0 + 31.0;
+                    for (tab_index, tab) in group.tabs.iter().take(4).enumerate() {
+                        let label = if tab_index == group.active {
+                            format!("• {tab}")
+                        } else {
+                            tab.clone()
+                        };
+                        let width = (f64::from(
+                            tr.measure(
+                                &label,
+                                (theme.tokens.typography.scale.sm - 2.0).max(9.0),
+                                None,
+                            )
+                            .0,
+                        ) + 12.0)
+                            .min(96.0);
+                        if tab_x + width > rect.x1 - 8.0 {
+                            break;
+                        }
+                        let chip = RoundedRect::from_rect(
+                            Rect::new(tab_x, tab_y, tab_x + width, tab_y + 20.0),
+                            5.0,
+                        );
+                        scene.fill(
+                            Fill::NonZero,
+                            transform,
+                            if tab_index == group.active {
+                                theme.tokens.colors.accent[5].with_alpha_factor(0.18)
+                            } else {
+                                theme.tokens.colors.lift(0.55)
+                            },
+                            None,
+                            &chip,
+                        );
+                        tr.draw_text(
+                            scene,
+                            &label,
+                            (theme.tokens.typography.scale.sm - 2.0).max(9.0),
+                            theme.tokens.colors.text_dim,
+                            at(transform, tab_x + 6.0, tab_y + 4.0),
+                            Some(text_width(width - 12.0)),
+                        );
+                        tab_x += width + 5.0;
+                    }
+                    if group.tabs.len() > 4 && tab_x + 28.0 < rect.x1 {
+                        tr.draw_text(
+                            scene,
+                            &format!("+{}", group.tabs.len() - 4),
+                            (theme.tokens.typography.scale.sm - 2.0).max(9.0),
+                            theme.tokens.colors.text_dim,
+                            at(transform, tab_x + 2.0, tab_y + 4.0),
+                            None,
+                        );
+                    }
+                }
+            }
+            x = x1;
+        }
+        y += row_h + gap;
+    }
+}
+
+fn draw_presence_trail(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    bounds: Rect,
+    frames: &[WorkspaceReplayFrame],
+    current: usize,
+) {
+    tr.draw_text(
+        scene,
+        "Presence trail",
+        (theme.tokens.typography.scale.sm - 1.0).max(10.0),
+        theme.tokens.colors.text_dim,
+        at(transform, bounds.x0, bounds.y0 + 2.0),
+        None,
+    );
+    let start = current.saturating_sub(8);
+    let slice = frames.get(start..=current).unwrap_or(&[]);
+    let x0 = bounds.x0 + 92.0;
+    let available = (bounds.x1 - x0).max(1.0);
+    let step = available / slice.len().max(1) as f64;
+    for (index, frame) in slice.iter().enumerate() {
+        let x = x0 + step * (index as f64 + 0.5);
+        if frame.pointers.is_empty() {
+            let (r, g, b) = ui::widget::history::hue_to_rgb(frame.author.avatar_hue);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                vello::peniko::Color::from_rgba8(r, g, b, 255),
+                None,
+                &vello::kurbo::Circle::new(Point::new(x, bounds.y0 + 9.0), 5.0),
+            );
+        } else {
+            for (person, pointer) in frame.pointers.iter().take(3).enumerate() {
+                let (r, g, b) = pointer.color;
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    vello::peniko::Color::from_rgba8(r, g, b, 255),
+                    None,
+                    &vello::kurbo::Circle::new(
+                        Point::new(x, bounds.y0 + 5.0 + person as f64 * 5.0),
+                        3.5,
+                    ),
+                );
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_replay_pointers(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    canvas: Rect,
+    frame: &WorkspaceReplayFrame,
+    viewport: Rect,
+) {
+    let source_w = (viewport.x1 + SHEET_INSET).max(1.0);
+    let source_h = (viewport.y1 + SHEET_INSET).max(1.0);
+    for pointer in frame
+        .pointers
+        .iter()
+        .filter(|pointer| pointer.desktop_space)
+    {
+        let px = (f64::from(pointer.point.0) / source_w).clamp(0.0, 1.0);
+        let py = (f64::from(pointer.point.1) / source_h).clamp(0.0, 1.0);
+        let point = Point::new(
+            canvas.x0 + 10.0 + px * (canvas.width() - 20.0),
+            canvas.y0 + 10.0 + py * (canvas.height() - 20.0),
+        );
+        let (r, g, b) = pointer.color;
+        let color = vello::peniko::Color::from_rgba8(r, g, b, 255);
+        let cursor =
+            vello::kurbo::BezPath::from_svg("M0 0 L0 18 L5 13 L9 21 L13 19 L9 11 L17 11 Z")
+                .unwrap_or_default();
+        scene.fill(
+            Fill::NonZero,
+            transform.then_translate(point.to_vec2()),
+            color,
+            None,
+            &cursor,
+        );
+        tr.draw_text(
+            scene,
+            &pointer.name,
+            (theme.tokens.typography.scale.sm - 2.0).max(9.0),
+            color,
+            at(transform, point.x + 14.0, point.y + 4.0),
+            Some(text_width(100.0)),
+        );
     }
 }
 
@@ -4121,6 +5006,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn app_native_handoff_focuses_the_exact_version_without_marking_it_unseen() {
+        let (mut tree, workspace, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        let unread_before = pane.passive_unread;
+        let id = HistoryEntryId::from_bytes([9; 16]);
+        let resource = "signed-file-record".to_string();
+        let context = ui::qos_actions::ActionContext::for_resource(
+            "Edited",
+            resource.clone(),
+            "files.entry",
+            "Launch brief.md",
+        )
+        .with_app("org.qos.Files", "Files");
+        pane.open_external_entry(HistoryEntry {
+            id,
+            author: ui::widget::HistoryAuthor::new("Ada", 280.0, "01010101"),
+            op_class: collab_types::OpClass::Compaction,
+            artifact_kind: ArtifactKind::File,
+            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(20),
+            summary: "Edited · Launch brief.md".into(),
+            text_delta: None,
+            diff_payload: None,
+            redaction: None,
+            context: Some(context),
+        });
+        pane.apply_deep_link(crate::shell::chrome_state::ActivityFocus {
+            entry_id: Some(*id.as_bytes()),
+            resource_id: Some(resource.clone()),
+            resource_version: Some(*id.as_bytes()),
+            ..crate::shell::chrome_state::ActivityFocus::default()
+        });
+
+        assert_eq!(pane.view(), ActivityView::Explore);
+        assert_eq!(pane.lens, LensSelection::Resource(resource));
+        let (selected, _) = pane.timeline.selection().expect("exact version selected");
+        assert_eq!(pane.timeline.entries()[selected].id, id);
+        assert_eq!(
+            pane.timeline.visible_entry(0).map(|entry| entry.id),
+            Some(id)
+        );
+        assert_eq!(pane.passive_unread, unread_before);
+        assert_eq!(pane.glance_signal(workspace.raw()).1, unread_before);
+    }
+
     /// A second workspace with its own governance, interleaved in one document.
     fn two_room_tree() -> (WorkspaceTree, WorkspaceId, WorkspaceId) {
         let (mut tree, first, user) = busy_room();
@@ -4632,6 +5562,79 @@ mod tests {
         assert_eq!(pane.digest().total_changes, pane.entries().len());
         assert!(!pane.digest().briefs.is_empty());
         assert!(pane.digest().headline().is_some());
+    }
+
+    #[test]
+    fn replay_materializes_real_causal_layouts_and_exposes_controls() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+            91_001,
+            "Plan".to_string(),
+            b"{}".to_vec(),
+        ));
+        qdoc::history::commit_stamped(&mut tree.doc);
+        assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+            91_002,
+            "Review".to_string(),
+            b"{}".to_vec(),
+        ));
+        qdoc::history::commit_stamped(&mut tree.doc);
+        let mut pane = pane_over(&mut tree);
+        assert!(pane.replay_frames.len() >= 2);
+        let tab_counts: Vec<usize> = pane
+            .replay_frames
+            .iter()
+            .map(|frame| {
+                frame
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| &workspace.groups)
+                    .map(|group| group.tabs.len())
+                    .sum()
+            })
+            .collect();
+        assert!(
+            tab_counts.windows(2).any(|pair| pair[0] != pair[1]),
+            "causal forks must expose a changing real layout: {tab_counts:?}"
+        );
+        pane.set_view(ActivityView::Replay);
+        paint(&mut pane);
+        let order = pane.focus_order();
+        assert!(order.contains(&ActivityFocus::ReplayBack));
+        assert!(order.contains(&ActivityFocus::ReplayPlay));
+        assert!(order.contains(&ActivityFocus::ReplayForward));
+
+        let mut presence = PresenceCtx::empty();
+        let ada = ui::permissions::UserId("ada".into());
+        presence.names.insert(ada.clone(), "Ada".into());
+        presence.set_pointer(
+            &ui::presence::PresenceKey::desktop_pointer("design-room"),
+            ada,
+            (420.0, 260.0),
+        );
+        pane.observe_replay_presence(&presence);
+        let pointer = pane
+            .replay_frames
+            .last()
+            .and_then(|frame| frame.pointers.first())
+            .expect("session presence is retained against the durable checkpoint");
+        assert_eq!(pointer.name, "Ada");
+        assert_eq!(pointer.point, (420.0, 260.0));
+        assert!(pointer.desktop_space);
+    }
+
+    #[test]
+    fn narrow_history_keeps_both_scope_choices_visible() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        pane.layout(Rect::new(0.0, 0.0, 380.0, 640.0));
+        paint(&mut pane);
+        assert_eq!(pane.scope_rects.len(), 2);
+        assert!(
+            pane.scope_rects
+                .iter()
+                .all(|(_, rect)| { rect.area() > 0.0 && pane.sheet.contains(rect.center()) })
+        );
     }
 
     #[test]
