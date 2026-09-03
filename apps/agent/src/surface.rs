@@ -621,7 +621,10 @@ pub fn permitted(perms: &PermissionContext, address: &ActionAddress) -> bool {
 /// Check the authority the operation itself declares. The address gate stays
 /// the fallback for legacy descriptors; a read-only view must not silently be
 /// upgraded to Write, and an administrative action must not be downgraded.
-fn permitted_descriptor(perms: &PermissionContext, descriptor: &ActionDescriptor) -> bool {
+pub(crate) fn permitted_descriptor(
+    perms: &PermissionContext,
+    descriptor: &ActionDescriptor,
+) -> bool {
     let mut scope = scope_for(&descriptor.address);
     scope.op = match descriptor.contract.permission {
         PermissionRequirement::None | PermissionRequirement::Read => Verb::Read,

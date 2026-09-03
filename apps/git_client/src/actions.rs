@@ -66,17 +66,21 @@ pub enum GitClientOperation {
     Commit { message: String },
 }
 
-fn operation(id: &str, label: &str, kind: OperationKind, value: GitClientOperation) -> ActionSpec {
-    let spec = ActionSpec::operation(id, label, kind, GIT_CLIENT_OPERATION_TYPE, &value)
-        .expect("GitClientOperation is always serializable");
+fn operation(
+    id: &str,
+    label: &str,
+    kind: OperationKind,
+    value: &GitClientOperation,
+) -> Option<ActionSpec> {
+    let spec = ActionSpec::operation(id, label, kind, GIT_CLIENT_OPERATION_TYPE, value).ok()?;
     match value {
         GitClientOperation::ShowChanges
         | GitClientOperation::ShowHistory
-        | GitClientOperation::ShowBranches => spec.retry_policy(RetryPolicy::Idempotent),
+        | GitClientOperation::ShowBranches => Some(spec.retry_policy(RetryPolicy::Idempotent)),
         GitClientOperation::StageAll | GitClientOperation::UnstageAll => {
-            spec.reversible().retry_policy(RetryPolicy::Idempotent)
+            Some(spec.reversible().retry_policy(RetryPolicy::Idempotent))
         }
-        GitClientOperation::Commit { .. } => spec,
+        GitClientOperation::Commit { .. } => Some(spec),
     }
 }
 
@@ -169,6 +173,10 @@ pub fn set_diff_layout_action(layout: DiffLayout) -> GitClientAction {
 /// flips the setting exactly as the on-screen control does. Level-triggered:
 /// recomputed from `doc` each frame, so the labels and target values always
 /// track the live state.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the resource catalogue keeps every repository action beside its label, contract, and live preference state in one auditable tree"
+)]
 pub fn provide_resources(repo_name: &str, doc: &AutoCommit) -> Vec<Resource> {
     let s = Settings::read_only(doc);
     let label = if repo_name.trim().is_empty() {
@@ -267,41 +275,50 @@ pub fn provide_resources(repo_name: &str, doc: &AutoCommit) -> Vec<Resource> {
             GitClientOperation::ShowBranches,
         ),
     ] {
-        repo = repo.with_action(self::operation(id, label, OperationKind::View, operation));
+        if let Some(spec) = self::operation(id, label, OperationKind::View, &operation) {
+            repo = repo.with_action(spec);
+        }
     }
-    repo = repo
-        .with_action(operation(
+    for (id, label, operation) in [
+        (
             "stage-all",
             "Stage all changes",
-            OperationKind::Effect,
             GitClientOperation::StageAll,
-        ))
-        .with_action(operation(
+        ),
+        (
             "unstage-all",
             "Unstage all changes",
-            OperationKind::Effect,
             GitClientOperation::UnstageAll,
-        ))
-        .with_action(
-            ActionSpec::prompted_operation(
-                "commit",
-                "Commit staged changes",
-                "Commit message",
-                "summary",
-                OperationKind::Effect,
-                GIT_CLIENT_OPERATION_TYPE,
-                |message| {
-                    EncodedAction::encode_operation(
-                        GIT_CLIENT_OPERATION_TYPE,
-                        &GitClientOperation::Commit {
-                            message: message.to_string(),
-                        },
-                    )
-                    .expect("GitClientOperation is always serializable")
-                },
-            )
-            .with_description("Create a commit from the currently staged changes"),
-        );
+        ),
+    ] {
+        if let Some(spec) = self::operation(id, label, OperationKind::Effect, &operation) {
+            repo = repo.with_action(spec);
+        }
+    }
+    repo = repo.with_action(
+        ActionSpec::prompted_operation(
+            "commit",
+            "Commit staged changes",
+            "Commit message",
+            "summary",
+            OperationKind::Effect,
+            GIT_CLIENT_OPERATION_TYPE,
+            |message| {
+                EncodedAction::encode_operation(
+                    GIT_CLIENT_OPERATION_TYPE,
+                    &GitClientOperation::Commit {
+                        message: message.to_string(),
+                    },
+                )
+                .unwrap_or_else(|error| EncodedAction {
+                    type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    payload: format!("git commit operation could not be serialized: {error}")
+                        .into_bytes(),
+                })
+            },
+        )
+        .with_description("Create a commit from the currently staged changes"),
+    );
 
     vec![repo]
 }

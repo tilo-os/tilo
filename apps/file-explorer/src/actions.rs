@@ -296,8 +296,20 @@ mod tests {
         w.sync(&mut doc, &ROOT);
 
         let resources = Widget::resources(&w, &doc);
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].kind, "files.folder");
+        assert_eq!(resources.len(), 1, "one current-folder root");
+        let folder = &resources[0];
+        assert_eq!(folder.kind, "files.folder");
+        let actions: Vec<&str> = folder
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        for expected in ["refresh", "navigate", "new-folder", "paste"] {
+            assert!(
+                actions.contains(&expected),
+                "folder publishes {expected}: {actions:?}",
+            );
+        }
         assert!(
             w.take_committed_action().is_none(),
             "no action is dispatched, so no action-host undo boundary is recorded",

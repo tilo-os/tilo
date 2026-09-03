@@ -60,6 +60,12 @@ pub enum PhotosOperation {
     Save { path: Option<String> },
 }
 
+/// Decode an operation payload owned by the Photos app.
+///
+/// # Errors
+///
+/// Returns an error when a Photos operation payload is not valid JSON for
+/// [`PhotosOperation`]. Unknown operation types return `Ok(None)`.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<PhotosOperation>, String> {
     if type_id != PHOTOS_OPERATION_TYPE {
         return Ok(None);
@@ -69,12 +75,13 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<PhotosOp
         .map_err(|e| e.to_string())
 }
 
-fn operation(id: &str, label: &str, op: PhotosOperation) -> Option<ActionSpec> {
+fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> {
     let spec =
-        ActionSpec::operation(id, label, OperationKind::Effect, PHOTOS_OPERATION_TYPE, &op).ok()?;
+        ActionSpec::operation(id, label, OperationKind::Effect, PHOTOS_OPERATION_TYPE, op).ok()?;
     Some(match op {
-        PhotosOperation::Open { .. } => spec.retry_policy(RetryPolicy::Idempotent),
-        PhotosOperation::Copy => spec.retry_policy(RetryPolicy::Idempotent),
+        PhotosOperation::Open { .. } | PhotosOperation::Copy => {
+            spec.retry_policy(RetryPolicy::Idempotent)
+        }
         PhotosOperation::Save { .. } => spec.retry_policy(RetryPolicy::AtMostOnce),
     })
 }
@@ -265,7 +272,7 @@ impl ResourceProvider for PhotosResources {
             );
         resource = resource.with_action(file_operation("open", "Open another photograph", true));
         for (id, label, op) in [("copy", "Copy photograph", PhotosOperation::Copy)] {
-            if let Some(spec) = operation(id, label, op) {
+            if let Some(spec) = operation(id, label, &op) {
                 resource = resource.with_action(spec);
             }
         }
@@ -318,7 +325,11 @@ fn file_operation(id: &str, label: &str, open: bool) -> ActionSpec {
                     PhotosOperation::Save { path }
                 },
             )
-            .expect("photos file operation serializes")
+            .unwrap_or_else(|error| EncodedAction {
+                type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                payload: format!("photos file operation could not be serialized: {error}")
+                    .into_bytes(),
+            })
         },
     )
     .execution(ExecutionMode::Background { cancellable: false })

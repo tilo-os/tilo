@@ -438,6 +438,12 @@ impl AppActionBroker {
         self.state.published_surfaces()
     }
 
+    /// Invoke one published application action.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the surface or action is unavailable or dispatch
+    /// to its application connection fails.
     pub fn invoke(
         &self,
         peer_id: u64,
@@ -453,6 +459,11 @@ impl AppActionBroker {
             .invoke(peer_id, resource, action, argument, actor)
     }
 
+    /// Start a published action and return its lifecycle job.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the action is unavailable or cannot be dispatched.
     pub fn start(
         &self,
         peer_id: u64,
@@ -473,6 +484,11 @@ impl AppActionBroker {
         self.state.invocation_statuses(actor)
     }
 
+    /// Request cooperative cancellation for an owned invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown, foreign, or non-cancellable invocation.
     pub fn cancel(&self, id: u64, actor: &str) -> Result<(), String> {
         self.state.request_cancellation(id, actor)
     }
@@ -482,6 +498,11 @@ impl AppActionBroker {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Prepare a one-use confirmation token for the exact invocation inputs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the action disappeared or confirmation evidence is invalid.
     pub fn prepare_confirmation(
         &self,
         peer_id: u64,
@@ -496,6 +517,11 @@ impl AppActionBroker {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Start a published action using a previously prepared confirmation token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the action or token is unavailable or invalid.
     pub fn start_confirmed(
         &self,
         peer_id: u64,
@@ -593,6 +619,11 @@ impl BrokerHandle {
 
     /// Direct one invocation to the exact application connection that
     /// published the addressed operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the action broker, surface, or action is
+    /// unavailable or dispatch to its application connection fails.
     pub fn invoke_published_action(
         &self,
         peer_id: u64,

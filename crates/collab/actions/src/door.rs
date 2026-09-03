@@ -476,6 +476,12 @@ pub fn invoke_json(
     )
 }
 
+/// Invoke typed arguments after an outer policy boundary has completed the
+/// action contract's confirmation step.
+///
+/// # Errors
+///
+/// Returns the same errors as [`invoke_json`].
 #[allow(clippy::too_many_arguments)]
 /// Typed-argument invocation after an outer policy boundary has completed the
 /// action contract's confirmation step.

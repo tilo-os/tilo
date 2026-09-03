@@ -223,6 +223,10 @@ type PresenceBroadcastSink = Box<dyn Fn(&PresenceKey, &PresencePayload) + Send +
 /// Lets the shell drain `NeighbourMsg::PresenceMoved` into
 /// [`PresenceCtx::remote_cursors`] without App knowing about Iroh.
 type FrameTick = Box<dyn FnMut(&mut PresenceCtx) + Send + Sync>;
+type ResolvedResourceInvocation<'a> = (
+    Option<serde_json::Map<String, serde_json::Value>>,
+    &'a qos_actions::ActionSpec,
+);
 
 /// Runtime audit result for one interactive control.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -401,7 +405,7 @@ pub struct App {
         std::collections::HashMap<String, crate::floating_surface::FloatingSurfacePresentation>,
     /// Activity IDs from the previous service pump, including generic
     /// browser/capture mirrors that do not own a secondary native window.
-    /// Comparing this set lets an app toggle PiP off with an explicit Dismiss
+    /// Comparing this set lets an app toggle `PiP` off with an explicit Dismiss
     /// instead of abandoning a compositor mirror until process exit.
     last_active_floating_ids: std::collections::HashSet<String>,
     /// IDs whose shell `PrepareSurface`/`Adopted` reply has established
@@ -424,6 +428,19 @@ pub struct App {
 }
 
 impl App {
+    fn initial_presence_context() -> PresenceCtx {
+        // Own identity, in preference order: the handle announced on `Hello`,
+        // then the fallback app id. Anything else is somebody else and gets
+        // painted.
+        let mut context = PresenceCtx::empty();
+        context.set_own_identity(
+            crate::collaboration::presence_handle_env()
+                .into_iter()
+                .chain(std::iter::once(crate::collaboration::local_user_id().0)),
+        );
+        context
+    }
+
     pub fn new(state: State, root_widget: Box<dyn Widget>) -> Self {
         Self::with_collaboration_manager(state, root_widget, CollaborationManager::new())
     }
@@ -472,18 +489,7 @@ impl App {
             last_stable_metadata: None,
             collab_manager,
             local_author: crate::collaboration::local_user_id(),
-            presence_ctx: {
-                // Own identity, in preference order: the handle announced on
-                // `Hello`, then the fallback app id. Anything else is
-                // somebody else and gets painted.
-                let mut ctx = PresenceCtx::empty();
-                ctx.set_own_identity(
-                    crate::collaboration::presence_handle_env()
-                        .into_iter()
-                        .chain(std::iter::once(crate::collaboration::local_user_id().0)),
-                );
-                ctx
-            },
+            presence_ctx: Self::initial_presence_context(),
             permission_ctx: PermissionContext::permissive(),
             presence_broadcast_scope: None,
             pointer_space: None,
@@ -561,6 +567,10 @@ impl App {
             .with_a11y(&self.a11y, self.text_scale, self.ui_scale);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the service pump keeps one ordered lifecycle transaction in a single function"
+    )]
     fn pump_floating_surface_service(&mut self) -> bool {
         let active_ids = self
             .root_widget
@@ -814,7 +824,7 @@ impl App {
                         self.root_widget.set_floating_surface_bounds(bounds);
                     }
                     Err(error) => {
-                        tracing::warn!(%error, "shell sent invalid floating-surface bounds")
+                        tracing::warn!(%error, "shell sent invalid floating-surface bounds");
                     }
                 }
             }
@@ -887,7 +897,7 @@ impl App {
                 position: PhysicalPosition::new(position.x + dx, position.y + dy),
             }),
             WindowEvent::Touch(touch) => {
-                let mut translated = touch.clone();
+                let mut translated = *touch;
                 translated.location.x += dx;
                 translated.location.y += dy;
                 Some(WindowEvent::Touch(translated))
@@ -991,7 +1001,7 @@ impl App {
             .map(|binding| {
                 let status = match &binding.kind {
                     crate::widget::ControlBindingKind::Action(address) => {
-                        if qos_actions::door::resolve(&resources, address).is_none() {
+                        if qos_actions::door::resolve(resources, address).is_none() {
                             ControlBindingStatus::StaleAddress
                         } else if !seen.insert(address.clone()) {
                             ControlBindingStatus::SharedAddress
@@ -1141,20 +1151,14 @@ impl App {
         id: u64,
         resource: String,
         action: String,
-        argument: Option<String>,
-        actor: String,
+        argument: Option<&str>,
+        actor: &str,
     ) {
         let address = qos_actions::ActionAddress::new(resource, action);
         // Arrival on this directed stream means the broker already performed
         // permission and one-use confirmation-token checks.
         let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        let result = self.invoke_resource_action(
-            &address,
-            argument.as_deref(),
-            &actor,
-            true,
-            Some(invocation),
-        );
+        let result = self.invoke_resource_action(&address, argument, actor, true, Some(invocation));
         let update = match result {
             Ok(crate::widget::ResourceOperationStart::Completed(output)) => {
                 qos_actions::InvocationUpdate::Succeeded { invocation, output }
@@ -1183,6 +1187,89 @@ impl App {
             .send(CollabRequest::UpdateInvocation { id, update });
     }
 
+    fn resolve_resource_invocation<'a>(
+        resources: &'a [qos_actions::Resource],
+        address: &qos_actions::ActionAddress,
+        argument: Option<&str>,
+        confirmed_by_broker: bool,
+    ) -> Result<ResolvedResourceInvocation<'a>, qos_actions::DoorError> {
+        let typed_arguments = argument
+            .and_then(|value| value.strip_prefix(qos_actions::ARGUMENTS_JSON_PREFIX))
+            .map(|json| {
+                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+                    .map_err(|error| qos_actions::DoorError::InvalidArguments(error.to_string()))
+            })
+            .transpose()?;
+        let resolved = qos_actions::door::resolve(resources, address)
+            .ok_or_else(|| qos_actions::DoorError::Unknown(address.clone()))?;
+        if !matches!(
+            resolved.contract.confirmation,
+            qos_actions::ConfirmationPolicy::None
+        ) && !confirmed_by_broker
+        {
+            return Err(qos_actions::DoorError::ConfirmationRequired);
+        }
+        Ok((typed_arguments, resolved))
+    }
+
+    fn encode_resource_action(
+        resources: &[qos_actions::Resource],
+        address: &qos_actions::ActionAddress,
+        typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+        argument: Option<&str>,
+    ) -> Result<qos_actions::EncodedAction, qos_actions::DoorError> {
+        if let Some(arguments) = typed_arguments {
+            qos_actions::door::encode_json(resources, address, arguments)
+        } else {
+            qos_actions::door::encode(resources, address, argument)
+        }
+    }
+
+    fn invoke_document_resource_action(
+        &mut self,
+        resources: &[qos_actions::Resource],
+        address: &qos_actions::ActionAddress,
+        typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+        argument: Option<&str>,
+        actor: &str,
+    ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
+        let before = self.state.doc.get_heads();
+        let dispatched = if let Some(arguments) = typed_arguments {
+            qos_actions::door::invoke_json_confirmed(
+                &mut self.state.doc,
+                resources,
+                address,
+                arguments,
+                actor.as_bytes(),
+                &self.action_registry,
+                self.action_transport.as_mut(),
+            )?
+        } else {
+            qos_actions::door::invoke_confirmed(
+                &mut self.state.doc,
+                resources,
+                address,
+                argument,
+                actor.as_bytes(),
+                &self.action_registry,
+                self.action_transport.as_mut(),
+            )?
+        };
+        if dispatched.mutated_local() {
+            self.state.record_committed_action_authored(
+                before,
+                None,
+                None,
+                Some(crate::permissions::UserId(actor.to_string())),
+            );
+            self.needs_sync = true;
+            self.layout_dirty = true;
+        }
+        Ok(crate::widget::ResourceOperationStart::Completed(
+            qos_actions::ActionOutput::default(),
+        ))
+    }
+
     fn invoke_resource_action(
         &mut self,
         address: &qos_actions::ActionAddress,
@@ -1200,133 +1287,85 @@ impl App {
         } else {
             resources
         };
-        let typed_arguments = argument
-            .and_then(|value| value.strip_prefix(qos_actions::ARGUMENTS_JSON_PREFIX))
-            .map(|json| {
-                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
-                    .map_err(|error| qos_actions::DoorError::InvalidArguments(error.to_string()))
-            })
-            .transpose()?;
-        let resolved = qos_actions::door::resolve(&resources, address)
-            .ok_or_else(|| qos_actions::DoorError::Unknown(address.clone()))?;
-        if !matches!(
-            resolved.contract.confirmation,
-            qos_actions::ConfirmationPolicy::None
-        ) && !confirmed_by_broker
-        {
-            return Err(qos_actions::DoorError::ConfirmationRequired);
-        }
+        let (typed_arguments, resolved) =
+            Self::resolve_resource_invocation(&resources, address, argument, confirmed_by_broker)?;
         let kind = resolved.kind;
-        (|| {
-            if kind == qos_actions::OperationKind::Document {
-                let before = self.state.doc.get_heads();
-                let dispatched = if let Some(arguments) = &typed_arguments {
-                    qos_actions::door::invoke_json_confirmed(
-                        &mut self.state.doc,
-                        &resources,
-                        address,
-                        arguments,
-                        actor.as_bytes(),
-                        &self.action_registry,
-                        self.action_transport.as_mut(),
-                    )?
-                } else {
-                    qos_actions::door::invoke_confirmed(
-                        &mut self.state.doc,
-                        &resources,
-                        address,
-                        argument,
-                        actor.as_bytes(),
-                        &self.action_registry,
-                        self.action_transport.as_mut(),
-                    )?
-                };
-                if dispatched.mutated_local() {
-                    self.state.record_committed_action_authored(
-                        before,
-                        None,
-                        None,
-                        Some(crate::permissions::UserId(actor.to_string())),
-                    );
-                    self.needs_sync = true;
-                    self.layout_dirty = true;
-                }
-                Ok(crate::widget::ResourceOperationStart::Completed(
-                    qos_actions::ActionOutput::default(),
-                ))
-            } else {
-                let encoded = if let Some(arguments) = &typed_arguments {
-                    qos_actions::door::encode_json(&resources, address, arguments)?
-                } else {
-                    qos_actions::door::encode(&resources, address, argument)?
-                };
-                if encoded.type_id == crate::a11y_tree::SEMANTIC_OPERATION_TYPE {
-                    let handled = self
-                        .invoke_semantic_operation_encoded(&encoded)
-                        .map_err(qos_actions::DoorError::Failed)?;
-                    if !handled {
-                        return Err(qos_actions::DoorError::Unknown(address.clone()));
-                    }
-                    self.commit_action();
-                    self.needs_sync = true;
-                    self.layout_dirty = true;
-                    return Ok(crate::widget::ResourceOperationStart::Completed(
-                        qos_actions::ActionOutput::default(),
-                    ));
-                }
-                let operation_invocation = invocation.unwrap_or_default();
-                let started = self
-                    .root_widget
-                    .start_resource_operation(
-                        operation_invocation,
-                        kind,
-                        &encoded.type_id,
-                        &encoded.payload,
-                        &self.state.doc,
-                        &self.state.root,
-                    )
-                    .map_err(qos_actions::DoorError::Failed)?;
-                let Some(started) = started else {
-                    return Err(qos_actions::DoorError::Unknown(address.clone()));
-                };
-                if matches!(started, crate::widget::ResourceOperationStart::Accepted)
-                    && matches!(
-                        resolved.contract.execution,
-                        qos_actions::ExecutionMode::Immediate
-                    )
-                {
-                    return Err(qos_actions::DoorError::Failed(
-                        "an immediate operation cannot remain pending".into(),
-                    ));
-                }
-                if invocation.is_none()
-                    && matches!(started, crate::widget::ResourceOperationStart::Accepted)
-                {
-                    self.local_invocations.insert(operation_invocation);
-                }
-                if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
-                    // Queued widget work advances from `sync`; admission must
-                    // therefore schedule a model pass even if no document
-                    // mutation or input event accompanied the invocation.
-                    self.needs_sync = true;
-                }
-                if let crate::widget::ResourceOperationStart::Completed(output) = &started {
-                    resolved
-                        .contract
-                        .result
-                        .validate(output)
-                        .map_err(qos_actions::DoorError::Failed)?;
-                }
-                self.layout_dirty = true;
-                Ok(started)
+        if kind == qos_actions::OperationKind::Document {
+            return self.invoke_document_resource_action(
+                &resources,
+                address,
+                typed_arguments.as_ref(),
+                argument,
+                actor,
+            );
+        }
+        let encoded =
+            Self::encode_resource_action(&resources, address, typed_arguments.as_ref(), argument)?;
+        if encoded.type_id == crate::a11y_tree::SEMANTIC_OPERATION_TYPE {
+            let handled = self
+                .invoke_semantic_operation_encoded(&encoded)
+                .map_err(qos_actions::DoorError::Failed)?;
+            if !handled {
+                return Err(qos_actions::DoorError::Unknown(address.clone()));
             }
-        })()
+            self.commit_action();
+            self.needs_sync = true;
+            self.layout_dirty = true;
+            return Ok(crate::widget::ResourceOperationStart::Completed(
+                qos_actions::ActionOutput::default(),
+            ));
+        }
+        let operation_invocation = invocation.unwrap_or_default();
+        let started = self
+            .root_widget
+            .start_resource_operation(
+                operation_invocation,
+                kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &self.state.doc,
+                &self.state.root,
+            )
+            .map_err(qos_actions::DoorError::Failed)?;
+        let Some(started) = started else {
+            return Err(qos_actions::DoorError::Unknown(address.clone()));
+        };
+        if matches!(started, crate::widget::ResourceOperationStart::Accepted)
+            && matches!(
+                resolved.contract.execution,
+                qos_actions::ExecutionMode::Immediate
+            )
+        {
+            return Err(qos_actions::DoorError::Failed(
+                "an immediate operation cannot remain pending".into(),
+            ));
+        }
+        if invocation.is_none()
+            && matches!(started, crate::widget::ResourceOperationStart::Accepted)
+        {
+            self.local_invocations.insert(operation_invocation);
+        }
+        if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
+            // Queued widget work advances from `sync`; admission must
+            // therefore schedule a model pass even if no document
+            // mutation or input event accompanied the invocation.
+            self.needs_sync = true;
+        }
+        if let crate::widget::ResourceOperationStart::Completed(output) = &started {
+            resolved
+                .contract
+                .result
+                .validate(output)
+                .map_err(qos_actions::DoorError::Failed)?;
+        }
+        self.layout_dirty = true;
+        Ok(started)
     }
 
     /// Resolve queued local control intents against the current resource tree
     /// and enter through the same door/lifecycle as every other caller.
     fn dispatch_control_invocations(&mut self) -> usize {
-        let mut dispatched = 0;
+        let mut dispatched = 0_usize;
         while let Some(intent) = self.root_widget.take_control_invocation() {
             let local_resources = self
                 .collect_resources()
@@ -1353,7 +1392,7 @@ impl App {
                 if let Some(palette) = self.action_palette.as_mut() {
                     palette.activate_address(&intent.address.resource, &intent.address.action);
                 }
-                dispatched += 1;
+                dispatched = dispatched.saturating_add(1);
                 continue;
             }
             let json = format!(
@@ -1363,7 +1402,7 @@ impl App {
             );
             let actor = self.local_author.0.clone();
             match self.invoke_resource_action(&intent.address, Some(&json), &actor, false, None) {
-                Ok(_) => dispatched += 1,
+                Ok(_) => dispatched = dispatched.saturating_add(1),
                 Err(error) => tracing::warn!(
                     resource = %intent.address.resource,
                     action = %intent.address.action,
@@ -2450,7 +2489,9 @@ impl App {
                     action,
                     argument,
                     actor,
-                } => self.invoke_published_action(id, resource, action, argument, actor),
+                } => {
+                    self.invoke_published_action(id, resource, action, argument.as_deref(), &actor);
+                }
                 CollabEvent::InvocationCancellation { id } => {
                     self.request_invocation_cancellation(id);
                 }
@@ -2548,7 +2589,7 @@ impl App {
                 action,
                 argument,
                 actor,
-            } => self.invoke_published_action(id, resource, action, argument, actor),
+            } => self.invoke_published_action(id, resource, action, argument.as_deref(), &actor),
             CollabEvent::InvocationCancellation { id } => {
                 self.request_invocation_cancellation(id);
             }
@@ -3030,6 +3071,23 @@ impl App {
         )
     }
 
+    fn find_resource_action(
+        resources: &[qos_actions::Resource],
+        target: accesskit::NodeId,
+    ) -> Option<qos_actions::ActionAddress> {
+        resources.iter().find_map(|resource| {
+            resource
+                .actions
+                .iter()
+                .find(|spec| {
+                    crate::accesskit_bridge::resource_action_node_id(resource.id.as_str(), &spec.id)
+                        == target
+                })
+                .map(|spec| qos_actions::ActionAddress::new(resource.id.as_str(), &spec.id))
+                .or_else(|| Self::find_resource_action(&resource.children, target))
+        })
+    }
+
     /// Resolves both retained AccessKit nodes and synthetic semantic children
     /// (virtual rows/cells) to their owning widget. The widget gets first
     /// refusal; synthetic children additionally carry an opaque stable target
@@ -3040,10 +3098,10 @@ impl App {
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Option<(f64, f64)> {
-        self.refresh_control_action_availability();
         use crate::a11y::Action;
         use crate::accesskit_bridge::{A11yTarget, resolve_node_id};
 
+        self.refresh_control_action_availability();
         let argument = match action {
             Action::Activate | Action::ToggleCheck => Some(None),
             Action::SetValue(value) => Some(Some(value.as_str())),
@@ -3051,25 +3109,7 @@ impl App {
         };
         if let Some(argument) = argument {
             let resources = self.collect_declared_resources();
-            fn find_resource_action(
-                resources: &[qos_actions::Resource],
-                target: accesskit::NodeId,
-            ) -> Option<qos_actions::ActionAddress> {
-                resources.iter().find_map(|resource| {
-                    resource
-                        .actions
-                        .iter()
-                        .find(|spec| {
-                            crate::accesskit_bridge::resource_action_node_id(
-                                resource.id.as_str(),
-                                &spec.id,
-                            ) == target
-                        })
-                        .map(|spec| qos_actions::ActionAddress::new(resource.id.as_str(), &spec.id))
-                        .or_else(|| find_resource_action(&resource.children, target))
-                })
-            }
-            if let Some(address) = find_resource_action(&resources, target) {
+            if let Some(address) = Self::find_resource_action(&resources, target) {
                 let confirmation = qos_actions::door::resolve(&resources, &address)
                     .map(|spec| spec.contract.confirmation.clone())
                     .unwrap_or_default();
@@ -4415,12 +4455,12 @@ impl AppHandler {
                         match self.create_native_floating_window(event_loop, id, token, rect) {
                             Ok(()) => changed = true,
                             Err(error) => {
-                                tracing::warn!(%error, "could not prepare native floating surface")
+                                tracing::warn!(%error, "could not prepare native floating surface");
                             }
                         }
                     }
                     Err(error) => {
-                        tracing::warn!(%error, "shell sent invalid floating surface rect")
+                        tracing::warn!(%error, "shell sent invalid floating surface rect");
                     }
                 },
                 crate::floating_surface::FloatingSurfaceHostMessage::Adopted { id, rect } => {
@@ -5288,7 +5328,7 @@ impl AppHandler {
         if !handled && let Some(root_node) = app.root_node {
             app.refresh_control_action_availability();
             let scale_factor = window.scale_factor();
-            let had_floating_presentation =
+            let presentation_was_floating =
                 !app.root_widget.floating_surface_presentations().is_empty();
             let floating_pointer_event = app.primary_floating_pointer_event(&event, scale_factor);
             let used_desktop_pointer_space = floating_pointer_event.is_some();
@@ -5311,11 +5351,11 @@ impl AppHandler {
                 root_node,
                 &app.taffy,
             );
-            let has_floating_presentation =
+            let presentation_is_floating =
                 !app.root_widget.floating_surface_presentations().is_empty();
             floating_pointer_needs_redraw = matches!(event, WindowEvent::CursorMoved { .. })
                 && (used_desktop_pointer_space
-                    || had_floating_presentation != has_floating_presentation);
+                    || presentation_was_floating != presentation_is_floating);
             if was_mouse_click {
                 tracing::debug!(
                     handled,
@@ -5739,6 +5779,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "winit requires the complete per-window event dispatch at this callback boundary"
+    )]
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -5750,19 +5794,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             .iter()
             .position(|surface| surface.window.id() == window_id)
         {
-            let window = self.floating_windows[index].window.clone();
-            let desktop_rect = self.floating_windows[index].desktop_rect;
+            let Some(surface) = self.floating_windows.get(index) else {
+                return;
+            };
+            let window = surface.window.clone();
+            let desktop_rect = surface.desktop_rect;
+            let surface_id = surface.id.clone();
             match event {
                 WindowEvent::CloseRequested => {
-                    let id = self.floating_windows[index].id.clone();
                     if let Some(client) = self.app.floating_surface_client.as_mut() {
                         let _ = client.send(
                             &crate::floating_surface::FloatingSurfaceClientMessage::Dismiss {
-                                id: id.clone(),
+                                id: surface_id.clone(),
                             },
                         );
                     }
-                    self.close_native_floating_window(&id);
+                    self.close_native_floating_window(&surface_id);
                 }
                 WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                     window.request_redraw();
@@ -5856,6 +5903,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "winit idle work must remain ordered within its single lifecycle callback"
+    )]
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let Some(window) = self.window.clone() else {
             return;

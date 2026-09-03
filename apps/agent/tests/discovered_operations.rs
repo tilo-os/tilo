@@ -206,6 +206,85 @@ fn run(
     (replica, acted, invocation_actor)
 }
 
+/// A discovered destructive operation remains fail-closed when the planner
+/// supplies no explicit confirmation metadata. The whole sequence is refused
+/// before its harmless title step runs, so confirmation cannot be bypassed by
+/// surrounding a destructive operation with ordinary edits.
+#[test]
+fn a_discovered_destructive_operation_requires_explicit_confirmation() {
+    let _serial = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let replica = seed_document_with_image(
+        "Scribe: delete the image, then give this a title, then delete the image again",
+    );
+    let (mut replica, acted, invocation_actor) = run(
+        |sock, room| Config {
+            endpoint: Some(sock),
+            endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
+            app_id: APP.into(),
+            cluster: room,
+            record: Some(RECORD.into()),
+            name: "Scribe".into(),
+            pace: Duration::from_millis(10),
+            once: true,
+            model: false,
+            model_timeout: Duration::from_secs(1),
+            await_document: Duration::ZERO,
+            settle: Duration::ZERO,
+            directory: None,
+            permissions: granted("Scribe", "word-processor"),
+        },
+        replica,
+        |doc| {
+            blocks(doc)
+                .iter()
+                .any(|block| block.text.starts_with("Scribe: I can't"))
+        },
+        Duration::from_secs(15),
+    );
+    let shown: Vec<(String, String)> = blocks(&replica)
+        .iter()
+        .map(|b| (b.kind.clone(), b.text.clone()))
+        .collect();
+    assert!(acted, "the agent reports having acted");
+    assert!(
+        invocation_actor.is_none(),
+        "an unconfirmed destructive operation must not reach the app broker"
+    );
+
+    let b = blocks(&replica);
+    assert!(
+        b.iter()
+            .any(|x| x.kind == "paragraph" && x.text == "Launch plan"),
+        "the harmless title step must not partially run: {shown:?}"
+    );
+    assert!(
+        b.iter().any(|x| x.kind == "image"),
+        "the image must remain without explicit confirmation: {shown:?}"
+    );
+    let reply = b
+        .iter()
+        .find(|x| x.text.starts_with("Scribe: I can't"))
+        .unwrap_or_else(|| panic!("no refusal was written: {shown:?}"));
+    assert!(reply.text.contains("confirm: true"), "{}", reply.text);
+    assert!(!reply.text.contains('#'), "{}", reply.text);
+
+    // The refusal itself is still an attributed agent-authored document edit.
+    let genesis = qdoc::model::schema_genesis_actor_hex();
+    let seed = hex::encode("ada");
+    let actors: std::collections::HashSet<String> = qdoc::history::versions(&mut replica)
+        .into_iter()
+        .map(|v| v.actor_hex)
+        .filter(|a| *a != genesis && *a != seed)
+        .collect();
+    assert_eq!(
+        actors,
+        std::collections::HashSet::from([hex::encode("Scribe")]),
+        "the refusal's change must carry the agent's own actor"
+    );
+}
+
 /// **The core claim of discovery.** An operation nowhere written down in
 /// the agent — Word Processor's own "insert table" — is found, performed,
 /// and attributed to the agent's own actor, exactly as a catalogue action

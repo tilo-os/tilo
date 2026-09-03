@@ -318,18 +318,29 @@ mod tests {
         send(&mut app, &mut doc, &cursor_at(200.0, 200.0));
 
         let resources = Widget::resources(&app, &doc);
-        assert!(!resources.is_empty());
+        assert_eq!(resources.len(), 1, "one storage-system root");
+        let system = &resources[0];
+        assert_eq!(system.kind, "disks.system");
+        let partition = system
+            .children
+            .iter()
+            .flat_map(|drive| &drive.children)
+            .find(|resource| resource.kind == "disks.partition")
+            .expect("a partition resource");
+        let actions: Vec<&str> = partition
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        for expected in ["benchmark", "format"] {
+            assert!(
+                actions.contains(&expected),
+                "partition publishes {expected}: {actions:?}",
+            );
+        }
         assert!(
-            resources
-                .iter()
-                .flat_map(|root| &root.children)
-                .any(|drive| {
-                    !drive.actions.is_empty()
-                        || drive
-                            .children
-                            .iter()
-                            .any(|partition| !partition.actions.is_empty())
-                })
+            actions.iter().any(|id| matches!(*id, "mount" | "unmount")),
+            "partition publishes the mount action appropriate to its state: {actions:?}",
         );
         assert!(
             app.take_committed_action().is_none(),

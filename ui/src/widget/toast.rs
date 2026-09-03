@@ -288,6 +288,10 @@ const CARD_CLOSE_SIZE: f64 = 22.0;
 /// [`paint_card`]. Built fluently:
 /// `ToastCard::new("Slow network", ToastKind::Warning).body("retrying")`.
 #[derive(Clone, Copy)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent immediate-mode card affordances are supplied by the caller"
+)]
 pub struct ToastCard<'a> {
     /// Primary line — the summary. Semibold, `text_primary`.
     pub title: &'a str,

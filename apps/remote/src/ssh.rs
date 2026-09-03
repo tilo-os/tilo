@@ -524,7 +524,9 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         // Prove the upstream pipe: send a byte, expect the echo back.
         let acknowledgement = ssh.send_input_ack(b"Z".to_vec()).unwrap();
         assert_eq!(
-            acknowledgement.recv_timeout(Duration::from_secs(2)).unwrap(),
+            acknowledgement
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap(),
             Ok(()),
             "resource input is acknowledged only after the SSH channel write"
         );

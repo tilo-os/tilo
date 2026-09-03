@@ -1386,6 +1386,8 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
             .filter(|hit| state.client_input.surfaces.contains_key(&hit.surface_id))
             .map(|hit| (hit.surface_id, hit.rect))
             .collect::<Vec<_>>();
+        drop(tree);
+        drop(chrome);
         tiles.extend(
             fb.floating_surface_rects()
                 .into_iter()
