@@ -49,6 +49,13 @@ pub trait HttpsTransport {
 /// from verified artifact paths, a signed extension identity, and a service
 /// allocated loopback port — never a shell string.
 pub trait ProcessSupervisor {
+    /// Import a verified OCI archive and prove that the local image carries
+    /// the exact signed digest before it becomes launchable.
+    fn install_runtime_image(
+        &mut self,
+        archive: &Path,
+        signed_image: &str,
+    ) -> Result<(), ServiceError>;
     fn start(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError>;
     fn stop(&mut self, handle: &ProcessHandle) -> Result<(), ServiceError>;
 }
@@ -232,7 +239,9 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         model: &LocalModelRelease,
     ) -> Result<LocalModelStatus, ServiceError> {
         runtime.validate()?;
-        self.fetch_verified(&runtime.release.artifact)?;
+        let archive = self.fetch_verified(&runtime.release.artifact)?;
+        self.supervisor
+            .install_runtime_image(&archive, &runtime.release.oci_image)?;
         self.install_model(model)
     }
 
@@ -514,6 +523,9 @@ mod tests {
         stopped: Vec<String>,
     }
     impl ProcessSupervisor for Supervisor {
+        fn install_runtime_image(&mut self, _: &Path, _: &str) -> Result<(), ServiceError> {
+            Ok(())
+        }
         fn start(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError> {
             self.command = Some(command.clone());
             Ok(ProcessHandle { id: "svc-1".into() })
