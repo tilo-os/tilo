@@ -21,8 +21,8 @@ use qos_user_identity::{DeviceCert, RevocationList};
 use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck};
 use crate::daemon::{read_frame, write_frame};
 use crate::transport::{
-    ALPN, ContentEndpointAdvertisement, ContentEndpointRequest, DISCOVERY_ALPN, Envelope,
-    FrameReader, MAX_FRAME_BYTES,
+    ALPN, ContentEndpointAdvertisement, ContentEndpointRequest, ContentPeerRegistration,
+    DISCOVERY_ALPN, Envelope, FrameReader, MAX_FRAME_BYTES,
 };
 
 /// A live authenticated session with a relay. Handles are cheap;
@@ -110,7 +110,32 @@ impl RelayClient {
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
     ) -> Result<EndpointAddr, ClientError> {
-        Self::discover_content_endpoint_with_server_trust(
+        Ok(Self::discover_content_peer_with_server_trust(
+            endpoint,
+            relay_addr,
+            workspace_id,
+            Some((own_user_public_key, expected_server_device)),
+            own_cert,
+            own_sk,
+            revocations,
+        )
+        .await?
+        .endpoint)
+    }
+
+    /// Resolve both the content endpoint and authenticated Files workspace
+    /// ticket needed by a fresh device to join the live record plane.
+    pub async fn discover_content_peer(
+        endpoint: &Endpoint,
+        relay_addr: EndpointAddr,
+        workspace_id: u64,
+        own_user_public_key: [u8; 32],
+        expected_server_device: [u8; 32],
+        own_cert: DeviceCert,
+        own_sk: ed25519_dalek::SigningKey,
+        revocations: RevocationList,
+    ) -> Result<ContentPeerRegistration, ClientError> {
+        Self::discover_content_peer_with_server_trust(
             endpoint,
             relay_addr,
             workspace_id,
@@ -135,7 +160,7 @@ impl RelayClient {
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
     ) -> Result<EndpointAddr, ClientError> {
-        Self::discover_content_endpoint_with_server_trust(
+        Ok(Self::discover_content_peer_with_server_trust(
             endpoint,
             relay_addr,
             workspace_id,
@@ -144,10 +169,11 @@ impl RelayClient {
             own_sk,
             revocations,
         )
-        .await
+        .await?
+        .endpoint)
     }
 
-    async fn discover_content_endpoint_with_server_trust(
+    async fn discover_content_peer_with_server_trust(
         endpoint: &Endpoint,
         relay_addr: EndpointAddr,
         workspace_id: u64,
@@ -155,7 +181,7 @@ impl RelayClient {
         own_cert: DeviceCert,
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
-    ) -> Result<EndpointAddr, ClientError> {
+    ) -> Result<ContentPeerRegistration, ClientError> {
         let conn = endpoint
             .connect(relay_addr, DISCOVERY_ALPN)
             .await
@@ -214,13 +240,22 @@ impl RelayClient {
                 "relay returned a mismatched workspace".into(),
             ));
         }
-        advertisement
+        if advertisement.schema_version != 1 || advertisement.filesystem_ticket.is_empty() {
+            return Err(ClientError::Codec(
+                "relay returned an unsupported content registration".into(),
+            ));
+        }
+        let endpoint = advertisement
             .filesystem_endpoints
             .into_iter()
             .next()
             .ok_or_else(|| {
                 ClientError::Iroh("relay has no ready filesystem endpoint for workspace".into())
-            })
+            })?;
+        Ok(ContentPeerRegistration {
+            endpoint,
+            ticket: advertisement.filesystem_ticket,
+        })
     }
     /// Dial `relay_addr` on the `qos-relay/1` ALPN, run the auth
     /// handshake with `own_cert` + `own_sk`, and return a

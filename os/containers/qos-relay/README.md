@@ -6,17 +6,15 @@ content for the workspaces selected in Settings.
 
 ## Before starting
 
-On a trusted qOS device, create a home-server enrollment token. Put it in
-`enrollment-token.txt` next to `compose.yaml`, then create the persistent
-directories:
+Create the persistent directories:
 
 ```text
 mkdir -p identity config
 chmod 700 identity config
 ```
 
-The token is short-lived. The container creates its own device key; no user-root
-private key is copied to the server.
+The container creates its own device key; no user-root private key is copied to
+the server.
 
 ## Start
 
@@ -25,11 +23,15 @@ podman compose up -d
 ```
 
 Open Settings → Devices & Sync on the trusted qOS device and choose
-**Pair home server**. The devices find each other on the LAN. The signed
+**Pair home server**. Settings shows the server name and six-digit code; confirm
+that code on the server, then approve that exact device. The signed
 certificate, selected workspace IDs, file ticket, and signed live authority
 arrive as one authenticated provisioning response. The container writes its
-configuration and starts both replica services automatically. Remove
-`enrollment-token.txt` after pairing.
+configuration and starts both replica services automatically.
+
+Existing deployments may still mount a short-lived token at
+`/run/secrets/qos-enrollment-token`; this is a compatibility path, not required
+for normal pairing.
 
 The named volumes are essential: they hold the stable Iroh
 endpoint secret, CRDT snapshots, pending offline queues, revocations, and
