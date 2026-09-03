@@ -49,7 +49,6 @@ use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
 };
-use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
@@ -129,7 +128,7 @@ pub(crate) struct FloatingToplevel {
     /// later detach can resume without renderer or identity churn.
     pub suspended: bool,
     /// True only after the first commit carrying pixels. Constructing an
-    /// xdg_toplevel alone is not a visible ownership transfer.
+    /// `xdg_toplevel` alone is not a visible ownership transfer.
     pub presented: bool,
 }
 
@@ -362,15 +361,6 @@ pub struct State {
     pub xdg_decoration_state: XdgDecorationState,
     /// `wl_shm` global state — software buffer support; always advertises ARGB8888 + XRGB8888, no extra formats yet.
     pub shm_state: ShmState,
-    /// `wl_data_device_manager` global state — the clipboard and
-    /// drag-and-drop channel.
-    ///
-    /// Not optional in practice: GTK refuses to use a Wayland display at all
-    /// when absent — `gdk_wayland_display_open` checks for it alongside
-    /// `wl_compositor`/`wl_shm` and bails if any is missing, so every GTK
-    /// app connects, is refused, and falls back to a nonexistent X11
-    /// display. qOS's own toolkit doesn't use it, which is why it was missing.
-    pub data_device_state: DataDeviceState,
     /// `zwp_linux_dmabuf_v1` global state — enables clients to attach
     /// GPU-allocated (usually GBM) buffers to their surfaces.
     ///
@@ -430,26 +420,24 @@ pub struct State {
     pub surface_tracker: SurfaceTracker,
     /// The compositor's `wl_seat` handle with a pointer device already
     /// registered, constructed in [`State::new`]. Peer-sync's
-    /// [`Self::apply_remote_input`] injects pointer motion/button events
-    /// into this seat so remote-input traffic drives the local seat instead
-    /// of being logged and discarded. Keyboard injection is staged behind a
-    /// follow-up (needs a configured keymap); pointer is what the foreign-tab remote-control use case needs.
+    /// [`Self::apply_remote_input`] injects gated pointer and keyboard events
+    /// into this one seat, so every collaborator appears as one coherent
+    /// input source to an ordinary Wayland client.
     pub seat: Seat<Self>,
     /// Monotonic counter for input serials — reusing old `Serial`s would make wayland clients ignore the motion/button.
     pub serial_counter: u32,
     /// Wall-clock anchor for input timestamps; pointer events ship `time: u32` in milliseconds since this instant.
     pub start_time: std::time::Instant,
-    /// Per-peer virtual seats. [`InputEvent::PointerEnter`] auto-grabs the
-    /// peer's keyboard focus onto the target surface for downstream `Key`
-    /// events; [`InputEvent::PointerLeave`] releases it. See
-    /// [`crate::compositor::remote_seat::RemoteSeats`]; multi-user typing interleaves at the physical seat level (v1: bookkeeping only, not a per-peer pipeline).
+    /// Per-peer virtual-seat attribution. Click focus scopes which shared
+    /// surface may receive that peer's keys, while pointer leave preserves
+    /// the caret and the active tab retains the one app-facing
+    /// keyboard/text-input focus. See
+    /// [`crate::compositor::remote_seat::RemoteSeats`].
     pub remote_seats: RemoteSeats,
-    /// Optional surface-id → `WlSurface` resolver installed by the backend
-    /// (`native::run` wires this to the compositor's wayland-server
-    /// tracker). Populated at boot from the same map the render layer uses;
-    /// consulted by [`Self::apply_remote_input`]'s keyboard-focus flip on
-    /// `PointerEnter`. `None` (headless tests) makes the focus flip a bookkeeping-only no-op.
-    pub surface_resolver: Option<Box<dyn Fn(SurfaceId) -> Option<WlSurface> + Send + Sync>>,
+    /// Every live client surface, keyed by the stable collaboration id.
+    /// Native output bookkeeping uses this to emit `wl_surface.enter`, and
+    /// remote pointer motion uses it to resolve the real focus surface.
+    pub surface_handles: HashMap<SurfaceId, WlSurface>,
     /// Active share sessions keyed by their target `SurfaceId`.
     ///
     /// [`CompositorHandler::commit`] consults this map on every surface
@@ -458,6 +446,11 @@ pub struct State {
     /// stall waiting on the next damage pass. Held as `Arc` since
     /// [`crate::collab::flatpak_share::SharedFlatpakSession`]'s `encode_next_frame` takes `&self`.
     pub active_sessions: HashMap<SurfaceId, Arc<SharedFlatpakSession>>,
+    /// Non-blocking bridge from surface commits into the collaboration
+    /// transport. Installed by the native compositor when peer sync is on;
+    /// absent in isolated tests and offline sessions.
+    legacy_stream_publisher:
+        Option<Arc<dyn Fn(crate::network::NeighbourMsg) -> bool + Send + Sync>>,
     /// `wp_color_manager_v1` state — advertised primaries/transfers/features
     /// plus the registered global id. HDR clients bind it, query
     /// capabilities, and attach parametric image descriptions; the
@@ -554,7 +547,7 @@ impl State {
             suspended: pending.suspended,
             presented: false,
         };
-        self.floating_toplevels.push(surface.clone());
+        self.floating_toplevels.push(surface);
         true
     }
 
@@ -738,7 +731,6 @@ impl State {
         // Advertised to every client, unfiltered: hiding this global just makes a toolkit decorate itself.
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
-        let data_device_state = DataDeviceState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
 
@@ -787,7 +779,6 @@ impl State {
             xdg_shell_state,
             xdg_decoration_state,
             shm_state,
-            data_device_state,
             dmabuf_state,
             dmabuf_global,
             dmabuf_device,
@@ -807,8 +798,9 @@ impl State {
             serial_counter: 0,
             start_time: std::time::Instant::now(),
             remote_seats: RemoteSeats::new(),
-            surface_resolver: None,
+            surface_handles: HashMap::new(),
             active_sessions: HashMap::new(),
+            legacy_stream_publisher: None,
             color_manager,
             fractional_scale_manager,
             viewporter,
@@ -1058,15 +1050,109 @@ impl State {
         self.surface_scales.retain(|id, _| live.contains(id));
     }
 
-    /// Register a share session so [`CompositorHandler::commit`] pumps `encode_next_frame` on every commit; replaces any prior session.
+    /// Install the non-blocking network bridge used by live legacy streams.
+    pub fn set_legacy_stream_publisher(
+        &mut self,
+        publisher: Arc<dyn Fn(crate::network::NeighbourMsg) -> bool + Send + Sync>,
+    ) {
+        self.legacy_stream_publisher = Some(publisher);
+    }
+
+    /// Register a share session so [`CompositorHandler::commit`] pumps
+    /// `encode_next_frame` on every commit; replaces any prior session and
+    /// announces the new stream before its first frame.
     pub fn register_share_session(&mut self, session: Arc<SharedFlatpakSession>) {
         let surface = session.surface_id;
+        if let Some(previous) = self.active_sessions.get(&surface)
+            && let Some(publish) = &self.legacy_stream_publisher
+        {
+            let _ = publish(previous.stream_end_msg());
+        }
+        if let Some(publish) = &self.legacy_stream_publisher {
+            let _ = publish(session.stream_start_msg());
+        }
         self.active_sessions.insert(surface, session);
     }
 
     /// Deregister a share session by surface id (no-op if unregistered) — called on share end or surface destroy.
     pub fn unregister_share_session(&mut self, surface: SurfaceId) {
-        self.active_sessions.remove(&surface);
+        if let Some(session) = self.active_sessions.remove(&surface)
+            && let Some(publish) = &self.legacy_stream_publisher
+        {
+            let _ = publish(session.stream_end_msg());
+        }
+    }
+
+    /// Reconcile encoder lifetimes and viewer permissions with the active
+    /// workspace's replicated `shared_surfaces` map. A newly shared static
+    /// window is seeded from the compositor's already captured foreign frame,
+    /// so it does not have to damage itself again before the first packet.
+    pub fn reconcile_legacy_share_sessions(
+        &mut self,
+        host_peer: MsgPeerId,
+        desired: &HashMap<SurfaceId, (String, std::collections::HashSet<MsgPeerId>)>,
+        config: &crate::config::FlatpakShareConfig,
+    ) {
+        let stale = self
+            .active_sessions
+            .keys()
+            .copied()
+            .filter(|surface| !desired.contains_key(surface))
+            .collect::<Vec<_>>();
+        for surface in stale {
+            self.unregister_share_session(surface);
+        }
+
+        for (&surface, (app_id, recipients)) in desired {
+            let recipients = recipients
+                .iter()
+                .copied()
+                .filter(|peer| *peer != host_peer)
+                .collect::<std::collections::HashSet<_>>();
+            if recipients.is_empty() {
+                self.unregister_share_session(surface);
+                continue;
+            }
+            let Some((width, height)) = crate::compositor::foreign::store().frame_size(surface)
+            else {
+                continue;
+            };
+            let reusable = self.active_sessions.get(&surface).is_some_and(|session| {
+                session.app_id == *app_id && session.dimensions() == (width, height)
+            });
+            if reusable {
+                if let Some(session) = self.active_sessions.get(&surface) {
+                    session.sync_viewers(&recipients);
+                }
+                continue;
+            }
+
+            self.unregister_share_session(surface);
+            let Ok(session) =
+                SharedFlatpakSession::start(host_peer, app_id, surface, width, height, config)
+            else {
+                tracing::warn!(
+                    surface,
+                    app_id,
+                    width,
+                    height,
+                    "legacy share encoder failed to start"
+                );
+                continue;
+            };
+            let session = Arc::new(session);
+            session.sync_viewers(&recipients);
+            self.register_share_session(Arc::clone(&session));
+
+            if let Some(frame) = crate::compositor::foreign::store().snapshot(surface) {
+                session.deposit_captured_rgba(frame.rgba);
+                if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
+                    && let Some(publish) = &self.legacy_stream_publisher
+                {
+                    let _ = publish(frame.into_neighbour_msg());
+                }
+            }
+        }
     }
 
     /// Stage the buffer a foreign (external-client) toplevel just committed
@@ -1122,7 +1208,10 @@ impl State {
         if let Some(dmabuf) = self.surface_tracker.take_latest_dmabuf(surface_id) {
             session.deposit_captured_dmabuf(dmabuf);
             let emitted = session.encode_next_frame(std::time::Instant::now());
-            if emitted.is_some() {
+            if let Some(frame) = emitted {
+                if let Some(publish) = &self.legacy_stream_publisher {
+                    let _ = publish(frame.into_neighbour_msg());
+                }
                 // Encoder actually consumed the DMABUF. Only *now* do we bump
                 // the tracker's `dmabuf_direct_count` — the metric reflects
                 // real zero-copy, not "DMABUF-shaped but rejected and fell back to SHM".
@@ -1137,7 +1226,11 @@ impl State {
             return false;
         };
         session.deposit_captured_rgba(frame.rgba);
-        let _ = session.encode_next_frame(std::time::Instant::now());
+        if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
+            && let Some(publish) = &self.legacy_stream_publisher
+        {
+            let _ = publish(frame.into_neighbour_msg());
+        }
         true
     }
 
@@ -1169,6 +1262,27 @@ impl State {
         event: InputEvent,
     ) -> bool {
         self.review_remote_input(peer, surface, event).is_ok()
+    }
+
+    /// Mirror the active share session's latest viewer permission into the
+    /// compositor firewall, then review and inject the event. This closes the
+    /// gap between dynamic `set_read_only` changes and the state-level gate.
+    pub fn apply_network_remote_input(
+        &mut self,
+        peer: MsgPeerId,
+        surface: SurfaceId,
+        event: InputEvent,
+    ) -> bool {
+        let share = self
+            .active_sessions
+            .get(&surface)
+            .and_then(|session| session.viewer_share(peer));
+        if let Some(share) = share {
+            self.share_registry.insert(peer, surface, share);
+        } else {
+            self.share_registry.remove(peer, surface);
+        }
+        self.apply_remote_input(peer, surface, event)
     }
 
     /// [`Self::apply_remote_input`], reporting which rule refused the event rather than collapsing every refusal to `false`.
@@ -1207,6 +1321,19 @@ impl State {
             None => {
                 return Err(self.refuse_remote_input(peer, surface, &event, Denial::NotShared));
             }
+        }
+
+        // The app has one keyboard focus, but each collaborator must first
+        // focus this particular shared view. Otherwise an authenticated peer
+        // could inject keys into an active surface without ever interacting
+        // with its PeerView.
+        if matches!(event, InputEvent::Key { .. })
+            && self
+                .remote_seats
+                .seat(peer)
+                .is_none_or(|seat| seat.focused_surface != Some(surface))
+        {
+            return Err(self.refuse_remote_input(peer, surface, &event, Denial::FocusMuted));
         }
 
         // Region, z-order, scrubber, rate limit — what comes back is the event to inject, coordinates already moved into output space.
@@ -1483,9 +1610,10 @@ impl State {
 // state flows via explicit modifier press/release events, maintained by
 // smithay's `KeyboardInternal::key_input` from the keycode stream; the wire `modifiers` bitfield is diagnostics only.
 //
-// Focus grab: `PointerEnter { surface }` flips the single `Seat<State>`'s
-// keyboard focus to the target `WlSurface` (via `surface_resolver`);
-// `PointerLeave` releases it. `None` from the resolver makes the flip a bookkeeping-only no-op.
+// Focus: the active tab owns the single `Seat<State>`'s keyboard/text-input
+// focus. Pointer enter/leave updates per-peer attribution only; pointer motion
+// resolves the target `WlSurface` and its tile origin for normal Wayland
+// enter/motion delivery.
 impl RemoteInputSink for State {
     fn apply(&mut self, peer: MsgPeerId, surface: SurfaceId, event: InputEvent) {
         tracing::debug!(
@@ -1502,12 +1630,24 @@ impl RemoteInputSink for State {
         match event {
             InputEvent::PointerMotion { x, y } => {
                 if let Some(pointer) = self.seat.get_pointer() {
-                    // No surface focus here — the remote driver doesn't
-                    // know which local wl_surface corresponds to its
-                    // `surface` id. The pointer's logical position still updates, which the hover/cluster routing layer consumes.
+                    // The firewall translated the point to output space. Give
+                    // smithay the same surface + tile origin as local input so
+                    // it emits enter/motion in surface-local coordinates. A
+                    // `None` focus here is a Wayland leave, which made real
+                    // GTK/Qt/LibreOffice controls impossible to hover/click.
+                    let focus =
+                        self.surface_handles
+                            .get(&surface)
+                            .cloned()
+                            .and_then(|wl_surface| {
+                                self.remote_input_firewall
+                                    .view()
+                                    .rect(surface)
+                                    .map(|rect| (wl_surface, (rect.x0, rect.y0).into()))
+                            });
                     pointer.motion(
                         self,
-                        None,
+                        focus,
                         &MotionEvent {
                             location: (x, y).into(),
                             serial,
@@ -1541,24 +1681,41 @@ impl RemoteInputSink for State {
                 }
             }
             InputEvent::PointerEnter { surface: target } => {
-                // Grab keyboard focus for the peer's virtual seat.
-                let prev = self.remote_seats.seat_mut(peer).enter(target);
-                // Only flip the physical seat's keyboard focus if the target changed — noisy re-enters otherwise stomp focus state.
-                if prev != Some(target)
-                    && let (Some(resolver), Some(keyboard)) =
-                        (&self.surface_resolver, self.seat.get_keyboard())
-                {
-                    let target_surface = resolver(target);
-                    keyboard.set_focus(self, target_surface, serial);
-                }
+                // Preserve compatibility with pre-KeyboardFocus viewers,
+                // which used PointerEnter as their focus handshake. New
+                // viewers send an explicit click-derived transition too.
+                let seat = self.remote_seats.seat_mut(peer);
+                let _ = seat.pointer_enter(target);
+                let _ = seat.enter(target);
             }
             InputEvent::PointerLeave { surface: _ } => {
-                // Release the peer's grab, only clearing keyboard focus if this peer actually held it — an unentered `PointerLeave` is a no-op.
-                let prev = self.remote_seats.seat_mut(peer).leave();
-                if prev.is_some()
-                    && let Some(keyboard) = self.seat.get_keyboard()
-                {
-                    keyboard.set_focus(self, None, serial);
+                // Leaving ends pointer attribution only. In particular, do
+                // not release keys or deactivate text-input-v3: real apps
+                // keep their caret after the pointer moves elsewhere.
+                let _ = self.remote_seats.seat_mut(peer).pointer_leave();
+            }
+            InputEvent::KeyboardFocus {
+                surface: target,
+                focused,
+            } => {
+                if focused {
+                    let _ = self.remote_seats.seat_mut(peer).enter(target);
+                    return;
+                }
+                let _ = self.remote_seats.seat_mut(peer).leave();
+                let releases = self.remote_seats.release_peer_keys(peer);
+                for keycode in releases {
+                    if let Some(keyboard) = self.seat.get_keyboard() {
+                        let release_serial = self.next_serial();
+                        let _: Option<()> = keyboard.input(
+                            self,
+                            keycode.saturating_add(8).into(),
+                            KeyState::Released,
+                            release_serial,
+                            time,
+                            |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
+                        );
+                    }
                 }
             }
             InputEvent::Key {
@@ -1572,17 +1729,26 @@ impl RemoteInputSink for State {
                 //
                 // Modifier state is *not* force-set: smithay's
                 // `key_input` maintains it from the keycode stream, so peers send Shift-press → A-press → A-release → Shift-release; the wire `modifiers` bitfield is diagnostics only.
-                if let Some(keyboard) = self.seat.get_keyboard() {
+                if self.remote_seats.key_transition(peer, keysym, pressed)
+                    && let Some(keyboard) = self.seat.get_keyboard()
+                {
                     let key_state = if pressed {
                         KeyState::Pressed
                     } else {
                         KeyState::Released
                     };
-                    // Smithay's Keycode wraps u32 — Keysym on the wire passes straight through, mirroring wayland.rs sibling's `handle_input`.
-                    let _: Option<()> =
-                        keyboard.input(self, keysym.into(), key_state, serial, time, |_, _, _| {
-                            smithay::input::keyboard::FilterResult::<()>::Forward
-                        });
+                    // The compatibility wire's historical field name is
+                    // `keysym`, but the value is an evdev keycode. Smithay's
+                    // keyboard API consumes XKB keycodes (evdev + 8), exactly
+                    // like the local-client path.
+                    let _: Option<()> = keyboard.input(
+                        self,
+                        keysym.saturating_add(8).into(),
+                        key_state,
+                        serial,
+                        time,
+                        |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
+                    );
                 }
             }
         }
@@ -1701,6 +1867,13 @@ impl CompositorHandler for State {
         )
     }
 
+    fn new_surface(&mut self, surface: &WlSurface) {
+        self.surface_handles.insert(
+            crate::compositor::state::surface_id(surface),
+            surface.clone(),
+        );
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
         // HiDPI: push this surface's preferred `wp_fractional_scale` — the
         // scale of the *output it is on*, not one session-wide number,
@@ -1719,7 +1892,8 @@ impl CompositorHandler for State {
             .workspace_tree
             .workspaces
             .iter()
-            .any(|ws| ws.is_surface_shared(surface_id));
+            .any(|ws| ws.is_surface_shared(surface_id))
+            || self.active_sessions.contains_key(&surface_id);
         // Foreign-surface compositing: an adopted toplevel's buffer is captured every commit for `ForeignSurfaceWidget` to paint — independent of the share path above.
         let is_foreign_tab =
             tab_binding::group_id_for_surface(&self.workspace_tree, surface_id).is_some();
@@ -1817,6 +1991,13 @@ impl CompositorHandler for State {
         // encoder the same tick — without this the encoder waits for the
         // render loop's next damage sweep, a full-frame stall. Delegated to `tick_share_session_for_surface` to keep the pump logic testable without a real `WlSurface`.
         let _ = self.tick_share_session_for_surface(surface_id);
+    }
+
+    fn destroyed(&mut self, surface: &WlSurface) {
+        let id = crate::compositor::state::surface_id(surface);
+        self.surface_handles.remove(&id);
+        self.surface_tracker.forget(id);
+        self.unregister_share_session(id);
     }
 }
 

@@ -44,6 +44,7 @@
 ARG BASE_REF
 ARG RPMS_REF
 ARG KERNEL_RPMS_REF
+ARG WPE_BUILDROOT_REF
 
 # QOS_WITH_BROWSER=0 builds the image without the browser: no WPE WebKit engine
 # stage, no `browser` binary. Default 1 — a normal build is unchanged.
@@ -67,6 +68,10 @@ FROM ${RPMS_REF} AS rpms
 # qos-kernel-core out of it.
 FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 
+# CI restores these checksum-pinned files from persistent storage before the
+# build; local builds use the same resumable verifier.
+FROM github-assets AS github-assets
+
 
 # ---- Pinned Windows compatibility runtimes -------------------------------
 # UMU is the upstream-supported way to run Proton outside Steam. Keep the
@@ -76,29 +81,19 @@ FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 # Linux Runtime container remains UMU-owned and is populated in the capsule's
 # content-addressed cache when a game first needs that particular runtime.
 FROM ${BASE_REF} AS windows-compat-artifacts
-ADD --checksum=sha256:138ce4b8843608a257d4bee88191ca78a989778bcefd8abb3c1d1aaac3ac6fb8 \
-    https://github.com/Open-Wine-Components/umu-launcher/releases/download/1.4.0/umu-launcher-1.4.0-zipapp.tar \
-    /tmp/umu-launcher.tar
-ADD --checksum=sha256:62e99e029a18fa313e6fa63d42390918101730a940e3491c54d9d58cab887c69 \
-    https://github.com/Open-Wine-Components/umu-proton/releases/download/UMU-Proton-10.0-4/UMU-Proton-10.0-4.tar.gz \
-    /tmp/umu-proton.tar.gz
-ADD --checksum=sha256:87271019d53a13299b495287ef45def9078a0d654e5f53f99f67b82fffa034a8 \
-    https://raw.githubusercontent.com/Open-Wine-Components/umu-database/8297d420143bf722387b572fa1b81b5fa22746ac/umu-database.csv \
-    /out/catalogues/umu-database.csv
 ## Bottles' upstream program records improve catalogue matching. They are data,
 ## never an instruction source: qOS imports identity/runner hints only and does
 ## not execute a record's Steps, URLs, shell snippets, or dependencies.
-ADD --checksum=sha256:65cd49136305dccaa3d327cc948fa508f8e1d33de3e6c36ba0d9bf4646ca1727 \
-    https://github.com/bottlesdevs/programs/archive/d1160b816ca44a1cc803ab9a0050071517cc1960.tar.gz \
-    /tmp/bottles-programs.tar.gz
-RUN mkdir -p /out/bin /out/proton \
-    && tar -xf /tmp/umu-launcher.tar -C /tmp \
+RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+    mkdir -p /out/bin /out/proton \
+    && install -D -m 0644 /qos-assets/umu-database-8297d420.csv /out/catalogues/umu-database.csv \
+    && tar -xf /qos-assets/umu-launcher-1.4.0.tar -C /tmp \
     && install -m 0755 /tmp/umu/umu-run /out/bin/umu-run \
     && install -m 0644 /tmp/umu/umu_run.py /out/bin/umu_run.py \
-    && tar -xzf /tmp/umu-proton.tar.gz -C /out/proton \
+    && tar -xzf /qos-assets/umu-proton-10.0-4.tar.gz -C /out/proton \
     && test -x /out/proton/UMU-Proton-10.0-4/proton \
     && mkdir -p /out/catalogues/bottles-programs \
-    && tar -xzf /tmp/bottles-programs.tar.gz --strip-components=1 -C /out/catalogues/bottles-programs \
+    && tar -xzf /qos-assets/bottles-programs-d1160b8.tar.gz --strip-components=1 -C /out/catalogues/bottles-programs \
     && chmod -R a-w /out/catalogues/bottles-programs
 
 
@@ -108,13 +103,14 @@ RUN mkdir -p /out/bin /out/proton \
 # AirPlay receivers. Build one audited commit, run its hardware-free protocol
 # suite, and copy only the static sender into the OS image.
 FROM docker.io/library/golang:1.25.0-bookworm@sha256:81dc45d05a7444ead8c92a389621fafabc8e40f8fd1a19d7e5df14e61e98bc1a AS doubletake-builder
-ADD --checksum=sha256:e6c213bb221f4598e7e5e35804e8066b5b49a15ca2fb685729c9cf4ad82a20b7 \
-    https://github.com/omarroth/doubletake/archive/ae067228d76df011375164814b729932ed55ca2f.tar.gz \
-    /tmp/doubletake.tar.gz
-RUN mkdir -p /src /out \
-    && tar -xzf /tmp/doubletake.tar.gz --strip-components=1 -C /src
+ENV GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org
+RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+    mkdir -p /src /out \
+    && tar -xzf /qos-assets/doubletake-ae06722.tar.gz --strip-components=1 -C /src
 WORKDIR /src
-RUN CGO_ENABLED=0 go test ./... \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go test ./... \
     && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w -extldflags=-static' \
         -o /out/doubletake ./cmd/doubletake \
     && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w -extldflags=-static' \
@@ -128,11 +124,9 @@ FROM ${BASE_REF} AS fluxcast-builder
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     dnf install -y --setopt=reposdir=/repo python3 \
     && dnf clean all
-ADD --checksum=sha256:bfa0e96a25928cb7c9d906643e8947182ad124b35bcad3f0c765f4fc011c47ab \
-    https://github.com/IlyaP358/fluxcast/archive/a74f39fe3f2012e20315cd37e13e9803871e587f.tar.gz \
-    /tmp/fluxcast.tar.gz
-RUN mkdir -p /src \
-    && tar -xzf /tmp/fluxcast.tar.gz --strip-components=1 -C /src
+RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+    mkdir -p /src \
+    && tar -xzf /qos-assets/fluxcast-a74f39f.tar.gz --strip-components=1 -C /src
 COPY os/tests/fluxcast-rtsp-receiver.py /fluxcast-rtsp-receiver.py
 RUN PYTHONPATH=/src/src python3 -m unittest discover -s /src/tests -p 'test_wfd.py' \
     && PYTHONPATH=/src/src python3 /fluxcast-rtsp-receiver.py
@@ -146,28 +140,18 @@ RUN PYTHONPATH=/src/src python3 -m unittest discover -s /src/tests -p 'test_wfd.
 # it to link `browser --features wpe`, the final image copies it into the
 # rootfs.
 #
-# Build deps come from `dnf builddep webkitgtk6.0` (wpewebkit builds from the
-# same source tree) against live repos — a deliberate exception to the
-# frozen-repo rule for this throwaway stage: the output is pinned by the
-# wpewebkit version in build-wpe.sh and reused from the layer cache until
-# that changes. Folding the builddep set into the frozen snapshot is a
-# follow-up.
-FROM ${BASE_REF} AS wpe-builder-1
-
-# The explicit list covers what the WPE port needs and the GTK port does not,
-# so `builddep webkitgtk6.0` never pulls it: libinput + libudev (systemd-devel)
-# back ENABLE_WPE_PLATFORM_DRM, and gbm/wayland/epoxy the rest of WPEPlatform.
-RUN dnf install -y 'dnf5-command(builddep)' \
-    && dnf builddep -y webkitgtk6.0 \
-    && dnf install -y \
-        meson ninja-build gperf unifdef libgbm-devel curl xz \
-        wayland-devel wayland-protocols-devel libepoxy-devel \
-        libinput-devel systemd-devel \
-    && dnf clean all
+# Fedora's source BuildRequires are resolved only by the protected WPE
+# buildroot snapshot workflow. Production builds consume that per-architecture
+# image by digest and therefore have no Fedora mirror path in this stage.
+FROM ${WPE_BUILDROOT_REF} AS wpe-builder-1
+RUN test -s /usr/lib/qos/wpe-buildroot-packages.txt \
+    && test "$(cat /usr/lib/qos/wpe-buildroot-arch)" = "$(uname -m)"
 
 COPY os/dev/build-wpe.sh /build-wpe.sh
 RUN --mount=type=cache,target=/wpe-cache \
-    QOS_WPE_CACHE=/wpe-cache QOS_WPE_PREFIX=/usr QOS_WPE_DESTDIR=/wpe \
+    --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+    QOS_WPE_CACHE=/wpe-cache QOS_WPE_SOURCE_DIR=/qos-assets QOS_WPE_OFFLINE=1 \
+    QOS_WPE_PREFIX=/usr QOS_WPE_DESTDIR=/wpe \
     bash /build-wpe.sh build \
     && { [ ! -L /wpe/usr/lib ] || rm /wpe/usr/lib; }
 
@@ -241,10 +225,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # layer. The archive checksum is also pinned in os/Containerfile.builder.
 ARG SCCACHE_VERSION=0.17.0
 ARG SCCACHE_SHA256=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
-ADD --checksum=sha256:${SCCACHE_SHA256} \
-    https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz \
-    /tmp/sccache.tar.gz
-RUN tar -xzf /tmp/sccache.tar.gz -C /tmp \
+RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+    echo "${SCCACHE_SHA256}  /qos-assets/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz" | sha256sum -c - \
+    && tar -xzf /qos-assets/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz -C /tmp \
     && install -m 0755 \
        "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" \
        /usr/local/bin/sccache \
@@ -254,13 +237,8 @@ RUN tar -xzf /tmp/sccache.tar.gz -C /tmp \
 
 WORKDIR /build
 
-# The whole cargo workspace: in-tree crates (ui) + submodule working trees
-# (shell, fs, greeter, installer, apps/*). .containerignore keeps target/,
-# os/output and .git out of the context.
-COPY . /build
-
 # Keep cargo's home and sccache's cache under /build (which exists via WORKDIR/
-# COPY). The fedora-bootc base has no /root, so nesting cache mounts there fails
+# itself). The fedora-bootc base has no /root, so nesting cache mounts there fails
 # ("stat /root: no such file or directory"); single subdirs of /build are safe.
 # Deterministic compile (reproducible builds): no incremental state in output,
 # remap the build path so binaries don't embed /build, fixed locale/timezone so
@@ -290,6 +268,12 @@ ENV CARGO_HOME=/build/.cargo-home \
 # engine built in the wpe-builder stage. Overlaying /usr in this throwaway
 # stage keeps pkg-config discovery entirely standard.
 COPY --from=wpe-builder /wpe/ /
+
+# Copy the frequently changing workspace only after the large, stable WPE
+# overlay. This keeps source-only iterations from re-importing the browser
+# engine before Cargo can reach its cache mounts. .containerignore excludes
+# target/, os/output and .git from the context.
+COPY . /build
 
 # Compile the binaries the OS images need. Cache mounts persist cargo's
 # registry + git checkouts (CARGO_HOME), the target dir, and the sccache store
@@ -354,6 +338,9 @@ COPY --from=wpe-builder /wpe/ /
 # The image-only Cargo overrides below use thin LTO, retaining cross-crate
 # optimization while allowing LLVM to use the runner cores. Other release
 # artifacts keep the workspace's stricter profile unchanged.
+# Layer timestamp rewriting can make a restored target cache newer than changed
+# workspace sources. Profiles are cleaned before fingerprinting so Cargo never
+# accepts a stale path-dependency rlib; sccache still reuses compiler objects.
 ARG QOS_WITH_BROWSER
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
@@ -362,6 +349,9 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=secret,id=aws_secret_access_key \
     export AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)" \
     && export AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key 2>/dev/null || true)" \
+    && sccache --start-server \
+    && cargo clean --release \
+    && cargo clean --profile thin-app \
     && if [ "${QOS_WITH_BROWSER}" = "0" ]; then \
          BROWSER_PKG=""; THIN_EXCLUDES="browser"; THIN_BROWSER_FEATURE=""; \
        else \
@@ -369,19 +359,29 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          THIN_EXCLUDES=""; THIN_BROWSER_FEATURE=",browser/wpe"; \
        fi \
     && APP_FEATURES="music/audio,music/streaming,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,chat/live-media,mail/live,disks/live,video_editor/decode,video_editor/gst" \
+    && RELEASE_ARGS="-p shell -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper -p qos-rollback -p qos-cli -p ush -p qos-projector -p pkg-cli -p install -p cli-shim" \
     && CARGO_PROFILE_RELEASE_LTO=thin \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
-       cargo build --release \
-        -p shell -p fs -p qos-relay --bins -p terminal -p file-explorer -p settings \
-        -p windows-vm --bin qos-windows-vm-control --bin qos-windows-rail \
-        -p greeter -p installer \
-        -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
-        -p qos-rollback -p qos-cli -p ush -p qos-projector \
-        -p pkg-cli -p install -p cli-shim \
-        ${BROWSER_PKG} \
-    && EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
-       APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}" \
-       /build/os/scripts/build-thin-apps.sh \
+       cargo build --release ${RELEASE_ARGS} -p qos-relay --bins ${BROWSER_PKG} \
+    && CARGO_PROFILE_RELEASE_LTO=thin \
+       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+       cargo build --release -p windows-vm \
+         --bin qos-windows-vm-control --bin qos-windows-rail \
+    && missing=0 \
+    && for b in shell qos-projector fs qos-relay qos-relay-admin qos-enroll qos-home-peer-control terminal file-explorer settings qos-greeter qos-installer qos-runtime-bundle qos-launcher qos-power qos-unlock-helper qos-rollback qos qos-pkg qos-install qos-cli-shim qos-ush qos-windows-vm-control qos-windows-rail; do \
+         [ -x "target/release/$b" ] || missing=1; \
+       done \
+    && { [ "${QOS_WITH_BROWSER}" = "0" ] || [ -x target/release/browser ] || missing=1; } \
+    && if [ "$missing" = 1 ]; then \
+         cargo clean --release \
+         && CARGO_PROFILE_RELEASE_LTO=thin \
+            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+             cargo build --release ${RELEASE_ARGS} -p qos-relay --bins ${BROWSER_PKG} \
+         && CARGO_PROFILE_RELEASE_LTO=thin \
+            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+            cargo build --release -p windows-vm \
+              --bin qos-windows-vm-control --bin qos-windows-rail; \
+       fi \
     && mkdir -p /out /out/optional /out/thin-apps \
     && { [ "${QOS_WITH_BROWSER}" = "0" ] \
          || cp target/release/browser /out/optional/browser; } \
@@ -410,12 +410,20 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-windows-vm-control \
           target/release/qos-windows-rail \
           /out/ \
+    && EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
+       APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}" \
+       /build/os/scripts/build-thin-apps.sh \
     && for m in /build/apps/*/qos-app.toml; do \
            p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
            b="$(basename "$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$m" | head -1)")"; \
            case " ${THIN_EXCLUDES} " in *" $p "*) continue ;; esac; \
            [ -z "$b" ] || cp "target/thin-app/$b" /out/thin-apps/; \
        done \
+    # Files is also a privileged, directly-invoked system recovery surface.
+    # Package that exact standalone binary so the launcher and /usr/bin route
+    # cannot drift and headless recovery does not depend on runtime-bundle
+    # loader setup. Other ordinary apps keep the smaller shared-runtime build.
+    && cp /out/file-explorer /out/thin-apps/file-explorer \
     && cp target/thin-app/libruntime_dylib.so /out/ \
     && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
     && [ -n "${LIBSTD}" ] \
@@ -586,7 +594,17 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     mesa-dri-drivers \
     mesa-vulkan-drivers \
     libglvnd-egl \
+    google-noto-sans-fonts \
+    plymouth \
+    plymouth-plugin-script \
+    plymouth-scripts \
     && dnf clean all && ${FINALIZE_RPMDB}
+
+# Keep encrypted-root unlock in the same branded visual path as the UKI splash.
+# Assets are generated at build time so the source remains reviewable and the
+# initramfs does not depend on a desktop image stack.
+COPY os/usr/share/plymouth/themes/qos/ /usr/share/plymouth/themes/qos/
+COPY os/dev/make-plymouth-assets.py /usr/local/bin/make-plymouth-assets.py
 
 # Audio/Video
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
@@ -677,57 +695,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     cage \
     && dnf clean all && ${FINALIZE_RPMDB}
 
-# Windows compatibility engines. Wine is the tested desktop-program baseline;
-# UMU + its pinned Proton build are copied below for non-Steam games. The
-# appliance packages provide one KVM-accelerated, TPM-backed Windows fallback.
-# The live presentation is app-focused, whole-surface SPICE; FreeRDP RemoteApp
-# is usable only after qOS has probed a compatible local RAIL surface.
-# Changing this list requires refreshing RPMS_REF (see the file header).
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-    wine \
-    wine-dxvk \
-    gamescope \
-    qemu-kvm \
-    libvirt-client \
-    libvirt-daemon-kvm \
-    libvirt-daemon-config-nwfilter \
-    swtpm \
-    swtpm-tools \
-    edk2-ovmf \
-    virtio-win \
-    freerdp \
-    xwayland-satellite \
-    virt-viewer \
-    xorriso \
-    genisoimage \
-    udftools \
-    && dnf clean all && ${DROP_RPMDB_WAL}
-
-COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/qos-umu-run
-COPY --from=windows-compat-artifacts /out/bin/umu_run.py /usr/libexec/umu_run.py
-COPY --from=windows-compat-artifacts /out/proton/ /usr/lib/qos/windows-runners/proton/
-COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/qos/windows/catalogues/
-# The VM is defined only after an owner supplies installation media.  These
-# immutable host/guest contracts deliberately ship no Windows image or key.
-COPY os/usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-vm-network
-COPY os/usr/libexec/qos-windows-provision /usr/libexec/qos-windows-provision
-COPY os/usr/libexec/qos-windows-owner /usr/libexec/qos-windows-owner
-COPY os/usr/libexec/qos-windows-recovery-console /usr/libexec/qos-windows-recovery-console
-COPY --from=builder /out/qos-windows-vm-control /usr/libexec/qos-windows-vm-control
-COPY --from=builder /out/qos-windows-rail /usr/libexec/qos-windows-rail
-COPY os/usr/share/qos/windows/ /usr/share/qos/windows/
-COPY os/usr/share/polkit-1/actions/org.qos.windows.policy /usr/share/polkit-1/actions/org.qos.windows.policy
-COPY os/etc/polkit-1/rules.d/49-qos-windows.rules /etc/polkit-1/rules.d/49-qos-windows.rules
-COPY os/usr/lib/systemd/system/qos-windows-vm-network.service /usr/lib/systemd/system/qos-windows-vm-network.service
-COPY os/usr/lib/systemd/system/qos-windows-vm-egress-reaper.service /usr/lib/systemd/system/qos-windows-vm-egress-reaper.service
-COPY os/usr/lib/systemd/system/qos-windows-vm-egress-reaper.timer /usr/lib/systemd/system/qos-windows-vm-egress-reaper.timer
-COPY docs/windows-vm.md /usr/share/doc/qos/windows-vm.md
-COPY docs/windows-presentation.md /usr/share/doc/qos/windows-presentation.md
-RUN chmod 0755 /usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-provision /usr/libexec/qos-windows-owner \
-              /usr/libexec/qos-windows-recovery-console /usr/libexec/qos-windows-vm-control \
-              /usr/libexec/qos-windows-rail \
-    && systemctl enable qos-windows-vm-network.service qos-windows-vm-egress-reaper.timer
-
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
 # capability requests (FileChooser, ScreenCast, Camera) to our
 # qOS backend (Sandbox Phase 4.3).
@@ -779,11 +746,18 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     cups-ipptool \
     && dnf clean all && ${FINALIZE_RPMDB}
 
-# Ensure system groups exist in /etc/group and add greetd to them
-RUN (getent group video || echo "video:x:39:greetd" >> /etc/group) && \
-    (getent group input || echo "input:x:104:greetd" >> /etc/group) && \
-    sed -i 's/^video:x:39:$/video:x:39:greetd/' /etc/group && \
-    sed -i 's/^input:x:104:$/input:x:104:greetd/' /etc/group
+# Ensure hardware-access groups are materialised in the deployment's /etc and
+# add the greeter to them. `getent` is deliberately not used here: Fedora's NSS
+# stack can synthesize these well-known groups from systemd's user database
+# even when /etc/group has no corresponding record. That made this build step
+# incorrectly skip the records, after which first-boot `useradd -G video`
+# failed and left a freshly installed machine without its configured account.
+RUN grep -q '^video:' /etc/group || echo "video:x:39:greetd" >> /etc/group; \
+    grep -q '^input:' /etc/group || echo "input:x:104:greetd" >> /etc/group; \
+    sed -i 's/^video:x:39:$/video:x:39:greetd/' /etc/group; \
+    sed -i 's/^input:x:104:$/input:x:104:greetd/' /etc/group; \
+    grep -q '^video:x:39:.*greetd' /etc/group; \
+    grep -q '^input:x:104:.*greetd' /etc/group
 
 # Fonts
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
@@ -880,16 +854,15 @@ COPY --from=builder /out/qos-projector /usr/libexec/qos-projector
 # system audio) is delegated to the source-pinned, tested build above.
 COPY --from=doubletake-builder /out/doubletake /usr/libexec/qos-doubletake
 COPY --from=doubletake-builder /out/doubletake-test-receiver /usr/libexec/qos-doubletake-test-receiver
-ADD --checksum=sha256:e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118 \
-    https://raw.githubusercontent.com/omarroth/doubletake/ae067228d76df011375164814b729932ed55ca2f/LICENSE \
-    /usr/share/licenses/qos-doubletake/LICENSE
 # Miracast/Wi-Fi Display sender: full NetworkManager P2P, RTSP negotiation and
 # H.264/AAC RTP media, copied from the architecture-neutral tested source stage.
 COPY --from=fluxcast-builder /src/src /usr/libexec/qos-fluxcast-src
 COPY os/usr/libexec/qos-fluxcast /usr/libexec/qos-fluxcast
-ADD --checksum=sha256:3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986 \
-    https://raw.githubusercontent.com/IlyaP358/fluxcast/a74f39fe3f2012e20315cd37e13e9803871e587f/LICENSE \
-    /usr/share/licenses/qos-fluxcast/LICENSE
+RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+    install -D -m 0644 /qos-assets/doubletake-ae06722-LICENSE \
+      /usr/share/licenses/qos-doubletake/LICENSE \
+    && install -D -m 0644 /qos-assets/fluxcast-a74f39f-LICENSE \
+      /usr/share/licenses/qos-fluxcast/LICENSE
 COPY os/usr/share/dbus-1/system.d/zz-qos-projector-wifi-direct.conf \
      /usr/share/dbus-1/system.d/zz-qos-projector-wifi-direct.conf
 COPY os/usr/lib/systemd/user/qos-ush.service /usr/lib/systemd/user/qos-ush.service
@@ -1007,6 +980,12 @@ COPY os/etc/profile.d/qos-apps.sh /etc/profile.d/qos-apps.sh
 
 # FUSE mount service
 COPY os/usr/lib/systemd/system/fs.service /usr/lib/systemd/system/fs.service
+COPY os/usr/lib/systemd/system/fs-identity.path /usr/lib/systemd/system/fs-identity.path
+# A measured installer UKI must not try to persist its transient TPM identity
+# to the read-only live ESP. These conditions stop both systemd setup phases
+# only while the sealed command line carries qos.install.
+COPY os/usr/lib/systemd/system/systemd-tpm2-setup.service.d/10-qos-live-installer.conf /usr/lib/systemd/system/systemd-tpm2-setup.service.d/10-qos-live-installer.conf
+COPY os/usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-qos-live-installer.conf /usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-qos-live-installer.conf
 # The capability list that mount enforces. Shipped read-only under /usr;
 # tmpfiles.d copies it to /var/lib/qos on first boot, where it can be
 # edited and survives image updates. See fs.service for why the subject
@@ -1071,6 +1050,12 @@ COPY os/etc/containers/registries.d/code.podesta.ai.yaml /etc/containers/registr
 # First-boot setup service
 COPY os/usr/lib/systemd/system/shell-firstboot.service /usr/lib/systemd/system/shell-firstboot.service
 COPY os/usr/lib/systemd/system/qos-power.service /usr/lib/systemd/system/qos-power.service
+
+# Grow the real filesystem at /sysroot. The stock systemd-growfs-root.service
+# targets `/`, which is a composefs overlay here and cannot be grown; the
+# drop-in stands it down on this layout so the two never both apply.
+COPY os/usr/lib/systemd/system/qos-growfs-sysroot.service /usr/lib/systemd/system/qos-growfs-sysroot.service
+COPY os/usr/lib/systemd/system/systemd-growfs-root.service.d/10-qos-composefs.conf /usr/lib/systemd/system/systemd-growfs-root.service.d/10-qos-composefs.conf
 
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
@@ -1196,6 +1181,14 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --skip-
         efitools \
         systemd-ukify \
     && dnf clean all && ${FINALIZE_RPMDB}
+
+# systemd-ukify's pinned dependency set now provides Pillow, while the font
+# transaction above provides Noto Sans. Render the unlock copy only once both
+# are present; the resulting PNGs, not either desktop dependency, are what the
+# initramfs theme consumes.
+RUN python3 /usr/local/bin/make-plymouth-assets.py /usr/share/plymouth/themes/qos \
+ && plymouth-set-default-theme qos \
+ && test "$(plymouth-set-default-theme)" = qos
 
 # The install-config drop-in that flips bootc's bootloader choice to
 # systemd-boot. Lives at /usr/lib/bootc/install/*.toml — a drop-in dir bootc
@@ -1442,6 +1435,59 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
       > /usr/lib/systemd/system/fs.service.d/10-hardened-malloc.conf && \
     echo "scudo wired: $scudo"
 
+# Windows compatibility is intentionally assembled at the end of the rootfs.
+# The pinned VirtIO driver payload is large; placing it earlier makes rootless
+# Podman rescan that immutable 1.6 GiB layer for every subsequent COPY/RUN and
+# turns safe installer iteration into hours of avoidable layer commits.
+# Wine is the tested desktop-program baseline; UMU + its pinned Proton build are
+# copied below for non-Steam games. The appliance packages provide one
+# KVM-accelerated, TPM-backed Windows fallback. Changing this list requires
+# refreshing RPMS_REF (see the file header).
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+    wine \
+    wine-dxvk \
+    gamescope \
+    qemu-kvm \
+    libvirt-client \
+    libvirt-daemon-kvm \
+    libvirt-daemon-config-nwfilter \
+    swtpm \
+    swtpm-tools \
+    edk2-ovmf \
+    virtio-win \
+    freerdp \
+    xwayland-satellite \
+    virt-viewer \
+    xorriso \
+    genisoimage \
+    udftools \
+    && dnf clean all && ${FINALIZE_RPMDB}
+
+COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/qos-umu-run
+COPY --from=windows-compat-artifacts /out/bin/umu_run.py /usr/libexec/umu_run.py
+COPY --from=windows-compat-artifacts /out/proton/ /usr/lib/qos/windows-runners/proton/
+COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/qos/windows/catalogues/
+# The VM is defined only after an owner supplies installation media. These
+# immutable host/guest contracts deliberately ship no Windows image or key.
+COPY os/usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-vm-network
+COPY os/usr/libexec/qos-windows-provision /usr/libexec/qos-windows-provision
+COPY os/usr/libexec/qos-windows-owner /usr/libexec/qos-windows-owner
+COPY os/usr/libexec/qos-windows-recovery-console /usr/libexec/qos-windows-recovery-console
+COPY --from=builder /out/qos-windows-vm-control /usr/libexec/qos-windows-vm-control
+COPY --from=builder /out/qos-windows-rail /usr/libexec/qos-windows-rail
+COPY os/usr/share/qos/windows/ /usr/share/qos/windows/
+COPY os/usr/share/polkit-1/actions/org.qos.windows.policy /usr/share/polkit-1/actions/org.qos.windows.policy
+COPY os/etc/polkit-1/rules.d/49-qos-windows.rules /etc/polkit-1/rules.d/49-qos-windows.rules
+COPY os/usr/lib/systemd/system/qos-windows-vm-network.service /usr/lib/systemd/system/qos-windows-vm-network.service
+COPY os/usr/lib/systemd/system/qos-windows-vm-egress-reaper.service /usr/lib/systemd/system/qos-windows-vm-egress-reaper.service
+COPY os/usr/lib/systemd/system/qos-windows-vm-egress-reaper.timer /usr/lib/systemd/system/qos-windows-vm-egress-reaper.timer
+COPY docs/windows-vm.md /usr/share/doc/qos/windows-vm.md
+COPY docs/windows-presentation.md /usr/share/doc/qos/windows-presentation.md
+RUN chmod 0755 /usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-provision /usr/libexec/qos-windows-owner \
+              /usr/libexec/qos-windows-recovery-console /usr/libexec/qos-windows-vm-control \
+              /usr/libexec/qos-windows-rail \
+    && systemctl enable qos-windows-vm-network.service qos-windows-vm-egress-reaper.timer
+
 # Confine the collaborative filesystem daemon in its own SELinux domain
 # (qos_fs_t) instead of unconfined_service_t. Shipped permissive so it can't
 # break the working daemon; tightens to enforcing from captured AVCs (see the
@@ -1458,13 +1504,36 @@ COPY os/usr/lib/systemd/system/fs.service.d/20-selinux.conf /usr/lib/systemd/sys
 # exists)" while that directory is demonstrably absent. Removing the stale
 # sandbox, which this step already did, addresses the wrong half: the store
 # itself has to exist in this layer. Copy it into place first.
+#
+# Add-on SELinux RPM scriptlets are deliberately non-fatal (`semodule ... || :`).
+# Under the same rootless-overlay failure their policy archives are installed
+# but their modules are absent from `active` (they can also be left only in
+# abandoned `previous`/`tmp` stores). Reinstall and then verify every shipped
+# add-on policy archive after copying up the store. Keeping this generic matters:
+# optional desktop/virtualization packages can add a policy archive without also
+# changing this Containerfile.
 RUN cp -a /etc/selinux/targeted /var/tmp/qos-sestore \
  && rm -rf /etc/selinux/targeted \
  && mv /var/tmp/qos-sestore /etc/selinux/targeted \
  && rm -rf /etc/selinux/targeted/tmp \
+ && find /usr/share/selinux/packages -type f \( -name '*.pp' -o -name '*.pp.bz2' \) -print \
+      | sort \
+      | while IFS= read -r policy; do \
+          semodule -n -s targeted -X 200 -i "$policy" || exit 1; \
+        done \
  && semodule -i /usr/share/qos/selinux/qos-base.cil \
+ && semodule -s targeted -lfull > /var/tmp/qos-active-selinux-modules \
+ && find /usr/share/selinux/packages -type f \( -name '*.pp' -o -name '*.pp.bz2' \) -print \
+      | sort \
+      | while IFS= read -r policy; do \
+          module="$(basename "$policy")"; module="${module%.bz2}"; module="${module%.pp}"; \
+          awk -v module="$module" '$1 == "200" && $2 == module { found=1 } END { exit !found }' \
+            /var/tmp/qos-active-selinux-modules || exit 1; \
+        done \
+ && semodule -s targeted -lfull | grep -Eq '^400[[:space:]]+qos-base[[:space:]]' \
+ && rm -f /var/tmp/qos-active-selinux-modules \
  && restorecon -v /usr/lib/systemd/user/qos-graphical-session.target \
- && echo "qos-base SELinux module loaded"
+ && echo "all packaged add-on and qos-base SELinux modules loaded"
 
 # ---------------------------------------------------------------------------
 # Enable services
@@ -1483,8 +1552,8 @@ RUN cp -a /etc/selinux/targeted /var/tmp/qos-sestore \
 RUN systemctl enable greetd.service && \
     systemctl set-default graphical.target && \
     systemctl enable shell-firstboot.service && \
-    systemctl mask systemd-growfs-root.service && \
-    systemctl enable fs.service && \
+    systemctl enable qos-growfs-sysroot.service && \
+    systemctl enable fs.service fs-identity.path && \
     systemctl --global enable qos-identity.service && \
     systemctl --global enable qos-ush.service && \
     systemctl --global enable qos-fs-recipient.service && \
@@ -1536,8 +1605,7 @@ RUN systemctl enable NetworkManager.service
 # is either irrelevant to a desktop qOS (offline man-db caching), or a
 # `Wants=network-online.target` wait we don't need (nothing on the boot
 # path blocks on a routable interface — the shell + peer sync tolerate
-# late network), or plymouth cleanup that we avoid by not booting with
-# plymouth in the first place. Masking (not just disabling) makes them
+# late network). Masking (not just disabling) makes them
 # unable to be pulled in by transitive `Wants=`.
 #
 # `|| true` because the unit is only present when its package is
@@ -1545,8 +1613,6 @@ RUN systemctl enable NetworkManager.service
 RUN for u in \
         NetworkManager-wait-online.service \
         systemd-networkd-wait-online.service \
-        plymouth-quit-wait.service \
-        plymouth-quit.service \
         man-db-cache-update.timer \
         man-db-cache-update.service \
         systemd-update-utmp.service \
@@ -1658,7 +1724,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     # them under the CI builder, silently, and a missing module here is a root
     # that cannot be unlocked. Naming them makes dracut fail instead of omit.
     dracut --force --reproducible -v --kver "$kver" \
-        --add "crypt systemd-cryptsetup tpm2-tss" \
+        --add "crypt systemd-cryptsetup tpm2-tss plymouth" \
         "/usr/lib/modules/$kver/initramfs.img" > /tmp/dracut.log 2>&1 \
       || { cat /tmp/dracut.log >&2; exit 1; }; \
     test -s "/usr/lib/modules/$kver/initramfs.img"; \
@@ -1671,7 +1737,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     mkdir -p /usr/lib/qos; \
     sed -n 's/.*Including module: \([a-z0-9_-]*\).*/\1/p' /tmp/dracut.log \
       | sort -u > /usr/lib/qos/initramfs-modules.txt; \
-    for m in crypt systemd-cryptsetup tpm2-tss; do \
+    for m in crypt systemd-cryptsetup tpm2-tss plymouth; do \
       grep -qx "$m" /usr/lib/qos/initramfs-modules.txt || { \
         echo "dracut did not include the $m module; an encrypted root could not be opened" >&2; \
         cat /usr/lib/qos/initramfs-modules.txt >&2; exit 1; }; \
@@ -1781,6 +1847,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         binutils \
     && dnf clean all
 COPY os/dev/uki.sh /usr/local/bin/uki.sh
+COPY os/dev/make-boot-splash.py /usr/local/bin/make-boot-splash.py
 
 FROM uki-tools AS uki
 # Set to the digest `bootc install` asked for, to close the seal in a second pass

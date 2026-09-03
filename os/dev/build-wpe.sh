@@ -7,6 +7,7 @@
 #
 # Usage:
 #   build-wpe.sh deps    install build dependencies (dnf, needs sudo)
+#   build-wpe.sh verify-sources  verify pinned archives without compiling
 #   build-wpe.sh build   download + compile + install into the prefix
 #
 # Locations (override via env):
@@ -24,15 +25,25 @@ PREFIX=${QOS_WPE_PREFIX:-$CACHE/prefix}
 DESTDIR_ROOT=${QOS_WPE_DESTDIR:-}
 REL=https://wpewebkit.org/releases
 JOBS=${JOBS:-8}
+SOURCE_DIR=${QOS_WPE_SOURCE_DIR:-}
+OFFLINE=${QOS_WPE_OFFLINE:-0}
+MODE=${1:-build}
 
-if [ "${1:-build}" = deps ]; then
+LIBWPE=libwpe-1.16.3.tar.xz
+LIBWPE_SHA256=c880fa8d607b2aa6eadde7d6d6302b1396ebc38368fe2332fa20e193c7ee1420
+FDO=wpebackend-fdo-1.16.1.tar.xz
+FDO_SHA256=544ae14012f8e7e426b8cb522eb0aaaac831ad7c35601d1cf31d37670e0ebb3b
+WPEWK=wpewebkit-2.52.6.tar.xz
+WPEWK_SHA256=b2bafef2751625b7fdf530f230ff0f542ff0eeba3590c3a989d931b2a55c858e
+
+if [ "$MODE" = deps ]; then
     # wpewebkit builds from the same tree as webkitgtk, so Fedora's
     # webkitgtk6.0 build deps cover almost everything.
     sudo dnf -y builddep webkitgtk6.0 2>&1 | tail -3
     # What the WPE port needs and the GTK port does not, so builddep misses it:
     # libinput + libudev (systemd-devel) back ENABLE_WPE_PLATFORM_DRM, and
     # gbm/wayland/epoxy the rest of WPEPlatform. Keep in sync with the
-    # wpe-builder stage in os/Containerfile.
+    # snapshot buildroot in os/Containerfile.wpe-buildroot.
     sudo dnf -y install meson ninja-build gperf unifdef libgbm-devel \
         wayland-devel wayland-protocols-devel libepoxy-devel \
         libinput-devel systemd-devel 2>&1 | tail -2
@@ -50,20 +61,51 @@ fi
 
 cd "$CACHE"
 
-latest() { # latest tarball name for package $1 matching version regex $2
-    curl -s "$REL/" | grep -oE "$1-$2\.tar\.xz" | sort -uV | tail -1
-}
-
-LIBWPE=$(latest libwpe '1\.[0-9]+\.[0-9]+')
-FDO=$(latest wpebackend-fdo '1\.[0-9]+\.[0-9]+')
-WPEWK=$(latest wpewebkit '2\.52\.[0-9]+')
 echo "tarballs: $LIBWPE $FDO $WPEWK"
 
-for t in "$LIBWPE" "$FDO" "$WPEWK"; do
-    [ -f "$t" ] || curl -sLO "$REL/$t"
+prepare_source() {
+    local t="$1" expected="$2" source archive part actual
+    source=${SOURCE_DIR:+$SOURCE_DIR/$t}
+    archive=$CACHE/$t
+    if [ -n "$source" ] && [ -f "$source" ]; then
+        archive=$source
+    elif [ ! -f "$archive" ]; then
+        [ "$OFFLINE" != 1 ] || {
+            echo "missing offline WPE source: $t" >&2
+            exit 1
+        }
+        part=$archive.part
+        curl --proto '=https' --tlsv1.2 --location --fail --show-error \
+            --retry 8 --retry-all-errors --retry-max-time 180 \
+            --output "$part" "$REL/$t"
+        mv -f -- "$part" "$archive"
+    fi
+    actual=$(sha256sum "$archive" | cut -d ' ' -f 1)
+    [ "$actual" = "$expected" ] || {
+        echo "WPE source checksum mismatch for $t: expected $expected, got $actual" >&2
+        exit 1
+    }
+    printf '%s\n' "$archive"
+}
+
+for spec in \
+    "$LIBWPE:$LIBWPE_SHA256" \
+    "$FDO:$FDO_SHA256" \
+    "$WPEWK:$WPEWK_SHA256"; do
+    t=${spec%%:*}
+    expected=${spec#*:}
+    archive=$(prepare_source "$t" "$expected")
     d=${t%.tar.xz}
-    [ -d "$d" ] || tar xf "$t"
+    if [ "$MODE" != verify-sources ]; then
+        [ -d "$d" ] || tar xf "$archive"
+    fi
 done
+
+if [ "$MODE" = verify-sources ]; then
+    echo SOURCES_OK
+    exit 0
+fi
+[ "$MODE" = build ] || { echo "usage: $0 deps|verify-sources|build" >&2; exit 2; }
 
 export PKG_CONFIG_PATH="$DESTDIR_ROOT$PREFIX/lib64/pkgconfig:$DESTDIR_ROOT$PREFIX/share/pkgconfig:${PKG_CONFIG_PATH:-}"
 export LD_LIBRARY_PATH="$DESTDIR_ROOT$PREFIX/lib64:${LD_LIBRARY_PATH:-}"

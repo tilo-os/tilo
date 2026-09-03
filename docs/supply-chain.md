@@ -58,15 +58,28 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-qos-security-archite
   report a reference that is not a multi-arch index or whose `ostree.linux`
   does not match the Fedora release `BASE_SOURCE` claims, so a silent major
   bump fails the job instead of shipping.
+- **Persistent GitHub input cache.** Every GitHub-hosted tarball, source
+  snapshot, catalogue, and license consumed by the OS image is declared once
+  in `os/external-assets/github-assets.tsv` with an immutable URL and SHA-256.
+  `os/dev/cache-github-assets.sh` performs resumable, retrying downloads and
+  refuses a checksum mismatch. Both OS and CI-builder workflows restore that
+  directory through Forgejo's cache before materializing missing entries, so
+  ephemeral runners normally make no GitHub release-asset requests at all.
+  CI and local scripts expose the cache as a separate named build context;
+  Containerfiles consume it through read-only mounts. Archives therefore never
+  enter layer history or the Rust workspace context, and builds never fetch
+  from GitHub. Bump the manifest entry to update an input—the
+  manifest hash creates a fresh CI cache key automatically.
 - **Staged, verified promotion.** A boot-tested build is first uploaded under a
   non-channel candidate tag. CI signs its digest, attaches signed SPDX and SLSA
   provenance attestations, and verifies all three against the public key. Only
   then does it move `latest`, the version tag, and the dense `gen<N>` tag to
   that digest. Release jobs share one global concurrency lock, preventing two
   jobs from allocating the same generation.
-- **Pinned release machinery.** Every external action executed by the OS
-  release workflow is referenced by its full commit hash. Moving an upstream
-  `v3`/`v5` tag cannot alter the signing job.
+- **Pinned workflow machinery.** Every external action executed by every CI
+  workflow is referenced by its full commit hash. Moving an upstream `v3`/`v5`
+  tag cannot alter a validation, build, signing, or promotion job;
+  `os/tests/workflow_dependency_invariants.sh` enforces that repository-wide.
 
 ## ⚠️ Operational caveat — first signed image
 

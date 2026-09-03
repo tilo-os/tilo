@@ -14,6 +14,116 @@ pub enum InputModality {
     Touch,
     /// Keyboard navigation or activation.
     Keyboard,
+    /// A game controller, including a single Joy-Con used sideways.
+    Controller,
+}
+
+/// Controller legend/layout used when rendering face buttons.
+///
+/// Actions bind to positions (`South`, `East`, …), not printed letters: the
+/// south button is A on Xbox, B on Nintendo and × on PlayStation hardware.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControllerFamily {
+    Generic,
+    Xbox,
+    PlayStation,
+    Nintendo,
+    JoyConLeft,
+    JoyConRight,
+    JoyConPair,
+}
+
+impl ControllerFamily {
+    pub fn from_hid(vendor_id: Option<u16>, name: &str) -> Self {
+        match vendor_id {
+            Some(0x045e) => Self::Xbox,
+            Some(0x054c) => Self::PlayStation,
+            Some(0x057e) => Self::from_device_name(name),
+            _ => Self::from_device_name(name),
+        }
+    }
+
+    /// Classify the names exposed by HID/udev, SDL or a platform gamepad API.
+    /// Unknown hardware remains positional/generic rather than guessing face
+    /// letters incorrectly.
+    pub fn from_device_name(name: &str) -> Self {
+        let name = name.to_ascii_lowercase();
+        if name.contains("joy-con (l)") || name.contains("joycon left") {
+            Self::JoyConLeft
+        } else if name.contains("joy-con (r)") || name.contains("joycon right") {
+            Self::JoyConRight
+        } else if name.contains("joy-con") || name.contains("joycon") {
+            Self::JoyConPair
+        } else if name.contains("nintendo") || name.contains("pro controller") {
+            Self::Nintendo
+        } else if name.contains("dualsense")
+            || name.contains("dualshock")
+            || name.contains("playstation")
+        {
+            Self::PlayStation
+        } else if name.contains("xbox") || name.contains("xinput") {
+            Self::Xbox
+        } else {
+            Self::Generic
+        }
+    }
+}
+
+/// Physical legends printed on the connected keyboard. qOS may run on Linux
+/// with an Apple keyboard attached, so this cannot be inferred from the OS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyboardFamily {
+    Pc,
+    Apple,
+}
+
+impl KeyboardFamily {
+    pub const fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Apple
+        } else {
+            Self::Pc
+        }
+    }
+
+    pub fn from_device_name(name: &str) -> Self {
+        let name = name.to_ascii_lowercase();
+        if name.contains("apple") || name.contains("magic keyboard") {
+            Self::Apple
+        } else {
+            Self::Pc
+        }
+    }
+
+    pub fn from_hid(vendor_id: Option<u16>, name: &str) -> Self {
+        if vendor_id == Some(0x05ac) {
+            Self::Apple
+        } else {
+            Self::from_device_name(name)
+        }
+    }
+}
+
+/// Devices known to be available in this session. This is deliberately
+/// separate from [`InputModality`]: moving a mouse must not make a connected
+/// touchscreen or controller disappear from shortcut help.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputAvailability {
+    pub keyboard: bool,
+    pub pointer: bool,
+    pub touch: bool,
+    pub controller: bool,
+}
+
+impl Default for InputAvailability {
+    fn default() -> Self {
+        Self {
+            keyboard: true,
+            pointer: true,
+            touch: false,
+            controller: false,
+        }
+    }
 }
 
 /// Accuracy of the active pointing device.
@@ -27,21 +137,52 @@ pub enum PointerPrecision {
 }
 
 /// Runtime interaction information propagated by the host to every widget.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InteractionEnvironment {
     pub modality: InputModality,
     pub pointer_precision: PointerPrecision,
+    pub available: InputAvailability,
+    pub controller: Option<ControllerFamily>,
+    pub keyboard_family: KeyboardFamily,
+}
+
+impl Default for InteractionEnvironment {
+    fn default() -> Self {
+        Self {
+            modality: InputModality::default(),
+            pointer_precision: PointerPrecision::default(),
+            available: InputAvailability::default(),
+            controller: None,
+            keyboard_family: KeyboardFamily::current(),
+        }
+    }
 }
 
 impl InteractionEnvironment {
     pub const POINTER: Self = Self {
         modality: InputModality::Pointer,
         pointer_precision: PointerPrecision::Fine,
+        available: InputAvailability {
+            keyboard: true,
+            pointer: true,
+            touch: false,
+            controller: false,
+        },
+        controller: None,
+        keyboard_family: KeyboardFamily::Pc,
     };
 
     pub const TOUCH: Self = Self {
         modality: InputModality::Touch,
         pointer_precision: PointerPrecision::Coarse,
+        available: InputAvailability {
+            keyboard: true,
+            pointer: false,
+            touch: true,
+            controller: false,
+        },
+        controller: None,
+        keyboard_family: KeyboardFamily::Pc,
     };
 
     /// Minimum square target controls should expose in logical pixels.
@@ -55,6 +196,23 @@ impl InteractionEnvironment {
     /// Hover affordances have no meaning for a coarse direct pointer.
     pub const fn supports_hover(self) -> bool {
         matches!(self.pointer_precision, PointerPrecision::Fine)
+    }
+
+    /// Input language to lead with in shortcut help. A controller takes over
+    /// only after the person actually used it; otherwise a physical keyboard
+    /// is more efficient than touch, with touch as the no-keyboard fallback.
+    /// Pointer instructions accompany keyboard hints rather than becoming a
+    /// separate primary language.
+    pub const fn preferred_hint_modality(self) -> InputModality {
+        if matches!(self.modality, InputModality::Controller) && self.available.controller {
+            InputModality::Controller
+        } else if self.available.keyboard {
+            InputModality::Keyboard
+        } else if self.available.touch {
+            InputModality::Touch
+        } else {
+            InputModality::Pointer
+        }
     }
 
     /// Minimum vertical extent for adjacent full-width collection rows.
@@ -71,6 +229,63 @@ impl InteractionEnvironment {
     pub const fn with_keyboard_modality(self) -> Self {
         Self {
             modality: InputModality::Keyboard,
+            available: InputAvailability {
+                keyboard: true,
+                ..self.available
+            },
+            ..self
+        }
+    }
+
+    /// Record pointer use while preserving every previously discovered device.
+    #[must_use]
+    pub const fn with_pointer_modality(self) -> Self {
+        Self {
+            modality: InputModality::Pointer,
+            pointer_precision: PointerPrecision::Fine,
+            available: InputAvailability {
+                pointer: true,
+                ..self.available
+            },
+            ..self
+        }
+    }
+
+    /// Record direct touch while preserving keyboard, mouse and controller
+    /// availability for multi-device systems such as convertibles.
+    #[must_use]
+    pub const fn with_touch_modality(self) -> Self {
+        Self {
+            modality: InputModality::Touch,
+            pointer_precision: PointerPrecision::Coarse,
+            available: InputAvailability {
+                touch: true,
+                ..self.available
+            },
+            ..self
+        }
+    }
+
+    /// Record a controller event and retain its physical legend family.
+    #[must_use]
+    pub const fn with_controller(self, family: ControllerFamily) -> Self {
+        Self {
+            modality: InputModality::Controller,
+            available: InputAvailability {
+                controller: true,
+                ..self.available
+            },
+            controller: Some(family),
+            ..self
+        }
+    }
+
+    /// Override the legends without changing the current modality. Hardware
+    /// discovery uses this for Apple USB/Bluetooth keyboards on non-Mac hosts.
+    #[must_use]
+    pub const fn with_keyboard_family(self, family: KeyboardFamily) -> Self {
+        Self {
+            keyboard_family: family,
             ..self
         }
     }
@@ -210,6 +425,69 @@ mod tests {
         assert_eq!(env.pointer_precision, PointerPrecision::Coarse);
         assert_eq!(env.minimum_target(), 48.0);
         assert!(!env.supports_hover());
+        assert!(env.available.touch);
+        assert!(env.available.keyboard);
+    }
+
+    #[test]
+    fn modality_changes_do_not_erase_discovered_devices() {
+        let env = InteractionEnvironment::POINTER
+            .with_touch_modality()
+            .with_controller(ControllerFamily::JoyConPair)
+            .with_pointer_modality();
+        assert_eq!(env.modality, InputModality::Pointer);
+        assert!(env.available.pointer);
+        assert!(env.available.touch);
+        assert!(env.available.controller);
+        assert_eq!(env.controller, Some(ControllerFamily::JoyConPair));
+    }
+
+    #[test]
+    fn hint_priority_is_used_controller_then_keyboard_then_touch() {
+        let all = InteractionEnvironment::POINTER
+            .with_touch_modality()
+            .with_controller(ControllerFamily::Xbox);
+        assert_eq!(all.preferred_hint_modality(), InputModality::Controller);
+        let keyboard_last = all.with_keyboard_modality();
+        assert_eq!(
+            keyboard_last.preferred_hint_modality(),
+            InputModality::Keyboard
+        );
+        let touch_only = InteractionEnvironment {
+            modality: InputModality::Touch,
+            available: InputAvailability {
+                keyboard: false,
+                pointer: false,
+                touch: true,
+                controller: false,
+            },
+            ..InteractionEnvironment::TOUCH
+        };
+        assert_eq!(touch_only.preferred_hint_modality(), InputModality::Touch);
+    }
+
+    #[test]
+    fn hid_names_select_legends_without_affecting_semantic_positions() {
+        assert_eq!(
+            ControllerFamily::from_device_name("Nintendo Switch Joy-Con (L)"),
+            ControllerFamily::JoyConLeft
+        );
+        assert_eq!(
+            ControllerFamily::from_device_name("Sony DualSense Wireless Controller"),
+            ControllerFamily::PlayStation
+        );
+        assert_eq!(
+            ControllerFamily::from_hid(Some(0x054c), "Wireless Controller"),
+            ControllerFamily::PlayStation
+        );
+        assert_eq!(
+            ControllerFamily::from_device_name("Wireless Controller"),
+            ControllerFamily::Generic
+        );
+        assert_eq!(
+            KeyboardFamily::from_device_name("Apple Inc. Magic Keyboard"),
+            KeyboardFamily::Apple
+        );
     }
 
     fn touch(phase: winit::event::TouchPhase, id: u64, x: f64, y: f64) -> winit::event::Touch {

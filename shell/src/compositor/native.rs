@@ -3,12 +3,12 @@
 //! `wayland-2`, …) handed to `DisplayHandle::insert_client`. Doesn't open a
 //! TTY, talk to DRM/KMS, render, or forward input — those live elsewhere.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
@@ -65,7 +65,7 @@ use taffy::NodeId;
 use vello::kurbo::Rect;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+use winit::keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
 use crate::compositor::backend::{
     Backend, BackendEvent, DrmBackend, HeadlessBackend, Output, OutputId, WinitBackend,
@@ -85,6 +85,49 @@ use crate::compositor::metrics;
 use crate::compositor::output_globals;
 use crate::compositor::pacing;
 use crate::compositor::present;
+
+#[derive(Clone)]
+struct PendingLegacyStream {
+    source_peer: u64,
+    surface: u64,
+    local_peer: u64,
+    app_id: String,
+    codec: String,
+    hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
+    input_sink: Arc<dyn Fn(crate::network::streaming::InputEvent) + Send + Sync>,
+}
+
+fn desired_legacy_shares(
+    tree: &crate::shell::state::WorkspaceTree,
+) -> HashMap<u64, (String, std::collections::HashSet<u64>)> {
+    let Some(workspace) = tree
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == tree.active)
+    else {
+        return HashMap::new();
+    };
+    workspace
+        .shared_surfaces
+        .iter()
+        .filter_map(|(surface, peers)| {
+            let app_id = workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .find_map(|tab| match &tab.tile {
+                    crate::shell::state::TileContent::Foreign { app_id, surface_id }
+                        if *surface_id == surface =>
+                    {
+                        Some(app_id.clone())
+                    }
+                    _ => None,
+                })?;
+            Some((surface, (app_id, peers.clone())))
+        })
+        .collect()
+}
 use crate::compositor::switch_control::{SwitchAction, SwitchControlRuntime};
 
 use crate::compositor::state::{ClientState, State};
@@ -196,12 +239,10 @@ fn app_owned_source_region(
     authenticated_app_id: &str,
     app_size: vello::kurbo::Size,
 ) -> Option<Rect> {
-    let (app_id, region) = match source {
-        ui::floating_surface::FloatingSource::AppRegion { app_id, region }
-        | ui::floating_surface::FloatingSource::AppElement { app_id, region, .. } => {
-            (app_id, region)
-        }
-        _ => return None,
+    let (ui::floating_surface::FloatingSource::AppRegion { app_id, region }
+    | ui::floating_surface::FloatingSource::AppElement { app_id, region, .. }) = source
+    else {
+        return None;
     };
     let bounds = Rect::from_origin_size(vello::kurbo::Point::ZERO, app_size);
     let visible = region.intersect(bounds);
@@ -231,6 +272,9 @@ fn app_owned_transfer_region(
     (decorated.area() > 0.0).then_some(decorated)
 }
 
+// Coordinates have already been clamped to the u32-sized pixel buffer. The
+// float-to-integer conversion intentionally rounds outward to retain edges.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn frozen_transfer_frame(
     surface_id: u64,
     source: Rect,
@@ -297,10 +341,14 @@ fn frozen_floating_return_frame(
     })
 }
 
+#[allow(clippy::arithmetic_side_effects)]
 fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
     rect + app_rect.origin().to_vec2()
 }
 
+// This is the ordered protocol event pump; its branches share authentication
+// and handoff state that is clearer when kept in a single state-machine tick.
+#[allow(clippy::too_many_lines)]
 fn pump_floating_surface_service(
     service: &FloatingSurfaceService,
     state: &mut State,
@@ -544,7 +592,7 @@ fn pump_floating_surface_service(
                         );
                     }
                     (Err(error), _) | (_, Err(error)) => {
-                        tracing::warn!(%error, %app_id, "floating geometry rejected")
+                        tracing::warn!(%error, %app_id, "floating geometry rejected");
                     }
                 },
                 ui::floating_surface::FloatingSurfaceClientMessage::SourceCleared { id } => {
@@ -612,6 +660,7 @@ fn pump_floating_surface_service(
     changed
 }
 
+#[allow(clippy::arithmetic_side_effects)]
 fn clamp_external_floating_rect(rect: Rect, bounds: Rect) -> Rect {
     let mut offset = vello::kurbo::Vec2::ZERO;
     let reachable = 64.0;
@@ -628,6 +677,7 @@ fn clamp_external_floating_rect(rect: Rect, bounds: Rect) -> Rect {
     rect + offset
 }
 
+#[allow(clippy::arithmetic_side_effects)]
 fn clamp_external_floating_geometry(
     window_rect: Rect,
     content_rect: Rect,
@@ -665,15 +715,18 @@ fn floating_output_rects(outputs: &[Output], fallback_size: (u32, u32)) -> Vec<R
 }
 
 fn floating_desktop_bounds(outputs: &[Output], fallback_size: (u32, u32)) -> Rect {
-    let mut rects = floating_output_rects(outputs, fallback_size).into_iter();
-    let first = rects.next().expect("floating output fallback is non-empty");
-    rects.fold(first, |bounds, rect| bounds.union(rect))
+    let rects = floating_output_rects(outputs, fallback_size);
+    let Some((first, rest)) = rects.split_first() else {
+        return Rect::new(0.0, 0.0, 1.0, 1.0);
+    };
+    rest.iter().fold(*first, |bounds, rect| bounds.union(*rect))
 }
 
 /// Preserve free movement across touching displays while preventing a float
 /// from becoming stranded in a hole inside the desktop's bounding box. A
 /// reachable 64×64 patch on any real output is enough; otherwise the nearest
 /// output receives the same clamp used at the outside desktop edge.
+#[allow(clippy::arithmetic_side_effects)]
 fn clamp_external_floating_geometry_to_outputs(
     window_rect: Rect,
     content_rect: Rect,
@@ -708,6 +761,7 @@ fn clamp_external_floating_geometry_to_outputs(
     clamp_external_floating_geometry(window_rect, content_rect, target)
 }
 
+#[allow(clippy::arithmetic_side_effects)]
 fn rehome_native_floating_surfaces(
     state: &mut State,
     outputs: &[Output],
@@ -2146,6 +2200,159 @@ fn apply_session_transition(
 
 /// Whether an event is the hardware power key being pressed — detected by
 /// both the logical [`NamedKey::Power`] and physical key code, keymap-independent.
+/// Translate the backend-neutral winit events into the evdev-shaped EIS
+/// events.  Unknown physical keys intentionally remain local rather than
+/// guessing a keycode for a layout-specific key.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "winit exposes pixel-wheel coordinates as f64 while the EIS wire event is f32; bounded desktop coordinates intentionally narrow here"
+)]
+fn portal_capture_event(
+    event: &WindowEvent,
+    state: &State,
+) -> Option<crate::portal::CapturedInput> {
+    use crate::portal::CapturedInput;
+    match event {
+        WindowEvent::CursorMoved { position, .. } => {
+            let (old_x, old_y) = state.client_input.cursor();
+            Some(CapturedInput::PointerMotion {
+                x: position.x,
+                y: position.y,
+                dx: position.x - old_x,
+                dy: position.y - old_y,
+            })
+        }
+        WindowEvent::MouseInput { state, button, .. } => {
+            let button = match button {
+                MouseButton::Left => 0x110,
+                MouseButton::Right => 0x111,
+                MouseButton::Middle => 0x112,
+                MouseButton::Back => 0x116,
+                MouseButton::Forward => 0x115,
+                MouseButton::Other(button) => u32::from(*button),
+            };
+            Some(CapturedInput::PointerButton {
+                button,
+                pressed: *state == ElementState::Pressed,
+            })
+        }
+        WindowEvent::MouseWheel { delta, .. } => {
+            let (dx, dy) = match delta {
+                winit::event::MouseScrollDelta::LineDelta(x, y) => (*x, *y),
+                winit::event::MouseScrollDelta::PixelDelta(position) => {
+                    (position.x as f32, position.y as f32)
+                }
+            };
+            Some(CapturedInput::Scroll { dx, dy })
+        }
+        WindowEvent::KeyboardInput { event, .. } => {
+            keycode_for_eis(event.physical_key).map(|keycode| CapturedInput::Keyboard {
+                keycode,
+                pressed: event.state == ElementState::Pressed,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// USB HID / evdev keycodes for keys whose physical positions winit exposes.
+/// This deliberately maps physical keys, never characters, so a non-US layout
+/// still sees the correct key event over EIS.
+fn keycode_for_eis(key: PhysicalKey) -> Option<u32> {
+    let PhysicalKey::Code(code) = key else {
+        return None;
+    };
+    Some(match code {
+        KeyCode::Escape => 1,
+        KeyCode::Digit1 => 2,
+        KeyCode::Digit2 => 3,
+        KeyCode::Digit3 => 4,
+        KeyCode::Digit4 => 5,
+        KeyCode::Digit5 => 6,
+        KeyCode::Digit6 => 7,
+        KeyCode::Digit7 => 8,
+        KeyCode::Digit8 => 9,
+        KeyCode::Digit9 => 10,
+        KeyCode::Digit0 => 11,
+        KeyCode::Minus => 12,
+        KeyCode::Equal => 13,
+        KeyCode::Backspace => 14,
+        KeyCode::Tab => 15,
+        KeyCode::KeyQ => 16,
+        KeyCode::KeyW => 17,
+        KeyCode::KeyE => 18,
+        KeyCode::KeyR => 19,
+        KeyCode::KeyT => 20,
+        KeyCode::KeyY => 21,
+        KeyCode::KeyU => 22,
+        KeyCode::KeyI => 23,
+        KeyCode::KeyO => 24,
+        KeyCode::KeyP => 25,
+        KeyCode::BracketLeft => 26,
+        KeyCode::BracketRight => 27,
+        KeyCode::Enter => 28,
+        KeyCode::ControlLeft => 29,
+        KeyCode::KeyA => 30,
+        KeyCode::KeyS => 31,
+        KeyCode::KeyD => 32,
+        KeyCode::KeyF => 33,
+        KeyCode::KeyG => 34,
+        KeyCode::KeyH => 35,
+        KeyCode::KeyJ => 36,
+        KeyCode::KeyK => 37,
+        KeyCode::KeyL => 38,
+        KeyCode::Semicolon => 39,
+        KeyCode::Quote => 40,
+        KeyCode::Backquote => 41,
+        KeyCode::ShiftLeft => 42,
+        KeyCode::Backslash => 43,
+        KeyCode::KeyZ => 44,
+        KeyCode::KeyX => 45,
+        KeyCode::KeyC => 46,
+        KeyCode::KeyV => 47,
+        KeyCode::KeyB => 48,
+        KeyCode::KeyN => 49,
+        KeyCode::KeyM => 50,
+        KeyCode::Comma => 51,
+        KeyCode::Period => 52,
+        KeyCode::Slash => 53,
+        KeyCode::ShiftRight => 54,
+        KeyCode::AltLeft => 56,
+        KeyCode::Space => 57,
+        KeyCode::CapsLock => 58,
+        KeyCode::F1 => 59,
+        KeyCode::F2 => 60,
+        KeyCode::F3 => 61,
+        KeyCode::F4 => 62,
+        KeyCode::F5 => 63,
+        KeyCode::F6 => 64,
+        KeyCode::F7 => 65,
+        KeyCode::F8 => 66,
+        KeyCode::F9 => 67,
+        KeyCode::F10 => 68,
+        KeyCode::NumLock => 69,
+        KeyCode::ScrollLock => 70,
+        KeyCode::F11 => 87,
+        KeyCode::F12 => 88,
+        KeyCode::ControlRight => 97,
+        KeyCode::AltRight => 100,
+        KeyCode::Home => 102,
+        KeyCode::ArrowUp => 103,
+        KeyCode::PageUp => 104,
+        KeyCode::ArrowLeft => 105,
+        KeyCode::ArrowRight => 106,
+        KeyCode::End => 107,
+        KeyCode::ArrowDown => 108,
+        KeyCode::PageDown => 109,
+        KeyCode::Insert => 110,
+        KeyCode::Delete => 111,
+        KeyCode::SuperLeft => 125,
+        KeyCode::SuperRight => 126,
+        KeyCode::ContextMenu => 127,
+        _ => return None,
+    })
+}
+
 fn is_power_key(event: &WindowEvent) -> bool {
     if let WindowEvent::KeyboardInput { event, .. } = event
         && event.state == ElementState::Pressed
@@ -2551,6 +2758,7 @@ fn spawn_session_collab_broker(
 /// path after the identity ceremony releases the desktop.
 fn spawn_session_peer_sync(
     frame_builder: &mut FrameBuilder,
+    state: &mut State,
     tree_handle: crate::shell::state::WorkspaceTreeHandle,
 ) -> Option<Arc<crate::shell::network::ShellNetwork>> {
     match crate::shell::network::ShellNetwork::spawn(
@@ -2561,6 +2769,10 @@ fn spawn_session_peer_sync(
             let _ = handle.join_default_workspace();
             tracing::info!("peer-sync: actor spawned, default workspace joined");
             let net = Arc::new(handle);
+            let stream_net = Arc::clone(&net);
+            state.set_legacy_stream_publisher(Arc::new(move |message| {
+                stream_net.publish_legacy_active(message)
+            }));
             let bridge_net = Arc::clone(&net);
             frame_builder
                 .host_mut()
@@ -2717,11 +2929,294 @@ fn spawn_session_identity_broker(
 
 /// Everything the portal backend needs kept alive for the session — dropping
 /// it releases the bus name and tears the object server down.
+enum PortalCaptureCommand {
+    Screenshot {
+        request: crate::portal::desktop_services::ScreenshotRequest,
+        reply: std::sync::mpsc::SyncSender<crate::portal::desktop_services::PortalResult<String>>,
+    },
+    PickColor {
+        request_handle: String,
+        cancelled: Arc<std::sync::Mutex<HashSet<String>>>,
+        reply: std::sync::mpsc::SyncSender<
+            crate::portal::desktop_services::PortalResult<(f64, f64, f64)>,
+        >,
+    },
+    CancelScreenshot {
+        request_handle: String,
+    },
+}
+
+/// Bounded cross-thread bridge from the D-Bus runtime to the one compositor
+/// thread allowed to read pixels.  It has no ambient file authority: every
+/// completed image is republished through the authenticated caller's document
+/// subtree before a URI is returned.
+#[derive(Clone)]
+struct NativeScreenshotService {
+    sender: std::sync::mpsc::SyncSender<PortalCaptureCommand>,
+    pending: Arc<AtomicBool>,
+    cancelled: Arc<std::sync::Mutex<HashSet<String>>>,
+}
+
+impl NativeScreenshotService {
+    fn request<T>(
+        &self,
+        command: impl FnOnce(
+            std::sync::mpsc::SyncSender<crate::portal::desktop_services::PortalResult<T>>,
+        ) -> PortalCaptureCommand,
+    ) -> crate::portal::desktop_services::PortalResult<T> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        match self.sender.try_send(command(reply_tx)) {
+            Ok(()) => self.pending.store(true, Ordering::Release),
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                return crate::portal::desktop_services::PortalResult::Unavailable(
+                    "the compositor is already handling capture requests".into(),
+                );
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                return crate::portal::desktop_services::PortalResult::Unavailable(
+                    "the compositor capture bridge has stopped".into(),
+                );
+            }
+        }
+        reply_rx
+            .recv_timeout(Duration::from_secs(120))
+            .unwrap_or_else(|_| {
+                crate::portal::desktop_services::PortalResult::Unavailable(
+                    "the compositor did not answer the capture request".into(),
+                )
+            })
+    }
+}
+
+impl crate::portal::desktop_services::ScreenshotService for NativeScreenshotService {
+    fn available_targets(&self) -> u32 {
+        // Source selection happens in trusted chrome.  The backend never
+        // accepts app-provided geometry or window ids.
+        1 | 2 | 4 | 8
+    }
+
+    fn screenshot(
+        &self,
+        request: &crate::portal::desktop_services::ScreenshotRequest,
+    ) -> crate::portal::desktop_services::PortalResult<String> {
+        let request = request.clone();
+        self.request(|reply| PortalCaptureCommand::Screenshot { request, reply })
+    }
+
+    fn pick_color(
+        &self,
+        request_handle: &str,
+        _app_id: &str,
+    ) -> crate::portal::desktop_services::PortalResult<(f64, f64, f64)> {
+        let request_handle = request_handle.to_string();
+        self.request(|reply| PortalCaptureCommand::PickColor {
+            request_handle,
+            cancelled: self.cancelled.clone(),
+            reply,
+        })
+    }
+
+    fn cancel(&self, request_handle: &str) {
+        let _ = self
+            .sender
+            .try_send(PortalCaptureCommand::CancelScreenshot {
+                request_handle: request_handle.into(),
+            });
+        self.pending.store(true, Ordering::Release);
+    }
+
+    fn cancel_color(&self, request_handle: &str) {
+        if let Ok(mut cancelled) = self.cancelled.lock() {
+            cancelled.insert(request_handle.into());
+        }
+    }
+}
+
 struct PortalBackend {
     #[allow(dead_code)]
     runtime: tokio::runtime::Runtime,
     #[allow(dead_code)]
     server: crate::portal::ServerHandle,
+    remote_input: std::sync::mpsc::Receiver<crate::network::streaming::RemoteAction>,
+    input_capture: crate::portal::InputCaptureCompositorHandle,
+    screencast: crate::portal::ScreenCastStreamProvisionerHandle,
+    capture_requests: std::sync::mpsc::Receiver<PortalCaptureCommand>,
+    capture_pending: Arc<AtomicBool>,
+    documents: crate::portal::DocumentStoreHandle,
+    interactive_screenshot: std::sync::Mutex<Option<PendingInteractiveScreenshot>>,
+}
+
+fn portal_screencast_should_publish(has_streams: bool, session_locked: bool) -> bool {
+    has_streams && !session_locked
+}
+
+struct PendingInteractiveScreenshot {
+    request_handle: String,
+    caller: crate::portal::PortalCaller,
+    reply: std::sync::mpsc::SyncSender<crate::portal::desktop_services::PortalResult<String>>,
+}
+
+impl PortalBackend {
+    fn pump_remote_input(&self, state: &mut State, session_locked: bool) {
+        for action in self.remote_input.try_iter().take(512) {
+            // A portal session may remain connected across a local lock, but
+            // it must never be able to type into the password surface or
+            // queue input that is replayed immediately after unlock.
+            if !session_locked {
+                let _accepted = state.apply_remote_desktop_action(action);
+            }
+        }
+    }
+
+    fn observe_input_capture(&self, input: crate::portal::CapturedInput) -> bool {
+        self.input_capture.observe(input)
+    }
+
+    fn capture_pending(&self) -> bool {
+        self.capture_pending.load(Ordering::Acquire)
+    }
+
+    fn drain_capture_requests(
+        &self,
+        capture: &mut CaptureExecutor,
+        frame_builder: &mut FrameBuilder,
+        scene: &vello::Scene,
+        documents: &crate::portal::DocumentStoreHandle,
+    ) {
+        use crate::{portal::desktop_services::PortalResult, shell::state::FsMode};
+        for command in self.capture_requests.try_iter().take(8) {
+            match command {
+                PortalCaptureCommand::Screenshot { request, reply } => {
+                    if request.interactive
+                        || matches!(
+                            request.target,
+                            Some(
+                                crate::portal::desktop_services::ScreenshotTarget::Area
+                                    | crate::portal::desktop_services::ScreenshotTarget::Window
+                                    | crate::portal::desktop_services::ScreenshotTarget::ActiveWindow
+                            )
+                        )
+                    {
+                        let Ok(mut pending) = self.interactive_screenshot.lock() else {
+                            let _ = reply.send(PortalResult::Unavailable(
+                                "the screenshot selector is unavailable".into(),
+                            ));
+                            continue;
+                        };
+                        if pending.is_some() || !capture.arm_portal_screenshot() {
+                            let _ = reply.send(PortalResult::Unavailable(
+                                "another screenshot selection is already open".into(),
+                            ));
+                            continue;
+                        }
+                        let target = request.target.unwrap_or(
+                            crate::portal::desktop_services::ScreenshotTarget::Area,
+                        );
+                        if !frame_builder.host_mut().open_portal_screenshot_selector(target) {
+                            capture.cancel_portal_screenshot();
+                            let _ = reply.send(PortalResult::Cancelled);
+                            continue;
+                        }
+                        *pending = Some(PendingInteractiveScreenshot {
+                            request_handle: request.request_handle,
+                            caller: request.caller,
+                            reply,
+                        });
+                        continue;
+                    }
+                    let outcome = capture
+                        .capture_portal_screenshot(
+                            frame_builder,
+                            scene,
+                            request.target.unwrap_or(
+                                crate::portal::desktop_services::ScreenshotTarget::Screen,
+                            ),
+                            false,
+                        )
+                        .and_then(|host_path| {
+                            let published =
+                                documents.publish(&request.caller, &[host_path], FsMode::Read);
+                            let path = published.into_iter().next().ok_or_else(|| {
+                                "the document store rejected the screenshot".to_string()
+                            })?;
+                            crate::portal::file_chooser::file_uri(&path).ok_or_else(|| {
+                                "the document store returned a non-absolute screenshot path"
+                                    .to_string()
+                            })
+                        });
+                    let _ = reply.send(match outcome {
+                        Ok(uri) => PortalResult::Success(uri),
+                        Err(error) => PortalResult::Failed(error),
+                    });
+                }
+                PortalCaptureCommand::PickColor {
+                    request_handle,
+                    cancelled,
+                    reply,
+                } => {
+                    if cancelled
+                        .lock()
+                        .is_ok_and(|mut cancelled| cancelled.remove(&request_handle))
+                    {
+                        let _ = reply.send(PortalResult::Cancelled);
+                        continue;
+                    }
+                    let _ = reply.send(match capture.pick_portal_color(frame_builder, scene) {
+                        Ok(color) => PortalResult::Success(color),
+                        Err(error) => PortalResult::Failed(error),
+                    });
+                }
+                PortalCaptureCommand::CancelScreenshot { request_handle } => {
+                    let Ok(mut pending) = self.interactive_screenshot.lock() else {
+                        continue;
+                    };
+                    if pending
+                        .as_ref()
+                        .is_some_and(|pending| pending.request_handle == request_handle)
+                    {
+                        capture.cancel_portal_screenshot();
+                        if let Some(pending) = pending.take() {
+                            let _ = pending.reply.send(PortalResult::Cancelled);
+                        }
+                    }
+                }
+            }
+        }
+        self.capture_pending.store(false, Ordering::Release);
+    }
+
+    fn finish_interactive_screenshot(&self, outcome: &CaptureOutcome) -> bool {
+        use crate::portal::desktop_services::PortalResult;
+        let Ok(mut pending) = self.interactive_screenshot.lock() else {
+            return false;
+        };
+        let Some(pending_request) = pending.take() else {
+            return false;
+        };
+        let result = match outcome {
+            CaptureOutcome::PortalScreenshotSaved(host_path) => self
+                .documents
+                .publish(
+                    &pending_request.caller,
+                    std::slice::from_ref(host_path),
+                    crate::shell::state::FsMode::Read,
+                )
+                .into_iter()
+                .next()
+                .and_then(|path| crate::portal::file_chooser::file_uri(&path))
+                .map_or_else(
+                    || PortalResult::Failed("the document store rejected the screenshot".into()),
+                    PortalResult::Success,
+                ),
+            CaptureOutcome::PortalScreenshotCancelled => PortalResult::Cancelled,
+            _ => {
+                *pending = Some(pending_request);
+                return false;
+            }
+        };
+        let _ = pending_request.reply.send(result);
+        true
+    }
 }
 
 /// Stand the portal backend up inside the compositor.
@@ -2743,9 +3238,17 @@ struct PortalBackend {
 ///
 /// `None` with no session bus (headless rig, no user bus) — the compositor
 /// still runs, just logging that file open/save won't work.
+#[allow(
+    clippy::too_many_lines,
+    reason = "portal startup wires the complete backend atomically so no partially registered capability can be advertised"
+)]
 fn start_portal_backend(
     frame_builder: &mut FrameBuilder,
     tree_handle: crate::shell::state::WorkspaceTreeHandle,
+    notifications: crate::notifications::NotificationBridge,
+    zones: Vec<crate::portal::CaptureZone>,
+    inhibit_registry: qos_power_mgmt::InhibitRegistry,
+    selection: crate::compositor::selection::SharedSelection,
 ) -> Option<PortalBackend> {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -2760,31 +3263,65 @@ fn start_portal_backend(
         }
     };
 
+    let mut desktop_services =
+        crate::portal::DesktopPortalServices::for_session(tree_handle.clone());
     let grants = crate::portal::GrantStoreHandle::new(tree_handle);
     let prompts = crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::Channel);
     let pickers = crate::portal::FilePickerQueue::new();
     let documents = crate::portal::documents_for_session();
+    let (remote_input_tx, remote_input_rx) = std::sync::mpsc::channel();
+    let (capture_tx, capture_rx) = std::sync::mpsc::sync_channel(8);
+    let capture_pending = Arc::new(AtomicBool::new(false));
+    desktop_services.screenshot = crate::portal::desktop_services::ScreenshotServiceHandle::new(
+        Arc::new(NativeScreenshotService {
+            sender: capture_tx,
+            pending: capture_pending.clone(),
+            cancelled: Arc::new(std::sync::Mutex::new(HashSet::new())),
+        }),
+    );
+    let input_capture = crate::portal::InputCaptureCompositorHandle::native(zones);
+    let screencast = match crate::portal::RealPipewireProvisioner::new() {
+        Ok(provisioner) => {
+            crate::portal::ScreenCastStreamProvisionerHandle::new(Arc::new(provisioner))
+        }
+        Err(error) => {
+            tracing::warn!(%error, "portal: PipeWire screen capture is unavailable");
+            crate::portal::ScreenCastStreamProvisionerHandle::new(Arc::new(
+                crate::portal::UnavailableScreenCastProvisioner::new(error.to_string()),
+            ))
+        }
+    };
 
     let ctx = crate::portal::PortalContext {
         grants,
         prompts: prompts.clone(),
         caller_map: crate::portal::CallerMap::new(),
         file_picker: crate::portal::FilePickerSpawnerHandle::new(Arc::new(pickers.clone())),
-        screencast_provisioner: crate::portal::ScreenCastStreamProvisionerHandle::new(Arc::new(
-            crate::portal::UnavailableScreenCastProvisioner::new(
-                "native compositor capture has not been connected to PipeWire",
-            ),
+        screencast_provisioner: screencast.clone(),
+        remote_input_injector: crate::portal::RemoteInputInjectorHandle::new(Arc::new(
+            crate::portal::ChannelInjector::new(remote_input_tx),
         )),
-        remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+        input_capture: input_capture.clone(),
         documents: documents.clone(),
         // The real spooler: unlike the picker it needs no chrome/seat (a process
         // invocation), and reports no destinations on a machine with no CUPS.
         print_spooler: crate::portal::PrintSpoolerHandle::cups(),
+        notifications,
+        desktop_services,
+        authenticator: None,
     };
 
     let serve_result = runtime.block_on(async {
         let conn = zbus::ConnectionBuilder::session()?.build().await?;
-        crate::portal::serve(conn, ctx).await
+        crate::portal::serve_with_inhibit_and_clipboard(
+            conn,
+            ctx,
+            inhibit_registry,
+            crate::portal::clipboard::ClipboardBrokerHandle::new(Arc::new(
+                crate::portal::clipboard::CompositorClipboardBroker::new(selection),
+            )),
+        )
+        .await
     });
     let server = match serve_result {
         Ok(s) => s,
@@ -2827,7 +3364,17 @@ fn start_portal_backend(
              apps are unaffected."
         );
     }
-    Some(PortalBackend { runtime, server })
+    Some(PortalBackend {
+        runtime,
+        server,
+        remote_input: remote_input_rx,
+        input_capture,
+        screencast,
+        capture_requests: capture_rx,
+        capture_pending,
+        documents,
+        interactive_screenshot: std::sync::Mutex::new(None),
+    })
 }
 
 /// Construct the backend selected by `--backend drm|winit|headless` — split
@@ -3016,8 +3563,20 @@ pub fn run() -> ! {
             std::process::exit(1);
         }
     };
+    // Developer E2E harnesses drive an already-booted desktop through the
+    // debug-only control socket. Their deliberately empty XDG roots are test
+    // isolation, not a first-login fixture; letting OOBE capture input would
+    // make every real-client input test time out before its first keypress.
+    // Release builds ignore QOS_TEST_CONTROL entirely via DEV_ENV_OVERRIDES.
+    let test_control_session = test_control_path(
+        crate::compositor::dev_env::DEV_ENV_OVERRIDES,
+        std::env::var_os(TEST_CONTROL_ENV),
+    )
+    .is_some();
     let onboarding_identity_dir =
-        if crate::shell::identity_provisioning::needs_first_run_flow(&identity_store) {
+        if crate::shell::identity_provisioning::needs_first_run_flow(&identity_store)
+            && !test_control_session
+        {
             if let Some(identity_dir) = identity_store
                 .path()
                 .parent()
@@ -3094,12 +3653,22 @@ pub fn run() -> ! {
 
     // The xdg-desktop-portal backend, served from *this* process on the tree
     // it owns — see `start_portal_backend` for why not the separate daemon.
-    let _portal = start_portal_backend(&mut frame_builder, tree_handle.clone());
+    let notif_bridge = crate::notifications::NotificationBridge::new();
+    frame_builder.with_chrome(|st| st.set_notification_bridge(notif_bridge.clone()));
+    let inhibit_registry = qos_power_mgmt::InhibitRegistry::new();
+    let portal_backend = start_portal_backend(
+        &mut frame_builder,
+        tree_handle.clone(),
+        notif_bridge.clone(),
+        input_capture_zones(backend.outputs()),
+        inhibit_registry.clone(),
+        state.selection_store(),
+    );
 
     // Peer sync is constructed here (not only in hosted mode) because this is
     // the compositor that boots as the qOS session.
     let mut peer_sync = enable_peer_sync
-        .then(|| spawn_session_peer_sync(&mut frame_builder, tree_handle.clone()))
+        .then(|| spawn_session_peer_sync(&mut frame_builder, &mut state, tree_handle.clone()))
         .flatten();
     // The session's CRDT fan-out broker, bound before the wayland socket is
     // published (before any app launches) — an app resolves its collab
@@ -3285,7 +3854,6 @@ pub fn run() -> ! {
     let mut prev_locked = false;
     // Suspend-inhibitor registry: apps hold a token via
     // `inhibit_registry.acquire(reason)`; power service mirrors it into a real logind lock, idle loop checks `is_inhibited()` before suspending.
-    let inhibit_registry = qos_power_mgmt::InhibitRegistry::new();
     // Mailbox the async power service uses to reach this loop (lock, battery
     // toast, idle-reset on resume) and this loop uses to reach it (request suspend).
     let power_bridge = qos_power_mgmt::PowerBridge::new();
@@ -3295,11 +3863,9 @@ pub fn run() -> ! {
     // `Send + Sync` mailbox between the async zbus service (its own tokio
     // runtime) and this loop's sync chrome pump. Failure to reach the session
     // bus downgrades to a warning; shell-internal notifications keep working regardless.
-    let notif_bridge = crate::notifications::NotificationBridge::new();
     let priority_contacts = crate::priority_contacts::PriorityContactRegistry::open_default();
     let notification_sound = media::notification_sound::NotificationSoundPlayer::new();
     frame_builder.with_chrome(|st| {
-        st.set_notification_bridge(notif_bridge.clone());
         st.set_notification_runtime(notification_sound.clone(), priority_contacts.clone());
     });
     // Held for the lifetime of `run` so the runtime's worker threads keep driving zbus dispatch in the background.
@@ -3453,6 +4019,12 @@ pub fn run() -> ! {
     let mut last_paint = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
+    // Start announcements can beat the replicated `PeerWindow` tab they
+    // describe, and a workspace rebuild can replace a mounted runtime
+    // widget. Retain descriptors until explicit stream end and retry their
+    // cheap idempotent mount every network tick.
+    let mut pending_legacy_streams: HashMap<(u64, u64), PendingLegacyStream> = HashMap::new();
+    let legacy_share_config = crate::config::load_config().flatpak_share;
     // Optional paint-rate diagnostics (`QOS_PAINT_STATS=1`).
     let paint_stats = std::env::var("QOS_PAINT_STATS").is_ok();
     // Optional per-iteration timing (`QOS_LOOP_TIMING=1`): logs any tick over
@@ -3532,6 +4104,11 @@ pub fn run() -> ! {
                         // A resize is also how the compositor learns a monitor changed, so
                         // re-derive per-display widths alongside the scene extent.
                         frame_builder.set_output_geometry(output_geometry(backend.outputs()));
+                        if let Some(portal) = portal_backend.as_ref() {
+                            portal
+                                .input_capture
+                                .set_zones(input_capture_zones(backend.outputs()));
+                        }
                         // Keep the fullscreen-configure size in sync so a fullscreened client fills the current output.
                         state.output_size = size_to_signed(size);
                         // The swap chain lives on the render thread now, so the reconfigure
@@ -3625,6 +4202,16 @@ pub fn run() -> ! {
                             session_changed = true;
                         }
                     } else {
+                        // InputCapture deliberately sits after the compositor's
+                        // power/VT/lock/panic controls but before client/chrome
+                        // dispatch. Once a barrier activates, the event goes to
+                        // the session's EIS socket and nowhere else.
+                        if let Some(portal) = portal_backend.as_ref()
+                            && portal_capture_event(wev, &state)
+                                .is_some_and(|event| portal.observe_input_capture(event))
+                        {
+                            continue;
+                        }
                         // Backends that don't pair a `ModifiersChanged` with every modifier
                         // keystroke would leave the mask stale, which decides chord ownership.
                         if let WindowEvent::KeyboardInput { event: key_ev, .. } = wev {
@@ -3664,6 +4251,11 @@ pub fn run() -> ! {
                     // at once: scene extent, per-display widths, fullscreen size, cadence, `wl_output` globals.
                     outputs_dirty = true;
                     session_changed = true;
+                    if let Some(portal) = portal_backend.as_ref() {
+                        portal
+                            .input_capture
+                            .set_zones(input_capture_zones(backend.outputs()));
+                    }
                 }
                 BackendEvent::ShellGesture(action) => {
                     // A 3/4-finger gesture, already resolved into its navigation meaning —
@@ -3890,6 +4482,9 @@ pub fn run() -> ! {
         if session.is_locked() && !prev_locked {
             lock.reset();
         }
+        if session.is_locked() != prev_locked {
+            crate::portal::inhibit::publish_screensaver_state(session.is_locked());
+        }
         prev_locked = session.is_locked();
 
         // Pump the D-Bus notification bridge into the toast stack and mirror lock
@@ -3921,6 +4516,18 @@ pub fn run() -> ! {
             // The mirror above is the single source of tab adoption, so the input
             // router's own queues are pure bookkeeping — drained each tick so they can't grow across a long session.
             state.client_input.clear_pending();
+        }
+        // Every client surface must be associated with at least one output.
+        // GTK3/LibreOffice waits for `wl_surface.enter` before finishing its
+        // initial scale setup; Qt and GTK4 happen to tolerate its absence.
+        // `Output::enter` is idempotent, so this also covers surfaces created
+        // after startup without duplicating protocol events.
+        if let Some(primary) = backend.outputs().first()
+            && let Some(output) = output_globals.handle(primary.id)
+        {
+            for surface in state.surface_handles.values() {
+                output.enter(surface);
+            }
         }
         // Reconcile the seat's keyboard focus with the focused tab every tick, so a
         // tab/group/workspace switch or overlay open moves the keyboard immediately, not on the next keystroke.
@@ -3979,6 +4586,127 @@ pub fn run() -> ! {
         // network actor into the replica: peer changes fold in before this frame's pump reads them, bumping the revision to repaint.
         if let Some(net) = peer_sync.as_ref() {
             net.tick();
+            let desired = {
+                let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
+                let tree = tree_handle.read();
+                desired_legacy_shares(&tree)
+            };
+            state.reconcile_legacy_share_sessions(
+                net.local_peer_id_hash(),
+                &desired,
+                &legacy_share_config,
+            );
+            for inbound in net.take_inbound_legacy() {
+                match inbound.message {
+                    crate::network::NeighbourMsg::SurfaceStreamStart {
+                        surface,
+                        source_peer,
+                        app_id,
+                        codec,
+                        hdr_static_metadata,
+                        ..
+                    } => {
+                        let reply_net = Arc::clone(net);
+                        let local_peer = net.local_peer_id_hash();
+                        let workspace_topic = inbound.workspace_topic;
+                        let input_sink = Arc::new(move |input| {
+                            if let Ok(event) = postcard::to_allocvec(&input) {
+                                let _ = reply_net.publish_legacy_message(
+                                    workspace_topic,
+                                    crate::network::NeighbourMsg::RemoteInput {
+                                        peer: local_peer,
+                                        surface,
+                                        event,
+                                    },
+                                );
+                            }
+                        });
+                        let stream = PendingLegacyStream {
+                            source_peer,
+                            surface,
+                            local_peer,
+                            app_id,
+                            codec,
+                            hdr_static_metadata,
+                            input_sink,
+                        };
+                        let mounted = !stream.app_id.is_empty()
+                            && frame_builder.host_mut().mount_peer_stream(
+                                stream.source_peer,
+                                stream.surface,
+                                stream.local_peer,
+                                &stream.app_id,
+                                &stream.codec,
+                                stream.hdr_static_metadata.clone(),
+                                Arc::clone(&stream.input_sink),
+                            );
+                        if !mounted {
+                            tracing::warn!(
+                                source_peer,
+                                surface,
+                                app_id = stream.app_id,
+                                "legacy stream is waiting for its peer-window tab"
+                            );
+                        }
+                        pending_legacy_streams.insert((source_peer, surface), stream);
+                    }
+                    crate::network::NeighbourMsg::SurfaceFrame {
+                        surface,
+                        source_peer,
+                        encoded_h264,
+                        ..
+                    } => {
+                        let _ = frame_builder.host_mut().push_peer_stream_frame(
+                            source_peer,
+                            surface,
+                            &encoded_h264,
+                            None,
+                        );
+                    }
+                    crate::network::NeighbourMsg::SurfaceStreamEnd {
+                        surface,
+                        source_peer,
+                        ..
+                    } => {
+                        pending_legacy_streams.remove(&(source_peer, surface));
+                        let _ = frame_builder
+                            .host_mut()
+                            .unmount_peer_stream(source_peer, surface);
+                    }
+                    crate::network::NeighbourMsg::RemoteInput {
+                        peer,
+                        surface,
+                        event,
+                    } => {
+                        match postcard::from_bytes::<crate::network::streaming::InputEvent>(&event)
+                        {
+                            Ok(event) => {
+                                let _ = state.apply_network_remote_input(peer, surface, event);
+                            }
+                            Err(error) => tracing::warn!(
+                                peer,
+                                surface,
+                                %error,
+                                "dropping malformed remote input"
+                            ),
+                        }
+                    }
+                    _ => unreachable!("legacy inbox contains only live legacy messages"),
+                }
+            }
+            for stream in pending_legacy_streams.values() {
+                if !stream.app_id.is_empty() {
+                    let _ = frame_builder.host_mut().mount_peer_stream(
+                        stream.source_peer,
+                        stream.surface,
+                        stream.local_peer,
+                        &stream.app_id,
+                        &stream.codec,
+                        stream.hdr_static_metadata.clone(),
+                        Arc::clone(&stream.input_sink),
+                    );
+                }
+            }
         }
         // Keep the presence relay current, then fold in what peers sent. Pointer
         // is read level-triggered (covers every source: seat, remote peer, test
@@ -4027,7 +4755,8 @@ pub fn run() -> ! {
             // Apps were withheld until this edge, so their first service
             // descriptor always sees the live transport-backed broker.
             frame_builder.host_mut().set_peer_sync_enabled(true);
-            peer_sync = spawn_session_peer_sync(&mut frame_builder, tree_handle.clone());
+            peer_sync =
+                spawn_session_peer_sync(&mut frame_builder, &mut state, tree_handle.clone());
             collab_broker =
                 spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
             if let Some(broker) = collab_broker.as_ref() {
@@ -4059,6 +4788,12 @@ pub fn run() -> ! {
             || peers_moved
             || capture_executor.has_live_mirrors()
             || capture_executor.is_recording()
+            || portal_backend
+                .as_ref()
+                .is_some_and(PortalBackend::capture_pending)
+            || portal_backend
+                .as_ref()
+                .is_some_and(|portal| portal.screencast.has_streams())
             || keepalive_due;
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
@@ -4170,11 +4905,22 @@ pub fn run() -> ! {
                     notification_count: notif_count,
                     verifying: lock.is_verifying(),
                 };
-                lock_screen::draw_lock_scene(
+                let wallpaper = {
+                    let chrome = frame_builder.chrome();
+                    let tree = chrome.tree();
+                    tree.active_workspace().and_then(|workspace| {
+                        crate::shell::desktop_backdrop::wallpaper_image_for_workspace(
+                            &workspace.id.0.to_string(),
+                            "lockscreen",
+                        )
+                    })
+                };
+                lock_screen::draw_lock_scene_with_wallpaper(
                     &lock_outputs,
                     &theme,
                     frame_builder.text_renderer_mut(),
                     &view,
+                    wallpaper.as_ref(),
                 )
             } else {
                 let mut scene = frame_builder.paint();
@@ -4201,8 +4947,22 @@ pub fn run() -> ! {
             // point shared by winit, DRM and headless backends with both live
             // widget geometry and GPU-readable pixels available.
             if !session.is_locked() {
+                if let Some(portal) = portal_backend.as_ref() {
+                    portal.drain_capture_requests(
+                        &mut capture_executor,
+                        &mut frame_builder,
+                        &scene,
+                        &portal.documents,
+                    );
+                }
                 let outcomes = capture_executor.execute_ready(&mut frame_builder, &mut scene);
                 for outcome in outcomes {
+                    if portal_backend
+                        .as_ref()
+                        .is_some_and(|portal| portal.finish_interactive_screenshot(&outcome))
+                    {
+                        continue;
+                    }
                     match outcome {
                         CaptureOutcome::Saved(path) => {
                             // The captured miniature moves into a non-modal
@@ -4298,6 +5058,14 @@ pub fn run() -> ! {
                         CaptureOutcome::ScreenshotRevealed(path) => {
                             tracing::debug!(path = %path.display(), "screenshot folder opened");
                         }
+                        CaptureOutcome::PortalScreenshotSaved(path) => {
+                            tracing::warn!(path = %path.display(), "portal screenshot completed after its request expired");
+                        }
+                        CaptureOutcome::PortalScreenshotCancelled => {
+                            tracing::debug!(
+                                "portal screenshot selector cancelled after its request expired"
+                            );
+                        }
                         CaptureOutcome::Failed(error) => {
                             tracing::warn!(%error, "capture failed");
                             frame_builder.with_chrome(|chrome| {
@@ -4306,10 +5074,27 @@ pub fn run() -> ! {
                         }
                     }
                 }
+                if let Some(portal) = portal_backend.as_ref()
+                    && portal_screencast_should_publish(
+                        portal.screencast.has_streams(),
+                        session.is_locked(),
+                    )
+                {
+                    match capture_executor
+                        .render_portal_screencast_frame(&mut frame_builder, &scene)
+                    {
+                        Ok((width, height, rgba)) => {
+                            portal.screencast.publish_frame(width, height, rgba);
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "portal: screen-share frame render failed");
+                        }
+                    }
+                }
             }
-            // The lock screen is never transmitted: a receiver session may
-            // remain connected while the seat locks, but remote observers do
-            // not get password entry, notification counts, or unlock timing.
+            // Neither capture path transmits the lock screen: receiver
+            // sessions may remain connected, but no fresh frame reveals
+            // password entry, notification counts, or unlock timing.
             if !session.is_locked() && frame_builder.host().projection_capture_requested() {
                 let viewport = frame_builder.viewport();
                 #[allow(
@@ -4420,6 +5205,9 @@ pub fn run() -> ! {
         }
         // Selection bookkeeping after dispatch, not in the protocol handler:
         // smithay raises `new_selection` before installing the new source, so an inline pull would read the previous owner.
+        if let Some(portal) = portal_backend.as_ref() {
+            portal.pump_remote_input(&mut state, session.is_locked());
+        }
         state.pump_selection();
         if let Err(err) = display.flush_clients() {
             eprintln!("nirios compositor: flush_clients error: {err}");
@@ -4543,6 +5331,13 @@ mod tests {
         assert!(take_deferred_peer_sync_activation(&mut deferred, false));
         assert!(!deferred, "the current-session start is one-shot");
         assert!(!take_deferred_peer_sync_activation(&mut deferred, false));
+    }
+
+    #[test]
+    fn portal_screencast_never_publishes_a_locked_frame() {
+        assert!(portal_screencast_should_publish(true, false));
+        assert!(!portal_screencast_should_publish(true, true));
+        assert!(!portal_screencast_should_publish(false, false));
     }
 
     #[test]
@@ -5457,6 +6252,24 @@ fn output_geometry(
             x: f64::from(o.position.0),
             width: f64::from(o.size.0),
             height: f64::from(o.size.1),
+        })
+        .collect()
+}
+
+/// Logical output rectangles exposed as `InputCapture` zones.  Invalid outputs
+/// are omitted so a transient KMS modeset never offers a zero-sized capture
+/// target to a portal client.
+fn input_capture_zones(
+    outputs: &[crate::compositor::backend::Output],
+) -> Vec<crate::portal::CaptureZone> {
+    outputs
+        .iter()
+        .filter(|output| output.size.0 > 0 && output.size.1 > 0)
+        .map(|output| crate::portal::CaptureZone {
+            width: output.size.0,
+            height: output.size.1,
+            x: output.position.0,
+            y: output.position.1,
         })
         .collect()
 }

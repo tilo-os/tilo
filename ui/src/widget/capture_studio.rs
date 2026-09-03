@@ -183,7 +183,7 @@ impl CaptureTarget {
     }
 
     /// Workflow-appropriate meaning of “App”. A still image may expand an
-    /// app-provided document/canvas beyond its live window; video and PiP must
+    /// app-provided document/canvas beyond its live window; video and `PiP` must
     /// preserve the live window itself or a tall document becomes an
     /// unreadable strip that changes aspect while recording.
     pub fn full_app_rect(&self, mode: CaptureMode) -> Rect {
@@ -221,10 +221,10 @@ pub enum ScreenshotCommand {
     /// Open the exact saved artifact in the shared native markup workspace.
     MarkupLast,
     /// Open the finished artifact itself in the user's preferred image app.
-    /// This is distinct from RevealLast, which opens its containing folder.
+    /// This is distinct from `RevealLast`, which opens its containing folder.
     OpenLast,
     /// Turn the exact finished pixels into a frozen reference surface. This
-    /// must never be implemented as a live recapture/PiP source.
+    /// must never be implemented as a live recapture/`PiP` source.
     PinLast,
     RevealLast,
     /// Copy the already-rendered last screenshot without recapturing a live
@@ -296,6 +296,10 @@ impl DragSelection {
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent capture, recording, replay, and receipt states are retained together"
+)]
 pub struct CaptureStudio {
     rect: Rect,
     overlay_rect: Rect,
@@ -459,9 +463,9 @@ impl CaptureStudio {
         }
     }
 
-    /// Global PiP shortcut entry point. PiP is a frequent live-workflow, not
+    /// Global `PiP` shortcut entry point. `PiP` is a frequent live-workflow, not
     /// a screenshot destination hidden one mode-switch away, so its shell
-    /// chord lands directly in the region picker with PiP-safe defaults.
+    /// chord lands directly in the region picker with `PiP`-safe defaults.
     pub fn open_pip_setup(&mut self) {
         self.open();
         if !self.recording_active {
@@ -636,8 +640,8 @@ impl CaptureStudio {
             return;
         }
         let progress = f64::from(permille.min(1_000)) / 1_000.0;
-        self.recording_started_at =
-            Some(Instant::now() - RECORDING_HOLD - RECORDING_SETTLE.mul_f64(progress));
+        let offset = RECORDING_HOLD + RECORDING_SETTLE.mul_f64(progress);
+        self.recording_started_at = Instant::now().checked_sub(offset);
     }
 
     /// Keep the compositor's spatial recording affordance alive just long
@@ -953,7 +957,7 @@ impl CaptureStudio {
         };
     }
 
-    fn navigate_picker(&mut self, key: &NamedKey) -> bool {
+    fn navigate_picker(&mut self, key: NamedKey) -> bool {
         let forward = matches!(key, NamedKey::ArrowRight | NamedKey::ArrowDown);
         match (self.source, key) {
             (SourceMode::Window, NamedKey::ArrowLeft | NamedKey::ArrowRight) => {
@@ -1172,7 +1176,7 @@ impl CaptureStudio {
         }
     }
 
-    fn nudge_region(&mut self, key: &NamedKey, amount: f64) -> bool {
+    fn nudge_region(&mut self, key: NamedKey, amount: f64) -> bool {
         if self.source != SourceMode::Region {
             return false;
         }
@@ -1279,7 +1283,7 @@ impl CaptureStudio {
         }
         if self.source == SourceMode::Multi && !regions.is_empty() {
             let noun = if regions.len() == 1 { "area" } else { "areas" };
-            return format!("{} {noun} · drag to add · {finish}", regions.len(),);
+            return format!("{} {noun} · drag to add · {finish}", regions.len());
         }
         match (self.mode, self.source) {
             (CaptureMode::Screenshot, SourceMode::Region) => "Drag to select",
@@ -1367,8 +1371,11 @@ impl CaptureStudio {
         if started.elapsed() <= RECORDING_HOLD {
             return 0.0;
         }
-        let raw =
-            (started.elapsed() - RECORDING_HOLD).as_secs_f64() / RECORDING_SETTLE.as_secs_f64();
+        let raw = started
+            .elapsed()
+            .saturating_sub(RECORDING_HOLD)
+            .as_secs_f64()
+            / RECORDING_SETTLE.as_secs_f64();
         let t = raw.clamp(0.0, 1.0);
         // Quintic smoothstep: zero velocity at both ends keeps the handoff
         // from reading as a toast that simply teleports into the bar.
@@ -1403,8 +1410,11 @@ impl CaptureStudio {
         if started.elapsed() <= RECORDING_HOLD {
             return 0.0;
         }
-        let raw =
-            (started.elapsed() - RECORDING_HOLD).as_secs_f64() / RECORDING_SETTLE.as_secs_f64();
+        let raw = started
+            .elapsed()
+            .saturating_sub(RECORDING_HOLD)
+            .as_secs_f64()
+            / RECORDING_SETTLE.as_secs_f64();
         let t = raw.clamp(0.0, 1.0);
         t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
     }
@@ -1463,10 +1473,9 @@ impl CaptureStudio {
     }
 
     fn screenshot_receipt_rects_at(&self, p: f64, origin: Point) -> (Rect, Rect, Rect, Rect, Rect) {
-        let receipt = self
-            .screenshot_receipt
-            .as_ref()
-            .expect("receipt geometry requires a screenshot receipt");
+        let Some(receipt) = self.screenshot_receipt.as_ref() else {
+            return (Rect::ZERO, Rect::ZERO, Rect::ZERO, Rect::ZERO, Rect::ZERO);
+        };
         let bounds = self.status_rect();
         let compact = bounds.width() < 1000.0;
         let final_width = if compact { 360.0 } else { 320.0 };
@@ -1880,7 +1889,11 @@ impl CaptureStudio {
             mode: CaptureMode::Recording,
             source: self.source,
             destination: CaptureDestination::File,
-            regions: starting.then(|| self.active_regions()).unwrap_or_default(),
+            regions: if starting {
+                self.active_regions()
+            } else {
+                Vec::new()
+            },
             include_pointer: self.include_pointer,
             audio: if starting {
                 self.audio
@@ -2744,6 +2757,10 @@ impl CaptureStudio {
             return;
         }
         let remaining = armed.duration.saturating_sub(elapsed).as_secs_f64();
+        #[allow(
+            clippy::cast_sign_loss,
+            reason = "remaining capture delay is non-negative and clamped above one second"
+        )]
         let count = remaining.ceil().max(1.0) as u64;
         let second_progress = remaining.fract();
         let pulse = if theme.reduce_motion {
@@ -3225,7 +3242,7 @@ impl CaptureStudio {
         let docking_label = if p < 0.66 && !self.stop_pending && !self.recording_paused {
             crate::format::timecode(elapsed)
         } else {
-            settled_label.clone()
+            settled_label
         };
         // The explanatory sentence gives way to the compact timer while the
         // pill flies. Their staggered crossfade keeps at least one semantic
@@ -3817,7 +3834,7 @@ impl CaptureStudio {
     }
 
     fn draw_replay_indicator(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -4125,7 +4142,7 @@ impl Widget for CaptureStudio {
             let min_target_badge_y = self
                 .candidate_picker_rects()
                 .first()
-                .map_or(self.top_bar().y1 + 8.0, |picker| picker.y1 + 8.0);
+                .map_or_else(|| self.top_bar().y1 + 8.0, |picker| picker.y1 + 8.0);
             for target in &self.candidates {
                 let rect = target.visible_rect.intersect(self.selection_bounds());
                 if rect.area() <= 0.0 {
@@ -4933,13 +4950,13 @@ impl Widget for CaptureStudio {
                     },
                 ..
             } => {
-                if !self.navigate_picker(key) {
+                if !self.navigate_picker(*key) {
                     let amount = if modifiers.state().shift_key() {
                         10.0
                     } else {
                         1.0
                     };
-                    self.nudge_region(key, amount);
+                    self.nudge_region(*key, amount);
                 }
             }
             WindowEvent::KeyboardInput {
@@ -5198,6 +5215,11 @@ fn add_rect(path: &mut BezPath, r: Rect) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::field_reassign_with_default,
+        clippy::unchecked_time_subtraction,
+        reason = "tests construct and age retained state directly to exercise visual phases"
+    )]
     use super::*;
     #[test]
     fn picker_context_advances_from_instruction_to_ready_state() {
@@ -5351,7 +5373,7 @@ mod tests {
         s.finish_region_drag();
 
         let before_nudge = s.regions[0];
-        assert!(s.nudge_region(&NamedKey::ArrowLeft, 10.0));
+        assert!(s.nudge_region(NamedKey::ArrowLeft, 10.0));
         assert_eq!(s.regions[0].x0, before_nudge.x0 - 10.0);
         assert_eq!(s.regions[0].x1, before_nudge.x1 - 10.0);
 
@@ -6146,32 +6168,32 @@ mod tests {
         s.set_source_mode(SourceMode::Window);
 
         assert_eq!(s.selected_target.as_deref(), Some("notes"));
-        assert!(s.navigate_picker(&NamedKey::ArrowRight));
+        assert!(s.navigate_picker(NamedKey::ArrowRight));
         assert_eq!(s.selected_target.as_deref(), Some("files"));
-        assert!(s.navigate_picker(&NamedKey::ArrowRight));
+        assert!(s.navigate_picker(NamedKey::ArrowRight));
         assert_eq!(s.selected_target.as_deref(), Some("notes"));
-        assert!(s.navigate_picker(&NamedKey::ArrowLeft));
+        assert!(s.navigate_picker(NamedKey::ArrowLeft));
         assert_eq!(s.selected_target.as_deref(), Some("files"));
 
         assert_eq!(s.extent, CaptureExtent::Visible);
-        assert!(s.navigate_picker(&NamedKey::ArrowDown));
+        assert!(s.navigate_picker(NamedKey::ArrowDown));
         assert_eq!(s.extent, CaptureExtent::FullApp);
-        assert!(s.navigate_picker(&NamedKey::ArrowDown));
+        assert!(s.navigate_picker(NamedKey::ArrowDown));
         assert_eq!(s.extent, CaptureExtent::WholeStrip);
-        assert!(s.navigate_picker(&NamedKey::ArrowDown));
+        assert!(s.navigate_picker(NamedKey::ArrowDown));
         assert_eq!(s.extent, CaptureExtent::Visible);
-        assert!(s.navigate_picker(&NamedKey::ArrowUp));
+        assert!(s.navigate_picker(NamedKey::ArrowUp));
         assert_eq!(s.extent, CaptureExtent::WholeStrip);
 
         s.set_source_mode(SourceMode::Multi);
         assert_eq!(s.pip_layout, PipLayout::Auto);
-        assert!(s.navigate_picker(&NamedKey::ArrowRight));
+        assert!(s.navigate_picker(NamedKey::ArrowRight));
         assert_eq!(s.pip_layout, PipLayout::Grid);
-        assert!(s.navigate_picker(&NamedKey::ArrowDown));
+        assert!(s.navigate_picker(NamedKey::ArrowDown));
         assert_eq!(s.pip_layout, PipLayout::Stack);
-        assert!(s.navigate_picker(&NamedKey::ArrowRight));
+        assert!(s.navigate_picker(NamedKey::ArrowRight));
         assert_eq!(s.pip_layout, PipLayout::Auto);
-        assert!(s.navigate_picker(&NamedKey::ArrowLeft));
+        assert!(s.navigate_picker(NamedKey::ArrowLeft));
         assert_eq!(s.pip_layout, PipLayout::Stack);
     }
 }

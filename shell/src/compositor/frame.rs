@@ -40,6 +40,9 @@ struct FloatingTransferProxy {
     image: ImageData,
 }
 
+// The four flags are independent lifecycle signals from the handoff protocol;
+// wrapping them would only obscure the truth table at this private boundary.
+#[allow(clippy::fn_params_excessive_bools)]
 fn floating_transfer_proxy_needed(
     suspended: bool,
     native_presented: bool,
@@ -938,6 +941,13 @@ impl FrameBuilder {
     /// the clean scene and GPU-readable pixels.
     pub fn take_capture_intents(&mut self) -> Vec<ui::widget::CaptureIntent> {
         self.host.take_capture_intents()
+    }
+
+    /// Whether the compositor-owned Capture Studio is still awaiting a
+    /// selection.  Portal cancellation uses this to resolve its request when
+    /// the user dismisses the trusted selector without creating an intent.
+    pub fn capture_studio_open(&self) -> bool {
+        self.host.capture_studio_open()
     }
 
     /// Drain app-originated call/navigation/media handoffs. The app keeps

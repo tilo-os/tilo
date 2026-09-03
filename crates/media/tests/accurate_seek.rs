@@ -14,12 +14,10 @@
 //!
 //! # About the timebase
 //!
-//! This clip's video track starts at a PTS of 66.67ms rather than zero — a
-//! two-frame offset the container's edit list hides from `ffprobe` but which
-//! `GStreamer` reports verbatim. So a seek to `T` correctly yields a picture
-//! stamped `T + 66.67ms`. Every assertion below measures that base from the
-//! clip itself ([`common::stream_pts_base_ms`]) rather than hardcoding it, so
-//! the tests calibrate against the stream's own timeline and a genuine drift
+//! Container edit lists and decoder preroll can make the first decoded PTS
+//! non-zero. Every assertion below measures that base from the clip itself
+//! ([`common::stream_pts_base_ms`]) rather than assuming a timestamp origin,
+//! so the tests calibrate against the stream's timeline and genuine drift
 //! still fails.
 
 mod common;
@@ -140,13 +138,11 @@ mod real {
     /// Timestamps alone prove nothing: a pipeline that re-labelled a cached
     /// buffer would satisfy every check above. Pixels are the evidence.
     ///
-    /// The fixture is a screen recording, so most of the frame is static UI
-    /// and neighbouring pictures differ only where something moved. The
-    /// invariant is therefore "the picture genuinely changed", not "changed a
-    /// lot" — a stale frame differs in exactly **zero** bytes, so any
-    /// substantial difference settles it. A floor well above sampling noise
-    /// keeps that from being vacuous, and the far-apart comparison below adds
-    /// a case where the content must differ heavily.
+    /// The deterministic test pattern moves every frame. The invariant is
+    /// therefore "the picture genuinely changed", not merely "the timestamp
+    /// changed" — a stale frame differs in exactly zero bytes. A floor well
+    /// above sampling noise keeps that from being vacuous, and the far-apart
+    /// comparison below adds a case with greater visual displacement.
     #[test]
     fn stepping_forward_changes_the_picture_not_just_the_timestamp() {
         let mut e = engine();
@@ -178,7 +174,7 @@ mod real {
              frame would differ in none. The decoder is not seeking."
         );
 
-        // Two seconds apart on this recording is a different scene entirely.
+        // Two seconds moves the deterministic pattern much farther.
         let far = decode_frame_at(&mut e, MID_GOP_MS + 2_000, "frame C");
         let pc = far.to_rgba().expect("paintable");
         let far_diff = pa.iter().zip(pc.iter()).filter(|(x, y)| x != y).count();

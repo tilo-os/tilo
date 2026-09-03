@@ -21,7 +21,7 @@ use taffy::{
 };
 use vello::Scene;
 use vello::kurbo::RoundedRect;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -48,6 +48,7 @@ use crate::shell::peer_sync_overlay::{EventOutcome as PeerSyncEventOutcome, Peer
 pub use crate::shell::peer_sync_overlay::{
     PeerSyncRequest, PeerSyncResponse, PeerSyncSnapshot, PendingInvitationSummary,
 };
+use crate::shell::portal_dialog::PortalDialogController;
 use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
 use crate::shell::projection_overlay::ProjectionOverlay;
 use crate::shell::quick_settings_bluetooth::QuickSettingsBluetoothPane;
@@ -56,9 +57,7 @@ use crate::shell::quick_settings_root::{QuickSettingsRoot, RootAction, SliderCom
 use crate::shell::quick_settings_vpn::QuickSettingsVpnPane;
 use crate::shell::quick_settings_wifi::QuickSettingsWifiPane;
 use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
-use crate::shell::state::{
-    Capability, GRANT_ALWAYS, GRANT_SESSION, GrantScope, GroupId, StripId, WorkspaceId,
-};
+use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
 use crate::shell::workspace_settings::{CapEdit, EXPIRY_CHOICES};
 pub use crate::shell::workspace_settings_overlay::GrantComposerRects;
 use crate::shell::workspace_settings_overlay::{
@@ -133,12 +132,12 @@ struct CaptureMirrorLayer {
 struct CaptureMirrorImage {
     image: Image,
     /// Independently movable source regions. Keeping them separate lets a
-    /// Grid/Stack PiP pack itself during the flight without crossfading or
+    /// Grid/Stack `PiP` pack itself during the flight without crossfading or
     /// teleporting high-contrast pixels.
     handoff_layers: Vec<CaptureMirrorLayer>,
     /// Pinned stills use their receipt-scale preview as a calm launch proxy,
     /// then resolve into the exact artifact as the surface becomes readable.
-    /// Multi-source live PiP uses spatial layer motion instead.
+    /// Multi-source live `PiP` uses spatial layer motion instead.
     crossfade_handoff: bool,
     /// Original pixel aspect for tall frozen documents. `Some` switches the
     /// image from whole-artifact preview into a width-fitted scroll viewport
@@ -240,7 +239,7 @@ impl CaptureMirrorImage {
             return;
         };
         let raw = ((mix - 0.58) / 0.42).clamp(0.0, 1.0);
-        let alpha = (raw * raw * (3.0 - 2.0 * raw) * 0.46) as f32;
+        let alpha = f64_to_f32_lossy(raw * raw * (3.0 - 2.0 * raw) * 0.46);
         if alpha <= 0.001 {
             return;
         }
@@ -326,14 +325,14 @@ impl Widget for CaptureMirrorImage {
                 self.draw_document_scrollbar(scene, transform, theme, mix);
                 return;
             }
-            self.handoff_layers[0]
-                .image
-                .paint_at(scene, transform, target);
+            if let Some(layer) = self.handoff_layers.first_mut() {
+                layer.image.paint_at(scene, transform, target);
+            }
             if mix > 0.001 {
                 scene.push_layer(
                     Fill::NonZero,
                     BlendMode::default(),
-                    mix as f32,
+                    f64_to_f32_lossy(mix),
                     transform,
                     &self.rect,
                 );
@@ -431,19 +430,20 @@ fn capture_mirror_origin(
 /// Keep the ownership handoff meaningful when its source lives on the
 /// continuous desktop but wholly outside the physical output. Visible pixels
 /// are used exactly; off-screen pixels collapse to a small edge portal on the
-/// side where the source lives, so the resulting PiP arrives from its real
+/// side where the source lives, so the resulting `PiP` arrives from its real
 /// virtual direction instead of popping in at the destination.
 fn visible_capture_spawn(bounds: Rect, source: Option<Rect>) -> Option<Rect> {
+    const PORTAL_WIDTH: f64 = 84.0;
+    const PORTAL_HEIGHT: f64 = 52.0;
+    const EDGE_INSET: f64 = 6.0;
+    const TOP_SAFE: f64 = 48.0;
+
     let source = source.filter(|rect| rect.is_finite() && rect.area() > 1.0)?;
     let visible = source.intersect(bounds);
     if visible.width() > 1.0 && visible.height() > 1.0 {
         return Some(visible);
     }
 
-    const PORTAL_WIDTH: f64 = 84.0;
-    const PORTAL_HEIGHT: f64 = 52.0;
-    const EDGE_INSET: f64 = 6.0;
-    const TOP_SAFE: f64 = 48.0;
     let center = source.center();
     let x = if center.x < bounds.x0 {
         bounds.x0 + EDGE_INSET
@@ -492,6 +492,16 @@ fn capture_mirror_initial_size(
     vello::kurbo::Size::new(width, height)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShortcutGuideFocus {
+    Binding(settings_store::hardware::ShortcutAction),
+    Reset(
+        settings_store::hardware::ShortcutAction,
+        settings_store::hardware::ShortcutAction,
+    ),
+    Done,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independently-toggled, documented piece of overlay/transition \
@@ -501,6 +511,26 @@ fn capture_mirror_initial_size(
 )]
 pub struct ShellOverlayHost {
     rect: Rect,
+    /// Last-used modality plus devices the host has actually discovered.
+    /// The shortcut overlay reads this; connection alone never selects a
+    /// controller-facing view.
+    interaction: ui::InteractionEnvironment,
+    /// Direct-touch arena for shell-owned three-finger navigation and pinch
+    /// overview. One-finger streams continue to the ordinary widget tree.
+    touch_gestures: ui::gesture::TouchGestureArena,
+    /// Geometry painted by the keyboard guide, reused by pointer dispatch so
+    /// the visible keycaps themselves are the edit targets.
+    shortcut_binding_rects: Vec<(settings_store::hardware::ShortcutAction, Rect)>,
+    shortcut_reset_rects: Vec<(
+        settings_store::hardware::ShortcutAction,
+        settings_store::hardware::ShortcutAction,
+        Rect,
+    )>,
+    /// The action waiting for its next pressed chord. Escape clears this
+    /// without touching the persisted binding.
+    shortcut_rebind: Option<settings_store::hardware::ShortcutAction>,
+    shortcut_rebind_message: Option<String>,
+    shortcut_guide_focus: Option<ShortcutGuideFocus>,
     content: Box<dyn Widget>,
     /// Trusted first-login chrome. While present it is the entire root
     /// surface: desktop content, launch affordances, and every other overlay
@@ -645,6 +675,9 @@ pub struct ShellOverlayHost {
     /// exclusive input routing. Keeping those together prevents the host
     /// from growing another set of loosely-coupled modal fields.
     file_picker_overlay: FilePickerOverlay,
+    /// Compositor-owned sheets for portal app choices and consent/review
+    /// flows. A chooser is a concrete user selection, not a broad grant.
+    portal_dialogs: PortalDialogController,
     /// Whether peer-sync palette commands (`/invite`, `/connect`) are
     /// surfaced. It follows the live session transport and can be enabled
     /// when first-login provisioning completes.
@@ -676,6 +709,10 @@ pub struct ShellOverlayHost {
     /// tab whose content changed without its id changing still gets
     /// rebuilt.
     tab_tiles: std::collections::HashMap<u64, String>,
+    /// Session-local bindings from `(owner, surface)` to the peer-window tab
+    /// whose runtime content was replaced by a `PeerView`. These never enter
+    /// `ChromeState` or its replicated workspace document.
+    peer_stream_tabs: std::collections::HashMap<(u64, u64), u64>,
     /// Quick-settings root-page presentation, geometry and input state.
     qs_root: QuickSettingsRoot,
     /// Side-effect dispatcher for quick-settings actions. Production
@@ -731,7 +768,7 @@ pub struct ShellOverlayHost {
     /// the shell supplies only artifact bytes and drains semantic commands.
     screenshot_markup: Option<ui::widget::ScreenshotMarkup>,
     screenshot_markup_node: Option<NodeId>,
-    /// Live arbitrary-region PiP windows. Pixels are refreshed by the
+    /// Live arbitrary-region `PiP` windows. Pixels are refreshed by the
     /// compositor capture executor; placement/input/chrome stay in the shared
     /// widget layer so they behave exactly like other floating surfaces.
     capture_mirrors: Vec<(String, FloatingWindow<CaptureMirrorImage>)>,
@@ -1291,6 +1328,13 @@ impl ShellOverlayHost {
         let (search_registry, room_records) = Self::build_search_registry();
         Self {
             rect: Rect::ZERO,
+            interaction: ui::InteractionEnvironment::default(),
+            touch_gestures: ui::gesture::TouchGestureArena::new(),
+            shortcut_binding_rects: Vec::new(),
+            shortcut_reset_rects: Vec::new(),
+            shortcut_rebind: None,
+            shortcut_rebind_message: None,
+            shortcut_guide_focus: None,
             content,
             onboarding: None,
             onboarding_released: false,
@@ -1339,6 +1383,7 @@ impl ShellOverlayHost {
             permission_prompt: None,
             portal_prompts: None,
             file_picker_overlay: FilePickerOverlay::default(),
+            portal_dialogs: PortalDialogController::default(),
             peer_sync_enabled: false,
             peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
@@ -1347,6 +1392,7 @@ impl ShellOverlayHost {
             notification_stack: None,
             last_chrome_revision: u64::MAX,
             tab_tiles: std::collections::HashMap::new(),
+            peer_stream_tabs: std::collections::HashMap::new(),
             qs_root: QuickSettingsRoot::default(),
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
             qs_wifi_pane: QuickSettingsWifiPane::default(),
@@ -1471,6 +1517,35 @@ impl ShellOverlayHost {
         true
     }
 
+    /// Open Capture Studio for a portal request with a trusted initial source.
+    /// Apps only name a broad portal target; they never inject geometry,
+    /// surface ids, or an approval outcome into chrome.
+    pub fn open_portal_screenshot_selector(
+        &mut self,
+        target: crate::portal::desktop_services::ScreenshotTarget,
+    ) -> bool {
+        if !self.open_capture_studio(ui::widget::CaptureMode::Screenshot) {
+            return false;
+        }
+        self.capture_studio.set_source_mode(match target {
+            crate::portal::desktop_services::ScreenshotTarget::Area => {
+                ui::widget::SourceMode::Region
+            }
+            crate::portal::desktop_services::ScreenshotTarget::Window
+            | crate::portal::desktop_services::ScreenshotTarget::ActiveWindow => {
+                ui::widget::SourceMode::Window
+            }
+            crate::portal::desktop_services::ScreenshotTarget::Screen => {
+                ui::widget::SourceMode::Display
+            }
+        });
+        true
+    }
+
+    pub fn capture_studio_open(&self) -> bool {
+        self.capture_studio.is_open()
+    }
+
     pub fn open_screenshot_markup(
         &mut self,
         rgba: Arc<[u8]>,
@@ -1521,7 +1596,7 @@ impl ShellOverlayHost {
             .set_recording_transition_progress(permille);
     }
 
-    /// Freeze every newly-created capture PiP at a known source-handoff
+    /// Freeze every newly-created capture `PiP` at a known source-handoff
     /// phase. This is used by deterministic visual shots only; live windows
     /// continue to derive progress from elapsed time.
     pub fn set_capture_pip_transition_progress(&mut self, permille: u16) {
@@ -1621,6 +1696,10 @@ impl ShellOverlayHost {
     /// clipping them to the physical output. Used by the compositor's capture
     /// executor for `FullApp` and `WholeStrip`; the normal screen scene remains
     /// the source for visible-region/display captures.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "capture rendering needs the complete widget paint context"
+    )]
     pub fn draw_capture_targets(
         &mut self,
         target_ids: &[String],
@@ -1654,9 +1733,13 @@ impl ShellOverlayHost {
         rects
     }
 
-    /// Create or refresh a live captured-region PiP. Updating replaces only
+    /// Create or refresh a live captured-region `PiP`. Updating replaces only
     /// the image payload; the window's user-controlled position and size stay
     /// untouched across frames.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "capture payload geometry and handoff metadata form one lifecycle operation"
+    )]
     pub(crate) fn upsert_capture_mirror(
         &mut self,
         id: &str,
@@ -1688,6 +1771,10 @@ impl ShellOverlayHost {
     /// Create a frozen screenshot reference. Unlike a PiP/live capture this is
     /// inserted once and thereafter owned entirely by the surface host, so its
     /// pixels cannot drift when the underlying application changes.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "pinned capture creation carries the immutable artifact and its geometry"
+    )]
     pub(crate) fn insert_pinned_capture(
         &mut self,
         id: &str,
@@ -1711,7 +1798,7 @@ impl ShellOverlayHost {
         let preview_rgba: Vec<u8> = preview
             .pixels
             .into_iter()
-            .flat_map(|pixel| pixel.into_iter())
+            .flat_map(std::iter::IntoIterator::into_iter)
             .collect();
         let preview_image = Image::from_rgba(
             std::sync::Arc::from(preview_rgba),
@@ -1791,7 +1878,7 @@ impl ShellOverlayHost {
 
     /// Paint capture-owned presentation surfaces as a distinct compositor
     /// pass. Keeping mirrors and status chrome out of the ordinary desktop
-    /// scene prevents recursive PiP feedback and keeps the recording pill out
+    /// scene prevents recursive `PiP` feedback and keeps the recording pill out
     /// of the encoded video.
     pub fn draw_capture_overlays(
         &mut self,
@@ -1825,6 +1912,7 @@ impl ShellOverlayHost {
 
     #[allow(
         clippy::too_many_arguments,
+        clippy::trivially_copy_pass_by_ref,
         reason = "Widget event-dispatch context plus the selected mirror node"
     )]
     fn route_capture_mirror_event(
@@ -1860,7 +1948,9 @@ impl ShellOverlayHost {
         let Some(node) = self.capture_mirror_nodes.get(index).copied() else {
             return false;
         };
-        let (_, mirror) = &mut self.capture_mirrors[index];
+        let Some((_, mirror)) = self.capture_mirrors.get_mut(index) else {
+            return false;
+        };
         mirror.handle_event(
             event,
             scale_factor,
@@ -2435,6 +2525,174 @@ impl ShellOverlayHost {
             }
         }
         None
+    }
+
+    /// Replace one matching peer-window card with a live, session-local
+    /// decoder. Returns false when the remote app has no corresponding tab;
+    /// the caller may retry when the replicated window description arrives.
+    pub fn mount_peer_stream(
+        &mut self,
+        source_peer: u64,
+        surface_id: u64,
+        local_peer: u64,
+        app_id: &str,
+        codec: &str,
+        hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
+        input_sink: std::sync::Arc<dyn Fn(crate::network::streaming::InputEvent) + Send + Sync>,
+    ) -> bool {
+        let key = (source_peer, surface_id);
+        if let Some(tab_id) = self.peer_stream_tabs.get(&key).copied() {
+            for &row_ptr in self.group_row_ptrs.values() {
+                // SAFETY: rows are boxed by this host and `&mut self` makes
+                // the traversal exclusive, as in `foreign_surface_rect`.
+                let row: &mut GroupRow = unsafe { &mut *row_ptr };
+                for group in &mut row.groups {
+                    let Some(host) = group.host_for_tab_mut(tab_id) else {
+                        continue;
+                    };
+                    let ui::widget::TileContent::App(app) = host.content_mut() else {
+                        continue;
+                    };
+                    if app.as_any_mut().is_some_and(|any| {
+                        any.downcast_mut::<crate::shell::peer_view::PeerView>()
+                            .is_some()
+                    }) {
+                        return true;
+                    }
+                }
+            }
+            // A workspace/root rebuild invalidated the runtime widget while
+            // leaving the session alive. Forget only the runtime binding;
+            // the caller's retained start descriptor remounts it below.
+            self.peer_stream_tabs.remove(&key);
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let tab_id = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group.tabs.iter().find_map(|tab| match &tab.tile {
+                            crate::shell::state::TileContent::PeerWindow {
+                                app_id: candidate,
+                                ..
+                            } if candidate == app_id
+                                && !self.peer_stream_tabs.values().any(|id| *id == tab.id) =>
+                            {
+                                Some(tab.id)
+                            }
+                            _ => None,
+                        })
+                    })
+                })
+            })
+        };
+        let Some(tab_id) = tab_id else {
+            return false;
+        };
+        let mut peer_view = crate::shell::peer_view::PeerView::new_for_stream(
+            surface_id,
+            local_peer,
+            codec,
+            crate::diagnostics::PeerSurfaceMetrics::default(),
+            &crate::shell::hdr_display::DisplayCapabilities::sdr_default(),
+            hdr_static_metadata,
+        );
+        peer_view.set_input_sink(input_sink);
+        for &row_ptr in self.group_row_ptrs.values() {
+            // SAFETY: identical to `foreign_surface_rect`: rows are boxed by
+            // this host and `&mut self` makes this traversal exclusive.
+            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+            for group in &mut row.groups {
+                if let Some(host) = group.host_for_tab_mut(tab_id) {
+                    host.replace_content(ui::widget::TileContent::App(Box::new(peer_view)));
+                    self.peer_stream_tabs.insert(key, tab_id);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Decode the newest frame into the mounted peer view. The network inbox
+    /// already coalesces older frames, so this never accumulates video here.
+    pub fn push_peer_stream_frame(
+        &mut self,
+        source_peer: u64,
+        surface_id: u64,
+        encoded: &[u8],
+        latency_ns: Option<u64>,
+    ) -> bool {
+        let Some(tab_id) = self
+            .peer_stream_tabs
+            .get(&(source_peer, surface_id))
+            .copied()
+        else {
+            return false;
+        };
+        for &row_ptr in self.group_row_ptrs.values() {
+            // SAFETY: same row ownership invariant as `mount_peer_stream`.
+            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+            for group in &mut row.groups {
+                let Some(host) = group.host_for_tab_mut(tab_id) else {
+                    continue;
+                };
+                let ui::widget::TileContent::App(app) = host.content_mut() else {
+                    return false;
+                };
+                let Some(view) = app
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<crate::shell::peer_view::PeerView>())
+                else {
+                    return false;
+                };
+                return !matches!(
+                    view.push_encoded_with_latency(encoded, latency_ns),
+                    crate::shell::peer_view::PushOutcome::DecodeFailed
+                );
+            }
+        }
+        false
+    }
+
+    /// Drop a session-local peer decoder and restore the persisted
+    /// peer-window card underneath it.
+    pub fn unmount_peer_stream(&mut self, source_peer: u64, surface_id: u64) -> bool {
+        let Some(tab_id) = self.peer_stream_tabs.remove(&(source_peer, surface_id)) else {
+            return false;
+        };
+        let tile = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .find(|tab| tab.id == tab_id)
+                            .map(|tab| tab.tile.clone())
+                    })
+                })
+            })
+        });
+        let Some(tile) = tile else {
+            return false;
+        };
+        for &row_ptr in self.group_row_ptrs.values() {
+            // SAFETY: same row ownership invariant as `mount_peer_stream`.
+            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+            for group in &mut row.groups {
+                if let Some(host) = group.host_for_tab_mut(tab_id) {
+                    host.replace_content(crate::shell::to_ui_tile(&tile));
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Whether any tab on screen is still holding a place for an app that
@@ -3447,23 +3705,10 @@ impl ShellOverlayHost {
                 .front()
                 .is_some_and(|p| p.app_id == widget_app_id);
             if head_matches && let Some(mut pending) = st.pending_grants.pop_front() {
-                let app_id = pending.app_id.clone();
-                let capability = pending.capability.clone();
-                match choice {
-                    // `Allow` is once-only (treated as satisfied for this
-                    // single call, not persisted) and `Deny` persists
-                    // nothing (absence of a grant reads as deny) — neither
-                    // writes a grant, so they share this no-op arm.
-                    PromptChoice::Allow | PromptChoice::Deny => {}
-                    PromptChoice::Session => {
-                        let cap = with_grant_scope(capability, GRANT_SESSION);
-                        record_app_grant(&st, &app_id, &cap);
-                    }
-                    PromptChoice::Always => {
-                        let cap = with_grant_scope(capability, GRANT_ALWAYS);
-                        record_app_grant(&st, &app_id, &cap);
-                    }
-                }
+                // The async portal flow owns persistence after receiving this
+                // answer. Keeping that state in its private consent store is
+                // essential: a personal portal decision must never become a
+                // replicated workspace capability visible to collaborators.
                 // Release the blocked portal call — otherwise the D-Bus
                 // method awaiting the oneshot never returns and the app
                 // hangs on its own Open dialog.
@@ -3518,6 +3763,12 @@ impl ShellOverlayHost {
     /// can repaint.
     pub fn pump_file_picker(&mut self) -> bool {
         self.file_picker_overlay.pump(self.chrome.as_ref())
+    }
+
+    /// Latch the next portal-owned sheet. Its async reply remains held by the
+    /// controller until an explicit confirm or cancel event.
+    pub fn pump_portal_dialogs(&mut self) -> bool {
+        self.portal_dialogs.pump()
     }
 
     /// Moves buffered portal prompts onto the chrome's queue for
@@ -3702,6 +3953,147 @@ impl ShellOverlayHost {
             return false;
         };
         self.focus_window_on_strip(strip, group, tab)
+    }
+
+    /// Cycle tabs inside the focused window group. Unlike strip focus, this
+    /// wraps because the tab bar is a small local ring.
+    pub fn cycle_focused_tab(&mut self, steps: i32) -> bool {
+        if steps == 0 {
+            return false;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let target = (|| -> Option<(StripId, GroupId, u64)> {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            let strip = tree.active_strip.get(&tree.active).copied()?;
+            let group_id = tree.active_group_for(strip)?;
+            let group = tree
+                .active_workspace()?
+                .strips
+                .iter()
+                .find(|candidate| candidate.id == strip)?
+                .window_groups
+                .iter()
+                .find(|candidate| candidate.id == group_id)?;
+            let current = group
+                .tabs
+                .iter()
+                .position(|tab| tab.id == group.active_tab)
+                .unwrap_or(0);
+            let len = isize::try_from(group.tabs.len()).ok()?;
+            if len == 0 {
+                return None;
+            }
+            let next =
+                (isize::try_from(current).ok()? + isize::try_from(steps).ok()?).rem_euclid(len);
+            Some((
+                strip,
+                group_id,
+                group.tabs.get(usize::try_from(next).ok()?)?.id,
+            ))
+        })();
+        let Some(target) = target else {
+            return false;
+        };
+        self.focus_window_on_strip(target.0, target.1, target.2)
+    }
+
+    /// Resize the focused group in stable five-percent increments.
+    pub fn resize_focused_group(&mut self, delta_permille: i16) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let (group_id, width) = {
+            let st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            let strip_id = tree.active_strip.get(&tree.active).copied();
+            let Some(group_id) = strip_id.and_then(|id| tree.active_group_for(id)) else {
+                return false;
+            };
+            let Some(group) = tree
+                .active_workspace_mut()
+                .and_then(|workspace| {
+                    workspace
+                        .strips
+                        .iter_mut()
+                        .find(|strip| Some(strip.id) == strip_id)
+                })
+                .and_then(|strip| {
+                    strip
+                        .window_groups
+                        .iter_mut()
+                        .find(|group| group.id == group_id)
+                })
+            else {
+                return false;
+            };
+            let next = i32::from(group.width.permille())
+                .saturating_add(i32::from(delta_permille))
+                .clamp(
+                    i32::from(ui::widget::WIDTH_MIN_PERMILLE),
+                    i32::from(ui::widget::WIDTH_MAX_PERMILLE),
+                ) as u16;
+            if next == group.width.permille() {
+                return false;
+            }
+            group.width = crate::shell::state::WindowWidth::Fraction(next);
+            tree.doc_set_width(group_id, next);
+            (group_id, next)
+        };
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            if let Some(group) = row.groups.iter_mut().find(|group| group.id == group_id) {
+                group.set_width(ui::widget::WindowWidth::Fraction(width));
+                break;
+            }
+        }
+        chrome.borrow_mut().bump();
+        true
+    }
+
+    /// Move the focused group one slot while preserving its contents and
+    /// active tab. This is the keyboard twin of dragging its tab-bar ground.
+    pub fn reorder_focused_group(&mut self, direction: i32) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let changed = {
+            let st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            let Some(strip_id) = tree.active_strip.get(&tree.active).copied() else {
+                return false;
+            };
+            let Some(group_id) = tree.active_group_for(strip_id) else {
+                return false;
+            };
+            let Some(strip) = tree
+                .active_workspace()
+                .and_then(|workspace| workspace.strips.iter().find(|strip| strip.id == strip_id))
+            else {
+                return false;
+            };
+            let Some(current) = strip
+                .window_groups
+                .iter()
+                .position(|group| group.id == group_id)
+            else {
+                return false;
+            };
+            let last = strip.window_groups.len().saturating_sub(1);
+            let destination = if direction < 0 {
+                current.saturating_sub(1)
+            } else {
+                current.saturating_add(1).min(last)
+            };
+            tree.reorder_group_within_strip(strip_id, group_id, destination)
+        };
+        if changed {
+            chrome.borrow_mut().bump();
+        }
+        changed
     }
 
     /// Focuses one window by identity, then pans the strip to it (unlike a
@@ -5848,6 +6240,85 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Portal sheets are modal: the keyboard and pointer remain in shell
+    /// chrome until the person explicitly confirms or cancels.
+    fn route_portal_dialog_event(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) -> bool {
+        if self.portal_dialogs.view().is_none() {
+            return false;
+        }
+        match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        logical_key,
+                        physical_key,
+                        ..
+                    },
+                ..
+            } => {
+                let state = modifiers.state();
+                let capture_chord = self.portal_dialogs.is_shortcut_editor()
+                    && (state.control_key()
+                        || state.alt_key()
+                        || state.shift_key()
+                        || state.super_key());
+                if capture_chord {
+                    self.portal_dialogs.key(physical_key, modifiers);
+                } else {
+                    match logical_key {
+                        Key::Named(NamedKey::ArrowDown | NamedKey::Tab) => {
+                            self.portal_dialogs.select_next(false);
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            self.portal_dialogs.select_next(true);
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            self.portal_dialogs.confirm();
+                        }
+                        Key::Named(NamedKey::Escape) => {
+                            self.portal_dialogs.cancel();
+                        }
+                        Key::Named(NamedKey::Backspace | NamedKey::Delete) => {
+                            if !self.portal_dialogs.edit_launcher_name(logical_key) {
+                                self.portal_dialogs.clear_selected_shortcut();
+                            }
+                        }
+                        Key::Named(NamedKey::Space)
+                            if self.portal_dialogs.is_usb_device_selector() =>
+                        {
+                            self.portal_dialogs.toggle_selected_usb_device();
+                        }
+                        _ => {
+                            if !self.portal_dialogs.edit_launcher_name(logical_key) {
+                                self.portal_dialogs.key(physical_key, modifiers);
+                            }
+                        }
+                    }
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                if let (Some(point), Some(layout)) =
+                    (self.last_cursor, self.portal_dialogs.layout(self.rect))
+                {
+                    self.portal_dialogs.click(point, &layout);
+                }
+            }
+            _ => {}
+        }
+        *handled = true;
+        true
+    }
+
     /// Absorbs every non-`Pressed` pointer event over an open overlay so
     /// a hover/drag can't continue underneath it (`Pressed` is excluded
     /// so the per-overlay branches later still get clicks), and a
@@ -5984,6 +6455,116 @@ impl ShellOverlayHost {
     /// host DE running qOS as a client swallows Super first).
     /// `Super+H` toggles workspace history; `Ctrl+Tab`/`Super+Tab` toggle the overview; Esc closes the top
     /// overlay. Only called for a `Pressed` `KeyboardInput`.
+    fn capture_shortcut_chord(
+        &mut self,
+        action: settings_store::hardware::ShortcutAction,
+        logical_key: &Key,
+        modifiers: winit::event::Modifiers,
+    ) {
+        let Some(chord) = shortcut_chord_from_event(logical_key, modifiers) else {
+            return;
+        };
+        if matches!(logical_key, Key::Character(_)) && chord.modifiers.is_empty() {
+            self.shortcut_rebind_message =
+                Some("Add Super, Ctrl, Alt or Shift to printable keys.".into());
+            return;
+        }
+        let mut config = settings_store::hardware::ShortcutConfig::load();
+        if let Err(other) = config.set(action, chord) {
+            self.shortcut_rebind_message = Some(format!(
+                "Already used to {}. Press another shortcut.",
+                shortcut_action_label(other)
+            ));
+            return;
+        }
+        match config.save() {
+            Ok(()) => {
+                self.shortcut_rebind = None;
+                self.shortcut_rebind_message = None;
+            }
+            Err(_) => {
+                self.shortcut_rebind_message =
+                    Some("Could not save that shortcut. Press another shortcut.".into());
+            }
+        }
+    }
+
+    fn reset_shortcut_pair(
+        &mut self,
+        first: settings_store::hardware::ShortcutAction,
+        second: settings_store::hardware::ShortcutAction,
+    ) {
+        let defaults = settings_store::hardware::ShortcutConfig::default();
+        let mut candidate = settings_store::hardware::ShortcutConfig::load();
+        candidate.bindings.remove(&first);
+        candidate.bindings.remove(&second);
+        let restore = [first, second].into_iter().try_for_each(|action| {
+            defaults
+                .bindings
+                .get(&action)
+                .cloned()
+                .ok_or(action)
+                .and_then(|chord| candidate.set(action, chord))
+        });
+        if let Err(other) = restore {
+            self.shortcut_rebind_message = Some(format!(
+                "A default is already used to {}. Change that shortcut first.",
+                shortcut_action_label(other)
+            ));
+            return;
+        }
+        match candidate.save() {
+            Ok(()) => {
+                self.shortcut_rebind = None;
+                self.shortcut_rebind_message = None;
+            }
+            Err(_) => {
+                self.shortcut_rebind_message = Some("Could not restore the defaults.".into());
+            }
+        }
+    }
+
+    fn shortcut_guide_controls(&self) -> Vec<ShortcutGuideFocus> {
+        use settings_store::hardware::ShortcutAction as A;
+        let config = settings_store::hardware::ShortcutConfig::load();
+        let defaults = settings_store::hardware::ShortcutConfig::default();
+        let rows = [
+            (A::FocusPreviousWindow, A::FocusNextWindow),
+            (A::PreviousTab, A::NextTab),
+            (A::PreviousStrip, A::NextStrip),
+            (A::PreviousWorkspace, A::NextWorkspace),
+            (A::MoveGroupLeft, A::MoveGroupRight),
+            (A::ResizeNarrower, A::ResizeWider),
+        ];
+        let mut controls = Vec::with_capacity(19);
+        for (first, second) in rows {
+            controls.push(ShortcutGuideFocus::Binding(first));
+            controls.push(ShortcutGuideFocus::Binding(second));
+            if [first, second]
+                .into_iter()
+                .any(|action| config.bindings.get(&action) != defaults.bindings.get(&action))
+            {
+                controls.push(ShortcutGuideFocus::Reset(first, second));
+            }
+        }
+        controls.push(ShortcutGuideFocus::Done);
+        controls
+    }
+
+    fn move_shortcut_guide_focus(&mut self, backwards: bool) {
+        let controls = self.shortcut_guide_controls();
+        let current = self
+            .shortcut_guide_focus
+            .and_then(|focus| controls.iter().position(|candidate| *candidate == focus));
+        let next = match (current, backwards) {
+            (Some(0), true) | (None, true) => controls.len().saturating_sub(1),
+            (Some(index), true) => index.saturating_sub(1),
+            (Some(index), false) => (index + 1) % controls.len(),
+            (None, false) => 0,
+        };
+        self.shortcut_guide_focus = controls.get(next).copied();
+    }
+
     fn handle_shell_keyboard_event(
         &mut self,
         logical_key: &Key,
@@ -5997,6 +6578,21 @@ impl ShellOverlayHost {
         let alt_down = mstate.alt_key();
         let is_mod = super_down || mstate.control_key();
         let shift_down = mstate.shift_key();
+        if self.overlay_flags().shortcut_help
+            && let Some(action) = self.shortcut_rebind
+        {
+            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
+                self.shortcut_rebind = None;
+                self.shortcut_rebind_message = None;
+            } else {
+                self.capture_shortcut_chord(action, logical_key, modifiers);
+            }
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().bump();
+            }
+            *handled = true;
+            return true;
+        }
         // Ahead of every chord below: a password can contain any
         // character, and a `k` in one must not open search instead.
         if self.handle_wifi_password_key(logical_key, modifiers) {
@@ -6004,6 +6600,169 @@ impl ShellOverlayHost {
             return true;
         }
         if self.handle_quick_settings_keyboard(logical_key, shift_down, handled) {
+            return true;
+        }
+        let shortcut_config = settings_store::hardware::ShortcutConfig::load();
+        let shortcut_pressed = |action| {
+            shortcut_config
+                .bindings
+                .get(&action)
+                .is_some_and(|chord| shortcut_chord_matches(logical_key, modifiers, chord))
+        };
+        let help_chord = matches!(logical_key, Key::Named(NamedKey::F1))
+            || shortcut_pressed(settings_store::hardware::ShortcutAction::ShortcutHelp);
+        if help_chord {
+            if let Some(chrome) = self.chrome.clone() {
+                let mut st = chrome.borrow_mut();
+                st.overlays.shortcut_help = !st.overlays.shortcut_help;
+                st.bump();
+            }
+            self.shortcut_rebind = None;
+            self.shortcut_rebind_message = None;
+            self.shortcut_guide_focus =
+                self.overlay_flags()
+                    .shortcut_help
+                    .then_some(ShortcutGuideFocus::Binding(
+                        settings_store::hardware::ShortcutAction::FocusPreviousWindow,
+                    ));
+            *handled = true;
+            return true;
+        }
+        // The guide is modal: unfamiliar keys must not act on a window
+        // hidden behind it. Escape and F1 are its explicit exits.
+        if self.overlay_flags().shortcut_help {
+            match logical_key {
+                Key::Named(NamedKey::Tab) => {
+                    self.move_shortcut_guide_focus(shift_down);
+                }
+                Key::Named(NamedKey::Enter | NamedKey::Space) => match self.shortcut_guide_focus {
+                    Some(ShortcutGuideFocus::Binding(action)) => {
+                        self.shortcut_rebind = Some(action);
+                        self.shortcut_rebind_message = None;
+                    }
+                    Some(ShortcutGuideFocus::Reset(first, second)) => {
+                        self.reset_shortcut_pair(first, second);
+                        self.shortcut_guide_focus = Some(ShortcutGuideFocus::Binding(first));
+                    }
+                    Some(ShortcutGuideFocus::Done) => {
+                        if let Some(chrome) = self.chrome.clone() {
+                            let mut st = chrome.borrow_mut();
+                            st.overlays.shortcut_help = false;
+                            st.bump();
+                        }
+                        self.shortcut_guide_focus = None;
+                    }
+                    None => self.move_shortcut_guide_focus(false),
+                },
+                Key::Named(NamedKey::Escape) => {
+                    if let Some(chrome) = self.chrome.clone() {
+                        let mut st = chrome.borrow_mut();
+                        st.overlays.shortcut_help = false;
+                        st.bump();
+                        self.shortcut_rebind = None;
+                        self.shortcut_rebind_message = None;
+                        self.shortcut_guide_focus = None;
+                    }
+                }
+                _ => {}
+            }
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().bump();
+            }
+            *handled = true;
+            return true;
+        }
+        use settings_store::hardware::ShortcutAction;
+        if shortcut_pressed(ShortcutAction::Search) {
+            self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+            self.refresh_search_results(state, path);
+            *handled = true;
+            return true;
+        }
+        if shortcut_pressed(ShortcutAction::WorkspaceOverview) {
+            if let Some(chrome) = self.chrome.clone() {
+                let mut st = chrome.borrow_mut();
+                st.overlays.overview = !st.overlays.overview;
+                st.bump();
+            }
+            *handled = true;
+            return true;
+        }
+        if shortcut_pressed(ShortcutAction::QuickSettings) {
+            if let Some(chrome) = self.chrome.clone() {
+                let mut st = chrome.borrow_mut();
+                st.overlays.quick_settings = !st.overlays.quick_settings;
+                st.bump();
+            }
+            *handled = true;
+            return true;
+        }
+        let navigation = [
+            ShortcutAction::PreviousTab,
+            ShortcutAction::NextTab,
+            ShortcutAction::ResizeNarrower,
+            ShortcutAction::ResizeWider,
+            ShortcutAction::MoveGroupLeft,
+            ShortcutAction::MoveGroupRight,
+            ShortcutAction::FocusPreviousWindow,
+            ShortcutAction::FocusNextWindow,
+            ShortcutAction::PreviousStrip,
+            ShortcutAction::NextStrip,
+            ShortcutAction::PreviousWorkspace,
+            ShortcutAction::NextWorkspace,
+        ];
+        if let Some(action) = navigation
+            .into_iter()
+            .find(|action| shortcut_pressed(*action))
+        {
+            match action {
+                ShortcutAction::PreviousTab => {
+                    let _ = self.cycle_focused_tab(-1);
+                }
+                ShortcutAction::NextTab => {
+                    let _ = self.cycle_focused_tab(1);
+                }
+                ShortcutAction::ResizeNarrower => {
+                    let _ = self.resize_focused_group(-50);
+                }
+                ShortcutAction::ResizeWider => {
+                    let _ = self.resize_focused_group(50);
+                }
+                ShortcutAction::MoveGroupLeft => {
+                    let _ = self.reorder_focused_group(-1);
+                }
+                ShortcutAction::MoveGroupRight => {
+                    let _ = self.reorder_focused_group(1);
+                }
+                ShortcutAction::FocusPreviousWindow => {
+                    let _ = self.step_focus_along_strip(-1);
+                }
+                ShortcutAction::FocusNextWindow => {
+                    let _ = self.step_focus_along_strip(1);
+                }
+                ShortcutAction::PreviousStrip | ShortcutAction::NextStrip => {
+                    let direction = if action == ShortcutAction::PreviousStrip {
+                        -1
+                    } else {
+                        1
+                    };
+                    if let Some(chrome) = self.chrome.clone() {
+                        let _ = chrome.borrow_mut().switch_strip(direction);
+                    }
+                }
+                ShortcutAction::PreviousWorkspace | ShortcutAction::NextWorkspace => {
+                    let direction = if action == ShortcutAction::PreviousWorkspace {
+                        -1
+                    } else {
+                        1
+                    };
+                    if let Some(chrome) = self.chrome.clone() {
+                        let _ = chrome.borrow_mut().switch_workspace(direction);
+                    }
+                }
+                _ => {}
+            }
+            *handled = true;
             return true;
         }
         // Captured ahead of the modifier-only branch so Character('K')
@@ -6108,6 +6867,10 @@ impl ShellOverlayHost {
     /// The `is_mod` (Ctrl or Super held) chord set: search, the
     /// projection and overview toggles, window-creation chords, and
     /// focus/workspace stepping.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the existing shell chord router remains one auditable precedence table"
+    )]
     fn handle_shell_mod_chords(
         &mut self,
         logical_key: &Key,
@@ -6720,6 +7483,55 @@ impl ShellOverlayHost {
         let Some(p) = self.last_cursor else {
             return false;
         };
+        let help_open = self.overlay_flags().shortcut_help;
+        if help_open || self.shortcut_help_button_rect().contains(p) {
+            if help_open
+                && let Some(action) = self
+                    .shortcut_binding_rects
+                    .iter()
+                    .find_map(|(action, rect)| rect.contains(p).then_some(*action))
+            {
+                self.shortcut_rebind = Some(action);
+                self.shortcut_rebind_message = None;
+                self.shortcut_guide_focus = Some(ShortcutGuideFocus::Binding(action));
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                *handled = true;
+                return true;
+            }
+            if help_open
+                && let Some((first, second)) = self
+                    .shortcut_reset_rects
+                    .iter()
+                    .find_map(|(first, second, rect)| rect.contains(p).then_some((*first, *second)))
+            {
+                self.reset_shortcut_pair(first, second);
+                self.shortcut_guide_focus = Some(ShortcutGuideFocus::Binding(first));
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                *handled = true;
+                return true;
+            }
+            if let Some(chrome) = self.chrome.clone() {
+                let mut st = chrome.borrow_mut();
+                // Any click outside the card dismisses it; inside, only the
+                // explicit Done control closes. Both are safely absorbed.
+                if !help_open
+                    || !self.shortcut_help_panel_rect().contains(p)
+                    || self.shortcut_help_done_rect().contains(p)
+                {
+                    st.overlays.shortcut_help = !help_open;
+                    st.bump();
+                    self.shortcut_rebind = None;
+                    self.shortcut_rebind_message = None;
+                    self.shortcut_guide_focus = None;
+                }
+            }
+            *handled = true;
+            return true;
+        }
         if self.handle_workspace_navigation_click(p) {
             *handled = true;
             return true;
@@ -7743,8 +8555,132 @@ const OVERVIEW_PANEL_START_SCALE: f64 = 0.97;
 /// clipped row reads as "there is more" rather than unfinished.
 const OVERVIEW_SCROLL_FADE_PX: f64 = 40.0;
 
+fn shortcut_chord_matches(
+    logical_key: &Key,
+    modifiers: winit::event::Modifiers,
+    chord: &settings_store::hardware::KeyChord,
+) -> bool {
+    let key_matches =
+        shortcut_key_name(logical_key).is_some_and(|key| chord.key.eq_ignore_ascii_case(&key));
+    let state = modifiers.state();
+    key_matches
+        && chord.modifiers.contains("Super") == state.super_key()
+        && chord.modifiers.contains("Ctrl") == state.control_key()
+        && chord.modifiers.contains("Alt") == state.alt_key()
+        && chord.modifiers.contains("Shift") == state.shift_key()
+}
+
+fn shortcut_key_name(logical_key: &Key) -> Option<String> {
+    let name = match logical_key {
+        Key::Character(key) if key.as_str() == " " => "space".to_string(),
+        Key::Character(key) if key.chars().count() == 1 => key.to_ascii_lowercase(),
+        Key::Named(named) => match named {
+            NamedKey::ArrowLeft => "left",
+            NamedKey::ArrowRight => "right",
+            NamedKey::ArrowUp => "up",
+            NamedKey::ArrowDown => "down",
+            NamedKey::Tab => "tab",
+            NamedKey::Enter => "enter",
+            NamedKey::Space => "space",
+            NamedKey::Home => "home",
+            NamedKey::End => "end",
+            NamedKey::PageUp => "pageup",
+            NamedKey::PageDown => "pagedown",
+            NamedKey::Backspace => "backspace",
+            NamedKey::Delete => "delete",
+            NamedKey::Insert => "insert",
+            NamedKey::F1 => "f1",
+            NamedKey::F2 => "f2",
+            NamedKey::F3 => "f3",
+            NamedKey::F4 => "f4",
+            NamedKey::F5 => "f5",
+            NamedKey::F6 => "f6",
+            NamedKey::F7 => "f7",
+            NamedKey::F8 => "f8",
+            NamedKey::F9 => "f9",
+            NamedKey::F10 => "f10",
+            NamedKey::F11 => "f11",
+            NamedKey::F12 => "f12",
+            _ => return None,
+        }
+        .to_string(),
+        _ => return None,
+    };
+    Some(name)
+}
+
+fn shortcut_chord_from_event(
+    logical_key: &Key,
+    modifiers: winit::event::Modifiers,
+) -> Option<settings_store::hardware::KeyChord> {
+    let key = shortcut_key_name(logical_key)?;
+    let state = modifiers.state();
+    let mut names = std::collections::BTreeSet::new();
+    if state.super_key() {
+        names.insert("Super".to_string());
+    }
+    if state.control_key() {
+        names.insert("Ctrl".to_string());
+    }
+    if state.alt_key() {
+        names.insert("Alt".to_string());
+    }
+    if state.shift_key() {
+        names.insert("Shift".to_string());
+    }
+    Some(settings_store::hardware::KeyChord {
+        modifiers: names,
+        key,
+    })
+}
+
+fn shortcut_action_label(action: settings_store::hardware::ShortcutAction) -> &'static str {
+    use settings_store::hardware::ShortcutAction;
+    match action {
+        ShortcutAction::Search => "open search",
+        ShortcutAction::WorkspaceOverview => "open the workspace overview",
+        ShortcutAction::Lock => "lock the screen",
+        ShortcutAction::QuickSettings => "open Quick Settings",
+        ShortcutAction::ShortcutHelp => "open this guide",
+        ShortcutAction::FocusPreviousWindow => "focus the previous window",
+        ShortcutAction::FocusNextWindow => "focus the next window",
+        ShortcutAction::PreviousTab => "select the previous tab",
+        ShortcutAction::NextTab => "select the next tab",
+        ShortcutAction::PreviousStrip => "select the previous strip",
+        ShortcutAction::NextStrip => "select the next strip",
+        ShortcutAction::PreviousWorkspace => "select the previous workspace",
+        ShortcutAction::NextWorkspace => "select the next workspace",
+        ShortcutAction::MoveGroupLeft => "move the group left",
+        ShortcutAction::MoveGroupRight => "move the group right",
+        ShortcutAction::ResizeNarrower => "make the window narrower",
+        ShortcutAction::ResizeWider => "make the window wider",
+    }
+}
+
 impl Widget for ShellOverlayHost {
+    fn set_interaction_environment(&mut self, environment: ui::InteractionEnvironment) {
+        self.interaction = environment;
+        for child in self.children_mut() {
+            child.set_interaction_environment(environment);
+        }
+    }
+
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
+        let open_desktop_tour = self.onboarding.is_none()
+            && self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome.borrow().overlays.desktop_tour);
+        if open_desktop_tour {
+            if let Some(chrome) = self.chrome.as_ref() {
+                let mut state = chrome.borrow_mut();
+                state.overlays.desktop_tour = false;
+                state.bump();
+            }
+            self.onboarding = Some(crate::onboarding_view::OnboardingView::new_tour());
+            self.onboarding_released = false;
+            self.onboarding_focus_reset = false;
+        }
         if let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.sync(s, p);
             let finished = onboarding.finished();
@@ -7786,6 +8722,10 @@ impl Widget for ShellOverlayHost {
         self.harvest_floating_surface_source_updates();
         self.harvest_capture_studio_requests();
         let palette_dirty = self.palette.update(doc, path);
+        #[allow(
+            clippy::unnecessary_fold,
+            reason = "every mirror update has side effects and must run even after one reports dirty"
+        )]
         let mirror_dirty = self
             .capture_mirrors
             .iter_mut()
@@ -7830,6 +8770,7 @@ impl Widget for ShellOverlayHost {
         // screen by the end of it, not one frame later.
         let portal_dirty = self.drain_portal_prompts();
         let picker_dirty = self.pump_file_picker();
+        let dialog_dirty = self.pump_portal_dialogs();
         self.pump_permission_prompt();
         let launch_dirty = self.drain_launch_events() | self.retire_notices_for_opened_windows();
         // Also driven by the widget's own `update`, but routed here too so
@@ -7855,10 +8796,15 @@ impl Widget for ShellOverlayHost {
             || chrome_dirty
             || portal_dirty
             || picker_dirty
+            || dialog_dirty
             || mirror_dirty
             || follow_dirty
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the host assembles one ordered overlay layout lifecycle"
+    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -8016,6 +8962,10 @@ impl Widget for ShellOverlayHost {
         node
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the host applies one ordered overlay layout lifecycle"
+    )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         // A missing layout for `node` would mean taffy never computed
         // this frame's tree at all — nothing downstream has a sensible
@@ -8241,6 +9191,79 @@ impl Widget for ShellOverlayHost {
         // the original inline code hit a bare `return`.
         self.track_cursor_position(event, scale_factor);
 
+        if let WindowEvent::Touch(touch) = event {
+            let shell_owned_before = self.touch_gestures.shell_owns_current();
+            let phase = match touch.phase {
+                winit::event::TouchPhase::Started => ui::gesture::GesturePhase::Begin,
+                winit::event::TouchPhase::Moved => ui::gesture::GesturePhase::Update,
+                winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
+                    ui::gesture::GesturePhase::End
+                }
+            };
+            let point = Point::new(
+                touch.location.x / scale_factor,
+                touch.location.y / scale_factor,
+            );
+            let events = self.touch_gestures.on_touch(touch.id, point, phase);
+            let shell_owned = shell_owned_before || self.touch_gestures.shell_owns_current();
+            let mut claimed = false;
+            for gesture in events {
+                use ui::gesture::{TouchGestureEvent, TouchSwipeDirection};
+                match gesture {
+                    TouchGestureEvent::Swipe {
+                        fingers: 3..,
+                        direction: TouchSwipeDirection::Left,
+                    } => claimed |= self.step_focus_along_strip(1),
+                    TouchGestureEvent::Swipe {
+                        fingers: 3..,
+                        direction: TouchSwipeDirection::Right,
+                    } => claimed |= self.step_focus_along_strip(-1),
+                    TouchGestureEvent::Swipe {
+                        fingers: 3..,
+                        direction,
+                    } => {
+                        let step = if direction == TouchSwipeDirection::Up {
+                            -1
+                        } else {
+                            1
+                        };
+                        if let Some(chrome) = self.chrome.as_ref() {
+                            claimed |= chrome.borrow_mut().switch_workspace(step);
+                        }
+                    }
+                    TouchGestureEvent::Pinch {
+                        fingers: 3..,
+                        scale,
+                        ..
+                    } if scale <= 0.8 => {
+                        if let Some(chrome) = self.chrome.as_ref() {
+                            let mut state = chrome.borrow_mut();
+                            state.overlays.overview = true;
+                            state.bump();
+                            claimed = true;
+                        }
+                    }
+                    TouchGestureEvent::Pinch {
+                        fingers: 3..,
+                        scale,
+                        ..
+                    } if scale >= 1.25 => {
+                        if let Some(chrome) = self.chrome.as_ref() {
+                            let mut state = chrome.borrow_mut();
+                            state.overlays.overview = false;
+                            state.bump();
+                            claimed = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if claimed || shell_owned {
+                *handled = true;
+                return;
+            }
+        }
+
         if let (Some(markup), Some(markup_node)) =
             (self.screenshot_markup.as_mut(), self.screenshot_markup_node)
         {
@@ -8303,6 +9326,10 @@ impl Widget for ShellOverlayHost {
                 taffy,
             )
         {
+            return;
+        }
+
+        if self.route_portal_dialog_event(event, *modifiers, handled) {
             return;
         }
 
@@ -8400,6 +9427,25 @@ impl Widget for ShellOverlayHost {
         {
             return;
         }
+        // qOS-reserved shell chords above always win.  All remaining pressed
+        // physical keys are offered to the portal registry, which can only
+        // match an accelerator installed after a reviewed, authenticated
+        // GlobalShortcuts grant. A match consumes the key before app content.
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    physical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+            && crate::portal::global_shortcuts::ShellGlobalShortcutsService::global()
+                .match_physical_key(physical_key, *modifiers)
+        {
+            *handled = true;
+            return;
+        }
         if self.handle_shell_mouse_click_event(event, handled) {
             return;
         }
@@ -8449,7 +9495,7 @@ impl Widget for ShellOverlayHost {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, Role};
+        use ui::a11y::{AccessNode, AccessState, Role};
 
         let mut root = AccessNode::new(Role::Group).with_name("qOS workspace");
         if self.overlay_flags().room_activity {
@@ -8467,6 +9513,33 @@ impl Widget for ShellOverlayHost {
                 root.children
                     .push(self.qs_root.accessibility_snapshot(&state.quick_settings));
             }
+        }
+        if self.overlay_flags().shortcut_help {
+            use settings_store::hardware::ShortcutAction;
+            let shortcuts = settings_store::hardware::ShortcutConfig::load();
+            let chord = |action| {
+                shortcuts
+                    .bindings
+                    .get(&action)
+                    .map(settings_store::hardware::KeyChord::display)
+                    .unwrap_or_else(|| "unassigned".to_string())
+            };
+            root.children.push(
+                AccessNode::new(Role::Dialog)
+                    .with_name("Desktop keyboard and mouse guide")
+                    .with_description(format!(
+                        "Focus windows with {} or {}; tabs with {} or {}; strips with {} or {}; resize with {} or {}. Click a displayed shortcut to change it; Escape cancels a pending change. A changed row gets a curved-arrow button that restores its defaults. With a mouse, click windows and tabs, drag tabs or empty tab-bar space to reorder, and drag window gaps to resize. Escape closes this guide.",
+                        chord(ShortcutAction::FocusPreviousWindow),
+                        chord(ShortcutAction::FocusNextWindow),
+                        chord(ShortcutAction::PreviousTab),
+                        chord(ShortcutAction::NextTab),
+                        chord(ShortcutAction::PreviousStrip),
+                        chord(ShortcutAction::NextStrip),
+                        chord(ShortcutAction::ResizeNarrower),
+                        chord(ShortcutAction::ResizeWider),
+                    ))
+                    .with_state(AccessState::new().modal(true)),
+            );
         }
         Some(root)
     }
@@ -8525,7 +9598,8 @@ impl Widget for ShellOverlayHost {
         if let Some(onboarding) = self.onboarding.as_ref() {
             return vec![onboarding];
         }
-        let mut out: Vec<&dyn Widget> = Vec::with_capacity(5 + self.capture_mirrors.len());
+        let mut out: Vec<&dyn Widget> =
+            Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
         out.push(self.content.as_ref());
         out.push(&self.palette);
         if let Some(s) = self.sidebar.as_ref() {
@@ -8548,7 +9622,7 @@ impl Widget for ShellOverlayHost {
             return vec![onboarding];
         }
         let mut out: Vec<&mut (dyn Widget + '_)> =
-            Vec::with_capacity(5 + self.capture_mirrors.len());
+            Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
         out.push(self.content.as_mut());
         out.push(&mut self.palette);
         if let Some(s) = self.sidebar.as_mut() {
@@ -8631,7 +9705,7 @@ impl Widget for ShellOverlayHost {
                 .and_then(|sidebar| sidebar.next_wake_deadline()),
             self.notification_stack
                 .as_ref()
-                .and_then(|stack| stack.next_wake_deadline()),
+                .and_then(Widget::next_wake_deadline),
         ]
         .into_iter()
         .flatten()
@@ -8748,21 +9822,6 @@ fn capability_label(cap: &Capability) -> String {
     }
 }
 
-/// Return a copy of `cap` with its `scope` field replaced. The portal
-/// layer pushes a placeholder scope (typically [`GRANT_ONCE`]); the
-/// prompt's button choice decides what actually gets persisted.
-fn with_grant_scope(cap: Capability, scope: GrantScope) -> Capability {
-    match cap {
-        Capability::Filesystem { path, mode, .. } => Capability::Filesystem { path, mode, scope },
-        Capability::Camera { .. } => Capability::Camera { scope },
-        Capability::Microphone { .. } => Capability::Microphone { scope },
-        Capability::Screencast { .. } => Capability::Screencast { scope },
-        Capability::RemoteDesktop { .. } => Capability::RemoteDesktop { scope },
-        Capability::Print { .. } => Capability::Print { scope },
-        Capability::Network { hosts, .. } => Capability::Network { hosts, scope },
-    }
-}
-
 /// Is the local user the owner of the active workspace? Gates the
 /// permission prompt's "Always" button and the Permissions tab's Revoke
 /// buttons, via the workspace's capability model (recorded owner, or
@@ -8777,41 +9836,6 @@ fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) ->
     let tree = state.tree();
     tree.active_workspace()
         .is_some_and(|ws| tree.governs_room(ws.room) && ws.may_administer(&user))
-}
-
-/// Records an app's capability grant on the active workspace: written
-/// into the capability list, mirrored into the replicated doc, and
-/// flushed to disk when its expiry should survive a restart. Everything
-/// the prompt hands out flows through here.
-fn record_app_grant(
-    state: &crate::shell::chrome_state::ChromeState,
-    app_id: &str,
-    capability: &Capability,
-) {
-    let mut tree = state.tree_mut();
-    let Some(ws_id) = tree.active_workspace().map(|w| w.id) else {
-        return;
-    };
-    let Some(room) = tree.active_workspace().map(|w| w.room) else {
-        return;
-    };
-    if !tree.governs_room(room) {
-        return;
-    }
-    let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) else {
-        return;
-    };
-    let ids = ws.grant_app(app_id, capability);
-    let written: Vec<crate::shell::state::CapOverride> = ws
-        .capabilities
-        .iter()
-        .filter(|c| ids.contains(&c.id))
-        .cloned()
-        .collect();
-    for cap in written {
-        tree.doc_insert_capability(ws_id, &cap);
-    }
-    tree.flush_to_disk();
 }
 
 /// Applies a permission edit to the active workspace, then mirrors it
@@ -9558,6 +10582,498 @@ impl ShellOverlayHost {
         }
     }
 
+    fn shortcut_help_button_rect(&self) -> Rect {
+        Rect::new(
+            self.rect.x1 - 52.0,
+            self.rect.y1 - 52.0,
+            self.rect.x1 - 16.0,
+            self.rect.y1 - 16.0,
+        )
+    }
+
+    fn shortcut_help_panel_rect(&self) -> Rect {
+        let width = (self.rect.width() - 40.0).clamp(0.0, 760.0);
+        let max_height = if width < 620.0 { 620.0 } else { 500.0 };
+        let height = (self.rect.height() - 40.0).clamp(0.0, max_height);
+        Rect::new(
+            self.rect.center().x - width / 2.0,
+            self.rect.center().y - height / 2.0,
+            self.rect.center().x + width / 2.0,
+            self.rect.center().y + height / 2.0,
+        )
+    }
+
+    fn shortcut_help_done_rect(&self) -> Rect {
+        let panel = self.shortcut_help_panel_rect();
+        Rect::new(
+            panel.x1 - 88.0,
+            panel.y0 + 16.0,
+            panel.x1 - 20.0,
+            panel.y0 + 50.0,
+        )
+    }
+
+    fn draw_shortcut_help_button(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.overlay_flags().shortcut_help {
+            return;
+        }
+        let rect = self.shortcut_help_button_rect();
+        let colors = &theme.tokens.colors;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.neutral[1],
+            None,
+            &RoundedRect::from_rect(rect, rect.height() / 2.0),
+        );
+        let size = theme.tokens.typography.scale.sm;
+        let (w, h) = text_renderer.measure("?", size, None);
+        text_renderer.draw_text_weighted(
+            scene,
+            "?",
+            size,
+            colors.text_primary,
+            transform.pre_translate(
+                (
+                    rect.center().x - f64::from(w) / 2.0,
+                    rect.center().y - f64::from(h) / 2.0,
+                )
+                    .into(),
+            ),
+            None,
+            TextWeight::Semibold,
+        );
+    }
+
+    fn draw_shortcut_help(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        draw_modal_scrim_at(scene, transform, self.rect, 1.0, theme);
+        let panel = self.shortcut_help_panel_rect();
+        let colors = &theme.tokens.colors;
+        ui::surface::soft_shadow(scene, transform, panel, colors.neutral[0], 40.0, 12.0, 0.55);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.neutral[0],
+            None,
+            &RoundedRect::from_rect(panel, 18.0),
+        );
+        let title_size = theme.tokens.typography.scale.xl;
+        text_renderer.draw_text_weighted(
+            scene,
+            "Move around your desktop",
+            title_size,
+            colors.text_primary,
+            transform.pre_translate((panel.x0 + 28.0, panel.y0 + 22.0).into()),
+            Some(f64_to_f32_lossy(panel.width() - 140.0)),
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text(
+            scene,
+            "Windows stay in horizontal strips. Focus moves the viewport; nothing needs to overlap.",
+            theme.tokens.typography.scale.sm,
+            colors.text_dim,
+            transform.pre_translate((panel.x0 + 28.0, panel.y0 + 58.0).into()),
+            Some(f64_to_f32_lossy(panel.width() - 56.0)),
+        );
+
+        let done = self.shortcut_help_done_rect();
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+            None,
+            &RoundedRect::from_rect(done, 10.0),
+        );
+        if self.shortcut_guide_focus == Some(ShortcutGuideFocus::Done) {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                colors.text_primary,
+                None,
+                &RoundedRect::from_rect(done.inflate(3.0, 3.0), 12.0),
+            );
+        }
+        let label_size = theme.tokens.typography.scale.xs;
+        let (done_w, done_h) = text_renderer.measure("Done", label_size, None);
+        text_renderer.draw_text_weighted(
+            scene,
+            "Done",
+            label_size,
+            colors.text_primary,
+            transform.pre_translate(
+                (
+                    done.center().x - f64::from(done_w) / 2.0,
+                    done.center().y - f64::from(done_h) / 2.0,
+                )
+                    .into(),
+            ),
+            None,
+            TextWeight::Semibold,
+        );
+
+        use ui::input::{
+            ControllerBinding, ControllerButton, InputBinding, KeyLegend, KeyboardBinding,
+            KeyboardModifier, TouchGesture,
+        };
+        use ui::widget::{InputDeviceGlyph, InputHint};
+        let platform = ui::PlatformConventions::default();
+        let family = self
+            .interaction
+            .controller
+            .unwrap_or(ui::ControllerFamily::Generic);
+        let body = Rect::new(
+            panel.x0 + 28.0,
+            panel.y0 + 112.0,
+            panel.x1 - 28.0,
+            panel.y1 - 28.0,
+        );
+        self.shortcut_binding_rects.clear();
+        self.shortcut_reset_rects.clear();
+
+        if matches!(
+            self.interaction.preferred_hint_modality(),
+            ui::InputModality::Keyboard | ui::InputModality::Pointer
+        ) {
+            let feedback = if let Some(action) = self.shortcut_rebind {
+                Some(self.shortcut_rebind_message.clone().map_or_else(
+                    || {
+                        format!(
+                            "Press a new shortcut to {} · Esc cancels",
+                            shortcut_action_label(action)
+                        )
+                    },
+                    |message| format!("{message} · Esc cancels"),
+                ))
+            } else {
+                self.shortcut_rebind_message.clone()
+            };
+            if let Some(feedback) = feedback {
+                text_renderer.draw_text(
+                    scene,
+                    &feedback,
+                    theme.tokens.typography.scale.sm,
+                    colors.text_primary,
+                    transform.pre_translate((body.x0, panel.y0 + 92.0).into()),
+                    Some(f64_to_f32_lossy(body.width())),
+                );
+            }
+        }
+
+        match self.interaction.preferred_hint_modality() {
+            ui::InputModality::Controller => {
+                InputDeviceGlyph::paint_controller(
+                    scene,
+                    transform,
+                    Rect::new(body.x0, body.y0, body.x0 + 82.0, body.y0 + 52.0),
+                    family,
+                    theme,
+                );
+                text_renderer.draw_text(
+                    scene,
+                    "Hold Guide for desktop controls. Release it and every button goes back to your game.",
+                    theme.tokens.typography.scale.sm,
+                    colors.text_dim,
+                    transform.pre_translate((body.x0 + 104.0, body.y0 + 14.0).into()),
+                    Some(f64_to_f32_lossy(body.width() - 104.0)),
+                );
+                let rows = [
+                    (
+                        "Windows",
+                        ControllerButton::DpadLeft,
+                        ControllerButton::DpadRight,
+                    ),
+                    (
+                        "Workspaces",
+                        ControllerButton::DpadUp,
+                        ControllerButton::DpadDown,
+                    ),
+                    (
+                        "Tabs",
+                        ControllerButton::LeftBumper,
+                        ControllerButton::RightBumper,
+                    ),
+                    (
+                        "Strips",
+                        ControllerButton::LeftTrigger,
+                        ControllerButton::RightTrigger,
+                    ),
+                    ("Overview", ControllerButton::South, ControllerButton::South),
+                    (
+                        "This guide",
+                        ControllerButton::Start,
+                        ControllerButton::Start,
+                    ),
+                ];
+                let narrow = body.width() < 560.0;
+                for (index, (label, first, second)) in rows.iter().enumerate() {
+                    let column = if narrow { 0 } else { index % 2 };
+                    let row = if narrow { index } else { index / 2 };
+                    let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
+                    let y = body.y0
+                        + if narrow { 62.0 } else { 92.0 }
+                        + usize_to_f64_lossy(row) * if narrow { 54.0 } else { 82.0 };
+                    text_renderer.draw_text(
+                        scene,
+                        label,
+                        theme.tokens.typography.scale.sm,
+                        colors.text_primary,
+                        transform.pre_translate((x, y).into()),
+                        None,
+                    );
+                    let guide = ControllerBinding::new([ControllerButton::Guide, *first]);
+                    let other = ControllerBinding::new([ControllerButton::Guide, *second]);
+                    InputHint::paint_controller_choice_at(
+                        scene,
+                        transform,
+                        Point::new(x, y + 25.0),
+                        &guide,
+                        &other,
+                        platform,
+                        self.interaction.keyboard_family,
+                        family,
+                        text_renderer,
+                        theme,
+                    );
+                }
+            }
+            ui::InputModality::Touch => {
+                text_renderer.draw_text(
+                    scene,
+                    "Gestures follow the desktop's horizontal windows and vertical workspaces.",
+                    theme.tokens.typography.scale.sm,
+                    colors.text_dim,
+                    transform.pre_translate((body.x0, body.y0).into()),
+                    None,
+                );
+                let gestures = [
+                    ("Focus next window", TouchGesture::SwipeLeft { fingers: 3 }),
+                    (
+                        "Focus previous window",
+                        TouchGesture::SwipeRight { fingers: 3 },
+                    ),
+                    ("Previous workspace", TouchGesture::SwipeUp { fingers: 3 }),
+                    ("Next workspace", TouchGesture::SwipeDown { fingers: 3 }),
+                    ("Open overview", TouchGesture::PinchIn),
+                    ("Close overview", TouchGesture::PinchOut),
+                ];
+                let narrow = body.width() < 560.0;
+                for (index, (label, gesture)) in gestures.iter().enumerate() {
+                    let column = if narrow { 0 } else { index % 2 };
+                    let row = if narrow { index } else { index / 2 };
+                    let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
+                    let y = body.y0
+                        + if narrow { 36.0 } else { 52.0 }
+                        + usize_to_f64_lossy(row) * if narrow { 54.0 } else { 82.0 };
+                    text_renderer.draw_text(
+                        scene,
+                        label,
+                        theme.tokens.typography.scale.sm,
+                        colors.text_primary,
+                        transform.pre_translate((x, y).into()),
+                        None,
+                    );
+                    InputHint::paint_at(
+                        scene,
+                        transform,
+                        Point::new(x, y + 25.0),
+                        &InputBinding::Touch(*gesture),
+                        platform,
+                        self.interaction.keyboard_family,
+                        family,
+                        text_renderer,
+                        theme,
+                    );
+                }
+            }
+            ui::InputModality::Keyboard | ui::InputModality::Pointer => {
+                use settings_store::hardware::ShortcutAction;
+                let shortcuts = settings_store::hardware::ShortcutConfig::load();
+                let defaults = settings_store::hardware::ShortcutConfig::default();
+                let binding = |action| {
+                    let chord = shortcuts.bindings.get(&action);
+                    let modifiers = chord
+                        .into_iter()
+                        .flat_map(|chord| chord.modifiers.iter())
+                        .filter_map(|modifier| match modifier.as_str() {
+                            "Super" => Some(KeyboardModifier::System),
+                            "Ctrl" => Some(KeyboardModifier::Control),
+                            "Alt" => Some(KeyboardModifier::Alt),
+                            "Shift" => Some(KeyboardModifier::Shift),
+                            _ => None,
+                        });
+                    let key = chord.map_or_else(
+                        || KeyLegend::Character("—".into()),
+                        |chord| KeyLegend::from_name(&chord.key),
+                    );
+                    KeyboardBinding::new(modifiers, key)
+                };
+                let rows = [
+                    (
+                        "Windows",
+                        ShortcutAction::FocusPreviousWindow,
+                        ShortcutAction::FocusNextWindow,
+                    ),
+                    ("Tabs", ShortcutAction::PreviousTab, ShortcutAction::NextTab),
+                    (
+                        "Strips",
+                        ShortcutAction::PreviousStrip,
+                        ShortcutAction::NextStrip,
+                    ),
+                    (
+                        "Workspaces",
+                        ShortcutAction::PreviousWorkspace,
+                        ShortcutAction::NextWorkspace,
+                    ),
+                    (
+                        "Move group",
+                        ShortcutAction::MoveGroupLeft,
+                        ShortcutAction::MoveGroupRight,
+                    ),
+                    (
+                        "Resize",
+                        ShortcutAction::ResizeNarrower,
+                        ShortcutAction::ResizeWider,
+                    ),
+                ];
+                let narrow = body.width() < 560.0;
+                for (index, (label, previous, next)) in rows.iter().enumerate() {
+                    let column = if narrow { 0 } else { index % 2 };
+                    let row = if narrow { index } else { index / 2 };
+                    let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
+                    let y = body.y0 + usize_to_f64_lossy(row) * if narrow { 55.0 } else { 88.0 };
+                    text_renderer.draw_text(
+                        scene,
+                        label,
+                        theme.tokens.typography.scale.sm,
+                        colors.text_primary,
+                        transform.pre_translate((x, y).into()),
+                        None,
+                    );
+                    let actions = [*previous, *next];
+                    let hit_rects = InputHint::paint_keyboard_choice_at(
+                        scene,
+                        transform,
+                        Point::new(x, y + 26.0),
+                        &binding(*previous),
+                        &binding(*next),
+                        platform,
+                        self.interaction.keyboard_family,
+                        text_renderer,
+                        theme,
+                    );
+                    for (action, rect) in actions.into_iter().zip(hit_rects) {
+                        let hit =
+                            Rect::new(rect.x0 - 5.0, rect.y0 - 5.0, rect.x1 + 5.0, rect.y1 + 5.0);
+                        let active = self.shortcut_rebind == Some(action);
+                        let focused =
+                            self.shortcut_guide_focus == Some(ShortcutGuideFocus::Binding(action));
+                        let hovered = self.last_cursor.is_some_and(|point| hit.contains(point));
+                        if active || focused || hovered {
+                            scene.stroke(
+                                &Stroke::new(if active || focused { 2.0 } else { 1.0 }),
+                                transform,
+                                colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+                                None,
+                                &RoundedRect::from_rect(hit, 8.0),
+                            );
+                        }
+                        self.shortcut_binding_rects.push((action, hit));
+                    }
+
+                    let reset = Rect::new(
+                        hit_rects[1].x1 + 12.0,
+                        y + 26.0,
+                        hit_rects[1].x1 + 34.0,
+                        y + 48.0,
+                    );
+                    let changed = actions.into_iter().any(|action| {
+                        shortcuts.bindings.get(&action) != defaults.bindings.get(&action)
+                    });
+                    if changed {
+                        let hovered = self.last_cursor.is_some_and(|point| reset.contains(point));
+                        let focused = self.shortcut_guide_focus
+                            == Some(ShortcutGuideFocus::Reset(*previous, *next));
+                        scene.fill(
+                            Fill::NonZero,
+                            transform,
+                            if hovered || focused {
+                                colors.neutral[3]
+                            } else {
+                                colors.neutral[2]
+                            },
+                            None,
+                            &RoundedRect::from_rect(reset, 6.0),
+                        );
+                        if focused {
+                            scene.stroke(
+                                &Stroke::new(2.0),
+                                transform,
+                                colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+                                None,
+                                &RoundedRect::from_rect(reset.inflate(2.0, 2.0), 8.0),
+                            );
+                        }
+                        let reset_size = theme.tokens.typography.scale.base;
+                        let (reset_w, reset_h) = text_renderer.measure("↶", reset_size, None);
+                        text_renderer.draw_text(
+                            scene,
+                            "↶",
+                            reset_size,
+                            colors.text_primary,
+                            transform.pre_translate(
+                                (
+                                    reset.center().x - f64::from(reset_w) / 2.0,
+                                    reset.center().y - f64::from(reset_h) / 2.0,
+                                )
+                                    .into(),
+                            ),
+                            None,
+                        );
+                        self.shortcut_reset_rects.push((*previous, *next, reset));
+                    }
+                }
+                let pointer_y = body.y0 + if narrow { 342.0 } else { 286.0 };
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.neutral[3],
+                    None,
+                    &Rect::new(body.x0, pointer_y, body.x1, pointer_y + 1.0),
+                );
+                text_renderer.draw_text(
+                    scene,
+                    "Mouse · click a window · drag a tab or group · drag an edge to resize · scroll horizontally to move the view",
+                    theme.tokens.typography.scale.xs,
+                    colors.text_dim,
+                    transform.pre_translate((body.x0, pointer_y + 20.0).into()),
+                    Some(f64_to_f32_lossy(body.width())),
+                );
+                if settings_store::hardware::DesktopControlsConfig::load().vim_mode {
+                    text_renderer.draw_text(
+                        scene,
+                        "Vim mode · h j k l",
+                        theme.tokens.typography.scale.xs,
+                        colors.text_dim,
+                        transform.pre_translate((body.x0, pointer_y + 50.0).into()),
+                        None,
+                    );
+                }
+            }
+        }
+    }
+
     /// The overlays that sit above dropdowns and sheets: the command
     /// palette, the peer-sync card, the file-picker overlay and the OSD.
     /// Last of four passes split out of `draw`.
@@ -9569,6 +11085,7 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.draw_shortcut_help_button(scene, transform, text_renderer, theme);
         self.palette_was_visible = self.palette_visible;
         self.palette_transition.set_open(
             self.palette_visible,
@@ -9636,6 +11153,10 @@ impl ShellOverlayHost {
         // that opened it.
         self.draw_peer_sync(scene, transform, text_renderer, theme);
 
+        if self.overlay_flags().shortcut_help {
+            self.draw_shortcut_help(scene, transform, text_renderer, theme);
+        }
+
         // Above every other overlay, including the sidebar wheel — it's
         // genuinely modal (an app in another process is blocked on the
         // answer, and `handle_event` absorbs every event), and drawn by
@@ -9644,9 +11165,227 @@ impl ShellOverlayHost {
         self.file_picker_overlay
             .draw(self.rect, scene, transform, text_renderer, theme, presence);
 
+        self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
+
         // Above everything, including modals — a physical key works
         // while a modal is up, so its readout must too.
         self.draw_osd(scene, transform, text_renderer, theme);
+    }
+
+    /// Draw an OS-owned review sheet. The requesting application controls
+    /// neither its surface nor its hit regions.
+    #[allow(
+        clippy::too_many_lines,
+        clippy::needless_pass_by_ref_mut,
+        reason = "all portal sheet variants share one chrome renderer so untrusted app data cannot select a different visual surface"
+    )]
+    fn draw_portal_dialog_sheet(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(view) = self.portal_dialogs.view() else {
+            return;
+        };
+        let Some(layout) = self.portal_dialogs.layout(self.rect) else {
+            return;
+        };
+        draw_scrim_at(scene, transform, self.rect, 1.0, theme);
+        let sheet = RoundedRect::from_rect(layout.sheet, 16.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &sheet,
+        );
+        ui::surface::soft_shadow(
+            scene,
+            transform,
+            layout.sheet,
+            theme.tokens.colors.neutral[0],
+            36.0,
+            12.0,
+            0.6,
+        );
+        text_renderer.draw_text(
+            scene,
+            &view.title(),
+            20.0,
+            theme.tokens.colors.text_primary,
+            transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 22.0).into()),
+            None,
+        );
+        text_renderer.draw_text(
+            scene,
+            view.app_name(),
+            14.0,
+            theme.tokens.colors.text_dim,
+            transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 50.0).into()),
+            None,
+        );
+        text_renderer.draw_text(
+            scene,
+            view.detail(),
+            14.0,
+            theme.tokens.colors.text_dim,
+            transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 74.0).into()),
+            None,
+        );
+        for (index, (choice, rect)) in view.choices().iter().zip(&layout.choices).enumerate() {
+            let selected = index == self.portal_dialogs.selected();
+            draw_filter_chip(
+                scene,
+                transform,
+                text_renderer,
+                *rect,
+                choice,
+                14.0,
+                if selected {
+                    theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                } else {
+                    theme.tokens.colors.surfaces.base
+                },
+                theme.tokens.colors.text_primary,
+            );
+        }
+        // USB is intentionally a real multi-select sheet, rather than a
+        // generic all-or-nothing permission prompt.  A row click or Space
+        // toggles only that device; Enter commits the resulting subset.
+        let usb_start = self.portal_dialogs.visible_selection_start();
+        for (visible_index, (device, rect)) in view
+            .usb_devices()
+            .iter()
+            .skip(usb_start)
+            .zip(&layout.choices)
+            .enumerate()
+        {
+            let index = usb_start.saturating_add(visible_index);
+            let access = if device.writable {
+                "Read and write"
+            } else {
+                "Read only"
+            };
+            let label = format!(
+                "[{}] {} — {access}",
+                if device.selected { "✓" } else { " " },
+                device.label
+            );
+            let focused = index == self.portal_dialogs.selected();
+            draw_filter_chip(
+                scene,
+                transform,
+                text_renderer,
+                *rect,
+                &label,
+                14.0,
+                if focused {
+                    theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                } else {
+                    theme.tokens.colors.surfaces.base
+                },
+                theme.tokens.colors.text_primary,
+            );
+        }
+        if let Some(editor) = view.launcher_editor() {
+            if let Some(name_rect) = layout.launcher_name {
+                let focused = self.portal_dialogs.launcher_name_focused();
+                draw_filter_chip(
+                    scene,
+                    transform,
+                    text_renderer,
+                    name_rect,
+                    self.portal_dialogs.launcher_name().unwrap_or(editor.name),
+                    14.0,
+                    if focused {
+                        theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                    } else {
+                        theme.tokens.colors.surfaces.base
+                    },
+                    theme.tokens.colors.text_primary,
+                );
+            }
+            for (index, (label, rect)) in editor
+                .icon_choices
+                .iter()
+                .zip(&layout.launcher_icons)
+                .enumerate()
+            {
+                let selected = self.portal_dialogs.launcher_icon() == Some(index);
+                draw_filter_chip(
+                    scene,
+                    transform,
+                    text_renderer,
+                    *rect,
+                    label,
+                    14.0,
+                    if selected {
+                        theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                    } else {
+                        theme.tokens.colors.surfaces.base
+                    },
+                    theme.tokens.colors.text_primary,
+                );
+            }
+        }
+        for (index, (row, rect)) in view.shortcut_rows().iter().zip(&layout.choices).enumerate() {
+            let accelerator = row.accelerator.as_deref().map_or_else(
+                || "Not set".into(),
+                crate::portal::global_shortcuts::display_accelerator,
+            );
+            let label = if row.description.is_empty() {
+                format!("{}  —  {accelerator}", row.id)
+            } else {
+                format!("{}  —  {accelerator}", row.description)
+            };
+            let selected = index == self.portal_dialogs.selected();
+            draw_filter_chip(
+                scene,
+                transform,
+                text_renderer,
+                *rect,
+                &label,
+                14.0,
+                if selected {
+                    theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                } else {
+                    theme.tokens.colors.surfaces.base
+                },
+                theme.tokens.colors.text_primary,
+            );
+            if let Some(status) = &row.status {
+                text_renderer.draw_text(
+                    scene,
+                    status,
+                    11.0,
+                    theme.tokens.colors.semantic.warning,
+                    transform.pre_translate((rect.x0 + 10.0, rect.y1 - 10.0).into()),
+                    None,
+                );
+            }
+        }
+        draw_filter_chip(
+            scene,
+            transform,
+            text_renderer,
+            layout.cancel,
+            "Cancel",
+            14.0,
+            theme.tokens.colors.surfaces.base,
+            theme.tokens.colors.text_primary,
+        );
+        draw_filter_chip(
+            scene,
+            transform,
+            text_renderer,
+            layout.confirm,
+            view.confirm_label(),
+            14.0,
+            theme.tokens.colors.accent[5],
+            theme.tokens.colors.text_primary,
+        );
     }
 
     /// Paints an overlapping stack of member faces, right-aligned at
@@ -12372,6 +14111,101 @@ mod palette_dispatch_tests {
     }
 
     #[test]
+    fn configurable_shortcut_matcher_handles_named_keys_and_exact_modifiers() {
+        let chord = settings_store::hardware::KeyChord::parse("Super+Shift+Left").unwrap();
+        let matching = winit::event::Modifiers::from(
+            winit::keyboard::ModifiersState::SUPER | winit::keyboard::ModifiersState::SHIFT,
+        );
+        assert!(shortcut_chord_matches(
+            &Key::Named(NamedKey::ArrowLeft),
+            matching,
+            &chord
+        ));
+        assert!(!shortcut_chord_matches(
+            &Key::Named(NamedKey::ArrowLeft),
+            winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER),
+            &chord
+        ));
+    }
+
+    #[test]
+    fn shortcut_capture_builds_the_pressed_named_chord() {
+        let modifiers = winit::event::Modifiers::from(
+            winit::keyboard::ModifiersState::SUPER | winit::keyboard::ModifiersState::SHIFT,
+        );
+        let chord = shortcut_chord_from_event(&Key::Named(NamedKey::ArrowDown), modifiers)
+            .expect("a supported named key becomes a shortcut chord");
+        assert_eq!(chord.display(), "Super+Shift+Down");
+    }
+
+    #[test]
+    fn clicking_a_painted_shortcut_starts_capture_and_escape_only_cancels_capture() {
+        let (mut host, chrome) = host_with_chrome();
+        chrome.borrow_mut().overlays.shortcut_help = true;
+        let action = settings_store::hardware::ShortcutAction::FocusPreviousWindow;
+        host.shortcut_binding_rects
+            .push((action, Rect::new(20.0, 20.0, 80.0, 50.0)));
+        host.last_cursor = Some(Point::new(40.0, 35.0));
+        let click = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+        };
+        let mut handled = false;
+        assert!(host.handle_shell_mouse_click_event(&click, &mut handled));
+        assert!(handled);
+        assert_eq!(host.shortcut_rebind, Some(action));
+
+        let mut key_handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Escape),
+            winit::event::Modifiers::default(),
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut key_handled,
+        ));
+        assert!(key_handled);
+        assert_eq!(host.shortcut_rebind, None);
+        assert!(
+            chrome.borrow().overlays.shortcut_help,
+            "Escape cancels capture before it closes the guide"
+        );
+    }
+
+    #[test]
+    fn shortcut_guide_controls_are_keyboard_reachable() {
+        let (mut host, chrome) = host_with_chrome();
+        chrome.borrow_mut().overlays.shortcut_help = true;
+        let mut handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Tab),
+            winit::event::Modifiers::default(),
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert_eq!(
+            host.shortcut_guide_focus,
+            Some(ShortcutGuideFocus::Binding(
+                settings_store::hardware::ShortcutAction::FocusPreviousWindow
+            ))
+        );
+
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Enter),
+            winit::event::Modifiers::default(),
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert_eq!(
+            host.shortcut_rebind,
+            Some(settings_store::hardware::ShortcutAction::FocusPreviousWindow)
+        );
+    }
+
+    #[test]
     fn dispatch_overview_toggle_flips_overlay_and_closes_palette() {
         let (mut h, chrome) = host_with_chrome();
         h.palette_visible = true;
@@ -14202,6 +16036,28 @@ mod tests {
         assert!(host.take_structure_dirty());
         assert!(host.take_focus_reset());
         assert!(!host.take_focus_reset(), "focus reset must remain one-shot");
+    }
+
+    #[test]
+    fn desktop_tour_request_opens_once_and_is_consumed() {
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        let mut host =
+            ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
+        chrome.borrow_mut().overlays.desktop_tour = true;
+
+        host.sync(&mut AutoCommit::new(), &automerge::ROOT);
+
+        assert!(host.onboarding_active());
+        assert!(
+            host.onboarding
+                .as_ref()
+                .is_some_and(|view| !view.flow().is_done())
+        );
+        assert!(
+            !chrome.borrow().overlays.desktop_tour,
+            "the request edge is consumed so dismissing does not reopen it"
+        );
     }
 
     /// Bundle of host + chrome + the taffy state needed to dispatch

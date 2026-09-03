@@ -16,7 +16,7 @@ use std::f64::consts::PI;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Arc, Circle, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Fill;
+use vello::peniko::{Extend, Fill, ImageBrush, ImageData};
 
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -98,6 +98,19 @@ pub fn draw_lock_scene(
     text: &mut TextRenderer,
     view: &LockView<'_>,
 ) -> Scene {
+    draw_lock_scene_with_wallpaper(outputs, theme, text, view, None)
+}
+
+/// As [`draw_lock_scene`], using an optional compositor-owned private image
+/// behind the lock scrim. The image data has already been normalised and read
+/// from qOS's private cache; this renderer never opens an app-provided URI.
+pub fn draw_lock_scene_with_wallpaper(
+    outputs: &[LockOutput],
+    theme: &Theme,
+    text: &mut TextRenderer,
+    view: &LockView<'_>,
+    wallpaper: Option<&ImageData>,
+) -> Scene {
     let mut scene = Scene::new();
 
     // 1. Opaque backdrop over the combined geometry of every output — the
@@ -106,6 +119,36 @@ pub fn draw_lock_scene(
     let (ext_w, ext_h) = combined_extent(outputs);
     if ext_w > 0.0 && ext_h > 0.0 {
         let backdrop = Rect::new(0.0, 0.0, ext_w, ext_h);
+        let mut wallpaper_layer = false;
+        if let Some(image) = wallpaper
+            && image.width > 0
+            && image.height > 0
+        {
+            let scale = (ext_w / f64::from(image.width)).max(ext_h / f64::from(image.height));
+            let width = f64::from(image.width) * scale;
+            let height = f64::from(image.height) * scale;
+            let brush_transform =
+                Affine::translate(((ext_w - width) / 2.0, (ext_h - height) / 2.0))
+                    .pre_scale_non_uniform(scale, scale);
+            let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                &brush,
+                Some(brush_transform),
+                &backdrop,
+            );
+            // A firm dark scrim leaves the lock experience legible and does
+            // not expose a bright image through password/notification chrome.
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                0.68,
+                Affine::IDENTITY,
+                &backdrop,
+            );
+            wallpaper_layer = true;
+        }
         scene.fill(
             Fill::NonZero,
             Affine::IDENTITY,
@@ -113,6 +156,9 @@ pub fn draw_lock_scene(
             None,
             &backdrop,
         );
+        if wallpaper_layer {
+            scene.pop_layer();
+        }
     }
 
     // 2. One interactive lock widget per output, centred on that output.

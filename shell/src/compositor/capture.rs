@@ -61,27 +61,54 @@ pub fn recording_audio_availability() -> (bool, bool) {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CaptureOutcome {
     Saved(PathBuf),
-    Copied { width: u32, height: u32 },
-    Floated { id: String },
-    Pinned { id: String },
-    FloatingClosed { id: String },
+    Copied {
+        width: u32,
+        height: u32,
+    },
+    Floated {
+        id: String,
+    },
+    Pinned {
+        id: String,
+    },
+    FloatingClosed {
+        id: String,
+    },
     RecordingStarted(PathBuf),
-    RecordingPaused { path: PathBuf, paused: bool },
-    RecordingAudioLost { path: PathBuf, reason: String },
-    RecordingStopped { path: PathBuf, frames: u64 },
+    RecordingPaused {
+        path: PathBuf,
+        paused: bool,
+    },
+    RecordingAudioLost {
+        path: PathBuf,
+        reason: String,
+    },
+    RecordingStopped {
+        path: PathBuf,
+        frames: u64,
+    },
     RecordingOpened(PathBuf),
     RecordingRevealed(PathBuf),
     ReplayStarted,
-    ReplaySaved { path: PathBuf, seconds: u8 },
+    ReplaySaved {
+        path: PathBuf,
+        seconds: u8,
+    },
     ReplayStopped,
     ReplayAudioLost(String),
     ScreenshotOpened(PathBuf),
     ScreenshotMarkupOpened(PathBuf),
     ScreenshotMarkupClosed,
     ScreenshotRevealed(PathBuf),
+    /// A Screenshot portal selection completed in trusted shell chrome. Kept
+    /// distinct from a keyboard-initiated capture so its URI is returned only
+    /// to the authenticated request that armed the selector.
+    PortalScreenshotSaved(PathBuf),
+    PortalScreenshotCancelled,
     Failed(String),
 }
 
+#[derive(Default)]
 pub struct CaptureExecutor {
     sequence: u64,
     live_mirrors: Vec<LiveMirror>,
@@ -96,6 +123,7 @@ pub struct CaptureExecutor {
     external_floating: Vec<FloatingSurfaceRequest>,
     external_updates: Vec<(String, Rect, String, Rect)>,
     external_dismissals: Vec<String>,
+    portal_screenshot_armed: bool,
 }
 
 struct LiveMirror {
@@ -105,14 +133,14 @@ struct LiveMirror {
     renderer: Option<OffscreenRenderer>,
     preferred_size: Option<Size>,
     /// App-local semantic binding re-resolved against the owner's current
-    /// compositor surface each frame. Generic PiP therefore follows strip
+    /// compositor surface each frame. Generic `PiP` therefore follows strip
     /// movement and window resizing instead of sampling stale desktop pixels.
     tracking_source: Option<FloatingSource>,
     /// In-process app mirrors expose their activity edge through the shared
     /// widget tree. Shell-created and service-owned mirrors have separate
     /// lifecycles and must not be retired by that set.
     close_when_app_inactive: bool,
-    /// Consumed on first presentation so the PiP grows out of the selected
+    /// Consumed on first presentation so the `PiP` grows out of the selected
     /// pixels instead of appearing as an unrelated centered window.
     spawn_from: Option<Rect>,
 }
@@ -174,6 +202,9 @@ enum RecordingOutput {
 }
 
 impl RecordingOutput {
+    // The non-media build creates a fallible raw file while the media build
+    // constructs its muxer lazily. Keep one call contract across both cfgs.
+    #[allow(clippy::unnecessary_wraps)]
     fn new(
         path: &Path,
         width: u32,
@@ -232,23 +263,162 @@ impl RecordingOutput {
     }
 }
 
-impl Default for CaptureExecutor {
-    fn default() -> Self {
-        Self {
-            sequence: 0,
-            live_mirrors: Vec::new(),
-            recording: None,
-            last_recording: None,
-            last_screenshot: None,
-            replay: None,
-            external_floating: Vec::new(),
-            external_updates: Vec::new(),
-            external_dismissals: Vec::new(),
+impl CaptureExecutor {
+    /// Reserve the next trusted Capture Studio screenshot intent for a portal
+    /// request. The native bridge allows only one such selection at a time.
+    pub fn arm_portal_screenshot(&mut self) -> bool {
+        if self.portal_screenshot_armed {
+            return false;
+        }
+        self.portal_screenshot_armed = true;
+        true
+    }
+
+    pub fn cancel_portal_screenshot(&mut self) {
+        self.portal_screenshot_armed = false;
+    }
+    /// Capture a portal-requested still from the compositor's clean scene.
+    ///
+    /// This deliberately goes through the same Vello readback and PNG writer
+    /// as the shell's Capture Studio.  In particular, callers never receive a
+    /// Wayland surface buffer (which could contain pixels outside the selected
+    /// output) and the result is a finished file before its URI is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no output is captureable or compositor readback
+    /// and private PNG persistence cannot complete.
+    pub fn capture_portal_screenshot(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+        clean_screen_scene: &Scene,
+        target: crate::portal::desktop_services::ScreenshotTarget,
+        include_pointer: bool,
+    ) -> Result<PathBuf, String> {
+        let (viewport_width, viewport_height) = frame_builder.viewport();
+        if !viewport_width.is_finite()
+            || !viewport_height.is_finite()
+            || viewport_width <= 0.0
+            || viewport_height <= 0.0
+        {
+            return Err("the compositor has no captureable output".into());
+        }
+
+        // The portal frontend only supplies an intent, never app-controlled
+        // geometry.  Area and window selection are compositor UX choices; at
+        // this execution boundary the chosen region has already been reduced
+        // to an output-safe rectangle.  A non-interactive request defaults to
+        // the visible output, as required by Screenshot v2.
+        let region = Rect::new(0.0, 0.0, viewport_width, viewport_height);
+        let source = match target {
+            crate::portal::desktop_services::ScreenshotTarget::Screen
+            | crate::portal::desktop_services::ScreenshotTarget::Area => {
+                ui::widget::SourceMode::Region
+            }
+            crate::portal::desktop_services::ScreenshotTarget::Window
+            | crate::portal::desktop_services::ScreenshotTarget::ActiveWindow => {
+                // A window target is resolved by trusted chrome, not by the
+                // requesting app.  Until a particular shell window is picked,
+                // capture the focused visible output rather than fabricating a
+                // foreign application's off-screen content.
+                ui::widget::SourceMode::Display
+            }
+        };
+        let intent = CaptureIntent {
+            mode: CaptureMode::Screenshot,
+            source,
+            destination: CaptureDestination::File,
+            regions: vec![region],
+            include_pointer,
+            audio: AudioCaptureMode::None,
+            extent: CaptureExtent::Visible,
+            pip_layout: PipLayout::Auto,
+            targets: Vec::new(),
+            recording_command: None,
+            replay_command: None,
+            screenshot_command: None,
+        };
+        match self.execute_screenshot(frame_builder, clean_screen_scene, &intent)? {
+            CaptureOutcome::Saved(path) => Ok(path),
+            other => Err(format!(
+                "portal screenshot produced an unexpected outcome: {other:?}"
+            )),
         }
     }
-}
 
-impl CaptureExecutor {
+    /// Pick the compositor pixel currently under the trusted seat pointer.
+    /// The coordinate is clamped to the rendered output before indexing, so a
+    /// stale pointer position can never address outside the readback buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when there is no pointer/output or GPU readback fails.
+    pub fn pick_portal_color(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+        clean_screen_scene: &Scene,
+    ) -> Result<(f64, f64, f64), String> {
+        let (width, height) = frame_builder.viewport();
+        let width = width.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
+        let height = height.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
+        let pointer = frame_builder
+            .capture_pointer_position()
+            .ok_or_else(|| "move the pointer over the colour to pick it".to_string())?;
+        let x = pointer
+            .x
+            .floor()
+            .clamp(0.0, f64::from(width.saturating_sub(1))) as usize;
+        let y = pointer
+            .y
+            .floor()
+            .clamp(0.0, f64::from(height.saturating_sub(1))) as usize;
+        let mut renderer = OffscreenRenderer::try_new(width, height)
+            .map_err(|error| format!("colour picker renderer {width}×{height}: {error}"))?;
+        let rgba = render_capture_rgba(&mut renderer, clean_screen_scene);
+        let offset = y
+            .checked_mul(width as usize)
+            .and_then(|pixels| pixels.checked_add(x))
+            .and_then(|pixel| pixel.checked_mul(4))
+            .ok_or_else(|| "colour picker coordinate overflow".to_string())?;
+        let rgb: [u8; 3] = rgba
+            .get(offset..offset.saturating_add(3))
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| "colour picker readback was incomplete".to_string())?;
+        Ok((
+            f64::from(rgb[0]) / 255.0,
+            f64::from(rgb[1]) / 255.0,
+            f64::from(rgb[2]) / 255.0,
+        ))
+    }
+
+    /// Render the current composed desktop once for all active `PipeWire` portal
+    /// nodes.  The producer retains only this newest immutable frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the output dimensions overflow, renderer setup
+    /// fails, or GPU readback does not contain a complete RGBA frame.
+    pub fn render_portal_screencast_frame(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+        scene: &Scene,
+    ) -> Result<(u32, u32, std::sync::Arc<[u8]>), String> {
+        let (width, height) = frame_builder.viewport();
+        let width = width.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
+        let height = height.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
+        let mut renderer = OffscreenRenderer::try_new(width, height)
+            .map_err(|error| format!("screen-share renderer {width}×{height}: {error}"))?;
+        let rgba = render_capture_rgba(&mut renderer, scene);
+        let expected = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| "screen-share frame dimensions overflow".to_string())?;
+        if rgba.len() != expected {
+            return Err("screen-share renderer returned an incomplete frame".into());
+        }
+        Ok((width, height, std::sync::Arc::from(rgba)))
+    }
+
     pub fn queue_external_floating(&mut self, request: FloatingSurfaceRequest) {
         self.external_floating.push(request);
     }
@@ -269,6 +439,9 @@ impl CaptureExecutor {
     }
 
     /// Drain picker intents and advance continuous recording/mirror work.
+    // This is the ordered capture state-machine tick. Splitting it would hide
+    // the sequencing constraints between mirrors, recording, and replay.
+    #[allow(clippy::too_many_lines)]
     pub fn execute_ready(
         &mut self,
         frame_builder: &mut FrameBuilder,
@@ -426,7 +599,20 @@ impl CaptureExecutor {
         }
 
         let intents = frame_builder.take_capture_intents();
+        if self.portal_screenshot_armed
+            && intents.is_empty()
+            && !frame_builder.capture_studio_open()
+        {
+            self.portal_screenshot_armed = false;
+            outcomes.push(CaptureOutcome::PortalScreenshotCancelled);
+        }
         for intent in intents {
+            let portal_intent = self.portal_screenshot_armed
+                && intent.mode == CaptureMode::Screenshot
+                && intent.screenshot_command.is_none();
+            if portal_intent {
+                self.portal_screenshot_armed = false;
+            }
             let outcome = if let Some(command) = intent.screenshot_command {
                 match command {
                     ScreenshotCommand::MarkupLast => self
@@ -530,14 +716,21 @@ impl CaptureExecutor {
                 self.execute_screenshot(frame_builder, clean_screen_scene, &intent)
                     .unwrap_or_else(CaptureOutcome::Failed)
             };
-            outcomes.push(outcome);
+            if portal_intent {
+                outcomes.push(match outcome {
+                    CaptureOutcome::Saved(path) => CaptureOutcome::PortalScreenshotSaved(path),
+                    other => other,
+                });
+            } else {
+                outcomes.push(outcome);
+            }
         }
 
         for mirror in &mut self.live_mirrors {
             match refresh_mirror(frame_builder, clean_screen_scene, mirror) {
                 Ok(()) => {}
                 Err(error) => {
-                    outcomes.push(CaptureOutcome::Failed(format!("{}: {error}", mirror.title)))
+                    outcomes.push(CaptureOutcome::Failed(format!("{}: {error}", mirror.title)));
                 }
             }
         }
@@ -711,7 +904,7 @@ impl CaptureExecutor {
             path: path.clone(),
             width,
             height,
-            last_frame: Instant::now() - Duration::from_millis(34),
+            last_frame: immediately_due_instant(),
             frames: 0,
             paused: false,
             #[cfg(feature = "hdr-decode")]
@@ -737,7 +930,7 @@ impl CaptureExecutor {
         if !paused {
             // Resume with a fresh frame immediately; never make the user wait
             // for the cadence left over from before the pause.
-            recording.last_frame = Instant::now() - Duration::from_millis(34);
+            recording.last_frame = immediately_due_instant();
         }
         frame_builder.set_capture_recording_paused(paused);
         Ok(CaptureOutcome::RecordingPaused {
@@ -854,7 +1047,7 @@ impl CaptureExecutor {
             encoder,
             width,
             height,
-            last_frame: Instant::now() - Duration::from_millis(34),
+            last_frame: immediately_due_instant(),
             frames: VecDeque::with_capacity(REPLAY_FRAMES + REPLAY_KEYFRAME_INTERVAL as usize),
             video_bytes: 0,
             #[cfg(feature = "hdr-decode")]
@@ -911,17 +1104,25 @@ impl CaptureExecutor {
             .iter()
             .map(|track| replay_audio_tail(&track.pcm, replay.frames.len()))
             .collect();
-        for (_frame_index, frame) in replay.frames.iter().enumerate() {
+        for (frame_index, frame) in replay.frames.iter().enumerate() {
+            #[cfg(not(feature = "hdr-decode"))]
+            let _ = frame_index;
             output.write_access_unit(&frame.access_unit)?;
             #[cfg(feature = "hdr-decode")]
             for (track_index, pcm) in audio.iter().enumerate() {
-                let start = _frame_index * AUDIO_BYTES_PER_VIDEO_FRAME;
-                let end = start + AUDIO_BYTES_PER_VIDEO_FRAME;
-                output.write_pcm_audio(track_index, &pcm[start..end])?;
+                let start = frame_index.saturating_mul(AUDIO_BYTES_PER_VIDEO_FRAME);
+                let end = start.saturating_add(AUDIO_BYTES_PER_VIDEO_FRAME);
+                let samples = pcm
+                    .get(start..end)
+                    .ok_or_else(|| "replay audio frame is incomplete".to_string())?;
+                output.write_pcm_audio(track_index, samples)?;
             }
         }
         output.finish(&path)?;
-        let seconds = ((replay.frames.len() + REPLAY_FPS as usize - 1) / REPLAY_FPS as usize)
+        let seconds = replay
+            .frames
+            .len()
+            .div_ceil(REPLAY_FPS as usize)
             .min(REPLAY_SECONDS) as u8;
         self.last_recording = Some(path.clone());
         frame_builder.set_capture_replay_saved();
@@ -1209,7 +1410,9 @@ fn updated_local_tracking_source(
 
 fn floating_source_regions(frame_builder: &mut FrameBuilder, source: &FloatingSource) -> Vec<Rect> {
     match source {
-        FloatingSource::AppRegion { region, .. } => vec![*region],
+        FloatingSource::AppRegion { region, .. } | FloatingSource::AppElement { region, .. } => {
+            vec![*region]
+        }
         FloatingSource::Surface { surface_id } => frame_builder
             .foreign_surface_rect(*surface_id)
             .into_iter()
@@ -1218,7 +1421,6 @@ fn floating_source_regions(frame_builder: &mut FrameBuilder, source: &FloatingSo
             .iter()
             .flat_map(|source| floating_source_regions(frame_builder, source))
             .collect(),
-        FloatingSource::AppElement { region, .. } => vec![*region],
     }
 }
 
@@ -1397,10 +1599,10 @@ fn replay_audio_tail(pcm: &VecDeque<u8>, video_frames: usize) -> Vec<u8> {
     let mut out = vec![0; target_len];
     let source_start = pcm.len().saturating_sub(available);
     let target_start = target_len.saturating_sub(available);
-    for (target, source) in out[target_start..]
-        .iter_mut()
-        .zip(pcm.iter().skip(source_start))
-    {
+    let Some(targets) = out.get_mut(target_start..) else {
+        return out;
+    };
+    for (target, source) in targets.iter_mut().zip(pcm.iter().skip(source_start)) {
         *target = *source;
     }
     out
@@ -1421,8 +1623,7 @@ fn selected_audio_sources(mode: AudioCaptureMode) -> Vec<super::audio_capture::A
 #[cfg(feature = "hdr-decode")]
 fn drain_audio_tracks(recording: &mut RecordingSession, keep: bool) -> Result<(), String> {
     let mut ended = Vec::new();
-    for index in 0..recording.audio_tracks.len() {
-        let track = &mut recording.audio_tracks[index];
+    for (index, track) in recording.audio_tracks.iter_mut().enumerate() {
         match track.capture.drain(keep) {
             Ok(bytes) if keep && !bytes.is_empty() => {
                 recording.output.write_pcm_audio(track.mux_index, &bytes)?;
@@ -1450,6 +1651,11 @@ fn recording_frame_due(paused: bool, since_last_frame: Duration) -> bool {
     !paused && since_last_frame >= Duration::from_millis(33)
 }
 
+fn immediately_due_instant() -> Instant {
+    let now = Instant::now();
+    now.checked_sub(Duration::from_millis(34)).unwrap_or(now)
+}
+
 fn capture_source(
     frame_builder: &mut FrameBuilder,
     clean_screen_scene: &Scene,
@@ -1472,9 +1678,11 @@ fn capture_source(
             // produced a correctly-sized but transparent "successful"
             // screenshot. Whole-strip capture is atomic too: never silently
             // omit an app that closed between confirmation and execution.
-            let regions = (live_rects.len() == ids.len() && !ids.is_empty())
-                .then_some(live_rects)
-                .unwrap_or_default();
+            let regions = if live_rects.len() == ids.len() && !ids.is_empty() {
+                live_rects
+            } else {
+                Vec::new()
+            };
             (scene, regions)
         }
     };
@@ -1589,6 +1797,9 @@ fn compose_stack(source: &Scene, regions: &[Rect]) -> Result<(Scene, u32, u32), 
     Ok((scene, width, height))
 }
 
+// Widget counts are bounded by the visible capture selection, far below the
+// integer range where conversion to layout-space f64 can lose meaningful data.
+#[allow(clippy::cast_precision_loss)]
 fn grid_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
     let count = regions.len();
     let cols = (count as f64).sqrt().ceil().max(1.0) as usize;
@@ -1614,6 +1825,7 @@ fn grid_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
     (raw_w, raw_h, placements)
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn stack_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
     let card_w = regions.iter().map(Rect::width).fold(1.0_f64, f64::max);
     let card_h = regions.iter().map(Rect::height).fold(1.0_f64, f64::max);
@@ -1705,6 +1917,13 @@ fn next_replay_path(sequence: u64, include_audio: bool) -> PathBuf {
     root.join(format!("qOS Recent {stamp}-{sequence}.{extension}"))
 }
 
+// The fixed 4x4 preview sampler uses bounded dimensions and checked slice
+// access; direct grid arithmetic keeps the sampling geometry readable.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::manual_checked_ops
+)]
 fn capture_preview(rgba: &[u8], width: u32, height: u32) -> CapturePreview {
     const COLUMNS: usize = 6;
     const ROWS: usize = 4;
@@ -1808,6 +2027,12 @@ fn read_png_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>), String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::field_reassign_with_default,
+        clippy::too_many_lines,
+        reason = "capture integration tests keep their full scenario setup explicit"
+    )]
+
     use super::*;
     use crate::shell::state::{AppKind, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
     use ui::Widget;
@@ -1846,6 +2071,15 @@ mod tests {
 
         assert_eq!((width, height), (2, 2));
         assert_eq!(decoded, pixels);
+    }
+
+    #[test]
+    fn portal_selector_reservation_is_exclusive_and_cancellable() {
+        let mut executor = CaptureExecutor::default();
+        assert!(executor.arm_portal_screenshot());
+        assert!(!executor.arm_portal_screenshot());
+        executor.cancel_portal_screenshot();
+        assert!(executor.arm_portal_screenshot());
     }
 
     #[test]

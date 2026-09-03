@@ -313,16 +313,20 @@ mod tests {
         send(&mut app, &mut doc, &left_press());
 
         let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one engine resource");
-        let actions: Vec<_> = resources[0]
+        assert_eq!(resources.len(), 1, "one container-engine root");
+        let engine = &resources[0];
+        assert_eq!(engine.kind, "containers.engine");
+        let actions: Vec<_> = engine
             .children
             .iter()
             .flat_map(|resource| resource.actions.iter())
             .filter(|action| action.kind == ui::qos_actions::OperationKind::Effect)
             .collect();
         assert!(
-            !actions.is_empty(),
-            "engine objects export lifecycle effects"
+            actions
+                .iter()
+                .any(|action| matches!(action.id.as_str(), "start" | "stop")),
+            "container publishes the lifecycle action appropriate to its state",
         );
         assert!(actions.iter().all(|action| {
             action.kind == ui::qos_actions::OperationKind::Effect

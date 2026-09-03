@@ -440,6 +440,11 @@ pub fn make_invite_token_with_identity_and_role(
 
 /// Mint an invite bound to one recipient person identity. The optional name is
 /// signed by the inviter and therefore safe for an offline host to project.
+///
+/// # Errors
+///
+/// Returns an error if the workspace, endpoint, device certificate, or
+/// serialized signed token is invalid.
 #[allow(clippy::too_many_arguments)]
 pub fn make_invite_token_with_recipient(
     key: &iroh::SecretKey,
@@ -516,6 +521,7 @@ pub fn make_invite_token_with_recipient(
 /// expiry, an invalid or unminted room id, a device-certificate/endpoint
 /// mismatch, or a signature that verifies against neither the current nor
 /// the legacy signing payload.
+#[allow(clippy::too_many_lines)]
 pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String> {
     let json = B64
         .decode(token_str)

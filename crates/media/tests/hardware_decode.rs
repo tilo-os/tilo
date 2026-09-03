@@ -1,6 +1,6 @@
 //! Proof that hardware decode actually engages — by name, not by assertion.
 //!
-//! Run against the real 1080p H.264 fixture. The test interrogates the
+//! Run against the tracked H.264/AAC fixture. The test interrogates the
 //! `GStreamer` registry first, so its verdict is specific to the machine:
 //!
 //! * a hardware H.264 decoder exists → it **must** be the element that got
@@ -46,7 +46,7 @@ mod real {
         let report = engine.hw_report();
         let element = report.decoder_element.clone().unwrap_or_else(|| {
             panic!(
-                "a 1920x1080 picture was decoded but no decoder element was \
+                "an H.264 picture was decoded but no decoder element was \
                  recorded — the observation path is broken, so any claim about \
                  hardware decode would be unfounded. {summary}"
             )
@@ -211,7 +211,7 @@ mod real {
 
         let img: &DmabufImage = img;
         println!("dmabuf: {}", img.describe());
-        assert_eq!((img.width, img.height), (1920, 1080));
+        assert_eq!((img.width, img.height), (FIXTURE_WIDTH, FIXTURE_HEIGHT));
         assert_eq!(
             img.fourcc,
             media::dmabuf::DRM_FORMAT_NV12,
@@ -258,7 +258,7 @@ mod real {
             let a = s
                 .frame_at(3_000, std::time::Duration::from_secs(10))
                 .expect("the fixture decodes at 3s");
-            assert_eq!((a.width, a.height), (1920, 1080));
+            assert_eq!((a.width, a.height), (FIXTURE_WIDTH, FIXTURE_HEIGHT));
             let (hits_before, _) = s.cache_stats();
 
             // The same time again must not re-decode.

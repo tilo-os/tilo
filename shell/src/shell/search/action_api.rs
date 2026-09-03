@@ -263,12 +263,11 @@ impl SelectedAction<'_> {
         args: impl IntoIterator<Item = (String, ArgValue)>,
     ) -> Result<ActionReceipt, ActionError> {
         let bound = ActionArgs::bind(&self.result.params, args).map_err(ActionError::Arguments)?;
-        match &self.result.on_invoke {
-            Some(invoke) => invoke(doc, root, chrome, &bound),
-            None => {
-                (self.result.on_open)(doc, root, chrome, &bound)?;
-                Ok(ActionReceipt::completed())
-            }
+        if let Some(invoke) = &self.result.on_invoke {
+            invoke(doc, root, chrome, &bound)
+        } else {
+            (self.result.on_open)(doc, root, chrome, &bound)?;
+            Ok(ActionReceipt::completed())
         }
     }
 
@@ -276,6 +275,12 @@ impl SelectedAction<'_> {
     /// Unlike lossy JSON-to-enum guessing, binding consults each declared
     /// parameter, preserving resource/date-time/secret semantics and nested or
     /// nullable values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Arguments`] when the JSON object violates the
+    /// declared parameters, or [`ActionError::Refused`] when the provider
+    /// cannot perform the bound action.
     pub fn invoke_json(
         &self,
         doc: &mut AutoCommit,
@@ -285,12 +290,11 @@ impl SelectedAction<'_> {
     ) -> Result<ActionReceipt, ActionError> {
         let bound =
             ActionArgs::bind_json(&self.result.params, args).map_err(ActionError::Arguments)?;
-        match &self.result.on_invoke {
-            Some(invoke) => invoke(doc, root, chrome, &bound),
-            None => {
-                (self.result.on_open)(doc, root, chrome, &bound)?;
-                Ok(ActionReceipt::completed())
-            }
+        if let Some(invoke) = &self.result.on_invoke {
+            invoke(doc, root, chrome, &bound)
+        } else {
+            (self.result.on_open)(doc, root, chrome, &bound)?;
+            Ok(ActionReceipt::completed())
         }
     }
 

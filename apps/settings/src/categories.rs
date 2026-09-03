@@ -334,8 +334,8 @@ impl Category {
     pub fn section(self) -> Section {
         match self {
             Category::Network | Category::Bluetooth => Section::Connectivity,
-            Category::DeviceMesh => Section::Devices,
-            Category::Sound
+            Category::DeviceMesh
+            | Category::Sound
             | Category::Displays
             | Category::MouseKeyboard
             | Category::KeyboardShortcuts
@@ -426,7 +426,7 @@ impl Category {
         match self {
             Category::Network => Icon::Wifi,
             Category::Bluetooth => Icon::Bluetooth,
-            Category::DeviceMesh => Icon::CloudDownload,
+            Category::DeviceMesh | Category::ExternalAccounts => Icon::CloudDownload,
             Category::Sound => Icon::Volume2,
             Category::Displays => Icon::Monitor,
             Category::MouseKeyboard => Icon::Mouse,
@@ -440,7 +440,6 @@ impl Category {
             Category::Notifications => Icon::Bell,
             Category::DefaultApps => Icon::LayoutGrid,
             Category::Storage => Icon::HardDrive,
-            Category::ExternalAccounts => Icon::CloudDownload,
             Category::RegionFormats => Icon::Globe,
             Category::Permissions => Icon::Shield,
             Category::Updates => Icon::Refresh,
