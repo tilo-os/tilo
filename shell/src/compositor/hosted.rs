@@ -496,6 +496,7 @@ fn bring_up_portal(
     };
     // The portal's grant store shares the same `WorkspaceTreeHandle` as chrome + peer-sync: an
     // `Allow` outcome flips a workspace grant on the same tree the Permissions tab reads, and `doc_insert_grant` mirrors it into the automerge doc so peer-sync ships it next tick.
+    let desktop_services = crate::portal::DesktopPortalServices::for_session(tree_handle.clone());
     let grants = crate::portal::GrantStoreHandle::new(tree_handle);
     let ctx = crate::portal::PortalContext {
         grants,
@@ -511,9 +512,12 @@ fn bring_up_portal(
             )),
         ),
         remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+        input_capture: crate::portal::InputCaptureCompositorHandle::unavailable(),
         documents: crate::portal::documents_for_session(),
         print_spooler: crate::portal::PrintSpoolerHandle::cups(),
         notifications,
+        desktop_services,
+        authenticator: None,
     };
     let serve_result: Result<crate::portal::ServerHandle, zbus::Error> =
         rt_handle.block_on(async move {

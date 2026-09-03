@@ -82,6 +82,9 @@ fn relay_capped_lines<R: Read>(mut reader: R, mut on_line: impl FnMut(String)) {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LaunchedProcess {
     package_id: String,
+    /// Durable room identity supplied by the compositor for this launch.
+    /// Kept host-side; it is not trusted when read back from a sandbox.
+    workspace_id: Option<String>,
     start_time: u64,
 }
 
@@ -119,7 +122,7 @@ fn proc_stat(pid: u32) -> Option<(u32, u64)> {
     Some((fields.get(1)?.parse().ok()?, fields.get(19)?.parse().ok()?))
 }
 
-fn register_launched_process(pid: u32, package_id: &str) {
+fn register_launched_process(pid: u32, package_id: &str, workspace_id: Option<&str>) {
     let Some((_, start_time)) = proc_stat(pid) else {
         return;
     };
@@ -128,10 +131,54 @@ fn register_launched_process(pid: u32, package_id: &str) {
             pid,
             LaunchedProcess {
                 package_id: package_id.to_string(),
+                workspace_id: workspace_id.map(str::to_string),
                 start_time,
             },
         );
     }
+}
+
+/// Durable room ids for live, launcher-verified instances of `package_id`.
+/// Stale PID records are discarded before returning. Portal attribution uses
+/// this instead of trusting the backend caller's `app_id` alone.
+pub(crate) fn verified_workspaces_for_app(package_id: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let Ok(mut map) = LAUNCHED_PROCESSES.lock() else {
+        return result;
+    };
+    map.retain(|pid, launch| {
+        let live = proc_stat(*pid).is_some_and(|(_, start)| start == launch.start_time);
+        if live
+            && launch.package_id == package_id
+            && let Some(room) = launch.workspace_id.as_ref()
+        {
+            result.push(room.clone());
+        }
+        live
+    });
+    result.sort();
+    result.dedup();
+    result
+}
+
+/// Package ids with a launcher-verified live process. Background portal state
+/// is derived from this host-owned registry rather than an application's own
+/// claims. Stale PID/start-time pairs are removed as part of the snapshot.
+pub(crate) fn verified_running_packages() -> Vec<String> {
+    let Ok(mut map) = LAUNCHED_PROCESSES.lock() else {
+        return Vec::new();
+    };
+    let mut packages = Vec::new();
+    map.retain(|pid, launch| {
+        let live = proc_stat(*pid).is_some_and(|(_, start)| start == launch.start_time);
+        if live {
+            packages.push(launch.package_id.clone());
+        }
+        live
+    });
+    packages.sort();
+    packages.dedup();
+    packages
 }
 
 fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
@@ -1308,7 +1355,11 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
         if let Some(identity) = command.service_identity.clone() {
             register_trusted_service_launch(child.id(), identity);
         }
-        register_launched_process(child.id(), &app.package_id);
+        let workspace_id = command
+            .service_identity
+            .as_ref()
+            .map(|identity| identity.workspace_id.as_str());
+        register_launched_process(child.id(), &app.package_id, workspace_id);
         push_event(LaunchEvent {
             package_id: app.package_id.clone(),
             display_name: app.display_name.clone(),
@@ -2202,7 +2253,7 @@ mod tests {
     #[test]
     fn dbus_proxy_descendant_resolves_only_while_launcher_identity_is_live() {
         let parent = std::process::id();
-        register_launched_process(parent, "dev.qos.mail");
+        register_launched_process(parent, "dev.qos.mail", Some("room-mail"));
         let mut child = std::process::Command::new("sh")
             .args(["-c", "sleep 2"])
             .spawn()
@@ -2224,6 +2275,7 @@ mod tests {
             pid,
             LaunchedProcess {
                 package_id: "dev.qos.spoof".into(),
+                workspace_id: Some("room-spoof".into()),
                 start_time: u64::MAX,
             },
         );
