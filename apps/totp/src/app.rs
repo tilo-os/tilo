@@ -1113,7 +1113,7 @@ impl Widget for AuthenticatorApp {
     fn accessibility(&self) -> Option<AccessNode> {
         let visible = self.vault.search(self.search.value());
         let total = visible.len();
-        let mut children = vec![
+        let controls = vec![
             AccessNode::new(Role::Button)
                 .with_name("Add account")
                 .with_description("Add an authenticator account")
@@ -1130,6 +1130,11 @@ impl Widget for AuthenticatorApp {
                 )
                 .with_bounds(self.search_rect)
                 .with_action_target("totp.search"),
+        ];
+        let mut children = vec![
+            AccessNode::new(Role::Toolbar)
+                .with_name("Authenticator actions")
+                .with_children(controls),
         ];
 
         let account_rows = visible
@@ -1282,6 +1287,21 @@ mod tests {
                 .as_deref()
                 .is_some_and(|name| name.starts_with("Copy code for"))
         }));
+        assert!(
+            tree.children.iter().all(|node| node.semantic_key.is_none()),
+            "root regions are consistently position-addressed"
+        );
+        let toolbar = tree
+            .children
+            .iter()
+            .find(|node| node.role == Role::Toolbar)
+            .expect("authenticator actions toolbar");
+        assert!(
+            toolbar
+                .children
+                .iter()
+                .all(|node| node.semantic_key.is_some())
+        );
     }
 
     #[test]
