@@ -80,6 +80,228 @@ pub struct NavGestureRecognizer {
     touches: HashMap<u64, EdgeTouch>,
 }
 
+/// Device-independent output of the direct-touch gesture arena. Widgets use
+/// this instead of interpreting raw contact streams, so a canvas, document or
+/// game surface gets the same slop, pinch and swipe arbitration.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TouchGestureEvent {
+    Tap {
+        position: Point,
+    },
+    Pan {
+        fingers: u8,
+        delta: (f64, f64),
+    },
+    Pinch {
+        fingers: u8,
+        center: Point,
+        scale: f64,
+    },
+    Swipe {
+        fingers: u8,
+        direction: TouchSwipeDirection,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TouchSwipeDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Contact {
+    start: Point,
+    current: Point,
+}
+
+/// Resolves taps, pans, multi-finger swipes and pinches from raw direct-touch
+/// contacts. It reports continuous pan/pinch updates and at most one terminal
+/// tap or swipe. Long-press timing remains a host concern because it needs a
+/// frame/timer wake even when no touch event arrives.
+#[derive(Default)]
+pub struct TouchGestureArena {
+    contacts: HashMap<u64, Contact>,
+    start_center: Option<Point>,
+    previous_center: Option<Point>,
+    start_span: Option<f64>,
+    previous_scale: f64,
+    max_fingers: u8,
+    moved: bool,
+}
+
+impl TouchGestureArena {
+    const TAP_SLOP: f64 = 14.0;
+    const SWIPE_DISTANCE: f64 = 56.0;
+    const AXIS_DOMINANCE: f64 = 1.4;
+    const PINCH_SLOP: f64 = 0.04;
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Once a third contact joins, the whole stream remains shell-owned
+    /// through every release; ownership must not flicker back to an app when
+    /// the contact count falls from three to two.
+    pub fn shell_owns_current(&self) -> bool {
+        self.max_fingers >= 3 && !self.contacts.is_empty()
+    }
+
+    pub fn on_touch(
+        &mut self,
+        id: u64,
+        position: Point,
+        phase: GesturePhase,
+    ) -> Vec<TouchGestureEvent> {
+        match phase {
+            GesturePhase::Begin => {
+                self.contacts.insert(
+                    id,
+                    Contact {
+                        start: position,
+                        current: position,
+                    },
+                );
+                self.max_fingers = self.max_fingers.max(self.finger_count());
+                let center = self.center();
+                self.start_center = center;
+                self.previous_center = center;
+                self.start_span = self.span();
+                self.previous_scale = 1.0;
+                Vec::new()
+            }
+            GesturePhase::Update => {
+                let Some(contact) = self.contacts.get_mut(&id) else {
+                    return Vec::new();
+                };
+                contact.current = position;
+                let Some(center) = self.center() else {
+                    return Vec::new();
+                };
+                let previous = self.previous_center.replace(center).unwrap_or(center);
+                let delta = (center.x - previous.x, center.y - previous.y);
+                if self
+                    .contacts
+                    .values()
+                    .any(|contact| contact.current.distance(contact.start) > Self::TAP_SLOP)
+                {
+                    self.moved = true;
+                }
+                if let (Some(start_span), Some(span)) = (self.start_span, self.span())
+                    && start_span > 0.0
+                {
+                    let scale = span / start_span;
+                    let translation = self
+                        .start_center
+                        .map_or(0.0, |start| start.distance(center));
+                    let radial_motion = (span - start_span).abs();
+                    if ((scale - 1.0).abs() >= Self::PINCH_SLOP
+                        && radial_motion >= translation * 0.7)
+                        || (self.previous_scale - 1.0).abs() >= Self::PINCH_SLOP
+                    {
+                        self.previous_scale = scale;
+                        return vec![TouchGestureEvent::Pinch {
+                            fingers: self.finger_count(),
+                            center,
+                            scale,
+                        }];
+                    }
+                }
+                if delta.0 != 0.0 || delta.1 != 0.0 {
+                    vec![TouchGestureEvent::Pan {
+                        fingers: self.finger_count(),
+                        delta,
+                    }]
+                } else {
+                    Vec::new()
+                }
+            }
+            GesturePhase::End => {
+                if let Some(contact) = self.contacts.get_mut(&id) {
+                    contact.current = position;
+                }
+                let terminal = if self.contacts.len() == 1 {
+                    self.terminal_event(position)
+                } else {
+                    None
+                };
+                self.contacts.remove(&id);
+                if self.contacts.is_empty() {
+                    self.reset();
+                }
+                terminal.into_iter().collect()
+            }
+        }
+    }
+
+    fn finger_count(&self) -> u8 {
+        u8::try_from(self.contacts.len()).unwrap_or(u8::MAX)
+    }
+
+    fn center(&self) -> Option<Point> {
+        if self.contacts.is_empty() {
+            return None;
+        }
+        let (x, y) = self.contacts.values().fold((0.0, 0.0), |sum, contact| {
+            (sum.0 + contact.current.x, sum.1 + contact.current.y)
+        });
+        let count = f64::from(self.finger_count());
+        Some(Point::new(x / count, y / count))
+    }
+
+    fn span(&self) -> Option<f64> {
+        let center = self.center()?;
+        (self.contacts.len() >= 2).then(|| {
+            self.contacts
+                .values()
+                .map(|contact| contact.current.distance(center))
+                .sum::<f64>()
+                / f64::from(self.finger_count())
+        })
+    }
+
+    fn terminal_event(&self, position: Point) -> Option<TouchGestureEvent> {
+        let start = self.start_center?;
+        let end = self.center().unwrap_or(position);
+        let dx = end.x - start.x;
+        let dy = end.y - start.y;
+        if !self.moved && dx.hypot(dy) <= Self::TAP_SLOP {
+            return Some(TouchGestureEvent::Tap { position });
+        }
+        let (ax, ay) = (dx.abs(), dy.abs());
+        let direction = if ax >= Self::SWIPE_DISTANCE && ax >= ay * Self::AXIS_DOMINANCE {
+            if dx < 0.0 {
+                TouchSwipeDirection::Left
+            } else {
+                TouchSwipeDirection::Right
+            }
+        } else if ay >= Self::SWIPE_DISTANCE && ay >= ax * Self::AXIS_DOMINANCE {
+            if dy < 0.0 {
+                TouchSwipeDirection::Up
+            } else {
+                TouchSwipeDirection::Down
+            }
+        } else {
+            return None;
+        };
+        Some(TouchGestureEvent::Swipe {
+            fingers: self.max_fingers.max(1),
+            direction,
+        })
+    }
+
+    fn reset(&mut self) {
+        self.start_center = None;
+        self.previous_center = None;
+        self.start_span = None;
+        self.previous_scale = 1.0;
+        self.max_fingers = 0;
+        self.moved = false;
+    }
+}
+
 impl NavGestureRecognizer {
     pub fn new() -> Self {
         Self::default()
@@ -340,6 +562,70 @@ mod tests {
         assert!(g.release());
         assert!(g.drag().is_none());
         assert!(!g.release(), "second release reports no drag");
+    }
+
+    #[test]
+    fn direct_touch_tap_is_delayed_until_contact_ends() {
+        let mut arena = TouchGestureArena::new();
+        assert!(
+            arena
+                .on_touch(1, Point::new(20.0, 30.0), GesturePhase::Begin)
+                .is_empty()
+        );
+        assert_eq!(
+            arena.on_touch(1, Point::new(21.0, 30.0), GesturePhase::End),
+            [TouchGestureEvent::Tap {
+                position: Point::new(21.0, 30.0)
+            }]
+        );
+    }
+
+    #[test]
+    fn direct_touch_arbitrates_two_finger_motion_as_pinch() {
+        let mut arena = TouchGestureArena::new();
+        arena.on_touch(1, Point::new(40.0, 50.0), GesturePhase::Begin);
+        arena.on_touch(2, Point::new(60.0, 50.0), GesturePhase::Begin);
+        let events = arena.on_touch(2, Point::new(80.0, 50.0), GesturePhase::Update);
+        assert!(matches!(
+            events.as_slice(),
+            [TouchGestureEvent::Pinch { scale, .. }] if *scale > 1.5
+        ));
+    }
+
+    #[test]
+    fn direct_touch_reports_multi_finger_swipe_once_at_release() {
+        let mut arena = TouchGestureArena::new();
+        arena.on_touch(1, Point::new(100.0, 80.0), GesturePhase::Begin);
+        arena.on_touch(2, Point::new(100.0, 120.0), GesturePhase::Begin);
+        arena.on_touch(1, Point::new(20.0, 80.0), GesturePhase::Update);
+        arena.on_touch(2, Point::new(20.0, 120.0), GesturePhase::Update);
+        assert!(
+            arena
+                .on_touch(1, Point::new(20.0, 80.0), GesturePhase::End)
+                .is_empty()
+        );
+        assert_eq!(
+            arena.on_touch(2, Point::new(20.0, 120.0), GesturePhase::End),
+            [TouchGestureEvent::Swipe {
+                fingers: 2,
+                direction: TouchSwipeDirection::Left
+            }]
+        );
+    }
+
+    #[test]
+    fn three_finger_stream_stays_shell_owned_while_contacts_lift() {
+        let mut arena = TouchGestureArena::new();
+        for (id, x) in [(1, 20.0), (2, 40.0), (3, 60.0)] {
+            arena.on_touch(id, Point::new(x, 20.0), GesturePhase::Begin);
+        }
+        assert!(arena.shell_owns_current());
+        arena.on_touch(1, Point::new(20.0, 20.0), GesturePhase::End);
+        assert!(arena.shell_owns_current());
+        arena.on_touch(2, Point::new(40.0, 20.0), GesturePhase::End);
+        assert!(arena.shell_owns_current());
+        arena.on_touch(3, Point::new(60.0, 20.0), GesturePhase::End);
+        assert!(!arena.shell_owns_current());
     }
 
     // ── navigation gestures ────────────────────────────────────────────
