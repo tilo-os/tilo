@@ -13,6 +13,7 @@
 //! and ships each as a [`crate::network::NeighbourMsg::RemoteInput`].
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
@@ -90,6 +91,13 @@ pub struct PeerView {
     cached_image: Option<vello::peniko::ImageData>,
     /// Pending input events to ship back to the owner.
     pending_inputs: Vec<InputEvent>,
+    /// Production sends directly through this non-blocking bridge; tests
+    /// without one keep using `take_pending_inputs`.
+    input_sink: Option<Arc<dyn Fn(InputEvent) + Send + Sync>>,
+    pointer_inside: bool,
+    /// Click-derived keyboard focus. Pointer hover is deliberately separate:
+    /// moving out of a text field must not destroy its caret or IME session.
+    keyboard_focused: bool,
     rect: Rect,
     /// True when the view needs to repaint; without this, the default
     /// leaf [`Widget::needs_redraw`] returns `true` every frame,
@@ -127,6 +135,9 @@ impl PeerView {
             hdr_tonemap: None,
             cached_image: None,
             pending_inputs: Vec::new(),
+            input_sink: None,
+            pointer_inside: false,
+            keyboard_focused: false,
             rect: Rect::ZERO,
             dirty: true,
             metrics,
@@ -181,6 +192,9 @@ impl PeerView {
             hdr_tonemap,
             cached_image: None,
             pending_inputs: Vec::new(),
+            input_sink: None,
+            pointer_inside: false,
+            keyboard_focused: false,
             rect: Rect::ZERO,
             dirty: true,
             metrics,
@@ -264,19 +278,18 @@ impl PeerView {
 
     /// Coordinates are surface-local logical pixels.
     pub fn record_pointer_motion(&mut self, x: f64, y: f64) {
-        self.pending_inputs.push(InputEvent::PointerMotion { x, y });
+        self.emit_input(InputEvent::PointerMotion { x, y });
     }
 
     pub fn record_pointer_button(&mut self, button: u32, pressed: bool) {
-        self.pending_inputs
-            .push(InputEvent::PointerButton { button, pressed });
+        self.emit_input(InputEvent::PointerButton { button, pressed });
     }
 
     /// `modifiers` is the xkbcommon-style bitfield (Shift=1, Ctrl=4,
     /// Alt=8, Logo=64); callers that don't track modifiers can pass `0`
     /// since the owner's keycode stream recovers state itself.
     pub fn record_key(&mut self, keysym: u32, pressed: bool, modifiers: u32) {
-        self.pending_inputs.push(InputEvent::Key {
+        self.emit_input(InputEvent::Key {
             keysym,
             pressed,
             modifiers,
@@ -290,6 +303,53 @@ impl PeerView {
 
     pub fn take_pending_inputs(&mut self) -> Vec<InputEvent> {
         std::mem::take(&mut self.pending_inputs)
+    }
+
+    pub fn set_input_sink(&mut self, sink: Arc<dyn Fn(InputEvent) + Send + Sync>) {
+        self.input_sink = Some(sink);
+    }
+
+    fn emit_input(&mut self, event: InputEvent) {
+        if let Some(sink) = &self.input_sink {
+            sink(event);
+        } else {
+            self.pending_inputs.push(event);
+        }
+    }
+
+    fn set_pointer_inside(&mut self, inside: bool) {
+        if self.pointer_inside == inside {
+            return;
+        }
+        self.pointer_inside = inside;
+        self.emit_input(if inside {
+            InputEvent::PointerEnter {
+                surface: self.surface_id,
+            }
+        } else {
+            InputEvent::PointerLeave {
+                surface: self.surface_id,
+            }
+        });
+    }
+
+    fn set_keyboard_focused(&mut self, focused: bool) {
+        if self.keyboard_focused == focused {
+            return;
+        }
+        self.keyboard_focused = focused;
+        self.emit_input(InputEvent::KeyboardFocus {
+            surface: self.surface_id,
+            focused,
+        });
+    }
+
+    fn modifier_bits(modifiers: &Modifiers) -> u32 {
+        let state = modifiers.state();
+        u32::from(state.shift_key())
+            | (u32::from(state.control_key()) << 2)
+            | (u32::from(state.alt_key()) << 3)
+            | (u32::from(state.super_key()) << 6)
     }
 
     /// SDR RGBA frames upload straight through; HDR P010 frames are CPU
@@ -437,18 +497,68 @@ impl Widget for PeerView {
 
     fn handle_event(
         &mut self,
-        _event: &WindowEvent,
+        event: &WindowEvent,
         _scale_factor: f64,
-        _modifiers: &Modifiers,
+        modifiers: &Modifiers,
         _state: &mut AutoCommit,
         _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        // Real winit→`InputEvent` translation lives at the shell level,
-        // which calls `record_*` directly.
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let point = Point::new(position.x, position.y);
+                let inside = point.x >= self.rect.x0
+                    && point.x <= self.rect.x1
+                    && point.y >= self.rect.y0
+                    && point.y <= self.rect.y1;
+                self.set_pointer_inside(inside);
+                if inside && self.rect.width() > 0.0 && self.rect.height() > 0.0 {
+                    let (width, height) = self
+                        .latest
+                        .as_ref()
+                        .map_or((self.rect.width(), self.rect.height()), |frame| {
+                            (f64::from(frame.width), f64::from(frame.height))
+                        });
+                    let x = ((point.x - self.rect.x0) / self.rect.width() * width)
+                        .clamp(0.0, width.max(1.0) - 1.0);
+                    let y = ((point.y - self.rect.y0) / self.rect.height() * height)
+                        .clamp(0.0, height.max(1.0) - 1.0);
+                    self.record_pointer_motion(x, y);
+                    *handled = true;
+                }
+            }
+            WindowEvent::CursorLeft { .. } => self.set_pointer_inside(false),
+            WindowEvent::MouseInput { state, button, .. } => {
+                let pressed = matches!(state, winit::event::ElementState::Pressed);
+                if pressed {
+                    self.set_keyboard_focused(self.pointer_inside);
+                }
+                if (self.pointer_inside || self.keyboard_focused)
+                    && let Some(button) = crate::compositor::client_input::evdev_button(*button)
+                {
+                    self.record_pointer_button(button, pressed);
+                    *handled = true;
+                    if pressed {
+                        *focus_target = Some(node_id);
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } if self.keyboard_focused => {
+                if let Some(keycode) = crate::compositor::client_input::evdev_keycode(event) {
+                    self.record_key(
+                        keycode,
+                        matches!(event.state, winit::event::ElementState::Pressed),
+                        Self::modifier_bits(modifiers),
+                    );
+                    *handled = true;
+                }
+            }
+            WindowEvent::Focused(false) => self.set_keyboard_focused(false),
+            _ => {}
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -457,6 +567,10 @@ impl Widget for PeerView {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     /// Lets the App's `CursorMoved` redraw gate skip frames over an idle
@@ -599,6 +713,33 @@ mod tests {
         assert!(matches!(drained[1], InputEvent::PointerButton { .. }));
         assert!(matches!(drained[2], InputEvent::Key { .. }));
         assert!(view.take_pending_inputs().is_empty());
+    }
+
+    #[test]
+    fn pointer_leave_preserves_click_focus_until_explicit_blur() {
+        let mut view = PeerView::new(42, 9);
+        view.set_pointer_inside(true);
+        view.set_keyboard_focused(true);
+        view.set_pointer_inside(false);
+        assert!(view.keyboard_focused, "hover leave must preserve the caret");
+
+        view.set_keyboard_focused(false);
+        let events = view.take_pending_inputs();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                InputEvent::PointerEnter { surface: 42 },
+                InputEvent::KeyboardFocus {
+                    surface: 42,
+                    focused: true
+                },
+                InputEvent::PointerLeave { surface: 42 },
+                InputEvent::KeyboardFocus {
+                    surface: 42,
+                    focused: false
+                }
+            ]
+        ));
     }
 
     #[test]

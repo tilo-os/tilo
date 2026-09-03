@@ -497,6 +497,7 @@ impl SharedFlatpakSession {
         NeighbourMsg::SurfaceStreamStart {
             surface: self.surface_id,
             source_peer: self.host_user_id,
+            app_id: self.app_id.clone(),
             width: self.width,
             height: self.height,
             codec: codec_label,
@@ -668,6 +669,28 @@ impl SharedFlatpakSession {
         self.stream_sender.unsubscribe(peer);
     }
 
+    /// Make the live viewer set exactly match the workspace's replicated
+    /// recipient set. Existing read-only grants are preserved; newly added
+    /// viewers start with control enabled and still pass through the
+    /// compositor firewall before any input reaches the app.
+    pub fn sync_viewers(&self, desired: &std::collections::HashSet<PeerId>) {
+        let existing = self
+            .share_registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .peers_for(self.surface_id);
+        for peer in existing {
+            if !desired.contains(&peer) {
+                self.drop_viewer(peer);
+            }
+        }
+        for peer in desired {
+            if self.viewer_share(*peer).is_none() {
+                self.add_viewer(*peer, false);
+            }
+        }
+    }
+
     /// Cumulative drop-oldest count for a viewer's substream — diagnostic,
     /// surfaces "peer is falling behind" in the owner's UI.
     pub fn stream_drops_for(&self, peer: PeerId) -> u64 {
@@ -714,6 +737,17 @@ impl SharedFlatpakSession {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         reg.accept_remote_input(peer, self.surface_id)
+    }
+
+    /// Snapshot this viewer's current control grant so the compositor's
+    /// full firewall can mirror the session-owned permission immediately
+    /// before reviewing an inbound event.
+    pub fn viewer_share(&self, peer: PeerId) -> Option<StreamingShare> {
+        let reg = self
+            .share_registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reg.get(peer, self.surface_id).cloned()
     }
 
     /// Route an inbound `InputEvent` through the share-registry gate only —
@@ -888,12 +922,14 @@ mod tests {
                 colorimetry,
                 hdr_static_metadata,
                 bit_depth,
+                app_id,
             } => {
                 assert_eq!(surface, 42);
                 assert_eq!(source_peer, 0xBEEF);
                 assert_eq!(width, 64);
                 assert_eq!(height, 64);
                 assert_eq!(codec, "h264");
+                assert_eq!(app_id, "org.gimp.GIMP");
                 assert!(sender_monotonic_ns_at_send > 0);
                 assert_eq!(sender_monotonic_ns_at_send, ts);
                 assert_eq!(
@@ -983,6 +1019,27 @@ mod tests {
 
         s.drop_viewer(peer);
         assert!(!s.accept_remote_input(peer));
+    }
+
+    #[test]
+    fn viewer_reconciliation_adds_and_retires_exact_recipients() {
+        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_openh264()).expect("start");
+        s.add_viewer(10, false);
+        s.set_read_only(10, true);
+
+        s.sync_viewers(&std::collections::HashSet::from([10, 20]));
+        assert!(
+            !s.accept_remote_input(10),
+            "an existing read-only grant must stay read-only"
+        );
+        assert!(s.accept_remote_input(20), "new recipients receive control");
+
+        s.sync_viewers(&std::collections::HashSet::from([20]));
+        assert!(
+            s.viewer_share(10).is_none(),
+            "removed recipients are retired"
+        );
+        assert!(s.accept_remote_input(20));
     }
 
     #[test]
