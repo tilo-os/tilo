@@ -61,24 +61,50 @@ pub fn recording_audio_availability() -> (bool, bool) {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CaptureOutcome {
     Saved(PathBuf),
-    Copied { width: u32, height: u32 },
-    Floated { id: String },
-    Pinned { id: String },
-    FloatingClosed { id: String },
+    Copied {
+        width: u32,
+        height: u32,
+    },
+    Floated {
+        id: String,
+    },
+    Pinned {
+        id: String,
+    },
+    FloatingClosed {
+        id: String,
+    },
     RecordingStarted(PathBuf),
-    RecordingPaused { path: PathBuf, paused: bool },
-    RecordingAudioLost { path: PathBuf, reason: String },
-    RecordingStopped { path: PathBuf, frames: u64 },
+    RecordingPaused {
+        path: PathBuf,
+        paused: bool,
+    },
+    RecordingAudioLost {
+        path: PathBuf,
+        reason: String,
+    },
+    RecordingStopped {
+        path: PathBuf,
+        frames: u64,
+    },
     RecordingOpened(PathBuf),
     RecordingRevealed(PathBuf),
     ReplayStarted,
-    ReplaySaved { path: PathBuf, seconds: u8 },
+    ReplaySaved {
+        path: PathBuf,
+        seconds: u8,
+    },
     ReplayStopped,
     ReplayAudioLost(String),
     ScreenshotOpened(PathBuf),
     ScreenshotMarkupOpened(PathBuf),
     ScreenshotMarkupClosed,
     ScreenshotRevealed(PathBuf),
+    /// A Screenshot portal selection completed in trusted shell chrome. Kept
+    /// distinct from a keyboard-initiated capture so its URI is returned only
+    /// to the authenticated request that armed the selector.
+    PortalScreenshotSaved(PathBuf),
+    PortalScreenshotCancelled,
     Failed(String),
 }
 
@@ -97,6 +123,7 @@ pub struct CaptureExecutor {
     external_floating: Vec<FloatingSurfaceRequest>,
     external_updates: Vec<(String, Rect, String, Rect)>,
     external_dismissals: Vec<String>,
+    portal_screenshot_armed: bool,
 }
 
 struct LiveMirror {
@@ -237,6 +264,161 @@ impl RecordingOutput {
 }
 
 impl CaptureExecutor {
+    /// Reserve the next trusted Capture Studio screenshot intent for a portal
+    /// request. The native bridge allows only one such selection at a time.
+    pub fn arm_portal_screenshot(&mut self) -> bool {
+        if self.portal_screenshot_armed {
+            return false;
+        }
+        self.portal_screenshot_armed = true;
+        true
+    }
+
+    pub fn cancel_portal_screenshot(&mut self) {
+        self.portal_screenshot_armed = false;
+    }
+    /// Capture a portal-requested still from the compositor's clean scene.
+    ///
+    /// This deliberately goes through the same Vello readback and PNG writer
+    /// as the shell's Capture Studio.  In particular, callers never receive a
+    /// Wayland surface buffer (which could contain pixels outside the selected
+    /// output) and the result is a finished file before its URI is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no output is captureable or compositor readback
+    /// and private PNG persistence cannot complete.
+    pub fn capture_portal_screenshot(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+        clean_screen_scene: &Scene,
+        target: crate::portal::desktop_services::ScreenshotTarget,
+        include_pointer: bool,
+    ) -> Result<PathBuf, String> {
+        let (viewport_width, viewport_height) = frame_builder.viewport();
+        if !viewport_width.is_finite()
+            || !viewport_height.is_finite()
+            || viewport_width <= 0.0
+            || viewport_height <= 0.0
+        {
+            return Err("the compositor has no captureable output".into());
+        }
+
+        // The portal frontend only supplies an intent, never app-controlled
+        // geometry.  Area and window selection are compositor UX choices; at
+        // this execution boundary the chosen region has already been reduced
+        // to an output-safe rectangle.  A non-interactive request defaults to
+        // the visible output, as required by Screenshot v2.
+        let region = Rect::new(0.0, 0.0, viewport_width, viewport_height);
+        let source = match target {
+            crate::portal::desktop_services::ScreenshotTarget::Screen
+            | crate::portal::desktop_services::ScreenshotTarget::Area => {
+                ui::widget::SourceMode::Region
+            }
+            crate::portal::desktop_services::ScreenshotTarget::Window
+            | crate::portal::desktop_services::ScreenshotTarget::ActiveWindow => {
+                // A window target is resolved by trusted chrome, not by the
+                // requesting app.  Until a particular shell window is picked,
+                // capture the focused visible output rather than fabricating a
+                // foreign application's off-screen content.
+                ui::widget::SourceMode::Display
+            }
+        };
+        let intent = CaptureIntent {
+            mode: CaptureMode::Screenshot,
+            source,
+            destination: CaptureDestination::File,
+            regions: vec![region],
+            include_pointer,
+            audio: AudioCaptureMode::None,
+            extent: CaptureExtent::Visible,
+            pip_layout: PipLayout::Auto,
+            targets: Vec::new(),
+            recording_command: None,
+            replay_command: None,
+            screenshot_command: None,
+        };
+        match self.execute_screenshot(frame_builder, clean_screen_scene, &intent)? {
+            CaptureOutcome::Saved(path) => Ok(path),
+            other => Err(format!(
+                "portal screenshot produced an unexpected outcome: {other:?}"
+            )),
+        }
+    }
+
+    /// Pick the compositor pixel currently under the trusted seat pointer.
+    /// The coordinate is clamped to the rendered output before indexing, so a
+    /// stale pointer position can never address outside the readback buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when there is no pointer/output or GPU readback fails.
+    pub fn pick_portal_color(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+        clean_screen_scene: &Scene,
+    ) -> Result<(f64, f64, f64), String> {
+        let (width, height) = frame_builder.viewport();
+        let width = width.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
+        let height = height.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
+        let pointer = frame_builder
+            .capture_pointer_position()
+            .ok_or_else(|| "move the pointer over the colour to pick it".to_string())?;
+        let x = pointer
+            .x
+            .floor()
+            .clamp(0.0, f64::from(width.saturating_sub(1))) as usize;
+        let y = pointer
+            .y
+            .floor()
+            .clamp(0.0, f64::from(height.saturating_sub(1))) as usize;
+        let mut renderer = OffscreenRenderer::try_new(width, height)
+            .map_err(|error| format!("colour picker renderer {width}×{height}: {error}"))?;
+        let rgba = render_capture_rgba(&mut renderer, clean_screen_scene);
+        let offset = y
+            .checked_mul(width as usize)
+            .and_then(|pixels| pixels.checked_add(x))
+            .and_then(|pixel| pixel.checked_mul(4))
+            .ok_or_else(|| "colour picker coordinate overflow".to_string())?;
+        let rgb: [u8; 3] = rgba
+            .get(offset..offset.saturating_add(3))
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| "colour picker readback was incomplete".to_string())?;
+        Ok((
+            f64::from(rgb[0]) / 255.0,
+            f64::from(rgb[1]) / 255.0,
+            f64::from(rgb[2]) / 255.0,
+        ))
+    }
+
+    /// Render the current composed desktop once for all active `PipeWire` portal
+    /// nodes.  The producer retains only this newest immutable frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the output dimensions overflow, renderer setup
+    /// fails, or GPU readback does not contain a complete RGBA frame.
+    pub fn render_portal_screencast_frame(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+        scene: &Scene,
+    ) -> Result<(u32, u32, std::sync::Arc<[u8]>), String> {
+        let (width, height) = frame_builder.viewport();
+        let width = width.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
+        let height = height.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
+        let mut renderer = OffscreenRenderer::try_new(width, height)
+            .map_err(|error| format!("screen-share renderer {width}×{height}: {error}"))?;
+        let rgba = render_capture_rgba(&mut renderer, scene);
+        let expected = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| "screen-share frame dimensions overflow".to_string())?;
+        if rgba.len() != expected {
+            return Err("screen-share renderer returned an incomplete frame".into());
+        }
+        Ok((width, height, std::sync::Arc::from(rgba)))
+    }
+
     pub fn queue_external_floating(&mut self, request: FloatingSurfaceRequest) {
         self.external_floating.push(request);
     }
@@ -417,7 +599,20 @@ impl CaptureExecutor {
         }
 
         let intents = frame_builder.take_capture_intents();
+        if self.portal_screenshot_armed
+            && intents.is_empty()
+            && !frame_builder.capture_studio_open()
+        {
+            self.portal_screenshot_armed = false;
+            outcomes.push(CaptureOutcome::PortalScreenshotCancelled);
+        }
         for intent in intents {
+            let portal_intent = self.portal_screenshot_armed
+                && intent.mode == CaptureMode::Screenshot
+                && intent.screenshot_command.is_none();
+            if portal_intent {
+                self.portal_screenshot_armed = false;
+            }
             let outcome = if let Some(command) = intent.screenshot_command {
                 match command {
                     ScreenshotCommand::MarkupLast => self
@@ -521,7 +716,14 @@ impl CaptureExecutor {
                 self.execute_screenshot(frame_builder, clean_screen_scene, &intent)
                     .unwrap_or_else(CaptureOutcome::Failed)
             };
-            outcomes.push(outcome);
+            if portal_intent {
+                outcomes.push(match outcome {
+                    CaptureOutcome::Saved(path) => CaptureOutcome::PortalScreenshotSaved(path),
+                    other => other,
+                });
+            } else {
+                outcomes.push(outcome);
+            }
         }
 
         for mirror in &mut self.live_mirrors {
@@ -1869,6 +2071,15 @@ mod tests {
 
         assert_eq!((width, height), (2, 2));
         assert_eq!(decoded, pixels);
+    }
+
+    #[test]
+    fn portal_selector_reservation_is_exclusive_and_cancellable() {
+        let mut executor = CaptureExecutor::default();
+        assert!(executor.arm_portal_screenshot());
+        assert!(!executor.arm_portal_screenshot());
+        executor.cancel_portal_screenshot();
+        assert!(executor.arm_portal_screenshot());
     }
 
     #[test]

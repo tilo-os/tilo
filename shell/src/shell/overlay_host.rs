@@ -48,6 +48,7 @@ use crate::shell::peer_sync_overlay::{EventOutcome as PeerSyncEventOutcome, Peer
 pub use crate::shell::peer_sync_overlay::{
     PeerSyncRequest, PeerSyncResponse, PeerSyncSnapshot, PendingInvitationSummary,
 };
+use crate::shell::portal_dialog::PortalDialogController;
 use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
 use crate::shell::projection_overlay::ProjectionOverlay;
 use crate::shell::quick_settings_bluetooth::QuickSettingsBluetoothPane;
@@ -56,9 +57,7 @@ use crate::shell::quick_settings_root::{QuickSettingsRoot, RootAction, SliderCom
 use crate::shell::quick_settings_vpn::QuickSettingsVpnPane;
 use crate::shell::quick_settings_wifi::QuickSettingsWifiPane;
 use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
-use crate::shell::state::{
-    Capability, GRANT_ALWAYS, GRANT_SESSION, GrantScope, GroupId, StripId, WorkspaceId,
-};
+use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
 use crate::shell::workspace_settings::{CapEdit, EXPIRY_CHOICES};
 pub use crate::shell::workspace_settings_overlay::GrantComposerRects;
 use crate::shell::workspace_settings_overlay::{
@@ -676,6 +675,9 @@ pub struct ShellOverlayHost {
     /// exclusive input routing. Keeping those together prevents the host
     /// from growing another set of loosely-coupled modal fields.
     file_picker_overlay: FilePickerOverlay,
+    /// Compositor-owned sheets for portal app choices and consent/review
+    /// flows. A chooser is a concrete user selection, not a broad grant.
+    portal_dialogs: PortalDialogController,
     /// Whether peer-sync palette commands (`/invite`, `/connect`) are
     /// surfaced. Off by default; set via `--enable-peer-sync` or
     /// [`Self::with_peer_sync_enabled`].
@@ -1381,6 +1383,7 @@ impl ShellOverlayHost {
             permission_prompt: None,
             portal_prompts: None,
             file_picker_overlay: FilePickerOverlay::default(),
+            portal_dialogs: PortalDialogController::default(),
             peer_sync_enabled: false,
             peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
@@ -1512,6 +1515,35 @@ impl ShellOverlayHost {
             state.bump();
         }
         true
+    }
+
+    /// Open Capture Studio for a portal request with a trusted initial source.
+    /// Apps only name a broad portal target; they never inject geometry,
+    /// surface ids, or an approval outcome into chrome.
+    pub fn open_portal_screenshot_selector(
+        &mut self,
+        target: crate::portal::desktop_services::ScreenshotTarget,
+    ) -> bool {
+        if !self.open_capture_studio(ui::widget::CaptureMode::Screenshot) {
+            return false;
+        }
+        self.capture_studio.set_source_mode(match target {
+            crate::portal::desktop_services::ScreenshotTarget::Area => {
+                ui::widget::SourceMode::Region
+            }
+            crate::portal::desktop_services::ScreenshotTarget::Window
+            | crate::portal::desktop_services::ScreenshotTarget::ActiveWindow => {
+                ui::widget::SourceMode::Window
+            }
+            crate::portal::desktop_services::ScreenshotTarget::Screen => {
+                ui::widget::SourceMode::Display
+            }
+        });
+        true
+    }
+
+    pub fn capture_studio_open(&self) -> bool {
+        self.capture_studio.is_open()
     }
 
     pub fn open_screenshot_markup(
@@ -3652,23 +3684,10 @@ impl ShellOverlayHost {
                 .front()
                 .is_some_and(|p| p.app_id == widget_app_id);
             if head_matches && let Some(mut pending) = st.pending_grants.pop_front() {
-                let app_id = pending.app_id.clone();
-                let capability = pending.capability.clone();
-                match choice {
-                    // `Allow` is once-only (treated as satisfied for this
-                    // single call, not persisted) and `Deny` persists
-                    // nothing (absence of a grant reads as deny) — neither
-                    // writes a grant, so they share this no-op arm.
-                    PromptChoice::Allow | PromptChoice::Deny => {}
-                    PromptChoice::Session => {
-                        let cap = with_grant_scope(capability, GRANT_SESSION);
-                        record_app_grant(&st, &app_id, &cap);
-                    }
-                    PromptChoice::Always => {
-                        let cap = with_grant_scope(capability, GRANT_ALWAYS);
-                        record_app_grant(&st, &app_id, &cap);
-                    }
-                }
+                // The async portal flow owns persistence after receiving this
+                // answer. Keeping that state in its private consent store is
+                // essential: a personal portal decision must never become a
+                // replicated workspace capability visible to collaborators.
                 // Release the blocked portal call — otherwise the D-Bus
                 // method awaiting the oneshot never returns and the app
                 // hangs on its own Open dialog.
@@ -3723,6 +3742,12 @@ impl ShellOverlayHost {
     /// can repaint.
     pub fn pump_file_picker(&mut self) -> bool {
         self.file_picker_overlay.pump(self.chrome.as_ref())
+    }
+
+    /// Latch the next portal-owned sheet. Its async reply remains held by the
+    /// controller until an explicit confirm or cancel event.
+    pub fn pump_portal_dialogs(&mut self) -> bool {
+        self.portal_dialogs.pump()
     }
 
     /// Moves buffered portal prompts onto the chrome's queue for
@@ -6194,6 +6219,85 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Portal sheets are modal: the keyboard and pointer remain in shell
+    /// chrome until the person explicitly confirms or cancels.
+    fn route_portal_dialog_event(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) -> bool {
+        if self.portal_dialogs.view().is_none() {
+            return false;
+        }
+        match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        logical_key,
+                        physical_key,
+                        ..
+                    },
+                ..
+            } => {
+                let state = modifiers.state();
+                let capture_chord = self.portal_dialogs.is_shortcut_editor()
+                    && (state.control_key()
+                        || state.alt_key()
+                        || state.shift_key()
+                        || state.super_key());
+                if capture_chord {
+                    self.portal_dialogs.key(physical_key, modifiers);
+                } else {
+                    match logical_key {
+                        Key::Named(NamedKey::ArrowDown | NamedKey::Tab) => {
+                            self.portal_dialogs.select_next(false);
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            self.portal_dialogs.select_next(true);
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            self.portal_dialogs.confirm();
+                        }
+                        Key::Named(NamedKey::Escape) => {
+                            self.portal_dialogs.cancel();
+                        }
+                        Key::Named(NamedKey::Backspace | NamedKey::Delete) => {
+                            if !self.portal_dialogs.edit_launcher_name(logical_key) {
+                                self.portal_dialogs.clear_selected_shortcut();
+                            }
+                        }
+                        Key::Named(NamedKey::Space)
+                            if self.portal_dialogs.is_usb_device_selector() =>
+                        {
+                            self.portal_dialogs.toggle_selected_usb_device();
+                        }
+                        _ => {
+                            if !self.portal_dialogs.edit_launcher_name(logical_key) {
+                                self.portal_dialogs.key(physical_key, modifiers);
+                            }
+                        }
+                    }
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                if let (Some(point), Some(layout)) =
+                    (self.last_cursor, self.portal_dialogs.layout(self.rect))
+                {
+                    self.portal_dialogs.click(point, &layout);
+                }
+            }
+            _ => {}
+        }
+        *handled = true;
+        true
+    }
+
     /// Absorbs every non-`Pressed` pointer event over an open overlay so
     /// a hover/drag can't continue underneath it (`Pressed` is excluded
     /// so the per-overlay branches later still get clicks), and a
@@ -6742,6 +6846,10 @@ impl ShellOverlayHost {
     /// The `is_mod` (Ctrl or Super held) chord set: search, the
     /// projection and overview toggles, window-creation chords, and
     /// focus/workspace stepping.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the existing shell chord router remains one auditable precedence table"
+    )]
     fn handle_shell_mod_chords(
         &mut self,
         logical_key: &Key,
@@ -8626,6 +8734,7 @@ impl Widget for ShellOverlayHost {
         // screen by the end of it, not one frame later.
         let portal_dirty = self.drain_portal_prompts();
         let picker_dirty = self.pump_file_picker();
+        let dialog_dirty = self.pump_portal_dialogs();
         self.pump_permission_prompt();
         let launch_dirty = self.drain_launch_events() | self.retire_notices_for_opened_windows();
         // Also driven by the widget's own `update`, but routed here too so
@@ -8651,6 +8760,7 @@ impl Widget for ShellOverlayHost {
             || chrome_dirty
             || portal_dirty
             || picker_dirty
+            || dialog_dirty
             || mirror_dirty
             || follow_dirty
     }
@@ -9183,6 +9293,10 @@ impl Widget for ShellOverlayHost {
             return;
         }
 
+        if self.route_portal_dialog_event(event, *modifiers, handled) {
+            return;
+        }
+
         // A drag that began inside an app keeps pointer ownership until its
         // release, even after the surface has crossed outside the app/window.
         // Route this before shell overlays so the boundary frame cannot steal
@@ -9275,6 +9389,25 @@ impl Widget for ShellOverlayHost {
         } = event
             && self.handle_shell_keyboard_event(logical_key, *modifiers, state, path, handled)
         {
+            return;
+        }
+        // qOS-reserved shell chords above always win.  All remaining pressed
+        // physical keys are offered to the portal registry, which can only
+        // match an accelerator installed after a reviewed, authenticated
+        // GlobalShortcuts grant. A match consumes the key before app content.
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    physical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+            && crate::portal::global_shortcuts::ShellGlobalShortcutsService::global()
+                .match_physical_key(physical_key, *modifiers)
+        {
+            *handled = true;
             return;
         }
         if self.handle_shell_mouse_click_event(event, handled) {
@@ -9653,21 +9786,6 @@ fn capability_label(cap: &Capability) -> String {
     }
 }
 
-/// Return a copy of `cap` with its `scope` field replaced. The portal
-/// layer pushes a placeholder scope (typically [`GRANT_ONCE`]); the
-/// prompt's button choice decides what actually gets persisted.
-fn with_grant_scope(cap: Capability, scope: GrantScope) -> Capability {
-    match cap {
-        Capability::Filesystem { path, mode, .. } => Capability::Filesystem { path, mode, scope },
-        Capability::Camera { .. } => Capability::Camera { scope },
-        Capability::Microphone { .. } => Capability::Microphone { scope },
-        Capability::Screencast { .. } => Capability::Screencast { scope },
-        Capability::RemoteDesktop { .. } => Capability::RemoteDesktop { scope },
-        Capability::Print { .. } => Capability::Print { scope },
-        Capability::Network { hosts, .. } => Capability::Network { hosts, scope },
-    }
-}
-
 /// Is the local user the owner of the active workspace? Gates the
 /// permission prompt's "Always" button and the Permissions tab's Revoke
 /// buttons, via the workspace's capability model (recorded owner, or
@@ -9682,41 +9800,6 @@ fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) ->
     let tree = state.tree();
     tree.active_workspace()
         .is_some_and(|ws| tree.governs_room(ws.room) && ws.may_administer(&user))
-}
-
-/// Records an app's capability grant on the active workspace: written
-/// into the capability list, mirrored into the replicated doc, and
-/// flushed to disk when its expiry should survive a restart. Everything
-/// the prompt hands out flows through here.
-fn record_app_grant(
-    state: &crate::shell::chrome_state::ChromeState,
-    app_id: &str,
-    capability: &Capability,
-) {
-    let mut tree = state.tree_mut();
-    let Some(ws_id) = tree.active_workspace().map(|w| w.id) else {
-        return;
-    };
-    let Some(room) = tree.active_workspace().map(|w| w.room) else {
-        return;
-    };
-    if !tree.governs_room(room) {
-        return;
-    }
-    let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) else {
-        return;
-    };
-    let ids = ws.grant_app(app_id, capability);
-    let written: Vec<crate::shell::state::CapOverride> = ws
-        .capabilities
-        .iter()
-        .filter(|c| ids.contains(&c.id))
-        .cloned()
-        .collect();
-    for cap in written {
-        tree.doc_insert_capability(ws_id, &cap);
-    }
-    tree.flush_to_disk();
 }
 
 /// Applies a permission edit to the active workspace, then mirrors it
@@ -11046,9 +11129,227 @@ impl ShellOverlayHost {
         self.file_picker_overlay
             .draw(self.rect, scene, transform, text_renderer, theme, presence);
 
+        self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
+
         // Above everything, including modals — a physical key works
         // while a modal is up, so its readout must too.
         self.draw_osd(scene, transform, text_renderer, theme);
+    }
+
+    /// Draw an OS-owned review sheet. The requesting application controls
+    /// neither its surface nor its hit regions.
+    #[allow(
+        clippy::too_many_lines,
+        clippy::needless_pass_by_ref_mut,
+        reason = "all portal sheet variants share one chrome renderer so untrusted app data cannot select a different visual surface"
+    )]
+    fn draw_portal_dialog_sheet(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(view) = self.portal_dialogs.view() else {
+            return;
+        };
+        let Some(layout) = self.portal_dialogs.layout(self.rect) else {
+            return;
+        };
+        draw_scrim_at(scene, transform, self.rect, 1.0, theme);
+        let sheet = RoundedRect::from_rect(layout.sheet, 16.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &sheet,
+        );
+        ui::surface::soft_shadow(
+            scene,
+            transform,
+            layout.sheet,
+            theme.tokens.colors.neutral[0],
+            36.0,
+            12.0,
+            0.6,
+        );
+        text_renderer.draw_text(
+            scene,
+            &view.title(),
+            20.0,
+            theme.tokens.colors.text_primary,
+            transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 22.0).into()),
+            None,
+        );
+        text_renderer.draw_text(
+            scene,
+            view.app_name(),
+            14.0,
+            theme.tokens.colors.text_dim,
+            transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 50.0).into()),
+            None,
+        );
+        text_renderer.draw_text(
+            scene,
+            view.detail(),
+            14.0,
+            theme.tokens.colors.text_dim,
+            transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 74.0).into()),
+            None,
+        );
+        for (index, (choice, rect)) in view.choices().iter().zip(&layout.choices).enumerate() {
+            let selected = index == self.portal_dialogs.selected();
+            draw_filter_chip(
+                scene,
+                transform,
+                text_renderer,
+                *rect,
+                choice,
+                14.0,
+                if selected {
+                    theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                } else {
+                    theme.tokens.colors.surfaces.base
+                },
+                theme.tokens.colors.text_primary,
+            );
+        }
+        // USB is intentionally a real multi-select sheet, rather than a
+        // generic all-or-nothing permission prompt.  A row click or Space
+        // toggles only that device; Enter commits the resulting subset.
+        let usb_start = self.portal_dialogs.visible_selection_start();
+        for (visible_index, (device, rect)) in view
+            .usb_devices()
+            .iter()
+            .skip(usb_start)
+            .zip(&layout.choices)
+            .enumerate()
+        {
+            let index = usb_start.saturating_add(visible_index);
+            let access = if device.writable {
+                "Read and write"
+            } else {
+                "Read only"
+            };
+            let label = format!(
+                "[{}] {} — {access}",
+                if device.selected { "✓" } else { " " },
+                device.label
+            );
+            let focused = index == self.portal_dialogs.selected();
+            draw_filter_chip(
+                scene,
+                transform,
+                text_renderer,
+                *rect,
+                &label,
+                14.0,
+                if focused {
+                    theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                } else {
+                    theme.tokens.colors.surfaces.base
+                },
+                theme.tokens.colors.text_primary,
+            );
+        }
+        if let Some(editor) = view.launcher_editor() {
+            if let Some(name_rect) = layout.launcher_name {
+                let focused = self.portal_dialogs.launcher_name_focused();
+                draw_filter_chip(
+                    scene,
+                    transform,
+                    text_renderer,
+                    name_rect,
+                    self.portal_dialogs.launcher_name().unwrap_or(editor.name),
+                    14.0,
+                    if focused {
+                        theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                    } else {
+                        theme.tokens.colors.surfaces.base
+                    },
+                    theme.tokens.colors.text_primary,
+                );
+            }
+            for (index, (label, rect)) in editor
+                .icon_choices
+                .iter()
+                .zip(&layout.launcher_icons)
+                .enumerate()
+            {
+                let selected = self.portal_dialogs.launcher_icon() == Some(index);
+                draw_filter_chip(
+                    scene,
+                    transform,
+                    text_renderer,
+                    *rect,
+                    label,
+                    14.0,
+                    if selected {
+                        theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                    } else {
+                        theme.tokens.colors.surfaces.base
+                    },
+                    theme.tokens.colors.text_primary,
+                );
+            }
+        }
+        for (index, (row, rect)) in view.shortcut_rows().iter().zip(&layout.choices).enumerate() {
+            let accelerator = row.accelerator.as_deref().map_or_else(
+                || "Not set".into(),
+                crate::portal::global_shortcuts::display_accelerator,
+            );
+            let label = if row.description.is_empty() {
+                format!("{}  —  {accelerator}", row.id)
+            } else {
+                format!("{}  —  {accelerator}", row.description)
+            };
+            let selected = index == self.portal_dialogs.selected();
+            draw_filter_chip(
+                scene,
+                transform,
+                text_renderer,
+                *rect,
+                &label,
+                14.0,
+                if selected {
+                    theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                } else {
+                    theme.tokens.colors.surfaces.base
+                },
+                theme.tokens.colors.text_primary,
+            );
+            if let Some(status) = &row.status {
+                text_renderer.draw_text(
+                    scene,
+                    status,
+                    11.0,
+                    theme.tokens.colors.semantic.warning,
+                    transform.pre_translate((rect.x0 + 10.0, rect.y1 - 10.0).into()),
+                    None,
+                );
+            }
+        }
+        draw_filter_chip(
+            scene,
+            transform,
+            text_renderer,
+            layout.cancel,
+            "Cancel",
+            14.0,
+            theme.tokens.colors.surfaces.base,
+            theme.tokens.colors.text_primary,
+        );
+        draw_filter_chip(
+            scene,
+            transform,
+            text_renderer,
+            layout.confirm,
+            view.confirm_label(),
+            14.0,
+            theme.tokens.colors.accent[5],
+            theme.tokens.colors.text_primary,
+        );
     }
 
     /// Paints an overlapping stack of member faces, right-aligned at
