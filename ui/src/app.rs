@@ -5020,12 +5020,10 @@ impl AppHandler {
             None
         } else {
             match &event {
-                WindowEvent::Touch(_) => Some(crate::interaction::InteractionEnvironment::TOUCH),
+                WindowEvent::Touch(_) => Some(app.interaction.with_touch_modality()),
                 WindowEvent::CursorMoved { .. }
                 | WindowEvent::MouseInput { .. }
-                | WindowEvent::MouseWheel { .. } => {
-                    Some(crate::interaction::InteractionEnvironment::POINTER)
-                }
+                | WindowEvent::MouseWheel { .. } => Some(app.interaction.with_pointer_modality()),
                 WindowEvent::KeyboardInput {
                     event:
                         winit::event::KeyEvent {
@@ -5842,7 +5840,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         if let WindowEvent::Touch(touch) = &event {
             self.app
-                .set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
+                .set_interaction_environment(self.app.interaction.with_touch_modality());
             let pointer_events = self.touch_pointer.events(touch);
             self.dispatching_touch_pointer = true;
             for pointer_event in pointer_events {
