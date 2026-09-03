@@ -19,6 +19,13 @@ Imager package. Selecting its qOS release downloads the compressed image into a
 per-user cache and verifies both the transport SHA-256 and expanded-image
 SHA-256/size before the raw image is offered to the writer.
 
+Every package launches the wizard as the signed-in user. Only after the exact
+external device name is typed does it request polkit, macOS administrator, or
+Windows UAC approval for a short-lived helper mode. The helper receives a
+digest-bound, secret-free request, repeats the device identity and safety
+checks, writes and verifies the medium, then exits. Account and disk-encryption
+secrets never cross that privilege boundary.
+
 Flatpak is deliberately not offered. A sandboxed application cannot safely gain
 raw block-device access without a separately installed, narrowly scoped host
 helper, and elevating a second copy of the whole Flatpak application would both
