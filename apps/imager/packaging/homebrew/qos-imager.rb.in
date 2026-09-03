@@ -23,6 +23,9 @@ class QosImager < Formula
   end
 
   test do
-    assert_predicate bin/"qos-imager-bin", :executable?
+    shot = testpath/"imager.png"
+    system bin/"qos-imager-bin", "--shots", shot, "--scenario", "source", "--viewport", "900x700"
+    assert_predicate shot, :exist?
+    assert_operator shot.size, :>, 0
   end
 end

@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
+# Offscreen rendering never probes or writes disks. Keep diagnostics and
+# package smoke tests unprivileged instead of presenting an unnecessary polkit
+# prompt merely to prove that the packaged UI starts.
+for arg in "$@"; do
+  case "$arg" in
+    --shots|--shots=*|--shots-dir|--shots-dir=*) exec "$here/qos-imager-bin" "$@" ;;
+  esac
+done
 if [ "$(id -u)" -eq 0 ]; then
   export QOS_IMAGER_ALLOW_WRITE=1
   exec "$here/qos-imager-bin" "$@"
@@ -13,4 +21,3 @@ exec pkexec env \
   DISPLAY="${DISPLAY:-}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
   XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" XAUTHORITY="${XAUTHORITY:-}" \
   QOS_IMAGER_ALLOW_WRITE=1 "$here/qos-imager-bin" "$@"
-
