@@ -21,6 +21,15 @@
 #        --dev-login (local diagnostics only; requires QOS_INSTALLER_DEV_PASSWORD)
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
+# Several native build tools ignore Cargo's target directory and create
+# assembly/object scratch files through libc's TMPDIR.  Keep those files with
+# the installer output as well: shared /tmp commonly has a tight per-user quota
+# on developer and CI hosts, and a full /tmp must not break an otherwise
+# reproducible installer build.
+: "${TMPDIR:=${QOS_INSTALLER_OUTPUT}/.tmp}"
+mkdir -p "$TMPDIR"
+export TMPDIR
+
 STUB_UI=0
 DO_CARGO=1
 DEV_LOGIN=0
@@ -72,7 +81,8 @@ msg "2/3 podman build $QOS_INSTALLER_IMAGE (rootless)"
 # layer. On overlay-backed bootc images, committing every tiny file as its own
 # layer repeatedly scans the multi-gigabyte base and turns an iterative
 # installer build into an hour-long job.
-INSTALLER_CONTEXT="$(mktemp -d /tmp/qos-installer-context.XXXXXX)"
+INSTALLER_SCRATCH="$TMPDIR"
+INSTALLER_CONTEXT="$(mktemp -d "$INSTALLER_SCRATCH/qos-installer-context.XXXXXX")"
 cleanup_installer_context() { rm -rf "$INSTALLER_CONTEXT"; }
 trap cleanup_installer_context EXIT
 mkdir -p "$INSTALLER_CONTEXT/rootfs/usr" \
@@ -94,19 +104,24 @@ cleanup_installer_context
 trap - EXIT
 
 msg "3/3 disk image -> installer qcow2"
-# The live root is sized generously: the self-install model copies the booted
-# image into the live medium's /var/lib/containers (`bootc image copy-to-storage`)
-# before `bootc install`, which needs ~2x the image size free. A default ~12 GiB
-# root runs out mid-copy ("no space left on device"). The qcow2 stays sparse, so
-# the file is still small.
+# The live root holds both the booted composefs tree and a second unpacked image
+# in /var/lib/containers (`bootc image copy-to-storage`) before `bootc install`.
+# Size it from the actual image rather than a stale guess. Three times the OCI
+# image size covers both trees plus overlay metadata; 40 GiB is the tested floor
+# for the full Windows-compatibility payload. The pristine qcow2 remains sparse.
 #
 # `qos.install` is not passed here — it lives in the image, as
 # /usr/lib/bootc/kargs.d/50-installer.toml (see os/Containerfile.installer).
 rm -rf "$QOS_INSTALLER_OUTPUT/qcow2" "$QOS_INSTALLER_OUTPUT"/manifest* 2>/dev/null || true
+image_bytes="$(podman image inspect "$QOS_INSTALLER_IMAGE" --format '{{.Size}}')"
+gib=$((1024 * 1024 * 1024))
+root_gib=$(((image_bytes * 3 + gib - 1) / gib))
+[ "$root_gib" -ge 40 ] || root_gib=40
+msg "   live root ${root_gib}G (OCI image $(numfmt --to=iec-i --suffix=B "$image_bytes"), 3x + 40G floor)"
 DISK_ARGS=(
   "$QOS_INSTALLER_IMAGE"
   "$(dirname "$QOS_INSTALLER_DISK")"
-  --root-min 30G
+  --root-min "${root_gib}G"
 )
 if [ "$DEV_LOGIN" = 1 ]; then
   DISK_ARGS+=(--user "tester:${QOS_INSTALLER_DEV_PASSWORD}:wheel")

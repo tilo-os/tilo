@@ -17,6 +17,7 @@ on:
       - os/Containerfile.rpms
       - os/external-assets/github-assets.tsv
       - os/dev/cache-github-assets.sh
+      - os/dev/derive-rpm-package-set.py
       - os/Containerfile.host
       - os/dev/composefs/Containerfile
       - os/containers/qos-relay/Containerfile
@@ -60,33 +61,11 @@ jobs:
       # finds every package it wants.
       - name: Derive the package set from the Containerfiles
         run: |
-          # Enumerate all Containerfiles we snapshot for.  The qos-kernel
-          # build (os/kernel/Containerfile) installs its toolchain from the
-          # same frozen repo — including it here means the kernel build
-          # deps (rpm-build, gcc, kernel-devel, ...) land in the snapshot
-          # automatically.
-          FILES=(
-            os/Containerfile
-            os/Containerfile.host
-            os/dev/composefs/Containerfile
-            os/containers/qos-relay/Containerfile
-            os/kernel/Containerfile
-          )
-          pkgs=$(awk '
-            /(dnf|microdnf) install -y/ {
-              blk=$0
-              while (blk ~ /\\[[:space:]]*$/) { getline nx; sub(/\\[[:space:]]*$/,"",blk); blk=blk" "nx }
-              # Strip everything up to and including the install verb.
-              sub(/.*install -y/,"",blk)
-              sub(/&&.*/,"",blk)
-              n=split(blk,a," ")
-              for (i=1;i<=n;i++) {
-                # Skip flags and empty tokens; keep only bare package names.
-                if (a[i] ~ /^-/) continue
-                if (a[i] ~ /^[A-Za-z0-9][A-Za-z0-9._+-]*$/) print a[i]
-              }
-            }
-          ' "${FILES[@]}" | sort -u | tr '\n' ' ')
+          # This parser is shared with the static invariant test. It handles
+          # quoted capability specs and every install command in a RUN line;
+          # keeping a second awk copy here previously let them drift apart.
+          pkgs=$(./os/dev/derive-rpm-package-set.py | tr '\n' ' ')
+          test -n "$pkgs"
           echo "PACKAGES=$pkgs" >> "$GITHUB_ENV"
           echo "packages: $pkgs"
 

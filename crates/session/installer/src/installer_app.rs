@@ -215,6 +215,7 @@ fn encrypt_description(state: VerifiedBootState) -> &'static str {
 /// worker thread to mark terminal outcomes (anything else is a log line).
 const CTRL_DONE: &str = "\u{1}done";
 const CTRL_FAIL: &str = "\u{1}fail";
+const RECOVERY_KEY_PREFIX: &str = "::qos-recovery-key::";
 
 /// Card geometry (logical px).
 const CARD_WIDTH: f32 = 520.0;
@@ -685,6 +686,8 @@ pub struct InstallerApp {
     install_state: InstallState,
     /// Streamed install output (also the success/failure summary).
     status_lines: Vec<String>,
+    /// One-time LUKS recovery key, kept visible until the machine restarts.
+    recovery_key: Option<String>,
     /// Cached account/system fields (mirror their CRDT Text objects) for
     /// the Review display + backend argv.
     username: String,
@@ -771,6 +774,7 @@ impl InstallerApp {
             step: Step::Keyboard,
             install_state: InstallState::Idle,
             status_lines: Vec::new(),
+            recovery_key: None,
             username: String::new(),
             full_name: String::new(),
             password: Arc::new(Mutex::new(String::new())),
@@ -894,8 +898,6 @@ impl InstallerApp {
         self.status_lines = sample_install_log();
         self.status_lines
             .push("error: bootc install to-disk exited non-zero".to_string());
-        self.status_lines
-            .push("Installation failed. Review the log above.".to_string());
     }
 
     /// The selected disk, if any.
@@ -1103,9 +1105,15 @@ impl InstallerApp {
 
     /// Advance to the next step if the current one validates.
     fn go_next(&mut self) {
-        if self.step == Step::Disk && self.selected_disk_ref().is_some_and(|disk| disk.read_only) {
-            self.set_status("This disk is read-only and cannot be used for installation");
-            return;
+        if self.step == Step::Disk {
+            if self.selected_disk_ref().is_some_and(|disk| disk.is_system) {
+                self.set_status("The running installer disk cannot be used as its own destination");
+                return;
+            }
+            if self.selected_disk_ref().is_some_and(|disk| disk.read_only) {
+                self.set_status("This disk is read-only and cannot be used for installation");
+                return;
+            }
         }
         if self.step == Step::Disk
             && self.install_method == InstallMethod::Alongside
@@ -1232,6 +1240,7 @@ impl InstallerApp {
             "Starting install to {disk} for user {user} ({}).",
             opts.filesystem
         )];
+        self.recovery_key = None;
         self.dirty_structure = true;
         self.focus_reset = true;
 
@@ -1287,8 +1296,6 @@ impl InstallerApp {
             self.status_lines.push(line);
         }
         self.install_state = InstallState::Failed;
-        self.status_lines
-            .push("Installation failed. Review the log above.".to_string());
         self.dirty_structure = true;
         self.focus_reset = true;
     }
@@ -1799,6 +1806,7 @@ impl InstallerApp {
         let danger = theme.tokens.colors.semantic.danger;
         let xl = theme.tokens.typography.scale.xl;
         let sm = theme.tokens.typography.scale.sm;
+        let friendly_status = friendly_install_status(&self.status_lines);
 
         match self.install_state {
             InstallState::Done => {
@@ -1812,10 +1820,8 @@ impl InstallerApp {
                         .with_size(sm)
                         .with_color(dim),
                 ));
-                children.push(Box::new(StatusLog::new(
-                    self.status_lines.clone(),
-                    STATUS_LOG_HEIGHT,
-                )));
+                self.compose_recovery_key(theme, children);
+                children.push(Box::new(StatusLog::new(friendly_status, STATUS_LOG_HEIGHT)));
                 children.push(finish_row());
             }
             InstallState::Failed => {
@@ -1844,12 +1850,23 @@ impl InstallerApp {
                             .with_color(dim),
                     )),
                 ));
-                children.push(Box::new(StatusLog::new(
-                    self.status_lines.clone(),
-                    STATUS_LOG_HEIGHT,
-                )));
+                self.compose_recovery_key(theme, children);
+                children.push(Box::new(StatusLog::new(friendly_status, STATUS_LOG_HEIGHT)));
             }
         }
+    }
+
+    fn compose_recovery_key(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+        let Some(key) = &self.recovery_key else {
+            return;
+        };
+        let sm = theme.tokens.typography.scale.sm;
+        children.push(Box::new(
+            Text::new("Recovery key — save this somewhere off-device")
+                .with_size(sm)
+                .with_color(theme.status_success),
+        ));
+        children.push(Box::new(Text::new(key).with_size(sm)));
     }
 }
 
@@ -2017,6 +2034,62 @@ fn sample_install_log() -> Vec<String> {
     ]
 }
 
+/// Turn noisy container/partitioning output into the small set of milestones a
+/// person needs while the install is running. The complete transcript is still
+/// retained in `status_lines` and is shown unchanged on failure.
+fn friendly_install_status(lines: &[String]) -> Vec<String> {
+    let mut stages: Vec<String> = Vec::new();
+    let mut add = |stage: &str| {
+        if stages.last().is_none_or(|last| last != stage) {
+            stages.push(stage.to_string());
+        }
+    };
+
+    for line in lines {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("starting install") {
+            add("✓ Installation choices verified");
+        } else if lower.contains("copying the running qos image")
+            || lower.contains("copying blob")
+            || lower.contains("copying config")
+        {
+            add("Copying verified qOS system files…");
+        } else if lower.contains("preparing an encrypted root") || lower.contains("formatting luks")
+        {
+            add("Preparing encrypted storage…");
+        } else if lower.contains("installing qos onto") || lower.contains("base system installed") {
+            add("Installing the signed qOS system…");
+        } else if lower.contains("enrolling disk-encryption")
+            || lower.contains("recovery key verified")
+            || lower.contains("tpm2+pin enrolled")
+            || lower.contains("passphrase enrolled")
+        {
+            add("Securing disk unlock and recovery…");
+        } else if lower.contains("preparing the '") && lower.contains("account") {
+            add("Creating your account…");
+        } else if lower.contains("setting hostname")
+            || lower.contains("time zone")
+            || lower.contains("keyboard layout")
+        {
+            add("Applying your preferences…");
+        } else if lower.contains("boot loader")
+            || lower.contains("bootloader")
+            || lower.contains("initramfs")
+            || lower.contains("finalizing")
+        {
+            add("Finalizing the secure boot setup…");
+        } else if lower.contains("installed — remove the medium") {
+            add("✓ qOS is ready");
+        }
+    }
+
+    if stages.is_empty() {
+        stages.push("Preparing installation…".to_string());
+    }
+    let keep_from = stages.len().saturating_sub(5);
+    stages.split_off(keep_from)
+}
+
 impl InstallerApp {
     /// Cache the editable text fields for display / backend argv.
     fn sync_cached_fields(&mut self, state: &AutoCommit, root: &ObjId) {
@@ -2111,9 +2184,15 @@ impl InstallerApp {
             let p = disk_path(i);
             if Self::read_flag(state, root, p.as_str()) {
                 let _ = state.put(root, p.as_str(), false);
-                self.selected_disk = Some(i);
-                self.status.clear();
-                self.dirty_structure = true;
+                if self
+                    .disks
+                    .get(i)
+                    .is_some_and(|disk| !disk.is_system && !disk.read_only)
+                {
+                    self.selected_disk = Some(i);
+                    self.status.clear();
+                    self.dirty_structure = true;
+                }
             }
         }
 
@@ -2379,6 +2458,11 @@ impl Widget for InstallerApp {
             self.mark_install_done();
         } else if payload == CTRL_FAIL {
             self.mark_install_failed(None);
+        } else if let Some(key) = payload.strip_prefix(RECOVERY_KEY_PREFIX) {
+            if !key.trim().is_empty() {
+                self.recovery_key = Some(key.trim().to_string());
+                self.dirty_structure = true;
+            }
         } else {
             self.status_lines.push(payload.to_string());
             self.dirty_structure = true;
@@ -3108,14 +3192,55 @@ mod tests {
     }
 
     #[test]
+    fn recovery_key_marker_becomes_persistent_card_not_log_noise() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.step = Step::Install;
+        app.install_state = InstallState::Running;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        app.on_external_event("::qos-recovery-key::abcd-efgh-ijkl-mnop", &mut doc, &root);
+        assert_eq!(app.recovery_key.as_deref(), Some("abcd-efgh-ijkl-mnop"));
+        assert!(
+            app.status_lines.is_empty(),
+            "secret marker is not a log line"
+        );
+    }
+
+    #[test]
+    fn install_progress_hides_container_noise_behind_human_milestones() {
+        let lines = vec![
+            "Starting install to /dev/vdb for user qostest (btrfs).".to_string(),
+            "Copying blob 0123456789abcdef".to_string(),
+            "Copying blob fedcba9876543210".to_string(),
+            "==> Preparing an encrypted root on /dev/vdb".to_string(),
+            "Formatting LUKS2 with argon2id".to_string(),
+        ];
+        assert_eq!(
+            friendly_install_status(&lines),
+            vec![
+                "✓ Installation choices verified",
+                "Copying verified qOS system files…",
+                "Preparing encrypted storage…",
+            ]
+        );
+    }
+
+    #[test]
     fn external_fail_sentinel_marks_failed() {
         let mut app = InstallerApp::with_disks(sample());
         app.step = Step::Install;
         app.install_state = InstallState::Running;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
+        app.on_external_event("error: no space left on device", &mut doc, &root);
         app.on_external_event(CTRL_FAIL, &mut doc, &root);
         assert_eq!(app.install_state, InstallState::Failed);
+        assert_eq!(
+            app.status_lines.last().map(String::as_str),
+            Some("error: no space left on device"),
+            "the useful backend failure must remain the newest visible log line"
+        );
     }
 
     #[test]
@@ -3248,6 +3373,24 @@ mod tests {
                 .iter()
                 .any(|c| c.name() == "DiskRow" && c.is_focusable())
         );
+    }
+
+    #[test]
+    fn running_system_disk_is_visible_but_not_focusable() {
+        let mut disks = sample();
+        disks[0].is_system = true;
+        let mut app = InstallerApp::with_disks(disks);
+        app.step = Step::Disk;
+        let _ = build(&mut app);
+        let card = app.children()[0];
+        let disk_rows: Vec<_> = card
+            .children()
+            .into_iter()
+            .filter(|child| child.name() == "DiskRow")
+            .collect();
+        assert_eq!(disk_rows.len(), 2);
+        assert!(!disk_rows[0].is_focusable());
+        assert!(disk_rows[1].is_focusable());
     }
 
     #[test]

@@ -1,0 +1,142 @@
+# qOS boot and encrypted-root unlock theme. Keep this dependency-free: it runs
+# in the initramfs before the real root filesystem is available.
+Window.SetBackgroundTopColor(0.055, 0.063, 0.090);
+Window.SetBackgroundBottomColor(0.035, 0.039, 0.060);
+
+logo.image = Image("qos-logo.png");
+logo.sprite = Sprite(logo.image);
+logo.phase = 0;
+logo.sprite.SetZ(10);
+
+progress.background_image = Image("progress-background.png");
+progress.background = Sprite(progress.background_image);
+progress.fill_source = Image("progress-fill.png");
+progress.fill = Sprite();
+progress.background.SetZ(20);
+progress.fill.SetZ(21);
+
+fun place_brand(unlock_mode)
+  {
+    local.center_x = Window.GetX() + Window.GetWidth() / 2;
+    if (unlock_mode)
+      logo.y = Window.GetY() + Window.GetHeight() * 0.29;
+    else
+      logo.y = Window.GetY() + Window.GetHeight() * 0.39;
+    logo.sprite.SetPosition(center_x - logo.image.GetWidth() / 2,
+                            logo.y - logo.image.GetHeight() / 2, 10);
+
+    progress.x = center_x - progress.background_image.GetWidth() / 2;
+    progress.y = Window.GetY() + Window.GetHeight() * 0.72;
+    progress.background.SetPosition(progress.x, progress.y, 20);
+    progress.fill.SetPosition(progress.x, progress.y, 21);
+  }
+
+fun set_dialog_opacity(opacity)
+  {
+    if (!dialog.ready)
+      return;
+    dialog.heading.SetOpacity(opacity);
+    dialog.help.SetOpacity(opacity);
+    dialog.lock.SetOpacity(opacity);
+    dialog.entry.SetOpacity(opacity);
+    for (index = 0; dialog.bullet[index]; index++)
+      dialog.bullet[index].SetOpacity(opacity);
+  }
+
+fun setup_dialog()
+  {
+    local.center_x = Window.GetX() + Window.GetWidth() / 2;
+    local.entry_image = Image("entry.png");
+    local.lock_image = Image("lock.png");
+
+    dialog.heading_image = Image.Text("Unlock qOS", 0.94, 0.94, 0.98);
+    dialog.heading = Sprite(dialog.heading_image);
+    dialog.heading.SetPosition(center_x - dialog.heading_image.GetWidth() / 2,
+                               Window.GetY() + Window.GetHeight() * 0.48, 100);
+
+    dialog.help_image = Image.Text("Enter your disk passphrase", 0.62, 0.64, 0.73);
+    dialog.help = Sprite(dialog.help_image);
+    dialog.help.SetPosition(center_x - dialog.help_image.GetWidth() / 2,
+                            Window.GetY() + Window.GetHeight() * 0.535, 100);
+
+    dialog.entry_x = center_x - entry_image.GetWidth() / 2;
+    dialog.entry_y = Window.GetY() + Window.GetHeight() * 0.59;
+    dialog.entry = Sprite(entry_image);
+    dialog.entry.SetPosition(dialog.entry_x, dialog.entry_y, 100);
+
+    dialog.lock = Sprite(lock_image);
+    dialog.lock.SetPosition(dialog.entry_x + 18,
+                            dialog.entry_y + entry_image.GetHeight() / 2 - lock_image.GetHeight() / 2,
+                            101);
+    dialog.bullet_image = Image("bullet.png");
+    dialog.ready = 1;
+  }
+
+fun display_password(prompt, bullets)
+  {
+    mode = "password";
+    place_brand(1);
+    progress.background.SetOpacity(0);
+    progress.fill.SetOpacity(0);
+    if (!dialog.ready)
+      setup_dialog();
+    set_dialog_opacity(1);
+
+    # Keep very long passphrases visually bounded while accepting them in full.
+    local.visible_bullets = bullets;
+    if (visible_bullets > 24)
+      visible_bullets = 24;
+    for (index = 0; dialog.bullet[index] || index < visible_bullets; index++)
+      {
+        if (!dialog.bullet[index])
+          {
+            dialog.bullet[index] = Sprite(dialog.bullet_image);
+            dialog.bullet[index].SetPosition(dialog.entry_x + 64 + index * 11,
+                                              dialog.entry_y + 24, 102);
+          }
+        if (index < visible_bullets)
+          dialog.bullet[index].SetOpacity(1);
+        else
+          dialog.bullet[index].SetOpacity(0);
+      }
+  }
+
+fun display_normal()
+  {
+    mode = "normal";
+    place_brand(0);
+    set_dialog_opacity(0);
+    progress.background.SetOpacity(1);
+    progress.fill.SetOpacity(1);
+  }
+
+fun refresh()
+  {
+    # A restrained breathing animation keeps the screen alive without making a
+    # password prompt feel busy.
+    logo.phase += 0.025;
+    logo.sprite.SetOpacity(0.90 + 0.10 * ((Math.Sin(logo.phase) + 1) / 2));
+  }
+
+fun boot_progress(duration, percent)
+  {
+    local.width = Math.Int(progress.fill_source.GetWidth() * percent);
+    if (width < 1)
+      width = 1;
+    progress.fill.SetImage(progress.fill_source.Scale(width,
+                                                       progress.fill_source.GetHeight()));
+  }
+
+fun display_message(text)
+  {
+    # Plymouth sends low-level status strings here. The qOS boot is deliberately
+    # quiet; recovery details remain available on the console with Escape.
+  }
+
+mode = "normal";
+place_brand(0);
+Plymouth.SetRefreshFunction(refresh);
+Plymouth.SetBootProgressFunction(boot_progress);
+Plymouth.SetDisplayNormalFunction(display_normal);
+Plymouth.SetDisplayPasswordFunction(display_password);
+Plymouth.SetDisplayMessageFunction(display_message);
