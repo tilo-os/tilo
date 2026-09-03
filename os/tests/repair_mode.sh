@@ -146,7 +146,7 @@ fi
 
 # --- repair mode must not start the desktop -----------------------------------
 g="$OS/usr/lib/systemd/system-generators/qos-boot-mode-generator"
-for u in greetd.service fs.service bootc-fetch-apply-updates.timer sshd.service; do
+for u in greetd.service fs.service fs-identity.path bootc-fetch-apply-updates.timer sshd.service; do
   if grep -q "$u" "$g"; then
     ok "repair mode masks $u"
   else

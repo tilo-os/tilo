@@ -6664,13 +6664,16 @@ dependencies = [
  "automerge",
  "qos-actions",
  "qos-app",
+ "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "taffy",
  "tempfile",
  "vello",
  "winit",
+ "zstd",
 ]
 
 [[package]]
@@ -6814,8 +6817,10 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "os-actions",
+ "serde",
  "serde_json",
  "taffy",
+ "tempfile",
  "tracing-subscriber",
  "ui",
  "vello",

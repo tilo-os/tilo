@@ -1,4 +1,4 @@
-//! Read-only unattended-install configuration dialog.
+//! Read-only embedded-media-profile dialog.
 //!
 //! The host owns the policy which produces the export text. This component
 //! owns the transient modal state and every UI concern around presenting it.
@@ -16,7 +16,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
-const TITLE: &str = "Unattended install config";
+const TITLE: &str = "Embedded setup profile";
 const MAX_WIDTH: f64 = 640.0;
 const MAX_HEIGHT: f64 = 620.0;
 const WIDTH_FRACTION: f64 = 0.62;

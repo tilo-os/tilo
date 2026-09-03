@@ -10,11 +10,16 @@
 set -euo pipefail
 
 CONF=/etc/qos/install-user.conf
+FULL_NAME_CONF=/etc/qos/install-user-full-name
 [ -f "$CONF" ] || exit 0
 
 line="$(head -n1 "$CONF")"
 user="${line%%:*}"
 hash="${line#*:}"
+full_name=""
+if [ -f "$FULL_NAME_CONF" ]; then
+  full_name="$(head -n1 "$FULL_NAME_CONF")"
+fi
 
 if [ -z "$user" ] || [ -z "$hash" ] || [ "$user" = "$hash" ]; then
   echo "qos-firstboot-user: malformed $CONF (expected name:hash)" >&2
@@ -37,12 +42,17 @@ else
   # hands the group `/sys/class/backlight/*/brightness`, which is what
   # the brightness keys and the quick-settings slider write. Without it
   # brightness silently does nothing.
-  useradd -m -G wheel,qos-identity,video "$user"
+  if [ -n "$full_name" ]; then
+    useradd -m -c "$full_name" -G wheel,qos-identity,video "$user"
+  else
+    useradd -m -G wheel,qos-identity,video "$user"
+  fi
 fi
 
 printf '%s:%s\n' "$user" "$hash" | chpasswd -e
 
 # Remove the seed file (best-effort shred; fall back to rm).
 shred -u "$CONF" 2>/dev/null || rm -f "$CONF"
+[ ! -f "$FULL_NAME_CONF" ] || shred -u "$FULL_NAME_CONF" 2>/dev/null || rm -f "$FULL_NAME_CONF"
 
 echo "qos-firstboot-user: created account '$user'"
