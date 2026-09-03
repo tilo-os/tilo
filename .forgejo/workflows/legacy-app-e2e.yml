@@ -66,12 +66,12 @@ jobs:
       WGPU_ADAPTER_NAME: llvmpipe
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Restore Cargo downloads
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         continue-on-error: true
         with:
           path: |
@@ -115,7 +115,7 @@ jobs:
 
       - name: Upload screenshots and process logs
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: legacy-app-e2e-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/legacy-app-e2e
