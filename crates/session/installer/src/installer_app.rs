@@ -56,10 +56,12 @@ use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
 
+use ui::a11y::Politeness;
 use ui::app::UserEvent;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::typography::TextRole;
 use ui::widget::{Dropdown, Row, Scrollable, Spacer, Spinner, Text, TextInput, Widget};
 
 use crate::action_button::ActionButton;
@@ -1562,7 +1564,6 @@ impl InstallerApp {
         self.status_lines
             .push("Installed — remove the medium and reboot.".to_string());
         self.dirty_structure = true;
-        self.focus_reset = true;
     }
 
     fn mark_install_failed(&mut self, extra: Option<String>) {
@@ -1572,7 +1573,6 @@ impl InstallerApp {
         self.install_state = InstallState::Failed;
         self.reset_viewport();
         self.dirty_structure = true;
-        self.focus_reset = true;
     }
 
     /// Run a terminal power action (Reboot / Power off). On success the
@@ -1610,7 +1610,8 @@ impl InstallerApp {
             children.push(Box::new(
                 Text::new(&self.status)
                     .with_size(theme.tokens.typography.scale.sm)
-                    .with_color(theme.tokens.colors.semantic.danger),
+                    .with_color(theme.tokens.colors.semantic.danger)
+                    .with_live(Politeness::Assertive),
             ));
         }
 
@@ -2104,7 +2105,9 @@ impl InstallerApp {
             "[ ] I will save my recovery key"
         };
         children.push(Box::new(
-            ActionButton::new(ack_label, RECOVERY_ACK_PATH).with_test_id("recovery_ack"),
+            ActionButton::new(ack_label, RECOVERY_ACK_PATH)
+                .with_test_id("recovery_ack")
+                .checkbox(self.recovery_ack),
         ));
 
         // Begin is gated on the recovery-key acknowledgement when
@@ -2130,7 +2133,9 @@ impl InstallerApp {
                 children.push(Box::new(
                     Text::new("qOS is installed")
                         .with_size(xl)
-                        .with_color(theme.status_success),
+                        .with_color(theme.status_success)
+                        .with_role(TextRole::Title)
+                        .with_live(Politeness::Polite),
                 ));
                 children.push(Box::new(
                     Text::new("Installation complete. Remove the installer medium, then reboot. Signed system updates will be checked automatically after first boot when online; no update was downloaded during this install.")
@@ -2145,7 +2150,9 @@ impl InstallerApp {
                 children.push(Box::new(
                     Text::new("Installation failed")
                         .with_size(xl)
-                        .with_color(danger),
+                        .with_color(danger)
+                        .with_role(TextRole::Title)
+                        .with_live(Politeness::Assertive),
                 ));
                 children.push(Box::new(
                     Text::new("The installer stopped before it could confirm a bootable system. The destination may have been changed. Review the details, then re-enter your secrets before trying again.")
@@ -2160,7 +2167,11 @@ impl InstallerApp {
                 children.push(Box::new(ActionButton::new("Re-enter secrets", BACK_PATH)));
             }
             _ => {
-                children.push(Box::new(Text::new("Installing qOS…").with_size(xl)));
+                children.push(Box::new(
+                    Text::new("Installing qOS…")
+                        .with_size(xl)
+                        .with_role(TextRole::Title),
+                ));
                 children.push(Box::new(
                     Row::new().push(Box::new(Spinner::new())).push(Box::new(
                         Text::new("Working — this can take a few minutes. Don't power off.")
@@ -2395,6 +2406,12 @@ fn friendly_install_status(lines: &[String]) -> Vec<String> {
             add("Preparing encrypted storage…");
         } else if lower.contains("installing qos onto") || lower.contains("base system installed") {
             add("Installing the signed qOS system…");
+        } else if lower.contains("fido2") && (lower.contains("touch") || lower.contains("enroll")) {
+            // This is not background progress: systemd-cryptenroll is blocked
+            // until the person touches their selected hardware token. Keep it
+            // as an explicit stage so the visible log and its assertive live
+            // region both ask for the required action.
+            add("Touch your security key to continue…");
         } else if lower.contains("enrolling disk-encryption")
             || lower.contains("recovery key verified")
             || lower.contains("tpm2+pin enrolled")
@@ -2911,6 +2928,18 @@ mod tests {
             .children()
             .into_iter()
             .find_map(|child| find_named(child, name))
+    }
+
+    fn find_accessible(widget: &dyn Widget, name: &str) -> Option<ui::a11y::AccessNode> {
+        if let Some(node) = widget.accessibility()
+            && node.name.as_deref() == Some(name)
+        {
+            return Some(node);
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| find_accessible(child, name))
     }
 
     fn build(app: &mut InstallerApp) -> (TaffyTree<()>, NodeId) {
@@ -3674,8 +3703,8 @@ mod tests {
         app.on_external_event(CTRL_DONE, &mut doc, &root);
         assert_eq!(app.install_state, InstallState::Done);
         assert!(
-            app.take_focus_reset(),
-            "done sets focus reset for finish row"
+            !app.take_focus_reset(),
+            "an asynchronous completion must announce itself without moving focus"
         );
     }
 
@@ -3712,6 +3741,61 @@ mod tests {
                 "Preparing encrypted storage…",
             ]
         );
+    }
+
+    #[test]
+    fn hardware_token_touch_is_an_explicit_human_milestone() {
+        let lines = vec![
+            "==> Enrolling disk-encryption unlock factors".to_string(),
+            "  enrolling a FIDO2 security key (touch it now if prompted)…".to_string(),
+        ];
+        assert_eq!(
+            friendly_install_status(&lines),
+            vec![
+                "Securing disk unlock and recovery…",
+                "Touch your security key to continue…",
+            ]
+        );
+    }
+
+    #[test]
+    fn terminal_states_and_recovery_actions_have_live_accessible_semantics() {
+        let mut done = InstallerApp::for_shot(Step::Install);
+        done.shot_finished();
+        let _ = build(&mut done);
+        let success = find_accessible(&done, "qOS is installed").expect("success title");
+        assert_eq!(success.live, Some(Politeness::Polite));
+        let reboot = find_accessible(&done, "Reboot now").expect("reboot action");
+        assert_eq!(reboot.role, ui::a11y::Role::Button);
+        assert!(reboot.state.focusable);
+        assert!(find_accessible(&done, "Power off").is_some());
+
+        let mut failed = InstallerApp::for_shot(Step::Install);
+        failed.shot_failed();
+        let _ = build(&mut failed);
+        let failure = find_accessible(&failed, "Installation failed").expect("failure title");
+        assert_eq!(failure.live, Some(Politeness::Assertive));
+        assert!(find_accessible(&failed, "Re-enter secrets").is_some());
+    }
+
+    #[test]
+    fn validation_and_recovery_ack_announce_without_focus_reset() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.step = Step::Review;
+        app.selected_disk = Some(0);
+        app.set_status("Type /dev/sda exactly to confirm formatting it");
+        let _ = build(&mut app);
+
+        let validation = find_accessible(&app, "Type /dev/sda exactly to confirm formatting it")
+            .expect("validation status");
+        assert_eq!(validation.live, Some(Politeness::Assertive));
+        assert!(!app.focus_reset);
+
+        let ack =
+            find_accessible(&app, "I will save my recovery key").expect("recovery acknowledgement");
+        assert_eq!(ack.role, ui::a11y::Role::Checkbox);
+        assert_eq!(ack.state.checked, Some(false));
+        assert!(ack.state.focusable);
     }
 
     #[test]
