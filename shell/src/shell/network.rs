@@ -100,10 +100,130 @@ fn configured_host_addrs() -> Vec<iroh::EndpointAddr> {
     hosts
 }
 
+const MAX_HOME_PEER_REGISTRY_BYTES: u64 = 1024 * 1024;
+const MAX_HOME_PEERS: usize = 128;
+const MAX_HOME_PEER_LABEL_BYTES: usize = 80;
+const MAX_HOME_PEER_WORKSPACES: usize = 4096;
+
+#[derive(Clone, Debug, Deserialize)]
+struct HomePeerRegistration {
+    device_node_id: String,
+    relay_service_node_id: String,
+    label: String,
+    user_public_key: String,
+    relay_workspace_ids: Vec<u64>,
+}
+
+fn home_peer_registry_path() -> PathBuf {
+    std::env::var_os("QOS_HOME_PEERS_PATH")
+        .filter(|path| !path.is_empty())
+        .map_or_else(
+            || {
+                let paths = crate::firstboot::collaboration_identity_paths();
+                paths
+                    .user_pubkey
+                    .parent()
+                    .and_then(std::path::Path::parent)
+                    .map_or_else(|| PathBuf::from("/var/lib/qos"), PathBuf::from)
+                    .join("home-peers.json")
+            },
+            PathBuf::from,
+        )
+}
+
+fn decode_lower_hex_32(value: &str) -> Option<[u8; 32]> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return None;
+    }
+    hex::decode(value).ok()?.try_into().ok()
+}
+
+/// Read home peers only from the locally-rooted enrollment registry. Entries
+/// are additionally constrained to this user's certified root and one of the
+/// shell's current relay workspace shards; a copied registry must not make a
+/// shell dial another person's host. The relay service key is intentionally
+/// distinct from the device key, preventing a service address from claiming
+/// ordinary peer identity.
+#[derive(Clone, Debug)]
+struct RegisteredHomePeer {
+    addr: iroh::EndpointAddr,
+    expectation: crate::network::actor::HomePeerExpectation,
+}
+
+fn registered_home_peer_addrs(
+    local_user: Option<[u8; 32]>,
+    relay_workspace_ids: &std::collections::BTreeSet<u64>,
+) -> Vec<RegisteredHomePeer> {
+    let Some(local_user) = local_user else {
+        return Vec::new();
+    };
+    let path = home_peer_registry_path();
+    let Ok(metadata) = std::fs::metadata(&path) else {
+        return Vec::new();
+    };
+    if metadata.len() > MAX_HOME_PEER_REGISTRY_BYTES {
+        tracing::warn!(path = %path.display(), "home-peer registry exceeds its bounded schema");
+        return Vec::new();
+    }
+    let registrations: Vec<HomePeerRegistration> = match std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Vec<HomePeerRegistration>>(&bytes).ok())
+    {
+        Some(registrations) if registrations.len() <= MAX_HOME_PEERS => registrations,
+        _ => {
+            tracing::warn!(path = %path.display(), "home-peer registry is invalid");
+            return Vec::new();
+        }
+    };
+    let mut addrs = Vec::new();
+    for registration in registrations {
+        if registration.label.is_empty()
+            || registration.label.len() > MAX_HOME_PEER_LABEL_BYTES
+            || registration.relay_workspace_ids.len() > MAX_HOME_PEER_WORKSPACES
+            || !registration
+                .relay_workspace_ids
+                .iter()
+                .any(|workspace| relay_workspace_ids.contains(workspace))
+        {
+            continue;
+        }
+        // Validate the enrolled device id too, even though it is not dialled:
+        // it binds replacement/upsert identity in the signed registry.
+        if decode_lower_hex_32(&registration.device_node_id).is_none()
+            || decode_lower_hex_32(&registration.user_public_key) != Some(local_user)
+        {
+            continue;
+        }
+        let Some(relay_id) = decode_lower_hex_32(&registration.relay_service_node_id)
+            .and_then(|bytes| iroh::EndpointId::from_bytes(&bytes).ok())
+        else {
+            continue;
+        };
+        let Some(device_public_key) = decode_lower_hex_32(&registration.device_node_id) else {
+            continue;
+        };
+        addrs.push(RegisteredHomePeer {
+            addr: iroh::EndpointAddr::new(relay_id),
+            expectation: crate::network::actor::HomePeerExpectation {
+                user_public_key: local_user,
+                device_public_key,
+            },
+        });
+    }
+    addrs.sort_by_key(|host| host.addr.id.to_string());
+    addrs.dedup_by_key(|host| host.addr.id);
+    addrs
+}
+
 /// How often a shell asks the rooms it is in for anything it is
 /// missing. Room replication has no push side, so this interval is the
 /// upper bound on how stale a guest's view of a room can be.
 const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+const HOME_PEER_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 pub struct PendingInvitation {
@@ -261,6 +381,10 @@ pub struct ShellNetwork {
     listen_addrs: Arc<Mutex<Vec<iroh::EndpointAddr>>>,
     /// Always-on hosts included in newly issued invites.
     host_addrs: Mutex<Vec<iroh::EndpointAddr>>,
+    /// Last bounded scan of the enrollment registry. A paired home peer may
+    /// be approved after this shell started, so startup-only loading is not
+    /// sufficient.
+    last_home_peer_refresh: Mutex<Option<std::time::Instant>>,
     /// When [`Self::kick_periodic_sync`] last asked. `None` until the
     /// first tick, so the first frame after startup kicks a round.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
@@ -491,9 +615,23 @@ impl ShellNetwork {
             spawn_lan_discovery_forwarding(&runtime, mdns, &cmd_tx);
         }
 
-        let host_addrs = configured_host_addrs();
+        let relay_workspace_ids = tree.read().rooms().into_iter().map(room_topic_id).collect();
+        let home_peers = registered_home_peer_addrs(personal_continuity_user, &relay_workspace_ids);
+        let mut host_addrs = configured_host_addrs();
+        host_addrs.extend(home_peers.iter().map(|host| host.addr.clone()));
+        host_addrs.sort_by_key(|addr| addr.id.to_string());
+        host_addrs.dedup_by_key(|addr| addr.id);
         for addr in host_addrs.iter().cloned() {
-            let _ = cmd_tx.try_send(NetCmd::ConnectHost { addr });
+            let _ = cmd_tx.try_send(NetCmd::ConnectHost {
+                addr,
+                expectation: None,
+            });
+        }
+        for host in home_peers {
+            let _ = cmd_tx.try_send(NetCmd::ConnectHost {
+                addr: host.addr,
+                expectation: Some(host.expectation),
+            });
         }
 
         // Peer id `1` is the replica-side identity for
@@ -529,6 +667,7 @@ impl ShellNetwork {
             local_peer_id,
             listen_addrs,
             host_addrs: Mutex::new(host_addrs),
+            last_home_peer_refresh: Mutex::new(None),
             last_sync_kick: Mutex::new(None),
             personal_continuity: Mutex::new(persisted_continuity.continuity),
             personal_continuity_user,
@@ -942,7 +1081,69 @@ impl ShellNetwork {
         {
             hosts.push(addr.clone());
         }
-        self.cmd_tx.try_send(NetCmd::ConnectHost { addr }).is_ok()
+        self.cmd_tx
+            .try_send(NetCmd::ConnectHost {
+                addr,
+                expectation: None,
+            })
+            .is_ok()
+    }
+
+    /// Reload newly approved same-identity home peers. This is safe to call
+    /// from the frame loop: it reads a bounded local registry, queues dials
+    /// with `try_send`, and never waits for relay discovery or a connection.
+    pub fn refresh_home_peer_hosts(&self) -> bool {
+        let relay_workspace_ids = self
+            .replica
+            .lock()
+            .ok()
+            .map(|replica| {
+                replica
+                    .tree
+                    .read()
+                    .rooms()
+                    .into_iter()
+                    .map(room_topic_id)
+                    .collect::<std::collections::BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        let mut changed = false;
+        for host in registered_home_peer_addrs(self.personal_continuity_user, &relay_workspace_ids)
+        {
+            let addr = host.addr;
+            let known = self
+                .host_addrs
+                .lock()
+                .is_ok_and(|hosts| hosts.iter().any(|known| known.id == addr.id));
+            if !known {
+                if let Ok(mut hosts) = self.host_addrs.lock() {
+                    hosts.push(addr.clone());
+                }
+                changed |= self
+                    .cmd_tx
+                    .try_send(NetCmd::ConnectHost {
+                        addr,
+                        expectation: Some(host.expectation),
+                    })
+                    .is_ok();
+            }
+        }
+        changed
+    }
+
+    fn refresh_home_peer_hosts_periodically(&self) {
+        let Ok(mut last) = self.last_home_peer_refresh.lock() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        if let Some(previous) = *last
+            && now.duration_since(previous) < HOME_PEER_REFRESH_INTERVAL
+        {
+            return;
+        }
+        *last = Some(now);
+        drop(last);
+        let _ = self.refresh_home_peer_hosts();
     }
 
     /// The current iroh address published in an invite. It contains the
@@ -1581,6 +1782,7 @@ impl ShellNetwork {
         // never announces — so nothing else brings a stale guest's view
         // of a capability change up to date.
         self.kick_periodic_sync();
+        self.refresh_home_peer_hosts_periodically();
         // Hold the lock for the whole drain so a concurrent frame-tick
         // never sees half-merged events. A poisoned mutex (a prior
         // holder panicked mid-drain) just skips this tick rather than
@@ -2570,6 +2772,7 @@ pub(crate) fn shell_network_for_test(
         local_peer_id,
         listen_addrs: Arc::new(Mutex::new(Vec::new())),
         host_addrs: Mutex::new(Vec::new()),
+        last_home_peer_refresh: Mutex::new(None),
         last_sync_kick: Mutex::new(None),
         personal_continuity: Mutex::new(
             crate::shell::personal_continuity::PersonalContinuity::default(),
@@ -3478,6 +3681,138 @@ mod tests {
         assert!(net.cmd_tx.capacity() > 0);
         // Persistence side-effect: the keypair must have been written.
         assert!(key_path.exists(), "keypair file must exist after spawn");
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn home_peer_registry_survives_restart_and_only_admits_matching_identity_rooms() {
+        let temp = tempfile::tempdir().expect("temp");
+        let registry = temp.path().join("home-peers.json");
+        let own_user = [0x11; 32];
+        let service = iroh::SecretKey::from_bytes(&[0x22; 32]).public();
+        let device = iroh::SecretKey::from_bytes(&[0x33; 32]).public();
+        let other_service = iroh::SecretKey::from_bytes(&[0x44; 32]).public();
+        std::fs::write(
+            &registry,
+            serde_json::to_vec(&serde_json::json!([
+                {
+                    "device_node_id": hex::encode(device.as_bytes()),
+                    "relay_service_node_id": hex::encode(service.as_bytes()),
+                    "label": "Home server",
+                    "user_public_key": hex::encode(own_user),
+                    "relay_workspace_ids": [42],
+                },
+                {
+                    "device_node_id": hex::encode(device.as_bytes()),
+                    "relay_service_node_id": hex::encode(other_service.as_bytes()),
+                    "label": "Other identity",
+                    "user_public_key": hex::encode([0x99; 32]),
+                    "relay_workspace_ids": [42],
+                },
+                {
+                    "device_node_id": hex::encode(device.as_bytes()),
+                    "relay_service_node_id": hex::encode(other_service.as_bytes()),
+                    "label": "Other workspace",
+                    "user_public_key": hex::encode(own_user),
+                    "relay_workspace_ids": [77],
+                },
+            ]))
+            .expect("registry"),
+        )
+        .expect("write registry");
+        let previous = std::env::var_os("QOS_HOME_PEERS_PATH");
+        // SAFETY: guarded by the process_env serial group.
+        unsafe { std::env::set_var("QOS_HOME_PEERS_PATH", &registry) };
+        let rooms = std::collections::BTreeSet::from([42]);
+        let first_boot = registered_home_peer_addrs(Some(own_user), &rooms);
+        let restarted = registered_home_peer_addrs(Some(own_user), &rooms);
+        assert_eq!(first_boot, restarted, "registry is durable across restart");
+        assert_eq!(first_boot.len(), 1);
+        assert_eq!(first_boot[0].addr.id, service);
+
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("QOS_HOME_PEERS_PATH", value),
+                None => std::env::remove_var("QOS_HOME_PEERS_PATH"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn home_peer_registry_defaults_to_the_active_identity_root() {
+        let temp = tempfile::tempdir().expect("temp");
+        let identity_root = temp.path().join("user-data/qos");
+        let old_identity_root = std::env::var_os("QOS_IDENTITY_ROOT");
+        let old_registry = std::env::var_os("QOS_HOME_PEERS_PATH");
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            std::env::set_var("QOS_IDENTITY_ROOT", &identity_root);
+            std::env::remove_var("QOS_HOME_PEERS_PATH");
+        }
+        assert_eq!(
+            home_peer_registry_path(),
+            identity_root.join("home-peers.json"),
+            "the shell must read the approval registry beside its own user key, never a system copy"
+        );
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            match old_identity_root {
+                Some(value) => std::env::set_var("QOS_IDENTITY_ROOT", value),
+                None => std::env::remove_var("QOS_IDENTITY_ROOT"),
+            }
+            match old_registry {
+                Some(value) => std::env::set_var("QOS_HOME_PEERS_PATH", value),
+                None => std::env::remove_var("QOS_HOME_PEERS_PATH"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn live_registry_refresh_connects_a_newly_approved_home_peer() {
+        let temp = tempfile::tempdir().expect("temp");
+        let registry = temp.path().join("home-peers.json");
+        let own_user = [0x51; 32];
+        let service = iroh::SecretKey::from_bytes(&[0x52; 32]).public();
+        let device = iroh::SecretKey::from_bytes(&[0x53; 32]).public();
+        let mut tree = WorkspaceTree::default();
+        let workspace = tree.append_empty_workspace("Home peer workspace");
+        let room = RoomId::new();
+        assert!(tree.set_room(workspace, room));
+        let (mut net, mut commands) = shell_network_for_test(tree.shared(), 7);
+        net.personal_continuity_user = Some(own_user);
+        let old_registry = std::env::var_os("QOS_HOME_PEERS_PATH");
+        // SAFETY: guarded by the process_env serial group.
+        unsafe { std::env::set_var("QOS_HOME_PEERS_PATH", &registry) };
+        std::fs::write(
+            &registry,
+            serde_json::to_vec(&serde_json::json!([{
+                "device_node_id": hex::encode(device.as_bytes()),
+                "relay_service_node_id": hex::encode(service.as_bytes()),
+                "label": "Home server",
+                "user_public_key": hex::encode(own_user),
+                "relay_workspace_ids": [room_topic_id(room)],
+            }]))
+            .expect("registry"),
+        )
+        .expect("write registry");
+
+        assert!(net.refresh_home_peer_hosts());
+        let NetCmd::ConnectHost { addr, .. } = commands.try_recv().expect("queued relay dial")
+        else {
+            panic!("registry refresh must queue a host connection");
+        };
+        assert_eq!(addr.id, service);
+
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            match old_registry {
+                Some(value) => std::env::set_var("QOS_HOME_PEERS_PATH", value),
+                None => std::env::remove_var("QOS_HOME_PEERS_PATH"),
+            }
+        }
     }
 
     /// Two rooms this machine governs, and the network that holds

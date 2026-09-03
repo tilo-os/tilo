@@ -30,6 +30,13 @@ const MAX_GOSSIP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 pub type WorkspaceId = u64;
 pub type PeerId = EndpointId;
 
+/// Enrollment-bound identity expected behind a distinct relay service key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HomePeerExpectation {
+    pub user_public_key: [u8; 32],
+    pub device_public_key: [u8; 32],
+}
+
 /// Device certificate chain used to authenticate to a qOS workspace host.
 #[derive(Clone)]
 pub struct HostIdentity {
@@ -130,6 +137,7 @@ pub enum NetCmd {
     /// direct gossip path too; the host adds persistence and offline delivery.
     ConnectHost {
         addr: EndpointAddr,
+        expectation: Option<HomePeerExpectation>,
     },
 }
 
@@ -238,7 +246,7 @@ struct ActorState {
     topics: HashMap<WorkspaceId, TopicRuntime>,
     subscribers: HashMap<WorkspaceId, mpsc::Sender<NetEvent>>,
     peers: HashMap<EndpointId, EndpointAddr>,
-    hosts: HashMap<EndpointId, EndpointAddr>,
+    hosts: HashMap<EndpointId, (EndpointAddr, Option<HomePeerExpectation>)>,
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
     peers_seen: HashMap<(WorkspaceId, EndpointId), Instant>,
@@ -288,10 +296,10 @@ impl ActorState {
                     }
                 }
             }
-            Some(NetCmd::ConnectHost { addr }) => {
+            Some(NetCmd::ConnectHost { addr, expectation }) => {
                 let id = addr.id;
                 self.lookup.add_endpoint_info(addr.clone());
-                self.hosts.insert(id, addr.clone());
+                self.hosts.insert(id, (addr.clone(), expectation.clone()));
                 let Some(identity) = self.host_identity.as_ref() else {
                     tracing::warn!(peer = %id, "cannot connect workspace host without a device certificate");
                     return true;
@@ -302,6 +310,7 @@ impl ActorState {
                         identity,
                         ws,
                         addr.clone(),
+                        expectation.clone(),
                         &self.internal_tx,
                         &self.host_sessions,
                         &mut self.connecting_hosts,
@@ -345,12 +354,13 @@ impl ActorState {
             }
         }
         if let Some(identity) = self.host_identity.as_ref() {
-            for addr in self.hosts.values().cloned() {
+            for (addr, expectation) in self.hosts.values().cloned() {
                 schedule_host_topic(
                     &self.endpoint,
                     identity,
                     ws,
                     addr,
+                    expectation,
                     &self.internal_tx,
                     &self.host_sessions,
                     &mut self.connecting_hosts,
@@ -518,12 +528,13 @@ impl ActorState {
         }
         if let Some(identity) = self.host_identity.as_ref() {
             for ws in self.topics.keys().copied() {
-                for addr in self.hosts.values().cloned() {
+                for (addr, expectation) in self.hosts.values().cloned() {
                     schedule_host_topic(
                         &self.endpoint,
                         identity,
                         ws,
                         addr,
+                        expectation,
                         &self.internal_tx,
                         &self.host_sessions,
                         &mut self.connecting_hosts,
@@ -776,6 +787,7 @@ fn schedule_host_topic(
     identity: &HostIdentity,
     ws: WorkspaceId,
     addr: EndpointAddr,
+    expectation: Option<HomePeerExpectation>,
     internal_tx: &mpsc::Sender<InternalEvent>,
     sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     connecting: &mut HashSet<(WorkspaceId, EndpointId)>,
@@ -795,6 +807,71 @@ fn schedule_host_topic(
             return;
         }
     }
+    // Content discovery has a separate authenticated ALPN and must not hold
+    // up collaborative session establishment.  `ws` is the stable relay room
+    // shard used by `room_topic_id`, not a process-local tab/workspace id.
+    let discovery_endpoint = endpoint.clone();
+    let discovery_addr = addr.clone();
+    let Some(expectation) = expectation else {
+        // Invited/provider hosts can carry collaboration state, but only an
+        // enrolled home peer may nominate a Files hydration endpoint.
+        let tx = internal_tx.clone();
+        tokio::spawn(async move {
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                RelayClient::connect_to_pinned_host(
+                    endpoint,
+                    addr,
+                    device_cert,
+                    identity.device_signing_key.clone(),
+                    revocations,
+                ),
+            )
+            .await
+            .map_err(|_| "workspace host connection timed out".to_string())
+            .and_then(|result| result.map_err(|error| error.to_string()))
+            .and_then(|client| {
+                RelayCoeditSession::join(
+                    client,
+                    ws,
+                    identity.device_signing_key.verifying_key().to_bytes(),
+                )
+                .map_err(|error| error.to_string())
+            });
+            let _ = tx
+                .send(InternalEvent::HostConnected {
+                    ws,
+                    peer: host,
+                    result: Box::new(result),
+                })
+                .await;
+        });
+        return;
+    };
+    let discovery_cert = device_cert.clone();
+    let discovery_signing_key = identity.device_signing_key.clone();
+    let discovery_revocations = revocations.clone();
+    tokio::spawn(async move {
+        let discovered = tokio::time::timeout(
+            Duration::from_secs(10),
+            RelayClient::discover_content_endpoint(
+                &discovery_endpoint,
+                discovery_addr,
+                ws,
+                expectation.user_public_key,
+                expectation.device_public_key,
+                discovery_cert,
+                discovery_signing_key,
+                discovery_revocations,
+            ),
+        )
+        .await;
+        match discovered {
+            Ok(Ok(content_endpoint)) => schedule_content_peer_registration(content_endpoint),
+            Ok(Err(error)) => tracing::debug!(%error, ws, "relay content discovery is not ready"),
+            Err(_) => tracing::debug!(ws, "relay content discovery timed out"),
+        }
+    });
     let tx = internal_tx.clone();
     tokio::spawn(async move {
         let result = tokio::time::timeout(
@@ -826,6 +903,66 @@ fn schedule_host_topic(
             })
             .await;
     });
+}
+
+/// Submit an authenticated relay-discovered Files peer to the running FUSE
+/// daemon. This is deliberately a detached worker: endpoint registration may
+/// wait on the group-restricted daemon socket but must never delay networking
+/// or the compositor. The filesystem owns persistence and hydration policy.
+fn schedule_content_peer_registration(endpoint: EndpointAddr) {
+    if cfg!(test) && std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER").is_none() {
+        return;
+    }
+    let publisher = std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER")
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || std::path::PathBuf::from("/usr/bin/fs"),
+            std::path::PathBuf::from,
+        );
+    let cache_dir = std::env::var_os("QOS_FS_CONTENT_PEER_CACHE_DIR")
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || std::path::PathBuf::from("/var/cache/quick-fs"),
+            std::path::PathBuf::from,
+        );
+    let Ok(payload) = serde_json::to_vec(&endpoint) else {
+        tracing::warn!("could not serialize relay-discovered filesystem endpoint");
+        return;
+    };
+    let _ = std::thread::Builder::new()
+        .name("qos-fs-content-peer".to_string())
+        .spawn(move || {
+            use std::io::Write as _;
+
+            let mut child = match std::process::Command::new(&publisher)
+                .arg("register-content-peer")
+                .arg("--cache-dir")
+                .arg(&cache_dir)
+                .arg("--endpoint-stdin")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(error) => {
+                    tracing::warn!(%error, publisher = %publisher.display(), "could not start filesystem content-peer registration");
+                    return;
+                }
+            };
+            let Some(mut stdin) = child.stdin.take() else {
+                tracing::warn!("filesystem content-peer registration has no stdin");
+                return;
+            };
+            if let Err(error) = stdin.write_all(&payload) {
+                tracing::warn!(%error, "could not send discovered endpoint to filesystem daemon");
+                return;
+            }
+            drop(stdin);
+            match child.wait() {
+                Ok(status) if status.success() => {}
+                Ok(status) => tracing::warn!(?status, "filesystem content-peer registration failed"),
+                Err(error) => tracing::warn!(%error, "could not wait for filesystem content-peer registration"),
+            }
+        });
 }
 
 fn spawn_host_pump(
@@ -1200,6 +1337,7 @@ mod tests {
                 id: 42,
                 pin: true,
                 replication: ReplicationIntent::FullWorkspace,
+                admitted_users: Vec::new(),
             }],
             ..RelayConfig::default()
         };
@@ -1269,12 +1407,14 @@ mod tests {
         cmd_a
             .send(NetCmd::ConnectHost {
                 addr: relay.node_addr(),
+                expectation: None,
             })
             .await
             .unwrap();
         cmd_b
             .send(NetCmd::ConnectHost {
                 addr: relay.node_addr(),
+                expectation: None,
             })
             .await
             .unwrap();
