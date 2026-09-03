@@ -318,6 +318,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "word-processor",
+ "zeroize",
 ]
 
 [[package]]
