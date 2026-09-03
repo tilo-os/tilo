@@ -563,6 +563,7 @@ impl DeviceMeshPane {
 
     fn spawn_apply(&self) -> Result<Child, String> {
         let request = serde_json::json!({
+            "identity_root": identity_root(),
             "role": match self.config.device_role {
                 DeviceRole::Interactive => "interactive",
                 DeviceRole::Hybrid => "hybrid",
