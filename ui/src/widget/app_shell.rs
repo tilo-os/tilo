@@ -170,7 +170,7 @@ impl AppShell {
             .with_accessible_name(name)
             .with_size(34.0, 34.0)
             .ghost()
-            .on_click(move || requested.set(true))
+            .on_view(move || requested.set(true))
     }
 
     fn rebuild_back_button(&mut self) {
@@ -1172,6 +1172,7 @@ mod tests {
             &mut document,
             &automerge::ROOT,
         ));
+        dispatch_view_actions(&mut shell, &document);
         assert!(shell.take_structure_dirty());
         assert_eq!(screen.with(Clone::clone), NarrowScreen::List);
     }
@@ -1382,5 +1383,28 @@ mod tests {
         dispatch(s, &left_press(), &mut handled);
         let mut handled = false;
         dispatch(s, &left_release(), &mut handled);
+        dispatch_view_actions(s, &AutoCommit::new());
+    }
+
+    fn dispatch_view_actions(s: &mut AppShell, doc: &AutoCommit) {
+        while let Some(intent) = s.take_control_invocation() {
+            let mut resources = Vec::new();
+            crate::widget::collect_widget_resources(s, doc, &mut resources);
+            let encoded =
+                qos_actions::door::encode_json(&resources, &intent.address, &intent.arguments)
+                    .expect("AppShell Back exports the action it emits");
+            assert!(
+                s.start_resource_operation(
+                    qos_actions::InvocationId::new(),
+                    qos_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                    doc,
+                    &automerge::ROOT,
+                )
+                .expect("Back view action succeeds")
+                .is_some()
+            );
+        }
     }
 }
