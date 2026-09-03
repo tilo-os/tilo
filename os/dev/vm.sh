@@ -81,7 +81,7 @@ cmd_boot() {
   local attach_arg=""
   if [ -n "$attach" ]; then
     inenv "test -f '$attach' || qemu-img create -f qcow2 '$attach' '$QOS_TARGET_SIZE'" >/dev/null
-    attach_arg="-drive file=$attach,format=qcow2,if=virtio"
+    attach_arg="-drive file=$attach,format=qcow2,if=virtio,serial=qos-install-target"
     msg "attaching $attach as /dev/vdb"
   fi
 
@@ -156,8 +156,8 @@ cmd_boot_installer() {
   # First virtio disk = installer (/dev/vda); second = blank target (/dev/vdb).
   local args="$(machine_args) $(qemu_accel_args) -m $QOS_MEM -smp $QOS_SMP \
     $(pflash_args "$varstore") \
-    -drive file=$work_disk,format=qcow2,if=virtio \
-    -drive file=$target,format=qcow2,if=virtio \
+    -drive file=$work_disk,format=qcow2,if=virtio,serial=qos-installer-medium \
+    -drive file=$target,format=qcow2,if=virtio,serial=qos-install-target \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
     -pidfile $QOS_PIDFILE -name qos-custom-installer"
