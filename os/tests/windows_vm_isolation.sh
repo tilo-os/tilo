@@ -55,6 +55,8 @@ has "$EGRESS_NET" '<qos:windows-egress ' 'egress network has qOS ownership marke
 has "$NETWORK_TOOL" 'qos-windows-egress' 'network service defines the brokered egress network'
 has "$NETWORK_TOOL" 'net-destroy' 'egress network is inactive by default'
 has "$REAPER" 'egress-reap' 'root service reaps expired egress leases'
+has "$REAPER" 'controller repairs /run/qos/windows-egress to mode 2750' 'reaper documents its required setgid runtime repair'
+lacks "$REAPER" 'RestrictSUIDSGID=yes' 'reaper sandbox permits its required setgid runtime repair'
 has "$REAPER_TIMER" 'OnUnitActiveSec=30s' 'egress lease reaper runs periodically'
 has "$VM_CONTROL_SOURCE" 'write_lease' 'egress lease is recorded before NIC attachment'
 has "$VM_CONTROL_SOURCE" 'egress-reap' 'controller has a crash-safe lease reaper action'

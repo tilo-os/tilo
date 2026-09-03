@@ -11,9 +11,13 @@ on:
       - "apps/imager/**"
       - "ui/**"
       - "crates/runtime/**"
-      - "crates/collab/actions/**"
+      - "crates/**"
+      - "docs/installer-walkthrough.md"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "os/external-assets/github-assets.tsv"
+      - "os/dev/cache-github-assets.sh"
       - ".forgejo/workflows/release-imager.yml"
   pull_request:
     branches: ["main"]
@@ -21,91 +25,267 @@ on:
       - "apps/imager/**"
       - "ui/**"
       - "crates/runtime/**"
-      - "crates/collab/actions/**"
+      - "crates/**"
+      - "docs/installer-walkthrough.md"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "os/external-assets/github-assets.tsv"
+      - "os/dev/cache-github-assets.sh"
       - ".forgejo/workflows/release-imager.yml"
   workflow_dispatch:
 
 concurrency:
-  group: release-imager-${{ github.ref }}
-  cancel-in-progress: true
+  # Package promotion and the website manifest are mutable "latest" pointers.
+  # One global lane prevents an older, slower tag from overwriting a newer one.
+  group: release-imager-promotion
+  cancel-in-progress: false
 
 jobs:
-  linux:
-    runs-on: runner
-    container:
-      image: code.podesta.ai/qos/qos-builder:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+  medium:
+    if: startsWith(github.ref, 'refs/tags/imager-v')
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: runner
+          - arch: aarch64
+            runner: runner-arm64
+    runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Restore checksum-verified GitHub build inputs
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: os/external-assets/cache
+          key: imager-medium-inputs-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+      - name: Materialize immutable build inputs
+        run: ./os/dev/cache-github-assets.sh
+      - name: Install the pinned image-signature verifier
+        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
+      - name: Authenticate the native image builder
+        env:
+          QOS_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          test -n "$QOS_REGISTRY_TOKEN"
+          printf '%s' "$QOS_REGISTRY_TOKEN" | podman login code.podesta.ai \
+            --username '${{ github.actor }}' --password-stdin
+      - name: Build the tested qOS live installer
+        env:
+          QOS_REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          export QOS_REQUIRE_WPE_SIGNATURE=1
+          ./os/dev/build-image.sh
+          ./os/dev/build-custom-installer.sh
+          apps/imager/packaging/package-install-medium.sh \
+            os/output/installer/qcow2/disk.qcow2 "${{ matrix.arch }}"
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: qos-installer-medium-${{ matrix.arch }}
+          path: |
+            dist/qos-installer/qos-installer-linux-*.img.zst
+            dist/qos-installer/qos-installer-linux-*.img.zst.sha256
+            dist/qos-installer/catalog-*.json
+
+  catalog:
+    if: always()
+    needs: medium
+    runs-on: runner
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        if: startsWith(github.ref, 'refs/tags/imager-v')
+        with:
+          path: release-assets
+      - name: Assemble the release catalog
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
+            apps/imager/packaging/build-release-catalog.sh release-assets
+          else
+            mkdir -p dist/qos-installer-catalog
+            cp apps/imager/release-catalog.json \
+              dist/qos-installer-catalog/qos-installer-catalog-v1.json
+          fi
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: qos-installer-catalog
+          path: dist/qos-installer-catalog/*
+
+  linux:
+    needs: catalog
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: runner
+          - arch: aarch64
+            runner: runner-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          name: qos-installer-catalog
+          path: release-catalog
+      - run: cp release-catalog/qos-installer-catalog-v1.json apps/imager/release-catalog.json
       - name: Configure release signing
         env:
+          CREDENTIAL_BROKER: ${{ vars.IMAGER_CREDENTIAL_BROKER }}
+          ALLOW_STATIC_BOOTSTRAP: ${{ vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP }}
           SIGNING_KEY_B64: ${{ secrets.IMAGER_LINUX_SIGNING_KEY_B64 }}
           SIGNING_KEY_ID: ${{ secrets.IMAGER_LINUX_SIGNING_KEY_ID }}
         run: |
           set -euo pipefail
           case "${GITHUB_REF:-}" in
             refs/tags/imager-v*)
-              test -n "${SIGNING_KEY_B64:-}" && test -n "${SIGNING_KEY_ID:-}"
-              printf '%s' "$SIGNING_KEY_B64" | base64 --decode > /tmp/imager-signing-key.asc
-              gpg --batch --import /tmp/imager-signing-key.asc
-              rm -f /tmp/imager-signing-key.asc
+              version="${GITHUB_REF_NAME#imager-v}"
+              [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+                || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 1; }
+              if [ -n "${CREDENTIAL_BROKER:-}" ]; then
+                broker_env="$RUNNER_TEMP/qos-imager-linux-broker.env"
+                "$CREDENTIAL_BROKER" linux "$broker_env"
+                while IFS= read -r setting; do
+                  case "$setting" in
+                    QOS_LINUX_SIGNER=*|QOS_LINUX_VERIFY_KEY=*) printf '%s\n' "$setting" >> "$GITHUB_ENV" ;;
+                    *) printf 'credential broker returned an unsupported setting\n' >&2; exit 1 ;;
+                  esac
+                done < "$broker_env"
+                rm -f "$broker_env"
+              elif [ "${ALLOW_STATIC_BOOTSTRAP:-}" = 1 ]; then
+                test -n "${SIGNING_KEY_B64:-}" && test -n "${SIGNING_KEY_ID:-}"
+                signing_key="$RUNNER_TEMP/qos-imager-signing-key.asc"
+                printf '%s' "$SIGNING_KEY_B64" | base64 --decode > "$signing_key"
+                gpg --batch --import "$signing_key"
+                rm -f "$signing_key"
+                echo "QOS_LINUX_SIGNING_KEY=$SIGNING_KEY_ID" >> "$GITHUB_ENV"
+              else
+                printf 'configure IMAGER_CREDENTIAL_BROKER or explicitly enable static-signing bootstrap\n' >&2
+                exit 1
+              fi
               echo "QOS_REQUIRE_SIGNING=1" >> "$GITHUB_ENV"
-              echo "QOS_LINUX_SIGNING_KEY=$SIGNING_KEY_ID" >> "$GITHUB_ENV"
+              echo "QOS_REQUIRE_NATIVE_PACKAGES=1" >> "$GITHUB_ENV"
+              echo "QOS_VERSION=${GITHUB_REF_NAME#imager-v}" >> "$GITHUB_ENV"
               ;;
           esac
       - run: cargo test -p imager --lib --locked
       - run: apps/imager/packaging/package-host.sh
       # Forgejo does not implement the Artifact API v2 used by v4.
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
-          name: qos-imager-linux
+          name: qos-imager-linux-${{ matrix.arch }}
           path: |
-            dist/qos-imager/qos-imager-linux.tar.gz
-            dist/qos-imager/qos-imager-linux.tar.gz.sha256
-            dist/qos-imager/qos-imager-linux.tar.gz.asc
-          if-no-files-found: ignore
+            dist/qos-imager/qos-imager-linux-*.tar.gz
+            dist/qos-imager/qos-imager-linux-*.tar.gz.sha256
+            dist/qos-imager/qos-imager-linux-*.tar.gz.asc
+            dist/qos-imager/qos-imager-linux-*.AppImage
+            dist/qos-imager/qos-imager-linux-*.AppImage.sha256
+            dist/qos-imager/qos-imager-linux-*.AppImage.asc
+          if-no-files-found: error
 
   windows:
+    needs: catalog
+    permissions:
+      contents: read
+      id-token: write
     runs-on: windows
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          name: qos-installer-catalog
+          path: release-catalog
+      - shell: powershell
+        run: Copy-Item release-catalog/qos-installer-catalog-v1.json apps/imager/release-catalog.json
       - name: Configure release signing
         shell: powershell
         env:
           CERT_PFX_B64: ${{ secrets.IMAGER_WINDOWS_CERT_PFX_B64 }}
           CERT_PASSWORD: ${{ secrets.IMAGER_WINDOWS_CERT_PASSWORD }}
+          EXTERNAL_SIGNER: ${{ vars.IMAGER_WINDOWS_SIGNER }}
+          CREDENTIAL_BROKER: ${{ vars.IMAGER_CREDENTIAL_BROKER }}
+          ALLOW_STATIC_BOOTSTRAP: ${{ vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP }}
         run: |
           if ($env:GITHUB_REF -like "refs/tags/imager-v*") {
-            if (-not $env:CERT_PFX_B64 -or -not $env:CERT_PASSWORD) {
-              throw "Windows release signing secrets are missing"
+            $Version = $env:GITHUB_REF_NAME -replace '^imager-v', ''
+            if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "release tag must be imager-vMAJOR.MINOR.PATCH" }
+            if ($env:CREDENTIAL_BROKER) {
+              $BrokerEnv = Join-Path $env:RUNNER_TEMP "qos-imager-windows-broker.env"
+              & $env:CREDENTIAL_BROKER windows $BrokerEnv
+              if ($LASTEXITCODE -ne 0) { throw "credential broker failed" }
+              Get-Content $BrokerEnv | ForEach-Object {
+                if ($_ -notmatch '^QOS_WINDOWS_SIGNER=.+$') { throw "credential broker returned an unsupported setting" }
+                $_ | Out-File -FilePath $env:GITHUB_ENV -Append
+              }
+              Remove-Item $BrokerEnv -Force
+            } elseif ($env:EXTERNAL_SIGNER) {
+              "QOS_WINDOWS_SIGNER=$env:EXTERNAL_SIGNER" | Out-File -FilePath $env:GITHUB_ENV -Append
+            } elseif ($env:ALLOW_STATIC_BOOTSTRAP -eq "1") {
+              if (-not $env:CERT_PFX_B64 -or -not $env:CERT_PASSWORD) { throw "bootstrap PFX secrets are missing" }
+              $Pfx = Join-Path $env:RUNNER_TEMP "qos-imager-signing.pfx"
+              [IO.File]::WriteAllBytes($Pfx, [Convert]::FromBase64String($env:CERT_PFX_B64))
+              "QOS_WINDOWS_CERT_PFX=$Pfx" | Out-File -FilePath $env:GITHUB_ENV -Append
+              "QOS_WINDOWS_CERT_PASSWORD=$env:CERT_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Append
+            } else {
+              throw "Configure IMAGER_CREDENTIAL_BROKER or explicitly enable static-signing bootstrap"
             }
-            $Pfx = Join-Path $env:RUNNER_TEMP "qos-imager-signing.pfx"
-            [IO.File]::WriteAllBytes($Pfx, [Convert]::FromBase64String($env:CERT_PFX_B64))
             "QOS_REQUIRE_SIGNING=1" | Out-File -FilePath $env:GITHUB_ENV -Append
-            "QOS_WINDOWS_CERT_PFX=$Pfx" | Out-File -FilePath $env:GITHUB_ENV -Append
-            "QOS_WINDOWS_CERT_PASSWORD=$env:CERT_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "QOS_REQUIRE_NATIVE_PACKAGES=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "QOS_VERSION=$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "QOS_RELEASE_BASE_URL=https://code.podesta.ai/qos/qos/releases/download/$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Append
           }
       - shell: powershell
         run: cargo test -p imager --lib --locked
       - shell: powershell
         run: apps/imager/packaging/package-host.ps1
-      - uses: actions/upload-artifact@v3
+      - name: Validate the generated WinGet manifest
+        if: startsWith(github.ref, 'refs/tags/imager-v')
+        shell: powershell
+        run: |
+          $Winget = (Get-Command winget.exe -ErrorAction Stop).Source
+          & $Winget validate --manifest dist/qos-imager/winget
+          if ($LASTEXITCODE -ne 0) { throw "WinGet manifest validation failed" }
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: qos-imager-windows
           path: |
-            dist/qos-imager/qos-imager-windows.zip
-            dist/qos-imager/qos-imager-windows.zip.sha256
+            dist/qos-imager/qos-imager-windows-x86_64.exe
+            dist/qos-imager/qos-imager-windows-x86_64.exe.sha256
+            dist/qos-imager/qos-imager-windows-x86_64.zip
+            dist/qos-imager/qos-imager-windows-x86_64.zip.sha256
+            dist/qos-imager/qos-imager-setup-windows-x86_64.exe
+            dist/qos-imager/qos-imager-setup-windows-x86_64.exe.sha256
+            dist/qos-imager/winget/*.yaml
+          if-no-files-found: error
 
   macos:
-    runs-on: macos
+    needs: catalog
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: macos-x64
+          - arch: aarch64
+            runner: macos-arm64
+    runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          name: qos-installer-catalog
+          path: release-catalog
+      - run: cp release-catalog/qos-installer-catalog-v1.json apps/imager/release-catalog.json
       - name: Configure release signing
         env:
+          CREDENTIAL_BROKER: ${{ vars.IMAGER_CREDENTIAL_BROKER }}
+          ALLOW_STATIC_BOOTSTRAP: ${{ vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP }}
           CERT_P12_B64: ${{ secrets.IMAGER_MAC_CERT_P12_B64 }}
           CERT_PASSWORD: ${{ secrets.IMAGER_MAC_CERT_PASSWORD }}
           SIGNING_IDENTITY: ${{ secrets.IMAGER_MAC_SIGNING_IDENTITY }}
@@ -116,30 +296,231 @@ jobs:
           set -euo pipefail
           case "${GITHUB_REF:-}" in
             refs/tags/imager-v*)
-              test -n "${CERT_P12_B64:-}" && test -n "${CERT_PASSWORD:-}"
-              test -n "${SIGNING_IDENTITY:-}" && test -n "${APPLE_ID:-}"
-              test -n "${APPLE_TEAM_ID:-}" && test -n "${APPLE_APP_PASSWORD:-}"
-              keychain="$RUNNER_TEMP/qos-imager-signing.keychain-db"
-              p12="$RUNNER_TEMP/qos-imager-signing.p12"
-              printf '%s' "$CERT_P12_B64" | base64 --decode > "$p12"
-              security create-keychain -p qos-ci "$keychain"
-              security unlock-keychain -p qos-ci "$keychain"
-              security import "$p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
-              rm -f "$p12"
-              security set-key-partition-list -S apple-tool:,apple: -s -k qos-ci "$keychain"
-              security list-keychains -d user -s "$keychain"
+              version="${GITHUB_REF_NAME#imager-v}"
+              [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+                || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 1; }
+              if [ -n "${CREDENTIAL_BROKER:-}" ]; then
+                broker_env="$RUNNER_TEMP/qos-imager-macos-broker.env"
+                "$CREDENTIAL_BROKER" macos "$broker_env"
+                while IFS= read -r setting; do
+                  case "$setting" in
+                    QOS_MAC_SIGNING_IDENTITY=*|QOS_NOTARY_KEYCHAIN_PROFILE=*) printf '%s\n' "$setting" >> "$GITHUB_ENV" ;;
+                    *) printf 'credential broker returned an unsupported setting\n' >&2; exit 1 ;;
+                  esac
+                done < "$broker_env"
+                rm -f "$broker_env"
+              elif [ "${ALLOW_STATIC_BOOTSTRAP:-}" = 1 ]; then
+                test -n "${CERT_P12_B64:-}" && test -n "${CERT_PASSWORD:-}"
+                test -n "${SIGNING_IDENTITY:-}" && test -n "${APPLE_ID:-}"
+                test -n "${APPLE_TEAM_ID:-}" && test -n "${APPLE_APP_PASSWORD:-}"
+                keychain="$RUNNER_TEMP/qos-imager-signing.keychain-db"
+                p12="$RUNNER_TEMP/qos-imager-signing.p12"
+                printf '%s' "$CERT_P12_B64" | base64 --decode > "$p12"
+                security create-keychain -p qos-ci "$keychain"
+                security unlock-keychain -p qos-ci "$keychain"
+                security import "$p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+                rm -f "$p12"
+                security set-key-partition-list -S apple-tool:,apple: -s -k qos-ci "$keychain"
+                security list-keychains -d user -s "$keychain"
+                echo "QOS_MAC_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
+                echo "QOS_APPLE_ID=$APPLE_ID" >> "$GITHUB_ENV"
+                echo "QOS_APPLE_TEAM_ID=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
+                echo "QOS_APPLE_APP_PASSWORD=$APPLE_APP_PASSWORD" >> "$GITHUB_ENV"
+              else
+                printf 'configure IMAGER_CREDENTIAL_BROKER or explicitly enable static-signing bootstrap\n' >&2
+                exit 1
+              fi
               echo "QOS_REQUIRE_SIGNING=1" >> "$GITHUB_ENV"
-              echo "QOS_MAC_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
-              echo "QOS_APPLE_ID=$APPLE_ID" >> "$GITHUB_ENV"
-              echo "QOS_APPLE_TEAM_ID=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
-              echo "QOS_APPLE_APP_PASSWORD=$APPLE_APP_PASSWORD" >> "$GITHUB_ENV"
+              echo "QOS_REQUIRE_NATIVE_PACKAGES=1" >> "$GITHUB_ENV"
+              echo "QOS_VERSION=${GITHUB_REF_NAME#imager-v}" >> "$GITHUB_ENV"
               ;;
           esac
       - run: cargo test -p imager --lib --locked
       - run: apps/imager/packaging/package-host.sh
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
-          name: qos-imager-macos
+          name: qos-imager-macos-${{ matrix.arch }}
           path: |
-            dist/qos-imager/qos-imager-macos.zip
-            dist/qos-imager/qos-imager-macos.zip.sha256
+            dist/qos-imager/qos-imager-macos-*.zip
+            dist/qos-imager/qos-imager-macos-*.zip.sha256
+            dist/qos-imager/qos-imager-macos-*.dmg
+            dist/qos-imager/qos-imager-macos-*.dmg.sha256
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/imager-v')
+    needs: [linux, windows, macos]
+    runs-on: runner
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          path: release-assets
+      - name: Require the complete native release matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            qos-imager-linux-x86_64.AppImage
+            qos-imager-linux-aarch64.AppImage
+            qos-imager-linux-x86_64.tar.gz
+            qos-imager-linux-aarch64.tar.gz
+            qos-imager-windows-x86_64.exe
+            qos-imager-setup-windows-x86_64.exe
+            qos-imager-macos-x86_64.dmg
+            qos-imager-macos-aarch64.dmg
+          )
+          for name in "${required[@]}"; do
+            path="$(find release-assets -type f -name "$name" -print -quit)"
+            test -n "$path" || { printf 'missing release artifact: %s\n' "$name" >&2; exit 1; }
+            test -s "$path.sha256" || { printf 'missing release digest: %s.sha256\n' "$name" >&2; exit 1; }
+            case "$name" in
+              *.AppImage|*.tar.gz) test -s "$path.asc" \
+                || { printf 'missing release signature: %s.asc\n' "$name" >&2; exit 1; } ;;
+            esac
+          done
+          for name in qOS.Imager.installer.yaml qOS.Imager.yaml qOS.Imager.locale.en-US.yaml; do
+            test -n "$(find release-assets -type f -name "$name" -print -quit)" \
+              || { printf 'missing WinGet manifest: %s\n' "$name" >&2; exit 1; }
+          done
+      - name: Publish signed downloads to the tag release
+        env:
+          FORGEJO_TOKEN: ${{ github.token }}
+        run: apps/imager/packaging/publish-forgejo-release.sh release-assets
+
+  homebrew:
+    if: startsWith(github.ref, 'refs/tags/imager-v')
+    needs: publish
+    runs-on: macos-arm64
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          path: release-assets
+      - name: Publish the qOS Homebrew tap
+        env:
+          CREDENTIAL_BROKER: ${{ vars.IMAGER_CREDENTIAL_BROKER }}
+          ALLOW_STATIC_BOOTSTRAP: ${{ vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP }}
+          BOOTSTRAP_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          token_file="$RUNNER_TEMP/qos-homebrew-tap-token"
+          trap 'rm -f "$token_file"' EXIT
+          if [ -n "${CREDENTIAL_BROKER:-}" ]; then
+            "$CREDENTIAL_BROKER" homebrew "$token_file"
+            test -s "$token_file"
+          elif [ "${ALLOW_STATIC_BOOTSTRAP:-}" = 1 ] && [ -n "${BOOTSTRAP_TAP_TOKEN:-}" ]; then
+            printf '%s' "$BOOTSTRAP_TAP_TOKEN" > "$token_file"
+          else
+            printf 'configure the OIDC credential broker for Homebrew publication\n' >&2
+            exit 1
+          fi
+          chmod 0600 "$token_file"
+          HOMEBREW_TAP_TOKEN="$(cat "$token_file")" \
+            apps/imager/packaging/publish-homebrew-tap.sh release-assets
+
+  homebrew-install-test:
+    if: startsWith(github.ref, 'refs/tags/imager-v')
+    needs: homebrew
+    strategy:
+      matrix:
+        include:
+          - runner: runner
+            package_kind: formula
+          - runner: runner-arm64
+            package_kind: formula
+          - runner: macos-x64
+            package_kind: cask
+          - runner: macos-arm64
+            package_kind: cask
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Install and test the published Homebrew package
+        env:
+          PACKAGE_KIND: ${{ matrix.package_kind }}
+        run: |
+          set -euo pipefail
+          command -v brew >/dev/null
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          brew tap qos/qos https://code.podesta.ai/qos/homebrew-qos.git
+          if [ "$PACKAGE_KIND" = formula ]; then
+            brew install qos/qos/qos-imager
+            brew test qos/qos/qos-imager
+            brew uninstall qos-imager
+          else
+            brew install --cask qos/qos/qos-imager
+            brew list --cask qos-imager >/dev/null
+            brew uninstall --cask qos-imager
+          fi
+
+  winget:
+    if: startsWith(github.ref, 'refs/tags/imager-v')
+    needs: publish
+    runs-on: runner
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          path: release-assets
+      - name: Submit qOS Imager to the public WinGet index
+        env:
+          CREDENTIAL_BROKER: ${{ vars.IMAGER_CREDENTIAL_BROKER }}
+          ALLOW_STATIC_BOOTSTRAP: ${{ vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP }}
+          BOOTSTRAP_WINGET_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
+          WINGET_GITHUB_USER: ${{ vars.WINGET_GITHUB_USER }}
+        run: |
+          set -euo pipefail
+          token_file="$RUNNER_TEMP/qos-winget-token"
+          trap 'rm -f "$token_file"' EXIT
+          if [ -n "${CREDENTIAL_BROKER:-}" ]; then
+            "$CREDENTIAL_BROKER" winget "$token_file"
+            test -s "$token_file"
+          elif [ "${ALLOW_STATIC_BOOTSTRAP:-}" = 1 ] && [ -n "${BOOTSTRAP_WINGET_TOKEN:-}" ]; then
+            printf '%s' "$BOOTSTRAP_WINGET_TOKEN" > "$token_file"
+          else
+            printf 'configure the OIDC credential broker for WinGet publication\n' >&2
+            exit 1
+          fi
+          chmod 0600 "$token_file"
+          WINGET_GITHUB_TOKEN="$(cat "$token_file")" \
+            apps/imager/packaging/publish-winget.sh release-assets
+
+  site-downloads:
+    if: startsWith(github.ref, 'refs/tags/imager-v')
+    needs: [homebrew-install-test, winget]
+    runs-on: runner
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Advance the landing page to this verified release
+        env:
+          CREDENTIAL_BROKER: ${{ vars.IMAGER_CREDENTIAL_BROKER }}
+          ALLOW_STATIC_BOOTSTRAP: ${{ vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP }}
+          BOOTSTRAP_SITE_TOKEN: ${{ secrets.SITE_RELEASE_TOKEN }}
+          QOS_SITE_GIT_USER: ${{ vars.SITE_RELEASE_USER }}
+        run: |
+          set -euo pipefail
+          token_file="$RUNNER_TEMP/qos-site-release-token"
+          trap 'rm -f "$token_file"' EXIT
+          if [ -n "${CREDENTIAL_BROKER:-}" ]; then
+            "$CREDENTIAL_BROKER" site "$token_file"
+            test -s "$token_file"
+          elif [ "${ALLOW_STATIC_BOOTSTRAP:-}" = 1 ] && [ -n "${BOOTSTRAP_SITE_TOKEN:-}" ]; then
+            printf '%s' "$BOOTSTRAP_SITE_TOKEN" > "$token_file"
+          else
+            printf 'configure the OIDC credential broker for website publication\n' >&2
+            exit 1
+          fi
+          chmod 0600 "$token_file"
+          QOS_SITE_GIT_TOKEN="$(cat "$token_file")" \
+            apps/imager/packaging/publish-site-release.sh

@@ -43,7 +43,7 @@ ln -sf /usr/lib/systemd/system/qos-repair.target "$EARLY/default.target"
 # D-Bus activation, a socket unit, or a `Wants=` from a unit we did not write.
 # The collaborative filesystem is on the list because it joins a peer network
 # from a machine whose state is by definition not trusted yet.
-for unit in greetd.service fs.service shell-firstboot.service \
+for unit in greetd.service fs.service fs-identity.path shell-firstboot.service \
             qos-rollback-confirm.timer qos-rollback-confirm.service \
             bootc-fetch-apply-updates.timer sshd.service; do
   ln -sf /dev/null "$EARLY/$unit"
