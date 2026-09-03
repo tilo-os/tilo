@@ -413,6 +413,11 @@ impl BackupsApp {
     }
 
     fn drain_effects(&mut self) {
+        self.drain_picker();
+        self.drain_job();
+    }
+
+    fn drain_picker(&mut self) {
         let portal_result =
             self.picker
                 .as_ref()
@@ -452,7 +457,9 @@ impl BackupsApp {
                 ui::portal::PortalOutcome::Failed(error) => self.toast_now(error),
             }
         }
+    }
 
+    fn drain_job(&mut self) {
         loop {
             let event = self
                 .job
@@ -473,7 +480,7 @@ impl BackupsApp {
                         "{} files · {}",
                         progress.files,
                         ui::format::bytes(progress.bytes)
-                    ))
+                    ));
                 }
                 JobEvent::Created(manifest) => {
                     self.job = None;
@@ -930,14 +937,13 @@ impl BackupsApp {
             content.x1,
             cy,
         );
-        let detail = self
-            .job_status
-            .as_deref()
-            .unwrap_or(if self.source_path.is_some() {
+        let detail = self.job_status.as_deref().unwrap_or_else(|| {
+            if self.source_path.is_some() {
                 "Pick another drive or a folder outside the source."
             } else {
                 "Choose a folder. Backups will be checksummed and restorable."
-            });
+            }
+        });
         paint::text_center(
             scene,
             tr,
