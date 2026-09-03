@@ -987,6 +987,10 @@ impl ProtocolHandler for AuthorityProtocol {
             .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         send.finish().map_err(AcceptError::from_err)?;
+        // Keep the protocol handler alive until the client has consumed the
+        // final authority frame; dropping immediately can race QUIC stream
+        // delivery and turn a valid publish into `connection lost`.
+        connection.closed().await;
         Ok(())
     }
 }
@@ -2184,6 +2188,135 @@ mod tests {
             acl.grant_read(*id, "/");
         }
         AclHandle::new(acl)
+    }
+
+    #[tokio::test]
+    async fn signed_authority_alpn_updates_nas_and_targeted_revoke_keeps_owner() {
+        use crate::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
+        use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+
+        let (nas_endpoint, _lookup, nas_identity) = bind_certified_endpoint().await;
+        let (owner_endpoint, _lookup, owner_identity, owner_root, _owner_device) =
+            bind_certified_test_endpoint_with_root().await;
+        let (_collab_endpoint, _lookup, collab_identity, collab_root, _collab_device) =
+            bind_certified_test_endpoint_with_root().await;
+        let workspace = uuid::Uuid::new_v4();
+        let temp = tempfile::tempdir().unwrap();
+        let nas_authority = Arc::new(
+            WorkspaceAuthority::open(
+                temp.path().join("nas-authority.bin"),
+                workspace,
+                owner_root.verifying_key().to_bytes(),
+                collab_root.verifying_key().to_bytes(),
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let router = Router::builder(nas_endpoint.clone())
+            .accept(
+                QOS_FS_AUTHORITY_ALPN,
+                AuthorityProtocol {
+                    endpoint: nas_endpoint.clone(),
+                    identity: nas_identity,
+                    policy: None,
+                    authority: nas_authority.clone(),
+                    workspace_id: workspace,
+                },
+            )
+            .spawn();
+        let owner = owner_root.verifying_key().to_bytes();
+        let collaborator = collab_root.verifying_key().to_bytes();
+        let grant = WorkspaceAuthorityEnvelope::sign(
+            workspace,
+            1,
+            vec![
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(owner)),
+                    Scope::FsPath("/".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                ),
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                    Scope::FsPath("/".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                ),
+            ],
+            false,
+            &owner_root,
+        )
+        .unwrap();
+        let accepted = submit_workspace_authority(
+            &owner_endpoint,
+            nas_endpoint.addr(),
+            &owner_identity,
+            workspace,
+            Some(grant),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(accepted.revision, 1);
+        assert!(
+            nas_authority
+                .handle()
+                .permits(&collaborator, "/shared", crate::Access::Read)
+        );
+
+        let revoked = WorkspaceAuthorityEnvelope::sign(
+            workspace,
+            2,
+            vec![
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(owner)),
+                    Scope::FsPath("/".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                ),
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                    Scope::FsPath("/".into()),
+                    Effect::Restrict,
+                    Verb::Read,
+                ),
+            ],
+            false,
+            &owner_root,
+        )
+        .unwrap();
+        submit_workspace_authority(
+            &owner_endpoint,
+            nas_endpoint.addr(),
+            &owner_identity,
+            workspace,
+            Some(revoked.clone()),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !nas_authority
+                .handle()
+                .permits(&collaborator, "/shared", crate::Access::Read)
+        );
+        let owner_view = WorkspaceAuthority::open(
+            temp.path().join("owner-view.bin"),
+            workspace,
+            owner,
+            owner,
+            Vec::new(),
+        )
+        .unwrap();
+        owner_view.apply(revoked).unwrap();
+        assert!(
+            owner_view
+                .handle()
+                .permits(&owner, "/shared", crate::Access::Read)
+        );
+        router.shutdown().await.unwrap();
+        nas_endpoint.close().await;
+        owner_endpoint.close().await;
+        drop(collab_identity);
     }
 
     /// The identity an endpoint authenticates as — the same 32 bytes an ACL
