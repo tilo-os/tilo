@@ -194,8 +194,6 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::InvokePublishedAction { .. }
             | CollabRequest::PublishedInvocationStatus { .. }
             | CollabRequest::CancelPublishedInvocation { .. }
-            | CollabRequest::ReportContinuation { .. }
-            | CollabRequest::ClearContinuation { .. }
             | CollabRequest::LaunchPublishedApplication { .. } => {
                 // Shell-owned control-plane reports are consumed locally and
                 // never fan out to another application's document channel.
