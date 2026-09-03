@@ -28,7 +28,8 @@ grep -Fq 'Independently rebuild the release candidate' "$workflow" \
   && grep -Fq 'independent OS builds differ' "$workflow" \
   && grep -Fq 'final sealed OS images differ' "$workflow" \
   && grep -Fq 'os/dev/reseal-image.sh' "$workflow" \
-  && grep -Fq -- '--timestamp "$SOURCE_DATE_EPOCH"' "$repo/os/dev/reseal-image.sh" \
+  && grep -Fq -- '--source-date-epoch "$SOURCE_DATE_EPOCH"' "$repo/os/dev/reseal-image.sh" \
+  && grep -Fq -- '--rewrite-timestamp' "$repo/os/dev/reseal-image.sh" \
   && ok 'release compares uncached base and final sealed OS rebuilds' \
   || bad 'reproducibility is claimed without a release-blocking comparison'
 

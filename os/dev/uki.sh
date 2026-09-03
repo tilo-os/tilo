@@ -36,9 +36,14 @@ set -euo pipefail
 target=/target
 mkdir -p /out
 kver="$(ls /kernel)"
+python3 /usr/local/bin/make-boot-splash.py /out/qos-splash.bmp
 
 ukify_args=(
   --output "/out/${kver}.efi"
+  # systemd-stub paints this directly from the signed UKI. It replaces the
+  # console-to-black gap without adding Plymouth or another boot service to
+  # the critical chain.
+  --splash /out/qos-splash.bmp
   # Print the PCR 11 values this UKI will produce, per boot phase. This is the
   # host-side prediction a booted machine's PCR 11 is checked against, and the
   # input a signed per-generation prediction is made from.

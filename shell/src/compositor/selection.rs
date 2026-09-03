@@ -18,6 +18,7 @@
 //! asynchronously, read in-process synchronously; writes publish to Wayland
 //! on the next tick.
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Read;
 use std::os::unix::io::{AsFd, FromRawFd, OwnedFd};
@@ -59,7 +60,11 @@ pub fn text_mime_types() -> Vec<String> {
 /// Cap on a mirrored selection: bounds what a hostile or broken client can
 /// make the compositor buffer. A source exceeding it is dropped, not
 /// truncated — half a paste is worse than none.
-const MAX_SELECTION_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_SELECTION_BYTES: usize = 8 * 1024 * 1024;
+/// Keep an offer bounded even when a malicious client advertises thousands of
+/// names.  This is deliberately the same order as the Clipboard portal cap.
+pub const MAX_SELECTION_MIMES: usize = 16;
+pub const MAX_SELECTION_MIME_BYTES: usize = 128;
 
 /// Bytes a fresh pipe accepts before write blocks (Linux default 64 KiB);
 /// kept conservative so the "cannot block" assumption holds even under a
@@ -94,14 +99,24 @@ impl From<Target> for SelectionTarget {
     }
 }
 
-/// One side of the mirror: the text the compositor believes is currently on
-/// this selection, plus whether the compositor itself is the owner.
+/// One side of the mirror.  It retains the actual bytes for the formats qOS
+/// has asynchronously pulled from a client, not just a lossy text rendering.
+/// That makes this a suitable bridge for the Clipboard portal as well as the
+/// in-process UI.
 #[derive(Debug, Default, Clone)]
 struct Slot {
-    /// Last known text. `None` means "nothing has been copied", which is
-    /// distinct from `Some("")` — a client is allowed to own an empty
-    /// selection.
-    text: Option<String>,
+    /// Payloads keyed by advertised MIME type.  The aggregate is bounded by
+    /// `MAX_SELECTION_BYTES`; aliases are resolved on read rather than copied.
+    values: BTreeMap<String, Vec<u8>>,
+    /// MIME types exposed to Wayland clients when qOS owns the selection.
+    mime_types: Vec<String>,
+    /// Bumped whenever the selection changes hands, so an old asynchronous
+    /// client transfer cannot overwrite a newer selection.
+    generation: u64,
+    /// Monotonic mirror revision, including arrival of each asynchronously
+    /// pulled client MIME payload. Portal bridges poll this without ever
+    /// synchronously reading a Wayland client.
+    revision: u64,
     /// `true` while the compositor is the selection owner, i.e. the content
     /// came from in-process chrome and the compositor must answer `receive`
     /// requests from the mirror.
@@ -141,24 +156,190 @@ impl SelectionStore {
 /// Shared handle to the compositor's selection mirror.
 pub type SharedSelection = Arc<Mutex<SelectionStore>>;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SelectionSnapshot {
+    pub revision: u64,
+    pub compositor_owned: bool,
+    pub mime_types: Vec<String>,
+    pub has_payload: bool,
+}
+
+/// Non-blocking metadata for a portal bridge. The caller receives no bytes
+/// here and must still use the normal focus-gated broker to request them.
+pub fn selection_snapshot(store: &SharedSelection, target: Target) -> SelectionSnapshot {
+    store.lock().map_or_else(
+        |_| SelectionSnapshot::default(),
+        |store| {
+            let slot = store.slot(target);
+            SelectionSnapshot {
+                revision: slot.revision,
+                compositor_owned: slot.compositor_owned,
+                mime_types: slot.mime_types.clone(),
+                has_payload: !slot.values.is_empty(),
+            }
+        },
+    )
+}
+
+fn valid_mime(mime: &str) -> bool {
+    !mime.is_empty()
+        && mime.len() <= MAX_SELECTION_MIME_BYTES
+        && !mime.chars().any(|c| c.is_control() || c.is_whitespace())
+}
+
+fn is_text_mime(mime: &str) -> bool {
+    matches!(
+        mime,
+        TEXT_MIME | "text/plain" | "UTF8_STRING" | "STRING" | "TEXT"
+    )
+}
+
+fn normalized_mimes(mimes: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut mimes: Vec<_> = mimes
+        .into_iter()
+        .filter(|mime| valid_mime(mime))
+        .take(MAX_SELECTION_MIMES)
+        .collect();
+    if mimes.iter().any(|mime| is_text_mime(mime)) {
+        for alias in text_mime_types() {
+            if !mimes.contains(&alias) && mimes.len() < MAX_SELECTION_MIMES {
+                mimes.push(alias);
+            }
+        }
+    }
+    mimes.sort();
+    mimes.dedup();
+    // UTF-8 first avoids old clients choosing an ambiguous X11 alias.
+    mimes.sort_by_key(|mime| (mime != TEXT_MIME, mime.clone()));
+    mimes
+}
+
+fn text_value(slot: &Slot) -> Option<&[u8]> {
+    text_mime_types()
+        .iter()
+        .find_map(|mime| slot.values.get(mime).map(Vec::as_slice))
+}
+
+fn value_for(slot: &Slot, mime: &str) -> Option<Vec<u8>> {
+    slot.values
+        .get(mime)
+        .cloned()
+        .or_else(|| is_text_mime(mime).then(|| text_value(slot).map(ToOwned::to_owned))?)
+}
+
+fn total_bytes(values: &BTreeMap<String, Vec<u8>>) -> usize {
+    values
+        .values()
+        .fold(0usize, |total, bytes| total.saturating_add(bytes.len()))
+}
+
+/// MIME types currently available without waiting on a client.  A portal may
+/// read only these; it never gets a synchronous path into an arbitrary focused
+/// Wayland client.
+pub fn mirror_mime_types(store: &SharedSelection, target: Target) -> Vec<String> {
+    store
+        .lock()
+        .map(|store| store.slot(target).mime_types.clone())
+        .unwrap_or_default()
+}
+
+/// Read bytes already mirrored from `target`.  This is non-blocking and never
+/// bypasses Wayland focus/data-control isolation.
+pub fn mirror_bytes(store: &SharedSelection, target: Target, mime: &str) -> Option<Vec<u8>> {
+    store
+        .lock()
+        .ok()
+        .and_then(|store| value_for(store.slot(target), mime))
+}
+
 /// Read `target`'s current text from the mirror. Never blocks on a client or
 /// touches Wayland, so safe to call from a widget's `handle_event`.
 pub fn mirror_text(store: &SharedSelection, target: Target) -> Option<String> {
-    store.lock().ok()?.slot(target).text.clone()
+    String::from_utf8(mirror_bytes(store, target, TEXT_MIME)?).ok()
 }
 
 /// Write `text` to `target` from chrome and mark it for publishing; visible
 /// in-process immediately, becomes a Wayland selection on the next tick via
 /// [`State::pump_selection`].
 pub fn set_mirror_text(store: &SharedSelection, target: Target, text: &str) {
+    let _ = set_mirror_bytes(store, target, TEXT_MIME, text.as_bytes().to_vec());
+}
+
+/// Replace qOS's pending portal offer.  There is deliberately no publication
+/// until payload arrives: offering stale bytes under a newly remote-owned MIME
+/// would leak the prior selection.
+///
+/// # Errors
+///
+/// Returns an error for an empty, excessive, or malformed MIME offer, or if
+/// the shared selection store is unavailable.
+pub fn begin_mirror_offer(
+    store: &SharedSelection,
+    target: Target,
+    mimes: &[String],
+) -> Result<(), String> {
+    if mimes.is_empty() || mimes.len() > MAX_SELECTION_MIMES || mimes.iter().any(|m| !valid_mime(m))
+    {
+        return Err("invalid or excessive clipboard MIME offer".into());
+    }
     let Ok(mut store) = store.lock() else {
-        return;
+        return Err("clipboard selection store is unavailable".into());
     };
     let slot = store.slot_mut(target);
-    slot.text = Some(text.to_string());
+    slot.values.clear();
+    // Do not advertise an offered type until its bounded transfer completed.
+    // A Wayland client requesting an as-yet-unavailable remote MIME would
+    // otherwise receive an empty file and mistake it for legitimate content.
+    slot.mime_types.clear();
+    slot.generation = slot.generation.wrapping_add(1);
+    slot.revision = slot.revision.wrapping_add(1).max(1);
+    slot.compositor_owned = false;
+    slot.publish_pending = false;
+    // Revoke any old portal selection before the remote producer gives us new
+    // bytes.  This is an isolation boundary, not merely visual tidiness.
+    slot.clear_pending = true;
+    Ok(())
+}
+
+/// Store one bounded MIME payload and schedule publication to focused Wayland
+/// clients. Text aliases resolve to this single value; binary bytes are kept
+/// exactly as supplied (not decoded or re-encoded).
+///
+/// # Errors
+///
+/// Returns an error for an invalid MIME type, unavailable store, or a payload
+/// that would exceed the bounded selection budget.
+pub fn set_mirror_bytes(
+    store: &SharedSelection,
+    target: Target,
+    mime: &str,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
+    if !valid_mime(mime) {
+        return Err("invalid clipboard MIME type".into());
+    }
+    let Ok(mut store) = store.lock() else {
+        return Err("clipboard selection store is unavailable".into());
+    };
+    let slot = store.slot_mut(target);
+    let previous = slot.values.insert(mime.to_owned(), bytes);
+    if total_bytes(&slot.values) > MAX_SELECTION_BYTES {
+        if let Some(previous) = previous {
+            slot.values.insert(mime.to_owned(), previous);
+        } else {
+            slot.values.remove(mime);
+        }
+        return Err("clipboard selection exceeds the compositor size limit".into());
+    }
+    if !slot.mime_types.iter().any(|offered| offered == mime) {
+        slot.mime_types.push(mime.to_owned());
+    }
+    slot.mime_types = normalized_mimes(std::mem::take(&mut slot.mime_types));
     slot.compositor_owned = true;
+    slot.revision = slot.revision.wrapping_add(1).max(1);
     slot.publish_pending = true;
     slot.clear_pending = false;
+    Ok(())
 }
 
 /// Drop `target` entirely — no owner, no content.
@@ -167,25 +348,63 @@ pub fn clear_mirror(store: &SharedSelection, target: Target) {
         return;
     };
     let slot = store.slot_mut(target);
-    slot.text = None;
+    slot.values.clear();
+    slot.mime_types.clear();
+    slot.generation = slot.generation.wrapping_add(1);
+    slot.revision = slot.revision.wrapping_add(1).max(1);
     slot.compositor_owned = false;
     slot.publish_pending = false;
     slot.clear_pending = true;
 }
 
-/// Record a selection pulled from a *client*; clears `compositor_owned` so
-/// `receive` goes to the client, while the mirror keeps the text for
-/// synchronous in-process paste.
-fn record_client_text(store: &SharedSelection, target: Target, text: Option<String>) {
+/// Start mirroring a client-owned selection.  This happens before any pipe
+/// reads, and the returned generation binds those reads to this exact owner.
+fn begin_client_selection(
+    store: &SharedSelection,
+    target: Target,
+    mimes: Option<Vec<String>>,
+) -> u64 {
     let Ok(mut store) = store.lock() else {
-        return;
+        return 0;
     };
     let slot = store.slot_mut(target);
-    slot.text = text;
+    slot.values.clear();
+    slot.mime_types = mimes.map_or_else(Vec::new, normalized_mimes);
+    slot.generation = slot.generation.wrapping_add(1).max(1);
+    slot.revision = slot.revision.wrapping_add(1).max(1);
     slot.compositor_owned = false;
     // A client taking the selection supersedes anything chrome had queued.
     slot.publish_pending = false;
     slot.clear_pending = false;
+    slot.generation
+}
+
+/// Record one completed asynchronous client transfer, but only if it belongs
+/// to the selection owner that was current when the read began.
+fn record_client_bytes(
+    store: &SharedSelection,
+    target: Target,
+    generation: u64,
+    mime: &str,
+    bytes: Vec<u8>,
+) {
+    let Ok(mut store) = store.lock() else {
+        return;
+    };
+    let slot = store.slot_mut(target);
+    if generation == 0 || slot.generation != generation || bytes.len() > MAX_SELECTION_BYTES {
+        return;
+    }
+    let previous = slot.values.insert(mime.to_owned(), bytes);
+    if total_bytes(&slot.values) > MAX_SELECTION_BYTES {
+        if let Some(previous) = previous {
+            slot.values.insert(mime.to_owned(), previous);
+        } else {
+            slot.values.remove(mime);
+        }
+    } else {
+        slot.revision = slot.revision.wrapping_add(1).max(1);
+    }
 }
 
 /// Whether the compositor currently owns `target` (i.e. answers `receive` from the mirror).
@@ -454,6 +673,8 @@ fn read_into_mirror(
     loop_handle: &LoopHandle<'static, State>,
     store: SharedSelection,
     target: Target,
+    generation: u64,
+    mime: String,
     fd: OwnedFd,
 ) {
     // Non-blocking: a level-triggered wakeup with no bytes ready won't stall the loop.
@@ -481,16 +702,16 @@ fn read_into_mirror(
                             limit = MAX_SELECTION_BYTES,
                             "selection source exceeded the mirror size limit; dropping it"
                         );
-                        record_client_text(&store, target, None);
-                    } else if let Ok(text) = String::from_utf8(std::mem::take(&mut buf)) { record_client_text(&store, target, Some(text)) } else {
-                        // Owner advertised UTF-8 text then sent something else; mirroring bytes we
-                        // can't render would put mojibake in every paste, so record "nothing" and
-                        // leave the client as authority.
-                        tracing::warn!(
-                            target: "shell::selection",
-                            "selection source sent non-UTF-8 bytes for a text mime type"
+                    } else {
+                        // Keep raw bytes. Text validation happens only where
+                        // a UI wants text; binary MIME values must remain exact.
+                        record_client_bytes(
+                            &store,
+                            target,
+                            generation,
+                            &mime,
+                            std::mem::take(&mut buf),
                         );
-                        record_client_text(&store, target, None);
                     }
                     return Ok(PostAction::Remove);
                 }
@@ -569,25 +790,25 @@ impl State {
                 let slot = store.slot_mut(target);
                 if slot.clear_pending {
                     slot.clear_pending = false;
-                    Some(false)
+                    Some(None)
                 } else if slot.publish_pending {
                     slot.publish_pending = false;
-                    Some(true)
+                    Some(Some(slot.mime_types.clone()))
                 } else {
                     None
                 }
             };
             let dh = self.display_handle.clone();
             match action {
-                Some(true) => match target {
+                Some(Some(mime_types)) => match target {
                     Target::Clipboard => {
-                        set_data_device_selection(&dh, &self.seat, text_mime_types(), ());
+                        set_data_device_selection(&dh, &self.seat, mime_types, ());
                     }
                     Target::Primary => {
-                        set_primary_selection(&dh, &self.seat, text_mime_types(), ());
+                        set_primary_selection(&dh, &self.seat, mime_types, ());
                     }
                 },
-                Some(false) => match target {
+                Some(None) => match target {
                     Target::Clipboard => clear_data_device_selection(&dh, &self.seat),
                     Target::Primary => clear_primary_selection(&dh, &self.seat),
                 },
@@ -606,43 +827,52 @@ impl State {
         for pull in pending {
             let Some(mimes) = pull.mime_types else {
                 // The owner released the selection without replacing it.
-                record_client_text(&self.selection.store, pull.target, None);
+                begin_client_selection(&self.selection.store, pull.target, None);
                 continue;
             };
-            // Pick the most specific text type offered; a non-text source (e.g. an
-            // image drag) leaves the mirror empty rather than guessing.
-            let Some(mime) = text_mime_types().into_iter().find(|m| mimes.contains(m)) else {
-                record_client_text(&self.selection.store, pull.target, None);
-                continue;
-            };
-            let (read_fd, write_fd) = match selection_pipe() {
-                Ok(pair) => pair,
-                Err(e) => {
-                    tracing::warn!(target: "shell::selection", error = %e, "could not create selection pipe");
-                    continue;
-                }
-            };
-            // The two `request_*` helpers return distinct per-protocol error enums;
-            // only the message matters here, so both collapse to a string.
-            let requested = match pull.target {
-                Target::Clipboard => {
-                    request_data_device_client_selection(&self.seat, mime, write_fd)
-                        .map_err(|e| e.to_string())
-                }
-                Target::Primary => request_primary_client_selection(&self.seat, mime, write_fd)
-                    .map_err(|e| e.to_string()),
-            };
-            match requested {
-                Ok(()) => read_into_mirror(
-                    &self.loop_handle,
-                    Arc::clone(&self.selection.store),
-                    pull.target,
-                    read_fd,
-                ),
-                Err(e) => {
-                    // `ServerSideSelection` is normal when the compositor itself is the
-                    // owner — the mirror already holds the text, nothing to pull.
-                    tracing::debug!(target: "shell::selection", error = %e, "no client selection to mirror");
+            let generation =
+                begin_client_selection(&self.selection.store, pull.target, Some(mimes.clone()));
+            // Each request is a non-blocking calloop transfer.  Pull all
+            // bounded offered formats (text, PNG/JPEG, and future formats),
+            // not only a hand-picked text alias.
+            for mime in mimes
+                .into_iter()
+                .filter(|mime| valid_mime(mime))
+                .take(MAX_SELECTION_MIMES)
+            {
+                let (read_fd, write_fd) = match selection_pipe() {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        tracing::warn!(target: "shell::selection", error = %e, "could not create selection pipe");
+                        continue;
+                    }
+                };
+                // The two helpers return distinct error enums; only the
+                // diagnostic matters here.
+                let requested = match pull.target {
+                    Target::Clipboard => {
+                        request_data_device_client_selection(&self.seat, mime.clone(), write_fd)
+                            .map_err(|e| e.to_string())
+                    }
+                    Target::Primary => {
+                        request_primary_client_selection(&self.seat, mime.clone(), write_fd)
+                            .map_err(|e| e.to_string())
+                    }
+                };
+                match requested {
+                    Ok(()) => read_into_mirror(
+                        &self.loop_handle,
+                        Arc::clone(&self.selection.store),
+                        pull.target,
+                        generation,
+                        mime,
+                        read_fd,
+                    ),
+                    Err(e) => {
+                        // `ServerSideSelection` is normal when qOS owns the
+                        // source; it already has the bytes in the mirror.
+                        tracing::debug!(target: "shell::selection", error = %e, "no client selection to mirror");
+                    }
                 }
             }
         }
@@ -650,28 +880,10 @@ impl State {
 
     /// Answer a `receive` on a compositor-owned selection out of the mirror.
     fn serve_selection(&self, target: Target, mime_type: &str, fd: OwnedFd) {
-        use std::io::Write;
-        if !text_mime_types().iter().any(|m| m == mime_type) {
+        let Some(bytes) = mirror_bytes(&self.selection.store, target, mime_type) else {
             return;
-        }
-        let text = mirror_text(&self.selection.store, target).unwrap_or_default();
-        let mut file = File::from(fd);
-        // Fits the pipe buffer: the kernel takes it regardless of whether the
-        // client has started reading, and a clipboard is almost always this small.
-        if text.len() <= PIPE_BUFFER_BYTES {
-            if let Err(e) = file.write_all(text.as_bytes()) {
-                tracing::debug!(target: "shell::selection", error = %e, "selection receiver went away mid-transfer");
-            }
-            return;
-        }
-        // Larger payloads go to a thread — inline would block the compositor
-        // against the requesting client's read, which can't proceed while the
-        // compositor is stalled waiting to flush. The thread's exit at `write_all` closes the fd as EOF.
-        std::thread::spawn(move || {
-            if let Err(e) = file.write_all(text.as_bytes()) {
-                tracing::debug!(target: "shell::selection", error = %e, "selection receiver went away mid-transfer");
-            }
-        });
+        };
+        write_to_pipe(fd, bytes, "selection");
     }
 }
 
@@ -953,7 +1165,15 @@ mod tests {
         set_mirror_text(&s, Target::Clipboard, "from chrome");
         assert!(compositor_owns(&s, Target::Clipboard));
 
-        record_client_text(&s, Target::Clipboard, Some("from a client".into()));
+        let generation =
+            begin_client_selection(&s, Target::Clipboard, Some(vec![TEXT_MIME.to_string()]));
+        record_client_bytes(
+            &s,
+            Target::Clipboard,
+            generation,
+            TEXT_MIME,
+            b"from a client".to_vec(),
+        );
         assert!(!compositor_owns(&s, Target::Clipboard));
         assert_eq!(
             mirror_text(&s, Target::Clipboard).as_deref(),
@@ -1001,6 +1221,46 @@ mod tests {
         assert_eq!(mimes.first().map(String::as_str), Some(TEXT_MIME));
         assert!(mimes.iter().any(|m| m == "text/plain"));
         assert!(mimes.iter().any(|m| m == "UTF8_STRING"));
+    }
+
+    #[test]
+    fn binary_offer_round_trips_without_text_decoding_and_keeps_text_aliases() {
+        let s = store();
+        begin_mirror_offer(
+            &s,
+            Target::Clipboard,
+            &["image/png".into(), "text/plain".into()],
+        )
+        .unwrap();
+        let png = vec![0x89, b'P', b'N', b'G', 0, 0xff];
+        set_mirror_bytes(&s, Target::Clipboard, "image/png", png.clone()).unwrap();
+        set_mirror_bytes(&s, Target::Clipboard, "text/plain", b"hello".to_vec()).unwrap();
+        assert_eq!(mirror_bytes(&s, Target::Clipboard, "image/png"), Some(png));
+        assert_eq!(
+            mirror_bytes(&s, Target::Clipboard, "UTF8_STRING"),
+            Some(b"hello".to_vec())
+        );
+        assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("hello"));
+        let mimes = mirror_mime_types(&s, Target::Clipboard);
+        assert!(mimes.iter().any(|mime| mime == "image/png"));
+        assert!(mimes.iter().any(|mime| mime == "UTF8_STRING"));
+    }
+
+    #[test]
+    fn overlarge_or_stale_client_payload_cannot_replace_current_selection() {
+        let s = store();
+        let old = begin_client_selection(&s, Target::Clipboard, Some(vec!["image/jpeg".into()]));
+        let new = begin_client_selection(&s, Target::Clipboard, Some(vec!["image/png".into()]));
+        record_client_bytes(&s, Target::Clipboard, old, "image/jpeg", vec![7]);
+        assert_eq!(mirror_bytes(&s, Target::Clipboard, "image/jpeg"), None);
+        record_client_bytes(
+            &s,
+            Target::Clipboard,
+            new,
+            "image/png",
+            vec![0; MAX_SELECTION_BYTES + 1],
+        );
+        assert_eq!(mirror_bytes(&s, Target::Clipboard, "image/png"), None);
     }
 
     #[test]

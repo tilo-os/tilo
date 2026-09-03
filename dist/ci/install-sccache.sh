@@ -37,11 +37,17 @@ cleanup() {
 trap cleanup EXIT
 
 name="sccache-v${version}-${target}"
-if ! curl --proto '=https' --tlsv1.2 -fsSL \
-    "https://github.com/mozilla/sccache/releases/download/v${version}/${name}.tar.gz" \
-    -o "$archive"; then
-    echo "::warning::could not download optional sccache client; compiling normally"
-    exit 0
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+cached_archive="$repo_root/os/external-assets/cache/${name}.tar.gz"
+if [[ -f $cached_archive ]]; then
+    cp -- "$cached_archive" "$archive"
+else
+    if ! curl --proto '=https' --tlsv1.2 -fsSL \
+        "https://github.com/mozilla/sccache/releases/download/v${version}/${name}.tar.gz" \
+        -o "$archive"; then
+        echo "::warning::could not download optional sccache client; compiling normally"
+        exit 0
+    fi
 fi
 if ! printf '%s  %s\n' "$checksum" "$archive" | sha256sum --check --status; then
     echo "::warning::optional sccache client checksum failed; compiling normally"

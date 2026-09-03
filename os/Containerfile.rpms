@@ -12,7 +12,36 @@
 # base it will be installed on.
 # ============================================================================
 ARG BASE_REF
+FROM github-assets AS external-assets
+
 FROM ${BASE_REF} AS resolve
+
+# Snapshot creation must not inherit a randomly selected, stale mirror and then
+# retry every RPM serially. Use a current Fedora HTTPS mirror and bounded
+# parallelism; RPM signatures still provide the package authenticity check.
+RUN sed -i \
+      -e 's|^#baseurl=http://download.example/pub/fedora/linux/releases/|baseurl=https://ftp.fau.de/fedora/linux/releases/|' \
+      -e '/^metalink=.*repo=fedora-/s/^/#/' \
+      /etc/yum.repos.d/fedora.repo \
+ && sed -i \
+      -e 's|^#baseurl=http://download.example/pub/fedora/linux/updates/|baseurl=https://ftp.fau.de/fedora/linux/updates/|' \
+      -e 's|/Everything/SRPMS/|/Everything/source/tree/|' \
+      -e '/^metalink=.*repo=updates-/s/^/#/' \
+      /etc/yum.repos.d/fedora-updates.repo \
+ && printf '[main]\nmax_parallel_downloads=20\n' > /etc/dnf/dnf.conf \
+ && dnf install -y createrepo_c \
+ && dnf clean packages
+
+# Fedora's virtio-win project currently publishes this RPM unsigned. Treating
+# its moving `stable` repository as trusted would therefore be dishonest: fetch
+# the reviewed version through the shared external-input cache, whose manifest
+# pins its SHA-256, and expose only that exact byte sequence as a local repo.
+RUN --mount=type=bind,from=external-assets,source=/,target=/qos-assets,ro \
+    install -D -m 0644 /qos-assets/virtio-win-0.1.302-1.noarch.rpm \
+      /vendor/virtio-win-0.1.302-1.noarch.rpm \
+ && createrepo_c --quiet /vendor \
+ && printf '[virtio-win-pinned]\nname=Pinned virtio-win 0.1.302-1\nbaseurl=file:///vendor\ngpgcheck=0\nenabled=1\n' \
+      > /etc/yum.repos.d/virtio-win-pinned.repo
 
 # The exact package set the OS image installs (passed by the workflow, derived
 # from os/Containerfile's dnf-install blocks — single source of truth).
@@ -28,9 +57,9 @@ ARG PACKAGES
 # fetch mid-build — required for the kernel image to be reproducible).
 # dnf5 uses --srpm; dnf4 uses --source; try dnf5 first (the base's dnf is
 # dnf5) and fall back to dnf4 semantics if the flag isn't recognised.
-RUN dnf install -y createrepo_c \
- && dnf clean packages \
- && dnf install -y --downloadonly --exclude='qemu-user-static*' ${PACKAGES} \
+# After creating the repo, prove it resolves the complete requested transaction
+# (including dependencies) with every network repository hidden.
+RUN dnf install -y --downloadonly --exclude='qemu-user-static*' ${PACKAGES} \
  && mkdir -p /repo \
  && { find /var/cache/libdnf5 /var/cache/dnf -name '*.rpm' -exec cp -n {} /repo/ \; ; true; } 2>/dev/null \
  && test -n "$(ls /repo/*.rpm 2>/dev/null)" \
@@ -38,7 +67,10 @@ RUN dnf install -y createrepo_c \
       || dnf --enablerepo='*-source' download --source --destdir=/repo kernel ) \
  && ls -1 /repo/kernel-*.src.rpm >/dev/null \
  && createrepo_c --quiet /repo \
- && printf '[frozen]\nname=qOS frozen package snapshot\nbaseurl=file:///repo\ngpgcheck=0\nenabled=1\n' > /repo/frozen.repo
+ && printf '[frozen]\nname=qOS frozen package snapshot\nbaseurl=file:///repo\ngpgcheck=0\nenabled=1\n' > /repo/frozen.repo \
+ && printf '%s\n' ${PACKAGES} | sort -u > /repo/qos-direct-package-specs.txt \
+ && dnf clean all \
+ && dnf install -y --downloadonly --setopt=reposdir=/repo ${PACKAGES}
 
 # The published artifact: just the repo, nothing else.
 FROM scratch
