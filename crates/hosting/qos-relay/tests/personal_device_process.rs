@@ -174,6 +174,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
 
     let enroll = std::path::PathBuf::from(env!("CARGO_BIN_EXE_qos-enroll"));
     let status_file = recipient_identities.join("pairing-status.json");
+    let requester = qos_relay::ProcessLease::capture(std::process::id()).unwrap();
     let recipient_process = Command::new(&enroll)
         .args(["pair-device", "--identity-root"])
         .arg(&recipient_root)
@@ -181,6 +182,10 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         .arg(&recipient_identities)
         .args(["--label", "New laptop", "--timeout", "10", "--status-file"])
         .arg(&status_file)
+        .arg("--requester-pid")
+        .arg(requester.pid().to_string())
+        .arg("--requester-start-time")
+        .arg(requester.start_time().to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -401,6 +406,9 @@ fn privileged_helper_preserves_user_owned_personal_device_projection() {
         let script = r#"
 set -eu
 exec 9</usr/bin/mount
+exec 8</usr/bin/setpriv
+exec 7</usr/bin/sleep
+exec 6</usr/bin/awk
 mount --make-rprivate /
 /proc/self/fd/9 -t tmpfs tmpfs /etc
 printf '%s\n' 'qosaccept:x:42424:42424::/home/qosaccept:/sbin/nologin' >/etc/passwd
@@ -411,9 +419,13 @@ mkdir -p /home/qosaccept
 : > /usr/bin/qos-enroll
 /proc/self/fd/9 --bind "$QOS_ENROLL_BIN" /usr/bin/qos-enroll
 export PKEXEC_UID=42424
+/proc/self/fd/8 --reuid=42424 --regid=42424 --clear-groups /proc/self/fd/7 300 &
+requester=$!
+requester_start=$(/proc/self/fd/6 '{print $22}' "/proc/$requester/stat")
+trap 'kill "$requester" 2>/dev/null || true' EXIT
 "$QOS_HELPER" approve-device --identity-root "$QOS_APPROVER_ROOT" --identity-dir "$QOS_APPROVER_IDENTITIES" --expected-device "$QOS_RECIPIENT_ID" --expected-service "$QOS_RECIPIENT_SERVICE" &
 approval=$!
-"$QOS_HELPER" pair-device --identity-root "$QOS_RECIPIENT_ROOT" --identity-dir "$QOS_RECIPIENT_IDENTITIES" --label "New laptop" --status-file "$QOS_RECIPIENT_IDENTITIES/pairing-status.json"
+"$QOS_HELPER" pair-device --identity-root "$QOS_RECIPIENT_ROOT" --identity-dir "$QOS_RECIPIENT_IDENTITIES" --label "New laptop" --status-file "$QOS_RECIPIENT_IDENTITIES/pairing-status.json" --requester-pid "$requester" --requester-start-time "$requester_start"
 wait "$approval"
 "#;
         let output = Command::new("unshare")
