@@ -21,9 +21,9 @@ use fs::full_replica::{
 use fs::namespace::ROOT_INO;
 use fs::sync::{self, SyncHandle};
 use fs::workspace_authority::{
-    AuthorityRequest, WorkspaceAuthority, WorkspaceAuthorityEnvelope, local_authority_request,
-    local_authority_socket_path, local_content_socket_path, register_local_content_peer,
-    serve_local_authority, serve_local_content_peer,
+    AuthorityRequest, WorkspaceAuthority, WorkspaceAuthorityEnvelope, load_persisted_content_peers,
+    local_authority_request, local_authority_socket_path, local_content_socket_path,
+    register_local_content_peer, serve_local_authority, serve_local_content_peer,
 };
 use fs::{
     AclHandle, CapabilityFile, ContentStore, FileHistoryStore, FileShareLinkV2,
@@ -98,6 +98,25 @@ mod share_mount_tests {
         assert!(parse_share_uri_input(vec![b'x'; 65], 64).is_err());
         assert!(parse_share_uri_input(b"\r\n".to_vec(), 64).is_err());
         assert!(parse_share_uri_input(vec![0xff], 64).is_err());
+    }
+
+    #[test]
+    fn durable_replica_generation_is_written_before_readiness_can_use_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("namespace.bin");
+        let namespace = Arc::new(Mutex::new(Namespace::new("replica-checkpoint").unwrap()));
+        let written = persist_namespace_generation(&namespace, &path).unwrap();
+        assert_eq!(
+            written,
+            *blake3::hash(&std::fs::read(&path).unwrap()).as_bytes(),
+            "the reported generation must be the exact durable primary"
+        );
+        let mut reopened = load_namespace(&path, "replica-restart".into()).unwrap();
+        assert_eq!(
+            reopened.save(),
+            namespace.lock().unwrap().save(),
+            "a restart reopens the generation that was checkpointed"
+        );
     }
 
     #[test]
@@ -584,9 +603,33 @@ async fn register_content_peer(cache_dir: PathBuf, endpoint_stdin: bool) -> Resu
         !encoded.is_empty() && encoded.len() < 64 * 1024,
         "content endpoint input is empty or too large"
     );
-    let endpoint = serde_json::from_slice(&encoded).context("parse discovered content endpoint")?;
+    let registration =
+        serde_json::from_slice::<fs::workspace_authority::ContentPeerRequest>(&encoded)
+            .or_else(|_| {
+                // The original CLI accepted a raw EndpointAddr. Preserve that
+                // wire contract while allowing relay discovery to carry the NAS
+                // ticket needed by a fresh stock `fs serve` daemon.
+                serde_json::from_slice::<iroh_base::EndpointAddr>(&encoded).map(|endpoint| {
+                    fs::workspace_authority::ContentPeerRequest {
+                        endpoint,
+                        ticket: None,
+                    }
+                })
+            })
+            .context("parse discovered content endpoint registration")?;
     let ticket = Ticket::decode(&std::fs::read_to_string(workspace_ticket_path(&cache_dir))?)?;
-    register_local_content_peer(&local_content_socket_path(ticket.workspace_id()), endpoint).await
+    let response = register_local_content_peer(
+        &local_content_socket_path(ticket.workspace_id()),
+        registration.endpoint,
+        registration.ticket,
+    )
+    .await?;
+    if response.rebind_required && !response.restart_scheduled {
+        bail!(
+            "content peer was saved, but this ad-hoc fs daemon must be restarted to join its workspace"
+        );
+    }
+    Ok(())
 }
 
 fn read_share_uri(link: Option<String>, link_stdin: bool) -> Result<String> {
@@ -830,12 +873,56 @@ fn workspace_ticket_path(cache_dir: &Path) -> PathBuf {
     cache_dir.join("workspace-ticket")
 }
 
+fn bootstrap_peers(
+    ticket: &Ticket,
+    cache_dir: Option<&Path>,
+) -> Result<Vec<iroh_base::EndpointAddr>> {
+    let mut peers = vec![ticket.node.clone()];
+    if let Some(cache_dir) = cache_dir {
+        for peer in load_persisted_content_peers(cache_dir)? {
+            if peers.iter().all(|known| known.id != peer.endpoint.id) {
+                peers.push(peer.endpoint);
+            }
+        }
+    }
+    Ok(peers)
+}
+
+/// A daemon can serve either its own workspace or exactly one discovered
+/// remote workspace. Refuse ambiguous persisted state instead of combining
+/// record planes: records are signed against a workspace UUID, so selecting an
+/// arbitrary ticket could make a collaborator read the wrong namespace.
+fn persisted_remote_workspace_ticket(cache_dir: Option<&Path>) -> Result<Option<Ticket>> {
+    let Some(cache_dir) = cache_dir else {
+        return Ok(None);
+    };
+    let mut selected: Option<Ticket> = None;
+    for peer in load_persisted_content_peers(cache_dir)? {
+        let Some(ticket) = peer.decoded_ticket()? else {
+            continue;
+        };
+        if let Some(existing) = &selected {
+            anyhow::ensure!(
+                existing.workspace == ticket.workspace,
+                "content peer cache contains more than one remote workspace; use a separate cache"
+            );
+        } else {
+            selected = Some(ticket);
+        }
+    }
+    Ok(selected)
+}
+
 fn personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {
     let hash = blake3::derive_key("qos-personal-continuity-v1\0", user_public_key);
     let mut first8 = [0_u8; 8];
     first8.copy_from_slice(&hash[..8]);
     let id = u64::from_le_bytes(first8);
     if id == 0 { 1 } else { id }
+}
+
+fn managed_system_service() -> bool {
+    std::env::var_os("INVOCATION_ID").is_some()
 }
 
 /// Export a transfer-ready home-peer bundle from the workspace this device is
@@ -995,12 +1082,16 @@ async fn replica_workspace(
     let store = Arc::new(open_store(Some(bundle.cache_dir.clone())).await?);
     let hydrator = Arc::new(Hydrator::new(endpoint.clone(), Arc::clone(&store)));
     let namespace_path = namespace_path(Some(&bundle.cache_dir));
+    let bootstrap = bootstrap_peers(&ticket, Some(&bundle.cache_dir))?;
+    for peer in &bootstrap {
+        hydrator.add_peer(peer.clone());
+    }
     let namespace = Arc::new(Mutex::new(
         open_namespace_mount(
             endpoint.id().to_string(),
             namespace_path.as_deref(),
             &endpoint,
-            ticket.node.clone(),
+            &bootstrap,
             &transport_identity,
         )
         .await?,
@@ -1018,7 +1109,7 @@ async fn replica_workspace(
     let materializer = Arc::new(RecordMaterializer::new(
         workspace_id,
         Arc::clone(&namespace),
-        history,
+        history.clone(),
     ));
     materializer.reconcile_repository(&record_services.repository)?;
     record_services.mutation_sink = Some(materializer.clone());
@@ -1036,7 +1127,9 @@ async fn replica_workspace(
     )
     .await?;
     materializer.attach_sync(Arc::clone(&workspace.sync));
-    let _persist = namespace_path.map(|path| spawn_persist(Arc::clone(&namespace), path));
+    let _persist = namespace_path
+        .clone()
+        .map(|path| spawn_persist(Arc::clone(&namespace), path));
     println!("Home peer joined workspace; hydrating complete content replica.");
     let mut hydrated_namespace = None;
     let mut last_status = fs::full_replica::FullReplicaStatus::syncing();
@@ -1070,7 +1163,9 @@ async fn replica_workspace(
             // The workspace did not change across this hydration pass. Remove
             // only blobs absent from its current authenticated root set, then
             // force a fresh pass if a concurrent update arrives.
-            if let Err(error) = prune_obsolete_workspace_content(&namespace, &hydrator).await {
+            if let Err(error) =
+                prune_obsolete_workspace_content(&namespace, &hydrator, history.as_deref()).await
+            {
                 status = fs::full_replica::FullReplicaStatus::syncing();
                 status.state = "failed".into();
                 status.error = Some(format!("prune obsolete replica content: {error}"));
@@ -1080,6 +1175,35 @@ async fn replica_workspace(
                 // new root before publishing another ready proof.
                 hydrated_namespace = None;
                 continue;
+            }
+        }
+        if status.full_content_replication {
+            // Do not advertise a content-complete generation until its
+            // namespace roots are durable too.  The blob store survives a
+            // restart already; without this checkpoint it could not prove
+            // which retained blobs are live after the owner goes offline.
+            let Some(path) = namespace_path.as_ref() else {
+                status = fs::full_replica::FullReplicaStatus::syncing();
+                status.state = "failed".into();
+                status.error = Some("home peer has no durable namespace path".into());
+                let _ = status_tx.send((index, status.clone())).await;
+                last_status = status;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            };
+            match persist_namespace_generation(&namespace, path) {
+                Ok(persisted) if persisted == after => {}
+                Ok(_) => {
+                    // A namespace delta raced this pass.  Its checkpoint is
+                    // durable, but it has not yet had its blobs verified.
+                    hydrated_namespace = None;
+                    continue;
+                }
+                Err(error) => {
+                    status = fs::full_replica::FullReplicaStatus::syncing();
+                    status.state = "failed".into();
+                    status.error = Some(format!("persist replica namespace: {error}"));
+                }
             }
         }
         let _ = status_tx.send((index, status.clone())).await;
@@ -1154,19 +1278,44 @@ async fn serve(
     let store = Arc::new(open_store(cache_dir.clone()).await?);
     let author = endpoint.id().to_string();
 
-    // Restore a previously-persisted workspace, or start fresh (+ optional seed).
-    let (ns_value, fresh) = match np.as_ref().filter(|p| p.exists()) {
-        Some(p) => (load_namespace(p, author.clone())?, false),
-        None => (Namespace::new(author.clone())?, true),
+    // A registered NAS ticket changes the *workspace identity*, not merely a
+    // blob source.  Joining it here keeps the record mesh on the NAS UUID
+    // after `fs.service` restarts instead of deriving a fresh local UUID.
+    let remote_ticket = persisted_remote_workspace_ticket(cache_dir.as_deref())?;
+    let workspace_id = remote_ticket.as_ref().map_or_else(
+        || Ticket::workspace_id_for_topic(*endpoint.id().as_bytes()),
+        Ticket::workspace_id,
+    );
+    let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
+    if let Some(cache_dir) = cache_dir.as_deref() {
+        for peer in load_persisted_content_peers(cache_dir)? {
+            hydrator.add_peer(peer.endpoint);
+        }
+    }
+    let (ns_value, fresh) = match &remote_ticket {
+        Some(ticket) => {
+            let bootstrap = bootstrap_peers(ticket, cache_dir.as_deref())?;
+            (
+                open_namespace_mount(
+                    author.clone(),
+                    np.as_deref(),
+                    &endpoint,
+                    &bootstrap,
+                    &transport_identity,
+                )
+                .await?,
+                !np.as_ref().is_some_and(|path| path.exists()),
+            )
+        }
+        None => match np.as_ref().filter(|p| p.exists()) {
+            Some(p) => (load_namespace(p, author.clone())?, false),
+            None => (Namespace::new(author.clone())?, true),
+        },
     };
     let namespace = Arc::new(Mutex::new(ns_value));
-    let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
     let record_materializer = if let Some(records) = record_services.as_mut() {
-        let materializer = RecordMaterializer::new(
-            Ticket::workspace_id_for_topic(*endpoint.id().as_bytes()),
-            namespace.clone(),
-            history.clone(),
-        );
+        let materializer =
+            RecordMaterializer::new(workspace_id, namespace.clone(), history.clone());
         let materializer = match &replacement_transactions {
             Some((journal, namespace_path)) => {
                 materializer.with_transaction_recovery(Arc::clone(journal), namespace_path.clone())
@@ -1200,16 +1349,17 @@ async fn serve(
     let record_repository = record_services
         .as_ref()
         .map(|records| Arc::clone(&records.repository));
-    let workspace_id = Ticket::workspace_id_for_topic(*endpoint.id().as_bytes());
     // The serving owner is the authority publisher. A capability file may
     // bootstrap its first signed revision, but every peer thereafter enforces
     // the durable governor-signed state exposed by the authority ALPN.
-    if let (Some(records), Some(cache_dir), Some(acl_path), Some(governor)) = (
-        record_services.as_mut(),
-        cache_dir.as_ref(),
-        acl_args.acl.as_ref(),
-        share_issuer.as_ref(),
-    ) {
+    if remote_ticket.is_none()
+        && let (Some(records), Some(cache_dir), Some(acl_path), Some(governor)) = (
+            record_services.as_mut(),
+            cache_dir.as_ref(),
+            acl_args.acl.as_ref(),
+            share_issuer.as_ref(),
+        )
+    {
         let capabilities = serde_json::from_slice(&std::fs::read(acl_path)?)
             .context("parse workspace authority bootstrap capabilities")?;
         let principals = acl_args
@@ -1247,9 +1397,10 @@ async fn serve(
             .map(Arc::new)
         })
         .transpose()?;
-    let allow_legacy_record_migration = record_repository
-        .as_ref()
-        .is_some_and(|repository| repository.is_empty());
+    let allow_legacy_record_migration = remote_ticket.is_none()
+        && record_repository
+            .as_ref()
+            .is_some_and(|repository| repository.is_empty());
     let initialized_record_authority = if allow_legacy_record_migration {
         match (&history, &record_publisher) {
             (Some(history), Some(publisher)) => {
@@ -1299,14 +1450,33 @@ async fn serve(
         }
         _ => None,
     };
+    // Content discovery registration is useful to a read-only recipient too;
+    // it must not depend on that recipient owning the workspace authority.
     let content_socket = record_services
         .as_ref()
-        .and_then(|records| records.workspace_authority.as_ref())
-        .map(|authority| local_content_socket_path(authority.workspace()));
+        .map(|_| local_content_socket_path(workspace_id));
+    // Only the managed system service may self-restart: an ad-hoc foreground
+    // `fs serve` must remain attached to its caller and receives an explicit
+    // actionable response from `register-content-peer` instead.
+    let managed_service = managed_system_service();
+    let (rebind_tx, rebind_rx) = tokio::sync::mpsc::unbounded_channel();
     let content_socket_task = match content_socket.as_ref() {
-        Some(socket) => Some(serve_local_content_peer(socket.clone(), hydrator.clone()).await?),
+        Some(socket) => Some(
+            serve_local_content_peer(
+                socket.clone(),
+                hydrator.clone(),
+                cache_dir.clone(),
+                workspace_id,
+                managed_service.then_some(rebind_tx),
+            )
+            .await?,
+        ),
         None => None,
     };
+    // A discovered NAS ticket changes the namespace and record-plane UUID.
+    // FUSE/router state cannot safely swap that identity in place, so the
+    // managed mount receives a clean rebind outcome after acknowledging the
+    // durable registration; systemd then starts the joined service again.
     let workspace_args = record_services
         .as_ref()
         .and_then(|records| {
@@ -1316,9 +1486,25 @@ async fn serve(
                 .map(|authority| authority.handle())
         })
         .or_else(|| acl.as_ref().map(|(handle, _)| handle.clone()));
-    let (workspace, ticket) = match record_services {
-        Some(records) => {
-            Workspace::host_with_records(
+    let (workspace, ticket, joined_remote) = match (record_services, remote_ticket) {
+        (Some(records), Some(ticket)) => (
+            Workspace::join_with_records(
+                endpoint.clone(),
+                lookup,
+                store.clone(),
+                hydrator.clone(),
+                namespace.clone(),
+                ticket.clone(),
+                transport_identity,
+                workspace_args,
+                records,
+            )
+            .await?,
+            ticket,
+            true,
+        ),
+        (Some(records), None) => {
+            let (workspace, ticket) = Workspace::host_with_records(
                 endpoint.clone(),
                 lookup,
                 store.clone(),
@@ -1328,10 +1514,26 @@ async fn serve(
                 workspace_args,
                 records,
             )
-            .await?
+            .await?;
+            (workspace, ticket, false)
         }
-        None => {
-            Workspace::host(
+        (None, Some(ticket)) => (
+            Workspace::join(
+                endpoint.clone(),
+                lookup,
+                store.clone(),
+                hydrator.clone(),
+                namespace.clone(),
+                ticket.clone(),
+                transport_identity,
+                workspace_args,
+            )
+            .await?,
+            ticket,
+            true,
+        ),
+        (None, None) => {
+            let (workspace, ticket) = Workspace::host(
                 endpoint.clone(),
                 lookup,
                 store.clone(),
@@ -1340,7 +1542,8 @@ async fn serve(
                 transport_identity,
                 workspace_args,
             )
-            .await?
+            .await?;
+            (workspace, ticket, false)
         }
     };
     if let Some(materializer) = record_materializer {
@@ -1348,10 +1551,14 @@ async fn serve(
     }
 
     println!("Iroh NodeID: {}", endpoint.id());
-    println!(
-        "Hosting workspace — share this ticket to invite peers:\n{}",
-        ticket.encode()?
-    );
+    if joined_remote {
+        println!("Joined workspace from authenticated content discovery.");
+    } else {
+        println!(
+            "Hosting workspace — share this ticket to invite peers:\n{}",
+            ticket.encode()?
+        );
+    }
     if let Some(cache_dir) = &cache_dir {
         let encoded = ticket.encode()?;
         atomic_file::write(&workspace_ticket_path(cache_dir), encoded.as_bytes())?;
@@ -1360,10 +1567,10 @@ async fn serve(
     // never substitute their device key and recipient mounts never host this
     // service.
     let share_task = match (
-        &share_socket,
+        (!joined_remote).then(|| share_socket.as_ref()).flatten(),
         &record_repository,
         &share_authority,
-        share_issuer,
+        (!joined_remote).then_some(share_issuer).flatten(),
     ) {
         (Some(socket), Some(repository), Some(authority), Some(issuer)) => {
             let issuer_public =
@@ -1426,7 +1633,7 @@ async fn serve(
     let _control = control_sock
         .map(|s| spawn_control(&s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
-    run_mount(
+    let mount_outcome = run_mount(
         mount_point,
         namespace.clone(),
         hydrator,
@@ -1445,6 +1652,7 @@ async fn serve(
         storage_sock,
         false,
         false,
+        managed_service.then_some(rebind_rx),
     )
     .await?;
     if let Some(p) = &np {
@@ -1478,7 +1686,12 @@ async fn serve(
         let _ = std::fs::remove_file(socket);
     }
     drop(workspace);
-    Ok(())
+    match mount_outcome {
+        MountOutcome::Unmounted => Ok(()),
+        MountOutcome::RebindRequested => {
+            anyhow::bail!("content peer registration requires a managed fs.service rebind")
+        }
+    }
 }
 
 fn initialize_owner_record_authority(
@@ -1548,12 +1761,16 @@ async fn mount(
     let store = Arc::new(open_store(cache_dir.clone()).await?);
     let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
     let author = endpoint.id().to_string();
+    let bootstrap = bootstrap_peers(&ticket, cache_dir.as_deref())?;
+    for peer in &bootstrap {
+        hydrator.add_peer(peer.clone());
+    }
 
     let ns_value = open_namespace_mount(
         author,
         np.as_deref(),
         &endpoint,
-        ticket.node.clone(),
+        &bootstrap,
         &transport_identity,
     )
     .await?;
@@ -1656,6 +1873,7 @@ async fn mount(
         storage_sock,
         false,
         false,
+        None,
     )
     .await?;
     if let Some(p) = &np {
@@ -1933,6 +2151,7 @@ async fn mount_share(
         None,
         false,
         true,
+        None,
     )
     .await?;
     poll_task.abort();
@@ -2436,6 +2655,19 @@ fn open_history(cache_dir: Option<&Path>) -> Result<Option<Arc<FileHistoryStore>
 /// generations. A damaged primary is never overwritten by the live daemon.
 #[allow(clippy::significant_drop_tightening)] // Durable replacement is serialized with mutations.
 fn persist_now(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
+    if let Err(error) = persist_namespace_generation(namespace, path) {
+        eprintln!("namespace persist to {} failed: {error}", path.display());
+    }
+}
+
+/// Atomically persist one exact namespace generation and return its digest.
+/// A full-replica readiness proof is only published after this succeeds, so a
+/// ready NAS can always reopen the same namespace after a power loss.
+#[allow(clippy::significant_drop_tightening)]
+fn persist_namespace_generation(
+    namespace: &Arc<Mutex<Namespace>>,
+    path: &Path,
+) -> Result<[u8; 32]> {
     // Keep the namespace lock through the durable replacement. Transactional
     // projections use the same lock, preventing two same-process writers from
     // sharing atomic-file's process-scoped temporary pathname.
@@ -2443,11 +2675,10 @@ fn persist_now(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let bytes = namespace.save();
-    if let Err(e) = fs::durable_backup::write(path, &bytes, |candidate| {
+    fs::durable_backup::write(path, &bytes, |candidate| {
         Namespace::from_bytes("namespace-backup-validator", candidate).is_ok()
-    }) {
-        eprintln!("namespace persist to {} failed: {e}", path.display());
-    }
+    })?;
+    Ok(*blake3::hash(&bytes).as_bytes())
 }
 
 fn load_namespace(path: &Path, author: String) -> Result<Namespace> {
@@ -2486,7 +2717,7 @@ async fn open_namespace_mount(
     author: String,
     np: Option<&Path>,
     endpoint: &iroh::endpoint::Endpoint,
-    host: iroh_base::EndpointAddr,
+    bootstrap: &[iroh_base::EndpointAddr],
     identity: &FsTransportIdentity,
 ) -> Result<Namespace> {
     let persisted = match np.as_ref().filter(|p| p.exists()) {
@@ -2494,21 +2725,31 @@ async fn open_namespace_mount(
         None => None,
     };
 
-    match sync::fetch_remote_doc(endpoint, host, identity).await {
-        Ok(doc) => match persisted {
-            Some(mut ns) => {
-                ns.merge_remote_and_resolve(&doc)?;
-                Ok(ns)
+    let mut last_error = None;
+    for host in bootstrap {
+        match sync::fetch_remote_doc(endpoint, host.clone(), identity).await {
+            Ok(doc) => {
+                return match persisted {
+                    Some(mut ns) => {
+                        ns.merge_remote_and_resolve(&doc)?;
+                        Ok(ns)
+                    }
+                    None => Ok(Namespace::from_bytes(author, &doc)?),
+                };
             }
-            None => Ok(Namespace::from_bytes(author, &doc)?),
-        },
-        Err(e) => match persisted {
-            Some(ns) => {
-                eprintln!("host unreachable ({e}); starting from persisted workspace");
-                Ok(ns)
+            Err(error) => last_error = Some(error),
+        }
+    }
+    match persisted {
+        Some(ns) => {
+            if let Some(error) = last_error {
+                eprintln!(
+                    "bootstrap peers unreachable ({error}); starting from persisted workspace"
+                );
             }
-            None => Err(e),
-        },
+            Ok(ns)
+        }
+        None => Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no bootstrap peers configured"))),
     }
 }
 
@@ -2533,7 +2774,8 @@ async fn run_mount(
     storage_sock: Option<PathBuf>,
     read_only: bool,
     signal_recipient_ready: bool,
-) -> Result<()> {
+    mut rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
+) -> Result<MountOutcome> {
     if !mount_point.exists() {
         std::fs::create_dir_all(&mount_point)?;
     }
@@ -2647,30 +2889,62 @@ async fn run_mount(
     }
 
     let mp = mount_point.clone();
-    let mount_task = tokio::task::spawn_blocking(move || {
+    let (unmount_tx, unmount_rx) = std::sync::mpsc::channel::<()>();
+    // Keep the BackgroundSession under a supervisor instead of immediately
+    // consuming it in `join()`: a rebind must unmount the old FUSE session and
+    // wait for its worker before this process can return to systemd.
+    let mut mount_task = tokio::task::spawn_blocking(move || {
         let session = fuser::spawn_mount2(fs, &mp, &config)?;
         if signal_recipient_ready {
             use std::io::Write;
             println!("{}", fs::recipient_mount::RECIPIENT_MOUNT_READY_LINE);
             std::io::stdout().flush()?;
         }
-        session.join()
+        match unmount_rx.recv() {
+            Ok(()) => session.umount_and_join(),
+            Err(_) => session.join(),
+        }
     });
     println!("Mounting QuickFS at {}", mount_point.display());
 
     // Exit cleanly on Ctrl-C or mount exit (don't hang a crash-looping service forever).
-    tokio::select! {
-        res = mount_task => match res {
+    let outcome = tokio::select! {
+        res = &mut mount_task => {
+            match res {
             Ok(Ok(())) => println!("Filesystem unmounted."),
             Ok(Err(e)) => eprintln!("FUSE mount exited with error: {e}"),
             Err(e) => eprintln!("mount task failed: {e}"),
+            }
+            MountOutcome::Unmounted
         },
-        _ = tokio::signal::ctrl_c() => println!("Interrupted, exiting..."),
-    }
+        _ = tokio::signal::ctrl_c() => {
+            println!("Interrupted, exiting...");
+            let _ = unmount_tx.send(());
+            let _ = (&mut mount_task).await;
+            MountOutcome::Unmounted
+        },
+        _ = async {
+            match rebind.as_mut() {
+                Some(receiver) => { let _ = receiver.recv().await; }
+                None => std::future::pending::<()>().await,
+            }
+        } => {
+            println!("Content peer registration requested a clean workspace rebind.");
+            let _ = unmount_tx.send(());
+            let _ = (&mut mount_task).await;
+            MountOutcome::RebindRequested
+        },
+    };
     if let Some(task) = predictive_policy_task {
         task.abort();
     }
-    Ok(())
+    Ok(outcome)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MountOutcome {
+    Unmounted,
+    RebindRequested,
 }
 
 fn now_ms() -> u64 {
@@ -2763,6 +3037,49 @@ mod tests {
         }
         assert!(!argv.is_empty(), "fs.service has no ExecStart=");
         argv
+    }
+
+    #[test]
+    fn shipped_service_restarts_clean_ticket_rebinds() {
+        let unit = std::fs::read_to_string(os_file("os/usr/lib/systemd/system/fs.service"))
+            .expect("the shipped fs.service must exist");
+        assert!(
+            unit.lines().any(|line| line.trim() == "Restart=always"),
+            "a daemon-owned rebind must be restarted by the shipped service"
+        );
+        assert!(
+            service_exec_start()
+                .windows(2)
+                .any(|pair| { pair[0].ends_with("fs") && pair[1] == "serve" }),
+            "the shipped unit must enter the serve startup path that consumes persisted tickets"
+        );
+    }
+
+    #[test]
+    fn persisted_discovered_ticket_selects_remote_record_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let owner = iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x81; 32]).public());
+        let nas = iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x82; 32]).public());
+        let ticket = Ticket {
+            node: owner,
+            workspace: [0x83; 32],
+        }
+        .encode()
+        .unwrap();
+        let peers = vec![fs::workspace_authority::PersistedContentPeer {
+            endpoint: nas,
+            ticket: Some(ticket),
+        }];
+        atomic_file::write(
+            &fs::workspace_authority::content_peers_path(temp.path()),
+            &serde_json::to_vec(&peers).unwrap(),
+        )
+        .unwrap();
+        let selected = persisted_remote_workspace_ticket(Some(temp.path()))
+            .unwrap()
+            .expect("NAS ticket is retained for the next fs.service start");
+        assert_eq!(selected.workspace, [0x83; 32]);
+        assert_ne!(selected.node.id, peers[0].endpoint.id);
     }
 
     #[test]
