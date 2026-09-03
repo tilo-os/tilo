@@ -116,7 +116,7 @@ grep -Fq 'qos-installer-medium-${{ matrix.arch }}' "$workflow" \
   && ok 'native live media is catalogued and verified before writing' \
   || bad 'end-user install medium publication or verification is missing'
 
-grep -Fq 'key: imager-medium-inputs-' "$workflow" \
+grep -Fq 'key: github-assets-all-v1-' "$workflow" \
   && grep -Fq './os/dev/cache-github-assets.sh' "$workflow" \
   && grep -Fq 'podman login code.sandbox.example' "$workflow" \
   && grep -Fq 'sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9' "$workflow" \

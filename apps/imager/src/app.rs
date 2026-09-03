@@ -3,20 +3,19 @@
 //! `ImagerApp` is a single self-drawing "canvas" widget that renders a guided
 //! **wizard** with a six-station step indicator —
 //! Source → Drive → Customize → Confirm → Write → Done — and a Back /
-//! primary-action footer, covering both writing an image to a stick and
-//! installing qOS onto a disk.
+//! primary-action footer for creating a verified USB/SD installation medium.
 //!
 //! * **Source** — pick a local `.iso` / `.img` through the host XDG portal
 //!   (never a bespoke picker, per HIG §5), or a known qOS release.
-//! * **Drive** — choose the target from the *real* block devices (`lsblk`);
-//!   internal disks are hidden behind an explicit opt-in, and the **system
-//!   disk** cannot be selected without a separate acknowledgement.
+//! * **Drive** — choose external media from the *real* block devices (`lsblk`);
+//!   internal and system disks are never eligible. Installation onto those is
+//!   handled after boot by the live qOS installer.
 //! * **Customize** (qOS only) — the shared guided-customization step, delegated
 //!   in full to [`CustomizePanel`](crate::customize); a plain ISO skips it.
-//! * **Confirm** — a read-only review of every choice, an erase warning that
-//!   escalates for an internal / system disk, and the typed device-name gate.
+//! * **Confirm** — a read-only review of every choice, an erase warning, and
+//!   the typed device-name gate.
 //! * **Write** — a real, byte-for-byte streaming copy with live progress and a
-//!   read-back **verify** pass (captioned "Write" or "Install").
+//!   read-back **verify** pass.
 //! * **Done** — the verified / failed outcome with a fresh-start affordance.
 //!
 //! Every write is doubly gated: the typed confirmation at Confirm, plus the
@@ -80,8 +79,6 @@ enum Hit {
     Release(usize),
     Recent(usize),
     Target(usize),
-    ToggleInternal,
-    ToggleSystemAck,
     Rescan,
     ConfirmField,
     StepJump(Step),
@@ -126,12 +123,6 @@ pub struct ImagerApp {
     job_rx: Option<std::sync::mpsc::Receiver<Progress>>,
     portal_rx: Option<PortalChannel>,
     release_rx: Option<std::sync::mpsc::Receiver<Result<Source, String>>>,
-    show_internal: bool,
-    /// The user has explicitly acknowledged that selecting the **system** disk
-    /// (the one the running OS boots from) will destroy it. A system disk can
-    /// never be selected without this — the guard against picking it by
-    /// accident. Reset whenever the drive inventory changes.
-    system_ack: bool,
     export_dialog: ExportDialog,
     /// Stages the read-only export modal after the demo document has synced.
     /// Used only by the deterministic `export` screenshot scenario.
@@ -183,8 +174,6 @@ impl ImagerApp {
             job_rx: None,
             portal_rx: None,
             release_rx: None,
-            show_internal: false,
-            system_ack: false,
             export_dialog: ExportDialog::new(),
             export_after_sync: false,
             seeded: false,
@@ -207,24 +196,21 @@ impl ImagerApp {
         &self.releases
     }
 
-    /// The drives shown on the Drive step: always the removable ones, plus
-    /// internal/fixed disks only when the user explicitly opts in.
+    /// Only external installation media is shown. Internal installation and
+    /// dual boot belong to the installer on the booted qOS medium.
     fn visible_targets(&self) -> Vec<(usize, &TargetDrive)> {
         self.targets
             .iter()
             .enumerate()
-            .filter(|(_, d)| self.show_internal || d.removable)
+            .filter(|(_, drive)| drive.is_media_target())
             .collect()
     }
 
     fn removable_count(&self) -> usize {
-        self.targets.iter().filter(|d| d.removable).count()
-    }
-
-    /// Whether the currently-visible drive list contains the system disk — the
-    /// only case where the extra "I understand" acknowledgement is offered.
-    fn has_visible_system_disk(&self) -> bool {
-        self.visible_targets().iter().any(|(_, d)| d.is_system)
+        self.targets
+            .iter()
+            .filter(|drive| drive.is_media_target())
+            .count()
     }
 
     /// Can the flow move forward from `from`? (Also gates the step-indicator.)
@@ -265,17 +251,6 @@ impl ImagerApp {
     /// Only qOS images can be pre-configured; a plain ISO is written as-is.
     fn customizable(&self) -> bool {
         self.source.as_ref().is_some_and(|s| s.installable)
-    }
-
-    /// Writing to a **removable** drive is a plain image write ([`Action::Flash`],
-    /// verb "Write"); a customizable qOS image aimed at a **fixed/internal** disk
-    /// is a full install ([`Action::Install`], verb "Install"). This single
-    /// helper is the source of truth for the write-vs-install naming everywhere.
-    fn intended_action(&self) -> Action {
-        match (self.customizable(), self.target()) {
-            (true, Some(t)) if !t.removable => Action::Install,
-            _ => Action::Flash,
-        }
     }
 
     /// The label for the customization resource Ctrl+K publishes, or `None` when
@@ -633,25 +608,16 @@ impl ImagerApp {
         let mut y = content.y0 + 52.0;
         let vis = self.visible_targets();
         if vis.is_empty() {
-            // Empty state occupies the body; the only action is the internal toggle below.
+            // Empty state occupies the body; Rescan remains available above.
         } else {
             for (idx, _) in &vis {
                 let r = Rect::new(x0, y, x1, y + 112.0);
                 hits.push((r, Hit::Target(*idx)));
                 y += 112.0 + 12.0;
-                if y + 112.0 > content.y1 - 46.0 {
+                if y + 112.0 > content.y1 {
                     break;
                 }
             }
-        }
-        // "Show internal disks" toggle pinned near the bottom of the content.
-        let tr = Rect::new(x0, content.y1 - 44.0, x0 + 320.0, content.y1 - 44.0 + 34.0);
-        hits.push((tr, Hit::ToggleInternal));
-        // The system-disk acknowledgement sits beside it, only once a system
-        // disk is actually visible.
-        if self.has_visible_system_disk() {
-            let ack = Rect::new(tr.x1 + 12.0, tr.y0, (tr.x1 + 12.0 + 470.0).min(x1), tr.y1);
-            hits.push((ack, Hit::ToggleSystemAck));
         }
     }
 
@@ -1421,11 +1387,7 @@ impl ImagerApp {
             "The drive to write to — everything on it will be erased.",
         );
         // Detected count (to the left of the Rescan button).
-        let detected = if self.show_internal {
-            format!("{} drive(s)", self.targets.len())
-        } else {
-            format!("{} removable", self.removable_count())
-        };
+        let detected = format!("{} removable", self.removable_count());
         Self::txt_right(
             scene,
             tr,
@@ -1466,10 +1428,10 @@ impl ImagerApp {
         let vis = self.visible_targets();
         let mut y = content.y0 + 52.0;
         if vis.is_empty() {
-            self.draw_drive_empty(scene, tr, theme, t, content);
+            Self::draw_drive_empty(scene, tr, theme, t, content);
         } else {
             for (idx, drive) in &vis {
-                if y + 112.0 > content.y1 - 46.0 {
+                if y + 112.0 > content.y1 {
                     break;
                 }
                 let r = Rect::new(content.x0, y, content.x1, y + 112.0);
@@ -1477,123 +1439,9 @@ impl ImagerApp {
                 y += 112.0 + 12.0;
             }
         }
-
-        // Show-internal toggle.
-        let tr_rect = Rect::new(
-            content.x0,
-            content.y1 - 44.0,
-            content.x0 + 340.0,
-            content.y1 - 44.0 + 34.0,
-        );
-        self.draw_check_row(
-            scene,
-            tr,
-            theme,
-            t,
-            tr_rect,
-            self.show_internal,
-            c.semantic.danger,
-            "Show internal disks",
-        );
-        // System-disk acknowledgement, shown only when the system disk is
-        // actually in the list. It is the explicit gate that lets the system
-        // disk be selected at all (see `select_target`).
-        if self.has_visible_system_disk() {
-            let ack = Rect::new(
-                tr_rect.x1 + 12.0,
-                tr_rect.y0,
-                (tr_rect.x1 + 12.0 + 470.0).min(content.x1),
-                tr_rect.y1,
-            );
-            self.draw_check_row(
-                scene,
-                tr,
-                theme,
-                t,
-                ack,
-                self.system_ack,
-                c.semantic.danger,
-                "I understand — erasing my system disk destroys the running OS",
-            );
-        }
-    }
-
-    /// A labelled checkbox row (box + tick + caption) used by the Drive step's
-    /// reveal + acknowledgement gates. `accent` tints the checked box.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_check_row(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        row: Rect,
-        checked: bool,
-        accent: Color,
-        label: &str,
-    ) {
-        let c = &theme.tokens.colors;
-        let hov = row.contains(self.last_mouse);
-        Self::fill_rr(
-            scene,
-            t,
-            row,
-            10.0,
-            if hov { c.neutral[3] } else { c.neutral[2] },
-        );
-        Self::stroke_rr(
-            scene,
-            t,
-            row,
-            10.0,
-            if checked {
-                with_alpha(accent, 170)
-            } else {
-                c.border_standard
-            },
-            1.0,
-        );
-        let box_r = Rect::new(
-            row.x0 + 12.0,
-            row.y0 + 9.0,
-            row.x0 + 12.0 + 16.0,
-            row.y0 + 9.0 + 16.0,
-        );
-        Self::fill_rr(
-            scene,
-            t,
-            box_r,
-            4.0,
-            if checked { accent } else { c.neutral[4] },
-        );
-        if checked {
-            Self::check_disc(
-                scene,
-                t,
-                Point::new(
-                    f64::midpoint(box_r.x0, box_r.x1),
-                    f64::midpoint(box_r.y0, box_r.y1),
-                ),
-                8.0,
-                accent,
-                Color::WHITE,
-            );
-        }
-        Self::txt(
-            scene,
-            tr,
-            label,
-            12.5,
-            c.text_primary,
-            box_r.x1 + 10.0,
-            row.y0 + 9.0,
-            Some((row.width() - 40.0) as f32),
-            TextWeight::Medium,
-        );
     }
 
     fn draw_drive_empty(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -1636,15 +1484,10 @@ impl ImagerApp {
             card.y0 + 168.0,
             TextWeight::Regular,
         );
-        let hint = if self.show_internal {
-            "No drives detected."
-        } else {
-            "No removable drives detected — enable “Show internal disks” to target a fixed disk."
-        };
         Self::txt_center(
             scene,
             tr,
-            hint,
+            "Internal disks are available after booting this installation medium.",
             12.0,
             c.neutral[6],
             cx,
@@ -1712,7 +1555,7 @@ impl ImagerApp {
             TextWeight::Bold,
         );
 
-        self.draw_drive_card_details(scene, tr, theme, t, r, drive, left);
+        Self::draw_drive_card_details(scene, tr, theme, t, r, drive, left);
     }
 
     /// Draws the removable/fixed/system chip, the model + capacity line, and
@@ -1722,7 +1565,6 @@ impl ImagerApp {
         reason = "shares the (scene, tr, theme, t) render context plus per-card geometry with every draw_* helper in this file; bundling that context is a wider render-context refactor out of scope here"
     )]
     fn draw_drive_card_details(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -1783,25 +1625,13 @@ impl ImagerApp {
             TextWeight::Regular,
         );
 
-        // Destructive line — or, for a not-yet-acknowledged system disk, a
-        // clear "locked" note pointing at the acknowledgement gate.
-        let (line, col) = if drive.is_system && !self.system_ack {
-            (
-                "🔒 Locked — this is your system disk. Acknowledge below to select it.".to_string(),
-                c.text_dim,
-            )
-        } else {
-            (
-                format!("⚠ Erases {}", drive.contents_summary()),
-                c.semantic.danger,
-            )
-        };
+        let line = format!("⚠ Erases {}", drive.contents_summary());
         Self::txt(
             scene,
             tr,
             &line,
             11.5,
-            col,
+            c.semantic.danger,
             left,
             r.y1 - 24.0,
             Some((r.width() - (left - r.x0) - 30.0) as f32),
@@ -2766,13 +2596,13 @@ impl ImagerApp {
         let Some(drive) = self.targets.get(idx) else {
             return;
         };
-        // Hard guard: the system disk (the one the running OS boots from) can
-        // never be selected by a stray click. It only becomes selectable after
-        // the user ticks the explicit acknowledgement below the list.
-        if drive.is_system && !self.system_ack {
+        // Hard guard repeated below the visible-list filter: stale persisted or
+        // collaborative state cannot turn the media creator into an internal-
+        // disk raw writer.
+        if !drive.is_media_target() {
             self.set_status(
                 state,
-                "That is your system disk — tick “I understand” below to select it.",
+                "Internal and system disks can only be installed from the booted qOS medium.",
             );
             self.dirty = true;
             return;
@@ -2800,19 +2630,18 @@ impl ImagerApp {
         match self.step {
             Step::Source if self.can_advance(Step::Source) => self.goto(state, Step::Drive),
             Step::Drive if self.can_advance(Step::Drive) => {
-                // Record whether this is a write or an install (drives the
-                // naming), then route: a qOS image goes through Customize; a
-                // plain ISO skips straight to the Confirm review.
-                let act = self.intended_action();
-                self.action = act;
-                ImagerDoc::set_action(state, act);
+                self.action = Action::Flash;
+                ImagerDoc::set_action(state, Action::Flash);
                 if self.customizable() {
                     self.goto(state, Step::Customize);
                 } else {
                     self.goto(state, Step::Confirm);
                 }
             }
-            Step::Customize => self.goto(state, Step::Confirm),
+            Step::Customize => match self.profile.validate_media_profile() {
+                Ok(()) => self.goto(state, Step::Confirm),
+                Err(message) => self.set_status(state, &message),
+            },
             // Confirm advances into the write only when the typed-name gate is
             // armed; that same gesture kicks off the (external) job.
             Step::Confirm if self.can_advance(Step::Confirm) => self.start_write(state),
@@ -2877,6 +2706,9 @@ impl ImagerApp {
         let (Some(src), Some(tgt)) = (self.source.clone(), self.target().cloned()) else {
             return Err("Select a source and drive first.".into());
         };
+        if src.installable {
+            self.profile.validate_media_profile()?;
+        }
         if *device != tgt.dev_path() {
             return Err("The selected target changed; review the write plan again.".into());
         }
@@ -2917,9 +2749,16 @@ impl ImagerApp {
             crate::write::JobStart::TooSmall => {
                 return Err("Image is larger than the drive — write refused.".into());
             }
+            crate::write::JobStart::UnsafeTarget => {
+                return Err(
+                    "Internal and system disks can only be installed from the booted qOS medium."
+                        .into(),
+                );
+            }
             crate::write::JobStart::Incomplete => {
                 return Err("Select a source and drive before writing.".into());
             }
+            crate::write::JobStart::InvalidProfile(message) => return Err(message),
             crate::write::JobStart::WriteDisabled => {
                 return Err(
                     "Raw-device writing is disabled; enable the privileged Imager backend first."
@@ -3024,8 +2863,6 @@ impl ImagerApp {
         }
         self.selected = self.selected.filter(|i| *i < self.targets.len());
         ImagerDoc::set_selected(state, self.selected);
-        // A vanished/changed inventory invalidates any system-disk acknowledgement.
-        self.system_ack = false;
         self.dirty = true;
     }
 
@@ -3047,27 +2884,6 @@ impl ImagerApp {
                 }
             }
             Hit::Target(i) => self.select_target(state, i),
-            Hit::ToggleInternal => {
-                self.show_internal = !self.show_internal;
-                ImagerDoc::set_show_internal(state, self.show_internal);
-                // Hiding internal disks again also withdraws the system-disk
-                // acknowledgement, so re-revealing them re-arms the guard.
-                if !self.show_internal {
-                    self.system_ack = false;
-                }
-                self.dirty = true;
-            }
-            Hit::ToggleSystemAck => {
-                self.system_ack = !self.system_ack;
-                if !self.system_ack {
-                    // Withdrawing consent deselects the system disk if it was chosen.
-                    if self.target().is_some_and(|d| d.is_system) {
-                        self.selected = None;
-                        ImagerDoc::set_selected(state, None);
-                    }
-                }
-                self.dirty = true;
-            }
             Hit::Rescan => self.do_rescan(state),
             Hit::ConfirmField => {
                 self.confirm_input.set_focus(true);
@@ -3132,11 +2948,20 @@ impl Widget for ImagerApp {
         self.releases = ImagerDoc::releases(state);
         self.profile = ImagerDoc::profile(state);
         self.progress = ImagerDoc::progress(state);
-        self.action = ImagerDoc::action(state);
+        self.action = Action::Flash;
+        if ImagerDoc::action(state) != Action::Flash {
+            ImagerDoc::set_action(state, Action::Flash);
+        }
         self.status = ImagerDoc::status(state);
         self.step = ImagerDoc::step(state);
-        self.show_internal = ImagerDoc::show_internal(state);
-        self.selected = ImagerDoc::selected(state).filter(|i| *i < self.targets.len());
+        self.selected = ImagerDoc::selected(state).filter(|i| {
+            self.targets
+                .get(*i)
+                .is_some_and(TargetDrive::is_media_target)
+        });
+        if self.selected != ImagerDoc::selected(state) {
+            ImagerDoc::set_selected(state, self.selected);
+        }
 
         // Refresh the shared customization panel's fields from the profile
         // (each unfocused field mirrors the stored value; a focused one stays
@@ -3800,6 +3625,27 @@ mod tests {
         assert_eq!(app.step, Step::Confirm);
     }
 
+    #[test]
+    fn invalid_media_profile_blocks_confirm_and_direct_write() {
+        let (mut app, mut doc) = seeded_app();
+        app.select_target(&mut doc, 0);
+        app.profile.hostname = "bad host".into();
+        app.goto(&mut doc, Step::Customize);
+
+        app.advance(&mut doc);
+        assert_eq!(app.step, Step::Customize);
+        assert!(ImagerDoc::status(&doc).contains("Hostname"));
+
+        // A direct operation dispatch must repeat the gate rather than relying
+        // only on wizard navigation.
+        app.goto(&mut doc, Step::Confirm);
+        app.confirm_input.set_text("sdb");
+        app.start_write(&mut doc);
+        assert_eq!(app.step, Step::Confirm);
+        assert!(app.job_rx.is_none());
+        assert!(ImagerDoc::status(&doc).contains("Hostname"));
+    }
+
     /// The primary interaction, proven end to end by clicking the real
     /// on-screen targets: walk Source → Drive → Customize → Confirm. Every transition
     /// goes through the actual hit-testing + dispatch path, not a shortcut.
@@ -3925,19 +3771,15 @@ mod tests {
     }
 
     #[test]
-    fn drive_step_hides_internal_disks_until_opted_in() {
-        let (mut app, _doc) = seeded_app();
+    fn drive_step_only_offers_external_installation_media() {
+        let (app, _doc) = seeded_app();
         // Sample has one USB (removable) + one NVMe (fixed).
         assert_eq!(app.visible_targets().len(), 1);
         assert_eq!(app.removable_count(), 1);
-        app.show_internal = true;
-        assert_eq!(app.visible_targets().len(), 2);
     }
 
-    /// The system disk can never be selected by a stray click; it takes an
-    /// explicit acknowledgement, and withdrawing that consent deselects it.
     #[test]
-    fn system_disk_needs_acknowledgement_before_selection() {
+    fn internal_and_system_disks_can_never_be_selected() {
         let mut app = ImagerApp::new();
         let mut doc = AutoCommit::new();
         let mut targets = crate::model::sample_targets();
@@ -3945,37 +3787,13 @@ mod tests {
         ImagerDoc::seed(&mut doc, &targets);
         ImagerDoc::set_source(&mut doc, Some(&crate::model::sample_source()));
         app.sync(&mut doc, &automerge::ROOT);
-        app.show_internal = true; // reveal internal disks
-        assert!(app.has_visible_system_disk());
 
-        // A stray click on the system disk is refused with a clear reason.
         app.dispatch_hit(&mut doc, Hit::Target(1));
-        assert_eq!(
-            app.selected, None,
-            "the system disk is not selectable by accident"
-        );
+        assert_eq!(app.selected, None, "the system disk is never selectable");
         assert!(
             ImagerDoc::status(&doc)
                 .to_lowercase()
                 .contains("system disk")
-        );
-
-        // The explicit acknowledgement unlocks it.
-        app.dispatch_hit(&mut doc, Hit::ToggleSystemAck);
-        assert!(app.system_ack);
-        app.dispatch_hit(&mut doc, Hit::Target(1));
-        assert_eq!(
-            app.selected,
-            Some(1),
-            "acknowledged → the system disk can be selected"
-        );
-
-        // Withdrawing the acknowledgement drops the selection again.
-        app.dispatch_hit(&mut doc, Hit::ToggleSystemAck);
-        assert!(!app.system_ack);
-        assert_eq!(
-            app.selected, None,
-            "withdrawing consent deselects the system disk"
         );
     }
 
