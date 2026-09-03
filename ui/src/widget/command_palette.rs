@@ -230,6 +230,22 @@ impl CommandEntry {
             .or_else(|| self.keybinding.clone())
     }
 
+    fn keycap_labels(&self, platform: PlatformConventions) -> Option<Vec<String>> {
+        self.shortcut
+            .as_ref()
+            .map(|shortcut| shortcut.keycap_labels(platform))
+            .or_else(|| {
+                self.keybinding.as_ref().map(|binding| {
+                    binding
+                        .split('+')
+                        .map(str::trim)
+                        .filter(|part| !part.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+            })
+    }
+
     #[must_use]
     pub fn with_argument(
         mut self,
@@ -1589,21 +1605,20 @@ impl CommandPalette {
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
+        theme: &Theme,
         row: Rect,
         entry: &CommandEntry,
-        row_ground: Color,
         colors: &crate::tokens::Colors,
-        desc_size: f32,
         label_size: f32,
         selected: bool,
         platform: PlatformConventions,
     ) -> f64 {
         // Reserved before measuring the text, so a long title is ellipsised
         // rather than painted under the chip.
-        if let Some(kb) = entry.keybinding_label(platform) {
-            let (kw, kh) = text_renderer.measure(&kb, desc_size, None);
-            let chip_w = f64::from(kw) + 14.0;
-            let chip_h = f64::from(kh) + 8.0;
+        if let Some(labels) = entry.keycap_labels(platform) {
+            let chip_w =
+                crate::widget::InputHint::measure_keycap_labels(&labels, text_renderer, theme);
+            let chip_h = 26.0;
             let cy = f64::midpoint(row.y0, row.y1);
             let chip = Rect::new(
                 row.x1 - chip_w - 8.0,
@@ -1611,33 +1626,13 @@ impl CommandPalette {
                 row.x1 - 8.0,
                 cy + chip_h / 2.0,
             );
-            let chip_shape = RoundedRect::from_rect(chip, 5.0);
-            let kb_fill =
-                crate::tokens::colors::over(row_ground, Color::WHITE, KEYBINDING_CHIP_WASH);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                colors.surface_white_5,
-                None,
-                &chip_shape,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                colors.border_white_10,
-                None,
-                &chip_shape,
-            );
-            text_renderer.draw_text(
+            crate::widget::InputHint::paint_keycap_labels_at(
                 scene,
-                &kb,
-                desc_size,
-                colors.ink_on(kb_fill, colors.text_dim, ON_CARD_SMALL_TEXT_CONTRAST),
-                transform.pre_translate(Vec2::new(
-                    chip.x0 + 7.0,
-                    chip.center().y - f64::from(kh) / 2.0,
-                )),
-                None,
+                transform,
+                Point::new(chip.x0, chip.y0),
+                &labels,
+                text_renderer,
+                theme,
             );
             chip.x0 - 8.0
         } else if entry.argument.is_some() {
@@ -1709,11 +1704,10 @@ impl CommandPalette {
             scene,
             transform,
             text_renderer,
+            theme,
             row,
             entry,
-            row_ground,
             colors,
-            desc_size,
             label_size,
             selected,
             platform,
@@ -1874,9 +1868,6 @@ impl CommandPalette {
 /// Ink drawn on a selected row is measured against the composite this
 /// produces — the two values must stay equal.
 const SELECTION_WASH: f32 = 0.22;
-/// Must match the alpha of `surface_white_5`, which is what actually paints
-/// the keybinding chip.
-const KEYBINDING_CHIP_WASH: f32 = 13.0 / 255.0;
 
 const ROW_HEIGHT: f64 = 32.0;
 const TWO_LINE_ROW_HEIGHT: f64 = 42.0;

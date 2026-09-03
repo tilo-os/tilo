@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use futures_lite::StreamExt;
 use iroh::address_lookup::memory::MemoryLookup;
-use iroh::protocol::Router;
+use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use iroh_gossip::api::{Event as GossipEvent, GossipSender};
 use iroh_gossip::net::{GOSSIP_ALPN, Gossip};
@@ -21,11 +21,23 @@ use tokio::sync::mpsc;
 
 use crate::network::protocol::NeighbourMsg;
 
+#[cfg(test)]
+static DEDICATED_SURFACE_FRAMES_RECEIVED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const PEER_TIMEOUT: Duration = Duration::from_secs(15);
 const EVICTION_INTERVAL: Duration = Duration::from_secs(1);
 const HOST_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(600);
 const MAX_GOSSIP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_SURFACE_FRAME_BYTES: usize = 64 * 1024 * 1024;
+const SURFACE_STREAM_ALPN: &[u8] = b"qos-surface-stream/1";
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct SurfaceWireFrame {
+    workspace: WorkspaceId,
+    message: NeighbourMsg,
+}
 
 pub type WorkspaceId = u64;
 pub type PeerId = EndpointId;
@@ -175,6 +187,12 @@ enum InternalEvent {
         // so an unboxed `Result` here would size the whole enum to fit it.
         result: Box<Result<RelayCoeditSession, String>>,
     },
+    SurfaceFrame {
+        ws: WorkspaceId,
+        peer: EndpointId,
+        fingerprint: [u8; 32],
+        msg: NeighbourMsg,
+    },
     Closed {
         ws: WorkspaceId,
     },
@@ -198,6 +216,67 @@ struct TopicRuntime {
 struct HostRuntime {
     session: Arc<RelayCoeditSession>,
     pump: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Clone)]
+struct SurfaceStreamProtocol {
+    internal_tx: mpsc::Sender<InternalEvent>,
+}
+
+impl std::fmt::Debug for SurfaceStreamProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SurfaceStreamProtocol")
+    }
+}
+
+impl ProtocolHandler for SurfaceStreamProtocol {
+    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
+        let peer = connection.remote_id();
+        let tx = self.internal_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                let mut recv = match connection.accept_uni().await {
+                    Ok(recv) => recv,
+                    Err(_) => return,
+                };
+                let bytes = match recv.read_to_end(MAX_SURFACE_FRAME_BYTES).await {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        tracing::debug!(peer = %peer, %error, "surface frame stream read failed");
+                        continue;
+                    }
+                };
+                let Ok(frame) = postcard::from_bytes::<SurfaceWireFrame>(&bytes) else {
+                    tracing::warn!(peer = %peer, "invalid dedicated surface frame");
+                    continue;
+                };
+                if !matches!(frame.message, NeighbourMsg::SurfaceFrame { .. }) {
+                    tracing::warn!(peer = %peer, "non-frame message on surface stream ALPN");
+                    continue;
+                }
+                #[cfg(test)]
+                DEDICATED_SURFACE_FRAMES_RECEIVED
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Ok(message_bytes) = postcard::to_allocvec(&frame.message) else {
+                    continue;
+                };
+                let fingerprint = message_fingerprint(&message_bytes);
+                if tx
+                    .send(InternalEvent::SurfaceFrame {
+                        ws: frame.workspace,
+                        peer,
+                        fingerprint,
+                        msg: frame.message,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        Ok(())
+    }
 }
 
 pub struct Actor;
@@ -244,6 +323,9 @@ struct ActorState {
     peers_seen: HashMap<(WorkspaceId, EndpointId), Instant>,
     recent: HashSet<(WorkspaceId, [u8; 32])>,
     recent_order: VecDeque<(WorkspaceId, [u8; 32])>,
+    /// Long-lived direct media connections. One unidirectional QUIC stream
+    /// per frame avoids head-of-line blocking between viewers and frames.
+    surface_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
 }
 
 impl ActorState {
@@ -273,10 +355,23 @@ impl ActorState {
                 }
             }
             Some(NetCmd::Publish { ws, msg }) => {
-                publish(&self.topics, &self.host_sessions, ws, msg, false).await;
+                let gossip_fallback = if matches!(msg, NeighbourMsg::SurfaceFrame { .. }) {
+                    !self.publish_surface_direct(ws, &msg).await
+                } else {
+                    true
+                };
+                publish(
+                    &self.topics,
+                    &self.host_sessions,
+                    ws,
+                    msg,
+                    false,
+                    gossip_fallback,
+                )
+                .await;
             }
             Some(NetCmd::PublishCheckpoint { ws, msg }) => {
-                publish(&self.topics, &self.host_sessions, ws, msg, true).await;
+                publish(&self.topics, &self.host_sessions, ws, msg, true, true).await;
             }
             Some(NetCmd::Connect { addr }) => {
                 let id = addr.id;
@@ -311,6 +406,67 @@ impl ActorState {
             None => return false,
         }
         true
+    }
+
+    /// Send an encoded surface frame over the media ALPN to every directly
+    /// connected participant in this workspace. Returns true only when every
+    /// currently-known direct participant was reached; otherwise the caller
+    /// retains gossip as a compatibility fallback. The workspace host is
+    /// still published to separately.
+    async fn publish_surface_direct(&mut self, ws: WorkspaceId, msg: &NeighbourMsg) -> bool {
+        let wire = SurfaceWireFrame {
+            workspace: ws,
+            message: msg.clone(),
+        };
+        let Ok(bytes) = postcard::to_allocvec(&wire) else {
+            return false;
+        };
+        if bytes.len() > MAX_SURFACE_FRAME_BYTES {
+            tracing::warn!(ws, bytes = bytes.len(), "surface frame exceeds wire limit");
+            return false;
+        }
+        let workspace_peer_count = self
+            .peers_seen
+            .keys()
+            .filter(|(peer_ws, _)| *peer_ws == ws)
+            .count();
+        let targets: Vec<_> = self
+            .peers
+            .values()
+            .filter(|addr| self.peers_seen.contains_key(&(ws, addr.id)))
+            .cloned()
+            .collect();
+        let mut sent = 0usize;
+        for addr in targets {
+            let peer = addr.id;
+            let connection = if let Some(connection) = self.surface_connections.get(&peer) {
+                connection.clone()
+            } else {
+                let Ok(Ok(connection)) = tokio::time::timeout(
+                    Duration::from_millis(300),
+                    self.endpoint.connect(addr, SURFACE_STREAM_ALPN),
+                )
+                .await
+                else {
+                    continue;
+                };
+                self.surface_connections.insert(peer, connection.clone());
+                connection
+            };
+            let send = async {
+                let mut stream = connection.open_uni().await.map_err(|_| ())?;
+                stream.write_all(&bytes).await.map_err(|_| ())?;
+                stream.finish().map_err(|_| ())?;
+                Ok::<(), ()>(())
+            };
+            match tokio::time::timeout(Duration::from_millis(40), send).await {
+                Ok(Ok(())) => sent = sent.saturating_add(1),
+                _ => {
+                    self.surface_connections.remove(&peer);
+                }
+            }
+        }
+        workspace_peer_count > 0 && sent == workspace_peer_count
     }
 
     /// [`NetCmd::JoinWorkspace`] arm of [`Self::handle_command`], split out
@@ -374,6 +530,27 @@ impl ActorState {
             }
             Some(InternalEvent::Host { ws, peer, event }) => {
                 self.handle_host_event(ws, peer, event).await;
+            }
+            Some(InternalEvent::SurfaceFrame {
+                ws,
+                peer,
+                fingerprint,
+                msg,
+            }) => {
+                // A bare ALPN connection is not workspace admission. Require
+                // the peer to have appeared on this workspace's authenticated
+                // gossip topic first; ShellNetwork performs the capability
+                // and claimed-publisher checks before dispatch.
+                if !self.peers_seen.contains_key(&(ws, peer)) {
+                    tracing::warn!(ws, peer = %peer, "surface frame from unknown workspace peer");
+                    return true;
+                }
+                self.peers_seen.insert((ws, peer), Instant::now());
+                if mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
+                    && let Some(tx) = self.subscribers.get(&ws)
+                {
+                    let _ = tx.send(NetEvent::Msg { ws, peer, msg }).await;
+                }
             }
             None => return false,
         }
@@ -593,13 +770,19 @@ async fn run(
     listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
     mut cmd_rx: mpsc::Receiver<NetCmd>,
 ) {
+    let (internal_tx, mut internal_rx) = mpsc::channel(256);
     let gossip = Gossip::builder()
         .max_message_size(MAX_GOSSIP_MESSAGE_BYTES)
         .spawn(endpoint.clone());
     let router = Router::builder(endpoint.clone())
         .accept(GOSSIP_ALPN, gossip.clone())
+        .accept(
+            SURFACE_STREAM_ALPN,
+            SurfaceStreamProtocol {
+                internal_tx: internal_tx.clone(),
+            },
+        )
         .spawn();
-    let (internal_tx, mut internal_rx) = mpsc::channel(256);
     let mut state = ActorState {
         endpoint,
         lookup,
@@ -616,6 +799,7 @@ async fn run(
         peers_seen: HashMap::new(),
         recent: HashSet::new(),
         recent_order: VecDeque::new(),
+        surface_connections: HashMap::new(),
     };
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut eviction = tokio::time::interval(EVICTION_INTERVAL);
@@ -660,6 +844,7 @@ async fn publish(
     ws: WorkspaceId,
     msg: NeighbourMsg,
     shell_checkpoint: bool,
+    broadcast_gossip: bool,
 ) {
     let Some(topic) = topics.get(&ws) else { return };
     let bytes = match postcard::to_allocvec(&msg) {
@@ -669,7 +854,8 @@ async fn publish(
             return;
         }
     };
-    if let Err(error) = topic.sender.broadcast(Bytes::from(bytes.clone())).await {
+    if broadcast_gossip && let Err(error) = topic.sender.broadcast(Bytes::from(bytes.clone())).await
+    {
         tracing::warn!(ws, %error, "iroh gossip publish failed");
     }
     for ((session_ws, _), runtime) in host_sessions {
@@ -1001,11 +1187,12 @@ mod tests {
     async fn two_actors_exchange_over_iroh() {
         let (a, lookup_a) = endpoint().await;
         let (b, lookup_b) = endpoint().await;
+        let source_peer = crate::network::behaviour::peer_liveness_handle(&a.id());
         let b_addr = b.addr();
         let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
         let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
         let (event_a, mut rx_a) = mpsc::channel(16);
-        let (event_b, _rx_b) = mpsc::channel(16);
+        let (event_b, mut rx_b) = mpsc::channel(16);
         cmd_a
             .send(NetCmd::JoinWorkspace {
                 ws: 42,
@@ -1056,6 +1243,45 @@ mod tests {
                 break;
             }
         }
+
+        let dedicated_before =
+            DEDICATED_SURFACE_FRAMES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed);
+        cmd_a
+            .send(NetCmd::Publish {
+                ws: 42,
+                msg: NeighbourMsg::SurfaceFrame {
+                    surface: 7,
+                    source_peer,
+                    encoded_h264: vec![0, 0, 0, 1, 0x65],
+                    ts: 99,
+                },
+            })
+            .await
+            .unwrap();
+        loop {
+            let event = timeout(Duration::from_secs(10), rx_b.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(
+                event,
+                NetEvent::Msg {
+                    msg: NeighbourMsg::SurfaceFrame {
+                        surface: 7,
+                        ts: 99,
+                        ..
+                    },
+                    ..
+                }
+            ) {
+                break;
+            }
+        }
+        assert!(
+            DEDICATED_SURFACE_FRAMES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed)
+                > dedicated_before,
+            "surface frame should arrive through the dedicated QUIC ALPN"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

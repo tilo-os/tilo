@@ -627,3 +627,67 @@ fn the_apps_filter_does_not_outlive_the_picker() {
         h.host.palette_kind_filter()
     );
 }
+
+#[test]
+fn bracket_keys_cycle_tabs_inside_the_focused_group() {
+    let mut h = Harness::new();
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
+
+    h.key(Key::Character("]".into()), ModifiersState::SUPER);
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][1]));
+
+    h.key(Key::Character("]".into()), ModifiersState::SUPER);
+    assert_eq!(
+        h.active_window(),
+        (h.groups[0], h.tabs[0][0]),
+        "tab cycling wraps within the group rather than leaving it"
+    );
+}
+
+#[test]
+fn keyboard_resize_changes_the_persisted_fraction() {
+    let mut h = Harness::new();
+    let before = {
+        let state = h.chrome.borrow();
+        state.tree().workspaces[0].strips[0].window_groups[0]
+            .width
+            .permille()
+    };
+    h.key(Key::Character("=".into()), ModifiersState::SUPER);
+    let after = {
+        let state = h.chrome.borrow();
+        state.tree().workspaces[0].strips[0].window_groups[0]
+            .width
+            .permille()
+    };
+    assert_eq!(after, before + 50);
+}
+
+#[test]
+fn shifted_arrow_reorders_the_focused_group() {
+    let mut h = Harness::new();
+    h.key(
+        Key::Named(NamedKey::ArrowRight),
+        ModifiersState::SUPER | ModifiersState::SHIFT,
+    );
+    let order: Vec<_> = {
+        let state = h.chrome.borrow();
+        state.tree().workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .map(|group| group.id)
+            .collect()
+    };
+    assert_eq!(order[0], h.groups[1]);
+    assert_eq!(order[1], h.groups[0]);
+}
+
+#[test]
+fn f1_toggles_the_desktop_guide() {
+    let mut h = Harness::new();
+    assert!(!h.chrome.borrow().overlays.shortcut_help);
+    h.key(Key::Named(NamedKey::F1), ModifiersState::empty());
+    assert!(h.chrome.borrow().overlays.shortcut_help);
+    h.key(Key::Named(NamedKey::F1), ModifiersState::empty());
+    assert!(!h.chrome.borrow().overlays.shortcut_help);
+}

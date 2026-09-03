@@ -85,6 +85,49 @@ use crate::compositor::metrics;
 use crate::compositor::output_globals;
 use crate::compositor::pacing;
 use crate::compositor::present;
+
+#[derive(Clone)]
+struct PendingLegacyStream {
+    source_peer: u64,
+    surface: u64,
+    local_peer: u64,
+    app_id: String,
+    codec: String,
+    hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
+    input_sink: Arc<dyn Fn(crate::network::streaming::InputEvent) + Send + Sync>,
+}
+
+fn desired_legacy_shares(
+    tree: &crate::shell::state::WorkspaceTree,
+) -> HashMap<u64, (String, std::collections::HashSet<u64>)> {
+    let Some(workspace) = tree
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == tree.active)
+    else {
+        return HashMap::new();
+    };
+    workspace
+        .shared_surfaces
+        .iter()
+        .filter_map(|(surface, peers)| {
+            let app_id = workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .find_map(|tab| match &tab.tile {
+                    crate::shell::state::TileContent::Foreign { app_id, surface_id }
+                        if *surface_id == surface =>
+                    {
+                        Some(app_id.clone())
+                    }
+                    _ => None,
+                })?;
+            Some((surface, (app_id, peers.clone())))
+        })
+        .collect()
+}
 use crate::compositor::switch_control::{SwitchAction, SwitchControlRuntime};
 
 use crate::compositor::state::{ClientState, State};
@@ -3481,6 +3524,10 @@ pub fn run() -> ! {
                 let _ = handle.join_default_workspace();
                 tracing::info!("peer-sync: actor spawned, default workspace joined");
                 let net = Arc::new(handle);
+                let stream_net = Arc::clone(&net);
+                state.set_legacy_stream_publisher(Arc::new(move |message| {
+                    stream_net.publish_legacy_active(message)
+                }));
                 let bridge_net = Arc::clone(&net);
                 let bridge_tree = tree_handle;
                 frame_builder
@@ -3928,6 +3975,12 @@ pub fn run() -> ! {
     let mut last_paint = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
+    // Start announcements can beat the replicated `PeerWindow` tab they
+    // describe, and a workspace rebuild can replace a mounted runtime
+    // widget. Retain descriptors until explicit stream end and retry their
+    // cheap idempotent mount every network tick.
+    let mut pending_legacy_streams: HashMap<(u64, u64), PendingLegacyStream> = HashMap::new();
+    let legacy_share_config = crate::config::load_config().flatpak_share;
     // Optional paint-rate diagnostics (`QOS_PAINT_STATS=1`).
     let paint_stats = std::env::var("QOS_PAINT_STATS").is_ok();
     // Optional per-iteration timing (`QOS_LOOP_TIMING=1`): logs any tick over
@@ -4420,6 +4473,18 @@ pub fn run() -> ! {
             // router's own queues are pure bookkeeping — drained each tick so they can't grow across a long session.
             state.client_input.clear_pending();
         }
+        // Every client surface must be associated with at least one output.
+        // GTK3/LibreOffice waits for `wl_surface.enter` before finishing its
+        // initial scale setup; Qt and GTK4 happen to tolerate its absence.
+        // `Output::enter` is idempotent, so this also covers surfaces created
+        // after startup without duplicating protocol events.
+        if let Some(primary) = backend.outputs().first()
+            && let Some(output) = output_globals.handle(primary.id)
+        {
+            for surface in state.surface_handles.values() {
+                output.enter(surface);
+            }
+        }
         // Reconcile the seat's keyboard focus with the focused tab every tick, so a
         // tab/group/workspace switch or overlay open moves the keyboard immediately, not on the next keystroke.
         client_input::sync_keyboard_focus(&mut state, &frame_builder);
@@ -4477,6 +4542,127 @@ pub fn run() -> ! {
         // network actor into the replica: peer changes fold in before this frame's pump reads them, bumping the revision to repaint.
         if let Some(net) = peer_sync.as_ref() {
             net.tick();
+            let desired = {
+                let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
+                let tree = tree_handle.read();
+                desired_legacy_shares(&tree)
+            };
+            state.reconcile_legacy_share_sessions(
+                net.local_peer_id_hash(),
+                &desired,
+                &legacy_share_config,
+            );
+            for inbound in net.take_inbound_legacy() {
+                match inbound.message {
+                    crate::network::NeighbourMsg::SurfaceStreamStart {
+                        surface,
+                        source_peer,
+                        app_id,
+                        codec,
+                        hdr_static_metadata,
+                        ..
+                    } => {
+                        let reply_net = Arc::clone(net);
+                        let local_peer = net.local_peer_id_hash();
+                        let workspace_topic = inbound.workspace_topic;
+                        let input_sink = Arc::new(move |input| {
+                            if let Ok(event) = postcard::to_allocvec(&input) {
+                                let _ = reply_net.publish_legacy_message(
+                                    workspace_topic,
+                                    crate::network::NeighbourMsg::RemoteInput {
+                                        peer: local_peer,
+                                        surface,
+                                        event,
+                                    },
+                                );
+                            }
+                        });
+                        let stream = PendingLegacyStream {
+                            source_peer,
+                            surface,
+                            local_peer,
+                            app_id,
+                            codec,
+                            hdr_static_metadata,
+                            input_sink,
+                        };
+                        let mounted = !stream.app_id.is_empty()
+                            && frame_builder.host_mut().mount_peer_stream(
+                                stream.source_peer,
+                                stream.surface,
+                                stream.local_peer,
+                                &stream.app_id,
+                                &stream.codec,
+                                stream.hdr_static_metadata.clone(),
+                                Arc::clone(&stream.input_sink),
+                            );
+                        if !mounted {
+                            tracing::warn!(
+                                source_peer,
+                                surface,
+                                app_id = stream.app_id,
+                                "legacy stream is waiting for its peer-window tab"
+                            );
+                        }
+                        pending_legacy_streams.insert((source_peer, surface), stream);
+                    }
+                    crate::network::NeighbourMsg::SurfaceFrame {
+                        surface,
+                        source_peer,
+                        encoded_h264,
+                        ..
+                    } => {
+                        let _ = frame_builder.host_mut().push_peer_stream_frame(
+                            source_peer,
+                            surface,
+                            &encoded_h264,
+                            None,
+                        );
+                    }
+                    crate::network::NeighbourMsg::SurfaceStreamEnd {
+                        surface,
+                        source_peer,
+                        ..
+                    } => {
+                        pending_legacy_streams.remove(&(source_peer, surface));
+                        let _ = frame_builder
+                            .host_mut()
+                            .unmount_peer_stream(source_peer, surface);
+                    }
+                    crate::network::NeighbourMsg::RemoteInput {
+                        peer,
+                        surface,
+                        event,
+                    } => {
+                        match postcard::from_bytes::<crate::network::streaming::InputEvent>(&event)
+                        {
+                            Ok(event) => {
+                                let _ = state.apply_network_remote_input(peer, surface, event);
+                            }
+                            Err(error) => tracing::warn!(
+                                peer,
+                                surface,
+                                %error,
+                                "dropping malformed remote input"
+                            ),
+                        }
+                    }
+                    _ => unreachable!("legacy inbox contains only live legacy messages"),
+                }
+            }
+            for stream in pending_legacy_streams.values() {
+                if !stream.app_id.is_empty() {
+                    let _ = frame_builder.host_mut().mount_peer_stream(
+                        stream.source_peer,
+                        stream.surface,
+                        stream.local_peer,
+                        &stream.app_id,
+                        &stream.codec,
+                        stream.hdr_static_metadata.clone(),
+                        Arc::clone(&stream.input_sink),
+                    );
+                }
+            }
         }
         // Keep the presence relay current, then fold in what peers sent. Pointer
         // is read level-triggered (covers every source: seat, remote peer, test

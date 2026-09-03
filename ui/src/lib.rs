@@ -74,6 +74,7 @@ pub mod history_source;
 pub mod i18n;
 pub mod icons;
 pub mod image_store;
+pub mod input;
 pub mod interaction;
 pub mod launch;
 pub mod local_state;
@@ -144,7 +145,14 @@ pub use color_compat::ColorCompat;
 pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
 pub use i18n::{ArgValue, I18nError, I18nManager, PseudoLocale};
 pub use image_store::{Fetcher, ImageStore};
-pub use interaction::{InputModality, InteractionEnvironment, PointerPrecision};
+pub use input::{
+    ActionBindings, BindingConflict, BindingSet, ControllerBinding, ControllerButton, InputBinding,
+    KeyLegend, KeyboardBinding, KeyboardModifier, TouchGesture,
+};
+pub use interaction::{
+    ControllerFamily, InputAvailability, InputModality, InteractionEnvironment, KeyboardFamily,
+    PointerPrecision,
+};
 pub use local_state::{
     LatestRequest, LatestTask, LocalState, LocalStateWriter, RequestCompletion, TaskCompletion,
     WakeHandle,
