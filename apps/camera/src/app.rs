@@ -27,6 +27,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect};
 use vello::peniko::Color;
 
+use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -342,6 +343,210 @@ impl CameraApp {
 
     fn push_region(&mut self, rect: Rect, action: Action) {
         self.regions.push((rect, action));
+    }
+
+    /// A stable semantic target for a hand-painted control. It is derived
+    /// from the same `Action` the pointer hit map holds, so it cannot drift
+    /// into a second accessibility-only command path.
+    fn a11y_target(action: &Action) -> String {
+        match action {
+            Action::Nav(screen) => format!("camera.nav:{}", screen.as_str()),
+            Action::Back => "camera.back".into(),
+            Action::Shutter => "camera.shutter".into(),
+            Action::SetMode(mode) => format!("camera.mode:{}", mode.as_str()),
+            Action::CycleFacing => "camera.facing".into(),
+            Action::SetFilter(filter) => format!("camera.filter:{}", filter.label()),
+            Action::SelectCapture(id) => format!("camera.capture:{id}"),
+            Action::CloseDetail => "camera.close-detail".into(),
+            Action::ToggleFavSelected => "camera.favorite".into(),
+            Action::DeleteSelected => "camera.delete".into(),
+            Action::DismissScan => "camera.dismiss-scan".into(),
+            Action::Scan(index) => format!("camera.scan:{index}"),
+            Action::ScanLibraryItem(id) => format!("camera.scan-library:{id}"),
+            Action::ShareSelected => "camera.share".into(),
+            Action::CycleResolution => "camera.resolution".into(),
+            Action::CycleFormat => "camera.format".into(),
+            Action::SetTimer(timer) => format!("camera.timer:{}", timer.seconds()),
+            Action::ToggleGrid => "camera.grid".into(),
+            Action::ToggleLevel => "camera.level".into(),
+            Action::ToggleMirror => "camera.mirror".into(),
+            Action::ToggleGeotag => "camera.geotag".into(),
+            Action::ToggleHdr => "camera.hdr".into(),
+            Action::CycleDefaultFacing => "camera.default-facing".into(),
+        }
+    }
+
+    fn a11y_node(&self, rect: Rect, action: &Action) -> AccessNode {
+        let (role, name, state) = match action {
+            Action::Nav(screen) => (
+                Role::Button,
+                format!("Open {}", screen.label()),
+                AccessState::new().focusable(true),
+            ),
+            Action::Back => (
+                Role::Button,
+                "Back".into(),
+                AccessState::new().focusable(true),
+            ),
+            Action::Shutter => (
+                Role::Button,
+                if self.is_recording() {
+                    "Stop recording"
+                } else if self.mode == CaptureMode::Video {
+                    "Start recording"
+                } else {
+                    "Take photo"
+                }
+                .into(),
+                AccessState::new().focusable(true),
+            ),
+            Action::SetMode(mode) => (
+                Role::RadioButton,
+                format!("{} mode", mode.as_str()),
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.mode == *mode),
+            ),
+            Action::CycleFacing => (
+                Role::Button,
+                format!("Switch camera, currently {}", self.facing.label()),
+                AccessState::new().focusable(true),
+            ),
+            Action::SetFilter(filter) => (
+                Role::RadioButton,
+                format!("Show {}", filter.label()),
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.filter == *filter),
+            ),
+            Action::SelectCapture(id) => (
+                Role::Button,
+                self.captures
+                    .iter()
+                    .find(|capture| capture.id == *id)
+                    .map_or_else(
+                        || "Open media".into(),
+                        |capture| format!("Open {}", capture.label),
+                    ),
+                AccessState::new().focusable(true),
+            ),
+            Action::CloseDetail => (
+                Role::Button,
+                "Close preview".into(),
+                AccessState::new().focusable(true),
+            ),
+            Action::ToggleFavSelected => (
+                Role::ToggleButton,
+                "Favorite selected media".into(),
+                AccessState::new().focusable(true).checked(
+                    self.selected_capture
+                        .as_ref()
+                        .is_some_and(|id| self.favorites.contains(id)),
+                ),
+            ),
+            Action::DeleteSelected => (
+                Role::Button,
+                "Delete selected media".into(),
+                AccessState::new().focusable(true),
+            ),
+            Action::DismissScan => (
+                Role::Button,
+                "Dismiss scan result".into(),
+                AccessState::new().focusable(true),
+            ),
+            Action::Scan(_) => (
+                Role::Button,
+                "Use scanned result".into(),
+                AccessState::new().focusable(true),
+            ),
+            Action::ScanLibraryItem(id) => (
+                Role::Button,
+                self.captures
+                    .iter()
+                    .find(|capture| capture.id == *id)
+                    .map_or_else(
+                        || "Scan media".into(),
+                        |capture| format!("Scan {}", capture.label),
+                    ),
+                AccessState::new().focusable(true),
+            ),
+            Action::ShareSelected => (
+                Role::Button,
+                "Share selected media".into(),
+                AccessState::new().focusable(true),
+            ),
+            Action::CycleResolution => (
+                Role::Button,
+                format!(
+                    "Change resolution, currently {}",
+                    self.settings.resolution.label()
+                ),
+                AccessState::new().focusable(true),
+            ),
+            Action::CycleFormat => (
+                Role::Button,
+                format!(
+                    "Change photo format, currently {}",
+                    self.settings.photo_format.label()
+                ),
+                AccessState::new().focusable(true),
+            ),
+            Action::SetTimer(timer) => (
+                Role::RadioButton,
+                format!("{} timer", timer.label()),
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.settings.timer == *timer),
+            ),
+            Action::ToggleGrid => (
+                Role::Switch,
+                "Composition grid".into(),
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.settings.grid),
+            ),
+            Action::ToggleLevel => (
+                Role::Switch,
+                "Level guide".into(),
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.settings.level),
+            ),
+            Action::ToggleMirror => (
+                Role::Switch,
+                "Mirror front camera".into(),
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.settings.mirror_front),
+            ),
+            Action::ToggleGeotag => (
+                Role::Switch,
+                "Save location with photos".into(),
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.settings.geotag),
+            ),
+            Action::ToggleHdr => (
+                Role::Switch,
+                "HDR".into(),
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.settings.hdr),
+            ),
+            Action::CycleDefaultFacing => (
+                Role::Button,
+                format!(
+                    "Change default camera, currently {}",
+                    self.settings.default_facing.label()
+                ),
+                AccessState::new().focusable(true),
+            ),
+        };
+        AccessNode::new(role)
+            .with_name(name)
+            .with_state(state)
+            .with_bounds(rect)
+            .with_action_target(Self::a11y_target(action))
     }
 
     fn reload_library(&mut self) {
@@ -1187,6 +1392,52 @@ impl Widget for CameraApp {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn accessibility(&self) -> Option<AccessNode> {
+        // `regions` is rebuilt by `draw` from the actual screen and content.
+        // Deduplicate identical actions: a backdrop and a visible back affordance
+        // can share one action, but must not publish colliding semantic ids.
+        let mut targets = HashSet::new();
+        let controls = self
+            .regions
+            .iter()
+            .filter_map(|(rect, action)| {
+                let target = Self::a11y_target(action);
+                targets
+                    .insert(target)
+                    .then(|| self.a11y_node(*rect, action))
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name("Camera")
+                .with_bounds(self.rect)
+                .with_children(controls),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &A11yAction,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if !matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
+            return false;
+        }
+        let hit = self
+            .regions
+            .iter()
+            .find(|(_, candidate)| Self::a11y_target(candidate) == target)
+            .map(|(_, candidate)| candidate.clone());
+        if let Some(hit) = hit {
+            self.apply(hit, state, path);
+            true
+        } else {
+            false
+        }
+    }
     fn needs_redraw(&self) -> bool {
         // Keep animating while recording so the elapsed timer advances and the
         // hermetic frame-synth keeps feeding the encoder.
@@ -1280,7 +1531,9 @@ impl CameraApp {
         center_x: f64,
         top_y: f64,
     ) {
-        let seg_w = 240.0;
+        // Keep the three mode targets inside a narrow/high-zoom viewport
+        // instead of letting the fixed desktop-width pill clip off-screen.
+        let seg_w = (self.rect.width() - EDGE * 2.0).clamp(150.0, 240.0);
         let seg = Rect::new(
             center_x - seg_w / 2.0,
             top_y,
@@ -4283,6 +4536,52 @@ mod tests {
             narrow_w < wide_w,
             "viewfinder reflowed {wide_w} -> {narrow_w}"
         );
+    }
+
+    #[test]
+    fn accessibility_exports_named_controls_from_the_painted_hit_map() {
+        let (mut app, mut doc, root) = sample_app();
+        render_at(&mut app, &mut doc, &root, 900.0, 700.0);
+        let tree = app.accessibility().expect("camera has a semantic window");
+        assert_eq!(tree.role, Role::Window);
+        assert_eq!(tree.name.as_deref(), Some("Camera"));
+        assert!(tree.children.iter().any(|node| {
+            node.name.as_deref() == Some("Take photo")
+                && node.role == Role::Button
+                && node.action_target.as_deref() == Some("camera.shutter")
+        }));
+        assert!(tree.children.iter().all(|node| node.bounds.is_some()));
+    }
+
+    #[test]
+    fn accessibility_activation_reuses_camera_action_dispatch() {
+        let (mut app, mut doc, root) = sample_app();
+        render_at(&mut app, &mut doc, &root, 900.0, 700.0);
+        let before = app.captures.len();
+        assert!(app.perform_semantic_action(
+            "camera.shutter",
+            &A11yAction::Activate,
+            &mut doc,
+            &root,
+        ));
+        assert_eq!(app.captures.len(), before + 1);
+    }
+
+    #[test]
+    fn compact_mode_switcher_stays_within_the_viewport() {
+        let (mut app, mut doc, root) = sample_app();
+        render_at(&mut app, &mut doc, &root, 260.0, 700.0);
+        let tree = app.accessibility().expect("camera has a semantic window");
+        let mode_controls: Vec<_> = tree
+            .children
+            .iter()
+            .filter(|node| node.role == Role::RadioButton)
+            .collect();
+        assert_eq!(mode_controls.len(), 2, "Photo and Video are reachable");
+        assert!(mode_controls.iter().all(|node| {
+            let bounds = node.bounds.expect("painted control has bounds");
+            bounds.x0 >= app.rect.x0 && bounds.x1 <= app.rect.x1
+        }));
     }
 
     #[test]
