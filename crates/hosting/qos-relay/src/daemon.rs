@@ -16,7 +16,9 @@ use iroh_base::{EndpointAddr, PublicKey};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
 
-use qos_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
+use qos_user_identity::{
+    DeviceCert, RevocationList, verify_device_cert_at, verify_revocation_entry,
+};
 
 use crate::auth::{self, Hello, HelloAck2, PeerRole};
 use crate::client::RelayClient;
@@ -28,7 +30,7 @@ use crate::peer::{
 use crate::policy::TrustPolicy;
 use crate::transport::{
     ALPN, ContentEndpointAdvertisement, ContentEndpointRequest, DISCOVERY_ALPN, Envelope,
-    MAX_FRAME_BYTES,
+    HomePeerManagementRequest, HomePeerManagementResponse, MANAGEMENT_ALPN, MAX_FRAME_BYTES,
 };
 use crate::workspace::{Membership, SharedWorkspace, WorkspaceRuntime};
 
@@ -253,9 +255,19 @@ impl Relay {
                 }
             }),
         };
+        let management = ManagementProtocol {
+            own_user_pk: identity.user_public_key,
+            own_cert: identity.device_cert.clone(),
+            own_sk: identity.device_signing_key.clone(),
+            revocations: revocations.clone(),
+            mesh_profile: mesh_profile.clone(),
+            full_replica_status: cfg.full_replica_status.clone(),
+            state_root: cfg.state_root.clone(),
+        };
         let router = Router::builder(endpoint.clone())
             .accept(ALPN, handler)
             .accept(DISCOVERY_ALPN, discovery)
+            .accept(MANAGEMENT_ALPN, management)
             .spawn();
 
         let peer_relay_tasks = spawn_background_tasks(
@@ -687,6 +699,7 @@ fn spawn_home_peer_authority_refresh(
                 tracing::warn!(path = %bundle_path.display(), "home-peer authority bundle is invalid");
                 continue;
             };
+            let global_namespace = bundle.workspaces.len() == 1;
             let mut users = vec![hex::encode(own_user)];
             let mut room_users: HashMap<u64, std::collections::HashSet<[u8; 32]>> = HashMap::new();
             let mut governed_rooms = std::collections::HashSet::new();
@@ -741,7 +754,7 @@ fn spawn_home_peer_authority_refresh(
                         // A signed authority may contain room grants for a
                         // different host; they have no force outside this
                         // bundle's explicit room binding.
-                        if !workspace.relay_workspace_ids.contains(&room)
+                        if (!global_namespace && !workspace.relay_workspace_ids.contains(&room))
                             || room == crate::personal_continuity_workspace_id(&authority.governor)
                             || capability.effect != collab_types::Effect::Grant
                             || !capability.is_live_at(Some(now))
@@ -752,6 +765,7 @@ fn spawn_home_peer_authority_refresh(
                             continue;
                         };
                         users.push(hex::encode(user.as_bytes()));
+                        governed_rooms.insert(room);
                         room_users.entry(room).or_default().insert(*user.as_bytes());
                     }
                 }
@@ -898,6 +912,157 @@ struct DiscoveryProtocol {
     autobind: Option<WorkspaceAutobind>,
 }
 
+#[derive(Clone)]
+struct ManagementProtocol {
+    own_user_pk: [u8; 32],
+    own_cert: DeviceCert,
+    own_sk: ed25519_dalek::SigningKey,
+    revocations: Arc<std::sync::RwLock<RevocationList>>,
+    mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
+    full_replica_status: PathBuf,
+    state_root: PathBuf,
+}
+
+impl std::fmt::Debug for ManagementProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ManagementProtocol")
+    }
+}
+
+impl ProtocolHandler for ManagementProtocol {
+    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
+        if self.state_root.join("decommissioned").exists() {
+            return Err(AcceptError::from_err(std::io::Error::other(
+                "home peer is decommissioned",
+            )));
+        }
+        let (mut send, mut recv) = connection.accept_bi().await?;
+        let hello: Hello = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        let revocations = self
+            .revocations
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let peer = auth::accept_hello(
+            &hello,
+            &self.own_user_pk,
+            &TrustPolicy::AllowMatchingUser,
+            &revocations,
+            crate::peer::now_ns(),
+        )
+        .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        let mut nonce = [0; 32];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+        let ack = auth::build_hello_ack(
+            self.own_cert.clone(),
+            &self.own_sk,
+            nonce,
+            &hello.client_nonce,
+        );
+        write_frame(
+            &mut send,
+            &postcard::to_allocvec(&ack)
+                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
+        )
+        .await
+        .map_err(AcceptError::from_err)?;
+        let ack2: HelloAck2 = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        auth::verify_hello_ack2(&ack2, &peer.device_public_key, &nonce)
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        let request: HomePeerManagementRequest =
+            postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
+                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        let mut decommissioned = false;
+        match request {
+            HomePeerManagementRequest::Status => {}
+            HomePeerManagementRequest::Rename { label } => {
+                if !peer.cert.capabilities.can_admit_devices {
+                    return Err(AcceptError::from_err(std::io::Error::other(
+                        "device is not authorized to rename home peers",
+                    )));
+                }
+                let label = label.trim();
+                if !crate::valid_home_peer_label(label) {
+                    return Err(AcceptError::from_err(std::io::Error::other(
+                        "home-peer name must be 1 to 80 bytes",
+                    )));
+                }
+                atomic_file::write_with_mode(
+                    &self.state_root.join("home-peer-name"),
+                    label.as_bytes(),
+                    0o644,
+                )
+                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+            }
+            HomePeerManagementRequest::Decommission { revocation } => {
+                if !peer.cert.capabilities.can_admit_devices {
+                    return Err(AcceptError::from_err(std::io::Error::other(
+                        "device is not authorized to remove home peers",
+                    )));
+                }
+                verify_revocation_entry(&revocation).map_err(|error| {
+                    AcceptError::from_err(std::io::Error::other(error.to_string()))
+                })?;
+                if revocation.user_public_key != self.own_user_pk
+                    || revocation.revoked_device_public_key != self.own_cert.device_public_key
+                {
+                    return Err(AcceptError::from_err(std::io::Error::other(
+                        "revocation does not target this home peer",
+                    )));
+                }
+                let mut entries =
+                    crate::store::load_revocations(&self.state_root).map_err(|error| {
+                        AcceptError::from_err(std::io::Error::other(error.to_string()))
+                    })?;
+                if !entries.iter().any(|entry| {
+                    entry.revoked_device_public_key == revocation.revoked_device_public_key
+                }) {
+                    entries.push(revocation);
+                    crate::store::save_revocations(&self.state_root, &entries).map_err(
+                        |error| AcceptError::from_err(std::io::Error::other(error.to_string())),
+                    )?;
+                }
+                atomic_file::write_with_mode(
+                    &self.state_root.join("decommissioned"),
+                    b"decommissioned\n",
+                    0o600,
+                )
+                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+                decommissioned = true;
+            }
+        }
+        let label = std::fs::read_to_string(self.state_root.join("home-peer-name"))
+            .ok()
+            .filter(|label| !label.trim().is_empty())
+            .unwrap_or_else(|| self.own_cert.device_label.clone());
+        let files_ready = full_replica_proof(&self.full_replica_status).is_some();
+        write_frame(
+            &mut send,
+            &postcard::to_allocvec(&HomePeerManagementResponse {
+                device_public_key: self.own_cert.device_public_key,
+                label: label.trim().to_string(),
+                files_ready,
+                services: self.mesh_profile.services.clone(),
+                decommissioned,
+            })
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
+        )
+        .await
+        .map_err(AcceptError::from_err)?;
+        send.finish().map_err(AcceptError::from_err)?;
+        if decommissioned && !cfg!(test) {
+            tokio::spawn(async {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                std::process::exit(0);
+            });
+        }
+        connection.closed().await;
+        Ok(())
+    }
+}
+
 impl std::fmt::Debug for DiscoveryProtocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("DiscoveryProtocol")
@@ -906,6 +1071,15 @@ impl std::fmt::Debug for DiscoveryProtocol {
 
 impl ProtocolHandler for DiscoveryProtocol {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
+        if self
+            .autobind
+            .as_ref()
+            .is_some_and(|autobind| autobind.state_root.join("decommissioned").exists())
+        {
+            return Err(AcceptError::from_err(std::io::Error::other(
+                "home peer is decommissioned",
+            )));
+        }
         let (mut send, mut recv) = connection.accept_bi().await?;
         let hello: Hello = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
@@ -1038,6 +1212,15 @@ impl std::fmt::Debug for RelayProtocol {
 
 impl ProtocolHandler for RelayProtocol {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
+        if self
+            .autobind
+            .as_ref()
+            .is_some_and(|autobind| autobind.state_root.join("decommissioned").exists())
+        {
+            return Err(AcceptError::from_err(std::io::Error::other(
+                "home peer is decommissioned",
+            )));
+        }
         let this = self.clone();
         let (send, recv) = connection.accept_bi().await?;
         // Run the whole session in a separate task so we return
@@ -1778,15 +1961,20 @@ mod tests {
         std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
         let config = RelayConfig {
             state_root: temp.path().join("relay"),
-            workspaces: vec![crate::config::WorkspaceBinding {
-                id: 42,
-                pin: true,
-                replication: crate::mesh::ReplicationIntent::FullWorkspace,
-                admitted_users: vec![hex::encode(governor.verifying_key().to_bytes())],
-            }],
+            workspaces: Vec::new(),
             ..RelayConfig::default()
         };
         let workspaces = build_workspace_registry(&config).unwrap();
+        get_or_autobind_workspace(
+            &workspaces,
+            Some(&WorkspaceAutobind {
+                state_root: config.state_root.clone(),
+            }),
+            42,
+        )
+        .await
+        .unwrap()
+        .expect("owner autobinds the newly opened room");
         let policy = Arc::new(std::sync::RwLock::new(TrustPolicy::AllowList {
             users: Vec::new(),
         }));
@@ -1879,6 +2067,7 @@ mod tests {
         let (root, user) = UserIdentity::generate("owner", 1);
         let (host_key, host) = DeviceIdentity::generate("home", 2);
         let (client_key, client) = DeviceIdentity::generate("laptop", 3);
+        let (admin_key, admin) = DeviceIdentity::generate("primary", 5);
         let mut host_cert = DeviceCert {
             user_public_key: user.public_key,
             device_public_key: host.public_key,
@@ -1897,8 +2086,18 @@ mod tests {
             expires_at_ns: None,
             signature: [0; 64],
         };
+        let mut admin_cert = DeviceCert {
+            user_public_key: user.public_key,
+            device_public_key: admin.public_key,
+            device_label: admin.label,
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 4,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
         sign_device_cert(&mut host_cert, &root).unwrap();
         sign_device_cert(&mut client_cert, &root).unwrap();
+        sign_device_cert(&mut admin_cert, &root).unwrap();
         let filesystem =
             EndpointAddr::new(iroh::SecretKey::from_bytes(&host_key.to_bytes()).public())
                 .with_ip_addr("127.0.0.1:40123".parse().unwrap());
@@ -2017,6 +2216,103 @@ mod tests {
                 client_cert.clone(),
                 client_key.clone(),
                 RevocationList::new(),
+            )
+            .await
+            .is_err()
+        );
+        let status = crate::client::RelayClient::manage_home_peer(
+            &client_endpoint,
+            relay.node_addr(),
+            user.public_key,
+            host.public_key,
+            client_cert.clone(),
+            client_key.clone(),
+            RevocationList::new(),
+            HomePeerManagementRequest::Status,
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.label, "home");
+        assert!(status.files_ready);
+        assert!(
+            crate::client::RelayClient::manage_home_peer(
+                &client_endpoint,
+                relay.node_addr(),
+                user.public_key,
+                host.public_key,
+                client_cert.clone(),
+                client_key.clone(),
+                RevocationList::new(),
+                HomePeerManagementRequest::Rename {
+                    label: "Not authorized".into(),
+                },
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            crate::client::RelayClient::manage_home_peer(
+                &client_endpoint,
+                relay.node_addr(),
+                user.public_key,
+                host.public_key,
+                admin_cert.clone(),
+                admin_key.clone(),
+                RevocationList::new(),
+                HomePeerManagementRequest::Rename {
+                    label: "NAS\u{202e}hidden".into(),
+                },
+            )
+            .await
+            .is_err()
+        );
+        let renamed = crate::client::RelayClient::manage_home_peer(
+            &client_endpoint,
+            relay.node_addr(),
+            user.public_key,
+            host.public_key,
+            admin_cert.clone(),
+            admin_key.clone(),
+            RevocationList::new(),
+            HomePeerManagementRequest::Rename {
+                label: "Living room NAS".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(renamed.label, "Living room NAS");
+        let mut revocation = qos_user_identity::RevocationEntry {
+            user_public_key: user.public_key,
+            revoked_device_public_key: host.public_key,
+            revoked_at_ns: now_ns(),
+            reason: qos_user_identity::RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        qos_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
+        let removed = crate::client::RelayClient::manage_home_peer(
+            &client_endpoint,
+            relay.node_addr(),
+            user.public_key,
+            host.public_key,
+            admin_cert.clone(),
+            admin_key.clone(),
+            RevocationList::new(),
+            HomePeerManagementRequest::Decommission { revocation },
+        )
+        .await
+        .unwrap();
+        assert!(removed.decommissioned);
+        assert!(temp.path().join("relay/decommissioned").exists());
+        assert!(
+            crate::client::RelayClient::manage_home_peer(
+                &client_endpoint,
+                relay.node_addr(),
+                user.public_key,
+                host.public_key,
+                admin_cert,
+                admin_key,
+                RevocationList::new(),
+                HomePeerManagementRequest::Status,
             )
             .await
             .is_err()

@@ -89,7 +89,7 @@ pub use client::{ClientError, RelayClient};
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};
 pub use config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use daemon::{Relay, RelayError, RelayHandle};
-pub use home_peer::HomePeerRegistration;
+pub use home_peer::{HomePeerRegistration, valid_home_peer_label};
 pub use mesh::{
     DeviceMeshProfile, DeviceRole, Placement, PlacementRequest, RemoteControlRoute,
     ReplicationIntent, ReplicationResource, ServerAdvertisement, ServiceCapabilities, Workload,

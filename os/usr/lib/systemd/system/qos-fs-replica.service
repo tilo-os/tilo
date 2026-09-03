@@ -3,7 +3,10 @@ Description=qOS complete authenticated filesystem replica
 After=network-online.target qos-relay-firstboot.service
 Wants=network-online.target
 Requires=qos-relay-firstboot.service
+After=qos-relay.service
+BindsTo=qos-relay.service
 ConditionPathExists=/etc/qos/home-peer.toml
+ConditionPathExists=!/var/lib/qos-relay/decommissioned
 
 [Service]
 Type=simple

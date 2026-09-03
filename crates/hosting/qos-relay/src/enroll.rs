@@ -176,10 +176,7 @@ fn register_home_peer(
     relay_workspace_ids: &[u64],
 ) -> anyhow::Result<()> {
     let path = identity_root.join("home-peers.json");
-    if cert.device_label.is_empty()
-        || cert.device_label.len() > 80
-        || relay_workspace_ids.len() > 4096
-    {
+    if !qos_relay::valid_home_peer_label(&cert.device_label) || relay_workspace_ids.len() > 4096 {
         bail!("home-peer registration exceeds its bounded schema");
     }
     let mut registrations = match std::fs::read(&path) {
@@ -204,8 +201,7 @@ fn register_home_peer(
                         || hex::encode(cert.device_public_key) != entry.device_node_id
                         || hex::encode(cert.user_public_key) != entry.user_public_key
                 })
-                || entry.label.is_empty()
-                || entry.label.len() > 80
+                || !qos_relay::valid_home_peer_label(&entry.label)
                 || entry.relay_workspace_ids.len() > 4096
         })
     {
@@ -271,8 +267,7 @@ fn valid_solicitation(solicitation: &PairSolicitation) -> bool {
     solicitation.magic == PAIR_MAGIC
         && VerifyingKey::from_bytes(&solicitation.device_public_key).is_ok()
         && solicitation.relay_service_node_id != [0; 32]
-        && !solicitation.label.trim().is_empty()
-        && solicitation.label.len() <= 80
+        && qos_relay::valid_home_peer_label(&solicitation.label)
 }
 
 fn discover(timeout: u64) -> anyhow::Result<()> {
@@ -792,8 +787,8 @@ fn pair(
     let (device, _) = qos_user_identity::persist::load_or_create_device_key(&paths)?;
     let relay_service_node_id = qos_relay::daemon::relay_service_node_id(&device);
     let label: String = label.chars().take(80).collect();
-    if label.trim().is_empty() {
-        bail!("home-server label must not be empty");
+    if !qos_relay::valid_home_peer_label(&label) {
+        bail!("home-server label must be a printable single-line name");
     }
     let solicitation = postcard::to_stdvec(&PairSolicitation {
         magic: PAIR_MAGIC,

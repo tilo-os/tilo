@@ -35,5 +35,8 @@ grep -q 'After=network-online.target qos-relay-firstboot.service' "$replica_unit
 grep -q 'Requires=qos-relay-firstboot.service' "$replica_unit"
 grep -q 'After=network-online.target qos-relay-firstboot.service' "$relay_unit"
 grep -q 'Requires=qos-relay-firstboot.service' "$relay_unit"
+grep -q 'ConditionPathExists=!/var/lib/qos-relay/decommissioned' "$relay_unit"
+grep -q 'ConditionPathExists=!/var/lib/qos-relay/decommissioned' "$replica_unit"
+grep -q 'BindsTo=qos-relay.service' "$replica_unit"
 grep -q 'qos-relay-firstboot.service /usr/lib/systemd/system/qos-relay-firstboot.service' "$root/os/Containerfile"
 echo "home-peer setup boundary: ok"
