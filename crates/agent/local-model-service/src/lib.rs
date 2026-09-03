@@ -41,6 +41,7 @@ pub trait HttpsTransport {
         url: &str,
         start: u64,
         maximum_bytes: u64,
+        progress: &mut dyn FnMut(u64),
         destination: &mut File,
     ) -> Result<u64, ServiceError>;
 }
@@ -112,6 +113,11 @@ impl SignedRuntime {
 #[serde(default)]
 pub struct ServiceState {
     pub models: BTreeMap<String, ManagedModel>,
+    /// A non-secret, revision-pinned record of an explicit license decision.
+    /// It contains no account identity or token; the catalog's immutable
+    /// license id and artifact identity make an old acceptance unusable for a
+    /// different release.
+    pub accepted_licenses: BTreeMap<String, LicenseAcceptance>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +125,19 @@ pub struct ManagedModel {
     pub model_sha256: String,
     pub status: LocalModelStatus,
     pub process: Option<ProcessHandle>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LicenseAcceptance {
+    pub model_version: String,
+    pub model_sha256: String,
+    pub license_id: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TransferEvent {
+    Received(u64),
+    Verifying,
 }
 
 /// Concrete filesystem service. All storage paths are derived from verified
@@ -185,9 +204,14 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             .size_bytes
             .checked_sub(start)
             .ok_or(ServiceError::PartialTooLarge)?;
-        let received = self
-            .transport
-            .resume(&artifact.url, start, maximum, &mut file)?;
+        let mut ignored_progress = |_| {};
+        let received = self.transport.resume(
+            &artifact.url,
+            start,
+            maximum,
+            &mut ignored_progress,
+            &mut file,
+        )?;
         file.sync_all()?;
         let total = start
             .checked_add(received)
@@ -217,6 +241,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         &mut self,
         model: &LocalModelRelease,
     ) -> Result<LocalModelStatus, ServiceError> {
+        self.require_license_acceptance(model)?;
         self.fetch_verified(&model.artifact)?;
         self.state.models.insert(
             model.id.clone(),
@@ -239,14 +264,123 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         model: &LocalModelRelease,
     ) -> Result<LocalModelStatus, ServiceError> {
         runtime.validate()?;
+        self.require_license_acceptance(model)?;
         let archive = self.fetch_verified(&runtime.release.artifact)?;
         self.supervisor
             .install_runtime_image(&archive, &runtime.release.oci_image)?;
         self.install_model(model)
     }
 
+    /// Background-worker variant that atomically publishes each received model
+    /// byte count, then verification and installation phases. The transfer
+    /// implementation calls `progress` for every chunk it actually writes.
+    pub fn install_with_runtime_progress(
+        &mut self,
+        runtime: &SignedRuntime,
+        model: &LocalModelRelease,
+    ) -> Result<LocalModelStatus, ServiceError> {
+        runtime.validate()?;
+        self.require_license_acceptance(model)?;
+        let archive = self.fetch_verified(&runtime.release.artifact)?;
+        self.supervisor
+            .install_runtime_image(&archive, &runtime.release.oci_image)?;
+        let mut published = self.state.clone();
+        let state_path = self.root.join(STATE_FILE);
+        let model_id = model.id.clone();
+        let total = model.artifact.size_bytes;
+        let mut progress_error = None;
+        let transfer = {
+            let mut progress = |event: TransferEvent| {
+                if let Some(managed) = published.models.get_mut(&model_id) {
+                    managed.status = match event {
+                        TransferEvent::Received(received) => LocalModelStatus::Downloading {
+                            received_bytes: received,
+                            total_bytes: total,
+                        },
+                        TransferEvent::Verifying => LocalModelStatus::Verifying,
+                    };
+                }
+                // Keep the state update outside the `get_mut` borrow: every
+                // confirmed write has a durable status record before the
+                // worker proceeds to the next chunk.
+                if let Err(error) = persist_state(&state_path, &published) {
+                    progress_error = Some(error);
+                }
+            };
+            self.fetch_verified_with_progress(&model.artifact, &mut progress)
+        };
+        transfer?;
+        if let Some(error) = progress_error {
+            return Err(error);
+        }
+        if let Some(managed) = published.models.get_mut(&model_id) {
+            managed.status = LocalModelStatus::Installed;
+        }
+        persist_state(&state_path, &published)?;
+        self.state = published;
+        Ok(LocalModelStatus::Installed)
+    }
+
+    fn fetch_verified_with_progress(
+        &mut self,
+        artifact: &PinnedArtifact,
+        progress: &mut dyn FnMut(TransferEvent),
+    ) -> Result<PathBuf, ServiceError> {
+        validate_artifact(artifact)?;
+        let final_path = self.object_path(&artifact.sha256)?;
+        if final_path.exists() {
+            progress(TransferEvent::Received(artifact.size_bytes));
+            progress(TransferEvent::Verifying);
+            verify_file(&final_path, artifact)?;
+            return Ok(final_path);
+        }
+        let partial = self
+            .root
+            .join("partial")
+            .join(format!("{}.part", artifact.sha256));
+        let start = fs::metadata(&partial)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        if start > artifact.size_bytes {
+            return Err(ServiceError::PartialTooLarge);
+        }
+        progress(TransferEvent::Received(start));
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .read(true)
+            .open(&partial)?;
+        let maximum = artifact
+            .size_bytes
+            .checked_sub(start)
+            .ok_or(ServiceError::PartialTooLarge)?;
+        let mut reported = start;
+        let mut relay = |written: u64| {
+            reported = start.saturating_add(written);
+            progress(TransferEvent::Received(reported));
+        };
+        let received =
+            self.transport
+                .resume(&artifact.url, start, maximum, &mut relay, &mut file)?;
+        file.sync_all()?;
+        let total = start
+            .checked_add(received)
+            .ok_or(ServiceError::PartialTooLarge)?;
+        if total != artifact.size_bytes {
+            return Err(ServiceError::IncompleteDownload {
+                expected: artifact.size_bytes,
+                actual: total,
+            });
+        }
+        progress(TransferEvent::Verifying);
+        verify_file(&partial, artifact)?;
+        fs::rename(&partial, &final_path).map_err(ServiceError::Io)?;
+        Ok(final_path)
+    }
+
     /// Durable status written before a background worker begins transfer.
     pub fn queue_install(&mut self, model: &LocalModelRelease) -> Result<(), ServiceError> {
+        self.require_license_acceptance(model)?;
         self.state.models.insert(
             model.id.clone(),
             ManagedModel {
@@ -259,6 +393,42 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             },
         );
         self.persist()
+    }
+
+    /// Capture the user's explicit confirmation against this exact signed
+    /// release. This is intentionally separate from UI state and survives a
+    /// transient worker restart, while a changed catalog release must be
+    /// confirmed again.
+    pub fn record_license_acceptance(
+        &mut self,
+        model: &LocalModelRelease,
+    ) -> Result<(), ServiceError> {
+        self.state.accepted_licenses.insert(
+            model.id.clone(),
+            LicenseAcceptance {
+                model_version: model.version.clone(),
+                model_sha256: model.artifact.sha256.clone(),
+                license_id: model.license_id.clone(),
+            },
+        );
+        self.persist()
+    }
+
+    fn require_license_acceptance(&self, model: &LocalModelRelease) -> Result<(), ServiceError> {
+        if !model.requires_acceptance {
+            return Ok(());
+        }
+        let accepted = self.state.accepted_licenses.get(&model.id);
+        let accepted =
+            accepted.ok_or_else(|| ServiceError::LicenseNotAccepted(model.id.clone()))?;
+        if accepted.model_version == model.version
+            && accepted.model_sha256 == model.artifact.sha256
+            && accepted.license_id == model.license_id
+        {
+            Ok(())
+        } else {
+            Err(ServiceError::LicenseNotAccepted(model.id.clone()))
+        }
     }
 
     pub fn record_failure(
@@ -310,7 +480,10 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             runtime_kind: runtime.release.kind,
             args: vec![
                 "serve".into(),
-                model_path.display().to_string(),
+                // The supervisor mounts this verified host object at this
+                // stable, container-visible path. Never pass a host path to
+                // vLLM inside the OCI container.
+                "/models/model".into(),
                 "--host".into(),
                 "127.0.0.1".into(),
                 "--port".into(),
@@ -383,11 +556,15 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     }
 
     fn persist(&self) -> Result<(), ServiceError> {
-        let mut bytes = serde_json::to_vec_pretty(&self.state)?;
-        bytes.push(b'\n');
-        atomic_file::write_creating_parent(&self.root.join(STATE_FILE), &bytes)?;
-        Ok(())
+        persist_state(&self.root.join(STATE_FILE), &self.state)
     }
+}
+
+fn persist_state(path: &Path, state: &ServiceState) -> Result<(), ServiceError> {
+    let mut bytes = serde_json::to_vec_pretty(state)?;
+    bytes.push(b'\n');
+    atomic_file::write_creating_parent(path, &bytes)?;
+    Ok(())
 }
 
 fn load_state(path: &Path) -> Result<ServiceState, ServiceError> {
@@ -463,6 +640,8 @@ pub enum ServiceError {
     RuntimeNotInstalled,
     #[error("model is not installed: {0}")]
     ModelNotInstalled(String),
+    #[error("model license has not been accepted for this exact release: {0}")]
+    LicenseNotAccepted(String),
     #[error("invalid port")]
     InvalidPort,
     #[error("invalid local endpoint")]
@@ -492,8 +671,13 @@ mod tests {
         LocalModelRelease {
             id: "tiny".into(),
             label: "Tiny".into(),
+            description: "A tiny test model".into(),
             version: "1".into(),
             artifact: artifact(bytes),
+            license_id: "MIT".into(),
+            license_url: "https://catalog.example.invalid/license".into(),
+            requires_acceptance: false,
+            installed_size_bytes: bytes.len() as u64,
             allowed_runtimes: [RuntimeKind::Cpu].into(),
             required_memory_mib: 1,
             required_accelerator_mib: 0,
@@ -510,11 +694,34 @@ mod tests {
             _: &str,
             start: u64,
             _: u64,
+            progress: &mut dyn FnMut(u64),
             destination: &mut File,
         ) -> Result<u64, ServiceError> {
             self.starts.push(start);
             let tail = &self.bytes[start as usize..];
             destination.write_all(tail)?;
+            progress(tail.len() as u64);
+            Ok(tail.len() as u64)
+        }
+    }
+    struct ChunkedTransport {
+        bytes: Vec<u8>,
+    }
+    impl HttpsTransport for ChunkedTransport {
+        fn resume(
+            &mut self,
+            _: &str,
+            start: u64,
+            _: u64,
+            progress: &mut dyn FnMut(u64),
+            destination: &mut File,
+        ) -> Result<u64, ServiceError> {
+            let tail = &self.bytes[start as usize..];
+            let split = tail.len().min(2);
+            destination.write_all(&tail[..split])?;
+            progress(split as u64);
+            destination.write_all(&tail[split..])?;
+            progress(tail.len() as u64);
             Ok(tail.len() as u64)
         }
     }
@@ -563,6 +770,68 @@ mod tests {
         assert_eq!(fs::read(object).unwrap(), bytes);
         assert_eq!(service.transport.starts, [3]);
         assert!(!partial.exists());
+    }
+
+    #[test]
+    fn verified_fetch_publishes_each_confirmed_byte_count() {
+        let bytes = b"chunked";
+        let dir = tempfile::tempdir().unwrap();
+        let item = artifact(bytes);
+        let mut service = LocalModelService::open(
+            dir.path(),
+            ChunkedTransport {
+                bytes: bytes.to_vec(),
+            },
+            Supervisor {
+                command: None,
+                stopped: vec![],
+            },
+        )
+        .unwrap();
+        let mut progress = Vec::new();
+        service
+            .fetch_verified_with_progress(&item, &mut |event| progress.push(event))
+            .unwrap();
+        assert_eq!(
+            progress,
+            vec![
+                TransferEvent::Received(0),
+                TransferEvent::Received(2),
+                TransferEvent::Received(bytes.len() as u64),
+                TransferEvent::Verifying,
+            ]
+        );
+    }
+
+    #[test]
+    fn acceptance_is_pinned_to_the_exact_model_release() {
+        let bytes = b"licensed";
+        let dir = tempfile::tempdir().unwrap();
+        let mut licensed = model(bytes);
+        licensed.requires_acceptance = true;
+        let mut service = LocalModelService::open(
+            dir.path(),
+            Transport {
+                bytes: bytes.to_vec(),
+                starts: vec![],
+            },
+            Supervisor {
+                command: None,
+                stopped: vec![],
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            service.queue_install(&licensed),
+            Err(ServiceError::LicenseNotAccepted(_))
+        ));
+        service.record_license_acceptance(&licensed).unwrap();
+        service.queue_install(&licensed).unwrap();
+        licensed.version = "2".into();
+        assert!(matches!(
+            service.queue_install(&licensed),
+            Err(ServiceError::LicenseNotAccepted(_))
+        ));
     }
 
     #[test]
