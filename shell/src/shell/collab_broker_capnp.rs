@@ -64,6 +64,35 @@ struct AdmittedJoinIdentity {
     /// Certified document operations use this directly instead of requiring
     /// a second, channel-local role attestation for the same person.
     role: CapRole,
+    /// Delegated agent principal for this channel. The certified device still
+    /// proves which person launched it, while policy uses this revocable id.
+    agent_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BrokerActor {
+    id: String,
+    is_agent: bool,
+}
+
+impl AdmittedJoinIdentity {
+    fn broker_actor(&self) -> BrokerActor {
+        BrokerActor {
+            id: self
+                .agent_id
+                .clone()
+                .unwrap_or_else(|| self.principal_id.clone()),
+            is_agent: self.agent_id.is_some(),
+        }
+    }
+
+    fn policy_actor(&self, room: &str) -> Actor {
+        match &self.agent_id {
+            Some(agent) => Actor::agent(agent),
+            None => Actor::person(Some(self.role), self.principal_id.clone()),
+        }
+        .in_room(room.to_string())
+    }
 }
 
 fn principal_id_for_root(user_public_key: [u8; 32]) -> String {
@@ -95,7 +124,32 @@ fn admit_verified_join(
         principal_id,
         role,
         display_handle: None,
+        agent_id: None,
     })
+}
+
+fn admit_agent_delegation(
+    tree: &WorkspaceTree,
+    route: &CrdtRoute,
+    admitted: &mut AdmittedJoinIdentity,
+    agent_id: &str,
+) -> Result<(), String> {
+    let workspace = tree
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room.to_string() == route.cluster_id)
+        .ok_or_else(|| "agent delegation names an unavailable workspace".to_string())?;
+    if !workspace.may_administer(&admitted.principal_id) {
+        return Err("only a workspace administrator may launch a delegated agent session".into());
+    }
+    let role = workspace
+        .role_of_agent(agent_id)
+        .filter(|role| *role != CapRole::Denied)
+        .ok_or_else(|| "the requested agent is not an active workspace member".to_string())?;
+    admitted.role = role;
+    admitted.agent_id = Some(agent_id.to_string());
+    admitted.display_handle = Some(agent_id.to_string());
+    Ok(())
 }
 
 fn verify_session_author(
@@ -363,7 +417,7 @@ struct ChannelSubscribers {
     context: Vec<ContextSub>,
 }
 
-type ActionCatalogueSubscriber = (String, String, mpsc::UnboundedSender<String>);
+type ActionCatalogueSubscriber = (String, BrokerActor, mpsc::UnboundedSender<String>);
 
 /// Shared typed broker state, attached to the transport-neutral fanout core.
 pub struct CapnpBrokerState {
@@ -551,7 +605,22 @@ impl CapnpBrokerState {
         clippy::too_many_lines,
         reason = "catalogue projection applies one ordered authorization and serialization pass"
     )]
+    #[cfg(test)]
     fn action_catalogue_json(&self, cluster_id: &str, actor: &str) -> Result<String, String> {
+        self.action_catalogue_json_for(
+            cluster_id,
+            &BrokerActor {
+                id: actor.to_string(),
+                is_agent: false,
+            },
+        )
+    }
+
+    fn action_catalogue_json_for(
+        &self,
+        cluster_id: &str,
+        actor: &BrokerActor,
+    ) -> Result<String, String> {
         let membership = self
             .membership
             .as_ref()
@@ -564,7 +633,11 @@ impl CapnpBrokerState {
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?
             .clone();
         drop(tree);
-        let caller = workspace.actor_for_person(&actor.to_string());
+        let caller = if actor.is_agent {
+            workspace.actor_for_agent(&actor.id)
+        } else {
+            workspace.actor_for_person(&actor.id)
+        };
         let live_apps = self
             .published_surfaces()
             .into_iter()
@@ -695,7 +768,7 @@ impl CapnpBrokerState {
         let mut disconnected = Vec::new();
         for (peer, cluster, actor, tx) in subscribers {
             let delivered = self
-                .action_catalogue_json(&cluster, &actor)
+                .action_catalogue_json_for(&cluster, &actor)
                 .is_ok_and(|snapshot| tx.send(snapshot).is_ok());
             if !delivered {
                 disconnected.push(peer);
@@ -825,6 +898,28 @@ impl CapnpBrokerState {
         actor: &str,
         confirmation_token: Option<&str>,
     ) -> Result<InvocationJob, String> {
+        self.start_invocation_confirmed_for(
+            peer_id,
+            resource,
+            action,
+            argument,
+            &BrokerActor {
+                id: actor.to_string(),
+                is_agent: false,
+            },
+            confirmation_token,
+        )
+    }
+
+    fn start_invocation_confirmed_for(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        actor: &BrokerActor,
+        confirmation_token: Option<&str>,
+    ) -> Result<InvocationJob, String> {
         let offered = self
             .surfaces
             .lock()
@@ -858,7 +953,11 @@ impl CapnpBrokerState {
             .iter()
             .find(|workspace| workspace.room.to_string() == offered.0.route.cluster_id)
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
-        let caller = workspace.actor_for_person(&actor.to_string());
+        let caller = if actor.is_agent {
+            workspace.actor_for_agent(&actor.id)
+        } else {
+            workspace.actor_for_person(&actor.id)
+        };
         let target = ResourceRef::Action {
             app: offered.0.app_id.clone(),
             action: action.to_string(),
@@ -899,7 +998,7 @@ impl CapnpBrokerState {
                 || grant.resource != resource
                 || grant.action != action
                 || grant.argument_digest != argument_digest(argument)
-                || grant.actor != actor
+                || grant.actor != actor.id
             {
                 return Err(
                     "the confirmation token is expired or does not match this invocation".into(),
@@ -922,7 +1021,7 @@ impl CapnpBrokerState {
                         ))),
                     },
                     last_sequence: 0,
-                    actor: actor.to_string(),
+                    actor: actor.id.clone(),
                     cancellable: matches!(
                         offered.1.contract.execution,
                         qos_actions::ExecutionMode::Background { cancellable: true }
@@ -948,7 +1047,7 @@ impl CapnpBrokerState {
                 resource: resource.to_string(),
                 action: action.to_string(),
                 argument: argument.map(str::to_string),
-                actor: actor.to_string(),
+                actor: actor.id.clone(),
             })
             .is_err()
         {
@@ -1092,10 +1191,12 @@ impl CapnpBrokerState {
     /// `joinChannel(channelId, identity)` carries no announced handle,
     /// so the room lookup is the only answer for who to stamp traffic as.
     fn participant_id(admitted: &AdmittedJoinIdentity) -> String {
-        admitted
-            .display_handle
-            .clone()
-            .unwrap_or_else(|| admitted.principal_id.clone())
+        admitted.agent_id.clone().unwrap_or_else(|| {
+            admitted
+                .display_handle
+                .clone()
+                .unwrap_or_else(|| admitted.principal_id.clone())
+        })
     }
 
     fn revalidate_admission(
@@ -1112,7 +1213,17 @@ impl CapnpBrokerState {
                     "certified collaboration session is no longer admitted: {error}"
                 ))
             })?;
-        current.display_handle.clone_from(&admitted.display_handle);
+        if let Some(agent_id) = &admitted.agent_id {
+            admit_agent_delegation(&membership.read(), route, &mut current, agent_id).map_err(
+                |error| {
+                    capnp::Error::failed(format!(
+                        "certified agent session is no longer admitted: {error}"
+                    ))
+                },
+            )?;
+        } else {
+            current.display_handle.clone_from(&admitted.display_handle);
+        }
         Ok(current)
     }
 
@@ -1155,9 +1266,9 @@ impl CapnpBrokerState {
             .ok_or_else(|| {
                 capnp::Error::failed("certified document workspace is no longer available".into())
             })?;
-        let actor = Actor::person(Some(admitted.role), admitted.principal_id.clone())
-            .with_principal(Principal::App(route.app_id.clone()))
-            .in_room(route.cluster_id.clone());
+        let actor = admitted
+            .policy_actor(&route.cluster_id)
+            .with_principal(Principal::App(route.app_id.clone()));
         let resource = ResourceRef::Artifact {
             app: Some(route.app_id.clone()),
             kind: ArtifactKind::Note,
@@ -1486,8 +1597,39 @@ impl collab_service::Server for CapnpCollabService {
                 .chars()
                 .take(64)
                 .collect::<String>();
-            if !participant_handle.is_empty() {
-                verified_identity.display_handle = Some(participant_handle);
+            let participant_kind = reader.get_participant_kind()?.to_str().map_err(|error| {
+                capnp::Error::failed(format!("participant kind not utf8: {error}"))
+            })?;
+            match participant_kind {
+                "" | "person" => {
+                    if !participant_handle.is_empty() {
+                        verified_identity.display_handle = Some(participant_handle);
+                    }
+                }
+                "agent" => {
+                    if participant_handle.is_empty() {
+                        return Err(capnp::Error::failed(
+                            "an agent session must name its workspace agent".into(),
+                        ));
+                    }
+                    let membership = state.membership.as_ref().ok_or_else(|| {
+                        capnp::Error::failed("agent session has no workspace authority".into())
+                    })?;
+                    admit_agent_delegation(
+                        &membership.read(),
+                        &route,
+                        &mut verified_identity,
+                        &participant_handle,
+                    )
+                    .map_err(|error| {
+                        capnp::Error::failed(format!("agent collaboration join rejected: {error}"))
+                    })?;
+                }
+                other => {
+                    return Err(capnp::Error::failed(format!(
+                        "unknown collaboration participant kind `{other}`"
+                    )));
+                }
             }
             tracing::info!(
                 target: "qos_collab_probe",
@@ -1495,6 +1637,7 @@ impl collab_service::Server for CapnpCollabService {
                 peer_id,
                 role = ?verified_identity.role,
                 principal = %verified_identity.principal_id,
+                acting_as = ?verified_identity.agent_id,
                 device = ?{
                     collab_types::Ed25519PublicKey::from_bytes(
                         verified_identity.verified.device_public_key,
@@ -2142,9 +2285,9 @@ impl channel_handle::Server for CapnpChannelHandle {
         {
             return Promise::err(error);
         }
-        match self.state.action_catalogue_json(
+        match self.state.action_catalogue_json_for(
             &self.route().cluster_id,
-            &self.verified_identity.principal_id,
+            &self.verified_identity.broker_actor(),
         ) {
             Ok(snapshot) => {
                 results.get().set_catalogue_json(&snapshot);
@@ -2166,9 +2309,9 @@ impl channel_handle::Server for CapnpChannelHandle {
             return Promise::err(error);
         }
         let cluster = self.route().cluster_id;
-        let actor = self.verified_identity.principal_id.clone();
+        let actor = self.verified_identity.broker_actor();
         let (tx, rx) = mpsc::unbounded_channel();
-        let initial = match self.state.action_catalogue_json(&cluster, &actor) {
+        let initial = match self.state.action_catalogue_json_for(&cluster, &actor) {
             Ok(snapshot) => snapshot,
             Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
@@ -2268,14 +2411,19 @@ impl channel_handle::Server for CapnpChannelHandle {
                     })
                 })
                 .ok_or_else(|| capnp::Error::failed("unknown application action".into()))?;
-            let actor = current.principal_id;
+            let actor = current.broker_actor();
             let phrase = confirmation
                 .get("confirmation_phrase")
                 .and_then(serde_json::Value::as_str);
             let job = match &offered.contract.confirmation {
-                qos_actions::ConfirmationPolicy::None => {
-                    state.start_invocation(peer_id, &resource, &action, argument.as_deref(), &actor)
-                }
+                qos_actions::ConfirmationPolicy::None => state.start_invocation_confirmed_for(
+                    peer_id,
+                    &resource,
+                    &action,
+                    argument.as_deref(),
+                    &actor,
+                    None,
+                ),
                 qos_actions::ConfirmationPolicy::Confirm => {
                     if confirmation
                         .get("confirm")
@@ -2292,11 +2440,11 @@ impl channel_handle::Server for CapnpChannelHandle {
                             &resource,
                             &action,
                             argument.as_deref(),
-                            &actor,
+                            &actor.id,
                             None,
                         )
                         .map_err(capnp::Error::failed)?;
-                    state.start_invocation_confirmed(
+                    state.start_invocation_confirmed_for(
                         peer_id,
                         &resource,
                         &action,
@@ -2312,11 +2460,11 @@ impl channel_handle::Server for CapnpChannelHandle {
                             &resource,
                             &action,
                             argument.as_deref(),
-                            &actor,
+                            &actor.id,
                             phrase,
                         )
                         .map_err(capnp::Error::failed)?;
-                    state.start_invocation_confirmed(
+                    state.start_invocation_confirmed_for(
                         peer_id,
                         &resource,
                         &action,
@@ -2357,7 +2505,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let update = self
             .state
-            .invocation_statuses(&current.principal_id)
+            .invocation_statuses(&current.broker_actor().id)
             .into_iter()
             .find_map(|(candidate, update)| (candidate == id).then_some(update));
         let mut result = results.get();
@@ -2387,7 +2535,10 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(request) => request.get_id(),
             Err(error) => return Promise::err(error),
         };
-        if let Err(error) = self.state.request_cancellation(id, &current.principal_id) {
+        if let Err(error) = self
+            .state
+            .request_cancellation(id, &current.broker_actor().id)
+        {
             return Promise::err(capnp::Error::failed(error));
         }
         let Some(update) = self.state.invocation_status(id) else {
@@ -2443,7 +2594,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             };
             let workspace = workspace.clone();
             drop(tree);
-            let caller = workspace.actor_for_person(&current.principal_id);
+            let caller = current.policy_actor(&self.route().cluster_id);
             if workspace.decide(&caller, &ResourceRef::App(app_id.clone()), Verb::Write)
                 != CapDecision::Allow
             {
@@ -2471,7 +2622,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             },
         };
         self.state
-            .record_completion(id, current.principal_id, update.clone());
+            .record_completion(id, current.broker_actor().id, update.clone());
         match serde_json::to_string(&update) {
             Ok(json) => {
                 results.get().set_id(id);
@@ -3632,6 +3783,80 @@ mod tests {
             .is_err(),
             "a member cannot submit another device's envelope through this session"
         );
+    }
+
+    #[test]
+    fn agent_delegation_uses_agent_caps_and_is_revoked_live() {
+        let root = SigningKey::from_bytes(&[44; 32]);
+        let principal = principal_id_for_root(root.verifying_key().to_bytes());
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(44),
+            "Agent room",
+        );
+        workspace.owner = Some(principal.clone());
+        let route = CrdtRoute::cluster(workspace.room.to_string());
+        let agent_membership = workspace.grant_capability(CapOverride::membership(
+            Subject::agent("scribe"),
+            workspace.room.to_string(),
+            Verb::Comment,
+        ));
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+
+        let mut admitted = admit_verified_join(&tree, &route, verified_device(&root))
+            .expect("the owner is admitted before delegation");
+        admit_agent_delegation(&tree, &route, &mut admitted, "scribe")
+            .expect("the owner may operate an admitted agent");
+        assert_eq!(admitted.broker_actor().id, "scribe");
+        assert!(admitted.broker_actor().is_agent);
+        assert_eq!(admitted.role, CapRole::Commenter);
+        assert!(
+            admitted
+                .policy_actor(&route.cluster_id)
+                .principals
+                .contains(&Principal::Agent("scribe".into()))
+        );
+
+        let membership = tree.shared();
+        assert!(membership.write().workspaces[0].revoke_capability(&agent_membership));
+        let fanout = Arc::new(FanoutState::new());
+        let state = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(membership),
+            None,
+        );
+        assert!(
+            state.revalidate_admission(&route, &admitted).is_err(),
+            "revoking agent membership invalidates an already-open agent channel"
+        );
+    }
+
+    #[test]
+    fn non_owner_cannot_claim_an_agent_principal() {
+        let member = SigningKey::from_bytes(&[45; 32]);
+        let member_id = principal_id_for_root(member.verifying_key().to_bytes());
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(45),
+            "Delegation room",
+        );
+        let route = CrdtRoute::cluster(workspace.room.to_string());
+        workspace.grant_capability(CapOverride::membership(
+            Subject::person(&member_id),
+            workspace.room.to_string(),
+            Verb::Write,
+        ));
+        workspace.grant_capability(CapOverride::membership(
+            Subject::agent("operator"),
+            workspace.room.to_string(),
+            Verb::Write,
+        ));
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let mut admitted = admit_verified_join(&tree, &route, verified_device(&member))
+            .expect("the person is a member");
+        assert!(admit_agent_delegation(&tree, &route, &mut admitted, "operator").is_err());
     }
 
     #[test]
