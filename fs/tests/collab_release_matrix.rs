@@ -988,6 +988,13 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     .try_into()
     .unwrap();
     let deleted_manifest = Hash::from(deleted_manifest_bytes);
+    let original_survivor_manifest: [u8; 32] = get_xattr(
+        &owner_mount.join("survivor.txt"),
+        fs::syncstate::CONTENT_HASH_XATTR,
+    )
+    .unwrap()
+    .try_into()
+    .unwrap();
 
     let bundle = temp.path().join("home-peer.toml");
     let replica_cache = temp.path().join("nas-cache");
@@ -1010,6 +1017,40 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     std::fs::remove_file(owner_mount.join("deleted.txt")).unwrap();
 
     let original = fs::Ticket::decode(&owner_ticket).unwrap();
+    let updated_manifest: [u8; 32] = wait_for_process(&mut owner_process, || {
+        let manifest: [u8; 32] = get_xattr(
+            &owner_mount.join("survivor.txt"),
+            fs::syncstate::CONTENT_HASH_XATTR,
+        )
+        .ok()?
+        .try_into()
+        .ok()?;
+        (manifest != original_survivor_manifest).then_some(manifest)
+    });
+    let updated_manifest = Hash::from(updated_manifest);
+    let replica_workspace_cache = replica_cache.join(original.workspace_id().to_string());
+    wait_for(PROCESS_TIMEOUT, || {
+        if let Some(exit) = nas.child.try_wait().unwrap() {
+            panic!(
+                "replica exited {exit}; logs:\n{}",
+                nas.logs.lock().unwrap().join("\n")
+            );
+        }
+        let bytes = std::fs::read(replica_workspace_cache.join("namespace.bin")).ok()?;
+        let namespace = Namespace::from_bytes("nas-generation-barrier", &bytes).ok()?;
+        (namespace.entry_at("survivor.txt")?.hash == Some(updated_manifest)
+            && namespace.entry_at("deleted.txt").is_none())
+        .then_some(())
+    });
+    let prior_status_update = fs::full_replica::load_status(&status)
+        .unwrap()
+        .unwrap()
+        .updated_at_ms;
+    wait_for(PROCESS_TIMEOUT, || {
+        let current = fs::full_replica::load_status(&status).ok().flatten()?;
+        (current.full_content_replication && current.updated_at_ms > prior_status_update)
+            .then_some(())
+    });
     let nas_ticket = fs::Ticket {
         node: nas_endpoint,
         workspace: original.workspace,
@@ -1144,7 +1185,6 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     // Inspect the stopped daemon's real durable store: removal from the
     // namespace is insufficient if obsolete manifests/chunks still consume a
     // home peer's bounded disk indefinitely.
-    let replica_workspace_cache = replica_cache.join(original.workspace_id().to_string());
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let store = fs::ContentStore::open(replica_workspace_cache)
             .await
