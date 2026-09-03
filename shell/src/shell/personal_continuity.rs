@@ -455,6 +455,14 @@ impl DeviceContinuationSnapshot {
             for (strip_index, strip) in workspace.strips.iter().enumerate() {
                 for (group_index, group) in strip.window_groups.iter().enumerate() {
                     for (tab_index, tab) in group.tabs.iter().enumerate() {
+                        // Materialized continuation tabs are remote offers,
+                        // not locally-open state. Republishing them with this
+                        // device's stamp creates an echo that can outlive the
+                        // source device's later close (especially file cards,
+                        // which use a Stub tile rather than PeerWindow).
+                        if tree.continuation_tabs.contains(&tab.id) {
+                            continue;
+                        }
                         let launch = tree
                             .continuation_file_references
                             .get(&tab.id)
@@ -813,7 +821,7 @@ mod tests {
     use crate::shell::state::{
         AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
     };
-    use std::collections::HashMap;
+    use std::collections::{BTreeSet, HashMap};
 
     fn device(name: &str) -> DeviceId {
         DeviceId::new(name).unwrap()
@@ -1062,5 +1070,49 @@ mod tests {
         let encoded = serde_json::to_string(&report.snapshot).unwrap();
         assert!(!encoded.contains("feed_beef"));
         assert!(!encoded.contains("/home/ada"));
+    }
+
+    #[test]
+    fn does_not_echo_a_remote_file_placeholder_after_its_source_closes() {
+        let workspace_id = WorkspaceId(8);
+        let strip_id = StripId(9);
+        let room = room(ROOM_A);
+        let mut workspace = Workspace::new(workspace_id, "From another device");
+        workspace.room = room;
+        workspace.strips = vec![Strip {
+            id: strip_id,
+            name: "Available elsewhere".into(),
+            window_groups: vec![WindowGroup {
+                id: 10,
+                tabs: vec![Tab {
+                    id: 81,
+                    title: "File".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::FileExplorer,
+                        label: "Available on another device".into(),
+                    },
+                }],
+                active_tab: 81,
+                width: WindowWidth::Normal,
+                maximized: false,
+            }],
+        }];
+        let mut continuation_tabs = BTreeSet::new();
+        continuation_tabs.insert(81);
+        let mut continuation_file_references = HashMap::new();
+        continuation_file_references.insert(
+            81,
+            LaunchIntent::file_reference("record:remote-file", Some([7; 32]), None).unwrap(),
+        );
+        let tree = WorkspaceTree {
+            workspaces: vec![workspace],
+            active: workspace_id,
+            continuation_tabs,
+            continuation_file_references,
+            ..WorkspaceTree::default()
+        };
+
+        let recaptured = DeviceContinuationSnapshot::capture(&tree, device("desktop-01"), 2);
+        assert!(recaptured.snapshot.workspaces[0].apps.is_empty());
     }
 }
