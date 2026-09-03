@@ -1508,6 +1508,8 @@ mod tests {
         .await;
         let (a, lookup_a) = identified_endpoint(&a_key).await;
         let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let b_restart_key = b_key.clone();
+        let b_restart_cert = b_cert.clone();
         let identity = |key, cert| HostIdentity {
             device_cert: cert,
             device_signing_key: key,
@@ -1561,6 +1563,44 @@ mod tests {
             }) = timeout(Duration::from_secs(10), rx_b.recv()).await.unwrap()
             {
                 assert!(snapshot.is_empty(), "closure replaces live checkpoint");
+                break;
+            }
+        }
+
+        // A fresh actor with B's durable device identity models a shell
+        // restart while A is offline. The host must replay the retained
+        // closure baseline rather than resurrecting A's earlier checkpoint.
+        let (b_restarted, lookup_restarted) = identified_endpoint(&b_restart_key).await;
+        let (cmd_restarted, _task_restarted) = Actor::spawn_reporting_addrs(
+            b_restarted,
+            lookup_restarted,
+            Some(identity(b_restart_key, b_restart_cert)),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (events, mut replay) = mpsc::channel(16);
+        cmd_restarted
+            .send(NetCmd::JoinWorkspace {
+                ws: 42,
+                on_event: events,
+            })
+            .await
+            .unwrap();
+        cmd_restarted
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+                expectation: None,
+            })
+            .await
+            .unwrap();
+        loop {
+            if let Some(NetEvent::Msg {
+                msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
+                ..
+            }) = timeout(Duration::from_secs(10), replay.recv())
+                .await
+                .unwrap()
+            {
+                assert!(snapshot.is_empty(), "restarted B receives retained closure");
                 break;
             }
         }
