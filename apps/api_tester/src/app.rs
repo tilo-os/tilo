@@ -115,6 +115,16 @@ fn response_status_height(width: f64) -> f64 {
     }
 }
 
+fn response_status_line_center(row: Rect) -> f64 {
+    if row.height() > RESPONSE_STATUS_H {
+        // Compact response chrome reserves the lower part of the region for
+        // the view switcher. Centre status and timing in the first row only.
+        row.y0 + RESPONSE_STATUS_H / 2.0
+    } else {
+        row.center().y
+    }
+}
+
 /// Outcome of the background send worker.
 enum SendOutcome {
     Ok(ResponseData),
@@ -1680,7 +1690,7 @@ impl ApiTesterApp {
 
         let row = l.resp_status;
         let x0 = area.x0 + PAD;
-        let cy = row.center().y;
+        let cy = response_status_line_center(row);
 
         if let Some(resp) = self.response.clone() {
             let scol = status_color(theme, resp.status_class());
@@ -2714,6 +2724,10 @@ mod tests {
         assert_eq!(layout.resp_body.y0, layout.resp_status.y1);
         assert!(layout.resp_view.x0 >= layout.response.x0 + PAD);
         assert!(layout.resp_view.x1 <= layout.response.x1 - PAD);
+        assert!(
+            response_status_line_center(layout.resp_status) + 12.0 < layout.resp_view.y0,
+            "status pill must clear the compact view switcher"
+        );
     }
 
     #[test]
