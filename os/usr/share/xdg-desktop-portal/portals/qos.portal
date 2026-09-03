@@ -1,4 +1,4 @@
 [portal]
 DBusName=org.freedesktop.impl.portal.desktop.qos
-Interfaces=org.freedesktop.impl.portal.FileChooser;org.freedesktop.impl.portal.ScreenCast;org.freedesktop.impl.portal.RemoteDesktop;org.freedesktop.impl.portal.Access;org.freedesktop.impl.portal.Camera;org.freedesktop.impl.portal.Print
+Interfaces=org.freedesktop.impl.portal.FileChooser;org.freedesktop.impl.portal.ScreenCast;org.freedesktop.impl.portal.RemoteDesktop;org.freedesktop.impl.portal.Access;org.freedesktop.impl.portal.Print;org.freedesktop.impl.portal.Notification
 UseIn=nirios

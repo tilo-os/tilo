@@ -47,6 +47,7 @@ EXPECTED_INTERFACES=(
     "org.freedesktop.impl.portal.RemoteDesktop"
     "org.freedesktop.impl.portal.Access"
     "org.freedesktop.impl.portal.Print"
+    "org.freedesktop.impl.portal.Notification"
 )
 
 fail=0
@@ -95,6 +96,12 @@ if assert_file_exists "$PORTAL_FILE"; then
             fail=1
         fi
     done
+    interface_value="$(sed -n 's/^Interfaces=//p' "$PORTAL_FILE")"
+    IFS=';' read -r -a declared_interfaces <<< "$interface_value"
+    if (( ${#declared_interfaces[@]} != ${#EXPECTED_INTERFACES[@]} )); then
+        echo "FAIL: $PORTAL_FILE: interface count does not match the Rust backend" >&2
+        fail=1
+    fi
 fi
 
 # --- no second claimant for the bus name -----------------------------

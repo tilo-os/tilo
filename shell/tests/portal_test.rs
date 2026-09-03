@@ -73,7 +73,8 @@ async fn bring_up_pair_with_spawners(
     print_spooler: PrintSpoolerHandle,
 ) -> (Connection, Connection, PortalContext) {
     use shell::portal::{
-        AccessBackend, FileChooserBackend, PrintBackend, RemoteDesktopBackend, ScreenCastBackend,
+        AccessBackend, FileChooserBackend, NotificationBackend, PrintBackend, RemoteDesktopBackend,
+        ScreenCastBackend,
     };
     let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
 
@@ -86,6 +87,7 @@ async fn bring_up_pair_with_spawners(
         remote_input_injector,
         documents: shell::portal::DocumentStoreHandle::host_paths(),
         print_spooler,
+        notifications: shell::notifications::NotificationBridge::new(),
     };
     let ctx_clone = ctx.clone();
 
@@ -97,6 +99,7 @@ async fn bring_up_pair_with_spawners(
     let ac = AccessBackend::new(ctx.clone());
     let rd = RemoteDesktopBackend::new(ctx.clone());
     let pr = PrintBackend::new(ctx.clone());
+    let no = NotificationBackend::new(ctx.clone());
 
     let server_builder = Builder::unix_stream(server_sock)
         .server(TEST_GUID)
@@ -111,7 +114,9 @@ async fn bring_up_pair_with_spawners(
         .serve_at(OBJECT_PATH, rd)
         .expect("serve_at rd")
         .serve_at(OBJECT_PATH, pr)
-        .expect("serve_at pr");
+        .expect("serve_at pr")
+        .serve_at(OBJECT_PATH, no)
+        .expect("serve_at notification");
     let client_builder = Builder::unix_stream(client_sock).p2p();
 
     let (server_conn, client_conn) =
@@ -135,6 +140,106 @@ async fn portal_proxy<'a>(client: &'a Connection, interface: &'static str) -> Pr
         .build()
         .await
         .expect("proxy build")
+}
+
+fn string_value(value: &str) -> OwnedValue {
+    OwnedValue::from(zbus::zvariant::Str::from(value))
+}
+
+#[tokio::test]
+async fn notification_add_replace_isolate_and_remove_round_trip() {
+    let (store, _ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(100, "ws"));
+    let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
+    let caller_map = CallerMap::new();
+    let (_server, client, ctx) = bring_up_pair(store, queue, caller_map).await;
+    let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.Notification").await;
+
+    let mut payload = HashMap::new();
+    payload.insert("title", string_value("Build complete"));
+    payload.insert("body", string_value("All checks passed"));
+    payload.insert("priority", string_value("high"));
+    proxy
+        .call_method(
+            "AddNotification",
+            &("org.example.build", "result", &payload),
+        )
+        .await
+        .expect("add notification");
+
+    let first = ctx.notifications.drain_incoming();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].summary, "Build complete");
+    assert_eq!(first[0].body, "All checks passed");
+    assert_eq!(first[0].urgency, 2);
+    assert_eq!(
+        first[0]
+            .caller
+            .as_ref()
+            .map(|caller| caller.app_id.as_str()),
+        Some("org.example.build")
+    );
+    let first_numeric_id = first[0].dbus_id;
+
+    payload.insert("title", string_value("Build updated"));
+    proxy
+        .call_method(
+            "AddNotification",
+            &("org.example.build", "result", &payload),
+        )
+        .await
+        .expect("replace notification");
+    let replacement = ctx.notifications.drain_incoming();
+    assert_eq!(replacement.len(), 1);
+    assert_eq!(replacement[0].dbus_id, first_numeric_id);
+    assert_eq!(replacement[0].summary, "Build updated");
+
+    proxy
+        .call_method(
+            "AddNotification",
+            &("org.example.other", "result", &payload),
+        )
+        .await
+        .expect("same string id for another app");
+    let other = ctx.notifications.drain_incoming();
+    assert_eq!(other.len(), 1);
+    assert_ne!(other[0].dbus_id, first_numeric_id);
+
+    proxy
+        .call_method("RemoveNotification", &("org.example.build", "result"))
+        .await
+        .expect("remove notification");
+    assert_eq!(
+        ctx.notifications.drain_close_requests(),
+        vec![first_numeric_id]
+    );
+
+    // Removal consumes the app-local mapping. Repeating it is a harmless
+    // no-op and cannot close the other application's same-named entry.
+    proxy
+        .call_method("RemoveNotification", &("org.example.build", "result"))
+        .await
+        .expect("remove missing notification");
+    assert!(ctx.notifications.drain_close_requests().is_empty());
+}
+
+#[tokio::test]
+async fn notification_properties_match_version_two_contract() {
+    let (store, _ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(1001, "ws"));
+    let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
+    let caller_map = CallerMap::new();
+    let (_server, client, _ctx) = bring_up_pair(store, queue, caller_map).await;
+    let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.Notification").await;
+
+    let version: u32 = proxy
+        .get_property("Version")
+        .await
+        .expect("version property");
+    assert_eq!(version, 2);
+    let options: HashMap<String, OwnedValue> = proxy
+        .get_property("SupportedOptions")
+        .await
+        .expect("supported options property");
+    assert!(options.is_empty());
 }
 
 #[tokio::test]
