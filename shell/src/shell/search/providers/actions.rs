@@ -239,6 +239,15 @@ impl Action {
             },
         ),
         chrome(
+            "desktop-tour.open",
+            "Take the desktop tour",
+            "Revisit the three-minute introduction to navigation, organisation and collaboration",
+            |st, _| {
+                st.overlays.desktop_tour = true;
+                Ok(())
+            },
+        ),
+        chrome(
             "overview.toggle",
             "Toggle workspace overview",
             "Show all workspaces in the wheel view",
@@ -439,6 +448,31 @@ impl Action {
                 st.push_notification(
                     "Enrollment token copied",
                     "It expires in five minutes and cannot admit further devices.",
+                );
+                Ok(())
+            },
+        ),
+        chrome(
+            "identity.home-peer.enroll",
+            "Pair a home server",
+            "Copy a five-minute setup code with always-on full-sync access",
+            |st, _| {
+                let (_, profile) = active_identity(st)?;
+                let now = now_ns_u64();
+                let expires = now.saturating_add(5 * 60 * 1_000_000_000);
+                let token = crate::device_fleet::DeviceFleetStore::from_env()
+                    .and_then(|store| {
+                        store.mint_enrollment(
+                            &profile.id,
+                            qos_user_identity::DeviceCapabilities::host(),
+                            expires,
+                        )
+                    })
+                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+                ui::text_selection::clipboard_copy(&token);
+                st.push_notification(
+                    "Home-server setup code copied",
+                    "It expires in five minutes and grants full workspace replication.",
                 );
                 Ok(())
             },
@@ -957,6 +991,30 @@ mod tests {
             state.ws_settings_tab,
             crate::shell::workspace_settings::WsTab::Permissions
         );
+    }
+
+    #[test]
+    fn desktop_tour_is_searchable_and_requests_the_trusted_chrome_modal() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let results = {
+            let state = chrome.borrow();
+            provider.query(SearchContext {
+                needle: "desktop tour",
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        let result = results
+            .iter()
+            .find(|result| result.id == "desktop-tour.open")
+            .expect("the completed first-use tour must remain discoverable");
+
+        (result.on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
+        assert!(chrome.borrow().overlays.desktop_tour);
     }
 
     #[test]

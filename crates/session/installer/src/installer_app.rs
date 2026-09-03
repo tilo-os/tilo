@@ -76,6 +76,10 @@ const HOSTNAME_PATH: &str = "installer.hostname";
 const TIMEZONE_PATH: &str = "installer.timezone";
 /// CRDT path holding the selected keyboard layout's *display name*.
 const KEYMAP_PATH: &str = "installer.keymap";
+/// Typed confirmation for the destructive whole-disk path. Alongside installs
+/// never consult it because their privileged backend accepts prepared
+/// partitions only.
+const ERASE_CONFIRM_PATH: &str = "installer.erase_confirmation";
 const NEXT_PATH: &str = "installer.next";
 const BACK_PATH: &str = "installer.back";
 const BEGIN_PATH: &str = "installer.begin";
@@ -705,6 +709,7 @@ pub struct InstallerApp {
     /// `installer.keymap` CRDT Text). Resolved to xkb layout/variant via
     /// [`crate::layouts`] when building the install command.
     keymap: String,
+    erase_confirmation: String,
     /// Time-zone choices shown by the Options-step [`Dropdown`], sourced
     /// from the system at runtime (see [`crate::timezones::list_timezones`]).
     timezones: Vec<String>,
@@ -784,6 +789,7 @@ impl InstallerApp {
             locale: "en_US.UTF-8".to_string(),
             timezone: DEFAULT_TIMEZONE.to_string(),
             keymap: DEFAULT_KEYMAP_NAME.to_string(),
+            erase_confirmation: String::new(),
             timezones: default_timezones(),
             tz_open_for_shot: false,
             status: String::new(),
@@ -950,6 +956,13 @@ impl InstallerApp {
             && validate_startup_secret(&secret_copy(&self.password), self.verified_tpm()).is_ok()
     }
 
+    fn destructive_confirmation_ready(&self) -> bool {
+        self.install_method == InstallMethod::Alongside
+            || self
+                .selected_dev()
+                .is_some_and(|device| self.erase_confirmation.trim() == device)
+    }
+
     /// Human-readable summary of the encryption factors for the Review step.
     fn encryption_summary(&self) -> String {
         // Recovery key is always present; TPM is PIN-protected iff a PIN was
@@ -1039,6 +1052,9 @@ impl InstallerApp {
         {
             let _ = state.splice_text(&obj, 0, 0, &self.keymap);
         }
+        if state.get(root, ERASE_CONFIRM_PATH).ok().flatten().is_none() {
+            let _ = state.put_object(root, ERASE_CONFIRM_PATH, ObjType::Text);
+        }
         // The TPM2 PIN is a Text object so the masked TextInput can splice
         // into it like every other field; it starts empty (no PIN).
         for path in [
@@ -1103,6 +1119,13 @@ impl InstallerApp {
         )
     }
 
+    fn clear_text(state: &mut AutoCommit, root: &ObjId, path: &str) {
+        if let Ok(Some((Value::Object(ObjType::Text), object))) = state.get(root, path) {
+            let delete = isize::try_from(state.length(&object)).unwrap_or(isize::MAX);
+            let _ = state.splice_text(&object, 0, delete, "");
+        }
+    }
+
     /// Advance to the next step if the current one validates.
     fn go_next(&mut self) {
         if self.step == Step::Disk {
@@ -1121,7 +1144,7 @@ impl InstallerApp {
                 .selected_disk_ref()
                 .is_some_and(Disk::can_install_alongside)
         {
-            self.set_status("Alongside needs an empty, unmounted Linux partition of at least 32 GiB and an existing EFI System Partition");
+            self.set_status("Alongside needs an empty, unmounted Linux partition of at least 32 GiB and an unmounted EFI partition of at least 2 GiB");
             return;
         }
         match validate_step(
@@ -1167,16 +1190,19 @@ impl InstallerApp {
         }
     }
 
-    /// Step backward. From a *failed* install the Back button returns to
-    /// Review so the user can retry; otherwise it walks the wizard back.
+    /// Step backward. A failed launch has already deliberately erased both
+    /// secret buffers, so recovery returns to Account instead of presenting a
+    /// Review screen whose Begin button can only fail validation.
     fn go_back(&mut self) {
         if self.step == Step::Install {
             if self.install_state == InstallState::Failed {
-                self.step = Step::Review;
+                self.step = Step::Account;
                 self.install_state = InstallState::Idle;
                 self.install_launched = false;
                 self.status_lines.clear();
-                self.status.clear();
+                self.set_status(
+                    "Re-enter your startup and account secret, then review and try again",
+                );
                 self.dirty_structure = true;
                 self.focus_reset = true;
             }
@@ -1206,6 +1232,10 @@ impl InstallerApp {
             self.set_status("Select a disk to continue");
             return;
         };
+        if !self.destructive_confirmation_ready() {
+            self.set_status(&format!("Type {disk} exactly to confirm erasing it"));
+            return;
+        }
         // Encryption requires the recovery-key acknowledgement (defense in
         // depth — the Begin button and Enter both gate on this too).
         if !self.recovery_ack {
@@ -1492,7 +1522,7 @@ impl InstallerApp {
         let guidance = if self.install_method == InstallMethod::Erase {
             "Erase disk deletes every partition and operating system on the selected disk."
         } else {
-            "Alongside preserves existing partitions. For safety, qOS only uses an empty Linux partition (32 GiB+) you prepared beforehand; it never shrinks Windows or guesses that unknown data is disposable."
+            "Alongside preserves existing partitions. Prepare an empty Linux partition (32 GiB+) and a 2 GiB EFI partition for qOS first. qOS never shrinks Windows or guesses that unknown data is disposable."
         };
         children.push(Box::new(Text::new(guidance).with_size(sm).with_color(
             if self.install_method == InstallMethod::Erase {
@@ -1698,6 +1728,28 @@ impl InstallerApp {
         children.push(nav_row(Step::Options, NEXT_PATH, "Next", false));
     }
 
+    fn compose_erase_confirmation(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        dev: &str,
+    ) {
+        if self.install_method != InstallMethod::Erase {
+            return;
+        }
+        children.push(Box::new(
+            Text::new(&format!("Type {dev} to confirm the whole-disk erase"))
+                .with_size(theme.tokens.typography.scale.sm)
+                .with_color(theme.text_dim),
+        ));
+        children.push(Box::new(
+            TextInput::new(Vec::new())
+                .with_id("installer.erase_confirmation")
+                .with_placeholder(dev)
+                .with_on_change_path(ERASE_CONFIRM_PATH),
+        ));
+    }
+
     fn compose_review_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
         let danger = theme.tokens.colors.semantic.danger;
@@ -1736,7 +1788,7 @@ impl InstallerApp {
             ));
             children.push(summary_row(
                 theme,
-                "Shared EFI partition",
+                "qOS EFI partition",
                 disk.efi_partition()
                     .map_or("<missing>", |p| p.name.as_str()),
             ));
@@ -1771,6 +1823,7 @@ impl InstallerApp {
         children.push(Box::new(
             Text::new(&impact).with_size(base).with_color(danger),
         ));
+        self.compose_erase_confirmation(theme, children, &dev);
 
         // Encryption generates a recovery key shown ONCE during the
         // install. Make the user explicitly acknowledge they'll save
@@ -1792,7 +1845,7 @@ impl InstallerApp {
 
         // Begin is gated on the recovery-key acknowledgement when
         // encrypting (otherwise always enabled).
-        let begin_disabled = !self.encryption_ready();
+        let begin_disabled = !self.encryption_ready() || !self.destructive_confirmation_ready();
         children.push(nav_row(
             Step::Review,
             BEGIN_PATH,
@@ -1831,15 +1884,16 @@ impl InstallerApp {
                         .with_color(danger),
                 ));
                 children.push(Box::new(
-                    Text::new("Something went wrong. Review the log, then go back to try again.")
+                    Text::new("The installer stopped before it could confirm a bootable system. The destination may have been changed. Review the details, then re-enter your secrets before trying again.")
                         .with_size(sm)
                         .with_color(dim),
                 ));
+                children.push(Box::new(Text::new("Details").with_size(sm).with_color(dim)));
                 children.push(Box::new(StatusLog::new(
                     self.status_lines.clone(),
                     STATUS_LOG_HEIGHT,
                 )));
-                children.push(Box::new(ActionButton::new("Back", BACK_PATH)));
+                children.push(Box::new(ActionButton::new("Re-enter secrets", BACK_PATH)));
             }
             _ => {
                 children.push(Box::new(Text::new("Installing qOS…").with_size(xl)));
@@ -2005,6 +2059,14 @@ fn sample_disks() -> Vec<Disk> {
                     mountpoint: String::new(),
                     part_type: LINUX_FILESYSTEM_GUID.to_string(),
                 },
+                DiskPartition {
+                    name: "/dev/sda4".to_string(),
+                    size_bytes: 2_147_483_648,
+                    filesystem: "vfat".to_string(),
+                    label: "qOS EFI".to_string(),
+                    mountpoint: String::new(),
+                    part_type: EFI_SYSTEM_GUID.to_string(),
+                },
             ],
         },
         Disk {
@@ -2105,6 +2167,13 @@ impl InstallerApp {
         if let Some(k) = Self::read_text(state, root, KEYMAP_PATH) {
             self.keymap = k;
         }
+        if let Some(confirmation) = Self::read_text(state, root, ERASE_CONFIRM_PATH)
+            && self.erase_confirmation != confirmation
+        {
+            self.erase_confirmation = confirmation;
+            self.status.clear();
+            self.dirty_structure = true;
+        }
     }
 
     fn event_proxy(&self) -> Option<EventLoopProxy<UserEvent>> {
@@ -2189,6 +2258,10 @@ impl InstallerApp {
                     .get(i)
                     .is_some_and(|disk| !disk.is_system && !disk.read_only)
                 {
+                    if self.selected_disk != Some(i) {
+                        Self::clear_text(state, root, ERASE_CONFIRM_PATH);
+                        self.erase_confirmation.clear();
+                    }
                     self.selected_disk = Some(i);
                     self.status.clear();
                     self.dirty_structure = true;
@@ -2200,11 +2273,16 @@ impl InstallerApp {
             let p = install_method_path(i);
             if Self::read_flag(state, root, p.as_str()) {
                 let _ = state.put(root, p.as_str(), false);
-                self.install_method = if i == 1 {
+                let method = if i == 1 {
                     InstallMethod::Alongside
                 } else {
                     InstallMethod::Erase
                 };
+                if self.install_method != method {
+                    Self::clear_text(state, root, ERASE_CONFIRM_PATH);
+                    self.erase_confirmation.clear();
+                }
+                self.install_method = method;
                 self.status.clear();
                 self.dirty_structure = true;
             }
@@ -2422,7 +2500,7 @@ impl Widget for InstallerApp {
                     // Enter must honour the same gate as the Begin button:
                     // when encrypting, the recovery-key acknowledgement is
                     // required before the install can start.
-                    if self.encryption_ready() {
+                    if self.encryption_ready() && self.destructive_confirmation_ready() {
                         let _ = state.put(root, BEGIN_PATH, true);
                     }
                     *handled = true;
@@ -3059,6 +3137,7 @@ mod tests {
         app2.kernel_lockdown = true;
         app2.target_verified_boot = true;
         app2.recovery_ack = true;
+        app2.erase_confirmation = "/dev/sda".to_string();
         *app2.password.lock().unwrap() = "246810".to_string();
         let _ = build(&mut app2);
         let card2 = app2.children()[0];
@@ -3067,6 +3146,48 @@ mod tests {
             .last()
             .and_then(|nav| nav.children().last().map(|b| b.is_focusable()));
         assert_eq!(begin_enabled, Some(true), "Begin enabled once acknowledged");
+    }
+
+    #[test]
+    fn whole_disk_install_requires_exact_typed_device_confirmation() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.selected_disk = Some(0);
+        app.step = Step::Review;
+        app.tpm2 = true;
+        app.secure_boot = true;
+        app.kernel_lockdown = true;
+        app.target_verified_boot = true;
+        app.recovery_ack = true;
+        *app.password.lock().unwrap() = "246810".to_string();
+        *app.password_confirmation.lock().unwrap() = "246810".to_string();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+
+        let _ = doc.put(&root, BEGIN_PATH, true);
+        app.sync(&mut doc, &root);
+        assert_eq!(app.step, Step::Review);
+        assert_eq!(app.install_state, InstallState::Idle);
+        assert!(app.status.contains("Type /dev/sda exactly"));
+
+        let object = match doc.get(&root, ERASE_CONFIRM_PATH).unwrap() {
+            Some((Value::Object(ObjType::Text), object)) => object,
+            other => panic!("expected confirmation text object, got {other:?}"),
+        };
+        let _ = doc.splice_text(&object, 0, 0, "/dev/sda");
+        app.sync(&mut doc, &root);
+        assert!(app.destructive_confirmation_ready());
+        assert!(
+            app.take_structure_dirty(),
+            "typing the confirmation must rebuild the disabled Begin button"
+        );
+        let _ = build(&mut app);
+        let card = app.children()[0];
+        let begin_enabled = card
+            .children()
+            .last()
+            .and_then(|nav| nav.children().last().map(|button| button.is_focusable()));
+        assert_eq!(begin_enabled, Some(true));
     }
 
     #[test]
@@ -3152,7 +3273,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_install_back_returns_to_review() {
+    fn failed_install_recovery_returns_to_cleared_secret_step() {
         let mut app = InstallerApp::with_disks(sample());
         app.selected_disk = Some(0);
         app.step = Step::Install;
@@ -3164,9 +3285,10 @@ mod tests {
 
         let _ = doc.put(&root, BACK_PATH, true);
         app.sync(&mut doc, &root);
-        assert_eq!(app.step, Step::Review);
+        assert_eq!(app.step, Step::Account);
         assert_eq!(app.install_state, InstallState::Idle);
         assert!(!app.install_launched, "retry must re-arm the launch guard");
+        assert!(app.status.contains("Re-enter"));
     }
 
     #[test]

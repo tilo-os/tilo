@@ -286,6 +286,66 @@ fn draw_skeleton_block(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: &P
 }
 
 impl Widget for MusicApp {
+    fn continuation_metadata(
+        &self,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<ui::collaboration::ContinuationMetadata> {
+        let track_id = self.pb.current.as_ref()?;
+        if track_id.is_empty() || track_id.len() > 256 || track_id.contains(['/', '\\']) {
+            return None;
+        }
+        // Intentionally omit `playing`, queue and volume. A receiving device
+        // may offer this paused position, but must never autoplay or alter its
+        // local audio policy merely because another device reported it.
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "track_id": track_id,
+            "position_ms": self.playhead_ms.max(0.0) as u64,
+            "paused": true,
+        }))
+        .ok()?;
+        Some(ui::collaboration::ContinuationMetadata {
+            schema_version: 1,
+            bytes,
+        })
+    }
+
+    fn restore_continuation_metadata(
+        &mut self,
+        metadata: &ui::collaboration::ContinuationMetadata,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if metadata.schema_version != 1 {
+            return false;
+        }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&metadata.bytes) else {
+            return false;
+        };
+        let Some(track_id) = value.get("track_id").and_then(serde_json::Value::as_str) else {
+            return false;
+        };
+        if !self.lib.tracks.contains_key(track_id) {
+            return false;
+        }
+        self.pb.current = Some(track_id.to_owned());
+        let requested_position = value
+            .get("position_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let duration = self.current_duration_ms();
+        let position = if duration == 0 {
+            requested_position
+        } else {
+            requested_position.min(duration)
+        };
+        self.pb.position_ms = position;
+        self.pb.playing = false;
+        self.playhead_ms = position as f64;
+        crate::doc::write_playback(state, &self.pb);
+        true
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         self.ensure_seeded(state);
         if self.playback_loaded {

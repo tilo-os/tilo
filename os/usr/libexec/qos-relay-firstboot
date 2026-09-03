@@ -1,76 +1,25 @@
 #!/usr/bin/env bash
-# First-boot bootstrap for a qOS host-mode image.
-#
-# Runs once, before qos-relay.service. Flow:
-#
-#   1. Read /etc/qos/enrollment-token.txt (a base32-Crockford
-#      EnrollmentToken minted by the operator's primary device via
-#      the imager app).
-#   2. Decode + verify the token via `qos-relay-admin` (no network
-#      needed for this step — it's a pure crypto check).
-#   3. Generate a device keypair at /var/lib/qos/device/keypair.bin.
-#   4. Persist the user root pubkey at
-#      /var/lib/qos/user-identity/pubkey.bin.
-#   5. Advertise the device pubkey + enrollment nonce over LAN mdns
-#      so the primary device can sign a DeviceCert back to us.
-#   6. On timeout: print a pairing token + our device pubkey to the
-#      console so the operator can complete the handshake OOB.
-#
-# The v0 script performs steps 1, 3, 4 and prints a stub for step 5.
-# The mdns discovery + cert exchange is wired at the SP5 level and
-# will land alongside a small `qos-enroll` helper (which the imager
-# app also uses on the primary side). This script deliberately
-# short-circuits if the cert already exists — a re-run is a no-op.
-
+# Complete host enrollment and provisioning with the trusted nearby qOS device.
 set -euo pipefail
 
-TOKEN_PATH=/etc/qos/enrollment-token.txt
-IDENTITY_ROOT=/var/lib/qos
-DEVICE_DIR="${IDENTITY_ROOT}/device"
-USER_DIR="${IDENTITY_ROOT}/user-identity"
+token=/etc/qos/enrollment-token.txt
+cert=/var/lib/qos/device/cert.bin
+home_peer=/etc/qos/home-peer.toml
 
-echo "qos-relay-firstboot: starting"
-
-if [[ ! -s "${TOKEN_PATH}" ]] || grep -q '^# Replace' "${TOKEN_PATH}"; then
-    echo "qos-relay-firstboot: no enrollment token at ${TOKEN_PATH}"
-    echo "                    the imager app must bake a token before first boot;"
-    echo "                    aborting so systemd retries on the next boot."
-    exit 1
-fi
-
-mkdir -p "${DEVICE_DIR}" "${USER_DIR}"
-chmod 0700 "${DEVICE_DIR}"
-
-if [[ -s "${DEVICE_DIR}/cert.bin" ]]; then
-    echo "qos-relay-firstboot: device cert already present, nothing to do"
+if [[ -e /var/lib/qos-relay/decommissioned ]]; then
     exit 0
 fi
 
-TOKEN="$(cat "${TOKEN_PATH}" | tr -d '[:space:]')"
-if [[ -z "${TOKEN}" ]]; then
-    echo "qos-relay-firstboot: token file is empty"
-    exit 1
+if [[ -s "$cert" && -s "$home_peer" ]]; then
+    exit 0
 fi
-
-# TODO(SP5): implement the LAN mdns exchange + cert receive.
-# The remainder of this script is a placeholder: it stages the
-# enrollment token as an audit artifact, generates a device key,
-# and prints instructions so the operator can complete the flow by
-# hand until the automated helper lands. This is intentional — the
-# design has the pieces (`qos_user_identity::decode_enrollment_token`,
-# device keypair generation, cert persist); the network wiring is
-# SP5 follow-up work.
-echo "qos-relay-firstboot: staging enrollment token"
-cp "${TOKEN_PATH}" "${IDENTITY_ROOT}/pending-enrollment-token.txt"
-chmod 0600 "${IDENTITY_ROOT}/pending-enrollment-token.txt"
-
-echo "qos-relay-firstboot: no automated LAN handshake yet."
-echo "                    Complete enrollment via 'qos-enroll accept'"
-echo "                    on your primary device with this token:"
-echo
-echo "${TOKEN}"
-echo
-# Return zero so systemd does not spin on unit-restart — the
-# operator will finish the OOB step, drop cert.bin into place, and
-# `systemctl restart qos-relay.service` will pick it up.
-exit 0
+label="$(hostnamectl --static 2>/dev/null || hostname 2>/dev/null || echo 'Home server')"
+if [[ -s "$token" ]] && ! grep -q '^# Replace' "$token"; then
+    /usr/bin/qos-enroll join --token-file "$token" --identity-root /var/lib/qos \
+        --home-peer-output /etc/qos/home-peer.toml --label "$label" --timeout 270
+    rm -f "$token"
+else
+    /usr/bin/qos-enroll pair --identity-root /var/lib/qos \
+        --home-peer-output /etc/qos/home-peer.toml --label "$label" --timeout 270
+fi
+echo "qos-relay-firstboot: enrollment and full-sync setup complete"

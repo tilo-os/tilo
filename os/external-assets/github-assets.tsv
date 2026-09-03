@@ -7,6 +7,12 @@ e6c213bb221f4598e7e5e35804e8066b5b49a15ca2fb685729c9cf4ad82a20b7	doubletake-ae06
 bfa0e96a25928cb7c9d906643e8947182ad124b35bcad3f0c765f4fc011c47ab	fluxcast-a74f39f.tar.gz	https://github.com/IlyaP358/fluxcast/archive/a74f39fe3f2012e20315cd37e13e9803871e587f.tar.gz
 67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006	sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz	https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
 821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77	sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz	https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz
+c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d	linuxdeploy-1-alpha-20251107-1-x86_64.AppImage	https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage
+620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff	linuxdeploy-1-alpha-20251107-1-aarch64.AppImage	https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-aarch64.AppImage
+ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0	appimagetool-1.9.1-x86_64.AppImage	https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158	appimagetool-1.9.1-aarch64.AppImage	https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-aarch64.AppImage
+2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d	type2-runtime-20251108-x86_64	https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444	type2-runtime-20251108-aarch64	https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-aarch64
 c880fa8d607b2aa6eadde7d6d6302b1396ebc38368fe2332fa20e193c7ee1420	libwpe-1.16.3.tar.xz	https://wpewebkit.org/releases/libwpe-1.16.3.tar.xz
 544ae14012f8e7e426b8cb522eb0aaaac831ad7c35601d1cf31d37670e0ebb3b	wpebackend-fdo-1.16.1.tar.xz	https://wpewebkit.org/releases/wpebackend-fdo-1.16.1.tar.xz
 b2bafef2751625b7fdf530f230ff0f542ff0eeba3590c3a989d931b2a55c858e	wpewebkit-2.52.6.tar.xz	https://wpewebkit.org/releases/wpewebkit-2.52.6.tar.xz

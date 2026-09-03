@@ -10,7 +10,7 @@ FROM registry.fedoraproject.org/fedora:42
 
 # nodejs: actions/checkout. capnproto: runtime-collab build.rs.
 # vulkan-loader + mesa-vulkan-drivers: llvmpipe, so GPU tests run headless.
-# libadwaita-demo, qt6-qtbase-examples and LibreOffice Writer are real-process
+# GNOME Text Editor, qt6-qtbase-examples and LibreOffice Writer are real-process
 # subjects for the legacy-app caret E2E. Keeping them in this weekly-built
 # image makes the path-gated PR job deterministic and avoids live dnf traffic.
 # bubblewrap is a test *subject*, not a tool — the launcher's confinement
@@ -44,7 +44,7 @@ RUN dnf install -y \
       nasm \
       vulkan-loader mesa-vulkan-drivers \
       bubblewrap \
-      libadwaita-demo qt6-qtbase-examples libreoffice-writer \
+      gnome-text-editor qt6-qtbase-examples libreoffice-writer \
     && dnf clean all
 
 ENV RUSTUP_HOME=/usr/local/rustup \

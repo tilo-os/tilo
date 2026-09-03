@@ -72,6 +72,7 @@ async fn start_relay_at(
             id: *id,
             pin: true,
             replication: qos_relay::ReplicationIntent::FullWorkspace,
+            admitted_users: Vec::new(),
         });
     }
     let identity = RelayIdentity {
@@ -96,6 +97,7 @@ async fn start_relay_at(
 /// subscription drop — far longer than any outage this test can sit through).
 async fn prime_then_close_relay2(
     user: &TestUser,
+    relay1: &Relay,
     relay1_addr: iroh_base::EndpointAddr,
     r2_sk: SigningKey,
     r2_cert: DeviceCert,
@@ -103,14 +105,36 @@ async fn prime_then_close_relay2(
     workspaces: &[u64],
     members: &[[u8; 32]],
 ) {
+    let r2_pubkey = r2_cert.device_public_key;
     let r2_first = start_relay_at(user, r2_sk, r2_cert, r2_state_root, workspaces, members).await;
     // Peer-relay r1 ← r2 dial primes relay1's `known_peer_relays`.
     r2_first.add_peer_relay_at(relay1_addr, "r1".into(), 0);
-    // Wait for the handshake + hello exchange to complete.
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // Wait for the actual subscription rather than guessing how long the
+    // handshake takes on the runner.
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if relay1.is_subscribed(workspaces[0], &r2_pubkey).await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("relay2 subscribed to relay1");
     r2_first.shutdown().await;
-    // Give relay1 a moment to observe the subscription drop.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Wait until relay1 has removed the closed subscription before publishing
+    // the outage deltas. Otherwise a loaded runner can accidentally classify
+    // the dead QUIC stream as live and lose store-and-forward coverage.
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if !relay1.is_subscribed(workspaces[0], &r2_pubkey).await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("relay1 observed relay2 shutdown");
 }
 
 /// p1 publishes three tagged deltas via relay1 while relay2 is down, and
@@ -231,6 +255,7 @@ async fn deltas_queued_during_outage_arrive_in_order_after_reconnect() {
     // via PeerRelayHello.
     prime_then_close_relay2(
         &user,
+        &relay1.relay,
         relay1.relay.node_addr(),
         r2_sk.clone(),
         r2_cert.clone(),

@@ -37,7 +37,7 @@ const RECORD_ID_MIGRATION_DOMAIN: &[u8] = b"qos.collaborative-fs.namespace-recor
 pub const MAX_LIVE_RECORD_BLOB_SCAN: usize = 100_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct LiveRecordBlobRoots {
+pub struct LiveRecordBlobRoots {
     pub record_id: FileRecordId,
     pub manifest: Option<Hash>,
     pub thumbnail: Option<Hash>,
@@ -1421,7 +1421,7 @@ impl Namespace {
     /// Minimal live record graph used by the content store to resolve manifest
     /// chunks. Kept crate-private so callers cannot accidentally disclose
     /// another record's roots while checking one requested blob.
-    pub(crate) fn live_record_blob_roots(
+    pub fn live_record_blob_roots(
         &self,
         max_live_records: usize,
     ) -> Result<Vec<LiveRecordBlobRoots>, LiveRecordBlobScanError> {
