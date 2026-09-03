@@ -22,17 +22,30 @@ use serde::{Deserialize, Serialize};
 /// side rollout.
 pub const ALPN: &[u8] = b"qos-relay/1";
 /// Authenticated one-shot discovery of direct filesystem endpoints.
-pub const DISCOVERY_ALPN: &[u8] = b"qos-relay-discovery/1";
+pub const DISCOVERY_ALPN: &[u8] = b"qos-relay-discovery/2";
 
 /// Small, stable discovery reply consumed directly by filesystem workers.
 /// Keeping this separate from the relay's richer placement profile avoids a
 /// relay-only address ever being mistaken for a content endpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentEndpointAdvertisement {
+    /// Explicit schema version for persisted/client registration envelopes.
+    pub schema_version: u16,
     /// Relay room whose signed filesystem authority authorised this lookup.
     pub workspace_id: u64,
     /// Direct authenticated filesystem/blob endpoints currently ready for it.
     pub filesystem_endpoints: Vec<EndpointAddr>,
+    /// Authenticated Files workspace binding used to join the record plane.
+    pub filesystem_ticket: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Complete authenticated registration handed to the local Files daemon.
+pub struct ContentPeerRegistration {
+    /// Direct Iroh endpoint serving filesystem records and blobs.
+    pub endpoint: EndpointAddr,
+    /// Encoded Files ticket binding a fresh daemon to the shared namespace.
+    pub ticket: String,
 }
 
 /// A client must name the relay room it is resolving. The host never exposes

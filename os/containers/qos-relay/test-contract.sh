@@ -23,10 +23,9 @@ done
 # State must outlive the container. Enrollment creates only the scoped host
 # identity here; the user's root private key never enters this deployment.
 need "$compose" "./identity:/var/lib/qos:Z"
-need "$compose" "./enrollment-token.txt:/run/secrets/qos-enrollment-token:ro,Z"
 need "$compose" "qos-relay-state:/var/lib/qos-relay:Z"
+need "$compose" "network_mode: host"
 need "$compose" "test -s /var/lib/qos-relay/metrics.json"
-need "$compose" '"${QOS_RELAY_PORT:-4433}:4433/udp"'
 
 # Parse the template with the standard-library TOML parser rather than trusting
 # a visually plausible example that the daemon cannot load.
@@ -53,6 +52,7 @@ need "$compose" "qos-full-replica"
 need "$entrypoint" "/usr/bin/fs replica"
 need "$entrypoint" "/usr/bin/qos-relay"
 need "$entrypoint" "/usr/bin/qos-enroll join"
+need "$entrypoint" "/usr/bin/qos-enroll pair"
 need "$entrypoint" "wait -n"
 
 echo "qos-relay container contract: PASS"

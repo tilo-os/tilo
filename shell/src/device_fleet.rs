@@ -80,11 +80,12 @@ impl DeviceFleetStore {
     /// certificate or revocation entry fails verification.
     pub fn load(&self, identity_id: &str) -> io::Result<DeviceFleet> {
         let path = self.path(identity_id);
-        if !path.exists() {
-            return Ok(DeviceFleet::new(identity_id.to_string()));
-        }
-        let fleet: DeviceFleet = serde_json::from_slice(&fs::read(path)?)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let mut fleet: DeviceFleet = if path.exists() {
+            serde_json::from_slice(&fs::read(path)?)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+        } else {
+            DeviceFleet::new(identity_id.to_string())
+        };
         if fleet.schema_version != FLEET_SCHEMA_VERSION || fleet.identity_id != identity_id {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -98,6 +99,41 @@ impl DeviceFleetStore {
         for entry in &fleet.revocations {
             verify_revocation_entry(entry)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        }
+        // Home peers are enrolled by the privileged LAN broker rather than the
+        // ordinary device-completion UI. Their root-signed certificates live
+        // in the shared enrollment registry and are projected into the same
+        // fleet so list/revoke works identically for headless devices.
+        if let Some(root) = self
+            .identity_paths
+            .user_pubkey
+            .parent()
+            .and_then(std::path::Path::parent)
+        {
+            let registry = root.join("home-peers.json");
+            if let Ok(metadata) = fs::metadata(&registry)
+                && metadata.len() <= 1024 * 1024
+            {
+                let registrations: Vec<qos_relay::HomePeerRegistration> =
+                    serde_json::from_slice(&fs::read(&registry)?)
+                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+                let identity = decode_hex_32(identity_id)?;
+                for cert in registrations
+                    .into_iter()
+                    .filter_map(|registration| registration.device_cert)
+                    .filter(|cert| cert.user_public_key == identity)
+                {
+                    verify_device_cert(&cert)
+                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+                    if !fleet
+                        .certificates
+                        .iter()
+                        .any(|known| known.device_public_key == cert.device_public_key)
+                    {
+                        fleet.certificates.push(cert);
+                    }
+                }
+            }
         }
         Ok(fleet)
     }

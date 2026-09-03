@@ -177,6 +177,8 @@ pub struct DeviceMeshPane {
     apply_child: Option<Child>,
     apply_queued: bool,
     pairing_child: Option<Child>,
+    pairing_discovery: bool,
+    pairing_candidate: Option<PairCandidate>,
     next_status_refresh: Instant,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -186,6 +188,14 @@ pub struct DeviceMeshPane {
 struct DiscoveredWorkspace {
     id: u64,
     name: String,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, PartialEq, Eq)]
+struct PairCandidate {
+    device_node_id: String,
+    relay_service_node_id: String,
+    label: String,
+    verification_code: String,
 }
 
 fn workspace_key(id: u64) -> String {
@@ -316,6 +326,8 @@ impl DeviceMeshPane {
             apply_child: None,
             apply_queued: false,
             pairing_child: None,
+            pairing_discovery: false,
+            pairing_candidate: None,
             next_status_refresh: Instant::now() + STATUS_REFRESH_INTERVAL,
             composed: None,
             rect: Rect::ZERO,
@@ -442,14 +454,20 @@ impl DeviceMeshPane {
             )
         };
         let pairing = self.pairing_child.is_some();
+        let pair_label = if pairing {
+            "Pairing…".to_string()
+        } else if let Some(candidate) = &self.pairing_candidate {
+            format!(
+                "Approve {} · {}",
+                candidate.label, candidate.verification_code
+            )
+        } else {
+            "Pair home server".to_string()
+        };
         let approve = Box::new(
             Button::new(
                 "device_mesh.approve_enrollment",
-                if pairing {
-                    "Pairing…"
-                } else {
-                    "Pair home server"
-                },
+                &pair_label,
                 Some(APPROVE_ENROLLMENT_KEY),
             )
             .with_enabled(!pairing),
@@ -570,6 +588,11 @@ impl DeviceMeshPane {
                 DeviceRole::AlwaysOnServer => "always-on",
             },
             "workspace_ids": self.config.workspaces.iter().map(|workspace| workspace.id).collect::<Vec<_>>(),
+            "replication": match self.common_replication() {
+                ReplicationIntent::WorkspaceOnly => "workspace-only",
+                ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => "on-demand",
+                ReplicationIntent::FullWorkspace => "full",
+            },
             "inbound_relay": self.config.services.inbound_relay,
             "remote_control_relay": self.config.services.remote_control_relay,
             "app_serving": self.config.services.app_serving,
@@ -605,10 +628,30 @@ impl DeviceMeshPane {
         if self.pairing_child.is_some() {
             return;
         }
+        let Some(candidate) = self.pairing_candidate.clone() else {
+            self.load_status = match Command::new("/usr/bin/qos-enroll")
+                .args(["discover", "--timeout", "15"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => {
+                    self.pairing_child = Some(child);
+                    self.pairing_discovery = true;
+                    "Looking for your new home server…".into()
+                }
+                Err(error) => format!("Could not start nearby discovery: {error}"),
+            };
+            self.structure_dirty = true;
+            return;
+        };
         let mut command = Command::new("pkexec");
         command
             .args([CONTROL_HELPER, "approve-enrollment", "--identity-root"])
-            .arg(identity_root());
+            .arg(identity_root())
+            .args(["--expected-device", &candidate.device_node_id])
+            .args(["--expected-service", &candidate.relay_service_node_id]);
         let ids = if self.config.workspaces.is_empty() {
             self.discovered_workspaces
                 .iter()
@@ -632,7 +675,11 @@ impl DeviceMeshPane {
         {
             Ok(child) => {
                 self.pairing_child = Some(child);
-                "Home server pairing in progress…".into()
+                self.pairing_discovery = false;
+                format!(
+                    "Approving {} with code {}…",
+                    candidate.label, candidate.verification_code
+                )
             }
             Err(error) => format!("Could not start pairing: {error}"),
         };
@@ -673,16 +720,36 @@ impl DeviceMeshPane {
         match pairing_result {
             Some(Ok(Some(status))) => {
                 let mut child = self.pairing_child.take().expect("pairing child exists");
-                if status.success() {
+                if status.success() && self.pairing_discovery {
+                    let mut output = String::new();
+                    if let Some(mut stdout) = child.stdout.take() {
+                        let _ = stdout.read_to_string(&mut output);
+                    }
+                    match serde_json::from_str::<PairCandidate>(output.trim()) {
+                        Ok(candidate) => {
+                            self.load_status = format!(
+                                "Found {}. Confirm code {} on the server, then approve.",
+                                candidate.label, candidate.verification_code
+                            );
+                            self.pairing_candidate = Some(candidate);
+                        }
+                        Err(_) => {
+                            self.load_status =
+                                "Nearby discovery returned an invalid identity".into();
+                        }
+                    }
+                } else if status.success() {
                     self.registered_home_peers = registered_home_peer_count();
                     self.refresh_runtime_status();
                     self.load_status = "Home server paired".into();
+                    self.pairing_candidate = None;
                 } else {
                     self.load_status = format!(
                         "Home server was not paired: {}. Choose Pair home server to retry.",
                         child_error(&mut child, "the pairing window closed")
                     );
                 }
+                self.pairing_discovery = false;
                 self.structure_dirty = true;
             }
             Some(Err(error)) => {
@@ -747,15 +814,28 @@ impl Widget for DeviceMeshPane {
                 self.structure_dirty = true;
             }
             self.config.device_role = role;
-            if role.can_serve() {
-                self.config.services.workspace_replication = true;
-                self.config.services.inbound_relay = true;
-                let _ = state.put(root, INBOUND_RELAY_KEY, true);
-                for workspace in &mut self.config.workspaces {
-                    workspace.pin = true;
-                }
+            self.config.services.workspace_replication = role.can_serve();
+            self.config.services.inbound_relay = role.can_serve();
+            let _ = state.put(root, INBOUND_RELAY_KEY, role.can_serve());
+            for workspace in &mut self.config.workspaces {
+                workspace.pin = role.can_serve();
             }
             if role == DeviceRole::AlwaysOnServer {
+                if self.config.workspaces.is_empty() {
+                    self.config.workspaces = self
+                        .discovered_workspaces
+                        .iter()
+                        .map(|workspace| qos_relay::WorkspaceBinding {
+                            id: workspace.id,
+                            pin: true,
+                            replication: ReplicationIntent::FullWorkspace,
+                            admitted_users: Vec::new(),
+                        })
+                        .collect();
+                    for workspace in &self.discovered_workspaces {
+                        let _ = state.put(root, workspace_key(workspace.id), true);
+                    }
+                }
                 self.config.services.full_content_replication = true;
                 for workspace in &mut self.config.workspaces {
                     workspace.replication = ReplicationIntent::FullWorkspace;
@@ -765,6 +845,8 @@ impl Widget for DeviceMeshPane {
                     REPLICATION_KEY,
                     replication_label(&ReplicationIntent::FullWorkspace),
                 );
+            } else {
+                self.config.services.full_content_replication = false;
             }
             self.next_status_refresh = Instant::now();
             changed = true;

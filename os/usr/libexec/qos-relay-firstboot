@@ -9,13 +9,13 @@ home_peer=/etc/qos/home-peer.toml
 if [[ -s "$cert" && -s "$home_peer" ]]; then
     exit 0
 fi
-if [[ ! -s "$token" ]] || grep -q '^# Replace' "$token"; then
-    echo "qos-relay-firstboot: add a home-server enrollment token at $token"
-    exit 1
-fi
-
 label="$(hostnamectl --static 2>/dev/null || hostname 2>/dev/null || echo 'Home server')"
-/usr/bin/qos-enroll join --token-file "$token" --identity-root /var/lib/qos \
-    --home-peer-output /etc/qos/home-peer.toml --label "$label" --timeout 270
-rm -f "$token"
+if [[ -s "$token" ]] && ! grep -q '^# Replace' "$token"; then
+    /usr/bin/qos-enroll join --token-file "$token" --identity-root /var/lib/qos \
+        --home-peer-output /etc/qos/home-peer.toml --label "$label" --timeout 270
+    rm -f "$token"
+else
+    /usr/bin/qos-enroll pair --identity-root /var/lib/qos \
+        --home-peer-output /etc/qos/home-peer.toml --label "$label" --timeout 270
+fi
 echo "qos-relay-firstboot: enrollment and full-sync setup complete"

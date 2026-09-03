@@ -74,6 +74,7 @@ pub mod client;
 pub mod coedit;
 pub mod config;
 pub mod daemon;
+pub mod home_peer;
 pub mod mesh;
 pub mod metrics;
 pub mod peer;
@@ -88,12 +89,14 @@ pub use client::{ClientError, RelayClient};
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};
 pub use config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use daemon::{Relay, RelayError, RelayHandle};
+pub use home_peer::HomePeerRegistration;
 pub use mesh::{
     DeviceMeshProfile, DeviceRole, Placement, PlacementRequest, RemoteControlRoute,
     ReplicationIntent, ReplicationResource, ServerAdvertisement, ServiceCapabilities, Workload,
     place, route_remote_control,
 };
 pub use policy::TrustPolicy;
+pub use transport::ContentPeerRegistration;
 pub use transport::{ALPN, Envelope};
 
 /// Semantic version emitted by `qos-relay --version`. Tied to the
