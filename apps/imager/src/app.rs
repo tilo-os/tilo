@@ -18,10 +18,9 @@
 //!   read-back **verify** pass.
 //! * **Done** — the verified / failed outcome with a fresh-start affordance.
 //!
-//! Every write is doubly gated: the typed confirmation at Confirm, plus the
-//! `QOS_IMAGER_ALLOW_WRITE=1` allow-gate in [`crate::write`]. With the gate off
-//! (tests, `--shots`, normal dev runs) the write control is unavailable; the app
-//! never reports synthetic progress or success.
+//! Every write is doubly gated: the typed confirmation at Confirm, then native
+//! host authentication for a short-lived privileged writer. The wizard itself
+//! stays unprivileged; tests and shots cannot start the helper.
 //!
 //! All persistent state (selected source/target, the live profile, the typed
 //! confirmation, the current step, job progress) lives in the Automerge
@@ -2037,9 +2036,9 @@ impl ImagerApp {
         }
         // Gate note.
         let note = if crate::write::allow_write() {
-            "Live write enabled (QOS_IMAGER_ALLOW_WRITE=1)."
+            "Direct privileged writer enabled."
         } else {
-            "Writing unavailable — enable the privileged backend with QOS_IMAGER_ALLOW_WRITE=1."
+            "Your device will ask for administrator approval when writing begins."
         };
         Self::txt(
             scene,
@@ -2385,7 +2384,7 @@ impl ImagerApp {
         Self::txt_center(
             scene,
             tr,
-            "The drive was not changed. See the message below.",
+            "Writing did not verify. The drive may be incomplete; retry before using it.",
             14.0,
             c.text_dim,
             cxp,
