@@ -1235,6 +1235,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn remote_file_reference_resolves_a_projected_record_without_source_path() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("hydrated-on-read.md");
@@ -1268,9 +1269,11 @@ mod tests {
         )
         .unwrap();
 
-        let resolved =
-            resolve_continuity_file_reference_in_roots(&reference, &[root.path().to_path_buf()])
-                .expect("the mounted Files record catalog resolves the remote reference");
+        let previous = std::env::var_os("QOS_WORKSPACE_ROOTS");
+        // SAFETY: guarded by the process_env serial group.
+        unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", root.path()) };
+        let resolved = open_continuity_file_reference(&reference)
+            .expect("the mounted Files record catalog resolves and hydrates the remote reference");
         assert_eq!(resolved, path);
         assert_eq!(std::fs::read(resolved).unwrap(), b"hydrated content");
         assert!(
@@ -1278,5 +1281,12 @@ mod tests {
                 .unwrap()
                 .contains(root.path().to_str().unwrap())
         );
+        // SAFETY: restore the process-global environment under the same lock.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("QOS_WORKSPACE_ROOTS", value),
+                None => std::env::remove_var("QOS_WORKSPACE_ROOTS"),
+            }
+        }
     }
 }
