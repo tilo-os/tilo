@@ -6,10 +6,15 @@ set -euo pipefail
 : "${GITHUB_SERVER_URL:?missing Forgejo server URL}"
 : "${GITHUB_REF_NAME:?missing release tag}"
 : "${QOS_SITE_GIT_TOKEN:?missing short-lived website token}"
+: "${QOS_LINUX_SIGNING_FINGERPRINT:?missing protected Linux signing fingerprint}"
 
 version="${GITHUB_REF_NAME#imager-v}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 2; }
+fingerprint="${QOS_LINUX_SIGNING_FINGERPRINT^^}"
+fingerprint="${fingerprint//[[:space:]]/}"
+[[ "$fingerprint" =~ ^([A-F0-9]{40}|[A-F0-9]{64})$ ]] \
+  || { printf 'Linux signing fingerprint must be a full OpenPGP fingerprint\n' >&2; exit 2; }
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -37,8 +42,9 @@ if [[ "$current_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   printf 'refusing to replace newer landing-page release %s with %s\n' "$current_version" "$version" >&2
   exit 1
 fi
-jq --arg tag "$GITHUB_REF_NAME" \
-  '.tag = $tag | .published = true' "$manifest" >"$manifest.next"
+jq --arg tag "$GITHUB_REF_NAME" --arg fingerprint "$fingerprint" \
+  '.tag = $tag | .published = true | .linuxSigningFingerprint = $fingerprint' \
+  "$manifest" >"$manifest.next"
 mv "$manifest.next" "$manifest"
 
 npm --prefix "$work/site" ci

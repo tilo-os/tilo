@@ -137,7 +137,8 @@ grep -Fq 'qos/homebrew-qos' "$repo/apps/imager/packaging/publish-homebrew-tap.sh
 grep -Fq 'site-downloads:' "$workflow" \
   && grep -Fq 'test:release' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq "jq -r '.tag // empty'" "$repo/apps/imager/packaging/publish-site-release.sh" \
-  && grep -Fq "'.tag = \$tag | .published = true'" "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq '.linuxSigningFingerprint = $fingerprint' "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq 'QOS_LINUX_SIGNING_FINGERPRINT: ${{ vars.IMAGER_LINUX_SIGNING_FINGERPRINT }}' "$workflow" \
   && ok 'landing-page manifest advances only through the gated release workflow' \
   || bad 'landing-page release publication is not wired'
 
