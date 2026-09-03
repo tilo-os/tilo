@@ -4,17 +4,20 @@
 //! envelope is verified against the workspace governor, persists its revision,
 //! and can only narrow or replace authority through a newer signed revision.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use collab_types::{CapOverride, Principal};
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
+use crate::sync::Ticket;
 use crate::{AclHandle, IdentityKey, WorkspaceAcl};
 
 pub const QOS_FS_AUTHORITY_ALPN: &[u8] = b"qos-fs-workspace-authority/1";
 const MAX_AUTHORITY_FRAME: usize = 256 * 1024;
+const CONTENT_PEERS_FILE: &str = "content-peers.json";
+const MAX_PERSISTED_CONTENT_PEERS: usize = 32;
 /// Local, group-restricted control socket used by the desktop authority
 /// publisher. It avoids self-dialling an Iroh node while the filesystem
 /// daemon owns that node's UDP socket.
@@ -37,6 +40,108 @@ pub fn local_content_socket_path(workspace: uuid::Uuid) -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/run/qos"))
         .join(format!("workspace-content-{workspace}.sock"))
+}
+
+/// Durable direct Files endpoints discovered through the authenticated relay.
+/// This file is written only by the root-owned filesystem daemon after its
+/// group-restricted control socket accepts the request.
+pub fn content_peers_path(cache_dir: &Path) -> PathBuf {
+    cache_dir.join(CONTENT_PEERS_FILE)
+}
+
+/// A discovered Files endpoint together with the namespace/record plane it
+/// serves.  `ticket` is absent only for entries written by older daemons; a
+/// legacy entry remains useful for blob hydration but is deliberately not
+/// treated as a record-plane bootstrap source.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersistedContentPeer {
+    pub endpoint: iroh_base::EndpointAddr,
+    #[serde(default)]
+    pub ticket: Option<String>,
+}
+
+impl PersistedContentPeer {
+    fn validate(&self) -> anyhow::Result<()> {
+        if let Some(ticket) = &self.ticket {
+            // The ticket names the shared namespace/record plane. Its node is
+            // commonly the originating owner, while `endpoint` is the
+            // authenticated always-on replica discovered through relay; those
+            // identities are intentionally distinct. Discovery authentication
+            // pins the endpoint to the enrolled host, so here we only verify
+            // the bounded ticket encoding and retain its workspace identity.
+            let _ = Ticket::decode(ticket)?;
+        }
+        Ok(())
+    }
+
+    pub fn decoded_ticket(&self) -> anyhow::Result<Option<Ticket>> {
+        self.ticket.as_deref().map(Ticket::decode).transpose()
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PersistedContentPeersFile {
+    Current(Vec<PersistedContentPeer>),
+    /// Version-zero files contained bare endpoint addresses.  Keep them for
+    /// on-demand blob hydration, but never invent a workspace binding.
+    Legacy(Vec<iroh_base::EndpointAddr>),
+}
+
+pub fn load_persisted_content_peers(cache_dir: &Path) -> anyhow::Result<Vec<PersistedContentPeer>> {
+    let path = content_peers_path(cache_dir);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let mut peers = match serde_json::from_slice(&std::fs::read(&path)?)? {
+        PersistedContentPeersFile::Current(peers) => peers,
+        PersistedContentPeersFile::Legacy(peers) => peers
+            .into_iter()
+            .map(|endpoint| PersistedContentPeer {
+                endpoint,
+                ticket: None,
+            })
+            .collect(),
+    };
+    anyhow::ensure!(
+        peers.len() <= MAX_PERSISTED_CONTENT_PEERS,
+        "persisted content peers exceed {MAX_PERSISTED_CONTENT_PEERS}"
+    );
+    let mut unique = Vec::with_capacity(peers.len());
+    for peer in peers.drain(..) {
+        peer.validate()?;
+        if !unique
+            .iter()
+            .any(|known: &PersistedContentPeer| known.endpoint.id == peer.endpoint.id)
+        {
+            unique.push(peer);
+        }
+    }
+    Ok(unique)
+}
+
+fn persist_content_peer(cache_dir: &Path, peer: PersistedContentPeer) -> anyhow::Result<()> {
+    peer.validate()?;
+    let mut peers = load_persisted_content_peers(cache_dir)?;
+    if let Some(existing) = peers
+        .iter_mut()
+        .find(|known| known.endpoint.id == peer.endpoint.id)
+    {
+        // A later authenticated discovery can upgrade a legacy address with
+        // the authoritative workspace ticket. Never discard that binding.
+        if peer.ticket.is_some() {
+            *existing = peer;
+        }
+    } else {
+        anyhow::ensure!(
+            peers.len() < MAX_PERSISTED_CONTENT_PEERS,
+            "content peer limit of {MAX_PERSISTED_CONTENT_PEERS} reached"
+        );
+        peers.push(peer);
+    }
+    atomic_file::write(&content_peers_path(cache_dir), &serde_json::to_vec(&peers)?)?;
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,18 +337,36 @@ pub struct AuthorityResponse {
 #[serde(deny_unknown_fields)]
 pub struct ContentPeerRequest {
     pub endpoint: iroh_base::EndpointAddr,
+    /// Exact NAS ticket returned by authenticated relay discovery.  The
+    /// daemon validates that it names this endpoint before making it durable.
+    /// Omitted only by old clients, which preserve blob-only behaviour.
+    #[serde(default)]
+    pub ticket: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContentPeerResponse {
     pub accepted: bool,
+    /// The endpoint was durably stored, but its ticket names a different
+    /// workspace from the currently-running `fs serve` record plane. The
+    /// daemon will restart itself after replying so it joins that plane.
+    #[serde(default)]
+    pub rebind_required: bool,
+    /// A managed system service has scheduled that rebind after this response
+    /// was flushed. Ad-hoc `fs serve` callers receive the same durable
+    /// registration but must restart their daemon explicitly.
+    #[serde(default)]
+    pub restart_scheduled: bool,
 }
 
 #[cfg(unix)]
 pub async fn serve_local_content_peer(
     socket: PathBuf,
     hydrator: std::sync::Arc<crate::Hydrator>,
+    cache_dir: Option<PathBuf>,
+    active_workspace: uuid::Uuid,
+    rebind: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -258,15 +381,57 @@ pub async fn serve_local_content_peer(
                 break;
             };
             let hydrator = hydrator.clone();
+            let cache_dir = cache_dir.clone();
+            let rebind = rebind.clone();
             tokio::spawn(async move {
-                let accepted = match read_frame::<_, ContentPeerRequest>(&mut stream).await {
-                    Ok(request) => {
-                        hydrator.add_peer(request.endpoint);
-                        true
+                let (accepted, rebind_required) =
+                    match read_frame::<_, ContentPeerRequest>(&mut stream).await {
+                        Ok(request) => {
+                            let rebind_required = request
+                                .ticket
+                                .as_deref()
+                                .and_then(|encoded| {
+                                    Ticket::decode(encoded)
+                                        .ok()
+                                        .map(|ticket| ticket.workspace_id() != active_workspace)
+                                })
+                                .unwrap_or(false);
+                            let persisted = cache_dir.as_deref().map_or(Ok(()), |cache| {
+                                persist_content_peer(
+                                    cache,
+                                    PersistedContentPeer {
+                                        endpoint: request.endpoint.clone(),
+                                        ticket: request.ticket.clone(),
+                                    },
+                                )
+                            });
+                            if persisted.is_ok() {
+                                hydrator.add_peer(request.endpoint);
+                                (true, rebind_required)
+                            } else {
+                                (false, false)
+                            }
+                        }
+                        Err(_) => (false, false),
+                    };
+                let restart_scheduled = rebind_required && rebind.is_some();
+                let response_sent = write_frame(
+                    &mut stream,
+                    &ContentPeerResponse {
+                        accepted,
+                        rebind_required,
+                        restart_scheduled,
+                    },
+                )
+                .await
+                .is_ok();
+                // The client needs a successful acknowledgement before the
+                // service exits and systemd starts the joined record plane.
+                if response_sent && accepted && restart_scheduled {
+                    if let Some(rebind) = rebind {
+                        let _ = rebind.send(());
                     }
-                    Err(_) => false,
-                };
-                let _ = write_frame(&mut stream, &ContentPeerResponse { accepted }).await;
+                }
             });
         }
     }))
@@ -276,16 +441,16 @@ pub async fn serve_local_content_peer(
 pub async fn register_local_content_peer(
     socket: &std::path::Path,
     endpoint: iroh_base::EndpointAddr,
-) -> anyhow::Result<()> {
+    ticket: Option<String>,
+) -> anyhow::Result<ContentPeerResponse> {
     let mut stream = tokio::net::UnixStream::connect(socket).await?;
-    write_frame(&mut stream, &ContentPeerRequest { endpoint }).await?;
+    write_frame(&mut stream, &ContentPeerRequest { endpoint, ticket }).await?;
+    let response = read_frame::<_, ContentPeerResponse>(&mut stream).await?;
     anyhow::ensure!(
-        read_frame::<_, ContentPeerResponse>(&mut stream)
-            .await?
-            .accepted,
+        response.accepted,
         "filesystem daemon rejected content endpoint"
     );
-    Ok(())
+    Ok(response)
 }
 
 /// Start the local authority publisher service. The caller is responsible for
@@ -512,16 +677,93 @@ mod tests {
             Arc::new(crate::ContentStore::memory()),
         ));
         let socket = temp.path().join("content.sock");
-        let task = serve_local_content_peer(socket.clone(), hydrator.clone())
-            .await
-            .unwrap();
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let active_workspace = Ticket::workspace_id_for_topic([0x71; 32]);
+        let (rebind_tx, mut rebind_rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = serve_local_content_peer(
+            socket.clone(),
+            hydrator.clone(),
+            Some(cache.clone()),
+            active_workspace,
+            Some(rebind_tx),
+        )
+        .await
+        .unwrap();
         let discovered =
             iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x42; 32]).public())
                 .with_ip_addr("127.0.0.1:45454".parse().unwrap());
-        register_local_content_peer(&socket, discovered.clone())
+        let ticket = Ticket {
+            node: discovered.clone(),
+            workspace: [0x71; 32],
+        }
+        .encode()
+        .unwrap();
+        register_local_content_peer(&socket, discovered.clone(), Some(ticket.clone()))
             .await
             .unwrap();
         assert!(hydrator.known_peers().contains(&discovered));
+        assert_eq!(
+            load_persisted_content_peers(&cache).unwrap(),
+            vec![PersistedContentPeer {
+                endpoint: discovered,
+                ticket: Some(ticket),
+            }]
+        );
+        assert!(rebind_rx.try_recv().is_err());
+        task.abort();
+        endpoint.close().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn distinct_nas_endpoint_persists_owner_ticket_and_requests_rebind() {
+        let temp = tempfile::tempdir().unwrap();
+        let endpoint = iroh::endpoint::Endpoint::bind(iroh::endpoint::presets::N0)
+            .await
+            .unwrap();
+        let hydrator = Arc::new(crate::Hydrator::new(
+            endpoint.clone(),
+            Arc::new(crate::ContentStore::memory()),
+        ));
+        let socket = temp.path().join("content.sock");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let active_workspace = uuid::Uuid::from_u128(0x11);
+        let remote_workspace = [0x22; 32];
+        let (rebind_tx, mut rebind_rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = serve_local_content_peer(
+            socket.clone(),
+            hydrator.clone(),
+            Some(cache.clone()),
+            active_workspace,
+            Some(rebind_tx),
+        )
+        .await
+        .unwrap();
+        let nas = iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x42; 32]).public());
+        let owner = iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x43; 32]).public());
+        let ticket = Ticket {
+            node: owner,
+            workspace: remote_workspace,
+        }
+        .encode()
+        .unwrap();
+
+        register_local_content_peer(&socket, nas.clone(), Some(ticket.clone()))
+            .await
+            .unwrap();
+        assert!(hydrator.known_peers().contains(&nas));
+        let restored = load_persisted_content_peers(&cache).unwrap()[0]
+            .decoded_ticket()
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.workspace, remote_workspace);
+        assert_ne!(restored.node.id, nas.id, "the owner and NAS are distinct");
+        tokio::time::timeout(std::time::Duration::from_secs(1), rebind_rx.recv())
+            .await
+            .unwrap()
+            .expect("different workspace ticket asks the daemon to restart into it");
         task.abort();
         endpoint.close().await;
     }

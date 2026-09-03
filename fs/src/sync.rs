@@ -10,6 +10,7 @@
 //! Automerge object ids — independently-created docs would fork on
 //! merge. The bootstrap exchange guarantees that shared history.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -20,6 +21,7 @@ use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh_base::EndpointAddr;
+use iroh_blobs::Hash;
 use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
 use iroh_gossip::net::{GOSSIP_ALPN, Gossip};
 use iroh_gossip::proto::TopicId;
@@ -58,6 +60,9 @@ use crate::workspace_authority::{
 
 /// Custom ALPN for the document exchange (bootstrap + incremental sync).
 pub const QOS_FS_SYNC_ALPN: &[u8] = b"qos-fs-sync/0";
+/// Interactive peers always retain small previews when metadata changes, but
+/// never fetch a file manifest/chunks merely to populate a directory view.
+const MAX_INTERACTIVE_THUMBNAIL_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Certified local identity and live revocation state required by every
 /// workspace-sync connection.
@@ -356,7 +361,7 @@ pub async fn sync_with_peer(
     peer: EndpointAddr,
     namespace: &Arc<Mutex<Namespace>>,
     identity: &FsTransportIdentity,
-) -> Result<()> {
+) -> Result<bool> {
     if identity.partitioned() {
         anyhow::bail!("transport partition gate is closed");
     }
@@ -368,6 +373,7 @@ pub async fn sync_with_peer(
         send.write_all(&[MODE_SYNC]).await?;
         let mut state = automerge::sync::State::new();
         // Initiator: write-then-read each round; the responder mirrors.
+        let mut received_change = false;
         for _ in 0..200 {
             let msg = {
                 namespace
@@ -378,6 +384,7 @@ pub async fn sync_with_peer(
             write_frame(&mut send, msg.as_deref().unwrap_or(&[])).await?;
             let peer_msg = read_frame(&mut recv).await?;
             if !peer_msg.is_empty() {
+                received_change = true;
                 let _ = namespace
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -388,10 +395,85 @@ pub async fn sync_with_peer(
             }
         }
         let _ = send.finish();
-        Ok::<(), anyhow::Error>(())
+        Ok::<bool, anyhow::Error>(received_change)
     })
     .await
     .map_err(|_| anyhow::anyhow!("sync exchange timed out"))?
+}
+
+/// Fetch only preview blobs newly referenced by the namespace. This makes a
+/// normal desktop immediately useful offline for browsing while keeping
+/// manifests and file bytes strictly on-demand. Callers invoke it only after
+/// a successful namespace/record change, never on the reconciliation timer.
+async fn prefetch_namespace_thumbnails(
+    namespace: &Arc<Mutex<Namespace>>,
+    hydrator: &Hydrator,
+    pending: &mut HashMap<Hash, (u8, tokio::time::Instant)>,
+    refresh_roots: bool,
+) -> Result<()> {
+    if refresh_roots {
+        let thumbnails = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .live_record_blob_roots(crate::namespace::MAX_LIVE_RECORD_BLOB_SCAN)?
+            .into_iter()
+            .filter_map(|roots| roots.thumbnail)
+            .collect::<HashSet<Hash>>();
+        pending.retain(|hash, _| thumbnails.contains(hash));
+        let now = tokio::time::Instant::now();
+        for thumbnail in thumbnails {
+            pending.entry(thumbnail).or_insert((0, now));
+        }
+    }
+    let now = tokio::time::Instant::now();
+    let due = pending
+        .iter()
+        .filter_map(|(hash, (_, retry_at))| (*retry_at <= now).then_some(*hash))
+        .collect::<Vec<_>>();
+    for thumbnail in due {
+        if hydrator.store.has(thumbnail).await {
+            pending.remove(&thumbnail);
+            continue;
+        }
+        let result = hydrator
+            .read_blob(
+                thumbnail,
+                0,
+                MAX_INTERACTIVE_THUMBNAIL_BYTES.saturating_add(1),
+            )
+            .await
+            .and_then(|bytes| {
+                anyhow::ensure!(
+                    u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+                        <= MAX_INTERACTIVE_THUMBNAIL_BYTES,
+                    "interactive thumbnail exceeds byte budget"
+                );
+                Ok(())
+            });
+        if result.is_ok() {
+            pending.remove(&thumbnail);
+            continue;
+        }
+        // A certificate/authority refresh or a temporarily offline owner must
+        // not make the rest of the preview queue fail. Retry each pending
+        // thumbnail independently with a capped 3/6/12/24/30 second backoff.
+        if let Some((attempts, retry_at)) = pending.get_mut(&thumbnail) {
+            *attempts = attempts.saturating_add(1).min(4);
+            let delay = 3_u64.saturating_mul(1_u64 << u32::from(*attempts));
+            *retry_at = now + Duration::from_secs(delay.min(30));
+        }
+    }
+    Ok(())
+}
+
+fn namespace_generation(namespace: &Arc<Mutex<Namespace>>) -> [u8; 32] {
+    let bytes = {
+        let mut namespace = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        namespace.save()
+    };
+    *blake3::hash(&bytes).as_bytes()
 }
 
 /// The policy the network planes serve through, or `None` for an
@@ -1717,7 +1799,8 @@ async fn pull_record_mesh_from_peer(
     identity: &FsTransportIdentity,
     policy: &PeerPolicy,
     records: &RecordPlane,
-) -> Result<()> {
+) -> Result<bool> {
+    let mut changed = false;
     let mut after_inventory = None;
     // One pass is deliberately finite even for a maliciously fragmented
     // repository. Subsequent anti-entropy passes resume from the beginning;
@@ -1744,7 +1827,7 @@ async fn pull_record_mesh_from_peer(
                 cursors,
                 next,
             } if workspace_id == records.workspace_id => (cursors, next),
-            RecordMeshResultV1::Denied => return Ok(()),
+            RecordMeshResultV1::Denied => return Ok(false),
             _ => anyhow::bail!("record mesh returned an invalid inventory response"),
         };
         let direct_actor = collab_types::FileActor {
@@ -1832,6 +1915,7 @@ async fn pull_record_mesh_from_peer(
                         policy,
                     },
                 )?;
+                changed |= !envelopes.is_empty();
                 local_sequence = records
                     .repository
                     .highest_sequence(key, &remote_cursor.actor)
@@ -1848,7 +1932,7 @@ async fn pull_record_mesh_from_peer(
     if let Some(materializer) = &records.materializer {
         materializer.reconcile_repository(&records.repository)?;
     }
-    Ok(())
+    Ok(changed)
 }
 
 async fn request_replica_ack(
@@ -1943,6 +2027,10 @@ async fn reconcile_loop(
 ) {
     let may_write = peer_may_write_whole_workspace(&policy, &identity.user_public_key())
         || peer_may_write_whole_workspace(&policy, &identity.device_public_key());
+    let mut pending_thumbnails = HashMap::new();
+    // `mount` bootstraps a namespace before this task starts, so schedule its
+    // previews once even if the first anti-entropy exchange is clean.
+    let mut refresh_thumbnails = true;
     loop {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
@@ -1950,6 +2038,7 @@ async fn reconcile_loop(
             hydrator.add_peer(peer);
         }
         let known_peers = hydrator.known_peers();
+        let mut namespace_changed = false;
         for peer in known_peers {
             let remote_may_write = policy.is_none()
                 || identity
@@ -1964,10 +2053,10 @@ async fn reconcile_loop(
                 // authorised writer's reconciliation request.
                 // Only a workspace-wide writer may send Automerge sync
                 // messages. The responder independently checks the same fact.
-                if sync_with_peer(&endpoint, peer.clone(), &namespace, &identity)
-                    .await
-                    .is_ok()
+                if let Ok(received_change) =
+                    sync_with_peer(&endpoint, peer.clone(), &namespace, &identity).await
                 {
+                    namespace_changed |= received_change;
                     let resolve_delta = {
                         namespace
                             .lock()
@@ -1986,11 +2075,16 @@ async fn reconcile_loop(
                 // Read-only peers pull a full snapshot and never upload local
                 // changes. Full snapshots are safe here because the remote
                 // serves them only to workspace-root readers.
+                let before_merge = namespace_generation(&namespace);
                 let resolve_delta = namespace
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .merge_remote_and_resolve(&doc)
                     .unwrap_or_default();
+                // A clean merge commonly needs no conflict-resolution delta;
+                // compare the document generation so its previews are still
+                // scheduled on a fresh collaborator.
+                namespace_changed |= before_merge != namespace_generation(&namespace);
                 if !resolve_delta.is_empty()
                     && let Some(sender) = &sender
                 {
@@ -2011,12 +2105,20 @@ async fn reconcile_loop(
                 {
                     eprintln!("workspace authority reconciliation failed: {error}");
                 }
-                if let Err(error) =
-                    pull_record_mesh_from_peer(&endpoint, peer.clone(), &identity, &policy, records)
-                        .await
-                    && !identity.partitioned()
+                match pull_record_mesh_from_peer(
+                    &endpoint,
+                    peer.clone(),
+                    &identity,
+                    &policy,
+                    records,
+                )
+                .await
                 {
-                    eprintln!("record mesh reconciliation failed: {error}");
+                    Ok(changed) => namespace_changed |= changed,
+                    Err(error) if !identity.partitioned() => {
+                        eprintln!("record mesh reconciliation failed: {error}");
+                    }
+                    Err(_) => {}
                 }
                 collect_replica_acks_from_peer(
                     &endpoint,
@@ -2027,6 +2129,18 @@ async fn reconcile_loop(
                 )
                 .await;
             }
+        }
+
+        if let Err(error) = prefetch_namespace_thumbnails(
+            &namespace,
+            &hydrator,
+            &mut pending_thumbnails,
+            namespace_changed || std::mem::take(&mut refresh_thumbnails),
+        )
+        .await
+            && !identity.partitioned()
+        {
+            eprintln!("thumbnail metadata prefetch failed: {error}");
         }
 
         if !may_write {
@@ -2165,6 +2279,78 @@ mod tests {
 
     async fn bind_certified_endpoint() -> (Endpoint, MemoryLookup, FsTransportIdentity) {
         bind_certified_test_endpoint().await
+    }
+
+    #[tokio::test]
+    async fn thumbnail_prefetch_isolated_retries_without_another_namespace_change() {
+        let source_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let source_store = ContentStore::memory();
+        let ready_thumbnail = source_store.ingest("ready preview").await.unwrap();
+        let source_router = Router::builder(source_endpoint.clone())
+            .accept(iroh_blobs::ALPN, source_store.blobs_protocol(None))
+            .spawn();
+
+        // This hash is real but its serving endpoint is intentionally absent
+        // during the first pass, modelling an auth warm-up/offline source.
+        let late_store = ContentStore::memory();
+        let late_thumbnail = late_store.ingest("late preview").await.unwrap();
+        let client_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let local_store = Arc::new(ContentStore::memory());
+        let hydrator = Hydrator::new(client_endpoint.clone(), Arc::clone(&local_store));
+        hydrator.add_peer(source_endpoint.addr());
+        let mut namespace = Namespace::new("preview-retry").unwrap();
+        let ready = namespace
+            .create_file(ROOT_INO, "ready.png", None, 0, 0)
+            .unwrap();
+        let late = namespace
+            .create_file(ROOT_INO, "late.png", None, 0, 0)
+            .unwrap();
+        assert!(namespace.set_thumb(ready, &ready_thumbnail));
+        assert!(namespace.set_thumb(late, &late_thumbnail));
+        let namespace = Arc::new(Mutex::new(namespace));
+        let mut pending = HashMap::new();
+
+        prefetch_namespace_thumbnails(&namespace, &hydrator, &mut pending, true)
+            .await
+            .unwrap();
+        assert!(local_store.has(ready_thumbnail).await);
+        assert!(pending.contains_key(&late_thumbnail));
+
+        let late_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let late_router = Router::builder(late_endpoint.clone())
+            .accept(iroh_blobs::ALPN, late_store.blobs_protocol(None))
+            .spawn();
+        hydrator.add_peer(late_endpoint.addr());
+        pending.insert(late_thumbnail, (0, tokio::time::Instant::now()));
+        prefetch_namespace_thumbnails(&namespace, &hydrator, &mut pending, false)
+            .await
+            .unwrap();
+        assert!(local_store.has(late_thumbnail).await);
+        assert!(pending.is_empty());
+
+        late_router.shutdown().await.unwrap();
+        source_router.shutdown().await.unwrap();
+        late_endpoint.close().await;
+        source_endpoint.close().await;
+        client_endpoint.close().await;
+    }
+
+    #[test]
+    fn clean_remote_merge_changes_generation_even_without_resolution_delta() {
+        let mut owner = Namespace::new("owner-preview").unwrap();
+        owner
+            .create_file(ROOT_INO, "preview.png", None, 0, 1)
+            .unwrap();
+        let document = owner.save();
+        let joined = Arc::new(Mutex::new(Namespace::new("joined-preview").unwrap()));
+        let before = namespace_generation(&joined);
+        let resolve = joined
+            .lock()
+            .unwrap()
+            .merge_remote_and_resolve(&document)
+            .unwrap();
+        assert!(resolve.is_empty(), "ordinary merge needs no repair delta");
+        assert_ne!(before, namespace_generation(&joined));
     }
 
     /// The workspace's policy: `entitled` get the run of the tree, nothing
