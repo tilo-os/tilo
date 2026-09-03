@@ -1,6 +1,8 @@
 use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 mod shared_surfaces;
 pub use shared_surfaces::SharedSurfaces;
@@ -19,6 +21,126 @@ pub use collab_types::caps::{
     decide_capability,
 };
 pub use collab_types::role::Role as CapRole;
+
+const DEFAULT_FS_AUTHORITY_CACHE_DIR: &str = "/var/cache/quick-fs";
+const DEFAULT_FS_AUTHORITY_PUBLISHER: &str = "/usr/bin/fs";
+const FS_AUTHORITY_PUBLISH_ATTEMPTS: u8 = 3;
+
+#[derive(Clone, Debug)]
+struct FsAuthorityPublication {
+    acl: PathBuf,
+    cache_dir: PathBuf,
+    publisher: PathBuf,
+}
+
+#[derive(Default)]
+struct FsAuthorityPublicationQueue {
+    pending: Option<FsAuthorityPublication>,
+    running: bool,
+}
+
+fn fs_authority_publication_queue() -> &'static Mutex<FsAuthorityPublicationQueue> {
+    static QUEUE: OnceLock<Mutex<FsAuthorityPublicationQueue>> = OnceLock::new();
+    QUEUE.get_or_init(|| Mutex::new(FsAuthorityPublicationQueue::default()))
+}
+
+fn fs_authority_publisher() -> PathBuf {
+    std::env::var_os("QOS_FS_AUTHORITY_PUBLISHER")
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || PathBuf::from(DEFAULT_FS_AUTHORITY_PUBLISHER),
+            PathBuf::from,
+        )
+}
+
+fn fs_authority_cache_dir() -> PathBuf {
+    std::env::var_os("QOS_FS_AUTHORITY_CACHE_DIR")
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || PathBuf::from(DEFAULT_FS_AUTHORITY_CACHE_DIR),
+            PathBuf::from,
+        )
+}
+
+/// Coalesce exports and submit them outside the compositor's mutation path.
+/// The filesystem authority socket may be unavailable while its service is
+/// starting; bounded retries cover that normal boot ordering and a later
+/// capability mutation always replaces the queued projection.
+fn schedule_fs_authority_publication(acl: PathBuf) {
+    // Unit tests exercise this only with an explicit harmless publisher;
+    // never let an isolated tree submit a fixture ACL to a real service.
+    if cfg!(test) && std::env::var_os("QOS_FS_AUTHORITY_PUBLISHER").is_none() {
+        return;
+    }
+    let publication = FsAuthorityPublication {
+        acl,
+        cache_dir: fs_authority_cache_dir(),
+        publisher: fs_authority_publisher(),
+    };
+    let Ok(mut queue) = fs_authority_publication_queue().lock() else {
+        tracing::warn!("filesystem authority publication queue is unavailable");
+        return;
+    };
+    queue.pending = Some(publication);
+    if queue.running {
+        return;
+    }
+    queue.running = true;
+    let spawned = std::thread::Builder::new()
+        .name("qos-fs-authority-publish".to_string())
+        .spawn(run_fs_authority_publication_queue);
+    if let Err(error) = spawned {
+        queue.running = false;
+        tracing::warn!(%error, "could not start filesystem authority publisher");
+    }
+}
+
+fn run_fs_authority_publication_queue() {
+    loop {
+        let publication = match fs_authority_publication_queue().lock() {
+            Ok(mut queue) => queue.pending.take(),
+            Err(error) => {
+                tracing::warn!(%error, "filesystem authority publication queue is poisoned");
+                return;
+            }
+        };
+        let Some(publication) = publication else {
+            if let Ok(mut queue) = fs_authority_publication_queue().lock() {
+                queue.running = false;
+            }
+            return;
+        };
+        for attempt in 1..=FS_AUTHORITY_PUBLISH_ATTEMPTS {
+            let result = std::process::Command::new(&publication.publisher)
+                .arg("publish-authority")
+                .arg("--cache-dir")
+                .arg(&publication.cache_dir)
+                .arg("--acl")
+                .arg(&publication.acl)
+                .status();
+            match result {
+                Ok(status) if status.success() => break,
+                Ok(status) => tracing::warn!(
+                    ?status,
+                    attempt,
+                    acl = %publication.acl.display(),
+                    "filesystem authority publication failed; will retry"
+                ),
+                Err(error) => tracing::warn!(
+                    %error,
+                    attempt,
+                    publisher = %publication.publisher.display(),
+                    "filesystem authority publisher could not start; will retry"
+                ),
+            }
+            if attempt < FS_AUTHORITY_PUBLISH_ATTEMPTS {
+                std::thread::sleep(std::time::Duration::from_millis(
+                    100_u64.saturating_mul(1_u64 << u32::from(attempt - 1)),
+                ));
+            }
+        }
+    }
+}
 
 /// Monotonic workspace identifier, newtype-wrapped over `u64`.
 #[derive(
@@ -41,6 +163,73 @@ impl WorkspaceId {
 #[cfg(test)]
 mod identity_fs_tests {
     use super::*;
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn capability_export_publishes_to_authority_in_the_background() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
+
+        let temp = tempfile::tempdir().expect("temp");
+        let publisher = temp.path().join("publisher.sh");
+        let log = temp.path().join("authority-arguments");
+        std::fs::write(
+            &publisher,
+            "#!/bin/sh\nsleep 0.2\nprintf '%s\\n' \"$@\" > \"$QOS_FS_AUTHORITY_TEST_LOG\"\n",
+        )
+        .expect("publisher script");
+        let mut permissions = std::fs::metadata(&publisher)
+            .expect("metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
+        let acl = temp.path().join("fs-capabilities.json");
+        let cache = temp.path().join("cache");
+        let old_publisher = std::env::var_os("QOS_FS_AUTHORITY_PUBLISHER");
+        let old_cache = std::env::var_os("QOS_FS_AUTHORITY_CACHE_DIR");
+        let old_log = std::env::var_os("QOS_FS_AUTHORITY_TEST_LOG");
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            std::env::set_var("QOS_FS_AUTHORITY_PUBLISHER", &publisher);
+            std::env::set_var("QOS_FS_AUTHORITY_CACHE_DIR", &cache);
+            std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", &log);
+        }
+
+        let mut tree = WorkspaceTree::default();
+        tree.fs_acl_path = Some(acl.clone());
+        let started = Instant::now();
+        tree.export_fs_capabilities();
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "a slow authority socket must not block the compositor mutation path"
+        );
+        for _ in 0..100 {
+            if log.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let arguments = std::fs::read_to_string(&log).expect("background publication");
+        assert!(arguments.contains("publish-authority"));
+        assert!(arguments.contains(cache.to_str().unwrap()));
+        assert!(arguments.contains(acl.to_str().unwrap()));
+
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            match old_publisher {
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_PUBLISHER", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_PUBLISHER"),
+            }
+            match old_cache {
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_CACHE_DIR", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_CACHE_DIR"),
+            }
+            match old_log {
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_TEST_LOG"),
+            }
+        }
+    }
 
     #[test]
     #[serial_test::serial(identity_env)]
@@ -4451,7 +4640,9 @@ impl WorkspaceTree {
         };
         if let Err(e) = atomic_file::write_creating_parent(path, &json) {
             tracing::warn!("filesystem capability export failed: {e}");
+            return;
         }
+        schedule_fs_authority_publication(path.clone());
     }
 
     /// Give every workspace with no recorded owner to `user`, returning
