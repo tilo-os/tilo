@@ -1223,7 +1223,9 @@ async fn replica_workspace(
                 continue;
             };
             match persist_namespace_generation(&namespace, path) {
-                Ok(persisted) if persisted == after => {}
+                Ok(persisted) if persisted == after => {
+                    status.namespace_generation = Some(hex::encode(persisted));
+                }
                 Ok(_) => {
                     // A namespace delta raced this pass.  Its checkpoint is
                     // durable, but it has not yet had its blobs verified.
