@@ -1,7 +1,9 @@
 //! Useful, deliberately bounded PowerPoint (`.pptx`) interchange.
 //!
 //! Slides, text boxes, rectangles, ellipses, lines and readable local pictures
-//! map to native DrawingML objects. PowerPoint features which do not exist in
+//! map to native DrawingML objects. Model-backed fills, outlines, stroke widths,
+//! text colour and emphasis are emitted as native DrawingML too. PowerPoint
+//! features which do not exist in
 //! the qOS model (masters, charts, SmartArt, transitions and animation) are
 //! intentionally not invented; the file UI tells users about that boundary.
 
@@ -118,6 +120,114 @@ struct Picture {
     bytes: Vec<u8>,
 }
 
+/// Write a qOS palette role as DrawingML. Theme colours stay live when the
+/// presentation is opened in Office; literal picker colours stay literal.
+fn drawing_color(role: &str) -> String {
+    if let Some(hex) = role.strip_prefix('#') {
+        if (hex.len() == 6 || hex.len() == 8) && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            let rgb = &hex[..6];
+            let alpha = if hex.len() == 8 {
+                u8::from_str_radix(&hex[6..], 16).ok()
+            } else {
+                None
+            };
+            let alpha_xml = alpha
+                .map(|a| format!("<a:alpha val=\"{}\"/>", u32::from(a) * 100_000 / 255))
+                .unwrap_or_default();
+            return format!(r#"<a:srgbClr val="{rgb}">{alpha_xml}</a:srgbClr>"#);
+        }
+    }
+    let scheme = match role {
+        "surface" | "on-accent" | "white" => "lt1",
+        "surface-dim" => "lt2",
+        "deep" | "text" => "dk1",
+        "text-dim" => "dk2",
+        "success" => "accent2",
+        "warning" => "accent3",
+        "danger" => "accent4",
+        "info" => "accent5",
+        // Accent-soft/deep deliberately remain tied to accent1. Transparency
+        // and tonal transforms are not modelled independently.
+        _ => "accent1",
+    };
+    format!(r#"<a:schemeClr val="{scheme}"/>"#)
+}
+
+fn drawing_fill(role: &str) -> String {
+    if role == "none" {
+        "<a:noFill/>".into()
+    } else {
+        format!("<a:solidFill>{}</a:solidFill>", drawing_color(role))
+    }
+}
+
+fn drawing_line(role: &str, width: f64) -> String {
+    let width = (width.max(0.0) * EMU).round() as i64;
+    if role == "none" || width == 0 {
+        "<a:ln><a:noFill/></a:ln>".into()
+    } else {
+        format!(
+            r#"<a:ln w="{width}"><a:solidFill>{}</a:solidFill></a:ln>"#,
+            drawing_color(role)
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ColorTarget {
+    Fill,
+    Stroke,
+    Text,
+}
+
+fn color_target(text_depth: usize, line_depth: usize) -> ColorTarget {
+    if text_depth > 0 {
+        ColorTarget::Text
+    } else if line_depth > 0 {
+        ColorTarget::Stroke
+    } else {
+        ColorTarget::Fill
+    }
+}
+
+fn set_pending_no_fill(c: &mut Pending, target: ColorTarget) {
+    match target {
+        ColorTarget::Fill | ColorTarget::Text => c.fill = "none".into(),
+        ColorTarget::Stroke => c.stroke = "none".into(),
+    }
+}
+
+fn set_pending_color(c: &mut Pending, target: ColorTarget, e: &BytesStart<'_>) {
+    let role = match local(e.name().as_ref()) {
+        b"schemeClr" => match attr(e, b"val").as_str() {
+            "lt1" => "white".into(),
+            "lt2" => "surface-dim".into(),
+            "dk1" => "text".into(),
+            "dk2" => "text-dim".into(),
+            "accent2" => "success".into(),
+            "accent3" => "warning".into(),
+            "accent4" => "danger".into(),
+            "accent5" => "info".into(),
+            // Accent6 and any unknown scheme keep a visual accent instead of
+            // claiming to retain a colour the model cannot represent.
+            _ => "accent".into(),
+        },
+        b"srgbClr" => {
+            let rgb = attr(e, b"val");
+            if rgb.len() == 6 && rgb.bytes().all(|b| b.is_ascii_hexdigit()) {
+                format!("#{}", rgb.to_ascii_uppercase())
+            } else {
+                "accent".into()
+            }
+        }
+        _ => return,
+    };
+    match target {
+        ColorTarget::Fill | ColorTarget::Text => c.fill = role,
+        ColorTarget::Stroke => c.stroke = role,
+    }
+}
+
 fn slide_xml(slide: &Slide, pictures: &[&Picture]) -> String {
     let mut s = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>"#,
@@ -139,7 +249,7 @@ fn slide_xml(slide: &Slide, pictures: &[&Picture]) -> String {
                     TextAlign::Justify => "just",
                     TextAlign::Left => "l",
                 };
-                let runs = el.text.split('\n').map(|line| format!(r#"<a:p><a:pPr algn="{align}"/><a:r><a:rPr lang="en-US" sz="{}" b="{}" i="{}"/><a:t>{}</a:t></a:r></a:p>"#, (el.font_size*100.0).round() as i64, u8::from(el.bold), u8::from(el.italic), xml(line))).collect::<String>();
+                let runs = el.text.split('\n').map(|line| format!(r#"<a:p><a:pPr algn="{align}"/><a:r><a:rPr lang="en-US" sz="{}" b="{}" i="{}">{}</a:rPr><a:t>{}</a:t></a:r></a:p>"#, (el.font_size*100.0).round() as i64, u8::from(el.bold), u8::from(el.italic), drawing_color(&el.fill), xml(line))).collect::<String>();
                 s.push_str(&format!(r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Text {id}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/>{runs}</p:txBody></p:sp>"#));
             }
             kind => {
@@ -148,7 +258,7 @@ fn slide_xml(slide: &Slide, pictures: &[&Picture]) -> String {
                     ElementKind::Line => "line",
                     _ => "rect",
                 };
-                s.push_str(&format!(r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Shape {id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/></a:xfrm><a:prstGeom prst="{prst}"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="5A60F0"/></a:solidFill></p:spPr></p:sp>"#));
+                s.push_str(&format!(r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Shape {id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/></a:xfrm><a:prstGeom prst="{prst}"><a:avLst/></a:prstGeom>{}{}</p:spPr></p:sp>"#, drawing_fill(&el.fill), drawing_line(&el.stroke, el.stroke_width)));
             }
         }
     }
@@ -169,6 +279,9 @@ struct Pending {
     bold: bool,
     italic: bool,
     align: TextAlign,
+    fill: String,
+    stroke: String,
+    stroke_width: f64,
 }
 impl Default for Pending {
     fn default() -> Self {
@@ -185,6 +298,9 @@ impl Default for Pending {
             bold: false,
             italic: false,
             align: TextAlign::Left,
+            fill: "accent".into(),
+            stroke: "none".into(),
+            stroke_width: 0.0,
         }
     }
 }
@@ -200,6 +316,10 @@ fn parse_slide(
     let mut cur: Option<Pending> = None;
     let mut in_text = false;
     let mut paragraph = false;
+    // The same DrawingML colour element occurs in fills, outlines and text
+    // runs. Keep a tiny amount of ancestor context instead of building a DOM.
+    let mut in_line = 0usize;
+    let mut in_text_style = 0usize;
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
@@ -246,6 +366,23 @@ fn parse_slide(
                             c.bold = attr(&e, b"b") == "1";
                             c.italic = attr(&e, b"i") == "1"
                         }
+                        in_text_style += 1;
+                    }
+                    b"ln" => {
+                        if let Some(c) = cur.as_mut() {
+                            c.stroke_width = attr_num(&e, b"w") / EMU;
+                        }
+                        in_line += 1;
+                    }
+                    b"srgbClr" | b"schemeClr" => {
+                        if let Some(c) = cur.as_mut() {
+                            set_pending_color(c, color_target(in_text_style, in_line), &e);
+                        }
+                    }
+                    b"noFill" => {
+                        if let Some(c) = cur.as_mut() {
+                            set_pending_no_fill(c, color_target(in_text_style, in_line));
+                        }
                     }
                     b"pPr" => {
                         if let Some(c) = cur.as_mut() {
@@ -289,6 +426,13 @@ fn parse_slide(
                             c.bold = attr(&e, b"b") == "1";
                             c.italic = attr(&e, b"i") == "1"
                         }
+                        b"srgbClr" | b"schemeClr" => {
+                            set_pending_color(c, color_target(in_text_style, in_line), &e);
+                        }
+                        b"noFill" => {
+                            set_pending_no_fill(c, color_target(in_text_style, in_line));
+                        }
+                        // Empty run properties cannot have a child colour.
                         _ => {}
                     }
                 }
@@ -302,6 +446,8 @@ fn parse_slide(
             }
             Ok(Event::End(e)) => match local(e.name().as_ref()) {
                 b"t" => in_text = false,
+                b"rPr" | b"defRPr" => in_text_style = in_text_style.saturating_sub(1),
+                b"ln" => in_line = in_line.saturating_sub(1),
                 b"sp" | b"cxnSp" | b"pic" => {
                     if let Some(c) = cur.take() {
                         push_pending(&mut slide, c, rels, zip);
@@ -367,6 +513,11 @@ fn push_pending(
             h,
         )
     };
+    // Preserve the native DrawingML styling the deck model can represent.
+    // (Text uses `fill` as its ink colour; shapes use it as their fill.)
+    el.fill = c.fill;
+    el.stroke = c.stroke;
+    el.stroke_width = c.stroke_width;
     el.z = slide.elements.len() as i64;
     slide.elements.push(el);
 }
@@ -543,6 +694,33 @@ mod tests {
                 .any(|e| e.kind == ElementKind::Ellipse)
         );
     }
+
+    #[test]
+    fn round_trips_native_shape_and_text_styling() {
+        let mut slide = Slide::new(Layout::Blank);
+        let mut shape = Element::shape(ElementKind::Rect, 10.0, 20.0, 100.0, 80.0);
+        shape.fill = "#12A4EF".into();
+        shape.stroke = "danger".into();
+        shape.stroke_width = 3.5;
+        slide.add(shape);
+        let mut text = Element::text("Ink", 20.0, 120.0, 200.0, 40.0, 18.0);
+        text.fill = "success".into();
+        slide.add(text);
+        let deck = Deck {
+            title: "Style fidelity".into(),
+            palette: PaletteKind::Indigo,
+            slides: vec![slide],
+        };
+
+        let bytes = write_pptx(&deck).expect("pptx export");
+        let got = read_pptx(&bytes).expect("pptx import");
+        let shape = &got.slides[0].elements[0];
+        assert_eq!(shape.fill, "#12A4EF");
+        assert_eq!(shape.stroke, "danger");
+        assert!((shape.stroke_width - 3.5).abs() < 0.01);
+        assert_eq!(got.slides[0].elements[1].fill, "success");
+    }
+
     #[test]
     fn bundles_local_picture() {
         let p = std::env::temp_dir().join(format!("slides-pptx-{}.png", std::process::id()));
