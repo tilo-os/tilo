@@ -413,7 +413,7 @@ mkdir -p /home/qosaccept
 export PKEXEC_UID=42424
 "$QOS_HELPER" approve-device --identity-root "$QOS_APPROVER_ROOT" --identity-dir "$QOS_APPROVER_IDENTITIES" --expected-device "$QOS_RECIPIENT_ID" --expected-service "$QOS_RECIPIENT_SERVICE" &
 approval=$!
-"$QOS_HELPER" pair-device --identity-root "$QOS_RECIPIENT_ROOT" --identity-dir "$QOS_RECIPIENT_IDENTITIES" --label "New laptop"
+"$QOS_HELPER" pair-device --identity-root "$QOS_RECIPIENT_ROOT" --identity-dir "$QOS_RECIPIENT_IDENTITIES" --label "New laptop" --status-file "$QOS_RECIPIENT_IDENTITIES/pairing-status.json"
 wait "$approval"
 "#;
         let output = Command::new("unshare")

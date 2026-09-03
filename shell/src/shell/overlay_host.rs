@@ -741,6 +741,9 @@ pub struct ShellOverlayHost {
     /// because it is a real `Widget` with its own hover/scroll/filter
     /// state, placed by hand like the notification stack.
     room_activity: crate::shell::room_activity::RoomActivityPane,
+    /// Background, local-only prose renderer. Deterministic summaries remain
+    /// installed until a cited model result passes validation.
+    history_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
     /// Open/close curve for the room-activity sheet.
     room_activity_transition: ui::Transition,
     /// Whether the sheet was open last frame, to invalidate derived rows
@@ -1402,6 +1405,7 @@ impl ShellOverlayHost {
             status_bridge: None,
             session_audio_policy: None,
             room_activity: crate::shell::room_activity::RoomActivityPane::new_persistent(),
+            history_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
             room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
             collaborators_overlay: CollaboratorsOverlay::default(),
@@ -2717,6 +2721,54 @@ impl ShellOverlayHost {
             }
         }
         false
+    }
+
+    /// Drain app-owned requests for shell chrome after the app's event path
+    /// has run. The request carries stable resource identity, so opening
+    /// Activity does not depend on a file's current path or display label.
+    fn drain_app_host_intents(&mut self) {
+        let mut intents = Vec::new();
+        for &row_ptr in self.group_row_ptrs.values() {
+            // SAFETY: `group_row_ptrs` points into `self.content`; `&mut self`
+            // makes this walk exclusive, matching the other row accessors.
+            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+            for group in &mut row.groups {
+                let Some(host) = group.active_host_mut() else {
+                    continue;
+                };
+                let ui::widget::TileContent::App(app) = host.content_mut() else {
+                    continue;
+                };
+                if let Some(intent) = app.take_host_intent() {
+                    intents.push(intent);
+                }
+            }
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        for intent in intents {
+            match intent {
+                ui::widget::AppHostIntent::ShowWorkspaceActivity {
+                    resource_id,
+                    version_id,
+                    entry,
+                } => {
+                    let entry_id = entry.as_ref().map(|entry| *entry.id.as_bytes());
+                    if let Some(entry) = entry {
+                        self.room_activity.open_external_entry(entry);
+                    }
+                    chrome.borrow_mut().open_room_activity(Some(
+                        crate::shell::chrome_state::ActivityFocus {
+                            resource_id: Some(resource_id),
+                            resource_version: version_id,
+                            entry_id,
+                            ..crate::shell::chrome_state::ActivityFocus::default()
+                        },
+                    ));
+                }
+            }
+        }
     }
 
     /// Diffs the live `WorkspaceTree` against every `GroupRow`'s children,
@@ -5528,6 +5580,16 @@ impl ShellOverlayHost {
             self.room_activity
                 .refresh_records_with_local(&mut tree, &records, &*local);
         }
+        self.refresh_history_narrative();
+    }
+
+    fn refresh_history_narrative(&mut self) {
+        if let Some(request) = self.room_activity.narrative_request() {
+            self.history_narrator.request(&request);
+            if let Some(narrative) = self.history_narrator.take_for(&request) {
+                let _ = self.room_activity.apply_generated_narrative(narrative);
+            }
+        }
     }
 
     /// Keep passive chrome truthful while the sheet is closed. The source's
@@ -5547,6 +5609,7 @@ impl ShellOverlayHost {
                 .refresh_records_with_local(&mut tree, &records, &*local);
             tree.active.raw()
         };
+        self.refresh_history_narrative();
         let (headline, unread, pulse) = self.room_activity.glance_signal(workspace);
         let passive_digest = self.room_activity.digest_for_workspace(workspace);
         let focus =
@@ -5557,6 +5620,8 @@ impl ShellOverlayHost {
                     author: brief.authors.first().map(|author| author.name.clone()),
                     group_id: brief.group_id.clone(),
                     entry_id: None,
+                    resource_id: None,
+                    resource_version: None,
                 });
         chrome
             .borrow_mut()
@@ -9735,6 +9800,7 @@ impl ShellOverlayHost {
         let palette_in_flight = self.palette_transition.is_animating(now);
         let power_menu_in_flight = self.power_menu.is_animating(now);
         let room_activity_in_flight = self.room_activity_transition.is_animating(now);
+        let room_replay_in_flight = self.room_activity.replay_is_playing();
         let capture_in_flight = self.capture_studio.needs_animation_frame();
         let projection_needs_frame = self.projection_overlay.needs_animation_frame(now);
         let sidebar_frame = self
@@ -9759,6 +9825,7 @@ impl ShellOverlayHost {
             || palette_in_flight
             || power_menu_in_flight
             || room_activity_in_flight
+            || room_replay_in_flight
             || capture_in_flight
             // The projection component includes both its transition and the
             // bounded worker-response frame pump in this signal.
@@ -10398,8 +10465,12 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
+        self.drain_app_host_intents();
         // Above the dropdowns, below the palette (which must stay reachable).
         self.refresh_room_activity_awareness();
+        // Capture session presence against the latest durable checkpoint even
+        // while History is closed, so returning to work has a real trail.
+        self.room_activity.observe_replay_presence(presence);
         if flags.room_activity && !self.room_activity_was_open {
             // Room may have changed while closed — drop stale derived rows.
             self.room_activity.invalidate();
