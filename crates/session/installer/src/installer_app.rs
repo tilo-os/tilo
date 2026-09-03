@@ -1167,16 +1167,19 @@ impl InstallerApp {
         }
     }
 
-    /// Step backward. From a *failed* install the Back button returns to
-    /// Review so the user can retry; otherwise it walks the wizard back.
+    /// Step backward. A failed launch has already deliberately erased both
+    /// secret buffers, so recovery returns to Account instead of presenting a
+    /// Review screen whose Begin button can only fail validation.
     fn go_back(&mut self) {
         if self.step == Step::Install {
             if self.install_state == InstallState::Failed {
-                self.step = Step::Review;
+                self.step = Step::Account;
                 self.install_state = InstallState::Idle;
                 self.install_launched = false;
                 self.status_lines.clear();
-                self.status.clear();
+                self.set_status(
+                    "Re-enter your startup and account secret, then review and try again",
+                );
                 self.dirty_structure = true;
                 self.focus_reset = true;
             }
@@ -1831,15 +1834,16 @@ impl InstallerApp {
                         .with_color(danger),
                 ));
                 children.push(Box::new(
-                    Text::new("Something went wrong. Review the log, then go back to try again.")
+                    Text::new("The installer stopped before it could confirm a bootable system. The destination may have been changed. Review the details, then re-enter your secrets before trying again.")
                         .with_size(sm)
                         .with_color(dim),
                 ));
+                children.push(Box::new(Text::new("Details").with_size(sm).with_color(dim)));
                 children.push(Box::new(StatusLog::new(
                     self.status_lines.clone(),
                     STATUS_LOG_HEIGHT,
                 )));
-                children.push(Box::new(ActionButton::new("Back", BACK_PATH)));
+                children.push(Box::new(ActionButton::new("Re-enter secrets", BACK_PATH)));
             }
             _ => {
                 children.push(Box::new(Text::new("Installing qOS…").with_size(xl)));
@@ -3160,7 +3164,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_install_back_returns_to_review() {
+    fn failed_install_recovery_returns_to_cleared_secret_step() {
         let mut app = InstallerApp::with_disks(sample());
         app.selected_disk = Some(0);
         app.step = Step::Install;
@@ -3172,9 +3176,10 @@ mod tests {
 
         let _ = doc.put(&root, BACK_PATH, true);
         app.sync(&mut doc, &root);
-        assert_eq!(app.step, Step::Review);
+        assert_eq!(app.step, Step::Account);
         assert_eq!(app.install_state, InstallState::Idle);
         assert!(!app.install_launched, "retry must re-arm the launch guard");
+        assert!(app.status.contains("Re-enter"));
     }
 
     #[test]
