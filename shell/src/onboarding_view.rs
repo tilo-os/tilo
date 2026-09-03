@@ -10,7 +10,9 @@
 //! system theme, focus order and accessibility like the rest of the desktop.
 
 use std::collections::HashMap;
+use std::io::Read as _;
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -56,6 +58,8 @@ pub const KEY_BACK: &str = "onboarding.back";
 pub const KEY_CONNECT_PATH: &str = "onboarding.connect.path";
 pub const KEY_CONNECT_BROWSE: &str = "onboarding.connect.browse";
 pub const KEY_IMPORT: &str = "onboarding.import";
+pub const KEY_CONNECT_NEARBY: &str = "onboarding.connect.nearby";
+pub const KEY_CONNECT_CANCEL: &str = "onboarding.connect.cancel";
 pub const KEY_UNDERSTOOD: &str = "onboarding.understood";
 pub const KEY_CREATE: &str = "onboarding.create";
 pub const KEY_BACKUP_BROWSE: &str = "onboarding.backup.browse";
@@ -148,6 +152,10 @@ pub struct OnboardingView {
     connect_passphrase: Arc<Mutex<String>>,
     backup_passphrase: Arc<Mutex<String>>,
     backup_confirmation: Arc<Mutex<String>>,
+    identity_dir: Option<PathBuf>,
+    nearby_child: Option<Child>,
+    nearby_status: Option<String>,
+    nearby_status_path: Option<PathBuf>,
 }
 
 impl OnboardingView {
@@ -164,7 +172,7 @@ impl OnboardingView {
 
     fn new_in_context(identity_dir: PathBuf, context: OnboardingContext) -> Self {
         let mint_dir = identity_dir.clone();
-        let import_dir = identity_dir;
+        let import_dir = identity_dir.clone();
         let minter: Minter = match context {
             OnboardingContext::FullSystem => {
                 Box::new(move || crate::onboarding::mint_into(&mint_dir).map_err(|e| e.to_string()))
@@ -174,7 +182,7 @@ impl OnboardingView {
                     .map_err(|e| e.to_string())
             }),
         };
-        Self::with_all_handlers_in_context(
+        let mut view = Self::with_all_handlers_in_context(
             minter,
             Box::new(move |source, passphrase| {
                 let store = crate::identity_registry::IdentityRegistryStore::at(&import_dir);
@@ -221,7 +229,10 @@ impl OnboardingView {
                     .map_err(|error| error.to_string())
             }),
             context,
-        )
+        );
+        view.nearby_status_path = Some(identity_dir.join(".nearby-enrollment-status.json"));
+        view.identity_dir = Some(identity_dir);
+        view
     }
 
     /// Build with an injected minter, so tests drive the whole widget without writing a key to disk.
@@ -276,6 +287,10 @@ impl OnboardingView {
             connect_passphrase: Arc::new(Mutex::new(String::new())),
             backup_passphrase: Arc::new(Mutex::new(String::new())),
             backup_confirmation: Arc::new(Mutex::new(String::new())),
+            identity_dir: None,
+            nearby_child: None,
+            nearby_status: None,
+            nearby_status_path: None,
         }
     }
 
@@ -395,7 +410,7 @@ impl OnboardingView {
                     Box::new(
                         Button::new(
                             "onboarding.connect.button",
-                            "Use existing",
+                            "Use my existing qOS identity",
                             Some(KEY_CONNECT),
                         )
                         .with_icon(ui::icons::Icon::ExternalLink),
@@ -440,6 +455,32 @@ impl OnboardingView {
                 Banner::error("That identity could not be connected").with_message(error.clone()),
             ));
         }
+        let nearby_action = if self.nearby_child.is_some() {
+            Button::new(
+                "onboarding.connect.cancel.button",
+                "Cancel",
+                Some(KEY_CONNECT_CANCEL),
+            )
+        } else {
+            Button::new(
+                "onboarding.connect.nearby.button",
+                "Connect nearby",
+                Some(KEY_CONNECT_NEARBY),
+            )
+            .with_style(ui::widget::ButtonStyle::Primary)
+        };
+        let mut nearby = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing.s3)
+            .push(paragraph(
+                "On a trusted qOS device, open Settings → Devices & Sync → Add a personal device. Compare the six-digit code shown on both devices before approving.",
+                theme,
+            ));
+        if let Some(status) = &self.nearby_status {
+            nearby = nearby.push(paragraph(status, theme));
+        }
+        nearby = nearby.push(Box::new(nearby_action));
         let file_row = Row::new().push(Box::new(path)).push(Box::new(
             Button::new(
                 "onboarding.connect.browse.button",
@@ -449,19 +490,26 @@ impl OnboardingView {
             .with_icon(ui::icons::Icon::Folder),
         ));
         Box::new(
-            body.push(Box::new(Card::titled("Identity file", Box::new(file_row))))
-                .push(Box::new(Card::titled(
-                    "Backup passphrase",
-                    Box::new(passphrase),
-                )))
-                .push(actions(vec![
-                    back_button(),
-                    Box::new(
-                        Button::new("onboarding.import.button", "Connect", Some(KEY_IMPORT))
-                            .with_icon(ui::icons::Icon::ArrowRight)
-                            .with_style(ui::widget::ButtonStyle::Primary),
-                    ),
-                ])),
+            body.push(Box::new(Card::titled(
+                "Nearby trusted device",
+                Box::new(nearby),
+            )))
+            .push(Box::new(Card::titled(
+                "Encrypted backup",
+                Box::new(file_row),
+            )))
+            .push(Box::new(Card::titled(
+                "Backup passphrase",
+                Box::new(passphrase),
+            )))
+            .push(actions(vec![
+                back_button(),
+                Box::new(
+                    Button::new("onboarding.import.button", "Connect", Some(KEY_IMPORT))
+                        .with_icon(ui::icons::Icon::ArrowRight)
+                        .with_style(ui::widget::ButtonStyle::Primary),
+                ),
+            ])),
         )
     }
 
@@ -971,6 +1019,112 @@ impl Widget for OnboardingView {
             }
         }
 
+        if read_bool(state, root, KEY_CONNECT_NEARBY) {
+            let _ = state.put(root, KEY_CONNECT_NEARBY, ScalarValue::Boolean(false));
+            if self.flow.screen() == Screen::Connect && self.nearby_child.is_none() {
+                match (&self.identity_dir, &self.nearby_status_path) {
+                    (Some(identity_dir), Some(status_path)) => {
+                        let _ = std::fs::remove_file(status_path);
+                        let label =
+                            std::env::var("HOSTNAME").unwrap_or_else(|_| "qOS device".into());
+                        match Command::new("pkexec")
+                            .args([
+                                "/usr/bin/qos-enroll",
+                                "pair-device",
+                                "--identity-root",
+                                "/var/lib/qos",
+                                "--identity-dir",
+                            ])
+                            .arg(identity_dir)
+                            .args(["--label", &label, "--status-file"])
+                            .arg(status_path)
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .spawn()
+                        {
+                            Ok(child) => {
+                                self.nearby_child = Some(child);
+                                self.nearby_status =
+                                    Some("Looking for a trusted device nearby…".into());
+                                self.error = None;
+                            }
+                            Err(error) => {
+                                self.error = Some(format!("Could not start nearby setup: {error}"))
+                            }
+                        }
+                    }
+                    _ => self.error = Some("Nearby setup is unavailable in this session".into()),
+                }
+                self.invalidation.structure();
+            }
+        }
+
+        if read_bool(state, root, KEY_CONNECT_CANCEL) {
+            let _ = state.put(root, KEY_CONNECT_CANCEL, ScalarValue::Boolean(false));
+            if let Some(mut child) = self.nearby_child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            self.nearby_status =
+                Some("Nearby setup cancelled. Choose Connect nearby to try again.".into());
+            self.invalidation.structure();
+        }
+
+        if let Some(path) = &self.nearby_status_path
+            && let Ok(bytes) = std::fs::read(path)
+            && let Ok(status) = serde_json::from_slice::<serde_json::Value>(&bytes)
+            && let Some(code) = status
+                .get("verification_code")
+                .and_then(serde_json::Value::as_str)
+        {
+            let message = format!("Code {code} · waiting for approval on your trusted device");
+            if self.nearby_status.as_deref() != Some(&message) {
+                self.nearby_status = Some(message);
+                self.invalidation.structure();
+            }
+        }
+        let nearby_finished = self
+            .nearby_child
+            .as_mut()
+            .and_then(|child| child.try_wait().ok().flatten());
+        if let Some(status) = nearby_finished {
+            let mut child = self.nearby_child.take().expect("nearby child exists");
+            let mut stdout = String::new();
+            let mut stderr = String::new();
+            if let Some(mut stream) = child.stdout.take() {
+                let _ = stream.read_to_string(&mut stdout);
+            }
+            if let Some(mut stream) = child.stderr.take() {
+                let _ = stream.read_to_string(&mut stderr);
+            }
+            if status.success() {
+                match serde_json::from_str::<serde_json::Value>(stdout.lines().last().unwrap_or_default()) {
+                    Ok(result) => {
+                        let fingerprint = result.get("identity").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+                        let path = result.get("record_path").and_then(serde_json::Value::as_str).map(PathBuf::from);
+                        if fingerprint.len() == 64 && path.is_some() {
+                            self.flow.complete_connected(MintedIdentity { fingerprint, path: path.expect("checked") });
+                            self.error = None;
+                            self.nearby_status = Some("Connected. Your workspaces will appear automatically.".into());
+                        } else {
+                            self.error = Some("The trusted device returned an invalid identity. Choose Connect nearby to retry.".into());
+                        }
+                    }
+                    Err(_) => self.error = Some("The trusted device returned an invalid identity. Choose Connect nearby to retry.".into()),
+                }
+            } else {
+                let detail = stderr
+                    .lines()
+                    .last()
+                    .unwrap_or("the pairing window closed or approval was cancelled");
+                self.error = Some(format!(
+                    "Nearby setup did not finish: {detail}. Choose Connect nearby to retry."
+                ));
+            }
+            self.invalidation.structure();
+        }
+
         if read_bool(state, root, KEY_BACKUP_BROWSE) {
             let _ = state.put(root, KEY_BACKUP_BROWSE, ScalarValue::Boolean(false));
             if self.flow.screen() == Screen::Done && self.picker.is_none() {
@@ -1011,6 +1165,11 @@ impl Widget for OnboardingView {
             let _ = state.put(root, KEY_BACK, ScalarValue::Boolean(false));
             self.error = None;
             clear_secret(&self.connect_passphrase);
+            if let Some(mut child) = self.nearby_child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            self.nearby_status = None;
             self.flow.back();
         }
 
