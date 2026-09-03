@@ -569,6 +569,18 @@ impl ChannelHandle {
         ))
     }
 
+    /// Whether Task Center requested cooperative cancellation for this exact
+    /// leased run. A `true` response is advisory to a running action, but an
+    /// agent must not start another action after observing it.
+    pub async fn task_run_cancelled(&self, run_id: u64, lease: &str) -> Result<bool, NotAvailable> {
+        let mut request = self.inner.task_run_cancelled_request();
+        let mut params = request.get();
+        params.set_run_id(run_id);
+        params.set_lease(lease);
+        let reply = request.send().promise.await?;
+        Ok(reply.get()?.get_cancelled())
+    }
+
     /// Report what became of an invocation. An empty `code` means it ran;
     /// anything else is a refusal, reported to whoever asked rather than
     /// swallowed — a caller that can't see the screen has no other way to
@@ -1119,7 +1131,16 @@ pub struct TaskRunEnvelope {
     pub title: String,
     pub run_id: u64,
     pub lease: String,
+    pub planning: TaskRunPlanning,
     pub action_context: serde_json::Value,
+}
+
+/// How the task owner allowed its delegated agent to choose actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskRunPlanning {
+    RulesOnly,
+    Model,
 }
 
 /// Agent lifecycle information the broker may project into the shared Task
@@ -1159,7 +1180,7 @@ impl TaskRunStream {
 
 #[cfg(test)]
 mod task_run_tests {
-    use super::{TaskRunEnvelope, TaskRunUpdate};
+    use super::{TaskRunEnvelope, TaskRunPlanning, TaskRunUpdate};
 
     #[test]
     fn task_run_wire_is_typed_and_rejects_unknown_fields() {
@@ -1169,6 +1190,7 @@ mod task_run_tests {
             title: "Review proposal".into(),
             run_id: 7,
             lease: "broker-lease".into(),
+            planning: TaskRunPlanning::RulesOnly,
             action_context: serde_json::json!({"purpose": "Review proposal"}),
         };
         let json = serde_json::to_string(&envelope).unwrap();
@@ -1177,7 +1199,11 @@ mod task_run_tests {
             envelope
         );
         assert!(serde_json::from_str::<TaskRunEnvelope>(
-            r#"{"version":1,"task_id":"t","title":"x","run_id":1,"lease":"l","action_context":{},"path":"/tmp"}"#
+            r#"{"version":1,"task_id":"t","title":"x","run_id":1,"lease":"l","planning":"rules_only","action_context":{},"path":"/tmp"}"#
+        )
+        .is_err());
+        assert!(serde_json::from_str::<TaskRunEnvelope>(
+            r#"{"version":1,"task_id":"t","title":"x","run_id":1,"lease":"l","planning":"unattended","action_context":{}}"#
         )
         .is_err());
         assert_eq!(

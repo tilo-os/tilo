@@ -19,6 +19,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 # The blocking agent facade delegates to the toolkit's typed
 # `QOS_SVC_COLLAB_FD` client and consumes the same request/event model as a
 # windowed app.
@@ -66,7 +67,6 @@ hex.workspace = true
 shell = { path = "../../shell", default-features = false }
 collab-types = { path = "../../crates/collab/collab-types" }
 qos-user-identity = { path = "../../crates/identity/qos-user-identity" }
-runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ed25519-dalek.workspace = true
 

@@ -158,6 +158,31 @@ pub enum CollabRequest {
         request_id: u64,
         app_id: String,
     },
+    /// Lifecycle record for a broker-minted task lease. Only an admitted
+    /// agent connection can make this request; the broker checks the lease.
+    ReportTaskRun {
+        run_id: u64,
+        lease: String,
+        update: runtime_collab::TaskRunUpdate,
+    },
+    /// Invoke an already permission-filtered published action under the
+    /// broker-owned task context. `request_id` correlates the async reply.
+    InvokeTaskAction {
+        request_id: u64,
+        run_id: u64,
+        lease: String,
+        peer_id: u64,
+        resource: String,
+        action: String,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    },
+    /// Poll the native Task Center's cooperative cancellation bit for a
+    /// lease. It cannot cancel a task and carries no task state itself.
+    TaskRunCancellation {
+        request_id: u64,
+        run_id: u64,
+        lease: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -346,6 +371,17 @@ pub enum CollabEvent {
     PublishedInvocationResult {
         request_id: u64,
         result: Result<(u64, qos_actions::InvocationUpdate), String>,
+    },
+    /// A run addressed to this admitted agent. The envelope is broker-minted
+    /// and contains a lease, not a caller-selected authority token.
+    TaskRun(runtime_collab::TaskRunEnvelope),
+    TaskActionInvocationResult {
+        request_id: u64,
+        result: Result<(u64, qos_actions::InvocationUpdate), String>,
+    },
+    TaskRunCancellation {
+        request_id: u64,
+        result: Result<bool, String>,
     },
 }
 
@@ -1565,6 +1601,10 @@ async fn ensure_sdk_route(
     spawn_action_stream(&channel, inbound_tx).await;
     spawn_invocation_stream(&channel, inbound_tx).await;
     spawn_action_catalogue_stream(&channel, inbound_tx).await;
+    // This intentionally fails quietly for person sessions. An admitted
+    // agent gets a separate broker-addressed queue; a document agent never
+    // has to infer task work from room traffic.
+    spawn_task_run_stream(&channel, inbound_tx).await;
     let presence = spawn_presence_stream(&channel, inbound_tx).await;
 
     routes.insert(
@@ -1767,6 +1807,29 @@ async fn spawn_action_catalogue_stream(
                     Err(error) => {
                         tracing::warn!(%error, "collab: invalid broker action catalogue");
                     }
+                }
+            }
+        });
+    }
+}
+
+/// Bridge broker-addressed task leases only when this connection is an
+/// admitted agent. The server refuses the subscription for people and for
+/// unadmitted agent identities, leaving their normal collaboration intact.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send and are driven only by the shovel LocalSet"
+)]
+async fn spawn_task_run_stream(
+    channel: &runtime_collab::ChannelHandle,
+    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+) {
+    if let Ok(stream) = channel.subscribe_task_runs().await {
+        let tx = inbound_tx.clone();
+        tokio::task::spawn_local(async move {
+            while let Ok(run) = stream.read().await {
+                if tx.send(CollabEvent::TaskRun(run)).is_err() {
+                    break;
                 }
             }
         });
@@ -2139,6 +2202,61 @@ async fn dispatch_sdk_request(
                         .map_err(|error| error.to_string())
                 });
             let _ = inbound_tx.send(CollabEvent::PublishedInvocationResult { request_id, result });
+        }
+        CollabRequest::ReportTaskRun {
+            run_id,
+            lease,
+            update,
+        } => {
+            if let Err(error) = route.channel.report_task_run(run_id, &lease, &update).await {
+                tracing::warn!(%error, run_id, "collab: reporting task run update failed");
+            }
+        }
+        CollabRequest::InvokeTaskAction {
+            request_id,
+            run_id,
+            lease,
+            peer_id,
+            resource,
+            action,
+            arguments,
+        } => {
+            let argument = format!(
+                "{}{}",
+                qos_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::Value::Object(arguments)
+            );
+            let result = route
+                .channel
+                .invoke_task_action(
+                    run_id,
+                    &lease,
+                    peer_id,
+                    &resource,
+                    &action,
+                    Some(&argument),
+                    "",
+                )
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|(id, update)| {
+                    serde_json::from_str(&update)
+                        .map(|update| (id, update))
+                        .map_err(|error| error.to_string())
+                });
+            let _ = inbound_tx.send(CollabEvent::TaskActionInvocationResult { request_id, result });
+        }
+        CollabRequest::TaskRunCancellation {
+            request_id,
+            run_id,
+            lease,
+        } => {
+            let result = route
+                .channel
+                .task_run_cancelled(run_id, &lease)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = inbound_tx.send(CollabEvent::TaskRunCancellation { request_id, result });
         }
     }
 }

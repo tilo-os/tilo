@@ -345,6 +345,7 @@ struct TaskRunEnvelope {
     title: String,
     run_id: u64,
     lease: String,
+    planning: runtime_collab::TaskRunPlanning,
     action_context: qos_actions::ActionContext,
 }
 
@@ -1250,6 +1251,17 @@ impl CapnpBrokerState {
             title: task.title.clone(),
             run_id,
             lease: lease.clone(),
+            planning: match task.route {
+                crate::shell::state::WorkspaceTaskRoute::RulesOnly => {
+                    runtime_collab::TaskRunPlanning::RulesOnly
+                }
+                crate::shell::state::WorkspaceTaskRoute::Model => {
+                    runtime_collab::TaskRunPlanning::Model
+                }
+                crate::shell::state::WorkspaceTaskRoute::Manual => {
+                    return Err("a manual task cannot be dispatched to an agent".into());
+                }
+            },
             action_context: context.clone(),
         })
         .map_err(|_| "the assigned agent task stream closed".to_string())?;
@@ -1306,6 +1318,34 @@ impl CapnpBrokerState {
             .ok_or_else(|| {
                 "the task run lease is unknown, expired, or belongs to another agent".to_string()
             })
+    }
+
+    /// A person cancelled this task from the native Task Center. Agents may
+    /// observe that fact, but only the person-facing task surface changes the
+    /// durable cancellation state.
+    fn task_run_cancelled(
+        &self,
+        peer_id: u64,
+        agent_id: &str,
+        run_id: u64,
+        lease: &str,
+    ) -> Result<bool, String> {
+        let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
+        let membership = self
+            .membership
+            .as_ref()
+            .ok_or_else(|| "the task broker has no workspace authority".to_string())?;
+        let tree = membership.read();
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == run.cluster_id)
+            .ok_or_else(|| "the task workspace is no longer hosted".to_string())?;
+        Ok(workspace
+            .tasks
+            .iter()
+            .find(|task| task.id == run.task_id)
+            .is_some_and(|task| task.status == WorkspaceTaskStatus::Cancelled))
     }
 
     fn record_task_run_update(
@@ -1388,6 +1428,9 @@ impl CapnpBrokerState {
         argument: Option<&str>,
     ) -> Result<InvocationJob, String> {
         let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
+        if self.task_run_cancelled(peer_id, agent_id, run_id, lease)? {
+            return Err("the task was cancelled; no further action may start".into());
+        }
         let confirmation_required = self
             .surfaces
             .lock()
@@ -2430,6 +2473,36 @@ impl channel_handle::Server for CapnpChannelHandle {
                     .map_err(|error| capnp::Error::failed(error.to_string()))?,
             );
             drop(job.completion);
+            Ok(())
+        })
+    }
+
+    fn task_run_cancelled(
+        self: Rc<Self>,
+        params: channel_handle::TaskRunCancelledParams,
+        mut results: channel_handle::TaskRunCancelledResults,
+    ) -> Promise<(), capnp::Error> {
+        let current = match self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            Ok(current) => current,
+            Err(error) => return Promise::err(error),
+        };
+        let Some(agent_id) = current.agent_id else {
+            return Promise::err(capnp::Error::failed(
+                "only an agent may observe task cancellation".into(),
+            ));
+        };
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        Promise::from_future(async move {
+            let request = params.get()?;
+            let lease = request.get_lease()?.to_str()?.to_owned();
+            let cancelled = state
+                .task_run_cancelled(peer_id, &agent_id, request.get_run_id(), &lease)
+                .map_err(capnp::Error::failed)?;
+            results.get().set_cancelled(cancelled);
             Ok(())
         })
     }
@@ -3681,6 +3754,7 @@ impl task_run_stream::Server for TaskRunStreamServer {
                 title: run.title,
                 run_id: run.run_id,
                 lease: run.lease,
+                planning: run.planning,
                 action_context: serde_json::to_value(run.action_context)
                     .map_err(|error| capnp::Error::failed(error.to_string()))?,
             };
