@@ -13,6 +13,7 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
   "$repo/apps/imager/packaging/macos/qos-imager" \
   "$repo/apps/imager/packaging/package-install-medium.sh" \
   "$repo/apps/imager/packaging/build-release-catalog.sh" \
+  "$repo/apps/imager/packaging/verify-linux-release.sh" \
   "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
   "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   "$repo/apps/imager/packaging/publish-site-release.sh" \
@@ -50,9 +51,19 @@ grep -Fq 'id-token: write' "$workflow" \
   || bad 'short-lived signing path is not wired into native release jobs'
 
 grep -Fq 'AppImage.asc' "$workflow" \
+  && grep -Fq 'qos-release-key.asc' "$workflow" \
+  && grep -Fq 'IMAGER_LINUX_SIGNING_FINGERPRINT' "$workflow" \
+  && grep -Fq 'verify-linux-release.sh release-assets' "$workflow" \
+  && grep -Fq 'verify-linux-release.sh" "$asset_root"' \
+    "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
   && ! grep -Fqi 'qos-imager-linux-*.flatpak' "$workflow" \
-  && ok 'every Linux download is signed and insecure Flatpak flashing is absent' \
-  || bad 'Linux release artifacts are unsigned or still include privileged Flatpak flashing'
+  && ok 'Linux signatures, release key, and protected fingerprint are a fail-closed publication gate' \
+  || bad 'Linux release trust bundle is incomplete or bypassable'
+
+grep -Fq 'bash os/tests/imager_linux_release_trust.sh' \
+    "$repo/.forgejo/workflows/check.yml" \
+  && ok 'Linux release trust tamper test runs in required checks' \
+  || bad 'Linux release trust tamper test is not wired into CI'
 
 linux_launcher="$repo/apps/imager/packaging/linux/qos-imager"
 mac_launcher="$repo/apps/imager/packaging/macos/qos-imager"
