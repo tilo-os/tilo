@@ -246,6 +246,7 @@ impl RelayClient {
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
     ) -> Result<ContentPeerRegistration, ClientError> {
+        let relay_service_id = *relay_addr.id.as_bytes();
         let conn = endpoint
             .connect(relay_addr, DISCOVERY_ALPN)
             .await
@@ -319,7 +320,7 @@ impl RelayClient {
         Ok(ContentPeerRegistration {
             endpoint,
             ticket: advertisement.filesystem_ticket,
-            relay_service_id: *relay_addr.id.as_bytes(),
+            relay_service_id,
         })
     }
     /// Dial `relay_addr` on the `qos-relay/1` ALPN, run the auth

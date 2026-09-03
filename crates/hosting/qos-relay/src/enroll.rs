@@ -203,6 +203,53 @@ struct FleetProjection {
     revocations: Vec<qos_user_identity::RevocationEntry>,
 }
 
+/// The files of a personal enrollment live in a private, durable staging
+/// directory until the approving device has sent `Finalized`.  A marker is
+/// deliberately retained while the staged files are being published: a boot
+/// or retry can finish the exact same transaction instead of guessing which
+/// of a set of independently-atomic renames reached disk.
+#[derive(Clone, Serialize, Deserialize)]
+struct PersonalEnrollmentMarker {
+    schema_version: u32,
+    identity_dir: PathBuf,
+    stage_name: String,
+    user_public_key: [u8; 32],
+    device_public_key: [u8; 32],
+    /// Set only after the recipient authenticates the approver's Finalized
+    /// packet. Prepared-but-unconfirmed transactions must never activate on
+    /// a later timeout retry.
+    commit_ready: bool,
+}
+
+const PERSONAL_ENROLLMENT_SCHEMA: u32 = 1;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PersonalCommitCheckpoint {
+    Record,
+    Fleet,
+    HomePeers,
+    Registry,
+    UserPublicKey,
+    PerUserCert,
+    DefaultCert,
+}
+
+fn enrollment_commit_dir(identity_root: &std::path::Path) -> PathBuf {
+    identity_root.join("enrollment-commits")
+}
+
+fn enrollment_stage_dir(identity_root: &std::path::Path) -> PathBuf {
+    identity_root.join("enrollment-staging")
+}
+
+fn personal_marker_path(identity_root: &std::path::Path, nonce: [u8; 16]) -> PathBuf {
+    enrollment_commit_dir(identity_root).join(format!("personal-{}.json", hex::encode(nonce)))
+}
+
+fn staged(path: &std::path::Path, name: &str) -> PathBuf {
+    path.join(name)
+}
+
 fn fleet_path(identity_dir: &std::path::Path, user: [u8; 32]) -> PathBuf {
     identity_dir
         .join("fleets")
@@ -346,7 +393,8 @@ fn public_identity_record(user: [u8; 32], display_name: &str) -> anyhow::Result<
     )?)
 }
 
-fn install_personal_projection(
+#[allow(dead_code)]
+fn legacy_install_personal_projection(
     identity_root: &std::path::Path,
     identity_dir: &std::path::Path,
     payload: &ResponsePayload,
@@ -477,6 +525,355 @@ fn install_personal_projection(
         }
     }
     Ok(record_path)
+}
+
+fn checked_personal_projection(
+    identity_root: &std::path::Path,
+    identity_dir: &std::path::Path,
+    payload: &ResponsePayload,
+) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let identity = payload
+        .public_identity_json
+        .as_ref()
+        .context("approval omitted the public identity")?;
+    let fleet = payload
+        .fleet_json
+        .as_ref()
+        .context("approval omitted the fleet")?;
+    let transferred_peers = payload
+        .home_peers_json
+        .as_ref()
+        .context("approval omitted home peers")?;
+    let user = payload.cert.user_public_key;
+    let id = hex::encode(user);
+    let projected: FleetProjection = serde_json::from_slice(fleet)?;
+    if projected.schema_version != 1
+        || projected.identity_id != id
+        || projected.certificates.len() > 256
+        || projected.revocations.len() > 256
+        || !projected
+            .certificates
+            .iter()
+            .any(|cert| cert.device_public_key == payload.cert.device_public_key)
+        || projected
+            .certificates
+            .iter()
+            .any(|cert| verify_device_cert(cert).is_err())
+        || projected
+            .revocations
+            .iter()
+            .any(|entry| verify_revocation_entry(entry).is_err())
+    {
+        bail!("approval returned an invalid device fleet");
+    }
+    let identity_value: serde_json::Value = serde_json::from_slice(identity)?;
+    let threshold = identity_value
+        .get("threshold_identity")
+        .and_then(serde_json::Value::as_object)
+        .context("approval returned an invalid public identity")?;
+    if threshold.get("group_public_key") != Some(&serde_json::json!(user))
+        || threshold
+            .get("secret_bytes")
+            .is_some_and(|secret| secret != &serde_json::json!([]))
+        || threshold.get("single_device") != Some(&serde_json::json!(false))
+    {
+        bail!("approval returned an identity containing private or mismatched key material");
+    }
+    let incoming: Vec<HomePeerRegistration> = serde_json::from_slice(transferred_peers)?;
+    if incoming.len() > 128
+        || incoming.iter().any(|entry| {
+            entry.user_public_key != id
+                || entry.relay_workspace_ids.len() > 4096
+                || !qos_relay::valid_home_peer_label(&entry.label)
+                || hex::decode(&entry.device_node_id)
+                    .ok()
+                    .is_none_or(|key| key.len() != 32)
+                || hex::decode(&entry.relay_service_node_id)
+                    .ok()
+                    .is_none_or(|key| key.len() != 32)
+                || entry.device_cert.as_ref().is_none_or(|cert| {
+                    verify_device_cert(cert).is_err()
+                        || cert.user_public_key != user
+                        || hex::encode(cert.device_public_key) != entry.device_node_id
+                })
+        })
+    {
+        bail!("approval returned an invalid home-peer registry");
+    }
+    let registry_path = identity_dir.join("registry.json");
+    let mut registry = match std::fs::read(&registry_path) {
+        Ok(bytes) if bytes.len() <= 1024 * 1024 => {
+            serde_json::from_slice::<serde_json::Value>(&bytes)
+                .context("existing identity registry is invalid")?
+        }
+        Ok(_) => bail!("existing identity registry exceeds 1 MiB"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({
+            "schema_version": 1,
+            "default_identity": id,
+            "identities": {},
+            "workspace_identities": {}
+        }),
+        Err(error) => return Err(error.into()),
+    };
+    if !registry.is_object()
+        || !registry["identities"].is_object()
+        || !registry["workspace_identities"].is_object()
+    {
+        bail!("existing identity registry has an invalid schema");
+    }
+    let record_path = identity_dir.join(format!("identity-{}.json", &id[..55]));
+    registry["default_identity"] = serde_json::json!(id);
+    registry["identities"][&id] = serde_json::json!({
+        "id": id,
+        "display_name": "My qOS identity",
+        "record_path": record_path,
+        "user_public_key": user
+    });
+    let peers_path = identity_root.join("home-peers.json");
+    let mut existing: Vec<HomePeerRegistration> = match std::fs::read(&peers_path) {
+        Ok(bytes) if bytes.len() <= 1024 * 1024 => {
+            serde_json::from_slice(&bytes).context("existing home-peer registry is invalid")?
+        }
+        Ok(_) => bail!("existing home-peer registry exceeds 1 MiB"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
+    if existing.len() > 128
+        || existing.iter().any(|entry| {
+            entry.schema_version != HomePeerRegistration::CURRENT_SCHEMA
+                || entry.relay_workspace_ids.len() > 4096
+                || !qos_relay::valid_home_peer_label(&entry.label)
+                || hex::decode(&entry.device_node_id)
+                    .ok()
+                    .is_none_or(|key| key.len() != 32)
+                || hex::decode(&entry.relay_service_node_id)
+                    .ok()
+                    .is_none_or(|key| key.len() != 32)
+                || hex::decode(&entry.user_public_key)
+                    .ok()
+                    .is_none_or(|key| key.len() != 32)
+                || entry.device_cert.as_ref().is_none_or(|cert| {
+                    verify_device_cert(cert).is_err()
+                        || hex::encode(cert.device_public_key) != entry.device_node_id
+                        || hex::encode(cert.user_public_key) != entry.user_public_key
+                })
+        })
+    {
+        bail!("existing home-peer registry violates its bounded verified schema");
+    }
+    // A response projects routes for one identity. Do not use it as a global
+    // snapshot and erase other identities' independently verified routes.
+    existing.retain(|entry| entry.user_public_key != id);
+    existing.extend(incoming);
+    if existing.len() > 128 {
+        bail!("merged home-peer registry is full");
+    }
+    existing.sort_by(|left, right| {
+        left.user_public_key
+            .cmp(&right.user_public_key)
+            .then_with(|| left.device_node_id.cmp(&right.device_node_id))
+    });
+    Ok((
+        identity.clone(),
+        fleet.clone(),
+        serde_json::to_vec_pretty(&existing)?,
+        serde_json::to_vec_pretty(&registry)?,
+    ))
+}
+
+fn stage_personal_enrollment(
+    identity_root: &std::path::Path,
+    identity_dir: &std::path::Path,
+    paths: &IdentityPaths,
+    payload: &ResponsePayload,
+) -> anyhow::Result<(PathBuf, PersonalEnrollmentMarker)> {
+    let (identity, fleet, peers, registry) =
+        checked_personal_projection(identity_root, identity_dir, payload)?;
+    let stage_name = format!(
+        "personal-{}-{}",
+        hex::encode(payload.nonce),
+        hex::encode(payload.cert.device_public_key)
+    );
+    let stage_dir = enrollment_stage_dir(identity_root).join(&stage_name);
+    std::fs::create_dir_all(&stage_dir)?;
+    let cert = qos_user_identity::canonical::canonical_bytes(&payload.cert)?;
+    atomic_file::write_with_mode(&staged(&stage_dir, "record.json"), &identity, 0o600)?;
+    atomic_file::write_with_mode(&staged(&stage_dir, "registry.json"), &registry, 0o600)?;
+    atomic_file::write(&staged(&stage_dir, "fleet.json"), &fleet)?;
+    atomic_file::write_with_mode(&staged(&stage_dir, "home-peers.json"), &peers, 0o644)?;
+    atomic_file::write(
+        &staged(&stage_dir, "user-pubkey.bin"),
+        &payload.cert.user_public_key,
+    )?;
+    atomic_file::write(&staged(&stage_dir, "per-user-cert.bin"), &cert)?;
+    atomic_file::write(&staged(&stage_dir, "default-cert.bin"), &cert)?;
+    let marker = PersonalEnrollmentMarker {
+        schema_version: PERSONAL_ENROLLMENT_SCHEMA,
+        identity_dir: identity_dir.to_path_buf(),
+        stage_name,
+        user_public_key: payload.cert.user_public_key,
+        device_public_key: payload.cert.device_public_key,
+        commit_ready: false,
+    };
+    let marker_path = personal_marker_path(identity_root, payload.nonce);
+    std::fs::create_dir_all(enrollment_commit_dir(identity_root))?;
+    atomic_file::write_with_mode(&marker_path, &serde_json::to_vec_pretty(&marker)?, 0o600)?;
+    let _ = paths; // binds staging to the active device layout at the call site.
+    Ok((marker_path, marker))
+}
+
+fn authorize_personal_commit(
+    marker_path: &std::path::Path,
+    marker: &PersonalEnrollmentMarker,
+) -> anyhow::Result<PersonalEnrollmentMarker> {
+    let mut marker = marker.clone();
+    marker.commit_ready = true;
+    atomic_file::write_with_mode(marker_path, &serde_json::to_vec_pretty(&marker)?, 0o600)?;
+    Ok(marker)
+}
+
+fn commit_staged_personal_enrollment(
+    identity_root: &std::path::Path,
+    paths: &IdentityPaths,
+    marker_path: &std::path::Path,
+    marker: &PersonalEnrollmentMarker,
+    mut checkpoint: impl FnMut(PersonalCommitCheckpoint) -> anyhow::Result<()>,
+) -> anyhow::Result<PathBuf> {
+    if marker.schema_version != PERSONAL_ENROLLMENT_SCHEMA
+        || !marker.commit_ready
+        || marker.stage_name.contains('/')
+        || marker.stage_name.contains('\\')
+    {
+        bail!("personal enrollment marker is invalid");
+    }
+    let stage_dir = enrollment_stage_dir(identity_root).join(&marker.stage_name);
+    let cert_bytes = std::fs::read(staged(&stage_dir, "default-cert.bin"))?;
+    let cert: DeviceCert = qos_user_identity::canonical::from_canonical_bytes(&cert_bytes)?;
+    if cert.user_public_key != marker.user_public_key
+        || cert.device_public_key != marker.device_public_key
+        || verify_device_cert(&cert).is_err()
+        || std::fs::read(staged(&stage_dir, "user-pubkey.bin"))? != marker.user_public_key
+    {
+        bail!("staged personal enrollment no longer validates");
+    }
+    let owner_dir = if marker.identity_dir.exists() {
+        marker.identity_dir.clone()
+    } else {
+        marker
+            .identity_dir
+            .parent()
+            .context("identity directory has no parent")?
+            .to_path_buf()
+    };
+    std::fs::create_dir_all(&marker.identity_dir)?;
+    let record = marker.identity_dir.join(format!(
+        "identity-{}.json",
+        &hex::encode(marker.user_public_key)[..55]
+    ));
+    let fleet = fleet_path(&marker.identity_dir, marker.user_public_key);
+    checkpoint(PersonalCommitCheckpoint::Record)?;
+    atomic_file::write_with_mode(
+        &record,
+        &std::fs::read(staged(&stage_dir, "record.json"))?,
+        0o600,
+    )?;
+    checkpoint(PersonalCommitCheckpoint::Fleet)?;
+    atomic_file::write_creating_parent(&fleet, &std::fs::read(staged(&stage_dir, "fleet.json"))?)?;
+    checkpoint(PersonalCommitCheckpoint::HomePeers)?;
+    atomic_file::write_with_mode(
+        &identity_root.join("home-peers.json"),
+        &std::fs::read(staged(&stage_dir, "home-peers.json"))?,
+        0o644,
+    )?;
+    checkpoint(PersonalCommitCheckpoint::Registry)?;
+    atomic_file::write_with_mode(
+        &marker.identity_dir.join("registry.json"),
+        &std::fs::read(staged(&stage_dir, "registry.json"))?,
+        0o600,
+    )?;
+    checkpoint(PersonalCommitCheckpoint::UserPublicKey)?;
+    atomic_file::write(&paths.user_pubkey, &marker.user_public_key)?;
+    checkpoint(PersonalCommitCheckpoint::PerUserCert)?;
+    atomic_file::write_creating_parent(
+        &paths.device_cert_for_user(&marker.user_public_key),
+        &std::fs::read(staged(&stage_dir, "per-user-cert.bin"))?,
+    )?;
+    // Publish this last: every projection file has been durably installed.
+    checkpoint(PersonalCommitCheckpoint::DefaultCert)?;
+    atomic_file::write(&paths.device_cert, &cert_bytes)?;
+    // A polkit-launched enrollment may have written these as root. Restore
+    // the identity owner's uid/gid before the marker is cleared, so recovery
+    // repeats this step if it is interrupted.
+    for path in [
+        marker.identity_dir.join("fleets"),
+        record.clone(),
+        fleet,
+        marker.identity_dir.join("registry.json"),
+    ] {
+        restore_owner_from_directory(&path, &owner_dir)?;
+    }
+    for path in [
+        identity_root.join("home-peers.json"),
+        paths.user_pubkey.clone(),
+        paths.device_cert_for_user(&marker.user_public_key),
+        paths.device_cert.clone(),
+    ] {
+        restore_owner_from_directory(&path, identity_root)?;
+    }
+    std::fs::remove_file(marker_path)?;
+    if let Some(parent) = marker_path.parent()
+        && let Ok(directory) = std::fs::File::open(parent)
+    {
+        directory.sync_all()?;
+    }
+    let _ = std::fs::remove_dir_all(stage_dir);
+    Ok(record)
+}
+
+fn recover_personal_enrollments(
+    identity_root: &std::path::Path,
+    identity_dir: &std::path::Path,
+    paths: &IdentityPaths,
+) -> anyhow::Result<()> {
+    let directory = enrollment_commit_dir(identity_root);
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let marker: PersonalEnrollmentMarker =
+            serde_json::from_slice(&std::fs::read(entry.path())?)
+                .context("personal enrollment recovery marker is invalid")?;
+        if marker.identity_dir == identity_dir && marker.commit_ready {
+            commit_staged_personal_enrollment(
+                identity_root,
+                paths,
+                &entry.path(),
+                &marker,
+                |_| Ok(()),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn install_personal_projection(
+    identity_root: &std::path::Path,
+    identity_dir: &std::path::Path,
+    payload: &ResponsePayload,
+) -> anyhow::Result<PathBuf> {
+    let paths = IdentityPaths::under(identity_root);
+    paths.ensure_directories()?;
+    let (marker_path, marker) =
+        stage_personal_enrollment(identity_root, identity_dir, &paths, payload)?;
+    let marker = authorize_personal_commit(&marker_path, &marker)?;
+    commit_staged_personal_enrollment(identity_root, &paths, &marker_path, &marker, |_| Ok(()))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1020,8 +1417,16 @@ fn join_with_token(
     }
     let paths = IdentityPaths::under(&identity_root);
     paths.ensure_directories()?;
+    if kind == EnrollmentKind::PersonalDevice {
+        recover_personal_enrollments(
+            &identity_root,
+            identity_dir
+                .as_deref()
+                .context("identity directory is required")?,
+            &paths,
+        )?;
+    }
     let (device, _) = qos_user_identity::persist::load_or_create_device_key(&paths)?;
-    qos_user_identity::persist::write_public_key(&paths.user_pubkey, &token.user_public_key)?;
     let request = Request {
         token: token_text.to_owned(),
         device_public_key: device.verifying_key().to_bytes(),
@@ -1077,8 +1482,22 @@ fn join_with_token(
                         home_peer_toml.as_bytes(),
                     )?;
                 }
-                let per_user = paths.device_cert_for_user(&response.payload.cert.user_public_key);
-                qos_user_identity::persist::write_device_cert(&per_user, &response.payload.cert)?;
+                // Preparing a personal enrollment only touches the private
+                // staging area. In particular, an existing device's global
+                // user key and default certificate remain untouched until
+                // Finalized has been authenticated.
+                let staged_personal = if kind == EnrollmentKind::PersonalDevice {
+                    Some(stage_personal_enrollment(
+                        &identity_root,
+                        identity_dir
+                            .as_deref()
+                            .context("identity directory is required")?,
+                        &paths,
+                        &response.payload,
+                    )?)
+                } else {
+                    None
+                };
                 let ack = make_ack(&response_bytes, token.nonce, &device)?;
                 socket.set_read_timeout(Some(Duration::from_millis(300)))?;
                 let completion_deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -1095,15 +1514,26 @@ fn join_with_token(
                             )
                             .is_ok()
                             {
-                                let record_path = if kind == EnrollmentKind::PersonalDevice {
-                                    Some(install_personal_projection(
+                                let record_path = if let Some((marker_path, marker)) =
+                                    staged_personal.as_ref()
+                                {
+                                    let marker = authorize_personal_commit(marker_path, marker)?;
+                                    Some(commit_staged_personal_enrollment(
                                         &identity_root,
-                                        identity_dir
-                                            .as_deref()
-                                            .context("identity directory is required")?,
-                                        &response.payload,
+                                        &paths,
+                                        marker_path,
+                                        &marker,
+                                        |_| Ok(()),
                                     )?)
                                 } else {
+                                    // The host path has no multi-file member
+                                    // projection, but still waits for
+                                    // Finalized before changing its active
+                                    // identity binding.
+                                    atomic_file::write(
+                                        &paths.user_pubkey,
+                                        &response.payload.cert.user_public_key,
+                                    )?;
                                     None
                                 };
                                 // Publish the default cert as the completion
@@ -1111,14 +1541,26 @@ fn join_with_token(
                                 // authenticates Finalized, and the member projection is
                                 // fully installed. A crash can therefore only leave a
                                 // retryable partial enrollment, never a bootable one.
-                                qos_user_identity::persist::write_device_cert(
-                                    &paths.device_cert,
-                                    &response.payload.cert,
-                                )?;
+                                if kind == EnrollmentKind::HomePeer {
+                                    qos_user_identity::persist::write_device_cert(
+                                        &paths.device_cert_for_user(
+                                            &response.payload.cert.user_public_key,
+                                        ),
+                                        &response.payload.cert,
+                                    )?;
+                                    qos_user_identity::persist::write_device_cert(
+                                        &paths.device_cert,
+                                        &response.payload.cert,
+                                    )?;
+                                }
                                 for directory in [
                                     paths.user_pubkey.parent(),
                                     paths.device_privkey.parent(),
-                                    per_user.parent(),
+                                    paths
+                                        .device_cert_for_user(
+                                            &response.payload.cert.user_public_key,
+                                        )
+                                        .parent(),
                                 ] {
                                     if let Some(directory) = directory {
                                         restore_owner_from_directory(directory, &identity_root)?;
@@ -1127,7 +1569,9 @@ fn join_with_token(
                                 for output in [
                                     &paths.user_pubkey,
                                     &paths.device_privkey,
-                                    &per_user,
+                                    &paths.device_cert_for_user(
+                                        &response.payload.cert.user_public_key,
+                                    ),
                                     &paths.device_cert,
                                 ] {
                                     restore_owner_from_directory(output, &identity_root)?;
@@ -1649,6 +2093,40 @@ mod tests {
     use super::*;
     use qos_user_identity::DeviceCapabilities;
 
+    fn personal_payload(
+        root: &ed25519_dalek::SigningKey,
+        device: &ed25519_dalek::SigningKey,
+        nonce: [u8; 16],
+    ) -> ResponsePayload {
+        let user = root.verifying_key().to_bytes();
+        let mut cert = DeviceCert {
+            user_public_key: user,
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "New laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, root).unwrap();
+        let fleet = FleetProjection {
+            schema_version: 1,
+            identity_id: hex::encode(user),
+            certificates: vec![cert.clone()],
+            revocations: Vec::new(),
+        };
+        ResponsePayload {
+            nonce,
+            recipient_device_public_key: cert.device_public_key,
+            relay_service_node_id: [8; 32],
+            cert,
+            home_peer_toml: None,
+            public_identity_json: Some(public_identity_record(user, "My qOS identity").unwrap()),
+            fleet_json: Some(serde_json::to_vec_pretty(&fleet).unwrap()),
+            home_peers_json: Some(b"[]".to_vec()),
+        }
+    }
+
     fn payload(root: &ed25519_dalek::SigningKey) -> ResponsePayload {
         let user_public_key = root.verifying_key().to_bytes();
         let mut cert = DeviceCert {
@@ -1818,6 +2296,127 @@ mod tests {
                 uid
             );
         }
+    }
+
+    #[test]
+    fn personal_enrollment_staging_keeps_an_existing_device_unchanged() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+        let member = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
+        let old_root = ed25519_dalek::SigningKey::from_bytes(&[53; 32]);
+        let old_device = ed25519_dalek::SigningKey::from_bytes(&[54; 32]);
+        let identity_root = tempfile::tempdir().unwrap();
+        let identity_dir = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(identity_root.path());
+        paths.ensure_directories().unwrap();
+        qos_user_identity::persist::write_public_key(
+            &paths.user_pubkey,
+            &old_root.verifying_key().to_bytes(),
+        )
+        .unwrap();
+        let mut old_cert = DeviceCert {
+            user_public_key: old_root.verifying_key().to_bytes(),
+            device_public_key: old_device.verifying_key().to_bytes(),
+            device_label: "Existing device".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut old_cert, &old_root).unwrap();
+        qos_user_identity::persist::write_device_cert(&paths.device_cert, &old_cert).unwrap();
+        let before_key = std::fs::read(&paths.user_pubkey).unwrap();
+        let before_cert = std::fs::read(&paths.device_cert).unwrap();
+
+        let payload = personal_payload(&root, &member, [9; 16]);
+        let (marker_path, marker) =
+            stage_personal_enrollment(identity_root.path(), identity_dir.path(), &paths, &payload)
+                .unwrap();
+        // This models an approval timeout: the recipient has a durable,
+        // retryable staging marker but no active identity mutation.
+        assert_eq!(std::fs::read(&paths.user_pubkey).unwrap(), before_key);
+        assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
+        assert!(marker_path.exists());
+        // A timeout/restart must not turn a merely prepared response into an
+        // active enrollment.
+        recover_personal_enrollments(identity_root.path(), identity_dir.path(), &paths).unwrap();
+        assert_eq!(std::fs::read(&paths.user_pubkey).unwrap(), before_key);
+        assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
+
+        let marker = authorize_personal_commit(&marker_path, &marker).unwrap();
+        assert!(
+            commit_staged_personal_enrollment(
+                identity_root.path(),
+                &paths,
+                &marker_path,
+                &marker,
+                |checkpoint| {
+                    if checkpoint == PersonalCommitCheckpoint::DefaultCert {
+                        bail!("simulated crash before default certificate")
+                    }
+                    Ok(())
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
+        // A subsequent boot/retry observes the marker and completes the
+        // exact staged commit rather than leaving a mixed durable state.
+        recover_personal_enrollments(identity_root.path(), identity_dir.path(), &paths).unwrap();
+        assert_eq!(
+            std::fs::read(&paths.user_pubkey).unwrap(),
+            root.verifying_key().to_bytes()
+        );
+        assert_eq!(
+            qos_user_identity::persist::read_device_cert(&paths.device_cert)
+                .unwrap()
+                .device_public_key,
+            member.verifying_key().to_bytes()
+        );
+    }
+
+    #[test]
+    fn personal_projection_merges_and_preserves_unrelated_home_peers() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
+        let member = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
+        let other_root = ed25519_dalek::SigningKey::from_bytes(&[63; 32]);
+        let other_device = ed25519_dalek::SigningKey::from_bytes(&[64; 32]);
+        let identity_root = tempfile::tempdir().unwrap();
+        let identity_dir = tempfile::tempdir().unwrap();
+        let mut other_cert = DeviceCert {
+            user_public_key: other_root.verifying_key().to_bytes(),
+            device_public_key: other_device.verifying_key().to_bytes(),
+            device_label: "Other identity home".into(),
+            capabilities: DeviceCapabilities::host(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut other_cert, &other_root).unwrap();
+        let other = HomePeerRegistration {
+            schema_version: HomePeerRegistration::CURRENT_SCHEMA,
+            device_node_id: hex::encode(other_cert.device_public_key),
+            relay_service_node_id: hex::encode([65; 32]),
+            label: other_cert.device_label.clone(),
+            user_public_key: hex::encode(other_cert.user_public_key),
+            device_cert: Some(other_cert),
+            relay_workspace_ids: vec![7],
+        };
+        atomic_file::write(
+            &identity_root.path().join("home-peers.json"),
+            &serde_json::to_vec_pretty(&vec![other.clone()]).unwrap(),
+        )
+        .unwrap();
+        install_personal_projection(
+            identity_root.path(),
+            identity_dir.path(),
+            &personal_payload(&root, &member, [10; 16]),
+        )
+        .unwrap();
+        let peers: Vec<HomePeerRegistration> = serde_json::from_slice(
+            &std::fs::read(identity_root.path().join("home-peers.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(peers, vec![other]);
     }
 
     #[test]
