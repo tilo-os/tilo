@@ -29,6 +29,8 @@ fi
 
 if grep -Fq 'qos-uki-cmdline remove systemd.show_status' "$containerfile" \
    && grep -Fq 'qos-uki-cmdline remove rd.udev.log_level' "$containerfile" \
+   && grep -Fq 'qos-uki-cmdline remove loglevel' "$containerfile" \
+   && grep -Fq 'qos-uki-cmdline remove vt.global_cursor_default' "$containerfile" \
    && grep -Fq 'qos-uki-cmdline show | grep -qw qos.mode=normal' "$containerfile" \
    && grep -Fq 'qos-uki-cmdline show | grep -qw qos.install' "$containerfile"; then
   ok "installer reserves measured UKI cmdline space without losing splash or mode"
