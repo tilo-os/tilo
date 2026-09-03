@@ -1578,6 +1578,28 @@ impl Widget for GroupRow {
                 .any(super::Widget::wants_pointer_capture)
     }
 
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        // Resize seams win where their generous hit band overlaps a group's
+        // edge. Empty tab-bar space then advertises whole-group dragging,
+        // instead of making that useful mouse path discoverable by accident.
+        if let Some(cursor) = self
+            .handles
+            .iter()
+            .find_map(|handle| handle.cursor_shape(point))
+        {
+            return Some(cursor);
+        }
+        if self.group_drag.is_some() {
+            return Some(winit::window::CursorIcon::Grabbing);
+        }
+        if self.groups.iter().any(|group| group.bar_grab_hit(point)) {
+            return Some(winit::window::CursorIcon::Grab);
+        }
+        self.groups
+            .iter()
+            .find_map(|group| group.cursor_shape(point))
+    }
+
     /// Neither this nor [`WindowGroup`] exposes `children()` (groups lay
     /// out outside taffy), so any rect a test needs has to be republished
     /// here. Each affordance is keyed by group id, plus the bare name for
@@ -2706,6 +2728,7 @@ mod tests {
             row.groups[0].bar_grab_hit(p),
             "the trailing tab-bar background must be a valid group-grab zone",
         );
+        assert_eq!(row.cursor_shape(p), Some(winit::window::CursorIcon::Grab));
         // A tab pill is NOT a grab zone (it drives the tab gesture).
         let pill = row.groups[0].tab_rects()[0].center();
         assert!(!row.groups[0].bar_grab_hit(pill));
