@@ -16,7 +16,7 @@ use clap::{Args, Parser, Subcommand};
 use collab_types::Principal;
 use fs::full_replica::{
     HomePeerBundle, HomePeerSet, aggregate_status, hydrate_full_workspace,
-    prune_obsolete_workspace_content, save_status,
+    prune_obsolete_workspace_content, save_status, validate_home_peer_set,
 };
 use fs::namespace::ROOT_INO;
 use fs::sync::{self, SyncHandle};
@@ -904,9 +904,7 @@ async fn replica(config_path: PathBuf) -> Result<()> {
         .with_context(|| format!("read home-peer bundle {}", config_path.display()))?;
     let bundle: HomePeerSet = toml::from_str(&config_text)
         .with_context(|| format!("parse home-peer bundle {}", config_path.display()))?;
-    if bundle.workspaces.is_empty() {
-        bail!("home-peer bundle contains no workspaces");
-    }
+    validate_home_peer_set(&bundle)?;
     save_status(
         &bundle.status_file,
         &fs::full_replica::FullReplicaStatus::syncing(),

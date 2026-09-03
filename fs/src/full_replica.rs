@@ -44,14 +44,27 @@ pub struct HomePeerBundle {
     pub relay_workspace_ids: Vec<u64>,
 }
 
-/// The one configuration file installed on a home peer. Each workspace runs
-/// independently under the same enrolled device identity; the common status
-/// becomes ready only when every worker has completed its current namespace.
+/// The one configuration file installed on a home peer.
+///
+/// qOS currently has one global Files namespace and one certified filesystem
+/// transport identity per device. Shell rooms are mapped through
+/// [`HomePeerBundle::relay_workspace_ids`]; configuring several filesystem
+/// bundles would bind competing endpoints under that same certified NodeId.
+/// Reject that unsafe topology before any worker starts.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HomePeerSet {
     pub status_file: std::path::PathBuf,
     pub workspaces: Vec<HomePeerBundle>,
+}
+
+/// Validate the topology before binding an authenticated filesystem endpoint.
+pub fn validate_home_peer_set(bundle: &HomePeerSet) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        bundle.workspaces.len() == 1,
+        "a home peer requires exactly one global Files workspace bundle"
+    );
+    Ok(())
 }
 
 /// A machine-readable proof of the latest hydration pass.
@@ -321,6 +334,28 @@ mod tests {
         let aggregate = aggregate_status(&[ready, FullReplicaStatus::syncing()]);
         assert!(!aggregate.full_content_replication);
         assert_eq!(aggregate.state, "syncing");
+    }
+
+    #[test]
+    fn global_files_topology_rejects_multiple_endpoint_workers() {
+        let workspace = HomePeerBundle {
+            ticket: "not-decoded-by-topology-validation".into(),
+            cache_dir: std::path::PathBuf::from("/tmp/files"),
+            capability_json: "[]".into(),
+            authority: None,
+            principals: Vec::new(),
+            relay_workspace_ids: vec![7, 8],
+        };
+        let one = HomePeerSet {
+            status_file: std::path::PathBuf::from("/tmp/status"),
+            workspaces: vec![workspace.clone()],
+        };
+        assert!(validate_home_peer_set(&one).is_ok());
+        let many = HomePeerSet {
+            status_file: one.status_file.clone(),
+            workspaces: vec![workspace.clone(), workspace],
+        };
+        assert!(validate_home_peer_set(&many).is_err());
     }
 
     // The discovery address carried by a ready proof must be the endpoint

@@ -414,6 +414,8 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
     let text = std::fs::read_to_string(&cfg.home_peer_bundle)?;
     let bundle: fs::full_replica::HomePeerSet = toml::from_str(&text)
         .map_err(|error| RelayError::Identity(format!("invalid home-peer bundle: {error}")))?;
+    fs::full_replica::validate_home_peer_set(&bundle)
+        .map_err(|error| RelayError::Identity(error.to_string()))?;
     if bundle.status_file != cfg.full_replica_status {
         return Err(RelayError::Identity(
             "home-peer status path differs from relay status path".into(),
