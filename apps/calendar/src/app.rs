@@ -33,6 +33,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
+use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -2150,6 +2151,87 @@ impl CalendarApp {
         // makes this a no-op.
         self.force_persist = true;
         self.dirty = true;
+    }
+
+    /// A compact semantic projection for the global controls in the painted
+    /// hit map. Event cells keep their existing keyboard/search routes; this
+    /// adapter covers the shared navigation and creation controls that every
+    /// view paints itself.
+    fn a11y_control(&self, action: &Action) -> Option<(String, String, Role, AccessState)> {
+        let (target, name, role, state) = match action {
+            Action::View(view) => (
+                format!("calendar.view:{}", view.label().to_lowercase()),
+                format!("{} view", view.label()),
+                Role::RadioButton,
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.view == *view),
+            ),
+            Action::Today => (
+                "calendar.today".into(),
+                "Go to today".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::Prev => (
+                "calendar.previous".into(),
+                "Previous period".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::Next => (
+                "calendar.next".into(),
+                "Next period".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::NewEvent => (
+                "calendar.new-event".into(),
+                "New event".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::ToggleSidebar => (
+                "calendar.sidebar".into(),
+                "Show calendars sidebar".into(),
+                Role::ToggleButton,
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.sidebar.is_open()),
+            ),
+            Action::ToggleSidebarCollapsed => (
+                "calendar.sidebar-width".into(),
+                "Expand calendars sidebar".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::BackToCalendar | Action::CloseDetail => (
+                "calendar.back".into(),
+                "Back to calendar".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::Sync => (
+                "calendar.sync".into(),
+                "Sync calendars".into(),
+                Role::Button,
+                AccessState::new().focusable(true).disabled(self.syncing),
+            ),
+            Action::Export => (
+                "calendar.export".into(),
+                "Export calendar".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::Import => (
+                "calendar.import".into(),
+                "Import calendar".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            _ => return None,
+        };
+        Some((target, name, role, state))
     }
 
     // --- calendar visibility --------------------------------------------
@@ -4647,6 +4729,59 @@ impl Widget for CalendarApp {
         self.rect
     }
 
+    fn accessibility(&self) -> Option<AccessNode> {
+        let mut seen = HashSet::new();
+        let controls = self
+            .hits
+            .iter()
+            .filter_map(|(rect, action)| {
+                let (target, name, role, state) = self.a11y_control(action)?;
+                seen.insert(target.clone()).then(|| {
+                    AccessNode::new(role)
+                        .with_name(name)
+                        .with_state(state)
+                        .with_bounds(*rect)
+                        .with_action_target(target)
+                })
+            })
+            .collect();
+        let mut root = AccessNode::new(Role::Window)
+            .with_name("Calendar")
+            .with_bounds(self.rect)
+            .with_children(controls);
+        if self.syncing {
+            root.children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name("Synchronizing calendars")
+                    .with_live(ui::a11y::Politeness::Polite),
+            );
+        }
+        Some(root)
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &A11yAction,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
+            return false;
+        }
+        let hit = self.hits.iter().find_map(|(_, candidate)| {
+            self.a11y_control(candidate)
+                .filter(|(candidate_target, _, _, _)| candidate_target == target)
+                .map(|_| candidate.clone())
+        });
+        if let Some(hit) = hit {
+            self.apply_action(hit, state);
+            true
+        } else {
+            false
+        }
+    }
+
     fn needs_redraw(&self) -> bool {
         self.dirty
             || self.notes_editor.needs_redraw()
@@ -5846,6 +5981,39 @@ mod tests {
         let before = app.model.task(id).unwrap().done;
         app.apply_action(Action::ToggleTask(id), &mut state);
         assert_ne!(app.model.task(id).unwrap().done, before);
+    }
+
+    #[test]
+    fn accessibility_exports_named_topbar_controls_and_reuses_actions() {
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        app.rect = Rect::new(0.0, 0.0, 960.0, 700.0);
+        app.relayout();
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        app.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        let tree = app.accessibility().expect("calendar has a semantic window");
+        assert_eq!(tree.role, Role::Window);
+        assert!(tree.children.iter().any(|node| {
+            node.name.as_deref() == Some("New event")
+                && node.action_target.as_deref() == Some("calendar.new-event")
+        }));
+        let before = app.model.events.len();
+        assert!(app.perform_semantic_action(
+            "calendar.new-event",
+            &A11yAction::Activate,
+            &mut state,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.model.events.len(), before + 1);
     }
 
     // --- caldav accounts seam ------------------------------------------
