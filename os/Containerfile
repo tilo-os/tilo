@@ -372,7 +372,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && CARGO_PROFILE_RELEASE_LTO=thin \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
        cargo build --release \
-        -p shell -p fs -p terminal -p file-explorer -p settings \
+        -p shell -p fs -p qos-relay --bins -p terminal -p file-explorer -p settings \
         -p windows-vm --bin qos-windows-vm-control --bin qos-windows-rail \
         -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
@@ -388,6 +388,10 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && cp target/release/shell \
           target/release/qos-projector \
           target/release/fs \
+          target/release/qos-relay \
+          target/release/qos-relay-admin \
+          target/release/qos-enroll \
+          target/release/qos-home-peer-control \
           target/release/terminal \
           target/release/file-explorer \
           target/release/settings \
@@ -821,6 +825,17 @@ COPY --from=builder /out/file-explorer /usr/bin/file-explorer
 # keyboard layout, power policy, touchpad — so an image without it is an
 # image where those are unreachable on real hardware.
 COPY --from=builder /out/settings /usr/bin/settings
+COPY --from=builder /out/qos-relay /usr/bin/qos-relay
+COPY --from=builder /out/qos-relay-admin /usr/bin/qos-relay-admin
+COPY --from=builder /out/qos-enroll /usr/bin/qos-enroll
+COPY --from=builder /out/qos-home-peer-control /usr/libexec/qos-home-peer-control
+COPY os/usr/lib/systemd/system/qos-relay.service /usr/lib/systemd/system/qos-relay.service
+COPY os/usr/lib/systemd/system/qos-fs-replica.service /usr/lib/systemd/system/qos-fs-replica.service
+COPY os/usr/lib/systemd/system/qos-relay-firstboot.service /usr/lib/systemd/system/qos-relay-firstboot.service
+COPY os/usr/libexec/qos-relay-firstboot /usr/libexec/qos-relay-firstboot
+COPY os/usr/share/polkit-1/actions/org.qos.home-peer.policy /usr/share/polkit-1/actions/org.qos.home-peer.policy
+COPY os/etc/polkit-1/rules.d/49-qos-home-peer.rules /etc/polkit-1/rules.d/49-qos-home-peer.rules
+RUN chmod 0755 /usr/bin/qos-relay /usr/bin/qos-relay-admin /usr/bin/qos-enroll /usr/libexec/qos-home-peer-control /usr/libexec/qos-relay-firstboot
 # Browser: chrome over the ui toolkit's WebView widget, engine = WPE WebKit
 # (built in the wpe-builder stage; its libs + WebProcess binaries are copied
 # into this rootfs below). Copied as the contents of /out/optional/ because the
