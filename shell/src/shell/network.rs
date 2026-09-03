@@ -3,8 +3,10 @@
 //! `NetEvent`s into replica replies re-published as `NetCmd::Publish`s.
 //! Wired in behind `--enable-peer-sync`.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
@@ -20,8 +22,62 @@ use crate::network::replica::WorkspaceTreeReplica;
 use crate::shell::state::WorkspaceTree;
 use crate::shell::state::{RoomId, WorkspaceTreeHandle};
 
+pub use crate::network::actor::PeerDepartureCause;
+use crate::shell::collab_broker::CrdtRoute;
+
 /// Compatibility/control topic used only when a message has no room identity.
 pub const DEFAULT_WS_TOPIC: u64 = 0;
+
+/// Maximum number of recent transport departures retained for diagnostics.
+///
+/// A session can repeatedly lose and regain a peer, so this is a ring rather
+/// than a once-per-peer map. The history is session-local and intentionally
+/// contains no application payload.
+const PEER_DEPARTURE_HISTORY_CAPACITY: usize = 64;
+
+/// A transport peer leaving one collaboration route.
+///
+/// `endpoint_id` is the authenticated transport identity; `user_public_key`
+/// is present only after the peer completed identity admission. Keeping both
+/// lets diagnostics distinguish an unnamed device from an admitted person's
+/// second device without retaining any message contents.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerDeparture {
+    pub endpoint_id: iroh::EndpointId,
+    pub session_handle: u64,
+    pub route: CrdtRoute,
+    pub cause: PeerDepartureCause,
+    pub user_public_key: Option<[u8; 32]>,
+    pub participant_name: Option<String>,
+    pub observed_at: SystemTime,
+}
+
+/// Shared, bounded departure history. It is intentionally independent of
+/// the actor event channel so a reader exit can still be recorded if a later
+/// roster or identity cleanup step cannot acquire its own lock.
+#[derive(Default)]
+pub(crate) struct PeerDepartureHistory {
+    entries: Mutex<VecDeque<PeerDeparture>>,
+}
+
+impl PeerDepartureHistory {
+    fn record(&self, departure: PeerDeparture) {
+        let Ok(mut entries) = self.entries.lock() else {
+            return;
+        };
+        if entries.len() >= PEER_DEPARTURE_HISTORY_CAPACITY {
+            entries.pop_front();
+        }
+        entries.push_back(departure);
+    }
+
+    pub(crate) fn snapshot(&self) -> Vec<PeerDeparture> {
+        self.entries
+            .lock()
+            .map(|entries| entries.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
 
 /// Stable transport/host shard for a durable room. Local workspace handles are
 /// deliberately not used: they differ between devices.
@@ -241,6 +297,9 @@ pub struct ShellNetwork {
     /// Frames are coalesced per surface when the render loop falls behind,
     /// keeping network jitter from turning into unbounded compositor memory.
     inbound_legacy: Arc<Mutex<std::collections::VecDeque<InboundLegacyEvent>>>,
+    /// Recent reader/transport exits, retained independently of mutable room
+    /// state so cleanup cannot erase the evidence it needs to diagnose.
+    peer_departures: Arc<PeerDepartureHistory>,
 }
 
 /// A live legacy-app message after transport identity and room capability
@@ -484,6 +543,7 @@ impl ShellNetwork {
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
             inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+            peer_departures: Arc::new(PeerDepartureHistory::default()),
         })
     }
 
@@ -514,6 +574,16 @@ impl ShellNetwork {
         };
 
         replica.tree.read().room_peer_labels(room)
+    }
+
+    /// Snapshot recent transport departures, oldest first. This is bounded
+    /// session diagnostics, not a durable participant roster.
+    pub fn peer_departures(&self) -> Vec<PeerDeparture> {
+        self.peer_departures.snapshot()
+    }
+
+    pub(crate) fn peer_departure_history(&self) -> Arc<PeerDepartureHistory> {
+        Arc::clone(&self.peer_departures)
     }
 
     /// Workspace topic for session traffic associated with the active room.
@@ -1518,7 +1588,8 @@ impl ShellNetwork {
             NetEvent::PeerJoined { .. } => self.publish_sync_requests(),
             // Without this the roster only ever grows: nothing else
             // tells it a session went quiet.
-            NetEvent::PeerLeft { peer, .. } => {
+            NetEvent::PeerLeft { ws, peer, cause } => {
+                self.record_peer_departure(ws, peer, cause);
                 let handle = crate::network::behaviour::peer_liveness_handle(&peer);
                 self.peer_identities
                     .remove(&crate::shell::state::PeerOrigin::peer(&peer));
@@ -1528,6 +1599,49 @@ impl ShellNetwork {
             }
             NetEvent::Msg { ws, peer, msg } => self.dispatch_neighbour_msg(ws, peer, msg),
         }
+    }
+
+    /// Capture departure evidence before identity and roster cleanup. Every
+    /// lock is best-effort: a poisoned diagnostic/replica lock must never turn
+    /// a reader exit into a shell panic or keep a stale session alive.
+    fn record_peer_departure(&self, ws: u64, peer: iroh::EndpointId, cause: PeerDepartureCause) {
+        let session_handle = crate::network::behaviour::peer_liveness_handle(&peer);
+        let route = self
+            .replica
+            .lock()
+            .ok()
+            .and_then(|replica| {
+                replica
+                    .tree
+                    .read()
+                    .rooms()
+                    .into_iter()
+                    .find(|room| room_topic_id(*room) == ws)
+            })
+            .map_or_else(
+                || CrdtRoute::cluster(""),
+                |room| CrdtRoute::cluster(room.to_string()),
+            );
+        let participant_name = (!route.cluster_id.is_empty())
+            .then(|| {
+                self.peer_labels(&route.cluster_id)
+                    .get(&session_handle)
+                    .cloned()
+            })
+            .flatten();
+        let user_public_key = self
+            .peer_identities
+            .get(&crate::shell::state::PeerOrigin::peer(&peer))
+            .map(|identity| identity.user_pubkey);
+        self.peer_departures.record(PeerDeparture {
+            endpoint_id: peer,
+            session_handle,
+            route,
+            cause,
+            user_public_key,
+            participant_name,
+            observed_at: SystemTime::now(),
+        });
     }
 
     /// Seed a durable host's checkpoint once it finishes subscribing to
@@ -2319,6 +2433,7 @@ pub(crate) fn shell_network_for_test(
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+        peer_departures: Arc::new(PeerDepartureHistory::default()),
     };
     (net, cmd_rx)
 }
@@ -3189,6 +3304,37 @@ mod tests {
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
         net.tick();
+    }
+
+    #[test]
+    fn peer_departure_retains_identity_route_and_cause_before_cleanup() {
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let room = tree.read().rooms()[0];
+        let (net, _cmd_rx) = shell_network_for_test(tree, 0xD3E0_7A7E);
+        let peer = iroh::SecretKey::from_bytes(&[83; 32]).public();
+
+        net.event_tx
+            .try_send(NetEvent::PeerLeft {
+                ws: room_topic_id(room),
+                peer,
+                cause: PeerDepartureCause::LivenessTimedOut,
+            })
+            .expect("queue peer departure");
+        net.tick();
+
+        let departures = net.peer_departures();
+        let [departure] = departures.as_slice() else {
+            panic!("one departure should be retained: {departures:?}");
+        };
+        assert_eq!(departure.endpoint_id, peer);
+        assert_eq!(
+            departure.session_handle,
+            crate::network::behaviour::peer_liveness_handle(&peer)
+        );
+        assert_eq!(departure.route, CrdtRoute::cluster(room.to_string()));
+        assert_eq!(departure.cause, PeerDepartureCause::LivenessTimedOut);
+        assert!(departure.user_public_key.is_none());
+        assert!(departure.observed_at <= SystemTime::now());
     }
 
     #[test]
