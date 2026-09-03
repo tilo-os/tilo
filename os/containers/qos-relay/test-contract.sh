@@ -20,9 +20,10 @@ for path in "$compose" "$config" "$readme"; do
   [ -f "$path" ] || fail "missing $(basename "$path")"
 done
 
-# State must outlive the container; identity is intentionally mounted
-# read-only, never created by this deployment.
-need "$compose" "./identity:/var/lib/qos:ro,Z"
+# State must outlive the container. Enrollment creates only the scoped host
+# identity here; the user's root private key never enters this deployment.
+need "$compose" "./identity:/var/lib/qos:Z"
+need "$compose" "./enrollment-token.txt:/run/secrets/qos-enrollment-token:ro,Z"
 need "$compose" "qos-relay-state:/var/lib/qos-relay:Z"
 need "$compose" "test -s /var/lib/qos-relay/metrics.json"
 need "$compose" '"${QOS_RELAY_PORT:-4433}:4433/udp"'
@@ -43,14 +44,15 @@ PY
 
 # Product boundary: this image promises verified full file residency.
 need "$readme" "filesystem peer"
-need "$readme" "workspaces[]"
-need "$readme" "does not enroll devices or mint certificates"
+need "$readme" "selected workspace IDs"
+need "$readme" "Pair home server"
 need "$containerfile" "target/release/fs"
 need "$containerfile" 'ENTRYPOINT ["/usr/bin/qos-home-peer"]'
-need "$compose" "./home-peer.toml:/etc/qos/home-peer.toml"
+need "$compose" "./config:/etc/qos:Z"
 need "$compose" "qos-full-replica"
 need "$entrypoint" "/usr/bin/fs replica"
 need "$entrypoint" "/usr/bin/qos-relay"
+need "$entrypoint" "/usr/bin/qos-enroll join"
 need "$entrypoint" "wait -n"
 
 echo "qos-relay container contract: PASS"

@@ -1,0 +1,10 @@
+// The executable itself accepts only two bounded operations and no paths:
+// apply a validated stdin projection, or approve a nearby host enrollment.
+polkit.addRule(function (action, subject) {
+    if (action.id == "org.freedesktop.policykit.exec" &&
+        action.lookup("program") == "/usr/libexec/qos-home-peer-control" &&
+        subject.local && subject.active && subject.isInGroup("wheel")) {
+        return polkit.Result.AUTH_ADMIN_KEEP;
+    }
+    return polkit.Result.NOT_HANDLED;
+});
