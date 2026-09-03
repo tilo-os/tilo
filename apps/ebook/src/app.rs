@@ -3009,6 +3009,65 @@ impl BooksApp {
 }
 
 impl Widget for BooksApp {
+    fn continuation_metadata(
+        &self,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<ui::collaboration::ContinuationMetadata> {
+        let book = self.library.get(self.book_idx)?;
+        // Book ids are content identities, never source paths. Refuse an
+        // unexpected id rather than turning a continuation report into a
+        // local filesystem disclosure.
+        if book.id.is_empty() || book.id.len() > 256 || book.id.contains(['/', '\\']) {
+            return None;
+        }
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "book_id": book.id,
+            "chapter": self.chapter,
+            "page": self.page,
+        }))
+        .ok()?;
+        Some(ui::collaboration::ContinuationMetadata {
+            schema_version: 1,
+            bytes,
+        })
+    }
+
+    fn restore_continuation_metadata(
+        &mut self,
+        metadata: &ui::collaboration::ContinuationMetadata,
+        _doc: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if metadata.schema_version != 1 {
+            return false;
+        }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&metadata.bytes) else {
+            return false;
+        };
+        let Some(book_id) = value.get("book_id").and_then(serde_json::Value::as_str) else {
+            return false;
+        };
+        let Some(index) = self.library.iter().position(|book| book.id == book_id) else {
+            return false;
+        };
+        let chapter = value
+            .get("chapter")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|v| usize::try_from(v).ok())
+            .unwrap_or(0)
+            .min(self.library[index].chapters.len().saturating_sub(1));
+        let page = value
+            .get("page")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|v| usize::try_from(v).ok())
+            .unwrap_or(0);
+        self.book_idx = index;
+        self.chapter = chapter;
+        self.page = page;
+        true
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::EBOOK_OPERATION_TYPE]
     }
