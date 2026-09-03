@@ -6,6 +6,11 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
+/// Toolkit-owned continuation schema used when an app has no narrower
+/// domain-specific projection. The CRDT document travels on its stable record
+/// route; this payload restores the complementary local presentation state.
+const GENERIC_VIEW_CONTINUATION_SCHEMA: u16 = u16::MAX;
+
 /// Synthetic input for `EventLoopProxy`: each variant becomes the real
 /// `WindowEvent`(s) and routes through the same handler, so injected and
 /// real-hardware events take the identical code path.
@@ -380,6 +385,9 @@ pub struct App {
     /// Last app-owned continuation projection sent to the local shell.
     last_published_continuation: Option<crate::collaboration::ContinuationMetadata>,
     pending_continuation_restore: Option<crate::collaboration::ContinuationMetadata>,
+    /// Generic view restoration waits until the first layout has built the
+    /// focus order. App-specific projections still apply before first sync.
+    pending_continuation_view: Option<crate::view::View>,
     /// Background/streaming operations admitted by the retained widget tree.
     /// They remain here until the widget reports exactly one terminal update.
     directed_invocations: std::collections::HashMap<qos_actions::InvocationId, DirectedInvocation>,
@@ -526,6 +534,7 @@ impl App {
             last_published_actions: None,
             last_published_continuation: None,
             pending_continuation_restore: crate::collaboration::continuation_restore_env(),
+            pending_continuation_view: None,
             directed_invocations: std::collections::HashMap::new(),
             local_invocations: std::collections::HashSet::new(),
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
@@ -1155,12 +1164,22 @@ impl App {
     /// focus itself or start playing media.
     fn publish_continuation_metadata(&mut self) {
         self.apply_pending_continuation_restore();
-        if !self.collab_manager.is_connected() {
+        if !self.collab_manager.is_connected() || self.pending_continuation_view.is_some() {
             return;
         }
-        let metadata = self
+        let declared = self
             .root_widget
             .continuation_metadata(&self.state.doc, &self.state.root);
+        let metadata = declared.or_else(|| {
+            let view = <Self as crate::view::FreezeThaw>::capture_view(self);
+            let bytes = postcard::to_stdvec(&view).ok()?;
+            (!bytes.is_empty() && bytes.len() <= 32 * 1024).then_some(
+                crate::collaboration::ContinuationMetadata {
+                    schema_version: GENERIC_VIEW_CONTINUATION_SCHEMA,
+                    bytes,
+                },
+            )
+        });
         if metadata == self.last_published_continuation {
             return;
         }
@@ -1176,6 +1195,12 @@ impl App {
 
     fn apply_pending_continuation_restore(&mut self) {
         if let Some(metadata) = self.pending_continuation_restore.take() {
+            if metadata.schema_version == GENERIC_VIEW_CONTINUATION_SCHEMA {
+                if let Ok(view) = postcard::from_bytes::<crate::view::View>(&metadata.bytes) {
+                    self.pending_continuation_view = Some(view);
+                }
+                return;
+            }
             let root = self.state.root.clone();
             let _ = self.root_widget.restore_continuation_metadata(
                 &metadata,
@@ -3414,6 +3439,9 @@ impl App {
             &mut self.node_map,
         ));
         self.update_focusable_order();
+        if let Some(view) = self.pending_continuation_view.take() {
+            <Self as crate::view::FreezeThaw>::restore_view(self, &view);
+        }
         if self.autofocus_first
             && self.focused_node.is_none()
             && let Some(&first) = self.focusable_order.first()
@@ -8261,6 +8289,35 @@ mod view_presence_tests {
         let mut app = App::new(State::new(), Box::new(root));
         app.init_layout();
         app
+    }
+
+    #[test]
+    fn generic_continuation_restores_view_for_apps_without_custom_metadata() {
+        let mut sender = app_with_root(ViewRoot {
+            scroll: vec![48.0, 12.0],
+            mode: Some("grid".into()),
+            resource: Some("record:stable-photo".into()),
+            rect: KurboRect::ZERO,
+        });
+        sender.last_frame_size = Some(winit::dpi::PhysicalSize::new(900, 600));
+        let view = <App as FreezeThaw>::capture_view(&sender);
+        let metadata = crate::collaboration::ContinuationMetadata {
+            schema_version: GENERIC_VIEW_CONTINUATION_SCHEMA,
+            bytes: postcard::to_stdvec(&view).unwrap(),
+        };
+
+        // Model launcher delivery before first layout, which is the real
+        // continuation order. The view waits until focus/layout nodes exist.
+        let mut receiver = App::new(State::new(), Box::new(ViewRoot::new()));
+        receiver.pending_continuation_restore = Some(metadata);
+        receiver.apply_pending_continuation_restore();
+        assert!(receiver.pending_continuation_view.is_some());
+        receiver.init_layout();
+
+        let restored = <App as FreezeThaw>::capture_view(&receiver);
+        assert_eq!(restored.scroll, vec![48.0, 12.0]);
+        assert_eq!(restored.view_mode.as_deref(), Some("grid"));
+        assert!(receiver.pending_continuation_view.is_none());
     }
 
     /// Asserted on both the frame that leaves the sender (via the broadcast
