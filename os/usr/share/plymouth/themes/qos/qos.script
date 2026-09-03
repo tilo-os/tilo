@@ -49,36 +49,39 @@ fun setup_dialog()
     local.entry_image = Image("entry.png");
     local.lock_image = Image("lock.png");
 
-    dialog.heading_image = Image.Text("Unlock qOS", 0.94, 0.94, 0.98);
-    dialog.heading = Sprite(dialog.heading_image);
+    # Text is pre-rendered into these assets. Image.Text depends on fonts and
+    # Pango data that intentionally are not carried in the small initramfs and
+    # can otherwise turn an encrypted-root prompt into an invisible wait.
+    global.dialog.heading_image = Image("unlock-heading.png");
+    global.dialog.heading = Sprite(dialog.heading_image);
     dialog.heading.SetPosition(center_x - dialog.heading_image.GetWidth() / 2,
                                Window.GetY() + Window.GetHeight() * 0.48, 100);
 
-    dialog.help_image = Image.Text("Enter your disk passphrase", 0.62, 0.64, 0.73);
-    dialog.help = Sprite(dialog.help_image);
+    global.dialog.help_image = Image("unlock-help.png");
+    global.dialog.help = Sprite(dialog.help_image);
     dialog.help.SetPosition(center_x - dialog.help_image.GetWidth() / 2,
                             Window.GetY() + Window.GetHeight() * 0.535, 100);
 
-    dialog.entry_x = center_x - entry_image.GetWidth() / 2;
-    dialog.entry_y = Window.GetY() + Window.GetHeight() * 0.59;
-    dialog.entry = Sprite(entry_image);
+    global.dialog.entry_x = center_x - entry_image.GetWidth() / 2;
+    global.dialog.entry_y = Window.GetY() + Window.GetHeight() * 0.59;
+    global.dialog.entry = Sprite(entry_image);
     dialog.entry.SetPosition(dialog.entry_x, dialog.entry_y, 100);
 
-    dialog.lock = Sprite(lock_image);
+    global.dialog.lock = Sprite(lock_image);
     dialog.lock.SetPosition(dialog.entry_x + 18,
                             dialog.entry_y + entry_image.GetHeight() / 2 - lock_image.GetHeight() / 2,
                             101);
-    dialog.bullet_image = Image("bullet.png");
-    dialog.ready = 1;
+    global.dialog.bullet_image = Image("bullet.png");
+    global.dialog.ready = 1;
   }
 
 fun display_password(prompt, bullets)
   {
-    mode = "password";
+    global.mode = "password";
     place_brand(1);
     progress.background.SetOpacity(0);
     progress.fill.SetOpacity(0);
-    if (!dialog.ready)
+    if (!global.dialog)
       setup_dialog();
     set_dialog_opacity(1);
 
@@ -90,7 +93,7 @@ fun display_password(prompt, bullets)
       {
         if (!dialog.bullet[index])
           {
-            dialog.bullet[index] = Sprite(dialog.bullet_image);
+            global.dialog.bullet[index] = Sprite(dialog.bullet_image);
             dialog.bullet[index].SetPosition(dialog.entry_x + 64 + index * 11,
                                               dialog.entry_y + 24, 102);
           }
@@ -103,7 +106,7 @@ fun display_password(prompt, bullets)
 
 fun display_normal()
   {
-    mode = "normal";
+    global.mode = "normal";
     place_brand(0);
     set_dialog_opacity(0);
     progress.background.SetOpacity(1);

@@ -42,10 +42,12 @@ RUN printf 'kargs = ["qos.install"]\n' \
     # Keep qos.mode=normal: qos-deployment derives the equal-width repair UKI
     # from it. Error-only kernel/udev logging and Plymouth already keep boot
     # clean. Dropping the redundant explicit systemd default and the udev log
-    # override (quiet already covers it) reserves enough measured .cmdline
+    # overrides (quiet already covers them) reserves enough measured .cmdline
     # space for target UUIDs without giving up the quiet splash.
     && /usr/libexec/qos-uki-cmdline remove systemd.show_status \
     && /usr/libexec/qos-uki-cmdline remove rd.udev.log_level \
+    && /usr/libexec/qos-uki-cmdline remove loglevel \
+    && /usr/libexec/qos-uki-cmdline remove vt.global_cursor_default \
     && /usr/libexec/qos-uki-cmdline append qos.root=0000000000000000000000000000000000000 \
     && /usr/libexec/qos-uki-cmdline append qos.luks=000000000000000000000000000000000000000000000 \
     && /usr/libexec/qos-uki-cmdline append qos.install \

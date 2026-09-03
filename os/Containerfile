@@ -590,6 +590,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     mesa-dri-drivers \
     mesa-vulkan-drivers \
     libglvnd-egl \
+    google-noto-sans-fonts \
     plymouth \
     plymouth-plugin-script \
     plymouth-scripts \
@@ -600,9 +601,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # initramfs does not depend on a desktop image stack.
 COPY os/usr/share/plymouth/themes/qos/ /usr/share/plymouth/themes/qos/
 COPY os/dev/make-plymouth-assets.py /usr/local/bin/make-plymouth-assets.py
-RUN python3 /usr/local/bin/make-plymouth-assets.py /usr/share/plymouth/themes/qos \
- && plymouth-set-default-theme qos \
- && test "$(plymouth-set-default-theme)" = qos
 
 # Audio/Video
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
@@ -1162,6 +1160,14 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --skip-
         efitools \
         systemd-ukify \
     && dnf clean all && ${FINALIZE_RPMDB}
+
+# systemd-ukify's pinned dependency set now provides Pillow, while the font
+# transaction above provides Noto Sans. Render the unlock copy only once both
+# are present; the resulting PNGs, not either desktop dependency, are what the
+# initramfs theme consumes.
+RUN python3 /usr/local/bin/make-plymouth-assets.py /usr/share/plymouth/themes/qos \
+ && plymouth-set-default-theme qos \
+ && test "$(plymouth-set-default-theme)" = qos
 
 # The install-config drop-in that flips bootc's bootloader choice to
 # systemd-boot. Lives at /usr/lib/bootc/install/*.toml — a drop-in dir bootc
