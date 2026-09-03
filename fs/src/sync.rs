@@ -1802,7 +1802,14 @@ async fn pull_workspace_authority_from_peer(
         &mut send,
         &AuthorityRequest {
             workspace: workspace_id,
-            publish: None,
+            // The governor is the only identity the remote protocol permits
+            // to publish. Sending its current signed envelope makes ACL
+            // reconciliation bidirectional: a desktop can push a revocation
+            // to an always-on NAS instead of waiting for the NAS to happen to
+            // initiate the next connection. Collaborators remain pull-only.
+            publish: (identity.user_public_key() == authority.governor())
+                .then(|| authority.current())
+                .flatten(),
         },
     )
     .await?;
@@ -2512,17 +2519,25 @@ mod tests {
             &owner_root,
         )
         .unwrap();
-        let accepted = submit_workspace_authority(
+        let owner_authority = WorkspaceAuthority::open(
+            temp.path().join("owner-authority.bin"),
+            workspace,
+            owner,
+            owner,
+            Vec::new(),
+        )
+        .unwrap();
+        owner_authority.apply(grant).unwrap();
+        pull_workspace_authority_from_peer(
             &owner_endpoint,
             nas_endpoint.addr(),
             &owner_identity,
+            &owner_authority,
             workspace,
-            Some(grant),
         )
         .await
-        .unwrap()
         .unwrap();
-        assert_eq!(accepted.revision, 1);
+        assert_eq!(nas_authority.current().unwrap().revision, 1);
         assert!(
             nas_authority
                 .handle()
@@ -2550,12 +2565,13 @@ mod tests {
             &owner_root,
         )
         .unwrap();
-        submit_workspace_authority(
+        owner_authority.apply(revoked.clone()).unwrap();
+        pull_workspace_authority_from_peer(
             &owner_endpoint,
             nas_endpoint.addr(),
             &owner_identity,
+            &owner_authority,
             workspace,
-            Some(revoked.clone()),
         )
         .await
         .unwrap();
