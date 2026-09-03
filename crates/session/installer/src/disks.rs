@@ -174,10 +174,10 @@ impl Disk {
         Some(extents)
     }
 
-    /// Return a plan only when exactly one unallocated GPT extent can hold a
-    /// dedicated 2 GiB ESP plus a >=32 GiB root. Ambiguity is left for an
-    /// explicit future chooser rather than silently selecting a region.
-    pub fn guided_alongside_plan(&self) -> Option<GuidedAlongsidePlan> {
+    /// Return every unallocated GPT extent that can hold a dedicated 2 GiB
+    /// ESP plus a >=32 GiB root, in on-disk order. Callers must require an
+    /// explicit choice when this returns more than one plan.
+    pub fn guided_alongside_plans(&self) -> Vec<GuidedAlongsidePlan> {
         if !self.partition_table.eq_ignore_ascii_case("gpt")
             || self.partition_table_uuid.is_empty()
             || self.logical_sector_size == 0
@@ -185,9 +185,11 @@ impl Disk {
             || !self.identity_ready()
             || self.read_only
         {
-            return None;
+            return Vec::new();
         }
-        let extents = self.occupied_extents()?;
+        let Some(extents) = self.occupied_extents() else {
+            return Vec::new();
+        };
         let disk_end = align_down(
             self.size_bytes.saturating_sub(PARTITION_ALIGNMENT_BYTES),
             PARTITION_ALIGNMENT_BYTES,
@@ -205,10 +207,16 @@ impl Disk {
                 PARTITION_ALIGNMENT_BYTES,
             );
             if end > start {
-                let size = end.checked_sub(start)?;
+                let Some(size) = end.checked_sub(start) else {
+                    return Vec::new();
+                };
                 if size >= MIN_ALONGSIDE_ESP_BYTES + MIN_ALONGSIDE_BYTES {
-                    let root_start = start.checked_add(MIN_ALONGSIDE_ESP_BYTES)?;
-                    let root_size = size.checked_sub(MIN_ALONGSIDE_ESP_BYTES)?;
+                    let Some(root_start) = start.checked_add(MIN_ALONGSIDE_ESP_BYTES) else {
+                        return Vec::new();
+                    };
+                    let Some(root_size) = size.checked_sub(MIN_ALONGSIDE_ESP_BYTES) else {
+                        return Vec::new();
+                    };
                     candidates.push(GuidedAlongsidePlan {
                         free_start_bytes: start,
                         free_size_bytes: size,
@@ -221,7 +229,13 @@ impl Disk {
             }
             cursor = cursor.max(occupied.start_bytes.saturating_add(occupied.size_bytes));
         }
-        exactly_one_owned(candidates.into_iter())
+        candidates
+    }
+
+    /// Convenience for flows that can proceed only when discovery is
+    /// unambiguous. Multiple safe extents are never silently resolved.
+    pub fn guided_alongside_plan(&self) -> Option<GuidedAlongsidePlan> {
+        exactly_one_owned(self.guided_alongside_plans().into_iter())
     }
 
     /// Minimum identity needed for any destructive handoff. Device number
@@ -719,9 +733,12 @@ mod tests {
             mountpoint: String::new(),
             part_type: "basic".into(),
         });
+        let plans = disk.guided_alongside_plans();
+        assert_eq!(plans.len(), 2, "both eligible gaps must be offered");
         assert!(
             disk.guided_alongside_plan().is_none(),
-            "two eligible gaps require an explicit choice"
+            "two eligible gaps must never be silently selected"
         );
+        assert!(plans[0].free_start_bytes < plans[1].free_start_bytes);
     }
 }
