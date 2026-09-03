@@ -171,7 +171,8 @@ cmd_prepare_partition() {
   mount "$esp" "$mnt/boot/efi"
   printf 'MNT=%s\nESP=%s\nLUKS_PART=%s\nLUKS_UUID=%s\nMAPPER=%s\nROOT_FS_UUID=%s\nKEY_FILE=%s\n' \
     "$mnt" "$esp" "$part" "$luks_uuid" "$mapper" "$root_fs_uuid" "$key"
-  printf 'KARGS=rd.luks.uuid=%s rd.luks.options=%s=tpm2-device=auto\n' "$luks_uuid" "$luks_uuid"
+  printf 'KARGS=rd.luks.uuid=%s rd.luks.options=%s=tpm2-device=auto,fido2-device=auto\n' \
+    "$luks_uuid" "$luks_uuid"
 }
 
 cmd_prepare() {
@@ -264,10 +265,11 @@ EOF
   install -d -m 0755 "$mnt/boot/efi"
   mount "$esp" "$mnt/boot/efi"
 
-  # Early userspace needs to be told which volume to open and how. tpm2-device
-  # is requested unconditionally: systemd-cryptsetup falls back to asking for a
-  # passphrase when there is no TPM or no TPM slot, so one karg set serves every
-  # factor combination.
+  # Early userspace needs to be told which volume to open and which enrolled
+  # hardware-token handlers to try. Both options are harmless when their token
+  # type is absent from the LUKS2 JSON metadata: systemd-cryptsetup falls back to
+  # asking for a passphrase. Keeping both here means an optional FIDO2 factor is
+  # usable at boot, rather than merely present in the LUKS header.
   printf 'MNT=%s\n'          "$mnt"
   printf 'ESP=%s\n'          "$esp"
   printf 'BOOT_PART=%s\n'    "$boot_part"
@@ -276,7 +278,7 @@ EOF
   printf 'MAPPER=%s\n'       "$mapper"
   printf 'ROOT_FS_UUID=%s\n' "$root_fs_uuid"
   printf 'KEY_FILE=%s\n'     "$key"
-  printf 'KARGS=rd.luks.uuid=%s rd.luks.options=%s=tpm2-device=auto\n' \
+  printf 'KARGS=rd.luks.uuid=%s rd.luks.options=%s=tpm2-device=auto,fido2-device=auto\n' \
       "$luks_uuid" "$luks_uuid"
 }
 
@@ -359,9 +361,9 @@ cmd_enrol() {
   if ! rec_key="$(systemd-cryptenroll "${unlock[@]}" --recovery-key "$dev" 2>"$scratch/rec.err")"; then
     die "recovery-key enrolment failed; aborting rather than shipping a disk with no recoverable factor:"$'\n'"$(cat "$scratch/rec.err")"
   fi
-  # Last non-blank line, and deliberately never fatal: the key slot is already
-  # on the volume by now, so failing to read the value back must not stop the
-  # factors below from being enrolled.
+  # Last non-blank line. The temporary install key still exists at this point,
+  # so an unreadable recovery key is a safe installation failure rather than a
+  # reason to finish a system whose owner has no usable hardware-loss fallback.
   rec_key="$(printf '%s\n' "$rec_key" | sed -e 's/[[:space:]]*$//' -e '/^$/d' | tail -1 || true)"
 
   if [ -n "$rec_key" ]; then
@@ -388,24 +390,20 @@ cmd_enrol() {
     if cryptsetup open --test-passphrase --key-file "$scratch/recovery" "$dev" 2>/dev/null; then
       log "  recovery key verified: it opens the volume."
     else
-      log "  WARNING: the key printed above did not open the volume when tested."
-      log "  Treat it as unusable and make sure another factor is enrolled."
+      die "the recovery key just enrolled did not open $dev; refusing to finish without a verified recovery factor"
     fi
   else
-    log "  WARNING: a recovery key slot was enrolled but its value could not be"
-    log "  read back from systemd-cryptenroll, so it has not been shown to you."
-    log "  Do not rely on it; the factors below are what will open this disk."
+    die "a recovery key slot was enrolled but its value could not be read back; refusing to finish without showing a usable recovery key"
   fi
 
-  # (2) FIDO2, if a token was asked for. Never fatal: the recovery key (and the
-  # TPM slot below) still open the volume.
+  # (2) FIDO2, if a token was asked for. An explicit installer choice is a
+  # configuration requirement, not a best-effort hint: while the temporary key
+  # still exists, stop and let the UI ask the owner to insert/touch the token.
   if [ "$want_fido2" -eq 1 ]; then
     log "  enrolling a FIDO2 security key (touch it now if prompted)…"
-    if systemd-cryptenroll "${unlock[@]}" --fido2-device=auto "$dev"; then
-      log "  FIDO2 key enrolled."
-    else
-      log "  WARNING: FIDO2 enrolment failed (no token?) — continuing."
-    fi
+    systemd-cryptenroll "${unlock[@]}" --fido2-device=auto "$dev" \
+      || die "FIDO2 enrolment failed; insert a compatible key, make sure it supports hmac-secret, and retry"
+    log "  FIDO2 key enrolled."
   fi
 
   # (3) The quiet-unlock factor. PCR 7 only: it is the Secure Boot policy

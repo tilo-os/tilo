@@ -17,12 +17,24 @@ fail=0
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
+unlock_placeholder=qos.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000
+sample_uuid=00000000-0000-0000-0000-000000000000
+unlock_options="rd.luks.options=$sample_uuid=tpm2-device=auto,fido2-device=auto"
+if [ "${#unlock_placeholder}" -eq "${#unlock_options}" ] \
+   && [ "$(grep -Fc 'rd.luks.options=%s=tpm2-device=auto,fido2-device=auto' "$encryptor")" -eq 2 ]; then
+  ok "sealed unlock slot exactly fits TPM2 and FIDO2 initramfs discovery options"
+else
+  bad "encrypted-root producer and sealed UKI hardware-token options disagree"
+fi
+
 karg_deletes="$(grep -c -- '--karg-delete qos.install' "$backend" || true)"
 if [ "$karg_deletes" -eq 2 ] \
    && grep -Fq 'qos.root=0000000000000000000000000000000000000' "$backend" \
    && grep -Fq 'qos.luks=000000000000000000000000000000000000000000000' "$backend" \
+   && grep -Fq 'qos.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000' "$backend" \
+   && grep -Fq 'rd.luks.options=$LUKS_UUID=tpm2-device=auto,fido2-device=auto' "$backend" \
    && grep -Fq 'remove qos.install "$TARGET_UKI"' "$backend"; then
-  ok "sealed encrypted installs specialize UUID slots and remove the live marker"
+  ok "sealed encrypted installs specialize UUID and hardware-token slots, then remove the live marker"
 else
   bad "sealed target UKI handoff is incomplete (legacy deletions: $karg_deletes)"
 fi
@@ -31,6 +43,7 @@ if grep -Fq 'qos-uki-cmdline remove systemd.show_status' "$containerfile" \
    && grep -Fq 'qos-uki-cmdline remove rd.udev.log_level' "$containerfile" \
    && grep -Fq 'qos-uki-cmdline remove loglevel' "$containerfile" \
    && grep -Fq 'qos-uki-cmdline remove vt.global_cursor_default' "$containerfile" \
+   && grep -Fq 'qos-uki-cmdline append qos.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000' "$containerfile" \
    && grep -Fq 'qos-uki-cmdline show | grep -qw qos.mode=normal' "$containerfile" \
    && grep -Fq 'qos-uki-cmdline show | grep -qw qos.install' "$containerfile"; then
   ok "installer reserves measured UKI cmdline space without losing splash or mode"
