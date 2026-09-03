@@ -351,6 +351,7 @@ mod tests {
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
             print_spooler: crate::portal::PrintSpoolerHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
+            notifications: crate::notifications::NotificationBridge::new(),
         };
         let caller = FileChooserBackend::resolve_caller(&ctx, None, "org.example");
         assert_eq!(caller.app_id, "org.example");
@@ -375,6 +376,7 @@ mod tests {
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
             print_spooler: crate::portal::PrintSpoolerHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
+            notifications: crate::notifications::NotificationBridge::new(),
         };
         let name: OwnedUniqueName = ":1.7".try_into().unwrap();
         let caller = FileChooserBackend::resolve_caller(&ctx, Some(&name), "ignored");
@@ -404,6 +406,7 @@ mod tests {
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
             print_spooler: crate::portal::PrintSpoolerHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
+            notifications: crate::notifications::NotificationBridge::new(),
         };
         let backend = FileChooserBackend::new(ctx);
         let caller = PortalCaller::new(ws_id, "org.example");
@@ -457,6 +460,7 @@ mod tests {
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
             print_spooler: crate::portal::PrintSpoolerHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
+            notifications: crate::notifications::NotificationBridge::new(),
         };
         let backend = FileChooserBackend::new(ctx);
         let caller = PortalCaller::new(ws_id, "org.example");
@@ -521,6 +525,7 @@ mod tests {
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
             print_spooler: crate::portal::PrintSpoolerHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
+            notifications: crate::notifications::NotificationBridge::new(),
         };
         let backend = FileChooserBackend::new(ctx);
         let caller = PortalCaller::new(ws_id, "org.example");
@@ -575,6 +580,7 @@ mod tests {
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
             print_spooler: crate::portal::PrintSpoolerHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
+            notifications: crate::notifications::NotificationBridge::new(),
         };
         let backend = FileChooserBackend::new(ctx);
         let caller = PortalCaller::new(ws_id, "org.example");
@@ -620,6 +626,7 @@ mod tests {
                 remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
                 print_spooler: crate::portal::PrintSpoolerHandle::null(),
                 documents: crate::portal::DocumentStoreHandle::host_paths(),
+                notifications: crate::notifications::NotificationBridge::new(),
             };
             let backend = FileChooserBackend::new(ctx);
             let caller = PortalCaller::new(ws_id, "org.example");
