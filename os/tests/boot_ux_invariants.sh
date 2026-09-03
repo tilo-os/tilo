@@ -16,6 +16,14 @@ grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth"' "$containerfile
 grep -Fq 'plymouth-set-default-theme qos' "$containerfile"
 grep -Fq 'ModuleName=script' "$theme"
 grep -Fq 'Plymouth.SetDisplayPasswordFunction(display_password)' "$script"
+grep -Fq 'if (!global.dialog)' "$script"
+grep -Fq 'global.dialog.heading = Sprite' "$script"
+grep -Fq 'global.dialog.entry = Sprite' "$script"
+grep -Fq 'global.dialog.ready = 1' "$script"
+if grep -Eq '^[[:space:]]+dialog\.(heading|help|entry|lock|bullet_image)[[:space:]]*=' "$script"; then
+  printf 'Plymouth dialog state must be assigned globally from callbacks\n' >&2
+  exit 1
+fi
 if grep -Fq 'plymouth-quit.service' "$containerfile"; then
   printf 'Plymouth quit services must not be masked\n' >&2
   exit 1
@@ -44,6 +52,7 @@ python3 - "$tmp/plymouth" <<'PY'
 import pathlib, struct, sys
 root = pathlib.Path(sys.argv[1])
 expected = {"qos-logo.png", "entry.png", "lock.png", "bullet.png",
+            "unlock-heading.png", "unlock-help.png",
             "progress-background.png", "progress-fill.png"}
 assert {path.name for path in root.iterdir()} == expected
 for path in root.iterdir():
