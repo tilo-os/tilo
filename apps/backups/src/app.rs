@@ -64,6 +64,13 @@ const RAIL_BREAKPOINT: f64 = 820.0;
 /// tighter tabs) and multi-column tile/card grids drop toward a single column.
 const NARROW_BREAKPOINT: f64 = 720.0;
 
+/// A closed overlay is positioned mostly outside the content rect. Require a
+/// non-zero eased reveal before painting it; otherwise its off-screen tail can
+/// show as a mysterious sliver at the opposite edge of a phone window.
+fn should_paint_rail(drawer: &SidebarDrawer, rail: Rect) -> bool {
+    rail.width() > 4.0 && drawer.reveal() > 0.001
+}
+
 /// Click/hover targets discovered during `draw` and consumed by
 /// `handle_event`. Cleared and rebuilt every frame.
 #[allow(
@@ -613,7 +620,7 @@ impl BackupsApp {
                 self.drawer.draw_scrim(scene, t);
                 self.hits.push((scrim, Hit::CloseRail));
             }
-            if side.width() > 4.0 {
+            if should_paint_rail(&self.drawer, side) {
                 self.draw_rail(scene, t, tr, theme, side);
             }
         }
@@ -4373,6 +4380,21 @@ mod tests {
             !app.catalog.destinations.is_empty(),
             "demo has destinations"
         );
+    }
+
+    #[test]
+    fn closed_overlay_rail_is_not_painted_from_its_offscreen_tail() {
+        let mut drawer = SidebarDrawer::new()
+            .left()
+            .docked_width(RAIL_W)
+            .overlay_width(RAIL_W.max(288.0))
+            .breakpoint(RAIL_BREAKPOINT);
+        let outer = Rect::new(20.0, 66.0, 370.0, 832.0);
+        drawer.resolve(outer);
+        let rail = drawer.sidebar_rect();
+        assert_eq!(drawer.reveal(), 0.0);
+        assert!(rail.x1 <= outer.x0);
+        assert!(!should_paint_rail(&drawer, rail));
     }
 
     /// A headless harness that drives the **production** widget path: it draws a
