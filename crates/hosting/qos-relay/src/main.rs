@@ -144,10 +144,25 @@ fn cmd_status(path: &Path) -> anyhow::Result<()> {
     );
     println!("identity_root: {}", cfg.identity_root.display());
     println!("state_root:    {}", cfg.state_root.display());
+    println!("full replica:  {}", cfg.full_replica_status.display());
     println!("iroh_listen:   {}", cfg.iroh_listen);
     println!("workspaces bound:");
     for ws in &cfg.workspaces {
         println!("  - {} (pin={})", ws.id, ws.pin);
+    }
+    match std::fs::read(&cfg.full_replica_status)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+    {
+        Some(status) => println!(
+            "full_content_replication: {}",
+            status
+                .get("full_content_replication")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                && status.get("state").and_then(serde_json::Value::as_str) == Some("ready")
+        ),
+        None => println!("full_content_replication: false"),
     }
     if let Some(metrics) = qos_relay::store::load_metrics(&cfg.state_root)? {
         println!(

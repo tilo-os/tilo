@@ -24,6 +24,7 @@ pub mod docstore;
 pub mod durable_backup;
 pub mod eviction;
 pub mod fs;
+pub mod full_replica;
 pub mod history;
 pub mod hydration;
 pub mod identity;
