@@ -86,7 +86,9 @@ is required: installation uses the signed image on the medium.
 
 This removes every partition and operating system on the selected disk. The
 review page names the exact disk and repeats the impact. Use this for an empty
-computer or when qOS will be its only operating system.
+computer or when qOS will be its only operating system. Installation remains
+disabled until you type the displayed device name exactly; changing the disk or
+switching install methods clears that confirmation.
 
 ### Install alongside
 
