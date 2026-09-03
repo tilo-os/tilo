@@ -320,7 +320,13 @@ impl ActorState {
                     .get(&id)
                     .is_some_and(|known| known != &(addr.clone(), expectation.clone()));
                 if changed {
-                    self.disconnect_host(id);
+                    // A new address for the same certified service replaces
+                    // only its relay session. Its already authenticated Files
+                    // endpoint remains usable until refreshed discovery proves
+                    // a replacement; treating a reconnect as removal creates
+                    // a needless offline window (and can strand hydration if
+                    // the new relay hint is temporarily unreachable).
+                    self.teardown_host(id, false);
                 }
                 self.lookup.add_endpoint_info(addr.clone());
                 self.hosts.insert(id, (addr.clone(), expectation.clone()));
@@ -342,13 +348,16 @@ impl ActorState {
                     );
                 }
             }
-            Some(NetCmd::DisconnectHost { id }) => self.disconnect_host(id),
+            Some(NetCmd::DisconnectHost { id }) => self.teardown_host(id, true),
             None => return false,
         }
         true
     }
 
-    fn disconnect_host(&mut self, id: EndpointId) {
+    /// Stop relay sessions and discovery tasks for one host.  `remove_content`
+    /// is reserved for an explicit enrolled-home-peer removal: an address
+    /// refresh must never revoke a still-valid Files hydration source.
+    fn teardown_host(&mut self, id: EndpointId, remove_content: bool) {
         let enrolled_home_peer = self
             .hosts
             .remove(&id)
@@ -376,7 +385,7 @@ impl ActorState {
                 task.abort();
             }
         }
-        if enrolled_home_peer {
+        if remove_content && enrolled_home_peer {
             // Discovery registrations are tied to the relay service identity,
             // not merely the direct Files endpoint.  Tear down that durable
             // route too: otherwise a removed home peer can return after an
@@ -1085,6 +1094,11 @@ async fn register_content_peer(registration: qos_relay::ContentPeerRegistration)
 /// authenticated by a removed enrolled relay. The daemon owns both its live
 /// Hydrator and the durable catalog, so the shell cannot leave one stale.
 async fn unregister_content_peers_for_relay(relay: EndpointId) -> bool {
+    #[cfg(test)]
+    noted_content_peer_removals()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(relay);
     if cfg!(test) && std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER").is_none() {
         return true;
     }
@@ -1126,6 +1140,12 @@ async fn unregister_content_peers_for_relay(relay: EndpointId) -> bool {
             false
         }
     }
+}
+
+#[cfg(test)]
+fn noted_content_peer_removals() -> &'static Mutex<Vec<EndpointId>> {
+    static REMOVALS: std::sync::OnceLock<Mutex<Vec<EndpointId>>> = std::sync::OnceLock::new();
+    REMOVALS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 fn spawn_host_pump(
@@ -1494,7 +1514,7 @@ mod tests {
         root: &ed25519_dalek::SigningKey,
         a_pub: [u8; 32],
         b_pub: [u8; 32],
-    ) -> (Relay, tempfile::TempDir) {
+    ) -> (Relay, tempfile::TempDir, DeviceCert) {
         let (host_key, host_cert) = enrol(root, DeviceCapabilities::host(), "host");
         let state = tempfile::tempdir().unwrap();
         let config = RelayConfig {
@@ -1512,7 +1532,7 @@ mod tests {
             RelayIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_signing_key: host_key,
-                device_cert: host_cert,
+                device_cert: host_cert.clone(),
                 revocations: RevocationList::new(),
             },
         )
@@ -1522,7 +1542,7 @@ mod tests {
             .set_workspace_membership(42, true, vec![a_pub, b_pub], state.path().to_path_buf())
             .await
             .unwrap();
-        (relay, state)
+        (relay, state, host_cert)
     }
 
     /// Exercise the exact scheduled enrolled-home-peer route, rather than a
@@ -1727,7 +1747,7 @@ mod tests {
         let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
         let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
         let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-        let (relay, _state) = spawn_pinned_relay_for_two_members(
+        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
             &root,
             a_key.verifying_key().to_bytes(),
             b_key.verifying_key().to_bytes(),
@@ -1784,13 +1804,13 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn host_address_refresh_reconnects_and_removal_stops_retrying() {
+    async fn failed_host_address_refresh_retains_files_route_until_explicit_removal() {
         use rand_core::OsRng;
         let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
         let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
         let a_public = a_key.verifying_key().to_bytes();
         let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-        let (relay, _state) =
+        let (relay, _state, host_cert) =
             spawn_pinned_relay_for_two_members(&root, a_public, b_key.verifying_key().to_bytes())
                 .await;
         let (a, lookup_a) = identified_endpoint(&a_key).await;
@@ -1813,16 +1833,17 @@ mod tests {
         )
         .await;
 
-        // Same certified node, refreshed dialing hints. There is no periodic
-        // HostReady at this test's timescale, so the next event proves the old
-        // session was replaced and the refreshed address was dialled.
-        let refreshed = relay
-            .node_addr()
-            .with_ip_addr("127.0.0.1:9".parse().unwrap());
+        // Upgrade the existing host route to an enrolled home-peer route.
+        // The subsequent address refresh must retain that route's Files
+        // endpoint; it is a reconnect, not a home-peer removal.
+        let expectation = HomePeerExpectation {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: host_cert.device_public_key,
+        };
         cmd_a
             .send(NetCmd::ConnectHost {
-                addr: refreshed,
-                expectation: None,
+                addr: relay.node_addr(),
+                expectation: Some(expectation.clone()),
             })
             .await
             .unwrap();
@@ -1836,12 +1857,47 @@ mod tests {
             }
         }
 
+        // A replacement address that cannot respond must not tear down the
+        // already-discovered Files endpoint. The old actor implementation
+        // called the permanent-removal path before attempting this dial.
+        let refreshed =
+            EndpointAddr::new(relay.node_addr().id).with_ip_addr("192.0.2.1:9".parse().unwrap());
+        cmd_a
+            .send(NetCmd::ConnectHost {
+                addr: refreshed,
+                expectation: Some(expectation),
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !noted_content_peer_removals()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(&relay.node_addr().id),
+            "an address refresh must retain the enrolled peer's Files route"
+        );
+
         cmd_a
             .send(NetCmd::DisconnectHost {
                 id: relay.node_addr().id,
             })
             .await
             .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if noted_content_peer_removals()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains(&relay.node_addr().id)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("explicit removal must revoke enrolled Files routes");
         for _ in 0..100 {
             if !relay.is_subscribed(42, &a_public).await {
                 break;
@@ -1862,7 +1918,7 @@ mod tests {
         let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
         let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
         let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-        let (relay, _state) = spawn_pinned_relay_for_two_members(
+        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
             &root,
             a_key.verifying_key().to_bytes(),
             b_key.verifying_key().to_bytes(),
