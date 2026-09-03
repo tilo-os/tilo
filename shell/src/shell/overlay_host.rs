@@ -646,8 +646,8 @@ pub struct ShellOverlayHost {
     /// from growing another set of loosely-coupled modal fields.
     file_picker_overlay: FilePickerOverlay,
     /// Whether peer-sync palette commands (`/invite`, `/connect`) are
-    /// surfaced. Off by default; set via `--enable-peer-sync` or
-    /// [`Self::with_peer_sync_enabled`].
+    /// surfaced. It follows the live session transport and can be enabled
+    /// when first-login provisioning completes.
     peer_sync_enabled: bool,
     /// Queue of peer-sync actions from [`Self::dispatch_palette_command`],
     /// drained by the compositor into its `ShellNetwork` handle.
@@ -2084,17 +2084,22 @@ impl ShellOverlayHost {
         self
     }
 
-    /// Toggle the peer-sync palette commands (`/invite`, `/connect`). Off
-    /// by default; flipped on by `--enable-peer-sync`. Idempotent: the
-    /// rows are appended once and can't be removed by toggling back off.
+    /// Configure peer-sync palette commands during host construction.
     #[must_use]
     pub fn with_peer_sync_enabled(mut self, enabled: bool) -> Self {
+        self.set_peer_sync_enabled(enabled);
+        self
+    }
+
+    /// Update peer-sync command availability for a live session. This is
+    /// needed when trusted first-login provisioning releases the desktop and
+    /// starts its transport without a restart.
+    pub fn set_peer_sync_enabled(&mut self, enabled: bool) {
         // `ActionsProvider` reads the flag off chrome, not this struct.
         self.peer_sync_enabled = enabled;
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().peer_sync_enabled = enabled;
         }
-        self
     }
 
     /// Whether peer-sync palette entries are registered.
@@ -12479,6 +12484,21 @@ mod palette_dispatch_tests {
         let mut h = host.with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         assert!(h.dispatch_palette_command("peer.invite"));
         assert_eq!(h.take_peer_sync_actions().len(), 1);
+    }
+
+    #[test]
+    fn peer_sync_can_be_enabled_after_first_login_host_is_built() {
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+        let mut host =
+            ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
+        assert!(!host.peer_sync_enabled());
+        assert!(!chrome.borrow().peer_sync_enabled);
+
+        host.set_peer_sync_enabled(true);
+
+        assert!(host.peer_sync_enabled());
+        assert!(chrome.borrow().peer_sync_enabled);
+        assert!(host.dispatch_palette_command("peer.invite"));
     }
 
     // Proves both halves of the invite-token crossing (mint → clipboard
