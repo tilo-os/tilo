@@ -92,12 +92,16 @@ const REBOOT_PATH: &str = "installer.reboot";
 const POWEROFF_PATH: &str = "installer.poweroff";
 const NETWORK_REFRESH_PATH: &str = "installer.network.refresh";
 const NETWORK_CONNECT_PATH: &str = "installer.network.connect";
+const DISK_REFRESH_PATH: &str = "installer.disk.refresh";
 fn network_path(i: usize) -> String {
     format!("installer.network.{i}")
 }
 /// Per-disk selection flag path: `installer.disk.<index>`.
 fn disk_path(i: usize) -> String {
     format!("installer.disk.{i}")
+}
+fn guided_extent_path(i: usize) -> String {
+    format!("installer.guided_extent.{i}")
 }
 fn install_method_path(i: usize) -> String {
     format!("installer.install_method.{i}")
@@ -879,6 +883,9 @@ pub struct InstallerApp {
     network: InstallerNetwork,
     disks: Vec<Disk>,
     selected_disk: Option<usize>,
+    /// Explicit choice when a disk has multiple safe unallocated extents.
+    /// A sole candidate is selected implicitly; ambiguity never is.
+    selected_guided_extent: Option<usize>,
     install_method: InstallMethod,
     /// UUIDs reviewed for the partitions the guided free-space path will add.
     /// Generated once per installer run; changing disks clears confirmation but
@@ -990,6 +997,7 @@ impl InstallerApp {
             network: InstallerNetwork::default(),
             disks,
             selected_disk: None,
+            selected_guided_extent: None,
             install_method: InstallMethod::Erase,
             guided_efi_partuuid: uuid::Uuid::new_v4().to_string(),
             guided_root_partuuid: uuid::Uuid::new_v4().to_string(),
@@ -1142,9 +1150,29 @@ impl InstallerApp {
     }
 
     fn guided_alongside_plan(&self) -> Option<GuidedAlongsidePlan> {
-        (self.install_method == InstallMethod::Alongside)
-            .then(|| self.selected_disk_ref()?.guided_alongside_plan())
-            .flatten()
+        if self.install_method != InstallMethod::Alongside {
+            return None;
+        }
+        let disk = self.selected_disk_ref()?;
+        if disk.can_install_alongside() {
+            return None;
+        }
+        let plans = disk.guided_alongside_plans();
+        match plans.as_slice() {
+            [only] => Some(only.clone()),
+            _ => self
+                .selected_guided_extent
+                .and_then(|index| plans.get(index).cloned()),
+        }
+    }
+
+    fn guided_alongside_plans(&self) -> Vec<GuidedAlongsidePlan> {
+        if self.install_method != InstallMethod::Alongside {
+            return Vec::new();
+        }
+        self.selected_disk_ref()
+            .filter(|disk| !disk.can_install_alongside())
+            .map_or_else(Vec::new, Disk::guided_alongside_plans)
     }
 
     fn uses_guided_alongside(&self) -> bool {
@@ -1157,7 +1185,7 @@ impl InstallerApp {
 
     fn selected_disk_can_install_alongside(&self) -> bool {
         self.selected_disk_ref().is_some_and(|disk| {
-            disk.can_install_alongside() || disk.guided_alongside_plan().is_some()
+            disk.can_install_alongside() || self.guided_alongside_plan().is_some()
         })
     }
 
@@ -1207,7 +1235,7 @@ impl InstallerApp {
             InstallMethod::Alongside => self.selected_disk_ref().and_then(|disk| {
                 disk.alongside_root()
                     .map(|partition| partition.name.clone())
-                    .or_else(|| disk.guided_alongside_plan().map(|_| disk.name.clone()))
+                    .or_else(|| self.guided_alongside_plan().map(|_| disk.name.clone()))
             }),
         }
     }
@@ -1346,6 +1374,7 @@ impl InstallerApp {
             RECOVERY_ACK_PATH,
             NETWORK_REFRESH_PATH,
             NETWORK_CONNECT_PATH,
+            DISK_REFRESH_PATH,
         ] {
             if state.get(root, path).ok().flatten().is_none() {
                 let _ = state.put(root, path, false);
@@ -1834,6 +1863,9 @@ impl InstallerApp {
                 dim
             },
         )));
+        children.push(Box::new(
+            ActionButton::new("Refresh disks", DISK_REFRESH_PATH).with_test_id("disk_refresh"),
+        ));
         if self.disks.is_empty() {
             children.push(Box::new(
                 Text::new("No disks found — is this running on real hardware?")
@@ -1850,6 +1882,10 @@ impl InstallerApp {
             }
         }
         let read_only = self.selected_disk_ref().is_some_and(|disk| disk.read_only);
+        let guided_plans = self.guided_alongside_plans();
+        if self.install_method == InstallMethod::Alongside && guided_plans.len() > 1 {
+            self.compose_guided_extent_choices(theme, children, &guided_plans);
+        }
         let unavailable = read_only
             || (self.install_method == InstallMethod::Alongside
                 && !self.selected_disk_can_install_alongside());
@@ -1865,7 +1901,14 @@ impl InstallerApp {
             && !read_only
             && self.install_method == InstallMethod::Alongside
         {
-            children.push(Box::new(Text::new("No safe alongside space was found. Shrink the existing OS from its own disk manager and leave at least 34 GiB unallocated, or prepare an empty Linux root and 2 GiB EFI partition, then restart the installer.").with_size(sm).with_color(danger)));
+            let message = if guided_plans.len() > 1 {
+                "Select one of the unallocated regions above to continue."
+            } else {
+                "No safe alongside space was found. Shrink the existing OS from its own disk manager and leave at least 34 GiB unallocated, or prepare an empty Linux root and 2 GiB EFI partition, then refresh disks."
+            };
+            children.push(Box::new(
+                Text::new(message).with_size(sm).with_color(danger),
+            ));
         } else if self.install_method == InstallMethod::Alongside
             && self.uses_guided_alongside()
             && let Some(plan) = self.guided_alongside_plan()
@@ -1885,6 +1928,36 @@ impl InstallerApp {
             NEXT_PATH,
             "Next",
             self.selected_disk.is_none() || unavailable,
+        ));
+    }
+
+    fn compose_guided_extent_choices(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        plans: &[GuidedAlongsidePlan],
+    ) {
+        children.push(Box::new(
+            Text::new("Choose the exact unallocated region for qOS")
+                .with_size(theme.tokens.typography.scale.base),
+        ));
+        for (index, plan) in plans.iter().enumerate() {
+            let start_gib = plan.free_start_bytes / (1024 * 1024 * 1024);
+            let size_gib = plan.free_size_bytes / (1024 * 1024 * 1024);
+            let label = if self.selected_guided_extent == Some(index) {
+                format!("✓ Selected · {size_gib} GiB free at {start_gib} GiB")
+            } else {
+                format!("Use {size_gib} GiB free at {start_gib} GiB")
+            };
+            children.push(Box::new(
+                ActionButton::new(&label, &guided_extent_path(index))
+                    .with_test_id(&format!("guided_extent_{index}")),
+            ));
+        }
+        children.push(Box::new(
+            Text::new("The location is measured from the start of the selected disk. Existing partitions between free regions remain untouched.")
+                .with_size(theme.tokens.typography.scale.sm)
+                .with_color(theme.text_dim),
         ));
     }
 
@@ -2587,6 +2660,43 @@ impl InstallerApp {
         }
     }
 
+    fn ensure_disk_paths(&self, state: &mut AutoCommit, root: &ObjId) {
+        for i in 0..self.disks.len() {
+            let path = disk_path(i);
+            if state.get(root, path.as_str()).ok().flatten().is_none() {
+                let _ = state.put(root, path.as_str(), false);
+            }
+        }
+        let extent_count = self
+            .disks
+            .iter()
+            .map(|disk| disk.guided_alongside_plans().len())
+            .max()
+            .unwrap_or(0);
+        for i in 0..extent_count {
+            let path = guided_extent_path(i);
+            if state.get(root, path.as_str()).ok().flatten().is_none() {
+                let _ = state.put(root, path.as_str(), false);
+            }
+        }
+    }
+
+    fn refresh_disks_with(&mut self, disks: Vec<Disk>) {
+        self.disks = disks;
+        self.selected_disk = None;
+        self.selected_guided_extent = None;
+        self.guided_efi_partuuid = uuid::Uuid::new_v4().to_string();
+        self.guided_root_partuuid = uuid::Uuid::new_v4().to_string();
+        self.erase_confirmation.clear();
+        self.status = if self.disks.is_empty() {
+            "Disk list refreshed; no installable disks were found.".to_string()
+        } else {
+            "Disk list refreshed. Select a destination again.".to_string()
+        };
+        self.dirty_structure = true;
+        self.focus_reset = true;
+    }
+
     fn sync_network_rising_edges(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let proxy = self.event_proxy();
         if self.network.ensure_initial_scan(proxy.clone()) {
@@ -2644,6 +2754,27 @@ impl InstallerApp {
     /// edges — each selector raises a per-option boolean flag on pick,
     /// which this drains and resolves into the corresponding index/state.
     fn sync_selection_rising_edges(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.ensure_disk_paths(state, root);
+        if Self::read_flag(state, root, DISK_REFRESH_PATH) {
+            let _ = state.put(root, DISK_REFRESH_PATH, false);
+            for i in 0..self.disks.len() {
+                let _ = state.put(root, disk_path(i).as_str(), false);
+            }
+            for i in 0..self
+                .disks
+                .iter()
+                .map(|disk| disk.guided_alongside_plans().len())
+                .max()
+                .unwrap_or(0)
+            {
+                let _ = state.put(root, guided_extent_path(i).as_str(), false);
+            }
+            Self::clear_text(state, root, ERASE_CONFIRM_PATH);
+            self.refresh_disks_with(read_disks());
+            self.ensure_disk_paths(state, root);
+            return;
+        }
+
         // Disk-selection rising edges (only meaningful on the Disk step).
         for i in 0..self.disks.len() {
             let p = disk_path(i);
@@ -2657,6 +2788,7 @@ impl InstallerApp {
                     if self.selected_disk != Some(i) {
                         Self::clear_text(state, root, ERASE_CONFIRM_PATH);
                         self.erase_confirmation.clear();
+                        self.selected_guided_extent = None;
                     }
                     self.selected_disk = Some(i);
                     self.status.clear();
@@ -2677,10 +2809,26 @@ impl InstallerApp {
                 if self.install_method != method {
                     Self::clear_text(state, root, ERASE_CONFIRM_PATH);
                     self.erase_confirmation.clear();
+                    self.selected_guided_extent = None;
                 }
                 self.install_method = method;
                 self.status.clear();
                 self.dirty_structure = true;
+            }
+        }
+
+        let guided_plan_count = self.guided_alongside_plans().len();
+        for i in 0..guided_plan_count {
+            let p = guided_extent_path(i);
+            if Self::read_flag(state, root, p.as_str()) {
+                let _ = state.put(root, p.as_str(), false);
+                if guided_plan_count > 1 && self.selected_guided_extent != Some(i) {
+                    Self::clear_text(state, root, ERASE_CONFIRM_PATH);
+                    self.erase_confirmation.clear();
+                    self.selected_guided_extent = Some(i);
+                    self.status.clear();
+                    self.dirty_structure = true;
+                }
             }
         }
 
@@ -3006,6 +3154,22 @@ mod tests {
         sample_disks()
     }
 
+    fn disk_with_two_guided_extents() -> Disk {
+        let gib = 1024_u64 * 1024 * 1024;
+        let mut disk = sample_disks().remove(1);
+        disk.partitions.push(DiskPartition {
+            name: "/dev/nvme0n1p1".to_string(),
+            start_bytes: 100 * gib,
+            size_bytes: 20 * gib,
+            part_uuid: "30000000-0000-4000-8000-000000000001".to_string(),
+            filesystem: "ntfs".to_string(),
+            label: "Existing OS".to_string(),
+            mountpoint: String::new(),
+            part_type: "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7".to_string(),
+        });
+        disk
+    }
+
     /// Recursively assert the widget tree mirrors the taffy tree at every
     /// node — the structural invariant the App's focusable-order traversal
     /// depends on.
@@ -3045,6 +3209,14 @@ mod tests {
             .children()
             .into_iter()
             .find_map(|child| find_accessible(child, name))
+    }
+
+    fn has_test_id(widget: &dyn Widget, id: &str) -> bool {
+        widget.test_id() == Some(id)
+            || widget
+                .children()
+                .into_iter()
+                .any(|child| has_test_id(child, id))
     }
 
     fn build(app: &mut InstallerApp) -> (TaffyTree<()>, NodeId) {
@@ -3747,6 +3919,66 @@ mod tests {
 
         app.go_next();
         assert_eq!(app.step, Step::Account);
+    }
+
+    #[test]
+    fn multiple_guided_extents_require_and_bind_an_explicit_choice() {
+        let disk = disk_with_two_guided_extents();
+        let plans = disk.guided_alongside_plans();
+        assert_eq!(plans.len(), 2);
+        let mut app = InstallerApp::with_disks(vec![disk]);
+        app.step = Step::Disk;
+        app.install_method = InstallMethod::Alongside;
+        app.selected_disk = Some(0);
+
+        assert!(app.guided_alongside_plan().is_none());
+        assert!(!app.selected_disk_can_install_alongside());
+        app.go_next();
+        assert_eq!(app.step, Step::Disk, "ambiguous free space must block Next");
+
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        let _ = doc.put(&root, guided_extent_path(1).as_str(), true);
+        app.sync(&mut doc, &root);
+        assert_eq!(app.guided_alongside_plan(), Some(plans[1].clone()));
+        let options = app.install_options();
+        assert_eq!(options.guided_free_start_bytes, plans[1].free_start_bytes);
+        assert_eq!(options.guided_free_size_bytes, plans[1].free_size_bytes);
+
+        let _ = build(&mut app);
+        assert!(has_test_id(&app, "disk_refresh"));
+        assert!(has_test_id(&app, "guided_extent_0"));
+        assert!(has_test_id(&app, "guided_extent_1"));
+    }
+
+    #[test]
+    fn disk_refresh_invalidates_every_reviewed_guided_identity() {
+        let disk = disk_with_two_guided_extents();
+        let mut app = InstallerApp::with_disks(vec![disk.clone()]);
+        app.step = Step::Disk;
+        app.install_method = InstallMethod::Alongside;
+        app.selected_disk = Some(0);
+        app.selected_guided_extent = Some(1);
+        app.erase_confirmation = disk.name.clone();
+        let old_efi_uuid = app.guided_efi_partuuid.clone();
+        let old_root_uuid = app.guided_root_partuuid.clone();
+        assert!(app.guided_alongside_plan().is_some());
+
+        app.refresh_disks_with(vec![disk]);
+        assert_eq!(app.selected_disk, None);
+        assert_eq!(app.selected_guided_extent, None);
+        assert!(app.erase_confirmation.is_empty());
+        assert_ne!(app.guided_efi_partuuid, old_efi_uuid);
+        assert_ne!(app.guided_root_partuuid, old_root_uuid);
+
+        app.selected_disk = Some(0);
+        assert!(
+            app.guided_alongside_plan().is_none(),
+            "the pre-refresh extent index must not survive rediscovery"
+        );
+        app.go_next();
+        assert_eq!(app.step, Step::Disk, "a stale choice must remain blocked");
     }
 
     #[test]

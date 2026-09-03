@@ -82,11 +82,14 @@ helper_args=(
   --new-efi-partuuid "$efi_uuid" --new-root-partuuid "$root_uuid"
   --expect-partition "$existing_uuid:1048576:4194304"
 )
-if [ "$(id -u)" -eq 0 ]; then
-  PATH="$tmp/bin:$PATH" "$helper" "${helper_args[@]}" >/dev/null
-else
-  sudo -n env "PATH=$tmp/bin:/usr/sbin:/usr/bin" "$helper" "${helper_args[@]}" >/dev/null
-fi
+invoke_helper() {
+  if [ "$(id -u)" -eq 0 ]; then
+    PATH="$tmp/bin:$PATH" "$helper" "${helper_args[@]}" >/dev/null
+  else
+    sudo -n env "PATH=$tmp/bin:/usr/sbin:/usr/bin" "$helper" "${helper_args[@]}" >/dev/null
+  fi
+}
+invoke_helper
 
 after_hash="$(run_root dd if="$existing" bs=1 skip=4096 count=31 status=none | sha256sum)"
 after_entry="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; t=json.load(sys.stdin)["partitiontable"]; u=sys.argv[1]; p=next(p for p in t["partitions"] if p["uuid"].lower()==u); print("{}:{}:{}".format(p["uuid"].lower(),p["start"]*t["sectorsize"],p["size"]*t["sectorsize"]))' "$existing_uuid")"
@@ -104,4 +107,31 @@ expected_map="$(printf '%s\n' \
 types="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; print("\n".join("{}={}".format(p["uuid"].lower(),p["type"].lower()) for p in json.load(sys.stdin)["partitiontable"]["partitions"]))')"
 grep -Fqx "$efi_uuid=c12a7328-f81f-11d2-ba4b-00a0c93ec93b" <<<"$types"
 grep -Fqx "$root_uuid=0fc63daf-8483-4772-8e79-3d69d8477de4" <<<"$types"
-printf 'ok    guided alongside appends only its ESP and root; existing GPT entry and bytes are unchanged\n'
+
+# An exact retry must recognize the UUID/geometry-bound pair, preserve an
+# already formatted qOS ESP, and never append another partition.
+efi_partition="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; u=sys.argv[1]; print(next(p["node"] for p in json.load(sys.stdin)["partitiontable"]["partitions"] if p["uuid"].lower()==u))' "$efi_uuid")"
+root_partition="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; u=sys.argv[1]; print(next(p["node"] for p in json.load(sys.stdin)["partitiontable"]["partitions"] if p["uuid"].lower()==u))' "$root_uuid")"
+efi_fs_uuid="$(run_root blkid -p -s UUID -o value "$efi_partition")"
+invoke_helper
+[ "$(run_root blkid -p -s UUID -o value "$efi_partition")" = "$efi_fs_uuid" ] \
+  || { echo 'FAIL  exact retry reformatted the existing qOS ESP' >&2; exit 1; }
+[ "$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["partitiontable"]["partitions"]))')" -eq 3 ] \
+  || { echo 'FAIL  exact retry appended another partition' >&2; exit 1; }
+
+# Model power loss after the GPT commit but before mkfs. Removing the
+# filesystem only from the UUID-bound newly created ESP must be recoverable;
+# the root and pre-existing sentinel must remain untouched.
+run_root wipefs -a "$efi_partition" >/dev/null
+[ -z "$(run_root blkid -p -s TYPE -o value "$efi_partition" 2>/dev/null || true)" ]
+invoke_helper
+[ "$(run_root blkid -p -s TYPE -o value "$efi_partition")" = vfat ] \
+  || { echo 'FAIL  exact interrupted plan did not restore its qOS ESP' >&2; exit 1; }
+[ -z "$(run_root blkid -p -s TYPE -o value "$root_partition" 2>/dev/null || true)" ] \
+  || { echo 'FAIL  guided root acquired a filesystem signature' >&2; exit 1; }
+[ "$(run_root dd if="$existing" bs=1 skip=4096 count=31 status=none | sha256sum)" = "$before_hash" ] \
+  || { echo 'FAIL  recovery changed existing partition bytes' >&2; exit 1; }
+[ "$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; t=json.load(sys.stdin)["partitiontable"]; s=t["sectorsize"]; print("\n".join(sorted("{}:{}:{}".format(p["uuid"].lower(),p["start"]*s,p["size"]*s) for p in t["partitions"])))')" = "$expected_map" ] \
+  || { echo 'FAIL  recovery changed the reviewed PARTUUID/geometry map' >&2; exit 1; }
+
+printf 'ok    guided alongside preserves existing bytes/map and safely resumes its exact partition plan\n'
