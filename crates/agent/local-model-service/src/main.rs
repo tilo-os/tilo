@@ -52,6 +52,9 @@ enum Action {
         model: String,
         #[arg(long)]
         revision: Option<String>,
+        /// Explicit acknowledgement for a catalog entry that requires it.
+        #[arg(long)]
+        accept_license: bool,
     },
     Start {
         #[arg(long)]
@@ -82,6 +85,7 @@ enum Action {
 /// `payload`; model and runtime artifacts within it remain individually pinned.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SignedCatalog {
+    signature_domain: String,
     key_id: String,
     signature: Vec<u8>,
     payload: CatalogPayload,
@@ -184,7 +188,11 @@ fn load_catalog(path: &PathBuf, keys: &PathBuf) -> Result<CatalogPayload, String
     .map_err(|_| "invalid catalog public key")?;
     let signature =
         Signature::from_slice(&signed.signature).map_err(|_| "invalid catalog signature")?;
-    let payload = serde_json::to_vec(&signed.payload).map_err(|error| error.to_string())?;
+    if signed.signature_domain != "qos.local-model.catalog.v1" {
+        return Err("unexpected catalog signature domain".into());
+    }
+    let mut payload = b"qos.local-model.catalog.v1\0".to_vec();
+    payload.extend(serde_json::to_vec(&signed.payload).map_err(|error| error.to_string())?);
     key.verify(&payload, &signature)
         .map_err(|_| "catalog signature verification failed")?;
     for runtime in &signed.payload.runtimes {
@@ -284,6 +292,53 @@ impl HttpsTransport for ReqwestTransport {
 /// [`VllmCommand`], itself constructed only from a verified signed catalog.
 struct SystemdSupervisor;
 impl ProcessSupervisor for SystemdSupervisor {
+    fn install_runtime_image(
+        &mut self,
+        archive: &std::path::Path,
+        signed_image: &str,
+    ) -> Result<(), ServiceError> {
+        // `podman load` receives a verified, content-addressed archive path;
+        // it is never given a registry tag or caller-controlled image string.
+        let status = Command::new("podman")
+            .args(["load", "--input"])
+            .arg(archive)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(ServiceError::Io)?;
+        if !status.success() {
+            return Err(ServiceError::Backend(
+                "podman could not import verified runtime archive".into(),
+            ));
+        }
+        let output = Command::new("podman")
+            .args([
+                "image",
+                "inspect",
+                "--format",
+                "{{json .RepoDigests}}",
+                signed_image,
+            ])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .map_err(ServiceError::Io)?;
+        if !output.status.success() {
+            return Err(ServiceError::Backend(
+                "podman cannot inspect imported signed runtime image".into(),
+            ));
+        }
+        let digests: Vec<String> = serde_json::from_slice(&output.stdout).map_err(|_| {
+            ServiceError::Backend("podman returned invalid image digest metadata".into())
+        })?;
+        if !digests.iter().any(|digest| digest == signed_image) {
+            return Err(ServiceError::Backend(
+                "imported OCI archive did not provide the exact signed image digest".into(),
+            ));
+        }
+        Ok(())
+    }
     fn start(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError> {
         let digest = hex::encode(Sha256::digest(command.endpoint.model_id.as_bytes()));
         let unit = format!("qos-vllm-{}", &digest[..16]);
@@ -460,16 +515,13 @@ fn package(model: &LocalModelRelease) -> LocalModelPackage {
     LocalModelPackage {
         id: model.id.clone(),
         name: model.label.clone(),
-        description: format!(
-            "Pinned local model · {} token context",
-            model.context_window
-        ),
+        description: model.description.clone(),
         source: model.artifact.url.clone(),
         revision: model.version.clone(),
-        license: "See model card".into(),
-        license_url: model.artifact.url.clone(),
+        license: model.license_id.clone(),
+        license_url: model.license_url.clone(),
         download_bytes: model.artifact.size_bytes,
-        installed_bytes: model.artifact.size_bytes,
+        installed_bytes: model.installed_size_bytes,
     }
 }
 fn recommendation(hardware: &HardwareSnapshot) -> HardwareRecommendation {
@@ -604,7 +656,11 @@ fn run(cli: Cli) -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
     match cli.command {
-        Action::Install { model, revision } => {
+        Action::Install {
+            model,
+            revision,
+            accept_license,
+        } => {
             let release = catalog
                 .models
                 .iter()
@@ -615,6 +671,11 @@ fn run(cli: Cli) -> Result<(), String> {
                             .is_none_or(|revision| revision == &release.version)
                 })
                 .ok_or_else(|| "model/revision is not in the signed catalog".to_string())?;
+            if release.requires_acceptance && !accept_license {
+                return Err(
+                    "this signed model release requires --accept-license before download".into(),
+                );
+            }
             service
                 .queue_install(release)
                 .map_err(|error| error.to_string())?;
