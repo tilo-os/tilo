@@ -14496,6 +14496,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "system-extension"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "postcard",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "taffy"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

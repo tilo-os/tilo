@@ -148,6 +148,7 @@ members = [
     "crates/session/qos-unlock-helper",
     "crates/session/qos-power",
     "crates/system/qos-startup-metrics",
+    "crates/system/system-extension",
     "crates/system/projector",
     "crates/session/installer",
     # Opt-in dynamic build of the runtime SDK. A member (shares lockfile
