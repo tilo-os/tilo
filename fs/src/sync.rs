@@ -4360,14 +4360,22 @@ mod tests {
         let (ep_a, look_a, auth_a) = bind_certified_endpoint().await;
         let (ep_b, _look_b, auth_b) = bind_certified_endpoint().await;
         let store = Arc::new(ContentStore::memory());
+        let manifest = store
+            .write_content(b"human-shared content")
+            .await
+            .unwrap()
+            .unwrap();
         let hydrator = Arc::new(Hydrator::new(ep_a.clone(), store.clone()));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        namespace
-            .lock()
-            .unwrap()
-            .create_dir(ROOT_INO, "human-shared", 1)
-            .unwrap();
+        {
+            let mut namespace = namespace.lock().unwrap();
+            namespace.create_dir(ROOT_INO, "human-shared", 1).unwrap();
+            namespace
+                .create_file(ROOT_INO, "human.txt", Some(&manifest), 20, 1)
+                .unwrap();
+        }
         let policy = policy_granting(&[auth_b.user_public_key()]);
+        let server = ep_a.clone();
         let (_workspace, ticket) = Workspace::host(
             ep_a,
             look_a,
@@ -4385,6 +4393,10 @@ mod tests {
             .expect("a device certified by the granted human must bootstrap");
         let joined = Namespace::from_bytes("joiner", &document).unwrap();
         assert!(joined.entry_at("human-shared").is_some());
+        let connection = ep_b.connect(server.addr(), iroh_blobs::ALPN).await.unwrap();
+        iroh_blobs::get::request::get_blob(connection, manifest)
+            .await
+            .expect("the same certified human grant must authorize blob hydration");
     }
 
     #[tokio::test]
