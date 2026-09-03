@@ -38,7 +38,9 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::shell::state::WorkspaceTree;
+use crate::shell::state::{
+    WorkspaceTask, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus, WorkspaceTree,
+};
 use crate::shell::workspace_history::{
     FeedCoverage, WorkspaceHistoryEntry, WorkspaceHistoryId, WorkspaceHistoryIndex,
     WorkspaceHistoryQuery, WorkspaceSeenFrontier,
@@ -64,6 +66,9 @@ pub enum ActivityView {
     /// Outcome-first summaries since this device's last completed visit.
     #[default]
     CatchUp,
+    /// Durable work assigned to people or agents, connected to live app
+    /// resources and the action history it produces.
+    Tasks,
     /// Full granular history with grouping, filters, rename and revert.
     Explore,
     /// Causal workspace checkpoints played as layout + participant changes.
@@ -71,11 +76,12 @@ pub enum ActivityView {
 }
 
 impl ActivityView {
-    const ALL: [Self; 3] = [Self::CatchUp, Self::Explore, Self::Replay];
+    const ALL: [Self; 4] = [Self::CatchUp, Self::Tasks, Self::Explore, Self::Replay];
 
     fn label(self) -> &'static str {
         match self {
             Self::CatchUp => "Catch up",
+            Self::Tasks => "Tasks",
             Self::Explore => "Explore",
             Self::Replay => "Replay",
         }
@@ -106,6 +112,12 @@ enum ActivityFocus {
     MorePeople,
     Brief(usize),
     MoreBriefs,
+    NewTask,
+    Task(String),
+    TaskRoute(WorkspaceTaskRoute),
+    TaskCreate,
+    TaskCancelCompose,
+    TaskAction(TaskAction),
     Lens(LensSelection),
     MoreLenses,
     Detail(DetailAction),
@@ -145,6 +157,25 @@ struct ReplayPointer {
     color: (u8, u8, u8),
     point: (f32, f32),
     desktop_space: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TaskAction {
+    OpenResource,
+    Start,
+    Complete,
+    Cancel,
+}
+
+impl TaskAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::OpenResource => "Open resource",
+            Self::Start => "Start",
+            Self::Complete => "Mark done",
+            Self::Cancel => "Cancel task",
+        }
+    }
 }
 
 struct AccessControl {
@@ -306,6 +337,7 @@ pub struct RoomActivityOutcome {
     pub open_target: Option<ui::HistoryResourceTarget>,
     pub compared: bool,
     pub undo_partial: bool,
+    pub task_changed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -380,6 +412,19 @@ pub struct RoomActivityPane {
     brief_more_advance: usize,
     brief_offset: usize,
     expanded_brief: Option<usize>,
+    tasks: Vec<WorkspaceTask>,
+    selected_task: Option<String>,
+    task_rects: Vec<(String, Rect)>,
+    new_task_rect: Option<Rect>,
+    task_action_rects: Vec<(TaskAction, Rect)>,
+    task_compose_open: bool,
+    task_draft: String,
+    task_route: WorkspaceTaskRoute,
+    task_route_rects: Vec<(WorkspaceTaskRoute, Rect)>,
+    task_create_rect: Option<Rect>,
+    task_cancel_rect: Option<Rect>,
+    task_attachment: Option<WorkspaceTaskResource>,
+    task_agent: Option<String>,
     facet_index: HistoryFacetIndex,
     lens: LensSelection,
     lens_rects: Vec<(LensSelection, Rect)>,
@@ -490,6 +535,19 @@ impl RoomActivityPane {
             brief_more_advance: 0,
             brief_offset: 0,
             expanded_brief: None,
+            tasks: Vec::new(),
+            selected_task: None,
+            task_rects: Vec::new(),
+            new_task_rect: None,
+            task_action_rects: Vec::new(),
+            task_compose_open: false,
+            task_draft: String::new(),
+            task_route: WorkspaceTaskRoute::Manual,
+            task_route_rects: Vec::new(),
+            task_create_rect: None,
+            task_cancel_rect: None,
+            task_attachment: None,
+            task_agent: None,
             facet_index: HistoryFacetIndex::default(),
             lens: LensSelection::default(),
             lens_rects: Vec::new(),
@@ -1064,6 +1122,24 @@ impl RoomActivityPane {
         if name != self.room_name {
             self.room_name = name;
         }
+        self.tasks = tree
+            .active_workspace()
+            .map(|workspace| workspace.tasks.clone())
+            .unwrap_or_default();
+        self.tasks.sort_by(|left, right| {
+            left.status
+                .is_finished()
+                .cmp(&right.status.is_finished())
+                .then_with(|| right.updated_at.cmp(&left.updated_at))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        if self
+            .selected_task
+            .as_ref()
+            .is_some_and(|id| !self.tasks.iter().any(|task| &task.id == id))
+        {
+            self.selected_task = None;
+        }
 
         let heads = tree.doc.get_heads();
         let active = tree.active.raw();
@@ -1455,6 +1531,8 @@ impl RoomActivityPane {
         } else if matches!(self.view, ActivityView::Explore | ActivityView::Replay) && vw >= 1_000.0
         {
             (vw - 2.0 * SHEET_INSET).min(1_100.0)
+        } else if self.view == ActivityView::Tasks && vw >= 900.0 {
+            (vw - 2.0 * SHEET_INSET).min(760.0)
         } else {
             (vw * 0.34).clamp(SHEET_MIN_W, SHEET_MAX_W)
         };
@@ -1534,6 +1612,7 @@ impl RoomActivityPane {
         }
         match self.view {
             ActivityView::CatchUp => self.draw_catch_up(scene, transform, tr, theme),
+            ActivityView::Tasks => self.draw_task_center(scene, transform, tr, theme),
             ActivityView::Explore => {
                 self.draw_explorer_panel_tabs(scene, transform, tr, theme);
                 self.draw_explorer_sidebars(scene, transform, tr, theme);
@@ -2461,6 +2540,244 @@ impl RoomActivityPane {
         );
     }
 
+    fn draw_task_center(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.task_rects.clear();
+        self.task_action_rects.clear();
+        self.task_route_rects.clear();
+        self.task_create_rect = None;
+        self.task_cancel_rect = None;
+
+        let x0 = self.sheet.x0 + 12.0;
+        let x1 = self.sheet.x1 - 12.0;
+        let mut y = self.sheet.y0 + self.chrome_height() + 8.0;
+        let new_task = Rect::new(x1 - 116.0, y, x1, y + 30.0);
+        self.new_task_rect = Some(new_task);
+        draw_task_button(scene, transform, tr, theme, new_task, "+ New task", true);
+        tr.draw_text_weighted(
+            scene,
+            "WORKSPACE QUEUE",
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_dim,
+            at(transform, x0 + 4.0, y + 8.0),
+            None,
+            ui::text_render::TextWeight::Medium,
+        );
+        y += 40.0;
+
+        if self.task_compose_open {
+            let composer = Rect::new(x0, y, x1, y + 164.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.lift(0.45),
+                None,
+                &RoundedRect::from_rect(composer, f64::from(theme.tokens.radii.md)),
+            );
+            tr.draw_text_weighted(
+                scene,
+                "Create work without leaving the desktop",
+                theme.tokens.typography.scale.base,
+                theme.tokens.colors.text_primary,
+                at(transform, composer.x0 + 12.0, composer.y0 + 10.0),
+                None,
+                ui::text_render::TextWeight::Medium,
+            );
+            let field = Rect::new(
+                composer.x0 + 12.0,
+                composer.y0 + 38.0,
+                composer.x1 - 12.0,
+                composer.y0 + 70.0,
+            );
+            scene.stroke(
+                &Stroke::new(1.5),
+                transform,
+                theme.tokens.colors.border_focus,
+                None,
+                &RoundedRect::from_rect(field, 6.0),
+            );
+            tr.draw_text(
+                scene,
+                if self.task_draft.is_empty() {
+                    "What needs doing?"
+                } else {
+                    &self.task_draft
+                },
+                theme.tokens.typography.scale.base,
+                if self.task_draft.is_empty() {
+                    theme.tokens.colors.text_dim
+                } else {
+                    theme.tokens.colors.text_primary
+                },
+                at(transform, field.x0 + 10.0, field.y0 + 7.0),
+                Some(text_width(field.width() - 20.0)),
+            );
+            let routes = [
+                WorkspaceTaskRoute::Manual,
+                WorkspaceTaskRoute::RulesOnly,
+                WorkspaceTaskRoute::Model,
+            ]
+            .into_iter()
+            .map(|route| (route, route.label().to_string()))
+            .collect::<Vec<_>>();
+            self.task_route_rects = draw_chip_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                Rect::new(
+                    composer.x0 + 8.0,
+                    composer.y0 + 78.0,
+                    composer.x1 - 8.0,
+                    composer.y0 + 106.0,
+                ),
+                &routes,
+                |route| *route == self.task_route,
+            );
+            let executor = match self.task_route {
+                WorkspaceTaskRoute::Manual => {
+                    "Executor · You or another collaborator · no model".to_string()
+                }
+                WorkspaceTaskRoute::RulesOnly | WorkspaceTaskRoute::Model => {
+                    self.task_agent.as_ref().map_or_else(
+                        || "Executor · No agent available · task stays unassigned".to_string(),
+                        |agent| format!("Executor · ▣ AGENT · {agent}"),
+                    )
+                }
+            };
+            let executor = tr.elide_to_width(
+                &executor,
+                theme.tokens.typography.scale.sm,
+                text_width(composer.width() - 24.0),
+            );
+            tr.draw_text(
+                scene,
+                &executor,
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_primary,
+                at(transform, composer.x0 + 12.0, composer.y0 + 107.0),
+                None,
+            );
+            let attached = self.task_attachment.as_ref().map_or_else(
+                || "No resource attached · task stays workspace-wide".to_string(),
+                |resource| {
+                    format!(
+                        "Attached · {} · {}",
+                        resource.app_label.as_deref().unwrap_or("Workspace"),
+                        resource.label
+                    )
+                },
+            );
+            let attached = tr.elide_to_width(
+                &attached,
+                theme.tokens.typography.scale.sm,
+                text_width(composer.width() - 24.0),
+            );
+            tr.draw_text(
+                scene,
+                &attached,
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_dim,
+                at(transform, composer.x0 + 12.0, composer.y0 + 126.0),
+                None,
+            );
+            let cancel = Rect::new(
+                composer.x1 - 190.0,
+                composer.y1 - 32.0,
+                composer.x1 - 104.0,
+                composer.y1 - 6.0,
+            );
+            let create = Rect::new(
+                composer.x1 - 98.0,
+                composer.y1 - 32.0,
+                composer.x1 - 8.0,
+                composer.y1 - 6.0,
+            );
+            self.task_cancel_rect = Some(cancel);
+            self.task_create_rect = Some(create);
+            draw_task_button(scene, transform, tr, theme, cancel, "Cancel", false);
+            draw_task_button(
+                scene,
+                transform,
+                tr,
+                theme,
+                create,
+                "Create",
+                !self.task_draft.trim().is_empty(),
+            );
+            y = composer.y1 + 8.0;
+        }
+
+        if self.tasks.is_empty() {
+            tr.draw_text_weighted(
+                scene,
+                "No tasks yet",
+                theme.tokens.typography.scale.base,
+                theme.tokens.colors.text_primary,
+                at(transform, x0 + 4.0, y + 16.0),
+                None,
+                ui::text_render::TextWeight::Medium,
+            );
+            tr.draw_text(
+                scene,
+                "Create one manually, or attach the resource selected in Explore.",
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_dim,
+                at(transform, x0 + 4.0, y + 40.0),
+                Some(text_width(x1 - x0 - 8.0)),
+            );
+            return;
+        }
+
+        for task in &self.tasks {
+            let selected = self.selected_task.as_deref() == Some(task.id.as_str());
+            let audit_rows = if selected { task.audit.len().min(3) } else { 0 };
+            let height = 82.0
+                + if selected {
+                    72.0 + 18.0 * audit_rows as f64
+                } else {
+                    0.0
+                };
+            if y + height > self.sheet.y1 - 8.0 {
+                break;
+            }
+            let rect = Rect::new(x0, y, x1, y + height);
+            self.task_rects.push((task.id.clone(), rect));
+            draw_task_card(
+                scene,
+                transform,
+                tr,
+                theme,
+                task,
+                rect,
+                selected,
+                self.now(),
+            );
+            if selected {
+                let actions = task_actions(task);
+                let items = actions
+                    .iter()
+                    .map(|action| (*action, action.label().to_string()))
+                    .collect::<Vec<_>>();
+                self.task_action_rects = draw_chip_row(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    Rect::new(rect.x0 + 8.0, rect.y1 - 32.0, rect.x1 - 8.0, rect.y1 - 4.0),
+                    &items,
+                    |_| false,
+                );
+            }
+            y += height + 8.0;
+        }
+    }
+
     /// Paint the sheet's title, factual scope/count, and latest outcome.
     fn draw_title_and_subtitle(
         &self,
@@ -2474,6 +2791,7 @@ impl RoomActivityPane {
         let title_size = tokens.typography.scale.lg;
         let title = match self.view {
             ActivityView::CatchUp => "Since you looked",
+            ActivityView::Tasks => "Task Center",
             ActivityView::Explore => "Workspace activity",
             ActivityView::Replay => "Replay workspace",
         };
@@ -2488,10 +2806,55 @@ impl RoomActivityPane {
         let sub_size = (tokens.typography.scale.sm - 1.0).max(10.0);
         let (change_count, contributor_count) = match self.view {
             ActivityView::CatchUp => (self.digest.total_changes, self.digest.people),
+            ActivityView::Tasks => (
+                self.tasks
+                    .iter()
+                    .filter(|task| !task.status.is_finished())
+                    .count(),
+                self.tasks
+                    .iter()
+                    .filter_map(|task| task.assigned_agent.as_ref())
+                    .collect::<HashSet<_>>()
+                    .len(),
+            ),
             ActivityView::Explore | ActivityView::Replay => {
                 (self.total_entries, self.contributors.len())
             }
         };
+        if self.view == ActivityView::Tasks {
+            let active = change_count;
+            let task_noun = if active == 1 { "task" } else { "tasks" };
+            let agent_noun = if contributor_count == 1 {
+                "agent"
+            } else {
+                "agents"
+            };
+            let subtitle = format!(
+                "{} · {active} active {task_noun} · {contributor_count} assigned {agent_noun}",
+                if self.room_name.is_empty() {
+                    "This workspace"
+                } else {
+                    self.room_name.as_str()
+                }
+            );
+            tr.draw_text(
+                scene,
+                &subtitle,
+                sub_size,
+                colors.text_dim,
+                at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 36.0),
+                Some(text_width(self.sheet.width() - 32.0)),
+            );
+            tr.draw_text(
+                scene,
+                "Native workspace tasks · model optional · every action auditable",
+                sub_size,
+                colors.text_primary,
+                at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 55.0),
+                Some(text_width(self.sheet.width() - 32.0)),
+            );
+            return;
+        }
         let people = if contributor_count == 1 {
             "1 person".to_string()
         } else {
@@ -2773,6 +3136,7 @@ impl RoomActivityPane {
         }
         let view_outcome = match self.view {
             ActivityView::CatchUp => self.handle_catchup_click(point),
+            ActivityView::Tasks => self.handle_tasks_click(point, tree),
             ActivityView::Explore => self.handle_explore_click(point, tree, records),
             ActivityView::Replay => self.handle_replay_click(point),
         };
@@ -2798,6 +3162,152 @@ impl RoomActivityPane {
             return Some(handled_outcome());
         }
         None
+    }
+
+    fn handle_tasks_click(
+        &mut self,
+        point: Point,
+        tree: &mut WorkspaceTree,
+    ) -> Option<RoomActivityOutcome> {
+        if self.new_task_rect.is_some_and(|rect| rect.contains(point)) {
+            self.keyboard_focus = Some(ActivityFocus::NewTask);
+            self.open_task_composer(tree);
+            return Some(handled_outcome());
+        }
+        if let Some(route) = hit_value(&self.task_route_rects, point) {
+            self.keyboard_focus = Some(ActivityFocus::TaskRoute(route));
+            self.task_route = route;
+            return Some(handled_outcome());
+        }
+        if self
+            .task_cancel_rect
+            .is_some_and(|rect| rect.contains(point))
+        {
+            self.keyboard_focus = Some(ActivityFocus::TaskCancelCompose);
+            self.close_task_composer();
+            return Some(handled_outcome());
+        }
+        if self
+            .task_create_rect
+            .is_some_and(|rect| rect.contains(point))
+        {
+            self.keyboard_focus = Some(ActivityFocus::TaskCreate);
+            return Some(self.create_task_from_draft(tree));
+        }
+        if let Some(action) = hit_value(&self.task_action_rects, point) {
+            self.keyboard_focus = Some(ActivityFocus::TaskAction(action));
+            return Some(self.apply_task_action(action, tree));
+        }
+        if let Some(id) = hit_value(&self.task_rects, point) {
+            self.keyboard_focus = Some(ActivityFocus::Task(id.clone()));
+            self.selected_task = (self.selected_task.as_deref() != Some(id.as_str())).then_some(id);
+            return Some(handled_outcome());
+        }
+        None
+    }
+
+    fn open_task_composer(&mut self, tree: &WorkspaceTree) {
+        self.task_compose_open = true;
+        self.task_draft.clear();
+        self.task_route = WorkspaceTaskRoute::Manual;
+        self.task_agent = tree
+            .active_workspace()
+            .and_then(|workspace| workspace.agent_members().into_iter().next())
+            .map(|(agent, _)| agent);
+        self.task_attachment = self.selection_detail().and_then(|detail| {
+            detail
+                .resources
+                .first()
+                .map(|resource| WorkspaceTaskResource {
+                    app_id: resource.app_id.clone(),
+                    app_label: resource.app_label.clone(),
+                    id: resource.id.clone(),
+                    kind: resource.kind.clone(),
+                    label: resource.label.clone(),
+                })
+        });
+    }
+
+    fn close_task_composer(&mut self) {
+        self.task_compose_open = false;
+        self.task_draft.clear();
+        self.task_attachment = None;
+    }
+
+    fn create_task_from_draft(&mut self, tree: &mut WorkspaceTree) -> RoomActivityOutcome {
+        let workspace = tree.active;
+        let assigned_agent = (self.task_route != WorkspaceTaskRoute::Manual)
+            .then(|| self.task_agent.clone())
+            .flatten();
+        let created = tree.create_workspace_task(
+            workspace,
+            self.task_draft.clone(),
+            crate::shell::state::local_user_id(),
+            assigned_agent,
+            self.task_route,
+            self.task_attachment.clone(),
+        );
+        if let Some(id) = created {
+            self.selected_task = Some(id);
+            self.close_task_composer();
+            self.refresh(tree);
+            RoomActivityOutcome {
+                handled: true,
+                task_changed: true,
+                ..RoomActivityOutcome::default()
+            }
+        } else {
+            handled_outcome()
+        }
+    }
+
+    fn apply_task_action(
+        &mut self,
+        action: TaskAction,
+        tree: &mut WorkspaceTree,
+    ) -> RoomActivityOutcome {
+        let Some(task_id) = self.selected_task.clone() else {
+            return handled_outcome();
+        };
+        if action == TaskAction::OpenResource {
+            let open_target = self
+                .tasks
+                .iter()
+                .find(|task| task.id == task_id)
+                .and_then(|task| task.resource.as_ref())
+                .map(|resource| ui::HistoryResourceTarget {
+                    app_id: resource.app_id.clone(),
+                    app_label: resource.app_label.clone(),
+                    id: resource.id.clone(),
+                    kind: resource.kind.clone(),
+                    label: resource.label.clone(),
+                });
+            return RoomActivityOutcome {
+                handled: true,
+                open_target,
+                ..RoomActivityOutcome::default()
+            };
+        }
+        let status = match action {
+            TaskAction::Start => WorkspaceTaskStatus::InProgress,
+            TaskAction::Complete => WorkspaceTaskStatus::Done,
+            TaskAction::Cancel => WorkspaceTaskStatus::Cancelled,
+            TaskAction::OpenResource => return handled_outcome(),
+        };
+        let changed = tree.set_workspace_task_status(
+            tree.active,
+            &task_id,
+            status,
+            &crate::shell::state::local_user_id(),
+        );
+        if changed {
+            self.refresh(tree);
+        }
+        RoomActivityOutcome {
+            handled: true,
+            task_changed: changed,
+            ..RoomActivityOutcome::default()
+        }
     }
 
     fn handle_catchup_click(&mut self, point: Point) -> Option<RoomActivityOutcome> {
@@ -2922,6 +3432,42 @@ impl RoomActivityPane {
         tree: &mut WorkspaceTree,
         records: Option<&RecordStore>,
     ) -> Option<RoomActivityOutcome> {
+        if self.task_compose_open {
+            let WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } = event
+            else {
+                return None;
+            };
+            return match logical_key {
+                Key::Named(NamedKey::Escape) => {
+                    self.close_task_composer();
+                    Some(handled_outcome())
+                }
+                Key::Named(NamedKey::Enter) => Some(self.create_task_from_draft(tree)),
+                Key::Named(NamedKey::Backspace) => {
+                    self.task_draft.pop();
+                    Some(handled_outcome())
+                }
+                Key::Character(text)
+                    if !modifiers.state().control_key()
+                        && !modifiers.state().super_key()
+                        && !modifiers.state().alt_key() =>
+                {
+                    if self.task_draft.chars().count() < 160 {
+                        self.task_draft.push_str(text);
+                    }
+                    Some(handled_outcome())
+                }
+                _ => Some(handled_outcome()),
+            };
+        }
         let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -3061,6 +3607,34 @@ impl RoomActivityPane {
                     .iter()
                     .map(|(index, _)| ActivityFocus::Brief(*index)),
             ),
+            ActivityView::Tasks => {
+                if self.new_task_rect.is_some() {
+                    order.push(ActivityFocus::NewTask);
+                }
+                if self.task_compose_open {
+                    order.extend(
+                        self.task_route_rects
+                            .iter()
+                            .map(|(route, _)| ActivityFocus::TaskRoute(*route)),
+                    );
+                    if self.task_cancel_rect.is_some() {
+                        order.push(ActivityFocus::TaskCancelCompose);
+                    }
+                    if self.task_create_rect.is_some() {
+                        order.push(ActivityFocus::TaskCreate);
+                    }
+                }
+                order.extend(
+                    self.task_rects
+                        .iter()
+                        .map(|(id, _)| ActivityFocus::Task(id.clone())),
+                );
+                order.extend(
+                    self.task_action_rects
+                        .iter()
+                        .map(|(action, _)| ActivityFocus::TaskAction(*action)),
+                );
+            }
             ActivityView::Explore => {
                 order.extend(
                     self.explorer_pane_rects
@@ -3137,6 +3711,21 @@ impl RoomActivityPane {
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
             ActivityFocus::MoreBriefs => self.brief_more_rect,
+            ActivityFocus::NewTask => self.new_task_rect,
+            ActivityFocus::Task(value) => self
+                .task_rects
+                .iter()
+                .find_map(|(id, rect)| (id == value).then_some(*rect)),
+            ActivityFocus::TaskRoute(value) => self
+                .task_route_rects
+                .iter()
+                .find_map(|(route, rect)| (route == value).then_some(*rect)),
+            ActivityFocus::TaskCreate => self.task_create_rect,
+            ActivityFocus::TaskCancelCompose => self.task_cancel_rect,
+            ActivityFocus::TaskAction(value) => self
+                .task_action_rects
+                .iter()
+                .find_map(|(action, rect)| (action == value).then_some(*rect)),
             ActivityFocus::Lens(value) => self
                 .lens_rects
                 .iter()
@@ -3215,6 +3804,15 @@ impl RoomActivityPane {
                 }
             }
             ActivityFocus::MoreBriefs => self.advance_briefs(),
+            ActivityFocus::NewTask => self.open_task_composer(tree),
+            ActivityFocus::Task(id) => {
+                self.selected_task =
+                    (self.selected_task.as_deref() != Some(id.as_str())).then_some(id);
+            }
+            ActivityFocus::TaskRoute(route) => self.task_route = route,
+            ActivityFocus::TaskCreate => return self.create_task_from_draft(tree),
+            ActivityFocus::TaskCancelCompose => self.close_task_composer(),
+            ActivityFocus::TaskAction(action) => return self.apply_task_action(action, tree),
             ActivityFocus::Lens(value) => {
                 self.lens = value;
                 self.reinstall_filter();
@@ -3320,6 +3918,16 @@ impl RoomActivityPane {
                 .get(*index)
                 .map(|brief| brief.title.clone()),
             ActivityFocus::MoreBriefs => Some("More outcomes".to_string()),
+            ActivityFocus::NewTask => Some("New task".to_string()),
+            ActivityFocus::Task(id) => self
+                .tasks
+                .iter()
+                .find(|task| &task.id == id)
+                .map(|task| task.title.clone()),
+            ActivityFocus::TaskRoute(route) => Some(route.label().to_string()),
+            ActivityFocus::TaskCreate => Some("Create task".to_string()),
+            ActivityFocus::TaskCancelCompose => Some("Cancel task creation".to_string()),
+            ActivityFocus::TaskAction(action) => Some(action.label().to_string()),
             ActivityFocus::Lens(LensSelection::All) => Some("Everything".to_string()),
             ActivityFocus::Lens(LensSelection::Facet(key, value)) => {
                 Some(format!("{key}: {value}"))
@@ -3405,6 +4013,43 @@ impl RoomActivityPane {
             ActivityFocus::MoreBriefs => {
                 control(Role::Button, false, None, "Show more outcome summaries")
             }
+            ActivityFocus::NewTask => control(
+                Role::Button,
+                false,
+                None,
+                "Create a workspace task without requiring a model",
+            ),
+            ActivityFocus::Task(id) => {
+                let task = self.tasks.iter().find(|task| &task.id == id)?;
+                AccessControl {
+                    role: Role::Button,
+                    selected: self.selected_task.as_ref() == Some(id),
+                    expanded: Some(self.selected_task.as_ref() == Some(id)),
+                    description: format!(
+                        "{}; {}; {}; {}",
+                        task.status.label(),
+                        task.route.label(),
+                        task.assigned_agent
+                            .as_deref()
+                            .map_or("unassigned", |_| "assigned to an agent"),
+                        task.resource
+                            .as_ref()
+                            .map_or("no attached resource", |resource| resource.label.as_str())
+                    ),
+                }
+            }
+            ActivityFocus::TaskRoute(route) => control(
+                Role::RadioButton,
+                self.task_route == *route,
+                None,
+                "Task execution route",
+            ),
+            ActivityFocus::TaskCreate | ActivityFocus::TaskCancelCompose => {
+                control(Role::Button, false, None, "Task composer action")
+            }
+            ActivityFocus::TaskAction(_) => {
+                control(Role::Button, false, None, "Selected task action")
+            }
             ActivityFocus::Lens(value) => {
                 control(Role::RadioButton, self.lens == *value, None, "History lens")
             }
@@ -3489,6 +4134,9 @@ impl RoomActivityPane {
                 ActivityView::CatchUp => {
                     "A summary of outcomes since this device last viewed the workspace"
                 }
+                ActivityView::Tasks => {
+                    "Durable workspace tasks with resource links, execution routes, and audit trails"
+                }
                 ActivityView::Explore => {
                     "The complete workspace history with filters and provenance"
                 }
@@ -3504,6 +4152,36 @@ impl RoomActivityPane {
             .enumerate()
             .filter_map(|(index, focus)| self.accessibility_control_node(focus, index, set_size))
             .collect();
+        if self.timeline_is_visible() {
+            let mut history = AccessNode::new(Role::List).with_name("History entries");
+            history.children = (0..self.timeline.visible_len().min(100))
+                .filter_map(|index| self.timeline.visible_entry(index))
+                .map(|entry| {
+                    AccessNode::new(Role::ListItem)
+                        .with_name(entry.summary.clone())
+                        .with_description(format!("By {}", entry.author.name))
+                })
+                .collect();
+            root.children.push(history);
+        }
+        if self.view == ActivityView::Tasks {
+            let mut tasks = AccessNode::new(Role::List).with_name("Workspace tasks");
+            tasks.children = self
+                .tasks
+                .iter()
+                .map(|task| {
+                    AccessNode::new(Role::ListItem)
+                        .with_name(task.title.clone())
+                        .with_description(format!(
+                            "{}; {}; {} audit events",
+                            task.status.label(),
+                            task.route.label(),
+                            task.audit.len()
+                        ))
+                })
+                .collect();
+            root.children.push(tasks);
+        }
         if let Some(detail) = self.selection_detail() {
             root.children.push(
                 AccessNode::new(Role::Group)
@@ -3578,6 +4256,21 @@ impl RoomActivityPane {
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
             ActivityFocus::MoreBriefs => self.brief_more_rect,
+            ActivityFocus::NewTask => self.new_task_rect,
+            ActivityFocus::Task(value) => self
+                .task_rects
+                .iter()
+                .find_map(|(id, rect)| (id == value).then_some(*rect)),
+            ActivityFocus::TaskRoute(value) => self
+                .task_route_rects
+                .iter()
+                .find_map(|(route, rect)| (route == value).then_some(*rect)),
+            ActivityFocus::TaskCreate => self.task_create_rect,
+            ActivityFocus::TaskCancelCompose => self.task_cancel_rect,
+            ActivityFocus::TaskAction(value) => self
+                .task_action_rects
+                .iter()
+                .find_map(|(action, rect)| (action == value).then_some(*rect)),
             ActivityFocus::Lens(value) => self
                 .lens_rects
                 .iter()
@@ -3625,7 +4318,7 @@ impl RoomActivityPane {
     /// True while the pane's name field has the keyboard, so Escape
     /// cancels the field rather than closing the sheet.
     pub fn wants_keyboard(&self) -> bool {
-        self.timeline.wants_keyboard()
+        self.task_compose_open || self.timeline.wants_keyboard()
     }
 
     /// Rewrite the document to the state at `id`, as a **new forward
@@ -3792,6 +4485,193 @@ fn handled_outcome() -> RoomActivityOutcome {
     RoomActivityOutcome {
         handled: true,
         ..RoomActivityOutcome::default()
+    }
+}
+
+fn task_actions(task: &WorkspaceTask) -> Vec<TaskAction> {
+    let mut actions = Vec::new();
+    if task.resource.is_some() {
+        actions.push(TaskAction::OpenResource);
+    }
+    match task.status {
+        WorkspaceTaskStatus::Queued | WorkspaceTaskStatus::Waiting => {
+            actions.push(TaskAction::Start);
+            actions.push(TaskAction::Cancel);
+        }
+        WorkspaceTaskStatus::InProgress => {
+            actions.push(TaskAction::Complete);
+            actions.push(TaskAction::Cancel);
+        }
+        WorkspaceTaskStatus::Done | WorkspaceTaskStatus::Cancelled => {}
+    }
+    actions
+}
+
+fn draw_task_button(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    label: &str,
+    prominent: bool,
+) {
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        if prominent {
+            theme.tokens.colors.accent[5]
+        } else {
+            theme.tokens.colors.lift(0.35)
+        },
+        None,
+        &RoundedRect::from_rect(rect, 6.0),
+    );
+    let size = theme.tokens.typography.scale.sm;
+    let (width, height) = tr.measure(label, size, None);
+    tr.draw_text_weighted(
+        scene,
+        label,
+        size,
+        theme.tokens.colors.text_primary,
+        at(
+            transform,
+            rect.center().x - f64::from(width) / 2.0,
+            rect.center().y - f64::from(height) / 2.0,
+        ),
+        None,
+        ui::text_render::TextWeight::Medium,
+    );
+}
+
+fn draw_task_card(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    task: &WorkspaceTask,
+    rect: Rect,
+    selected: bool,
+    now: SystemTime,
+) {
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.lift(if selected { 0.55 } else { 0.3 }),
+        None,
+        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+    );
+    if selected {
+        scene.stroke(
+            &Stroke::new(1.5),
+            transform,
+            theme.tokens.colors.border_focus,
+            None,
+            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+        );
+    }
+    let status = task.status.label();
+    tr.draw_text_weighted(
+        scene,
+        status,
+        theme.tokens.typography.scale.sm,
+        if task.status.is_finished() {
+            theme.tokens.colors.text_dim
+        } else {
+            theme.tokens.colors.accent[4]
+        },
+        at(transform, rect.x0 + 12.0, rect.y0 + 9.0),
+        None,
+        ui::text_render::TextWeight::Medium,
+    );
+    let route = task.route.label();
+    let route_width = tr.measure(route, theme.tokens.typography.scale.sm, None).0;
+    tr.draw_text(
+        scene,
+        route,
+        theme.tokens.typography.scale.sm,
+        theme.tokens.colors.text_dim,
+        at(
+            transform,
+            rect.x1 - 12.0 - f64::from(route_width),
+            rect.y0 + 9.0,
+        ),
+        None,
+    );
+    let title = tr.elide_to_width(
+        &task.title,
+        theme.tokens.typography.scale.base,
+        text_width(rect.width() - 24.0),
+    );
+    tr.draw_text_weighted(
+        scene,
+        &title,
+        theme.tokens.typography.scale.base,
+        theme.tokens.colors.text_primary,
+        at(transform, rect.x0 + 12.0, rect.y0 + 31.0),
+        None,
+        ui::text_render::TextWeight::Medium,
+    );
+    let assignee = task.assigned_agent.as_ref().map_or_else(
+        || format!("Unassigned · created by {}", task.created_by),
+        |agent| format!("▣ AGENT · {agent}"),
+    );
+    let resource = task
+        .resource
+        .as_ref()
+        .map(|resource| format!(" · {}", resource.label))
+        .unwrap_or_default();
+    let byline = tr.elide_to_width(
+        &format!("{assignee}{resource}"),
+        theme.tokens.typography.scale.sm,
+        text_width(rect.width() - 24.0),
+    );
+    tr.draw_text(
+        scene,
+        &byline,
+        theme.tokens.typography.scale.sm,
+        theme.tokens.colors.text_dim,
+        at(transform, rect.x0 + 12.0, rect.y0 + 55.0),
+        None,
+    );
+    if selected {
+        let mut audit_y = rect.y0 + 80.0;
+        tr.draw_text_weighted(
+            scene,
+            "AUDIT TRAIL",
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_dim,
+            at(transform, rect.x0 + 12.0, audit_y),
+            None,
+            ui::text_render::TextWeight::Medium,
+        );
+        audit_y += 20.0;
+        for event in task.audit.iter().rev().take(3) {
+            let event_time = u64::try_from(event.at)
+                .ok()
+                .and_then(|secs| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            let line = format!(
+                "{} · {} · {}",
+                event.actor,
+                event.summary,
+                format_relative_time(event_time, now)
+            );
+            let line = tr.elide_to_width(
+                &line,
+                theme.tokens.typography.scale.sm,
+                text_width(rect.width() - 32.0),
+            );
+            tr.draw_text(
+                scene,
+                &line,
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_primary,
+                at(transform, rect.x0 + 20.0, audit_y),
+                None,
+            );
+            audit_y += 18.0;
+        }
     }
 }
 
@@ -4942,6 +5822,95 @@ mod tests {
             before,
             "reading history is not a room edit"
         );
+    }
+
+    #[test]
+    fn task_center_creates_manual_work_without_a_model() {
+        let (mut tree, workspace, _) = busy_room();
+        let mut pane = RoomActivityPane::new();
+        pane.set_view(ActivityView::Tasks);
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        pane.refresh(&mut tree);
+        pane.open_task_composer(&tree);
+        pane.task_draft = "Check the launch copy".into();
+
+        let outcome = pane.create_task_from_draft(&mut tree);
+
+        assert!(outcome.task_changed);
+        let task = tree
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.id == workspace)
+            .and_then(|workspace| workspace.tasks.first())
+            .expect("task is stored on the workspace");
+        assert_eq!(task.route, WorkspaceTaskRoute::Manual);
+        assert!(task.assigned_agent.is_none());
+        assert_eq!(task.status, WorkspaceTaskStatus::Queued);
+        assert!(!pane.task_compose_open);
+    }
+
+    #[test]
+    fn task_center_attaches_the_resource_selected_in_explore() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        let resource_entry = HistoryEntry {
+            id: HistoryEntryId([71; 16]),
+            author: ui::widget::HistoryAuthor::new("ada", 10.0, "Ada"),
+            op_class: OpClass::EditMeta,
+            artifact_kind: ArtifactKind::File,
+            timestamp: SystemTime::UNIX_EPOCH,
+            summary: "Edited launch brief".into(),
+            text_delta: None,
+            diff_payload: None,
+            redaction: None,
+            context: Some(
+                ui::qos_actions::ActionContext::for_resource(
+                    "Edit",
+                    "document:launch-brief",
+                    "document",
+                    "Launch brief",
+                )
+                .with_app("org.qos.Writer", "Writer"),
+            ),
+        };
+        pane.timeline_mut().set_entries(vec![resource_entry]);
+        let resource_row = 0;
+        pane.timeline_mut()
+            .set_selection(Some((resource_row, resource_row)));
+        let expected = pane
+            .selection_detail()
+            .and_then(|detail| detail.resources.first().cloned())
+            .expect("selected action has a resource");
+
+        pane.set_view(ActivityView::Tasks);
+        pane.open_task_composer(&tree);
+
+        let attached = pane.task_attachment.as_ref().expect("resource is attached");
+        assert_eq!(attached.id, expected.id);
+        assert_eq!(attached.app_id, expected.app_id);
+    }
+
+    #[test]
+    fn task_accessibility_exposes_route_status_and_audit() {
+        let (mut tree, workspace, _) = busy_room();
+        tree.create_workspace_task(
+            workspace,
+            "Prepare screenshots",
+            "ada",
+            Some("studio-agent".into()),
+            WorkspaceTaskRoute::RulesOnly,
+            None,
+        )
+        .unwrap();
+        let mut pane = RoomActivityPane::new();
+        pane.set_view(ActivityView::Tasks);
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        pane.refresh(&mut tree);
+        let snapshot = pane.accessibility_snapshot();
+        let debug = format!("{snapshot:?}");
+        assert!(debug.contains("Prepare screenshots"));
+        assert!(debug.contains("rules only"));
+        assert!(debug.contains("1 audit events"));
     }
 
     #[test]
