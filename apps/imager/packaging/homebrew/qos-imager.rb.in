@@ -1,0 +1,28 @@
+class QosImager < Formula
+  desc "Create and verify customised qOS installation media"
+  homepage "https://code.podesta.ai/qos/qos"
+  version "@VERSION@"
+  license "AGPL-3.0-only"
+
+  depends_on :linux
+
+  if Hardware::CPU.arm?
+    url "@BASE_URL@/qos-imager-linux-aarch64.tar.gz"
+    sha256 "@LINUX_ARM64_SHA256@"
+  else
+    url "@BASE_URL@/qos-imager-linux-x86_64.tar.gz"
+    sha256 "@LINUX_X86_64_SHA256@"
+  end
+
+  def install
+    bin.install "qos-imager", "qos-imager-bin"
+  end
+
+  def caveats
+    "qOS Imager asks polkit for raw removable-drive access when it starts."
+  end
+
+  test do
+    assert_predicate bin/"qos-imager-bin", :executable?
+  end
+end

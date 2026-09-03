@@ -3,7 +3,10 @@
 
     uki-cmdline.py show [UKI]
     uki-cmdline.py blank KEY [UKI]
+    uki-cmdline.py remove KEY [UKI]
     uki-cmdline.py set KEY=VALUE [UKI]
+    uki-cmdline.py append KEY[=VALUE] [UKI]
+    uki-cmdline.py replace OLD=VALUE NEW=VALUE [UKI]
     uki-cmdline.py osrel [UKI]
     uki-cmdline.py set-osrel KEY=VALUE [KEY=VALUE ...] UKI
 
@@ -101,6 +104,78 @@ def find_cmdline(data):
         if name == ".cmdline":
             return raw, min(rsz, vsz)
     raise SystemExit("this PE has no .cmdline section, so it is not a UKI")
+
+
+def find_cmdline_room(data):
+    """Return cmdline header/raw geometry without moving another PE section."""
+    entries = list(section_table(data))
+    for o, name, va, vsz, rsz, raw in entries:
+        if name != ".cmdline":
+            continue
+        room = rsz
+        nxt = [e for e in entries if e[2] > va]
+        if nxt:
+            room = min(room, min(e[2] for e in nxt) - va)
+        return o, raw, rsz, vsz, room
+    raise SystemExit("this PE has no .cmdline section, so it is not a UKI")
+
+
+def append_cmdline(path, token):
+    if not token or token.startswith("=") or any(c.isspace() for c in token):
+        raise SystemExit("append takes one complete KEY or KEY=VALUE token")
+    with open(path, "r+b") as fh:
+        mm = mmap.mmap(fh.fileno(), 0)
+        try:
+            hdr, raw, rsz, vsz, room = find_cmdline_room(mm)
+            current = bytes(mm[raw : raw + min(rsz, vsz)]).rstrip(b"\0 \n")
+            bare_key = token.split("=", 1)[0].encode()
+            value_key = bare_key + b"="
+            if any(part == bare_key or part.startswith(value_key)
+                   for part in current.split()):
+                raise SystemExit(
+                    f"{bare_key.decode()} is already on the sealed command line"
+                )
+            new = current + (b" " if current else b"") + token.encode()
+            if len(new) > room:
+                raise SystemExit(
+                    f".cmdline would need {len(new)} bytes and only {room} are "
+                    "available without moving another PE section"
+                )
+            mm[raw : raw + rsz] = new + b"\0" * (rsz - len(new))
+            struct.pack_into("<I", mm, hdr + 8, len(new))
+            mm.flush()
+            return len(new), room
+        finally:
+            mm.close()
+
+
+def remove_cmdline(path, key_text):
+    if not key_text or "=" in key_text or any(c.isspace() for c in key_text):
+        raise SystemExit("remove takes one KEY without = or whitespace")
+    bare_key = key_text.encode()
+    value_key = bare_key + b"="
+    with open(path, "r+b") as fh:
+        mm = mmap.mmap(fh.fileno(), 0)
+        try:
+            hdr, raw, rsz, vsz, room = find_cmdline_room(mm)
+            current = bytes(mm[raw : raw + min(rsz, vsz)]).rstrip(b"\0 \n")
+            parts = current.split()
+            matches = [part for part in parts
+                       if part == bare_key or part.startswith(value_key)]
+            if len(matches) != 1:
+                raise SystemExit(
+                    f"expected exactly one {key_text} token, found {len(matches)}"
+                )
+            new = b" ".join(
+                part for part in parts
+                if part != bare_key and not part.startswith(value_key)
+            )
+            mm[raw : raw + rsz] = new + b"\0" * (rsz - len(new))
+            struct.pack_into("<I", mm, hdr + 8, len(new))
+            mm.flush()
+            return matches[0], len(new), room
+        finally:
+            mm.close()
 
 
 def find_osrel(data):
@@ -201,7 +276,9 @@ def default_uki():
 
 
 def main(argv):
-    if len(argv) < 2 or argv[1] not in ("show", "blank", "set", "osrel", "set-osrel"):
+    if len(argv) < 2 or argv[1] not in (
+        "show", "blank", "remove", "set", "append", "replace", "osrel", "set-osrel"
+    ):
         raise SystemExit(__doc__)
     action = argv[1]
 
@@ -233,18 +310,49 @@ def main(argv):
                 print("  " + line)
         return 0
 
-    if len(argv) < 3:
+    if action == "append":
+        if len(argv) not in (3, 4):
+            raise SystemExit("append needs KEY[=VALUE] [UKI]")
+        path = argv[3] if len(argv) == 4 else default_uki()
+        used, room = append_cmdline(path, argv[2])
+        print(f"appended {argv[2]} to {path} ({used} of {room} bytes)")
+        return 0
+
+    if action == "remove":
+        if len(argv) not in (3, 4):
+            raise SystemExit("remove needs KEY [UKI]")
+        path = argv[3] if len(argv) == 4 else default_uki()
+        removed, used, room = remove_cmdline(path, argv[2])
+        print(f"removed {removed.decode()} from {path} ({used} of {room} bytes)")
+        return 0
+
+    if action == "replace":
+        if len(argv) not in (4, 5):
+            raise SystemExit("replace needs OLD=VALUE NEW=VALUE [UKI]")
+        old = argv[2].encode()
+        replacement = argv[3].encode()
+        if b"=" not in old or b"=" not in replacement:
+            raise SystemExit("replace arguments must both be complete KEY=VALUE tokens")
+        if len(old) != len(replacement):
+            raise SystemExit(
+                f"replacement is {len(replacement)} bytes and the existing token is "
+                f"{len(old)}; a length-changing edit would move following PE sections"
+            )
+        key = old.split(b"=", 1)[0]
+        path = argv[4] if len(argv) == 5 else default_uki()
+    elif len(argv) < 3:
         raise SystemExit(f"{action} needs an argument, e.g. `{action} qos.generation"
                          + ("=7`" if action == "set" else "`"))
-    if action == "set":
+    elif action == "set":
         if "=" not in argv[2]:
             raise SystemExit("set takes KEY=VALUE, e.g. `set composefs=<digest>`")
         key = argv[2].split("=", 1)[0].encode()
         replacement = argv[2].encode()
+        path = argv[3] if len(argv) > 3 else default_uki()
     else:
         key = argv[2].encode()
         replacement = None
-    path = argv[3] if len(argv) > 3 else default_uki()
+        path = argv[3] if len(argv) > 3 else default_uki()
 
     with open(path, "r+b") as fh:
         mm = mmap.mmap(fh.fileno(), 0)
@@ -262,6 +370,11 @@ def main(argv):
             while end < len(cmdline) and cmdline[end : end + 1] not in (b" ", b"\0", b"\n"):
                 end += 1
             token = cmdline[start:end]
+            if action == "replace" and token != old:
+                raise SystemExit(
+                    f"refusing to replace an unexpected token\n  have: {token.decode()}\n"
+                    f"  expected: {old.decode()}"
+                )
             if replacement is None:
                 new = b" " * len(token)
             else:
