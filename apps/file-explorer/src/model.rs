@@ -76,6 +76,25 @@ pub const SHARE_XATTR: &str = "user.qos.share";
 pub const SHARE_CONTROL_XATTR: &str = "user.qos.share-control";
 pub const HISTORY_XATTR: &str = "user.qos.history";
 pub const HISTORY_CONTROL_XATTR: &str = "user.qos.history-control";
+
+/// Fetch a bounded immutable version preview from the collaborative
+/// filesystem. Binary/invalid UTF-8 versions intentionally return `None`.
+pub fn read_history_text_preview(
+    path: &Path,
+    version_id: collab_types::FileVersionId,
+) -> Option<String> {
+    let name = format!(
+        "{}{}",
+        collab_types::HISTORY_PREVIEW_XATTR_PREFIX,
+        version_id.0
+    );
+    let bytes = xattr::get(path, name).ok()??;
+    if bytes.len() > collab_types::MAX_HISTORY_PREVIEW_BYTES {
+        return None;
+    }
+    let text = String::from_utf8(bytes).ok()?;
+    (!text.chars().any(|character| character == '\0')).then_some(text)
+}
 pub const MAX_AVAILABILITY_XATTR_BYTES: usize = 2_048;
 pub const MAX_COLLAB_PROJECTION_BYTES: usize = 16 * 1024;
 

@@ -2499,6 +2499,8 @@ mod tests {
                 author: Some("Ada".into()),
                 group_id: Some("issue:42".into()),
                 entry_id: None,
+                resource_id: None,
+                resource_version: None,
             }),
         );
         bar.refresh_status_and_media_state();
