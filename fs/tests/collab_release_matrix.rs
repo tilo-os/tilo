@@ -287,17 +287,40 @@ fn spawn_replica(binary: &Path, identity: &Path, config: &Path) -> ReplicaProces
 }
 
 fn ready_replica_endpoint(status: &Path, process: &mut ReplicaProcess) -> iroh_base::EndpointAddr {
-    wait_for(PROCESS_TIMEOUT, || {
+    let deadline = Instant::now().checked_add(PROCESS_TIMEOUT).unwrap();
+    let mut last_status = None;
+    loop {
         if let Some(exit) = process.child.try_wait().unwrap() {
             panic!(
                 "replica exited {exit}; logs:\n{}",
                 process.logs.lock().unwrap().join("\n")
             );
         }
-        let status = fs::full_replica::load_status(status).ok().flatten()?;
-        (status.full_content_replication && !status.filesystem_endpoints.is_empty())
-            .then(|| status.filesystem_endpoints[0].clone())
-    })
+        let current_process_joined = process
+            .logs
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.contains("Home peer joined workspace"));
+        if let Some(current) = fs::full_replica::load_status(status).ok().flatten() {
+            // A status file deliberately survives daemon restarts for
+            // diagnostics. Do not mistake the previous process's last ready
+            // snapshot for this process becoming reachable.
+            if current_process_joined
+                && current.full_content_replication
+                && !current.filesystem_endpoints.is_empty()
+            {
+                return current.filesystem_endpoints[0].clone();
+            }
+            last_status = Some(current);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "replica readiness timed out; last status: {last_status:#?}; logs:\n{}",
+            process.logs.lock().unwrap().join("\n")
+        );
+        std::thread::park_timeout(Duration::from_millis(10));
+    }
 }
 
 fn gate(socket: &Path, command: &str) -> String {
@@ -978,14 +1001,23 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     owner_process.wait_line("Hosting workspace");
     let owner_ticket = owner_process.wait_ticket();
     owner_process.wait_line("Mounting QuickFS");
-    let deleted_manifest_bytes: [u8; 32] = get_xattr(
-        &owner_mount.join("deleted.txt"),
+    let deleted_manifest_bytes: [u8; 32] = wait_for_process(&mut owner_process, || {
+        get_xattr(
+            &owner_mount.join("deleted.txt"),
+            fs::syncstate::CONTENT_HASH_XATTR,
+        )
+        .ok()
+    })
+    .try_into()
+    .unwrap();
+    let deleted_manifest = Hash::from(deleted_manifest_bytes);
+    let original_survivor_manifest: [u8; 32] = get_xattr(
+        &owner_mount.join("survivor.txt"),
         fs::syncstate::CONTENT_HASH_XATTR,
     )
     .unwrap()
     .try_into()
     .unwrap();
-    let deleted_manifest = Hash::from(deleted_manifest_bytes);
 
     let bundle = temp.path().join("home-peer.toml");
     let replica_cache = temp.path().join("nas-cache");
@@ -1008,6 +1040,37 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     std::fs::remove_file(owner_mount.join("deleted.txt")).unwrap();
 
     let original = fs::Ticket::decode(&owner_ticket).unwrap();
+    let updated_manifest: [u8; 32] = wait_for_process(&mut owner_process, || {
+        let manifest: [u8; 32] = get_xattr(
+            &owner_mount.join("survivor.txt"),
+            fs::syncstate::CONTENT_HASH_XATTR,
+        )
+        .ok()?
+        .try_into()
+        .ok()?;
+        (manifest != original_survivor_manifest).then_some(manifest)
+    });
+    let updated_manifest = Hash::from(updated_manifest);
+    let replica_workspace_cache = replica_cache.join(original.workspace_id().to_string());
+    let replicated_generation = wait_for(PROCESS_TIMEOUT, || {
+        if let Some(exit) = nas.child.try_wait().unwrap() {
+            panic!(
+                "replica exited {exit}; logs:\n{}",
+                nas.logs.lock().unwrap().join("\n")
+            );
+        }
+        let bytes = std::fs::read(replica_workspace_cache.join("namespace.bin")).ok()?;
+        let namespace = Namespace::from_bytes("nas-generation-barrier", &bytes).ok()?;
+        (namespace.entry_at("survivor.txt")?.hash == Some(updated_manifest)
+            && namespace.entry_at("deleted.txt").is_none())
+        .then(|| hex::encode(blake3::hash(&bytes).as_bytes()))
+    });
+    wait_for(PROCESS_TIMEOUT, || {
+        let current = fs::full_replica::load_status(&status).ok().flatten()?;
+        (current.full_content_replication
+            && current.namespace_generation.as_deref() == Some(&replicated_generation))
+        .then_some(())
+    });
     let nas_ticket = fs::Ticket {
         node: nas_endpoint,
         workspace: original.workspace,
@@ -1030,13 +1093,27 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     );
     reader_process.wait_line("Joined workspace");
     reader_process.wait_line("Mounting QuickFS");
-    wait_for_process(&mut reader_process, || {
-        (std::fs::read(reader_mount.join("survivor.txt"))
+    let reader_file = reader_mount.join("survivor.txt");
+    let reader_manifest: [u8; 32] = wait_for_process(&mut reader_process, || {
+        get_xattr(&reader_file, fs::syncstate::CONTENT_HASH_XATTR)
             .ok()?
-            .as_slice()
-            == b"updated-through-nas")
-            .then_some(())
+            .try_into()
+            .ok()
     });
+    assert_eq!(Hash::from(reader_manifest), updated_manifest);
+    assert_eq!(std::fs::metadata(&reader_file).unwrap().len(), 19);
+    let reader_bytes = std::fs::read(&reader_file).unwrap_or_else(|error| {
+        panic!(
+            "collaborator could not hydrate NAS content: {error}; NAS logs:\n{}",
+            nas.logs.lock().unwrap().join("\n")
+        )
+    });
+    assert_eq!(
+        reader_bytes,
+        b"updated-through-nas",
+        "collaborator observed wrong NAS bytes; NAS logs:\n{}",
+        nas.logs.lock().unwrap().join("\n")
+    );
     assert!(!reader_mount.join("deleted.txt").exists());
     reader_process.stop();
 
@@ -1077,7 +1154,7 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
         .ok()?;
         (!authority
             .handle()
-            .permits(&reader, "/survivor.txt", fs::Access::Read))
+            .permits_peer(&reader, "/survivor.txt", fs::Access::Read))
         .then_some(())
     });
     let revoked_mount = temp.path().join("revoked-reader-mount");
@@ -1142,7 +1219,6 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     // Inspect the stopped daemon's real durable store: removal from the
     // namespace is insufficient if obsolete manifests/chunks still consume a
     // home peer's bounded disk indefinitely.
-    let replica_workspace_cache = replica_cache.join(original.workspace_id().to_string());
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let store = fs::ContentStore::open(replica_workspace_cache)
             .await

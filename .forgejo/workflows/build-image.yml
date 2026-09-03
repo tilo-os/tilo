@@ -61,13 +61,23 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Restore checksum-verified GitHub build inputs
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        id: github-assets-cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: os/external-assets/cache
-          key: github-build-inputs-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+          key: github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+          restore-keys: |
+            github-assets-all-v1-
 
       - name: Materialize immutable GitHub build inputs
         run: ./os/dev/cache-github-assets.sh
+
+      - name: Save checksum-verified GitHub build inputs immediately
+        if: steps.github-assets-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: os/external-assets/cache
+          key: github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
 
       # Cheap fail-fast before the expensive podman build: no crate silently
       # dropped from the workspace (that once orphaned 37 apps).
@@ -382,20 +392,20 @@ jobs:
             sleep 2
           done
 
-          # This is a fresh installed user, so the session must stop at the
-          # real first-login identity ceremony before the compositor starts.
-          # Drive the keyboard-accessible flow exactly as a person does:
+          # This is a fresh installed user, so the real compositor must start
+          # directly into its trusted first-login identity ceremony. Drive the
+          # keyboard-accessible flow exactly as a person does:
           # Continue -> acknowledge no recovery -> Create -> Start qOS. The
           # artifact poll is the deterministic barrier between Create and the
           # final screen; no test-only minting or bypass enters the image.
           for attempt in $(seq 1 60); do
             if ./os/dev/vm.sh ssh \
-              "pgrep -f '^/usr/bin/shell --provision-identity$' >/dev/null"; then
+              "pgrep -f '^/usr/bin/shell --backend drm( |$)' >/dev/null"; then
               break
             fi
             if [[ "$attempt" == 60 ]]; then
               ./os/dev/vm.sh serial | tail -120
-              echo "first-login identity ceremony did not start" >&2
+              echo "native compositor did not reach first-login OOBE" >&2
               exit 1
             fi
             sleep 1

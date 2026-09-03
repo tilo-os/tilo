@@ -3,26 +3,24 @@
 //! `ImagerApp` is a single self-drawing "canvas" widget that renders a guided
 //! **wizard** with a six-station step indicator —
 //! Source → Drive → Customize → Confirm → Write → Done — and a Back /
-//! primary-action footer, covering both writing an image to a stick and
-//! installing qOS onto a disk.
+//! primary-action footer for creating a verified USB/SD installation medium.
 //!
 //! * **Source** — pick a local `.iso` / `.img` through the host XDG portal
 //!   (never a bespoke picker, per HIG §5), or a known qOS release.
-//! * **Drive** — choose the target from the *real* block devices (`lsblk`);
-//!   internal disks are hidden behind an explicit opt-in, and the **system
-//!   disk** cannot be selected without a separate acknowledgement.
+//! * **Drive** — choose external media from the *real* block devices (`lsblk`);
+//!   internal and system disks are never eligible. Installation onto those is
+//!   handled after boot by the live qOS installer.
 //! * **Customize** (qOS only) — the shared guided-customization step, delegated
 //!   in full to [`CustomizePanel`](crate::customize); a plain ISO skips it.
-//! * **Confirm** — a read-only review of every choice, an erase warning that
-//!   escalates for an internal / system disk, and the typed device-name gate.
+//! * **Confirm** — a read-only review of every choice, an erase warning, and
+//!   the typed device-name gate.
 //! * **Write** — a real, byte-for-byte streaming copy with live progress and a
-//!   read-back **verify** pass (captioned "Write" or "Install").
+//!   read-back **verify** pass.
 //! * **Done** — the verified / failed outcome with a fresh-start affordance.
 //!
-//! Every write is doubly gated: the typed confirmation at Confirm, plus the
-//! `QOS_IMAGER_ALLOW_WRITE=1` allow-gate in [`crate::write`]. With the gate off
-//! (tests, `--shots`, normal dev runs) the write control is unavailable; the app
-//! never reports synthetic progress or success.
+//! Every write is doubly gated: the typed confirmation at Confirm, then native
+//! host authentication for a short-lived privileged writer. The wizard itself
+//! stays unprivileged; tests and shots cannot start the helper.
 //!
 //! All persistent state (selected source/target, the live profile, the typed
 //! confirmation, the current step, job progress) lives in the Automerge
@@ -80,8 +78,6 @@ enum Hit {
     Release(usize),
     Recent(usize),
     Target(usize),
-    ToggleInternal,
-    ToggleSystemAck,
     Rescan,
     ConfirmField,
     StepJump(Step),
@@ -93,6 +89,11 @@ enum Hit {
 
 struct Layout {
     crumbs: Vec<(Rect, Step)>,
+    /// At compact widths the six-step rail shows numbered/checkmarked discs
+    /// without labels. The page heading still names the current station, and
+    /// this keeps every station visible instead of clipping the first/last
+    /// controls outside the window.
+    compact_crumbs: bool,
     back: Option<Rect>,
     primary: Option<Rect>,
     hits: Vec<(Rect, Hit)>,
@@ -126,12 +127,6 @@ pub struct ImagerApp {
     job_rx: Option<std::sync::mpsc::Receiver<Progress>>,
     portal_rx: Option<PortalChannel>,
     release_rx: Option<std::sync::mpsc::Receiver<Result<Source, String>>>,
-    show_internal: bool,
-    /// The user has explicitly acknowledged that selecting the **system** disk
-    /// (the one the running OS boots from) will destroy it. A system disk can
-    /// never be selected without this — the guard against picking it by
-    /// accident. Reset whenever the drive inventory changes.
-    system_ack: bool,
     export_dialog: ExportDialog,
     /// Stages the read-only export modal after the demo document has synced.
     /// Used only by the deterministic `export` screenshot scenario.
@@ -183,8 +178,6 @@ impl ImagerApp {
             job_rx: None,
             portal_rx: None,
             release_rx: None,
-            show_internal: false,
-            system_ack: false,
             export_dialog: ExportDialog::new(),
             export_after_sync: false,
             seeded: false,
@@ -207,24 +200,21 @@ impl ImagerApp {
         &self.releases
     }
 
-    /// The drives shown on the Drive step: always the removable ones, plus
-    /// internal/fixed disks only when the user explicitly opts in.
+    /// Only external installation media is shown. Internal installation and
+    /// dual boot belong to the installer on the booted qOS medium.
     fn visible_targets(&self) -> Vec<(usize, &TargetDrive)> {
         self.targets
             .iter()
             .enumerate()
-            .filter(|(_, d)| self.show_internal || d.removable)
+            .filter(|(_, drive)| drive.is_media_target())
             .collect()
     }
 
     fn removable_count(&self) -> usize {
-        self.targets.iter().filter(|d| d.removable).count()
-    }
-
-    /// Whether the currently-visible drive list contains the system disk — the
-    /// only case where the extra "I understand" acknowledgement is offered.
-    fn has_visible_system_disk(&self) -> bool {
-        self.visible_targets().iter().any(|(_, d)| d.is_system)
+        self.targets
+            .iter()
+            .filter(|drive| drive.is_media_target())
+            .count()
     }
 
     /// Can the flow move forward from `from`? (Also gates the step-indicator.)
@@ -265,17 +255,6 @@ impl ImagerApp {
     /// Only qOS images can be pre-configured; a plain ISO is written as-is.
     fn customizable(&self) -> bool {
         self.source.as_ref().is_some_and(|s| s.installable)
-    }
-
-    /// Writing to a **removable** drive is a plain image write ([`Action::Flash`],
-    /// verb "Write"); a customizable qOS image aimed at a **fixed/internal** disk
-    /// is a full install ([`Action::Install`], verb "Install"). This single
-    /// helper is the source of truth for the write-vs-install naming everywhere.
-    fn intended_action(&self) -> Action {
-        match (self.customizable(), self.target()) {
-            (true, Some(t)) if !t.removable => Action::Install,
-            _ => Action::Flash,
-        }
     }
 
     /// The label for the customization resource Ctrl+K publishes, or `None` when
@@ -500,11 +479,16 @@ impl ImagerApp {
 // Layout
 // =========================================================================
 impl ImagerApp {
+    fn compact_content(content: Rect) -> bool {
+        content.width() < 520.0
+    }
+
     fn content_rect(&self) -> Rect {
         let v = self.rect;
         let top = CRUMB_TOP + CRUMB_H + 30.0;
         let bottom = v.y1 - FOOTER_H - 10.0;
-        let avail_w = v.width() - OUTER * 2.0;
+        let margin = if v.width() < 600.0 { 16.0 } else { OUTER };
+        let avail_w = v.width() - margin * 2.0;
         let w = avail_w.min(CONTENT_MAX_W);
         let x0 = v.x0 + (v.width() - w) / 2.0;
         Rect::new(x0, v.y0 + top, x0 + w, v.y0 + bottom)
@@ -517,9 +501,23 @@ impl ImagerApp {
 
         // ---- Step-indicator pills ----
         let steps = Step::all();
-        let crumb_w = 132.0f64;
-        let gap = 14.0f64;
-        let total = crumb_w * steps.len() as f64 + gap * (steps.len() as f64 - 1.0);
+        let full_crumb_w = 132.0f64;
+        let full_gap = 14.0f64;
+        let full_total = full_crumb_w * steps.len() as f64 + full_gap * (steps.len() as f64 - 1.0);
+        let compact_crumbs = v.width() - OUTER * 2.0 < full_total;
+        let rail_margin = if compact_crumbs { 16.0 } else { OUTER };
+        let rail_w = (v.width() - rail_margin * 2.0).max(0.0);
+        let (crumb_w, gap, total) = if compact_crumbs {
+            // Six controls remain inside the content margins down to the
+            // supported 320 px compact viewport. Prefer useful hit targets to
+            // labels which cannot fit; the screen heading supplies the name.
+            let gap = if rail_w >= 280.0 { 8.0 } else { 4.0 };
+            let gaps = gap * (steps.len() as f64 - 1.0);
+            let crumb_w = ((rail_w - gaps) / steps.len() as f64).max(24.0);
+            (crumb_w, gap, crumb_w * steps.len() as f64 + gaps)
+        } else {
+            (full_crumb_w, full_gap, full_total)
+        };
         let mut cx = v.x0 + (v.width() - total) / 2.0;
         let cy = v.y0 + CRUMB_TOP;
         let mut crumbs = Vec::new();
@@ -550,7 +548,12 @@ impl ImagerApp {
         let (mut back, mut primary) = (None, None);
         let show_back = matches!(self.step, Step::Drive | Step::Customize | Step::Confirm);
         if show_back {
-            let r = Rect::new(content.x0, by, content.x0 + 120.0, by + 44.0);
+            let width = if Self::compact_content(content) {
+                (content.width() - 12.0) / 2.0
+            } else {
+                120.0
+            };
+            let r = Rect::new(content.x0, by, content.x0 + width, by + 44.0);
             hits.push((r, Hit::Back));
             back = Some(r);
         }
@@ -567,6 +570,7 @@ impl ImagerApp {
 
         Layout {
             crumbs,
+            compact_crumbs,
             back,
             primary,
             hits,
@@ -580,10 +584,15 @@ impl ImagerApp {
         if self.step == Step::Write {
             return None;
         }
-        let w = match self.step {
-            Step::Confirm => 250.0,
-            Step::Done => 190.0,
-            _ => 170.0,
+        let has_back = matches!(self.step, Step::Drive | Step::Customize | Step::Confirm);
+        let w = if has_back && Self::compact_content(content) {
+            (content.width() - 12.0) / 2.0
+        } else {
+            match self.step {
+                Step::Confirm => 250.0,
+                Step::Done => 190.0,
+                _ => 170.0,
+            }
         };
         Some(Rect::new(content.x1 - w, by, content.x1, by + 44.0))
     }
@@ -591,13 +600,14 @@ impl ImagerApp {
     fn layout_source(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
         let x0 = content.x0;
         let x1 = content.x1;
-        let mut y = content.y0 + 44.0;
+        let compact = Self::compact_content(content);
+        let mut y = content.y0 + if compact { 64.0 } else { 44.0 };
         // Browse drop-zone.
         let browse = Rect::new(x0, y, x1, y + 96.0);
         hits.push((browse, Hit::PickFile));
         y = browse.y1 + (if self.source.is_some() { 16.0 } else { 28.0 });
         if self.source.is_some() {
-            y += 92.0 + 24.0; // selected card
+            y += if compact { 108.0 } else { 92.0 } + 24.0; // selected card
         }
         // qOS releases list. With none known, the zero-state card takes the
         // space and there is nothing here to click.
@@ -628,30 +638,23 @@ impl ImagerApp {
         let x0 = content.x0;
         let x1 = content.x1;
         // Rescan button top-right of the header row.
-        let rescan = Rect::new(x1 - 104.0, content.y0, x1, content.y0 + 30.0);
+        let compact = Self::compact_content(content);
+        let rescan_y = content.y0 + if compact { 52.0 } else { 0.0 };
+        let rescan = Rect::new(x1 - 104.0, rescan_y, x1, rescan_y + 30.0);
         hits.push((rescan, Hit::Rescan));
-        let mut y = content.y0 + 52.0;
+        let mut y = content.y0 + if compact { 94.0 } else { 52.0 };
         let vis = self.visible_targets();
         if vis.is_empty() {
-            // Empty state occupies the body; the only action is the internal toggle below.
+            // Empty state occupies the body; Rescan remains available above.
         } else {
             for (idx, _) in &vis {
                 let r = Rect::new(x0, y, x1, y + 112.0);
                 hits.push((r, Hit::Target(*idx)));
                 y += 112.0 + 12.0;
-                if y + 112.0 > content.y1 - 46.0 {
+                if y + 112.0 > content.y1 {
                     break;
                 }
             }
-        }
-        // "Show internal disks" toggle pinned near the bottom of the content.
-        let tr = Rect::new(x0, content.y1 - 44.0, x0 + 320.0, content.y1 - 44.0 + 34.0);
-        hits.push((tr, Hit::ToggleInternal));
-        // The system-disk acknowledgement sits beside it, only once a system
-        // disk is actually visible.
-        if self.has_visible_system_disk() {
-            let ack = Rect::new(tr.x1 + 12.0, tr.y0, (tr.x1 + 12.0 + 470.0).min(x1), tr.y1);
-            hits.push((ack, Hit::ToggleSystemAck));
         }
     }
 
@@ -720,8 +723,16 @@ impl ImagerApp {
             if current {
                 Self::stroke_rr(scene, t, *r, 10.0, c.accent[5], 1.4);
             }
-            // Number disc / check.
-            let disc_c = Point::new(r.x0 + 22.0, f64::midpoint(r.y0, r.y1));
+            // Number disc / check. Compact layouts center the disc in its
+            // station and omit the label, keeping all six stations on-screen.
+            let disc_c = Point::new(
+                if lay.compact_crumbs {
+                    f64::midpoint(r.x0, r.x1)
+                } else {
+                    r.x0 + 22.0
+                },
+                f64::midpoint(r.y0, r.y1),
+            );
             if done {
                 Self::check_disc(scene, t, disc_c, 11.0, c.semantic.success, Color::WHITE);
             } else {
@@ -738,26 +749,28 @@ impl ImagerApp {
                     TextWeight::Bold,
                 );
             }
-            let label_c = if current || done {
-                c.text_primary
-            } else {
-                c.text_dim
-            };
-            Self::txt(
-                scene,
-                tr,
-                s.title(),
-                13.5,
-                label_c,
-                r.x0 + 40.0,
-                f64::midpoint(r.y0, r.y1) - 9.0,
-                None,
-                if current {
-                    TextWeight::Semibold
+            if !lay.compact_crumbs {
+                let label_c = if current || done {
+                    c.text_primary
                 } else {
-                    TextWeight::Medium
-                },
-            );
+                    c.text_dim
+                };
+                Self::txt(
+                    scene,
+                    tr,
+                    s.title(),
+                    13.5,
+                    label_c,
+                    r.x0 + 40.0,
+                    f64::midpoint(r.y0, r.y1) - 9.0,
+                    None,
+                    if current {
+                        TextWeight::Semibold
+                    } else {
+                        TextWeight::Medium
+                    },
+                );
+            }
             // Connector to the next pill.
             if let Some(next) = lay.crumbs.get(i + 1) {
                 let nx0 = next.0.x0;
@@ -826,7 +839,9 @@ impl ImagerApp {
         }
 
         // A hint between them (center) — e.g. what's still needed.
-        if let Some(hint) = self.footer_hint() {
+        if !Self::compact_content(lay.content)
+            && let Some(hint) = self.footer_hint()
+        {
             Self::txt_center(
                 scene,
                 tr,
@@ -881,11 +896,12 @@ impl ImagerApp {
                     .unwrap_or_default();
                 // "Erase & write /dev/sdb" for a stick; "Erase & install
                 // /dev/nvme0n1" for a disk install — the verb reads plainly.
-                (
-                    format!("Erase & {}  {dev}", self.action.verb().to_ascii_lowercase()),
-                    self.can_advance(Step::Confirm),
-                    true,
-                )
+                let label = if r.width() < 220.0 {
+                    format!("Erase & {}", self.action.verb().to_ascii_lowercase())
+                } else {
+                    format!("Erase & {}  {dev}", self.action.verb().to_ascii_lowercase())
+                };
+                (label, self.can_advance(Step::Confirm), true)
             }
             // The Write station has no primary (returned None above); Done
             // offers a fresh start.
@@ -992,7 +1008,8 @@ impl ImagerApp {
         content: Rect,
     ) -> Rect {
         let c = &theme.tokens.colors;
-        let y = content.y0 + 44.0;
+        let compact = Self::compact_content(content);
+        let y = content.y0 + if compact { 64.0 } else { 44.0 };
         let browse = Rect::new(content.x0, y, content.x1, y + 96.0);
         let hov = browse.contains(self.last_mouse);
         Self::fill_rr(
@@ -1019,7 +1036,7 @@ impl ImagerApp {
             1.6,
         );
         // Download/arrow glyph.
-        let gx = browse.x0 + 46.0;
+        let gx = browse.x0 + if compact { 30.0 } else { 46.0 };
         let gy = f64::midpoint(browse.y0, browse.y1);
         let mut arr = BezPath::new();
         arr.move_to((gx, gy - 14.0));
@@ -1040,26 +1057,32 @@ impl ImagerApp {
                 Point::new(gx + 12.0, gy + 15.0),
             ),
         );
+        let text_x = browse.x0 + if compact { 58.0 } else { 84.0 };
+        let text_w = (browse.x1 - text_x - 12.0).max(0.0) as f32;
         Self::txt(
             scene,
             tr,
             "Browse for an image…",
             16.0,
             c.text_primary,
-            browse.x0 + 84.0,
+            text_x,
             browse.y0 + 30.0,
-            None,
+            Some(text_w),
             TextWeight::Semibold,
         );
         Self::txt(
             scene,
             tr,
-            "Opens the system file picker · .iso, .img, .raw",
+            if compact {
+                "Choose an .iso, .img, or .raw file"
+            } else {
+                "Opens the system file picker · .iso, .img, .raw"
+            },
             12.5,
             c.text_dim,
-            browse.x0 + 84.0,
+            text_x,
             browse.y0 + 54.0,
-            None,
+            Some(text_w),
             TextWeight::Regular,
         );
         browse
@@ -1068,6 +1091,10 @@ impl ImagerApp {
     /// Draws the selected-source summary card below the drop-zone (or draws
     /// nothing, if no source is selected yet), returning the y for the next
     /// section.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the compact and regular source-card variants intentionally share one renderer so their visual state cannot drift"
+    )]
     fn draw_source_selected_card(
         &self,
         scene: &mut Scene,
@@ -1082,7 +1109,9 @@ impl ImagerApp {
         let Some(src) = &self.source else {
             return browse.y1 + 28.0;
         };
-        let card = Rect::new(content.x0, y, content.x1, y + 92.0);
+        let compact = Self::compact_content(content);
+        let card_h = if compact { 108.0 } else { 92.0 };
+        let card = Rect::new(content.x0, y, content.x1, y + card_h);
         Self::fill_rr(scene, t, card, 14.0, c.surfaces.raised);
         Self::stroke_rr(
             scene,
@@ -1095,15 +1124,22 @@ impl ImagerApp {
         Self::check_disc(
             scene,
             t,
-            Point::new(card.x0 + 28.0, f64::midpoint(card.y0, card.y1)),
+            Point::new(
+                card.x0 + if compact { 22.0 } else { 28.0 },
+                if compact {
+                    card.y0 + 29.0
+                } else {
+                    f64::midpoint(card.y0, card.y1)
+                },
+            ),
             13.0,
             c.semantic.success,
             Color::WHITE,
         );
         let badge = Rect::new(
-            card.x0 + 52.0,
+            card.x0 + if compact { 42.0 } else { 52.0 },
             card.y0 + 18.0,
-            card.x0 + 52.0 + 46.0,
+            card.x0 + if compact { 88.0 } else { 98.0 },
             card.y0 + 18.0 + 22.0,
         );
         Self::fill_rr(scene, t, badge, 6.0, source_color(theme, src.kind));
@@ -1117,26 +1153,32 @@ impl ImagerApp {
             badge.y0 + 4.0,
             TextWeight::Bold,
         );
+        let detail_x = card.x0 + if compact { 42.0 } else { 108.0 };
+        let title_x = card.x0 + if compact { 98.0 } else { 108.0 };
         Self::txt(
             scene,
             tr,
             &src.name,
             15.5,
             c.text_primary,
-            card.x0 + 108.0,
+            title_x,
             card.y0 + 18.0,
-            Some((card.width() - 130.0) as f32),
+            Some((card.x1 - title_x - 16.0).max(0.0) as f32),
             TextWeight::Semibold,
         );
         Self::txt(
             scene,
             tr,
-            &src.summary(),
+            &if compact {
+                format!("{}  ·  {}", src.label, fmt_size(src.size))
+            } else {
+                src.summary()
+            },
             12.0,
             c.text_dim,
-            card.x0 + 108.0,
-            card.y0 + 42.0,
-            Some((card.width() - 130.0) as f32),
+            detail_x,
+            card.y0 + if compact { 52.0 } else { 42.0 },
+            Some((card.x1 - detail_x - 16.0).max(0.0) as f32),
             TextWeight::Regular,
         );
         if src.installable {
@@ -1146,9 +1188,9 @@ impl ImagerApp {
                 "● Can be pre-configured",
                 11.5,
                 c.semantic.success,
-                card.x0 + 108.0,
-                card.y0 + 62.0,
-                None,
+                detail_x,
+                card.y0 + if compact { 78.0 } else { 62.0 },
+                Some((card.x1 - detail_x - 16.0).max(0.0) as f32),
                 TextWeight::Medium,
             );
         } else {
@@ -1158,9 +1200,9 @@ impl ImagerApp {
                 "Written as-is",
                 11.5,
                 c.text_dim,
-                card.x0 + 108.0,
-                card.y0 + 62.0,
-                None,
+                detail_x,
+                card.y0 + if compact { 78.0 } else { 62.0 },
+                Some((card.x1 - detail_x - 16.0).max(0.0) as f32),
                 TextWeight::Medium,
             );
         }
@@ -1306,7 +1348,7 @@ impl ImagerApp {
             c.text_primary,
             r.x0 + 68.0,
             r.y0 + 9.0,
-            None,
+            Some((r.width() - 160.0).max(72.0) as f32),
             TextWeight::Semibold,
         );
         let where_ = if rel.local_path.is_empty() {
@@ -1322,7 +1364,7 @@ impl ImagerApp {
             c.text_dim,
             r.x0 + 68.0,
             r.y0 + 30.0,
-            None,
+            Some((r.width() - 84.0).max(0.0) as f32),
             TextWeight::Regular,
         );
         Self::txt_right(
@@ -1332,7 +1374,7 @@ impl ImagerApp {
             11.0,
             c.semantic.success,
             r.x1 - 16.0,
-            r.y0 + 20.0,
+            r.y0 + 9.0,
             TextWeight::Medium,
         );
         y + 54.0 + 10.0
@@ -1420,29 +1462,36 @@ impl ImagerApp {
             "Select the target drive",
             "The drive to write to — everything on it will be erased.",
         );
+        let compact = Self::compact_content(content);
         // Detected count (to the left of the Rescan button).
-        let detected = if self.show_internal {
-            format!("{} drive(s)", self.targets.len())
+        let detected = format!("{} removable", self.removable_count());
+        if compact {
+            Self::txt(
+                scene,
+                tr,
+                &detected,
+                11.5,
+                c.text_dim,
+                content.x0,
+                content.y0 + 60.0,
+                None,
+                TextWeight::Medium,
+            );
         } else {
-            format!("{} removable", self.removable_count())
-        };
-        Self::txt_right(
-            scene,
-            tr,
-            &detected,
-            11.5,
-            c.text_dim,
-            content.x1 - 116.0,
-            content.y0 + 8.0,
-            TextWeight::Medium,
-        );
+            Self::txt_right(
+                scene,
+                tr,
+                &detected,
+                11.5,
+                c.text_dim,
+                content.x1 - 116.0,
+                content.y0 + 8.0,
+                TextWeight::Medium,
+            );
+        }
         // Rescan button (top-right).
-        let rescan = Rect::new(
-            content.x1 - 104.0,
-            content.y0,
-            content.x1,
-            content.y0 + 30.0,
-        );
+        let rescan_y = content.y0 + if compact { 52.0 } else { 0.0 };
+        let rescan = Rect::new(content.x1 - 104.0, rescan_y, content.x1, rescan_y + 30.0);
         let hov = rescan.contains(self.last_mouse);
         Self::fill_rr(
             scene,
@@ -1464,12 +1513,12 @@ impl ImagerApp {
         );
 
         let vis = self.visible_targets();
-        let mut y = content.y0 + 52.0;
+        let mut y = content.y0 + if compact { 94.0 } else { 52.0 };
         if vis.is_empty() {
-            self.draw_drive_empty(scene, tr, theme, t, content);
+            Self::draw_drive_empty(scene, tr, theme, t, content, compact);
         } else {
             for (idx, drive) in &vis {
-                if y + 112.0 > content.y1 - 46.0 {
+                if y + 112.0 > content.y1 {
                     break;
                 }
                 let r = Rect::new(content.x0, y, content.x1, y + 112.0);
@@ -1477,135 +1526,22 @@ impl ImagerApp {
                 y += 112.0 + 12.0;
             }
         }
-
-        // Show-internal toggle.
-        let tr_rect = Rect::new(
-            content.x0,
-            content.y1 - 44.0,
-            content.x0 + 340.0,
-            content.y1 - 44.0 + 34.0,
-        );
-        self.draw_check_row(
-            scene,
-            tr,
-            theme,
-            t,
-            tr_rect,
-            self.show_internal,
-            c.semantic.danger,
-            "Show internal disks",
-        );
-        // System-disk acknowledgement, shown only when the system disk is
-        // actually in the list. It is the explicit gate that lets the system
-        // disk be selected at all (see `select_target`).
-        if self.has_visible_system_disk() {
-            let ack = Rect::new(
-                tr_rect.x1 + 12.0,
-                tr_rect.y0,
-                (tr_rect.x1 + 12.0 + 470.0).min(content.x1),
-                tr_rect.y1,
-            );
-            self.draw_check_row(
-                scene,
-                tr,
-                theme,
-                t,
-                ack,
-                self.system_ack,
-                c.semantic.danger,
-                "I understand — erasing my system disk destroys the running OS",
-            );
-        }
-    }
-
-    /// A labelled checkbox row (box + tick + caption) used by the Drive step's
-    /// reveal + acknowledgement gates. `accent` tints the checked box.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_check_row(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        row: Rect,
-        checked: bool,
-        accent: Color,
-        label: &str,
-    ) {
-        let c = &theme.tokens.colors;
-        let hov = row.contains(self.last_mouse);
-        Self::fill_rr(
-            scene,
-            t,
-            row,
-            10.0,
-            if hov { c.neutral[3] } else { c.neutral[2] },
-        );
-        Self::stroke_rr(
-            scene,
-            t,
-            row,
-            10.0,
-            if checked {
-                with_alpha(accent, 170)
-            } else {
-                c.border_standard
-            },
-            1.0,
-        );
-        let box_r = Rect::new(
-            row.x0 + 12.0,
-            row.y0 + 9.0,
-            row.x0 + 12.0 + 16.0,
-            row.y0 + 9.0 + 16.0,
-        );
-        Self::fill_rr(
-            scene,
-            t,
-            box_r,
-            4.0,
-            if checked { accent } else { c.neutral[4] },
-        );
-        if checked {
-            Self::check_disc(
-                scene,
-                t,
-                Point::new(
-                    f64::midpoint(box_r.x0, box_r.x1),
-                    f64::midpoint(box_r.y0, box_r.y1),
-                ),
-                8.0,
-                accent,
-                Color::WHITE,
-            );
-        }
-        Self::txt(
-            scene,
-            tr,
-            label,
-            12.5,
-            c.text_primary,
-            box_r.x1 + 10.0,
-            row.y0 + 9.0,
-            Some((row.width() - 40.0) as f32),
-            TextWeight::Medium,
-        );
     }
 
     fn draw_drive_empty(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
         t: Affine,
         content: Rect,
+        compact: bool,
     ) {
         let c = &theme.tokens.colors;
         let card = Rect::new(
             content.x0,
-            content.y0 + 60.0,
+            content.y0 + if compact { 94.0 } else { 60.0 },
             content.x1,
-            content.y0 + 60.0 + 240.0,
+            content.y0 + if compact { 334.0 } else { 300.0 },
         );
         Self::fill_rr(scene, t, card, 16.0, c.surfaces.raised);
         Self::dashed_rr(scene, t, card, 16.0, c.border_standard, 1.4);
@@ -1626,31 +1562,49 @@ impl ImagerApp {
             card.y0 + 140.0,
             TextWeight::Semibold,
         );
-        Self::txt_center(
-            scene,
-            tr,
-            "Plug in a USB stick or SD card, then press Rescan.",
-            13.0,
-            c.text_dim,
-            cx,
-            card.y0 + 168.0,
-            TextWeight::Regular,
-        );
-        let hint = if self.show_internal {
-            "No drives detected."
+        if compact {
+            for (line, y) in [
+                ("Plug in a USB stick or SD card,", card.y0 + 166.0),
+                ("then press Rescan.", card.y0 + 184.0),
+                ("Internal disks are shown after boot.", card.y0 + 212.0),
+            ] {
+                Self::txt_center(
+                    scene,
+                    tr,
+                    line,
+                    if y < card.y0 + 200.0 { 12.5 } else { 12.0 },
+                    if y < card.y0 + 200.0 {
+                        c.text_dim
+                    } else {
+                        c.neutral[6]
+                    },
+                    cx,
+                    y,
+                    TextWeight::Regular,
+                );
+            }
         } else {
-            "No removable drives detected — enable “Show internal disks” to target a fixed disk."
-        };
-        Self::txt_center(
-            scene,
-            tr,
-            hint,
-            12.0,
-            c.neutral[6],
-            cx,
-            card.y0 + 196.0,
-            TextWeight::Regular,
-        );
+            Self::txt_center(
+                scene,
+                tr,
+                "Plug in a USB stick or SD card, then press Rescan.",
+                13.0,
+                c.text_dim,
+                cx,
+                card.y0 + 168.0,
+                TextWeight::Regular,
+            );
+            Self::txt_center(
+                scene,
+                tr,
+                "Internal disks are available after booting this installation medium.",
+                12.0,
+                c.neutral[6],
+                cx,
+                card.y0 + 196.0,
+                TextWeight::Regular,
+            );
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1712,7 +1666,7 @@ impl ImagerApp {
             TextWeight::Bold,
         );
 
-        self.draw_drive_card_details(scene, tr, theme, t, r, drive, left);
+        Self::draw_drive_card_details(scene, tr, theme, t, r, drive, left);
     }
 
     /// Draws the removable/fixed/system chip, the model + capacity line, and
@@ -1722,7 +1676,6 @@ impl ImagerApp {
         reason = "shares the (scene, tr, theme, t) render context plus per-card geometry with every draw_* helper in this file; bundling that context is a wider render-context refactor out of scope here"
     )]
     fn draw_drive_card_details(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -1783,25 +1736,13 @@ impl ImagerApp {
             TextWeight::Regular,
         );
 
-        // Destructive line — or, for a not-yet-acknowledged system disk, a
-        // clear "locked" note pointing at the acknowledgement gate.
-        let (line, col) = if drive.is_system && !self.system_ack {
-            (
-                "🔒 Locked — this is your system disk. Acknowledge below to select it.".to_string(),
-                c.text_dim,
-            )
-        } else {
-            (
-                format!("⚠ Erases {}", drive.contents_summary()),
-                c.semantic.danger,
-            )
-        };
+        let line = format!("⚠ Erases {}", drive.contents_summary());
         Self::txt(
             scene,
             tr,
             &line,
             11.5,
-            col,
+            c.semantic.danger,
             left,
             r.y1 - 24.0,
             Some((r.width() - (left - r.x0) - 30.0) as f32),
@@ -1921,12 +1862,10 @@ impl ImagerApp {
         content: Rect,
     ) -> f64 {
         let c = &theme.tokens.colors;
-        let card = Rect::new(
-            content.x0,
-            content.y0 + 46.0,
-            content.x1,
-            content.y0 + 46.0 + 150.0,
-        );
+        let compact = Self::compact_content(content);
+        let top = content.y0 + if compact { 64.0 } else { 46.0 };
+        let height = if compact { 188.0 } else { 150.0 };
+        let card = Rect::new(content.x0, top, content.x1, top + height);
         Self::fill_rr(scene, t, card, 14.0, c.surfaces.raised);
         Self::stroke_rr(scene, t, card, 14.0, c.border_standard, 1.0);
         self.draw_confirm_review_rows(scene, tr, theme, card);
@@ -1943,6 +1882,7 @@ impl ImagerApp {
         card: Rect,
     ) {
         let c = &theme.tokens.colors;
+        let compact = card.width() < 520.0;
         let row =
             |scene: &mut Scene, tr: &mut TextRenderer, y: f64, k: &str, v: String, ok: bool| {
                 Self::txt(
@@ -1980,7 +1920,7 @@ impl ImagerApp {
         row(
             scene,
             tr,
-            card.y0 + 24.0,
+            card.y0 + 20.0,
             "Image",
             src_v,
             self.source.is_some(),
@@ -1992,7 +1932,7 @@ impl ImagerApp {
         row(
             scene,
             tr,
-            card.y0 + 58.0,
+            card.y0 + if compact { 54.0 } else { 58.0 },
             "Drive",
             tgt_v,
             self.target().is_some(),
@@ -2008,6 +1948,7 @@ impl ImagerApp {
         card: Rect,
     ) {
         let c = &theme.tokens.colors;
+        let compact = card.width() < 520.0;
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
             let fit = if tgt.fits(src.size) {
                 (
@@ -2027,7 +1968,7 @@ impl ImagerApp {
                 12.0,
                 c.text_dim,
                 card.x0 + 20.0,
-                card.y0 + 92.0,
+                card.y0 + if compact { 98.0 } else { 92.0 },
                 None,
                 TextWeight::Semibold,
             );
@@ -2038,8 +1979,8 @@ impl ImagerApp {
                 13.0,
                 fit.1,
                 card.x0 + 96.0,
-                card.y0 + 91.0,
-                None,
+                card.y0 + if compact { 97.0 } else { 91.0 },
+                Some((card.width() - 116.0).max(0.0) as f32),
                 TextWeight::Medium,
             );
         }
@@ -2061,7 +2002,7 @@ impl ImagerApp {
             12.0,
             c.text_dim,
             card.x0 + 20.0,
-            card.y0 + 122.0,
+            card.y0 + if compact { 132.0 } else { 122.0 },
             None,
             TextWeight::Semibold,
         );
@@ -2072,7 +2013,7 @@ impl ImagerApp {
             13.0,
             c.text_primary,
             card.x0 + 96.0,
-            card.y0 + 121.0,
+            card.y0 + if compact { 131.0 } else { 121.0 },
             Some((card.width() - 116.0) as f32),
             TextWeight::Medium,
         );
@@ -2092,11 +2033,13 @@ impl ImagerApp {
         let c = &theme.tokens.colors;
         let internal = self.target().is_some_and(|d| !d.removable);
         let system = self.target().is_some_and(|d| d.is_system);
+        let compact = Self::compact_content(content);
+        let banner_h = if compact { 58.0 } else { 44.0 };
         let banner = Rect::new(
             content.x0,
             card_bottom + 16.0,
             content.x1,
-            card_bottom + 16.0 + 44.0,
+            card_bottom + 16.0 + banner_h,
         );
         Self::fill_rr(
             scene,
@@ -2120,17 +2063,49 @@ impl ImagerApp {
         } else {
             "⚠  This permanently erases the drive. This cannot be undone."
         };
-        Self::txt(
-            scene,
-            tr,
-            warn,
-            13.0,
-            c.semantic.danger,
-            banner.x0 + 16.0,
-            banner.y0 + 14.0,
-            Some((banner.width() - 32.0) as f32),
-            TextWeight::Semibold,
-        );
+        if compact {
+            let (first, second) = if system {
+                (
+                    "⚠ This is your system disk; it will be erased.",
+                    "This cannot be undone.",
+                )
+            } else if internal {
+                (
+                    "⚠ This erases the entire internal disk.",
+                    "This cannot be undone.",
+                )
+            } else {
+                (
+                    "⚠ This permanently erases the drive.",
+                    "This cannot be undone.",
+                )
+            };
+            for (line, y) in [(first, banner.y0 + 10.0), (second, banner.y0 + 31.0)] {
+                Self::txt(
+                    scene,
+                    tr,
+                    line,
+                    12.5,
+                    c.semantic.danger,
+                    banner.x0 + 14.0,
+                    y,
+                    Some((banner.width() - 28.0) as f32),
+                    TextWeight::Semibold,
+                );
+            }
+        } else {
+            Self::txt(
+                scene,
+                tr,
+                warn,
+                13.0,
+                c.semantic.danger,
+                banner.x0 + 16.0,
+                banner.y0 + 14.0,
+                Some((banner.width() - 32.0) as f32),
+                TextWeight::Semibold,
+            );
+        }
     }
 
     /// The typed confirmation field and the write-gate note below it.
@@ -2207,9 +2182,11 @@ impl ImagerApp {
         }
         // Gate note.
         let note = if crate::write::allow_write() {
-            "Live write enabled (QOS_IMAGER_ALLOW_WRITE=1)."
+            "Direct privileged writer enabled."
+        } else if Self::compact_content(content) {
+            "Administrator approval comes next."
         } else {
-            "Writing unavailable — enable the privileged backend with QOS_IMAGER_ALLOW_WRITE=1."
+            "Your device will ask for administrator approval when writing begins."
         };
         Self::txt(
             scene,
@@ -2446,13 +2423,12 @@ impl ImagerApp {
         ok: bool,
     ) {
         let content = lay.content;
-        let cxp = f64::midpoint(content.x0, content.x1);
         let cyp = content.y0 + 120.0;
         let install = self.action == Action::Install;
         if ok {
-            Self::draw_write_done_ok_hero(scene, tr, theme, t, cxp, cyp, install);
+            Self::draw_write_done_ok_hero(scene, tr, theme, t, content, cyp, install);
         } else {
-            Self::draw_write_done_failed_hero(scene, tr, theme, t, cxp, cyp, install);
+            Self::draw_write_done_failed_hero(scene, tr, theme, t, content, cyp, install);
         }
         self.draw_write_done_summary(scene, tr, theme, t, content, ok);
     }
@@ -2463,11 +2439,13 @@ impl ImagerApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         t: Affine,
-        cxp: f64,
+        content: Rect,
         cyp: f64,
         install: bool,
     ) {
         let c = &theme.tokens.colors;
+        let cxp = f64::midpoint(content.x0, content.x1);
+        let compact = Self::compact_content(content);
         Self::check_disc(
             scene,
             t,
@@ -2497,16 +2475,36 @@ impl ImagerApp {
             cyp + 66.0,
             TextWeight::Bold,
         );
-        Self::txt_center(
-            scene,
-            tr,
-            sub,
-            14.0,
-            c.text_dim,
-            cxp,
-            cyp + 100.0,
-            TextWeight::Regular,
-        );
+        if compact {
+            let lines = if install {
+                ["Written and verified.", "Remove the media and reboot."]
+            } else {
+                ["Written and verified.", "You can safely remove the drive."]
+            };
+            for (line, y) in [(lines[0], cyp + 100.0), (lines[1], cyp + 120.0)] {
+                Self::txt_center(
+                    scene,
+                    tr,
+                    line,
+                    13.5,
+                    c.text_dim,
+                    cxp,
+                    y,
+                    TextWeight::Regular,
+                );
+            }
+        } else {
+            Self::txt_center(
+                scene,
+                tr,
+                sub,
+                14.0,
+                c.text_dim,
+                cxp,
+                cyp + 100.0,
+                TextWeight::Regular,
+            );
+        }
     }
 
     /// The failure hero: danger disc with an "!", headline + sub.
@@ -2515,11 +2513,13 @@ impl ImagerApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         t: Affine,
-        cxp: f64,
+        content: Rect,
         cyp: f64,
         install: bool,
     ) {
         let c = &theme.tokens.colors;
+        let cxp = f64::midpoint(content.x0, content.x1);
+        let compact = Self::compact_content(content);
         scene.fill(
             Fill::NonZero,
             t,
@@ -2552,16 +2552,34 @@ impl ImagerApp {
             cyp + 66.0,
             TextWeight::Bold,
         );
-        Self::txt_center(
-            scene,
-            tr,
-            "The drive was not changed. See the message below.",
-            14.0,
-            c.text_dim,
-            cxp,
-            cyp + 100.0,
-            TextWeight::Regular,
-        );
+        if compact {
+            for (line, y) in [
+                ("The drive may be incomplete.", cyp + 100.0),
+                ("Retry before using it.", cyp + 120.0),
+            ] {
+                Self::txt_center(
+                    scene,
+                    tr,
+                    line,
+                    13.5,
+                    c.text_dim,
+                    cxp,
+                    y,
+                    TextWeight::Regular,
+                );
+            }
+        } else {
+            Self::txt_center(
+                scene,
+                tr,
+                "Writing did not verify. The drive may be incomplete; retry before using it.",
+                14.0,
+                c.text_dim,
+                cxp,
+                cyp + 100.0,
+                TextWeight::Regular,
+            );
+        }
     }
 
     /// The Image/Drive summary card below the hero, when both are known.
@@ -2577,12 +2595,10 @@ impl ImagerApp {
         let c = &theme.tokens.colors;
         let cyp = content.y0 + 120.0;
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
-            let card = Rect::new(
-                content.x0 + 80.0,
-                cyp + 140.0,
-                content.x1 - 80.0,
-                cyp + 140.0 + 84.0,
-            );
+            let compact = Self::compact_content(content);
+            let inset = if compact { 0.0 } else { 80.0 };
+            let top = cyp + if compact { 154.0 } else { 140.0 };
+            let card = Rect::new(content.x0 + inset, top, content.x1 - inset, top + 84.0);
             Self::fill_rr(scene, t, card, 12.0, c.surfaces.raised);
             Self::stroke_rr(scene, t, card, 12.0, c.border_standard, 1.0);
             Self::txt(
@@ -2602,9 +2618,18 @@ impl ImagerApp {
                 &src.name,
                 13.5,
                 c.text_primary,
-                card.x0 + 90.0,
+                card.x0 + if compact { 76.0 } else { 90.0 },
                 card.y0 + 17.0,
-                Some((card.width() - 110.0) as f32),
+                Some(
+                    if compact && ok {
+                        card.width() - 176.0
+                    } else if compact {
+                        card.width() - 94.0
+                    } else {
+                        card.width() - 110.0
+                    }
+                    .max(0.0) as f32,
+                ),
                 TextWeight::Medium,
             );
             Self::txt(
@@ -2624,9 +2649,9 @@ impl ImagerApp {
                 &format!("{} · {}", tgt.model, tgt.dev_path()),
                 13.5,
                 c.text_primary,
-                card.x0 + 90.0,
+                card.x0 + if compact { 76.0 } else { 90.0 },
                 card.y0 + 47.0,
-                Some((card.width() - 110.0) as f32),
+                Some((card.width() - if compact { 94.0 } else { 110.0 }).max(0.0) as f32),
                 TextWeight::Medium,
             );
             if ok {
@@ -2766,13 +2791,13 @@ impl ImagerApp {
         let Some(drive) = self.targets.get(idx) else {
             return;
         };
-        // Hard guard: the system disk (the one the running OS boots from) can
-        // never be selected by a stray click. It only becomes selectable after
-        // the user ticks the explicit acknowledgement below the list.
-        if drive.is_system && !self.system_ack {
+        // Hard guard repeated below the visible-list filter: stale persisted or
+        // collaborative state cannot turn the media creator into an internal-
+        // disk raw writer.
+        if !drive.is_media_target() {
             self.set_status(
                 state,
-                "That is your system disk — tick “I understand” below to select it.",
+                "Internal and system disks can only be installed from the booted qOS medium.",
             );
             self.dirty = true;
             return;
@@ -2800,19 +2825,18 @@ impl ImagerApp {
         match self.step {
             Step::Source if self.can_advance(Step::Source) => self.goto(state, Step::Drive),
             Step::Drive if self.can_advance(Step::Drive) => {
-                // Record whether this is a write or an install (drives the
-                // naming), then route: a qOS image goes through Customize; a
-                // plain ISO skips straight to the Confirm review.
-                let act = self.intended_action();
-                self.action = act;
-                ImagerDoc::set_action(state, act);
+                self.action = Action::Flash;
+                ImagerDoc::set_action(state, Action::Flash);
                 if self.customizable() {
                     self.goto(state, Step::Customize);
                 } else {
                     self.goto(state, Step::Confirm);
                 }
             }
-            Step::Customize => self.goto(state, Step::Confirm),
+            Step::Customize => match self.profile.validate_media_profile() {
+                Ok(()) => self.goto(state, Step::Confirm),
+                Err(message) => self.set_status(state, &message),
+            },
             // Confirm advances into the write only when the typed-name gate is
             // armed; that same gesture kicks off the (external) job.
             Step::Confirm if self.can_advance(Step::Confirm) => self.start_write(state),
@@ -2877,6 +2901,9 @@ impl ImagerApp {
         let (Some(src), Some(tgt)) = (self.source.clone(), self.target().cloned()) else {
             return Err("Select a source and drive first.".into());
         };
+        if src.installable {
+            self.profile.validate_media_profile()?;
+        }
         if *device != tgt.dev_path() {
             return Err("The selected target changed; review the write plan again.".into());
         }
@@ -2917,9 +2944,16 @@ impl ImagerApp {
             crate::write::JobStart::TooSmall => {
                 return Err("Image is larger than the drive — write refused.".into());
             }
+            crate::write::JobStart::UnsafeTarget => {
+                return Err(
+                    "Internal and system disks can only be installed from the booted qOS medium."
+                        .into(),
+                );
+            }
             crate::write::JobStart::Incomplete => {
                 return Err("Select a source and drive before writing.".into());
             }
+            crate::write::JobStart::InvalidProfile(message) => return Err(message),
             crate::write::JobStart::WriteDisabled => {
                 return Err(
                     "Raw-device writing is disabled; enable the privileged Imager backend first."
@@ -3024,8 +3058,6 @@ impl ImagerApp {
         }
         self.selected = self.selected.filter(|i| *i < self.targets.len());
         ImagerDoc::set_selected(state, self.selected);
-        // A vanished/changed inventory invalidates any system-disk acknowledgement.
-        self.system_ack = false;
         self.dirty = true;
     }
 
@@ -3047,27 +3079,6 @@ impl ImagerApp {
                 }
             }
             Hit::Target(i) => self.select_target(state, i),
-            Hit::ToggleInternal => {
-                self.show_internal = !self.show_internal;
-                ImagerDoc::set_show_internal(state, self.show_internal);
-                // Hiding internal disks again also withdraws the system-disk
-                // acknowledgement, so re-revealing them re-arms the guard.
-                if !self.show_internal {
-                    self.system_ack = false;
-                }
-                self.dirty = true;
-            }
-            Hit::ToggleSystemAck => {
-                self.system_ack = !self.system_ack;
-                if !self.system_ack {
-                    // Withdrawing consent deselects the system disk if it was chosen.
-                    if self.target().is_some_and(|d| d.is_system) {
-                        self.selected = None;
-                        ImagerDoc::set_selected(state, None);
-                    }
-                }
-                self.dirty = true;
-            }
             Hit::Rescan => self.do_rescan(state),
             Hit::ConfirmField => {
                 self.confirm_input.set_focus(true);
@@ -3132,11 +3143,20 @@ impl Widget for ImagerApp {
         self.releases = ImagerDoc::releases(state);
         self.profile = ImagerDoc::profile(state);
         self.progress = ImagerDoc::progress(state);
-        self.action = ImagerDoc::action(state);
+        self.action = Action::Flash;
+        if ImagerDoc::action(state) != Action::Flash {
+            ImagerDoc::set_action(state, Action::Flash);
+        }
         self.status = ImagerDoc::status(state);
         self.step = ImagerDoc::step(state);
-        self.show_internal = ImagerDoc::show_internal(state);
-        self.selected = ImagerDoc::selected(state).filter(|i| *i < self.targets.len());
+        self.selected = ImagerDoc::selected(state).filter(|i| {
+            self.targets
+                .get(*i)
+                .is_some_and(TargetDrive::is_media_target)
+        });
+        if self.selected != ImagerDoc::selected(state) {
+            ImagerDoc::set_selected(state, self.selected);
+        }
 
         // Refresh the shared customization panel's fields from the profile
         // (each unfocused field mirrors the stored value; a focused one stays
@@ -3781,6 +3801,92 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let lay = app.compute_layout();
         assert_eq!(lay.crumbs.len(), 6);
+        assert!(!lay.compact_crumbs);
+    }
+
+    #[test]
+    fn compact_layout_keeps_every_step_station_inside_the_viewport() {
+        let (mut app, _doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
+        let lay = app.compute_layout();
+
+        assert!(lay.compact_crumbs);
+        assert_eq!(lay.crumbs.len(), Step::all().len());
+        assert!(lay.crumbs.iter().all(|(rect, _)| {
+            rect.x0 >= app.rect.x0
+                && rect.x1 <= app.rect.x1
+                && rect.width() >= 40.0
+                && rect.height() >= 34.0
+        }));
+        assert_eq!(
+            lay.crumbs.first().map(|(_, step)| *step),
+            Some(Step::Source)
+        );
+        assert_eq!(lay.crumbs.last().map(|(_, step)| *step), Some(Step::Done));
+    }
+
+    #[test]
+    fn compact_step_targets_use_the_same_on_screen_rects_as_the_rail() {
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
+        app.select_target(&mut doc, 0);
+        app.goto(&mut doc, Step::Confirm);
+        let lay = app.compute_layout();
+
+        for (rect, step) in &lay.crumbs {
+            if app.crumb_reachable(*step) {
+                assert!(lay.hits.iter().any(|(hit_rect, hit)| {
+                    hit_rect == rect && matches!(hit, Hit::StepJump(hit_step) if hit_step == step)
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn compact_body_controls_reserve_space_for_wrapped_headings() {
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
+
+        let source = app.compute_layout();
+        let browse = source
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, Hit::PickFile).then_some(*rect))
+            .unwrap();
+        assert!(browse.y0 >= source.content.y0 + 64.0);
+        assert!(browse.x0 >= source.content.x0 && browse.x1 <= source.content.x1);
+
+        app.goto(&mut doc, Step::Drive);
+        let drive = app.compute_layout();
+        let rescan = drive
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, Hit::Rescan).then_some(*rect))
+            .unwrap();
+        let target = drive
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, Hit::Target(_)).then_some(*rect))
+            .unwrap();
+        assert!(rescan.y0 >= drive.content.y0 + 52.0);
+        assert!(target.y0 >= rescan.y1 + 12.0);
+    }
+
+    #[test]
+    fn compact_footer_actions_never_overlap() {
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
+
+        for step in [Step::Drive, Step::Customize, Step::Confirm] {
+            app.goto(&mut doc, step);
+            let lay = app.compute_layout();
+            let back = lay.back.unwrap();
+            let primary = lay.primary.unwrap();
+            assert!(back.x0 >= lay.content.x0);
+            assert!(primary.x1 <= lay.content.x1);
+            assert!(back.x1 + 12.0 <= primary.x0);
+            assert!(back.width() >= 130.0 && primary.width() >= 130.0);
+        }
     }
 
     #[test]
@@ -3798,6 +3904,27 @@ mod tests {
         assert_eq!(app.step, Step::Customize);
         app.advance(&mut doc);
         assert_eq!(app.step, Step::Confirm);
+    }
+
+    #[test]
+    fn invalid_media_profile_blocks_confirm_and_direct_write() {
+        let (mut app, mut doc) = seeded_app();
+        app.select_target(&mut doc, 0);
+        app.profile.hostname = "bad host".into();
+        app.goto(&mut doc, Step::Customize);
+
+        app.advance(&mut doc);
+        assert_eq!(app.step, Step::Customize);
+        assert!(ImagerDoc::status(&doc).contains("Hostname"));
+
+        // A direct operation dispatch must repeat the gate rather than relying
+        // only on wizard navigation.
+        app.goto(&mut doc, Step::Confirm);
+        app.confirm_input.set_text("sdb");
+        app.start_write(&mut doc);
+        assert_eq!(app.step, Step::Confirm);
+        assert!(app.job_rx.is_none());
+        assert!(ImagerDoc::status(&doc).contains("Hostname"));
     }
 
     /// The primary interaction, proven end to end by clicking the real
@@ -3925,19 +4052,15 @@ mod tests {
     }
 
     #[test]
-    fn drive_step_hides_internal_disks_until_opted_in() {
-        let (mut app, _doc) = seeded_app();
+    fn drive_step_only_offers_external_installation_media() {
+        let (app, _doc) = seeded_app();
         // Sample has one USB (removable) + one NVMe (fixed).
         assert_eq!(app.visible_targets().len(), 1);
         assert_eq!(app.removable_count(), 1);
-        app.show_internal = true;
-        assert_eq!(app.visible_targets().len(), 2);
     }
 
-    /// The system disk can never be selected by a stray click; it takes an
-    /// explicit acknowledgement, and withdrawing that consent deselects it.
     #[test]
-    fn system_disk_needs_acknowledgement_before_selection() {
+    fn internal_and_system_disks_can_never_be_selected() {
         let mut app = ImagerApp::new();
         let mut doc = AutoCommit::new();
         let mut targets = crate::model::sample_targets();
@@ -3945,37 +4068,13 @@ mod tests {
         ImagerDoc::seed(&mut doc, &targets);
         ImagerDoc::set_source(&mut doc, Some(&crate::model::sample_source()));
         app.sync(&mut doc, &automerge::ROOT);
-        app.show_internal = true; // reveal internal disks
-        assert!(app.has_visible_system_disk());
 
-        // A stray click on the system disk is refused with a clear reason.
         app.dispatch_hit(&mut doc, Hit::Target(1));
-        assert_eq!(
-            app.selected, None,
-            "the system disk is not selectable by accident"
-        );
+        assert_eq!(app.selected, None, "the system disk is never selectable");
         assert!(
             ImagerDoc::status(&doc)
                 .to_lowercase()
                 .contains("system disk")
-        );
-
-        // The explicit acknowledgement unlocks it.
-        app.dispatch_hit(&mut doc, Hit::ToggleSystemAck);
-        assert!(app.system_ack);
-        app.dispatch_hit(&mut doc, Hit::Target(1));
-        assert_eq!(
-            app.selected,
-            Some(1),
-            "acknowledged → the system disk can be selected"
-        );
-
-        // Withdrawing the acknowledgement drops the selection again.
-        app.dispatch_hit(&mut doc, Hit::ToggleSystemAck);
-        assert!(!app.system_ack);
-        assert_eq!(
-            app.selected, None,
-            "withdrawing consent deselects the system disk"
         );
     }
 

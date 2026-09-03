@@ -19,8 +19,11 @@
 //!   * `greeter.username` — `Text`
 //!   * `greeter.password` — `Text` (rendered masked; value stays real)
 //!   * `greeter.submit`   — `bool` flag (Log-in / Enter rising edge)
+//!   * `greeter.fingerprint` — `bool` flag (explicit passwordless PAM attempt)
 //!   * `greeter.session`  — `Text` (the chosen session's label)
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
 use automerge::{
@@ -37,6 +40,7 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
 
+use ui::a11y::Politeness;
 use ui::app::UserEvent;
 use ui::caps_lock::CapsLockEstimate;
 use ui::icons::Icon;
@@ -44,7 +48,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, Divider, Dropdown, IconWidget, Row, Spacer, Spinner, Text, TextInput, Widget,
+    Button, Divider, Dropdown, IconWidget, Row, Scrollable, Spacer, Spinner, Text, TextInput,
+    Widget,
 };
 
 use crate::auth::{AuthUpdate, spawn_auth};
@@ -53,6 +58,7 @@ use crate::sessions::{DEFAULT_SESSIONS_DIR, Session, read_sessions};
 const USERNAME_PATH: &str = "greeter.username";
 const PASSWORD_PATH: &str = "greeter.password";
 const SUBMIT_PATH: &str = "greeter.submit";
+const FINGERPRINT_PATH: &str = "greeter.fingerprint";
 /// The session picker's chosen label, as a CRDT `Text`. The picker writes
 /// its selection here; [`GreeterApp::sync`] mirrors it back onto the
 /// selected index.
@@ -64,15 +70,18 @@ const SESSION_PATH: &str = "greeter.session";
 const REBOOT_PATH: &str = "greeter.reboot";
 const POWEROFF_PATH: &str = "greeter.poweroff";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthMethod {
+    Password,
+    Fingerprint,
+}
+
 /// Card geometry (logical px).
 const CARD_WIDTH: f32 = 400.0;
-const CARD_PADDING: f32 = 32.0;
+const CARD_PADDING: f32 = 24.0;
 /// Space between the card's top-level groups (brand, each field, the
 /// primary action, the status row, the power strip).
-const CARD_GAP: f32 = 20.0;
-/// Usable width inside the card's padding — what every full-bleed control
-/// is laid out at.
-const CONTENT_WIDTH: f32 = CARD_WIDTH - CARD_PADDING * 2.0;
+const CARD_GAP: f32 = 12.0;
 /// Gap between a field's label and the field itself. Tight enough that the
 /// pair reads as one unit rather than two stacked rows.
 const LABEL_GAP: f32 = 7.0;
@@ -112,6 +121,9 @@ struct VStack {
     /// `None` fills the parent's content width.
     width: Option<f32>,
     min_height: Option<f32>,
+    max_width: Option<f32>,
+    fill_height: bool,
+    center_children: bool,
     /// Paint the card surface: elevation shadow, fill, and hairline border.
     chrome: bool,
     rect: Rect,
@@ -126,20 +138,62 @@ impl VStack {
             padding: 0.0,
             width: None,
             min_height: None,
+            max_width: None,
+            fill_height: false,
+            center_children: false,
             chrome: false,
             rect: Rect::ZERO,
         }
     }
 
-    /// The login card itself — fixed width, padded, with chrome.
+    /// The login card itself — capped at a comfortable reading width, but
+    /// allowed to narrow with the viewport.
     fn card(gap: f32, children: Vec<Box<dyn Widget>>) -> Self {
         Self {
             children,
             gap,
             padding: CARD_PADDING,
-            width: Some(CARD_WIDTH),
+            width: None,
             min_height: None,
+            max_width: Some(CARD_WIDTH),
+            fill_height: false,
+            center_children: false,
             chrome: true,
+            rect: Rect::ZERO,
+        }
+    }
+
+    /// A viewport-height stage with flexible spacers above and below the
+    /// card. The spacers center a short card, then collapse to zero before
+    /// a tall card overflows into the surrounding [`Scrollable`].
+    fn viewport(child: Box<dyn Widget>) -> Self {
+        Self {
+            children: vec![Box::new(Spacer::new()), child, Box::new(Spacer::new())],
+            gap: 0.0,
+            padding: 16.0,
+            width: None,
+            min_height: None,
+            max_width: None,
+            fill_height: true,
+            center_children: true,
+            chrome: false,
+            rect: Rect::ZERO,
+        }
+    }
+
+    /// Full-height screen shell for the scrollable card and the persistent
+    /// power footer.
+    fn shell(children: Vec<Box<dyn Widget>>) -> Self {
+        Self {
+            children,
+            gap: 10.0,
+            padding: 16.0,
+            width: None,
+            min_height: None,
+            max_width: None,
+            fill_height: true,
+            center_children: false,
+            chrome: false,
             rect: Rect::ZERO,
         }
     }
@@ -183,7 +237,11 @@ impl Widget for VStack {
                     // content width and the copy sits on one left margin, so
                     // the form reads as a single column instead of a stack of
                     // separately-centred pills.
-                    align_items: Some(AlignItems::Stretch),
+                    align_items: Some(if self.center_children {
+                        AlignItems::Center
+                    } else {
+                        AlignItems::Stretch
+                    }),
                     gap: Size {
                         width: length(0.0_f32),
                         height: length(self.gap),
@@ -199,6 +257,14 @@ impl Widget for VStack {
                             Some(w) => length(w),
                             None => percent(1.0_f32),
                         },
+                        height: if self.fill_height {
+                            percent(1.0_f32)
+                        } else {
+                            Dimension::auto()
+                        },
+                    },
+                    max_size: Size {
+                        width: self.max_width.map_or(Dimension::auto(), length),
                         height: Dimension::auto(),
                     },
                     min_size: Size {
@@ -490,6 +556,9 @@ pub struct GreeterApp {
     /// [`UserEvent::External`]). Empty in tests / headless renders, where
     /// auth falls back to a synchronous exchange.
     proxy: Arc<OnceLock<EventLoopProxy<UserEvent>>>,
+    /// The compact-viewport scroll position survives status/caps/auth
+    /// rebuilds, which recreate the composed tree.
+    viewport_offset: Rc<Cell<(f32, f32)>>,
 }
 
 impl Default for GreeterApp {
@@ -524,6 +593,7 @@ impl GreeterApp {
             rect: Rect::ZERO,
             composed: None,
             proxy: Arc::new(OnceLock::new()),
+            viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
         }
     }
 
@@ -672,10 +742,22 @@ impl GreeterApp {
                     } else {
                         c.text_dim
                     };
+                    let politeness = if self.phase == AuthPhase::Authenticating {
+                        // PAM prompts can require immediate physical action
+                        // (for example, touching the fingerprint reader).
+                        Politeness::Assertive
+                    } else {
+                        Politeness::Polite
+                    };
                     rows.push(Box::new(
                         Row::new()
                             .push(Box::new(Spinner::with_size(16.0)))
-                            .push(Box::new(Text::new(live).with_size(13.0).with_color(tint))),
+                            .push(Box::new(
+                                Text::new(live)
+                                    .with_size(13.0)
+                                    .with_color(tint)
+                                    .with_live(politeness),
+                            )),
                     ));
                 }
             }
@@ -684,7 +766,8 @@ impl GreeterApp {
                 StatusKind::Hint => rows.push(Box::new(
                     Text::new(&self.status)
                         .with_size(13.0)
-                        .with_color(c.text_dim),
+                        .with_color(c.text_dim)
+                        .with_live(Politeness::Assertive),
                 )),
                 StatusKind::Error => {
                     rows.push(Box::new(
@@ -695,7 +778,8 @@ impl GreeterApp {
                             .push(Box::new(
                                 Text::new(&self.status)
                                     .with_size(13.0)
-                                    .with_color(c.semantic.danger),
+                                    .with_color(c.semantic.danger)
+                                    .with_live(Politeness::Assertive),
                             )),
                     ));
                     if !self.detail.is_empty() {
@@ -712,13 +796,36 @@ impl GreeterApp {
         VStack::new(4.0, rows).with_min_height(STATUS_HEIGHT)
     }
 
+    fn build_auth_actions(&self, busy: bool, theme: &Theme) -> VStack {
+        VStack::new(
+            ACTION_STATUS_GAP,
+            vec![
+                Box::new(
+                    Button::new("greeter.login", self.login_label(), Some(SUBMIT_PATH))
+                        .primary()
+                        .fill_width(ACTION_HEIGHT),
+                ),
+                Box::new(
+                    Button::new(
+                        "greeter.fingerprint",
+                        "Use fingerprint",
+                        Some(FINGERPRINT_PATH),
+                    )
+                    .with_enabled(!busy)
+                    .fill_width(ACTION_HEIGHT),
+                ),
+                Box::new(self.build_status(theme)),
+            ],
+        )
+    }
+
     /// Build the composed card subtree from current state.
     ///
     /// Focus continuity contract: the focusable set is, in tree order, the
-    /// username field, the password field, the session picker (present only
-    /// when there is more than one session to choose between), the primary
-    /// action, and the two power actions. Labels, the Caps-Lock note, the
-    /// spinner, and the status line are all non-focusable, so an incidental
+    /// username field, the password field, the primary action, the fingerprint
+    /// action, the session picker (present only when there is more than one
+    /// session to choose between), and the two power actions. Labels, the
+    /// Caps-Lock note, the spinner, and the status line are all non-focusable, so an incidental
     /// rebuild (a status change, a Caps-Lock flip, cycling the session)
     /// keeps keyboard focus AND the caret glued in place — see `main.rs`'s
     /// `autofocus_on_structure_change` and the App's `rebuild_structure`.
@@ -797,9 +904,18 @@ impl GreeterApp {
         }
         children.push(Box::new(VStack::new(LABEL_GAP, password_group)));
 
+        // --- authentication actions + status ------------------------------
+        // The one accented, full-width control on the card — everything else
+        // is quieter than this by construction — paired with the single
+        // status voice beneath the explicit password and fingerprint actions,
+        // so feedback lands where the eye already is after a click.
+        children.push(Box::new(self.build_auth_actions(busy, theme)));
+
         // --- session picker ----------------------------------------------
-        // Only when there is an actual choice to make. Offering to "pick"
-        // between one option is noise on the first screen of the OS.
+        // Only when there is an actual choice to make. It follows the
+        // immediately-needed authentication actions so a scaled/short
+        // viewport never hides Log in or Use fingerprint merely because an
+        // optional alternate session is installed.
         if self.sessions.len() > 1 {
             let options: Vec<String> = self.sessions.iter().map(|s| s.name.clone()).collect();
             children.push(Box::new(VStack::new(
@@ -815,30 +931,15 @@ impl GreeterApp {
             )));
         }
 
-        // --- primary action + its status ----------------------------------
-        // The one accented, full-width control on the card — everything else
-        // is quieter than this by construction — paired with the single
-        // status voice directly beneath it, so feedback lands where the eye
-        // already is after a click.
-        children.push(Box::new(VStack::new(
-            ACTION_STATUS_GAP,
-            vec![
-                Box::new(
-                    Button::new("greeter.login", self.login_label(), Some(SUBMIT_PATH))
-                        .primary()
-                        .with_size(CONTENT_WIDTH, ACTION_HEIGHT),
-                ),
-                Box::new(self.build_status(theme)),
-            ],
-        )));
-
-        // --- power strip ---------------------------------------------------
-        // Below a rule, pushed to the trailing edge, ghost-styled and
-        // shorter than the primary: reachable, clearly not the main event.
-        children.push(Box::new(
-            Divider::horizontal().with_color(c.border_white_10),
-        ));
-        children.push(Box::new(
+        let card: Box<dyn Widget> = Box::new(VStack::card(CARD_GAP, children));
+        let card_view: Box<dyn Widget> = Box::new(
+            Scrollable::new_vertical()
+                .fill_parent_height()
+                .with_child(Box::new(VStack::viewport(card)))
+                .with_persisted_offset(self.viewport_offset.clone())
+                .always_visible(),
+        );
+        let power: Box<dyn Widget> = Box::new(
             Row::new()
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(
@@ -853,9 +954,12 @@ impl GreeterApp {
                         .with_icon(Icon::Power)
                         .with_size(116.0, POWER_HEIGHT),
                 )),
-        ));
-
-        Box::new(VStack::card(CARD_GAP, children))
+        );
+        Box::new(VStack::shell(vec![
+            card_view,
+            Box::new(Divider::horizontal().with_color(c.border_white_10)),
+            power,
+        ]))
     }
 
     fn bootstrap_crdt(&self, state: &mut AutoCommit, root: &ObjId) {
@@ -867,6 +971,9 @@ impl GreeterApp {
         }
         if state.get(root, SUBMIT_PATH).ok().flatten().is_none() {
             let _ = state.put(root, SUBMIT_PATH, false);
+        }
+        if state.get(root, FINGERPRINT_PATH).ok().flatten().is_none() {
+            let _ = state.put(root, FINGERPRINT_PATH, false);
         }
         if state.get(root, SESSION_PATH).ok().flatten().is_none()
             && let Ok(obj) = state.put_object(root, SESSION_PATH, ObjType::Text)
@@ -926,12 +1033,42 @@ impl GreeterApp {
         }
     }
 
+    fn auth_secret(
+        state: &AutoCommit,
+        root: &ObjId,
+        method: AuthMethod,
+    ) -> Result<String, &'static str> {
+        match method {
+            AuthMethod::Password => {
+                let password = Self::read_text(state, root, PASSWORD_PATH).unwrap_or_default();
+                if password.is_empty() {
+                    Err("Enter your password")
+                } else {
+                    Ok(password)
+                }
+            }
+            AuthMethod::Fingerprint => Ok(String::new()),
+        }
+    }
+
     fn read_flag(state: &AutoCommit, root: &ObjId, path: &str) -> bool {
         matches!(
             state.get(root, path),
             Ok(Some((Value::Scalar(s), _)))
                 if matches!(s.as_ref(), ScalarValue::Boolean(true))
         )
+    }
+
+    /// Whether keyboard focus currently belongs to a button in the composed
+    /// card. Buttons are activated by [`ui::App`] after widget dispatch, so the
+    /// form-level Enter fallback must leave their event unhandled.
+    fn focused_button_present(&self) -> bool {
+        fn walk(widget: &dyn Widget) -> bool {
+            (widget.name() == "Button" && widget.is_focused())
+                || widget.children().into_iter().any(walk)
+        }
+
+        self.composed.as_deref().is_some_and(walk)
     }
 
     /// Environment handed to greetd's `StartSession`. Mirrors the
@@ -952,23 +1089,28 @@ impl GreeterApp {
     /// [`UserEvent::External`]). Without an event-loop proxy (tests /
     /// headless), it falls back to a synchronous exchange so the path is
     /// still exercised.
-    fn attempt_login(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn attempt_login(&mut self, state: &mut AutoCommit, root: &ObjId, method: AuthMethod) {
         // Guard: never start a second attempt while one is in flight.
         if self.phase != AuthPhase::Idle {
             return;
         }
 
         let username = Self::read_text(state, root, USERNAME_PATH).unwrap_or_default();
-        let password = Self::read_text(state, root, PASSWORD_PATH).unwrap_or_default();
 
         if username.trim().is_empty() {
             self.set_status("Enter your username");
             return;
         }
-        if password.is_empty() {
-            self.set_status("Enter your password");
-            return;
-        }
+        // An explicit fingerprint attempt must not copy or submit a password
+        // that happens to remain in the field. PAM/fprintd owns the factor
+        // conversation and receives an empty response for secret prompts.
+        let password = match Self::auth_secret(state, root, method) {
+            Ok(secret) => secret,
+            Err(message) => {
+                self.set_status(message);
+                return;
+            }
+        };
         let Some(session) = self.sessions.get(self.selected_session) else {
             self.set_status("No session available");
             return;
@@ -1112,7 +1254,12 @@ impl Widget for GreeterApp {
         // single click fires exactly one attempt.
         if Self::read_flag(state, root, SUBMIT_PATH) {
             let _ = state.put(root, SUBMIT_PATH, false);
-            self.attempt_login(state, root);
+            self.attempt_login(state, root, AuthMethod::Password);
+        }
+
+        if Self::read_flag(state, root, FINGERPRINT_PATH) {
+            let _ = state.put(root, FINGERPRINT_PATH, false);
+            self.attempt_login(state, root, AuthMethod::Fingerprint);
         }
 
         // Power-action rising edges. Reset the flag first so a single click
@@ -1261,23 +1408,17 @@ impl Widget for GreeterApp {
             }
         }
 
-        // Enter submits from anywhere in the form. We mark the event
-        // handled so the App runs its post-event `sync` (which detects
-        // the rising edge and runs auth).
-        let mut enter_pressed = false;
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
+        let enter_pressed = matches!(
+            event,
+            WindowEvent::KeyboardInput {
+                event: KeyEvent {
                     logical_key: Key::Named(NamedKey::Enter),
                     state: ElementState::Pressed,
                     ..
                 },
-            ..
-        } = event
-        {
-            let _ = state.put(root, SUBMIT_PATH, true);
-            enter_pressed = true;
-        }
+                ..
+            }
+        );
 
         // Delegate to the composed card.
         if let Some(c) = &mut self.composed
@@ -1297,7 +1438,12 @@ impl Widget for GreeterApp {
             );
         }
 
-        if enter_pressed {
+        // A focused control owns Enter. Dropdown consumes it above; buttons
+        // deliberately leave it for App's standard focused-control activation.
+        // Only an otherwise-unhandled Enter (normally from either text field)
+        // acts as the form's default Log-in action.
+        if enter_pressed && !*handled && !self.focused_button_present() {
+            let _ = state.put(root, SUBMIT_PATH, true);
             *handled = true;
         }
     }
@@ -1416,6 +1562,73 @@ mod tests {
         app.build_composition(&Theme::dark())
     }
 
+    fn set_focus_by_id(widget: &mut dyn Widget, id: &str) {
+        widget.set_focus(widget.test_id() == Some(id));
+        for child in widget.children_mut() {
+            set_focus_by_id(child, id);
+        }
+    }
+
+    fn named_key_event(key: NamedKey) -> WindowEvent {
+        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+
+        // winit intentionally keeps the platform-specific key field private;
+        // these are the same inert placeholders used by ui::App's key tests.
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = Key::Named(key);
+        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        event.location = KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        event.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event,
+            is_synthetic: false,
+        }
+    }
+
+    fn enter_event() -> WindowEvent {
+        named_key_event(NamedKey::Enter)
+    }
+
+    fn dispatch_enter(app: &mut GreeterApp, state: &mut AutoCommit, focused: &str) -> bool {
+        use std::collections::HashMap;
+        use taffy::AvailableSpace;
+
+        app.sync(state, &automerge::ROOT);
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = app.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: AvailableSpace::Definite(1280.0),
+                    height: AvailableSpace::Definite(800.0),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, node, Point::ZERO);
+        set_focus_by_id(app, focused);
+
+        let mut handled = false;
+        let mut focus_target = None;
+        app.handle_event(
+            &enter_event(),
+            1.0,
+            &winit::event::Modifiers::default(),
+            state,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        handled
+    }
+
     /// How a widget identifies itself in a tree dump: its `test_id` when it
     /// has one, otherwise its type name.
     ///
@@ -1445,6 +1658,45 @@ mod tests {
         w.children()
             .into_iter()
             .find_map(|child| accessible_name_for(child, id))
+    }
+
+    fn rect_for(w: &dyn Widget, id: &str) -> Option<Rect> {
+        if w.test_id() == Some(id) {
+            return Some(w.get_rect());
+        }
+        w.children()
+            .into_iter()
+            .find_map(|child| rect_for(child, id))
+    }
+
+    fn subtree_min_y(w: &dyn Widget) -> f64 {
+        w.children()
+            .into_iter()
+            .fold(w.get_rect().y0, |min_y, child| {
+                min_y.min(subtree_min_y(child))
+            })
+    }
+
+    fn layout_at(app: &mut GreeterApp, viewport: (f32, f32)) -> (TaffyTree<()>, NodeId) {
+        use std::collections::HashMap;
+        use taffy::AvailableSpace;
+
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let mut taffy = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = app.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: AvailableSpace::Definite(viewport.0),
+                    height: AvailableSpace::Definite(viewport.1),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, node, Point::ZERO);
+        (taffy, node)
     }
 
     /// The card's focusable widgets, identified by stable id, in tab order.
@@ -1505,6 +1757,17 @@ mod tests {
         out
     }
 
+    fn live_politeness_for(w: &dyn Widget, name: &str) -> Option<Politeness> {
+        if let Some(node) = w.accessibility()
+            && node.name.as_deref() == Some(name)
+        {
+            return node.live;
+        }
+        w.children()
+            .into_iter()
+            .find_map(|child| live_politeness_for(child, name))
+    }
+
     #[test]
     fn session_label_reflects_selection() {
         let mut app = GreeterApp::with_sessions(test_sessions());
@@ -1548,6 +1811,7 @@ mod tests {
                 "greeter.username",
                 "greeter.password",
                 "greeter.login",
+                "greeter.fingerprint",
                 "greeter.reboot",
                 "greeter.poweroff",
             ],
@@ -1674,7 +1938,7 @@ mod tests {
 
         let root = app.build_layout(&mut taffy, &theme, &mut node_map);
 
-        // GreeterApp exposes exactly one child (the card), matching the
+        // GreeterApp exposes exactly one child (the screen shell), matching the
         // single taffy child of the root node.
         assert_eq!(app.children().len(), 1);
         assert_eq!(taffy.children(root).unwrap().len(), 1);
@@ -1691,12 +1955,49 @@ mod tests {
             vec![
                 "greeter.username",
                 "greeter.password",
-                "greeter.session",
                 "greeter.login",
+                "greeter.fingerprint",
+                "greeter.session",
                 "greeter.reboot",
                 "greeter.poweroff",
             ]
         );
+    }
+
+    #[test]
+    fn enter_defaults_to_login_only_from_text_fields() {
+        let mut app = GreeterApp::with_sessions(test_sessions());
+        let mut doc = AutoCommit::new();
+
+        assert!(dispatch_enter(&mut app, &mut doc, "greeter.username"));
+        assert!(GreeterApp::read_flag(&doc, &automerge::ROOT, SUBMIT_PATH));
+    }
+
+    #[test]
+    fn focused_alternate_controls_own_enter_instead_of_login() {
+        for control in [
+            "greeter.session",
+            "greeter.fingerprint",
+            "greeter.reboot",
+            "greeter.poweroff",
+        ] {
+            let mut app = GreeterApp::with_sessions(test_sessions());
+            let mut doc = AutoCommit::new();
+            let handled = dispatch_enter(&mut app, &mut doc, control);
+
+            assert!(
+                !GreeterApp::read_flag(&doc, &automerge::ROOT, SUBMIT_PATH),
+                "Enter on {control} must not submit the password form"
+            );
+            if control == "greeter.session" {
+                assert!(handled, "the focused dropdown consumes Enter itself");
+            } else {
+                assert!(
+                    !handled,
+                    "the focused {control} button must remain available to App activation"
+                );
+            }
+        }
     }
 
     // --- auth lifecycle ------------------------------------------------
@@ -1722,6 +2023,28 @@ mod tests {
         assert_eq!(app.status, "Enter your password");
         assert_eq!(app.status_kind, StatusKind::Hint);
         assert_eq!(app.phase, AuthPhase::Idle);
+    }
+
+    #[test]
+    fn fingerprint_auth_explicitly_uses_no_password() {
+        let mut app = GreeterApp::with_sessions(test_sessions());
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+
+        assert_eq!(
+            GreeterApp::auth_secret(&doc, &root, AuthMethod::Password),
+            Err("Enter your password")
+        );
+        assert_eq!(
+            GreeterApp::auth_secret(&doc, &root, AuthMethod::Fingerprint),
+            Ok(String::new()),
+            "fingerprint PAM conversation must begin without a dummy password"
+        );
+        assert!(
+            focusables(&app).contains(&"greeter.fingerprint".to_string()),
+            "the passwordless factor must be an explicit reachable action"
+        );
     }
 
     /// In flight, the button carries the sentence and nothing else is
@@ -1804,6 +2127,35 @@ mod tests {
             said.iter().any(|s| s == "Place your finger on the reader"),
             "the prompt must reach the card, got {said:?}"
         );
+        assert_eq!(
+            live_politeness_for(card_of(&app).as_ref(), "Place your finger on the reader"),
+            Some(Politeness::Assertive),
+            "a time-sensitive PAM instruction must be announced without moving focus"
+        );
+    }
+
+    #[test]
+    fn login_feedback_is_a_live_region_with_appropriate_urgency() {
+        for (scenario, message, expected) in [
+            (
+                AuthScenario::Hint,
+                "Enter your password",
+                Politeness::Assertive,
+            ),
+            (
+                AuthScenario::Error,
+                "Incorrect username or password",
+                Politeness::Assertive,
+            ),
+            (AuthScenario::Starting, STARTING_MESSAGE, Politeness::Polite),
+        ] {
+            let app = GreeterApp::for_shot(scenario);
+            assert_eq!(
+                live_politeness_for(card_of(&app).as_ref(), message),
+                Some(expected),
+                "{scenario:?} feedback must be announced at the right urgency"
+            );
+        }
     }
 
     #[test]
@@ -2011,8 +2363,9 @@ mod tests {
             vec![
                 "TextInput", // username
                 "TextInput", // password
-                "Dropdown",  // session picker
                 "Button",    // log in
+                "Button",    // fingerprint
+                "Dropdown",  // session picker
                 "Button",    // restart
                 "Button",    // shut down
             ]
@@ -2207,6 +2560,93 @@ mod tests {
                 Some(app.login_label()),
                 "{scenario:?} must keep the state-specific visible label on the stable action"
             );
+        }
+    }
+
+    /// A narrow portrait display must keep the complete primary workflow on
+    /// screen instead of clipping the fixed-width card at both edges.
+    #[test]
+    fn narrow_viewport_keeps_auth_and_power_actions_visible() {
+        let mut app = GreeterApp::for_shot(AuthScenario::LongName);
+        let _layout = layout_at(&mut app, (320.0, 640.0));
+
+        for id in [
+            "greeter.login",
+            "greeter.fingerprint",
+            "greeter.reboot",
+            "greeter.poweroff",
+        ] {
+            let rect = rect_for(&app, id).unwrap_or_else(|| panic!("missing {id}"));
+            assert!(rect.x0 >= 15.5, "{id} escaped left: {rect:?}");
+            assert!(rect.x1 <= 304.5, "{id} escaped right: {rect:?}");
+            assert!(rect.y0 >= 0.0 && rect.y1 <= 640.0, "{id} clipped: {rect:?}");
+        }
+    }
+
+    /// At the 640×480 logical viewport produced by common 2× display
+    /// scaling, the sign-in and power actions remain immediately available.
+    /// The content card may scroll, but machine controls deliberately live
+    /// in a persistent footer rather than disappearing with it.
+    #[test]
+    fn large_text_viewport_keeps_auth_visible_and_power_reachable() {
+        for scenario in [
+            AuthScenario::Form,
+            AuthScenario::Error,
+            AuthScenario::Fingerprint,
+            AuthScenario::CapsLock,
+            AuthScenario::LongName,
+        ] {
+            let mut app = GreeterApp::for_shot(scenario);
+            let _layout = layout_at(&mut app, (640.0, 480.0));
+            let footer_top = rect_for(&app, "greeter.reboot").expect("power footer").y0;
+            assert!(
+                subtree_min_y(&app) >= 0.0,
+                "{scenario:?} starts with content above the viewport: {}",
+                subtree_min_y(&app)
+            );
+
+            for id in [
+                "greeter.login",
+                "greeter.fingerprint",
+                "greeter.reboot",
+                "greeter.poweroff",
+            ] {
+                let rect = rect_for(&app, id).unwrap_or_else(|| panic!("missing {id}"));
+                assert!(
+                    rect.y0 >= 0.0 && rect.y1 <= 480.0,
+                    "{scenario:?} clips {id}: {rect:?}"
+                );
+                if matches!(id, "greeter.login" | "greeter.fingerprint") {
+                    assert!(
+                        rect.y1 <= footer_top,
+                        "{scenario:?} lets the footer cover {id}: {rect:?}"
+                    );
+                }
+            }
+        }
+
+        // The installed image can offer the standard and peer-sync sessions;
+        // the additional picker must not push authentication out of reach.
+        let mut app = GreeterApp::with_sessions(test_sessions());
+        let _layout = layout_at(&mut app, (640.0, 480.0));
+        let footer_top = rect_for(&app, "greeter.reboot").expect("power footer").y0;
+        for id in [
+            "greeter.login",
+            "greeter.fingerprint",
+            "greeter.reboot",
+            "greeter.poweroff",
+        ] {
+            let rect = rect_for(&app, id).unwrap_or_else(|| panic!("missing {id}"));
+            assert!(
+                rect.y0 >= 0.0 && rect.y1 <= 480.0,
+                "session picker pushes {id} out of the scaled viewport: {rect:?}"
+            );
+            if matches!(id, "greeter.login" | "greeter.fingerprint") {
+                assert!(
+                    rect.y1 <= footer_top,
+                    "power footer covers {id} with the session picker: {rect:?}"
+                );
+            }
         }
     }
 }

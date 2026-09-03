@@ -13,7 +13,7 @@ AppId={{A47B49F8-4B63-4CE8-886D-3C124393028C}
 AppName={#MyAppName}
 AppVersion={#MyVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\qOS Imager
+DefaultDirName={localappdata}\Programs\qOS Imager
 DefaultGroupName=qOS
 OutputDir={#MyOut}
 OutputBaseFilename=qos-imager-setup-windows-x86_64
@@ -21,7 +21,7 @@ Compression=lzma2/max
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
 WizardStyle=modern
 UninstallDisplayIcon={app}\{#MyAppExeName}
 

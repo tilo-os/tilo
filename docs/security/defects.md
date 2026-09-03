@@ -222,11 +222,12 @@ passphrase that had been supplied. After the fix: exit 0, three slots, and both 
 the printed recovery key open the volume.
 
 The fix reads the key off **stdout**, where `systemd-cryptenroll` puts the key and nothing else,
-instead of pattern-matching the prose on stderr; makes the read-back non-fatal, since the slot
-exists by then and failing to display it must not stop later factors; and verifies each factor with
-`cryptsetup open --test-passphrase` before reporting it enrolled. It also normalises the pin file's
-bytes — a key file is taken as the passphrase verbatim, so a trailing newline would enrol a secret
-that cannot be typed at a boot prompt.
+instead of pattern-matching the prose on stderr, and verifies each factor with `cryptsetup open
+--test-passphrase` before reporting it enrolled. If the recovery value cannot be read back or does
+not open the volume, enrollment now fails while the temporary install key still exists; finishing
+without a usable off-device recovery factor is not allowed. It also normalises the pin file's bytes
+— a key file is taken as the passphrase verbatim, so a trailing newline would enrol a secret that
+cannot be typed at a boot prompt.
 
 **Regression check:** `os/tests/luks_enrolment.sh`, wired into `os/Containerfile` so it runs at
 image build time. It asserts the *opening*, not the exiting: the supplied passphrase opens the

@@ -8,6 +8,10 @@ set -euo pipefail
 : "${FORGEJO_TOKEN:?missing release token}"
 
 asset_root="${1:-release-assets}"
+if find "$asset_root" -type f -name 'qos-imager-linux-*' -print -quit \
+   | grep -q .; then
+  "$(dirname "$0")/verify-linux-release.sh" "$asset_root"
+fi
 api="${GITHUB_SERVER_URL%/}/api/v1/repos/${GITHUB_REPOSITORY}"
 auth="Authorization: token ${FORGEJO_TOKEN}"
 work="$(mktemp -d /var/tmp/qos-imager-release.XXXXXX)"
@@ -64,7 +68,7 @@ tag = sys.argv[1]
 print(json.dumps({
     "tag_name": tag,
     "name": f"qOS Imager {tag}",
-    "body": "Signed qOS Imager downloads. Verify the adjacent SHA-256 file before opening an artifact.",
+    "body": "Signed qOS Imager downloads. Verify each adjacent SHA-256 file before opening an artifact. Linux users can authenticate detached signatures with qos-release-key.asc after comparing qos-release-key.fingerprint with the fingerprint published through an independent qOS channel.",
     "draft": False,
     "prerelease": False,
 }))

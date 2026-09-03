@@ -692,7 +692,6 @@ fn admit_blob_caller_with_records(
     if peer_may_read_anything(policy, &peer) || has_record_session {
         Ok(peer)
     } else {
-        eprintln!("iroh-blobs: refusing {id} — it reads nothing in this workspace");
         Err(AbortReason::Permission)
     }
 }
@@ -863,6 +862,14 @@ fn blob_guard(
                     {
                         verdict = device.ok_or(AbortReason::Permission);
                     }
+                    if verdict.is_err() {
+                        eprintln!(
+                            "iroh-blobs: refusing {} — it reads nothing in this workspace",
+                            msg.inner
+                                .endpoint_id
+                                .map_or_else(|| "unnamed peer".into(), |id| id.to_string())
+                        );
+                    }
                     if let Ok(peer) = verdict {
                         callers.insert(msg.inner.connection_id, (peer, person));
                     }
@@ -887,6 +894,12 @@ fn blob_guard(
                         }
                         None => false,
                     };
+                    if !ok {
+                        eprintln!(
+                            "iroh-blobs: refusing unreadable blob {} on connection {}",
+                            msg.inner.request.hash, msg.inner.connection_id
+                        );
+                    }
                     msg.tx
                         .send(if ok {
                             Ok(())
@@ -1480,6 +1493,34 @@ impl Workspace {
             ticket.workspace_id(),
             records,
         )?;
+        // A full namespace bootstrap contains the structural tree, but signed
+        // file hashes and byte lengths live in the authenticated record mesh.
+        // Pull that projection before exposing the mount: otherwise a fresh
+        // collaborator can briefly observe real files as zero-byte entries,
+        // and an eager application may cache that false empty state.
+        if let Some(records) = &record_plane {
+            let initial_mesh = tokio::time::timeout(
+                Duration::from_secs(10),
+                pull_record_mesh_from_peer(
+                    &endpoint,
+                    ticket.node.clone(),
+                    &identity,
+                    &policy,
+                    records,
+                ),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("initial record mesh timed out"))
+            .and_then(std::convert::identity);
+            if let Err(error) = initial_mesh
+                && !identity.partitioned()
+            {
+                // Persisted/offline mounts remain available. The periodic
+                // mesh worker below keeps retrying a temporarily unavailable
+                // or older peer after startup.
+                eprintln!("initial record mesh reconciliation failed: {error}");
+            }
+        }
         Self::start(
             endpoint,
             lookup,
@@ -1587,7 +1628,7 @@ impl Workspace {
 
         let (local_tx, local_rx) = mpsc::unbounded_channel();
         let mut tasks = Vec::new();
-        let gossip_sender = if policy.is_none() {
+        let (gossip_sender, reconcile_rx) = if policy.is_none() {
             let topic = TopicId::from_bytes(topic_bytes);
             let gtopic = if boot_ids.is_empty() {
                 gossip.subscribe(topic, vec![]).await?
@@ -1602,13 +1643,13 @@ impl Workspace {
                 namespace.clone(),
                 hydrator.clone(),
             ))));
-            Some(sender)
+            (Some(sender), None)
         } else {
-            // Dropping the receiver makes `broadcast_delta` a cheap no-op.
-            // Authenticated anti-entropy reads the namespace itself and does
-            // not need a second change queue.
-            drop(local_rx);
-            None
+            // Enforced workspaces cannot relay unauthenticated gossip deltas,
+            // but local mutations still wake authenticated anti-entropy. This
+            // avoids making a live NAS wait for a polling tick and provides a
+            // prompt retry after a transient exchange failure.
+            (None, Some(local_rx))
         };
         // Anti-entropy backstop: periodically pull+merge peers' full docs and
         // resolve conflicts, so a missed gossip delta or a mid-join window
@@ -1621,6 +1662,7 @@ impl Workspace {
             identity,
             policy,
             record_plane,
+            reconcile_rx,
         ))));
 
         Ok(Workspace {
@@ -1697,8 +1739,13 @@ struct DirectMeshAuthorizer<'a> {
 
 impl RecordAuthorizer for DirectMeshAuthorizer<'_> {
     fn actor_is_certified(&self, actor: &collab_types::FileActor) -> bool {
+        // A home peer is commonly a second device certified to the same
+        // human as the desktop which authored the record. The envelope still
+        // verifies the original device signature; the live transport cert
+        // permits that human's directly-connected sibling device to relay it.
+        // Never extend this across people: collaborator A cannot vouch for
+        // collaborator B's device or attribution.
         actor.person.as_bytes() == &self.peer.user_public_key
-            && actor.device.as_bytes() == &self.peer.device_public_key
             && crate::share_session::LiveActorCertification::certification_is_current(
                 self.identity,
                 self.peer,
@@ -1762,7 +1809,14 @@ async fn pull_workspace_authority_from_peer(
         &mut send,
         &AuthorityRequest {
             workspace: workspace_id,
-            publish: None,
+            // The governor is the only identity the remote protocol permits
+            // to publish. Sending its current signed envelope makes ACL
+            // reconciliation bidirectional: a desktop can push a revocation
+            // to an always-on NAS instead of waiting for the NAS to happen to
+            // initiate the next connection. Collaborators remain pull-only.
+            publish: (identity.user_public_key() == authority.governor())
+                .then(|| authority.current())
+                .flatten(),
         },
     )
     .await?;
@@ -1836,7 +1890,7 @@ async fn pull_record_mesh_from_peer(
         };
         for remote_cursor in cursors
             .into_iter()
-            .filter(|cursor| cursor.actor == direct_actor)
+            .filter(|cursor| cursor.actor.person == direct_actor.person)
         {
             let key = RecordRepositoryKey {
                 workspace_id: records.workspace_id,
@@ -2051,6 +2105,7 @@ async fn reconcile_loop(
     identity: FsTransportIdentity,
     policy: PeerPolicy,
     records: Option<RecordPlane>,
+    mut local_rx: Option<mpsc::UnboundedReceiver<Bytes>>,
 ) {
     let may_write = peer_may_write_whole_workspace(&policy, &identity.user_public_key())
         || peer_may_write_whole_workspace(&policy, &identity.device_public_key());
@@ -2059,7 +2114,18 @@ async fn reconcile_loop(
     // previews once even if the first anti-entropy exchange is clean.
     let mut refresh_thumbnails = true;
     loop {
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        if let Some(receiver) = &mut local_rx {
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_secs(3)) => {}
+                mutation = receiver.recv() => {
+                    if mutation.is_none() {
+                        local_rx = None;
+                    }
+                }
+            }
+        } else {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
 
         for peer in identity.authenticated_peer_addrs() {
             hydrator.add_peer(peer);
@@ -2460,17 +2526,25 @@ mod tests {
             &owner_root,
         )
         .unwrap();
-        let accepted = submit_workspace_authority(
+        let owner_authority = WorkspaceAuthority::open(
+            temp.path().join("owner-authority.bin"),
+            workspace,
+            owner,
+            owner,
+            Vec::new(),
+        )
+        .unwrap();
+        owner_authority.apply(grant).unwrap();
+        pull_workspace_authority_from_peer(
             &owner_endpoint,
             nas_endpoint.addr(),
             &owner_identity,
+            &owner_authority,
             workspace,
-            Some(grant),
         )
         .await
-        .unwrap()
         .unwrap();
-        assert_eq!(accepted.revision, 1);
+        assert_eq!(nas_authority.current().unwrap().revision, 1);
         assert!(
             nas_authority
                 .handle()
@@ -2498,12 +2572,13 @@ mod tests {
             &owner_root,
         )
         .unwrap();
-        submit_workspace_authority(
+        owner_authority.apply(revoked.clone()).unwrap();
+        pull_workspace_authority_from_peer(
             &owner_endpoint,
             nas_endpoint.addr(),
             &owner_identity,
+            &owner_authority,
             workspace,
-            Some(revoked.clone()),
         )
         .await
         .unwrap();
@@ -4360,14 +4435,22 @@ mod tests {
         let (ep_a, look_a, auth_a) = bind_certified_endpoint().await;
         let (ep_b, _look_b, auth_b) = bind_certified_endpoint().await;
         let store = Arc::new(ContentStore::memory());
+        let manifest = store
+            .write_content(b"human-shared content")
+            .await
+            .unwrap()
+            .unwrap();
         let hydrator = Arc::new(Hydrator::new(ep_a.clone(), store.clone()));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        namespace
-            .lock()
-            .unwrap()
-            .create_dir(ROOT_INO, "human-shared", 1)
-            .unwrap();
+        {
+            let mut namespace = namespace.lock().unwrap();
+            namespace.create_dir(ROOT_INO, "human-shared", 1).unwrap();
+            namespace
+                .create_file(ROOT_INO, "human.txt", Some(&manifest), 20, 1)
+                .unwrap();
+        }
         let policy = policy_granting(&[auth_b.user_public_key()]);
+        let server = ep_a.clone();
         let (_workspace, ticket) = Workspace::host(
             ep_a,
             look_a,
@@ -4385,6 +4468,10 @@ mod tests {
             .expect("a device certified by the granted human must bootstrap");
         let joined = Namespace::from_bytes("joiner", &document).unwrap();
         assert!(joined.entry_at("human-shared").is_some());
+        let connection = ep_b.connect(server.addr(), iroh_blobs::ALPN).await.unwrap();
+        iroh_blobs::get::request::get_blob(connection, manifest)
+            .await
+            .expect("the same certified human grant must authorize blob hydration");
     }
 
     #[tokio::test]
@@ -4682,8 +4769,84 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fresh_record_join_finishes_initial_projection_before_returning() {
+        let server_temp = tempfile::tempdir().unwrap();
+        let client_temp = tempfile::tempdir().unwrap();
+        let (server_ep, server_lookup, server_identity, server_root, server_device) =
+            bind_certified_test_endpoint_with_root().await;
+        let (client_ep, client_lookup, client_identity, _client_root, _client_device) =
+            bind_certified_test_endpoint_with_root().await;
+        let workspace_id = Ticket::workspace_id_for_topic(*server_ep.id().as_bytes());
+        let record_id = FileRecordId::new();
+        let server_actor = FileActor {
+            person: Ed25519PublicKey(server_root.verifying_key().to_bytes()),
+            device: Ed25519PublicKey(server_identity.device_public_key()),
+        };
+        let server_services = record_services(server_temp.path());
+        publish_record_metadata(
+            Arc::clone(&server_services.repository),
+            workspace_id,
+            record_id,
+            server_actor,
+            server_device,
+            37,
+        );
+        let server_store = Arc::new(ContentStore::memory());
+        let server_hydrator = Arc::new(Hydrator::new(server_ep.clone(), Arc::clone(&server_store)));
+        let server_policy = Some(policy_granting(&[client_identity.user_public_key()]));
+        let (_server_workspace, ticket) = Workspace::host_with_records(
+            server_ep.clone(),
+            server_lookup,
+            server_store,
+            server_hydrator,
+            Arc::new(Mutex::new(Namespace::new("initial-record-server").unwrap())),
+            server_identity.clone(),
+            server_policy,
+            server_services,
+        )
+        .await
+        .unwrap();
+
+        let document = fetch_remote_doc(&client_ep, ticket.node.clone(), &client_identity)
+            .await
+            .unwrap();
+        let client_services = record_services(client_temp.path());
+        let client_repository = Arc::clone(&client_services.repository);
+        let client_store = Arc::new(ContentStore::memory());
+        let client_hydrator = Arc::new(Hydrator::new(client_ep.clone(), Arc::clone(&client_store)));
+        let client_policy = Some(policy_read_write(&[server_identity.user_public_key()], &[]));
+        let _client_workspace = Workspace::join_with_records(
+            client_ep,
+            client_lookup,
+            client_store,
+            client_hydrator,
+            Arc::new(Mutex::new(
+                Namespace::from_bytes("initial-record-client", &document).unwrap(),
+            )),
+            ticket,
+            client_identity,
+            client_policy,
+            client_services,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            client_repository.highest_sequence(
+                RecordRepositoryKey {
+                    workspace_id,
+                    record_id,
+                },
+                &server_actor,
+            ),
+            Some(1),
+            "join must not return before the bootstrap peer's signed projection is local"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[allow(clippy::too_many_lines)] // Live ACL and origin-validation scenario.
-    async fn record_mesh_enforces_live_root_acl_and_accepts_only_direct_origin_streams() {
+    async fn record_mesh_accepts_same_human_relays_but_rejects_other_people() {
         let server_temp = tempfile::tempdir().unwrap();
         let client_temp = tempfile::tempdir().unwrap();
         let (server_ep, server_lookup, server_identity, server_root, server_device) =
@@ -4706,9 +4869,27 @@ mod tests {
             41,
         );
 
-        // A peer may store another device's authenticated stream, but the
-        // direct-origin mesh deliberately refuses to relay it until actor
-        // certificate bundles are part of this protocol.
+        // A home peer certified to the same human must relay records signed
+        // by that person's other devices. The original device signature stays
+        // intact; only a different human remains outside the trust boundary.
+        let sibling_record = FileRecordId::new();
+        let sibling_device = ed25519_dalek::SigningKey::from_bytes(&[0x60; 32]);
+        let sibling_actor = FileActor {
+            person: server_actor.person,
+            device: Ed25519PublicKey(sibling_device.verifying_key().to_bytes()),
+        };
+        publish_record_metadata(
+            Arc::clone(&server_services.repository),
+            workspace_id,
+            sibling_record,
+            sibling_actor,
+            sibling_device,
+            73,
+        );
+
+        // A peer may also store a different person's authenticated stream,
+        // but transport certification does not authorize relaying across
+        // people.
         let relayed_record = FileRecordId::new();
         let relayed_person = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
         let relayed_device = ed25519_dalek::SigningKey::from_bytes(&[0x62; 32]);
@@ -4810,6 +4991,17 @@ mod tests {
                 .byte_len,
             41
         );
+        assert_eq!(
+            client_services.repository.highest_sequence(
+                RecordRepositoryKey {
+                    workspace_id,
+                    record_id: sibling_record,
+                },
+                &sibling_actor,
+            ),
+            Some(1),
+            "a home peer must relay a sibling device's signed stream"
+        );
         assert!(
             !client_services.repository.contains(RecordRepositoryKey {
                 workspace_id,
@@ -4828,7 +5020,7 @@ mod tests {
         let store_a = Arc::new(ContentStore::memory());
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
         let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
-        let (_ws_a, ticket) = Workspace::host(
+        let (ws_a, ticket) = Workspace::host(
             ep_a.clone(),
             look_a,
             store_a,
@@ -4846,7 +5038,7 @@ mod tests {
         let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
         let store_b = Arc::new(ContentStore::memory());
         let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
-        let _ws_b = Workspace::join(
+        let ws_b = Workspace::join(
             ep_b.clone(),
             look_b,
             store_b,
@@ -4859,23 +5051,31 @@ mod tests {
         .await
         .unwrap();
 
-        ns_b.lock()
-            .unwrap()
-            .create_file(ROOT_INO, "from-b", None, 0, 2)
-            .unwrap();
-        sync_with_peer(&ep_b, ticket.node.clone(), &ns_b, &auth_b)
-            .await
-            .expect("B is authorised to sync into A");
-        assert!(ns_a.lock().unwrap().entry_at("from-b").is_some());
+        let from_b = {
+            let mut namespace = ns_b.lock().unwrap();
+            namespace
+                .create_file(ROOT_INO, "from-b", None, 0, 2)
+                .unwrap();
+            namespace.save_incremental()
+        };
+        ws_b.sync.broadcast_delta(from_b);
+        assert!(
+            wait_until(|| ns_a.lock().unwrap().entry_at("from-b").is_some()).await,
+            "B's authenticated mutation wake must sync into A"
+        );
 
-        ns_a.lock()
-            .unwrap()
-            .create_file(ROOT_INO, "from-a", None, 0, 3)
-            .unwrap();
-        sync_with_peer(&ep_a, ep_b.addr(), &ns_a, &auth_a)
-            .await
-            .expect("A is authorised to sync into B");
-        assert!(ns_b.lock().unwrap().entry_at("from-a").is_some());
+        let from_a = {
+            let mut namespace = ns_a.lock().unwrap();
+            namespace
+                .create_file(ROOT_INO, "from-a", None, 0, 3)
+                .unwrap();
+            namespace.save_incremental()
+        };
+        ws_a.sync.broadcast_delta(from_a);
+        assert!(
+            wait_until(|| ns_b.lock().unwrap().entry_at("from-a").is_some()).await,
+            "A's authenticated mutation wake must sync into B"
+        );
     }
 
     /// The negative on the content plane: a stranger who already knows a

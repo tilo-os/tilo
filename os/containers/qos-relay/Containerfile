@@ -35,7 +35,7 @@ FROM ${RPMS_REF} AS rpms
 FROM ${BASE_REF} AS builder
 
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-        rust cargo sccache \
+        rust cargo sccache capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
         clang clang-devel pkgconf-pkg-config \
         openssl-devel \
