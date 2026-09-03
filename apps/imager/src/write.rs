@@ -30,7 +30,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
-use crate::model::{Action, InstallProfile, JobPhase, Progress, Source, TargetDrive};
+use crate::model::{
+    Action, InstallProfile, JobPhase, Progress, Source, SourceIdentity, TargetDrive,
+};
 use sha2::{Digest, Sha256};
 
 /// The chunk size of the streaming copy / verify loop (4 MiB) — large enough
@@ -289,7 +291,46 @@ impl JobResult {
 /// opened for writing, any chunk read or write fails, or the final flush or
 /// sync to `dst` fails.
 pub fn stream_copy(src: &Path, dst: &Path, mut on_progress: impl FnMut(u64)) -> io::Result<u64> {
+    let expected_size = src.metadata()?.len();
+    stream_copy_bound(src, dst, expected_size, None, None, &mut on_progress)
+}
+
+/// Copy exactly the source which was reviewed before elevation. The file is
+/// identified from the opened handle (not from a separate path lookup), then
+/// read to the exact reviewed length with an explicit EOF check. Catalog media
+/// additionally carries a signed expected digest, calculated during the copy.
+fn stream_copy_bound(
+    src: &Path,
+    dst: &Path,
+    expected_size: u64,
+    expected_identity: Option<SourceIdentity>,
+    expected_sha256: Option<&str>,
+    mut on_progress: impl FnMut(u64),
+) -> io::Result<u64> {
     let mut reader = OpenOptions::new().read(true).open(src)?;
+    let metadata = reader.metadata()?;
+    if !metadata.is_file() || metadata.len() != expected_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "source image size changed after review",
+        ));
+    }
+    if let Some(expected) = expected_identity
+        && SourceIdentity::from_metadata(&metadata) != Some(expected)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "source image was replaced after review",
+        ));
+    }
+    if expected_sha256.is_some_and(|digest| {
+        digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "source image has an invalid expected digest",
+        ));
+    }
     // `truncate(true)`: a fresh, exact byte-for-byte copy — no stale trailing
     // bytes survive from whatever previously occupied `dst`. Truncation is a
     // no-op on a real block device (not a regular file), so this is safe for
@@ -303,10 +344,19 @@ pub fn stream_copy(src: &Path, dst: &Path, mut on_progress: impl FnMut(u64)) -> 
     let mut writer = options.open(dst)?;
     let mut buf = vec![0u8; CHUNK];
     let mut written: u64 = 0;
-    loop {
-        let n = reader.read(&mut buf)?;
+    let mut hash = Sha256::new();
+    while written < expected_size {
+        let remaining = usize::try_from((expected_size - written).min(CHUNK as u64))
+            .map_err(|_| io::Error::other("source chunk size is out of range"))?;
+        let target = buf
+            .get_mut(..remaining)
+            .ok_or_else(|| io::Error::other("source chunk size exceeds buffer"))?;
+        let n = reader.read(target)?;
         if n == 0 {
-            break;
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "source image became shorter after review",
+            ));
         }
         // `n` is guaranteed <= buf.len() by the `Read::read` contract, but a
         // block-device write is exactly the place to fail loudly rather than
@@ -315,8 +365,25 @@ pub fn stream_copy(src: &Path, dst: &Path, mut on_progress: impl FnMut(u64)) -> 
             .get(..n)
             .ok_or_else(|| io::Error::other("read() returned a length past the buffer end"))?;
         writer.write_all(chunk)?;
+        hash.update(chunk);
         written += n as u64;
         on_progress(written);
+    }
+    let mut extra = [0_u8; 1];
+    if reader.read(&mut extra)? != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "source image became larger after review",
+        ));
+    }
+    if let Some(expected) = expected_sha256 {
+        let actual = format!("{:x}", hash.finalize());
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "source image no longer matches its signed release catalog",
+            ));
+        }
     }
     writer.flush()?;
     writer.sync_all()?;
@@ -409,16 +476,34 @@ pub fn run_job_paths(
     total: u64,
     mut on_progress: impl FnMut(Progress),
 ) -> JobResult {
+    run_job_paths_bound(src, dst, total, None, None, &mut on_progress)
+}
+
+fn run_job_paths_bound(
+    src: &Path,
+    dst: &Path,
+    total: u64,
+    expected_identity: Option<SourceIdentity>,
+    expected_sha256: Option<&str>,
+    mut on_progress: impl FnMut(Progress),
+) -> JobResult {
     let total = total.max(1);
     // Write phase.
-    let copied = stream_copy(src, dst, |bytes| {
-        on_progress(Progress {
-            phase: JobPhase::Writing,
-            write_frac: (bytes as f64 / total as f64).min(1.0),
-            verify_frac: 0.0,
-            rate_bps: 0,
-        });
-    });
+    let copied = stream_copy_bound(
+        src,
+        dst,
+        total,
+        expected_identity,
+        expected_sha256,
+        |bytes| {
+            on_progress(Progress {
+                phase: JobPhase::Writing,
+                write_frac: (bytes as f64 / total as f64).min(1.0),
+                verify_frac: 0.0,
+                rate_bps: 0,
+            });
+        },
+    );
     let written = match copied {
         Ok(n) => n,
         Err(e) => return JobResult::WriteFailed(e.to_string()),
@@ -455,7 +540,14 @@ fn run_system_job(req: &WriteRequest, mut on_progress: impl FnMut(Progress)) -> 
     if let Err(error) = prepare_target(&req.target) {
         return JobResult::WriteFailed(format!("could not safely unmount target: {error}"));
     }
-    let mut result = run_job_paths(&src, &dst, req.source.size, &mut on_progress);
+    let mut result = run_job_paths_bound(
+        &src,
+        &dst,
+        req.source.size,
+        req.source.identity,
+        req.source.expected_sha256.as_deref(),
+        &mut on_progress,
+    );
     if result.is_success()
         && req.source.installable
         && let Err(error) = write_profile_block(&dst, req.target.size, &req.profile)
@@ -1269,6 +1361,71 @@ mod tests {
         assert_eq!(phases, vec![JobPhase::Writing, JobPhase::Verifying]);
         assert!((last.write_frac - 1.0).abs() < 1e-9);
         assert!((last.verify_frac - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn reviewed_source_size_fails_closed_after_truncation_or_growth() {
+        let data = sample_bytes(4096);
+
+        let truncated = tmp_with(&data[..2048]);
+        let truncated_dst = tempfile::NamedTempFile::new().unwrap();
+        let result = run_job_paths(truncated.path(), truncated_dst.path(), 4096, |_| {});
+        assert!(
+            matches!(result, JobResult::WriteFailed(ref message) if message.contains("size changed"))
+        );
+
+        let grown = tmp_with(&data);
+        let grown_dst = tempfile::NamedTempFile::new().unwrap();
+        let result = run_job_paths(grown.path(), grown_dst.path(), 2048, |_| {});
+        assert!(
+            matches!(result, JobResult::WriteFailed(ref message) if message.contains("size changed"))
+        );
+    }
+
+    #[test]
+    fn replaced_source_is_rejected_before_destination_is_opened() {
+        let data = sample_bytes(4096);
+        let src = tmp_with(&data);
+        let mut wrong_identity = SourceIdentity::from_metadata(&src.as_file().metadata().unwrap())
+            .expect("test platform exposes file identity");
+        wrong_identity.file = wrong_identity.file.wrapping_add(1);
+        let dst = tmp_with(b"leave destination untouched");
+
+        let result = run_job_paths_bound(
+            src.path(),
+            dst.path(),
+            data.len() as u64,
+            Some(wrong_identity),
+            None,
+            |_| {},
+        );
+        assert!(
+            matches!(result, JobResult::WriteFailed(ref message) if message.contains("replaced"))
+        );
+        assert_eq!(
+            std::fs::read(dst.path()).unwrap(),
+            b"leave destination untouched"
+        );
+    }
+
+    #[test]
+    fn catalog_digest_is_checked_during_the_write() {
+        let data = sample_bytes(4096);
+        let src = tmp_with(&data);
+        let dst = tempfile::NamedTempFile::new().unwrap();
+        let wrong_digest = "0".repeat(64);
+
+        let result = run_job_paths_bound(
+            src.path(),
+            dst.path(),
+            data.len() as u64,
+            SourceIdentity::from_metadata(&src.as_file().metadata().unwrap()),
+            Some(&wrong_digest),
+            |_| {},
+        );
+        assert!(
+            matches!(result, JobResult::WriteFailed(ref message) if message.contains("signed release catalog"))
+        );
     }
 
     #[test]
