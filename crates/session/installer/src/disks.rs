@@ -34,10 +34,35 @@ pub const MIN_ALONGSIDE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 /// A typical 100--512 MiB Windows/Linux ESP cannot safely hold that lifecycle,
 /// even if the first install happens to fit.
 pub const MIN_ALONGSIDE_ESP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Keep partition starts and ends on MiB boundaries. Besides avoiding poor
+/// flash/4Kn alignment, the first/last MiB conservatively stay clear of both
+/// copies of the GPT metadata.
+const PARTITION_ALIGNMENT_BYTES: u64 = 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartitionExtent {
+    pub part_uuid: String,
+    pub start_bytes: u64,
+    pub size_bytes: u64,
+}
+
+/// A non-destructive plan that appends qOS's two partitions inside one exact
+/// unallocated GPT extent. It never represents space reclaimed by resizing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuidedAlongsidePlan {
+    pub free_start_bytes: u64,
+    pub free_size_bytes: u64,
+    pub efi_start_bytes: u64,
+    pub efi_size_bytes: u64,
+    pub root_start_bytes: u64,
+    pub root_size_bytes: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiskPartition {
     pub name: String,
+    /// Byte offset from the start of the parent disk.
+    pub start_bytes: u64,
     pub size_bytes: u64,
     /// GPT partition UUID used to bind the reviewed partition across device
     /// renumbering. Empty means discovery could not establish its identity.
@@ -83,6 +108,9 @@ pub struct Disk {
     /// Device model, e.g. `Samsung SSD 860 EVO`. May be empty.
     pub model: String,
     pub size_bytes: u64,
+    pub partition_table: String,
+    pub partition_table_uuid: String,
+    pub logical_sector_size: u64,
     /// Kernel device number observed during discovery. This is always bound,
     /// while WWN/serial add durable hardware identity when the device exports it.
     pub major_minor: String,
@@ -127,6 +155,75 @@ impl Disk {
             && self.efi_partition().is_some()
     }
 
+    pub fn occupied_extents(&self) -> Option<Vec<PartitionExtent>> {
+        let mut extents = self
+            .partitions
+            .iter()
+            .map(|partition| {
+                (!partition.part_uuid.is_empty()
+                    && partition.start_bytes > 0
+                    && partition.size_bytes > 0)
+                    .then(|| PartitionExtent {
+                        part_uuid: partition.part_uuid.to_ascii_lowercase(),
+                        start_bytes: partition.start_bytes,
+                        size_bytes: partition.size_bytes,
+                    })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        extents.sort_by_key(|extent| extent.start_bytes);
+        Some(extents)
+    }
+
+    /// Return a plan only when exactly one unallocated GPT extent can hold a
+    /// dedicated 2 GiB ESP plus a >=32 GiB root. Ambiguity is left for an
+    /// explicit future chooser rather than silently selecting a region.
+    pub fn guided_alongside_plan(&self) -> Option<GuidedAlongsidePlan> {
+        if !self.partition_table.eq_ignore_ascii_case("gpt")
+            || self.partition_table_uuid.is_empty()
+            || self.logical_sector_size == 0
+            || !PARTITION_ALIGNMENT_BYTES.is_multiple_of(self.logical_sector_size)
+            || !self.identity_ready()
+            || self.read_only
+        {
+            return None;
+        }
+        let extents = self.occupied_extents()?;
+        let disk_end = align_down(
+            self.size_bytes.saturating_sub(PARTITION_ALIGNMENT_BYTES),
+            PARTITION_ALIGNMENT_BYTES,
+        );
+        let mut cursor = PARTITION_ALIGNMENT_BYTES;
+        let mut candidates = Vec::new();
+        for occupied in extents.iter().chain(std::iter::once(&PartitionExtent {
+            part_uuid: String::new(),
+            start_bytes: disk_end,
+            size_bytes: 0,
+        })) {
+            let start = align_up(cursor, PARTITION_ALIGNMENT_BYTES);
+            let end = align_down(
+                occupied.start_bytes.min(disk_end),
+                PARTITION_ALIGNMENT_BYTES,
+            );
+            if end > start {
+                let size = end.checked_sub(start)?;
+                if size >= MIN_ALONGSIDE_ESP_BYTES + MIN_ALONGSIDE_BYTES {
+                    let root_start = start.checked_add(MIN_ALONGSIDE_ESP_BYTES)?;
+                    let root_size = size.checked_sub(MIN_ALONGSIDE_ESP_BYTES)?;
+                    candidates.push(GuidedAlongsidePlan {
+                        free_start_bytes: start,
+                        free_size_bytes: size,
+                        efi_start_bytes: start,
+                        efi_size_bytes: MIN_ALONGSIDE_ESP_BYTES,
+                        root_start_bytes: root_start,
+                        root_size_bytes: root_size,
+                    });
+                }
+            }
+            cursor = cursor.max(occupied.start_bytes.saturating_add(occupied.size_bytes));
+        }
+        exactly_one_owned(candidates.into_iter())
+    }
+
     /// Minimum identity needed for any destructive handoff. Device number
     /// closes same-session path reuse, while at least one hardware identifier
     /// keeps the binding durable across kernel renumbering.
@@ -167,6 +264,27 @@ fn exactly_one<'a>(
     candidates.next().is_none().then_some(candidate)
 }
 
+fn exactly_one_owned<T>(mut candidates: impl Iterator<Item = T>) -> Option<T> {
+    let candidate = candidates.next()?;
+    candidates.next().is_none().then_some(candidate)
+}
+
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "the fixed one-MiB alignment is nonzero; saturation handles addition overflow"
+)]
+fn align_up(value: u64, alignment: u64) -> u64 {
+    value.saturating_add(alignment - 1) / alignment * alignment
+}
+
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "the fixed one-MiB alignment is nonzero and division only reduces the value"
+)]
+fn align_down(value: u64, alignment: u64) -> u64 {
+    value / alignment * alignment
+}
+
 /// The `lsblk` argument vector. Kept as a constant so the call site and
 /// any docs/tests reference exactly one source of truth.
 pub const LSBLK_ARGS: [&str; 5] = [
@@ -174,7 +292,7 @@ pub const LSBLK_ARGS: [&str; 5] = [
     "-b",
     "-p",
     "--output",
-    "NAME,SIZE,MODEL,TYPE,FSTYPE,LABEL,MOUNTPOINT,PARTTYPE,PARTUUID,RM,RO,WWN,SERIAL,MAJ:MIN",
+    "NAME,SIZE,START,MODEL,TYPE,FSTYPE,LABEL,MOUNTPOINT,PARTTYPE,PARTUUID,PTTYPE,PTUUID,LOG-SEC,RM,RO,WWN,SERIAL,MAJ:MIN",
 ];
 
 /// Parse the output of `lsblk -dnpo NAME,SIZE,MODEL,TYPE` into the set of
@@ -210,6 +328,9 @@ pub fn parse_lsblk(output: &str) -> Vec<Disk> {
             size: (*size).to_string(),
             model: model_tokens.join(" "),
             size_bytes: 0,
+            partition_table: String::new(),
+            partition_table_uuid: String::new(),
+            logical_sector_size: 512,
             major_minor: String::new(),
             wwn: String::new(),
             serial: String::new(),
@@ -248,6 +369,9 @@ fn parse_lsblk_json(json: &Value) -> Vec<Disk> {
                 size: format_bytes(size_bytes),
                 model: field(d, "model"),
                 size_bytes,
+                partition_table: field(d, "pttype"),
+                partition_table_uuid: field(d, "ptuuid"),
+                logical_sector_size: number(d, "log-sec"),
                 major_minor: field(d, "maj:min"),
                 wwn: field(d, "wwn"),
                 serial: field(d, "serial"),
@@ -274,6 +398,9 @@ fn parse_partition(value: &Value) -> Option<DiskPartition> {
     }
     Some(DiskPartition {
         name: field(value, "name"),
+        // util-linux documents START in 512-byte sectors even when the device
+        // has a different logical sector size.
+        start_bytes: number(value, "start").saturating_mul(512),
         size_bytes: number(value, "size"),
         part_uuid: field(value, "partuuid"),
         filesystem: field(value, "fstype"),
@@ -403,6 +530,9 @@ mod tests {
             size: "238.5G".into(),
             model: "Samsung SSD".into(),
             size_bytes: 0,
+            partition_table: String::new(),
+            partition_table_uuid: String::new(),
+            logical_sector_size: 512,
             major_minor: String::new(),
             wwn: String::new(),
             serial: String::new(),
@@ -417,6 +547,9 @@ mod tests {
             size: "64G".into(),
             model: String::new(),
             size_bytes: 0,
+            partition_table: String::new(),
+            partition_table_uuid: String::new(),
+            logical_sector_size: 512,
             major_minor: String::new(),
             wwn: String::new(),
             serial: String::new(),
@@ -452,6 +585,7 @@ mod tests {
     fn alongside_rejects_small_or_mounted_efi_partitions() {
         let mut p = DiskPartition {
             name: "/dev/sda1".into(),
+            start_bytes: 1_048_576,
             size_bytes: MIN_ALONGSIDE_ESP_BYTES - 1,
             part_uuid: "00000000-0000-0000-0000-000000000001".into(),
             filesystem: "vfat".into(),
@@ -484,6 +618,7 @@ mod tests {
     fn alongside_rejects_partition_with_existing_signature() {
         let p = DiskPartition {
             name: "/dev/sda3".into(),
+            start_bytes: 1_048_576,
             size_bytes: MIN_ALONGSIDE_BYTES,
             part_uuid: "00000000-0000-0000-0000-000000000003".into(),
             filesystem: "ext4".into(),
@@ -519,6 +654,7 @@ mod tests {
     fn alongside_partitions_require_gpt_partuuid() {
         let mut root = DiskPartition {
             name: "/dev/vda3".into(),
+            start_bytes: 1_048_576,
             size_bytes: MIN_ALONGSIDE_BYTES,
             part_uuid: String::new(),
             filesystem: String::new(),
@@ -529,5 +665,63 @@ mod tests {
         assert!(!root.is_alongside_candidate());
         root.part_uuid = "00000000-0000-0000-0000-000000000003".into();
         assert!(root.is_alongside_candidate());
+    }
+
+    #[test]
+    fn guided_plan_uses_one_aligned_gpt_free_extent_without_resizing() {
+        let gib = 1024_u64 * 1024 * 1024;
+        let fixture = format!(
+            r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":{},"start":null,"model":"NVMe","type":"disk","pttype":"gpt","ptuuid":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","log-sec":512,"rm":false,"ro":false,"wwn":"eui.0011223344556677","serial":"QOS-NVME","maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":{},"start":2048,"type":"part","fstype":"ntfs","label":"Windows","mountpoint":null,"parttype":"basic","partuuid":"00000000-0000-0000-0000-000000000001"}}]}}]}}"#,
+            200 * gib,
+            100 * gib - PARTITION_ALIGNMENT_BYTES,
+        );
+        let disk = parse_lsblk(&fixture).remove(0);
+        let plan = disk.guided_alongside_plan().expect("one safe free extent");
+        assert_eq!(plan.free_start_bytes, 100 * gib);
+        assert_eq!(plan.efi_start_bytes, 100 * gib);
+        assert_eq!(plan.efi_size_bytes, 2 * gib);
+        assert_eq!(plan.root_start_bytes, 102 * gib);
+        assert_eq!(plan.root_size_bytes, 98 * gib - PARTITION_ALIGNMENT_BYTES);
+        assert_eq!(disk.occupied_extents().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn guided_plan_rejects_non_gpt_and_ambiguous_free_extents() {
+        let gib = 1024_u64 * 1024 * 1024;
+        let mut disk = Disk {
+            name: "/dev/vda".into(),
+            size: "200 GiB".into(),
+            model: "VM".into(),
+            size_bytes: 200 * gib,
+            partition_table: "dos".into(),
+            partition_table_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            logical_sector_size: 512,
+            major_minor: "252:0".into(),
+            wwn: String::new(),
+            serial: "guided-test".into(),
+            removable: false,
+            read_only: false,
+            is_system: false,
+            partitions: Vec::new(),
+        };
+        assert!(
+            disk.guided_alongside_plan().is_none(),
+            "MBR is never mutated"
+        );
+        disk.partition_table = "gpt".into();
+        disk.partitions.push(DiskPartition {
+            name: "/dev/vda1".into(),
+            start_bytes: 80 * gib,
+            size_bytes: 20 * gib,
+            part_uuid: "00000000-0000-0000-0000-000000000001".into(),
+            filesystem: "ntfs".into(),
+            label: "middle".into(),
+            mountpoint: String::new(),
+            part_type: "basic".into(),
+        });
+        assert!(
+            disk.guided_alongside_plan().is_none(),
+            "two eligible gaps require an explicit choice"
+        );
     }
 }
