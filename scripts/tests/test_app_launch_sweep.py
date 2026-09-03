@@ -1,8 +1,11 @@
 import importlib.util
 import json
 import pathlib
+import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 MODULE_PATH = pathlib.Path(__file__).resolve().parents[1] / "app-launch-sweep.py"
@@ -91,6 +94,160 @@ class SweepCheckpointTest(unittest.TestCase):
 
         with self.assertRaisesRegex(SWEEP.SweepStateError, "invalid completed"):
             SWEEP.prepare_checkpoint(self.out, self.config, True)
+
+    def test_resume_rejects_non_object_wrong_version_and_bad_map(self):
+        self.out.mkdir()
+        checkpoint = self.out / SWEEP.PROGRESS_FILENAME
+
+        checkpoint.write_text("[]")
+        with self.assertRaisesRegex(SWEEP.SweepStateError, "not a JSON object"):
+            SWEEP.prepare_checkpoint(self.out, self.config, True)
+
+        SWEEP.atomic_write_json(
+            checkpoint,
+            {
+                "version": SWEEP.PROGRESS_VERSION + 1,
+                "configuration": self.config,
+                "completed": {},
+            },
+        )
+        with self.assertRaisesRegex(SWEEP.SweepStateError, "incompatible version"):
+            SWEEP.prepare_checkpoint(self.out, self.config, True)
+
+        SWEEP.atomic_write_json(
+            checkpoint,
+            {
+                "version": SWEEP.PROGRESS_VERSION,
+                "configuration": self.config,
+                "completed": [],
+            },
+        )
+        with self.assertRaisesRegex(
+            SWEEP.SweepStateError, "valid completed-results map"
+        ):
+            SWEEP.prepare_checkpoint(self.out, self.config, True)
+
+        bad_result = dict(self.result, compositor_started="yes")
+        SWEEP.atomic_write_json(
+            checkpoint,
+            {
+                "version": SWEEP.PROGRESS_VERSION,
+                "configuration": self.config,
+                "completed": {"org.qos.calculator": bad_result},
+            },
+        )
+        with self.assertRaisesRegex(SWEEP.SweepStateError, "invalid completed"):
+            SWEEP.prepare_checkpoint(self.out, self.config, True)
+
+    def _make_cli_fixture(self):
+        root = pathlib.Path(self.tempdir.name) / "fixture"
+        worktree = root / "repo"
+        (worktree / "target/debug").mkdir(parents=True)
+        (worktree / "target/debug/shell").write_text("")
+        (worktree / "target/debug/qos-launcher").write_text("")
+        data_dir = root / "data"
+        (data_dir / "payloads/org.qos.cli").mkdir(parents=True)
+        (data_dir / "registry.toml").write_text('id = "org.qos.cli"\n')
+        (data_dir / "payloads/org.qos.cli/manifest.toml").write_text('type = "cli"\n')
+        return worktree, data_dir, root / "out"
+
+    def _run_cli(self, worktree, data_dir, out, *extra):
+        return subprocess.run(
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "--worktree",
+                str(worktree),
+                "--data-dir",
+                str(data_dir),
+                "--out",
+                str(out),
+                *extra,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_cli_rejects_corrupt_and_incompatible_checkpoints(self):
+        worktree, data_dir, out = self._make_cli_fixture()
+        out.mkdir(parents=True)
+        checkpoint = out / SWEEP.PROGRESS_FILENAME
+
+        checkpoint.write_text("{broken")
+        corrupt = self._run_cli(worktree, data_dir, out, "--resume")
+        self.assertEqual(corrupt.returncode, 2)
+        self.assertIn("corrupt", corrupt.stderr)
+
+        fresh = self._run_cli(worktree, data_dir, out)
+        self.assertEqual(fresh.returncode, 0, fresh.stderr)
+        incompatible = self._run_cli(worktree, data_dir, out, "--resume", "--shots")
+        self.assertEqual(incompatible.returncode, 2)
+        self.assertIn("different sweep options", incompatible.stderr)
+
+    def test_interrupted_run_resumes_only_unfinished_packages(self):
+        root = pathlib.Path(self.tempdir.name) / "fixture"
+        worktree = root / "repo"
+        (worktree / "target/debug").mkdir(parents=True)
+        (worktree / "target/debug/shell").write_text("")
+        (worktree / "target/debug/qos-launcher").write_text("")
+        data_dir = root / "data"
+        for package_id in ("org.qos.first", "org.qos.second"):
+            (data_dir / "payloads" / package_id).mkdir(parents=True)
+        (data_dir / "registry.toml").write_text(
+            'id = "org.qos.first"\nid = "org.qos.second"\n'
+        )
+        for package_id in ("org.qos.first", "org.qos.second"):
+            (data_dir / "payloads" / package_id / "manifest.toml").write_text(
+                'type = "gui"\n'
+            )
+        out = root / "out"
+        argv = [
+            "app-launch-sweep.py",
+            "--worktree",
+            str(worktree),
+            "--data-dir",
+            str(data_dir),
+            "--out",
+            str(out),
+            "--settle",
+            "0",
+        ]
+        result = dict(self.result, adopted=["org.qos.first#1"])
+        calls = []
+
+        def interrupt_on_second(_args, package_id, _out, _env_extra):
+            calls.append(package_id)
+            if package_id == "org.qos.second":
+                raise KeyboardInterrupt
+            return dict(result)
+
+        with mock.patch.object(SWEEP, "run_one", side_effect=interrupt_on_second):
+            with mock.patch.object(sys, "argv", argv):
+                with self.assertRaises(KeyboardInterrupt):
+                    SWEEP.main()
+
+        checkpoint = out / SWEEP.PROGRESS_FILENAME
+        saved = json.loads(checkpoint.read_text())
+        self.assertEqual(list(saved["completed"]), ["org.qos.first"])
+        self.assertEqual(calls, ["org.qos.first", "org.qos.second"])
+        calls.clear()
+
+        second_result = dict(self.result, adopted=["org.qos.second#1"])
+
+        def record_second_run(_args, package_id, _out, _env_extra):
+            calls.append(package_id)
+            return second_result
+
+        with mock.patch.object(SWEEP, "run_one", side_effect=record_second_run):
+            with mock.patch.object(sys, "argv", argv + ["--resume"]):
+                self.assertEqual(SWEEP.main(), 0)
+
+        self.assertEqual(calls, ["org.qos.second"])
+        completed = json.loads(checkpoint.read_text())["completed"]
+        self.assertEqual(set(completed), {"org.qos.first", "org.qos.second"})
+        report = json.loads((out / "results.json").read_text())
+        self.assertEqual(set(report), {"org.qos.first", "org.qos.second"})
 
 
 if __name__ == "__main__":
