@@ -609,7 +609,11 @@ impl ShellNetwork {
             spawn_lan_discovery_forwarding(&runtime, mdns, &cmd_tx);
         }
 
-        let relay_workspace_ids = tree.read().rooms().into_iter().map(room_topic_id).collect();
+        let mut relay_workspace_ids: std::collections::BTreeSet<_> =
+            tree.read().rooms().into_iter().map(room_topic_id).collect();
+        if let Some(user) = personal_continuity_user {
+            relay_workspace_ids.insert(personal_continuity_topic_id(&user));
+        }
         let home_peers = registered_home_peer_addrs(personal_continuity_user, &relay_workspace_ids);
         let mut host_addrs = configured_host_addrs();
         host_addrs.extend(home_peers.iter().map(|host| host.addr.clone()));
@@ -1087,7 +1091,7 @@ impl ShellNetwork {
     /// from the frame loop: it reads a bounded local registry, queues dials
     /// with `try_send`, and never waits for relay discovery or a connection.
     pub fn refresh_home_peer_hosts(&self) -> bool {
-        let relay_workspace_ids = self
+        let mut relay_workspace_ids = self
             .replica
             .lock()
             .ok()
@@ -1101,6 +1105,9 @@ impl ShellNetwork {
                     .collect::<std::collections::BTreeSet<_>>()
             })
             .unwrap_or_default();
+        if let Some(user) = self.personal_continuity_user {
+            relay_workspace_ids.insert(personal_continuity_topic_id(&user));
+        }
         let mut changed = false;
         for host in registered_home_peer_addrs(self.personal_continuity_user, &relay_workspace_ids)
         {
