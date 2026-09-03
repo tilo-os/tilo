@@ -390,6 +390,8 @@ const CONTROL_HEIGHT: f64 = 30.0;
 const COMPOSER_HEIGHT: f64 = 78.0;
 const REVOKE_WIDTH: f64 = 80.0;
 const REVOKE_HEIGHT: f64 = 26.0;
+const AGENT_REVIEW_WIDTH: f64 = 112.0;
+const AGENT_ONBOARDING_HEIGHT: f64 = 34.0;
 const SUBMIT_WIDTH: f64 = 92.0;
 const EXPIRY_SEGMENT_WIDTH: f64 = 58.0;
 /// Alpha for a control the user has no authority to use — matches the
@@ -1456,9 +1458,180 @@ pub struct AgentRow {
     pub agent: String,
     pub role: CapRole,
     pub grant_count: usize,
+    /// A human-readable summary of the *scoped* authority, not a role.
+    /// Agents never inherit their admission capability as ambient access.
+    pub preset: AgentAuthorityPreset,
     pub row_rect: Rect,
     pub role_rect: Rect,
+    pub review_rect: Rect,
     pub remove_rect: Rect,
+}
+
+/// A named starting point for an agent's capability review.
+///
+/// These are deliberately not `CapRole`s. A person can inherit a room role;
+/// an agent cannot. A preset says which explicit, resource-scoped grants to
+/// review, and is useful before there are any such grants at all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AgentAuthorityPreset {
+    /// Inspect selected material only.
+    Observer,
+    /// Work on selected files/documents, with no system access implied.
+    Contributor,
+    /// Invoke selected, explicitly approved app actions.
+    Operator,
+    /// The current grants do not match a safe built-in bundle.
+    #[default]
+    Custom,
+}
+
+impl AgentAuthorityPreset {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Observer => "Observer",
+            Self::Contributor => "Contributor",
+            Self::Operator => "Operator",
+            Self::Custom => "Custom",
+        }
+    }
+
+    /// Plain-language preview shown before the user grants a surface.
+    pub const fn review_hint(self) -> &'static str {
+        match self {
+            Self::Observer => "Read only on surfaces you select",
+            Self::Contributor => "Read/write only on surfaces you select",
+            Self::Operator => "Run only approved app actions",
+            Self::Custom => "Review every scoped permission",
+        }
+    }
+
+    /// The admission marker used for an initial, permission-free setup. It
+    /// does not confer this verb on arbitrary resources: `actor_for_agent`
+    /// intentionally carries no role.
+    pub const fn admission_verb(self) -> Verb {
+        match self {
+            Self::Observer | Self::Custom => Verb::Read,
+            Self::Contributor => Verb::Comment,
+            Self::Operator => Verb::Write,
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "observer" | "read" => Some(Self::Observer),
+            "contributor" | "contribute" => Some(Self::Contributor),
+            "operator" | "operate" => Some(Self::Operator),
+            "custom" => Some(Self::Custom),
+            _ => None,
+        }
+    }
+}
+
+/// Infer the review bundle from live *scoped* grants. Device, network,
+/// workspace-wide, and administrative grants intentionally fall into Custom:
+/// they need a conscious per-permission review, never a reassuring preset.
+pub fn agent_authority_preset(ws: &Workspace, agent: &str) -> AgentAuthorityPreset {
+    let mut has_scope = false;
+    let mut all_actions = true;
+    let mut all_read = true;
+    for cap in &ws.capabilities {
+        if cap.effect != Effect::Grant
+            || !cap.is_live_at(Some(crate::shell::state::now_unix()))
+            || cap.is_room_membership()
+            || !subject_is_agent(&cap.subject, agent)
+        {
+            continue;
+        }
+        has_scope = true;
+        if matches!(
+            &cap.scope,
+            Scope::Workspace | Scope::Device(_) | Scope::NetHost(_)
+        ) || matches!(cap.verb, Verb::Admin | Verb::Invite)
+        {
+            return AgentAuthorityPreset::Custom;
+        }
+        all_actions &= matches!(&cap.scope, Scope::Action { .. });
+        all_read &= cap.verb == Verb::Read;
+    }
+    if !has_scope {
+        // The admission record carries a stable setup intent, while the
+        // absence of scopes still means no effective authority. Older rooms
+        // used an unsuffixed id, so retain a conservative role-derived
+        // fallback for them.
+        return agent_admission_preset(ws, agent).unwrap_or_else(|| {
+            match ws.role_of_agent(agent) {
+                Some(CapRole::Viewer) => AgentAuthorityPreset::Observer,
+                Some(CapRole::Commenter) => AgentAuthorityPreset::Contributor,
+                Some(CapRole::Editor) => AgentAuthorityPreset::Operator,
+                _ => AgentAuthorityPreset::Custom,
+            }
+        });
+    }
+    if all_actions {
+        return AgentAuthorityPreset::Operator;
+    }
+    if all_read {
+        AgentAuthorityPreset::Observer
+    } else {
+        AgentAuthorityPreset::Contributor
+    }
+}
+
+fn agent_admission_preset(ws: &Workspace, agent: &str) -> Option<AgentAuthorityPreset> {
+    ws.capabilities
+        .iter()
+        .find(|cap| cap.is_room_membership() && subject_is_agent(&cap.subject, agent))
+        .and_then(|cap| cap.id.rsplit(':').next())
+        .and_then(AgentAuthorityPreset::parse)
+}
+
+/// Admit a named agent without manufacturing ambient authority. The caller
+/// still has to grant each file, action, device, or network surface through
+/// the normal capability review.
+pub fn admit_agent(
+    ws: &mut Workspace,
+    actor: &UserId,
+    agent: impl AsRef<str>,
+    preset: AgentAuthorityPreset,
+) -> CapEdit {
+    let agent = agent.as_ref().trim().to_ascii_lowercase();
+    if agent.is_empty() || !ws.may_administer(actor) {
+        return CapEdit::default();
+    }
+    let existing: Vec<_> = ws
+        .capabilities
+        .iter()
+        .filter(|cap| cap.is_room_membership() && subject_is_agent(&cap.subject, &agent))
+        .map(|cap| cap.id.clone())
+        .collect();
+    let mut edit = CapEdit::default();
+    for id in existing {
+        if ws.revoke_capability(&id) {
+            edit.revoked.push(id);
+        }
+    }
+    let cap = CapOverride::membership(
+        Subject::agent(agent.clone()),
+        ws.room.to_string(),
+        preset.admission_verb(),
+    )
+    .with_id(format!(
+        "agent-member:{agent}:{}",
+        preset.label().to_ascii_lowercase()
+    ))
+    .granted_by(Principal::Person(actor.clone()));
+    edit.granted.push(ws.grant_capability(cap));
+    edit
+}
+
+/// Geometry for the always-visible entry point into the guided setup.
+pub fn agents_add_rect(pane_rect: Rect) -> Rect {
+    Rect::new(
+        pane_rect.x0 + PANE_PAD_X,
+        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
+        pane_rect.x0 + PANE_PAD_X + 132.0,
+        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + AGENT_ONBOARDING_HEIGHT,
+    )
 }
 
 /// Stable, policy-backed rows for the Agents pane.
@@ -1466,8 +1639,12 @@ pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
     let mut agents = ws.agent_members();
     agents.sort_by(|a, b| a.0.cmp(&b.0));
     let mut rows = Vec::new();
-    let mut cursor_y =
-        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + SECTION_HEADER_HEIGHT;
+    let mut cursor_y = pane_rect.y0
+        + PANE_PAD_TOP
+        + PANE_INTRO_HEIGHT
+        + PANE_INTRO_GAP
+        + AGENT_ONBOARDING_HEIGHT
+        + SECTION_HEADER_HEIGHT;
     for (agent, role) in agents {
         let row_rect = Rect::new(
             pane_rect.x0 + PANE_PAD_X,
@@ -1485,7 +1662,13 @@ pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
             row_rect.center().y + REVOKE_HEIGHT / 2.0,
         );
         let role_rect = Rect::new(
-            remove_rect.x0 - 12.0 - 96.0,
+            remove_rect.x0 - 12.0 - AGENT_REVIEW_WIDTH - 12.0 - 96.0,
+            row_rect.center().y - REVOKE_HEIGHT / 2.0,
+            remove_rect.x0 - 12.0 - AGENT_REVIEW_WIDTH - 12.0,
+            row_rect.center().y + REVOKE_HEIGHT / 2.0,
+        );
+        let review_rect = Rect::new(
+            remove_rect.x0 - 12.0 - AGENT_REVIEW_WIDTH,
             row_rect.center().y - REVOKE_HEIGHT / 2.0,
             remove_rect.x0 - 12.0,
             row_rect.center().y + REVOKE_HEIGHT / 2.0,
@@ -1499,12 +1682,15 @@ pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
                     && subject_is_agent(&cap.subject, &agent)
             })
             .count();
+        let preset = agent_authority_preset(ws, &agent);
         rows.push(AgentRow {
             agent,
             role,
             grant_count,
+            preset,
             row_rect,
             role_rect,
+            review_rect,
             remove_rect,
         });
         cursor_y += ROW_HEIGHT + ROW_GAP;
@@ -1868,15 +2054,28 @@ pub fn draw_agents_pane(
         pane_rect,
         Icon::Sparkles,
         &format!("{count} agent collaborators"),
-        "Admission and scoped grants are separate; every agent action remains attributed.",
+        "Agents are visibly non-human collaborators. Admission grants no ambient workspace power.",
         if is_owner { "You manage" } else { "View only" },
         text_renderer,
         theme,
     );
     if rows.is_empty() {
+        draw_primary_button(
+            scene,
+            transform,
+            agents_add_rect(pane_rect),
+            "Add agent",
+            is_owner,
+            text_renderer,
+            theme,
+        );
         let empty = Rect::new(
             pane_rect.x0,
-            pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
+            pane_rect.y0
+                + PANE_PAD_TOP
+                + PANE_INTRO_HEIGHT
+                + PANE_INTRO_GAP
+                + AGENT_ONBOARDING_HEIGHT,
             pane_rect.x1,
             pane_rect.y1,
         );
@@ -1887,7 +2086,7 @@ pub fn draw_agents_pane(
             Icon::Sparkles,
             (
                 "No agents have access",
-                "Admitted agents appear here separately from people.",
+                "Start with a safe profile, then review each exact surface.",
             ),
             text_renderer,
             theme,
@@ -1899,10 +2098,23 @@ pub fn draw_agents_pane(
         transform,
         Point::new(
             pane_rect.x0 + PANE_PAD_X,
-            pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
+            pane_rect.y0
+                + PANE_PAD_TOP
+                + PANE_INTRO_HEIGHT
+                + PANE_INTRO_GAP
+                + AGENT_ONBOARDING_HEIGHT,
         ),
         "AGENTS",
         Some(count),
+        text_renderer,
+        theme,
+    );
+    draw_primary_button(
+        scene,
+        transform,
+        agents_add_rect(pane_rect),
+        "Add agent",
+        is_owner,
         text_renderer,
         theme,
     );
@@ -1960,9 +2172,15 @@ fn draw_agent_row(
     );
     let admission = agent_admission_label(row.role);
     let detail = match row.grant_count {
-        0 => format!("{admission} · no scoped permissions"),
-        1 => format!("{admission} · 1 scoped permission"),
-        n => format!("{admission} · {n} scoped permissions"),
+        0 => format!("{admission} · no scoped permissions — review required"),
+        1 => format!(
+            "{admission} · {} profile · 1 scoped permission",
+            row.preset.label()
+        ),
+        n => format!(
+            "{admission} · {} profile · {n} scoped permissions",
+            row.preset.label()
+        ),
     };
     let detail_size = tokens.typography.scale.xs;
     let detail = elide(&detail, detail_size, text_max, text_renderer);
@@ -1985,6 +2203,15 @@ fn draw_agent_row(
         },
         text_renderer,
         theme,
+    );
+    Button::paint(
+        scene,
+        transform,
+        text_renderer,
+        theme,
+        &ButtonFace::new(row.review_rect, "Review access")
+            .disabled(!is_owner)
+            .text_size(theme.tokens.typography.scale.xs),
     );
     draw_danger_button(
         scene,
@@ -2768,11 +2995,16 @@ fn draw_who_what_pickers(
     let subject = draft_subject(ws, draft);
     match &subject {
         Some(entry) => {
+            let caption = if entry.kind == SubjectKind::Agent {
+                "Who · AGENT (only this surface; no ambient workspace access)"
+            } else {
+                "Who"
+            };
             draw_control_caption(
                 scene,
                 transform,
                 Point::new(layout.subject_rect.x0 + 2.0, caption_y),
-                "Who",
+                caption,
                 text_renderer,
                 theme,
             );
@@ -3514,6 +3746,78 @@ mod agents_pane_tests {
             rows[0].grant_count, 1,
             "membership is not an extra permission"
         );
+        assert_eq!(rows[0].preset, AgentAuthorityPreset::Contributor);
+        assert!(rows[0].review_rect.x1 < rows[0].remove_rect.x0);
+    }
+
+    #[test]
+    fn profiles_describe_scoped_bundles_not_human_roles() {
+        let mut ws = Workspace::new(WorkspaceId::from(18), "profile-test");
+        ws.set_owner(OWNER);
+        let edit = admit_agent(
+            &mut ws,
+            &OWNER.to_string(),
+            AGENT,
+            AgentAuthorityPreset::Observer,
+        );
+        assert_eq!(edit.granted.len(), 1);
+        assert_eq!(ws.role_of_agent(AGENT), Some(CapRole::Viewer));
+        assert!(
+            !ws.allows(
+                &ws.actor_for_agent(AGENT),
+                &ResourceRef::App("dev.qos.notes".into()),
+                Verb::Read,
+            ),
+            "admission must never turn the Observer label into ambient app access"
+        );
+        assert_eq!(
+            agent_authority_preset(&ws, AGENT),
+            AgentAuthorityPreset::Observer
+        );
+
+        ws.grant_as(
+            &OWNER.to_string(),
+            CapOverride::grant(
+                Subject::agent(AGENT),
+                Scope::FsPath("/var/workspace/brief.md".into()),
+                Verb::Read,
+            ),
+        )
+        .expect("owner grants one selected file");
+        assert_eq!(
+            agent_authority_preset(&ws, AGENT),
+            AgentAuthorityPreset::Observer
+        );
+    }
+
+    #[test]
+    fn sensitive_or_broad_agent_grants_are_never_hidden_behind_a_preset() {
+        let mut ws = ws_with_agent();
+        ws.grant_as(
+            &OWNER.to_string(),
+            CapOverride::grant(
+                Subject::agent(AGENT),
+                Scope::NetHost("*".into()),
+                Verb::Read,
+            ),
+        )
+        .expect("owner grants network access for the test");
+        assert_eq!(
+            agent_authority_preset(&ws, AGENT),
+            AgentAuthorityPreset::Custom
+        );
+    }
+
+    #[test]
+    fn agent_onboarding_and_review_geometry_are_separate_from_revocation() {
+        let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
+        let add = agents_add_rect(pane);
+        let row = agents_pane_rows(&ws_with_agent(), pane)
+            .into_iter()
+            .next()
+            .expect("agent row");
+        assert!(add.y1 <= row.row_rect.y0);
+        assert!(row.review_rect.x1 < row.remove_rect.x0);
     }
 
     #[test]
