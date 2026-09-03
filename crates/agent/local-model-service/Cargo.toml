@@ -27,6 +27,8 @@ reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
 clap.workspace = true
 ed25519-dalek.workspace = true
 libc.workspace = true
+tar.workspace = true
+zstd.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

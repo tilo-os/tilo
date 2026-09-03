@@ -87,10 +87,20 @@ pub enum LocalModelPhase {
     },
     Ready {
         running: bool,
+        /// Exact loopback endpoint published by the supervised model service.
+        /// A missing endpoint is never substituted with a guessed port.
+        #[serde(default)]
+        endpoint: Option<LocalModelEndpoint>,
     },
     Error {
         message: String,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalModelEndpoint {
+    pub url: String,
+    pub model_id: String,
 }
 
 impl LocalModelPhase {
@@ -103,8 +113,8 @@ impl LocalModelPhase {
             Self::Downloading { .. } => "Downloading",
             Self::Installing { .. } => "Installing",
             Self::RestartRequired { .. } => "Restart required",
-            Self::Ready { running: true } => "Running",
-            Self::Ready { running: false } => "Ready",
+            Self::Ready { running: true, .. } => "Running",
+            Self::Ready { running: false, .. } => "Ready",
             Self::Error { .. } => "Needs attention",
         }
     }
@@ -266,8 +276,10 @@ enum ModelAction {
 
 fn available_actions(phase: &LocalModelPhase) -> Vec<ModelAction> {
     match phase {
-        LocalModelPhase::Ready { running: true } => vec![ModelAction::Stop, ModelAction::Remove],
-        LocalModelPhase::Ready { running: false } => {
+        LocalModelPhase::Ready { running: true, .. } => {
+            vec![ModelAction::Stop, ModelAction::Remove]
+        }
+        LocalModelPhase::Ready { running: false, .. } => {
             vec![ModelAction::Start, ModelAction::Remove]
         }
         LocalModelPhase::Error { .. } => vec![ModelAction::Retry, ModelAction::Remove],
@@ -347,21 +359,51 @@ fn select_default(profile_id: String) {
 }
 
 fn sync_local_profile(models: &[InstalledLocalModel]) {
-    let ready = models
-        .iter()
-        .filter(|model| matches!(model.phase, LocalModelPhase::Ready { .. }))
-        .collect::<Vec<_>>();
-    if ready.is_empty() {
-        return;
-    }
     let mut config = ProviderConfig::load();
     let existing = config
         .profiles
         .iter()
         .position(ProviderProfile::is_local_vllm_candidate);
-    let mut profile = existing
-        .and_then(|index| config.profiles.get(index).cloned())
-        .unwrap_or_else(ProviderProfile::local_vllm);
+    let Some(profile) = synced_local_profile(
+        existing.and_then(|index| config.profiles.get(index).cloned()),
+        models,
+    ) else {
+        return;
+    };
+    let changed = existing.and_then(|index| config.profiles.get(index)) != Some(&profile);
+    if changed {
+        config.upsert(profile);
+        let _ = config.save();
+    }
+}
+
+fn synced_local_profile(
+    existing: Option<ProviderProfile>,
+    models: &[InstalledLocalModel],
+) -> Option<ProviderProfile> {
+    let ready = models
+        .iter()
+        .filter(|model| matches!(model.phase, LocalModelPhase::Ready { .. }))
+        .collect::<Vec<_>>();
+    if ready.is_empty() {
+        return None;
+    }
+    let running_endpoint = ready.iter().find_map(|model| match &model.phase {
+        LocalModelPhase::Ready {
+            running: true,
+            endpoint: Some(endpoint),
+        } if endpoint.model_id == model.package.id
+            && (endpoint.url.starts_with("http://127.0.0.1:")
+                || endpoint.url.starts_with("http://[::1]:")) => Some(endpoint),
+        _ => None,
+    });
+    // Do not manufacture a disabled profile holding `:8000` merely because
+    // bytes are installed. The dynamic endpoint exists only when the manager
+    // has actually started and validated the loopback server.
+    if existing.is_none() && running_endpoint.is_none() {
+        return None;
+    }
+    let mut profile = existing.unwrap_or_else(ProviderProfile::local_vllm);
     profile.models = ready
         .iter()
         .map(|model| ModelDescriptor {
@@ -376,14 +418,14 @@ fn sync_local_profile(models: &[InstalledLocalModel]) {
         .default_model
         .filter(|id| profile.models.iter().any(|model| model.id == *id))
         .or_else(|| profile.models.first().map(|model| model.id.clone()));
-    profile.enabled = ready
-        .iter()
-        .any(|model| matches!(model.phase, LocalModelPhase::Ready { running: true }));
-    let changed = existing.and_then(|index| config.profiles.get(index)) != Some(&profile);
-    if changed {
-        config.upsert(profile);
-        let _ = config.save();
+    // The manager owns port allocation. Settings persists only the endpoint
+    // returned by its ready state, never the legacy `:8000` placeholder.
+    if let Some(endpoint) = running_endpoint {
+        profile.endpoint = endpoint.url.clone();
+        profile.default_model = Some(endpoint.model_id.clone());
     }
+    profile.enabled = running_endpoint.is_some();
+    Some(profile)
 }
 
 pub struct AgentModelsPane {
@@ -594,10 +636,10 @@ impl AgentModelsPane {
                     "Retry resumes verified files where possible. Remove clears this model's local snapshot.",
                 ));
             }
-            LocalModelPhase::Ready { running: true } => body.push(caption(
+            LocalModelPhase::Ready { running: true, .. } => body.push(caption(
                 "Available to agents through the local qOS gateway. Workspace permissions still apply to every task.",
             )),
-            LocalModelPhase::Ready { running: false } => body.push(caption(
+            LocalModelPhase::Ready { running: false, .. } => body.push(caption(
                 "Installed and verified. Start it when you want agents to use it; stopped models consume no accelerator memory.",
             )),
         }
@@ -1080,11 +1122,17 @@ mod tests {
     #[test]
     fn lifecycle_exposes_only_safe_controls() {
         assert_eq!(
-            available_actions(&LocalModelPhase::Ready { running: false }),
+            available_actions(&LocalModelPhase::Ready {
+                running: false,
+                endpoint: None
+            }),
             [ModelAction::Start, ModelAction::Remove]
         );
         assert_eq!(
-            available_actions(&LocalModelPhase::Ready { running: true }),
+            available_actions(&LocalModelPhase::Ready {
+                running: true,
+                endpoint: None
+            }),
             [ModelAction::Stop, ModelAction::Remove]
         );
         assert!(
@@ -1103,6 +1151,25 @@ mod tests {
     }
 
     #[test]
+    fn local_profile_uses_the_ready_manager_endpoint_not_port_8000() {
+        let package = package();
+        let models = vec![InstalledLocalModel {
+            package: package.clone(),
+            phase: LocalModelPhase::Ready {
+                running: true,
+                endpoint: Some(LocalModelEndpoint {
+                    url: "http://127.0.0.1:43127/v1".into(),
+                    model_id: package.id.clone(),
+                }),
+            },
+        }];
+        let profile = synced_local_profile(None, &models).expect("ready local profile");
+        assert_eq!(profile.endpoint, "http://127.0.0.1:43127/v1");
+        assert_eq!(profile.default_model.as_deref(), Some("test/model"));
+        assert!(profile.enabled);
+    }
+
+    #[test]
     fn progress_is_bounded_and_machine_readable() {
         let phase = LocalModelPhase::Downloading {
             downloaded_bytes: 3,
@@ -1117,7 +1184,10 @@ mod tests {
     #[test]
     fn remove_is_confirmed_before_backend_mutation() {
         let control = Arc::new(MockControl {
-            snapshot: Mutex::new(snapshot(Some(LocalModelPhase::Ready { running: false }))),
+            snapshot: Mutex::new(snapshot(Some(LocalModelPhase::Ready {
+                running: false,
+                endpoint: None,
+            }))),
             calls: Mutex::new(Vec::new()),
         });
         let mut pane = AgentModelsPane::with_control(control.clone());
