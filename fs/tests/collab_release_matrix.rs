@@ -978,11 +978,13 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     owner_process.wait_line("Hosting workspace");
     let owner_ticket = owner_process.wait_ticket();
     owner_process.wait_line("Mounting QuickFS");
-    let deleted_manifest_bytes: [u8; 32] = get_xattr(
-        &owner_mount.join("deleted.txt"),
-        fs::syncstate::CONTENT_HASH_XATTR,
-    )
-    .unwrap()
+    let deleted_manifest_bytes: [u8; 32] = wait_for_process(&mut owner_process, || {
+        get_xattr(
+            &owner_mount.join("deleted.txt"),
+            fs::syncstate::CONTENT_HASH_XATTR,
+        )
+        .ok()
+    })
     .try_into()
     .unwrap();
     let deleted_manifest = Hash::from(deleted_manifest_bytes);
