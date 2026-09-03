@@ -364,4 +364,28 @@ mod tests {
         assert_eq!(decoded.intrinsic_size(), (2, 1));
         assert!(decode_for_rendering(&placement, &[1, 2, 3]).is_none());
     }
+
+    #[test]
+    fn rendering_decoder_decodes_validated_png() {
+        let image = parse_kitty(b"a=T,f=100,t=d;iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=").unwrap();
+        let placement = TerminalImagePlacement {
+            hash: "test".into(),
+            mime: image.mime.into(),
+            byte_len: image.bytes.len() as u64,
+            row: 0,
+            col: 0,
+            columns: image.columns,
+            rows: image.rows,
+            pixel_width: image.pixel_width,
+            pixel_height: image.pixel_height,
+            protocol_id: None,
+            alternate_screen: false,
+        };
+        assert_eq!(
+            decode_for_rendering(&placement, &image.bytes)
+                .unwrap()
+                .intrinsic_size(),
+            (1, 1)
+        );
+    }
 }
