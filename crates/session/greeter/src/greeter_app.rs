@@ -40,6 +40,7 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
 
+use ui::a11y::Politeness;
 use ui::app::UserEvent;
 use ui::caps_lock::CapsLockEstimate;
 use ui::icons::Icon;
@@ -741,10 +742,22 @@ impl GreeterApp {
                     } else {
                         c.text_dim
                     };
+                    let politeness = if self.phase == AuthPhase::Authenticating {
+                        // PAM prompts can require immediate physical action
+                        // (for example, touching the fingerprint reader).
+                        Politeness::Assertive
+                    } else {
+                        Politeness::Polite
+                    };
                     rows.push(Box::new(
                         Row::new()
                             .push(Box::new(Spinner::with_size(16.0)))
-                            .push(Box::new(Text::new(live).with_size(13.0).with_color(tint))),
+                            .push(Box::new(
+                                Text::new(live)
+                                    .with_size(13.0)
+                                    .with_color(tint)
+                                    .with_live(politeness),
+                            )),
                     ));
                 }
             }
@@ -753,7 +766,8 @@ impl GreeterApp {
                 StatusKind::Hint => rows.push(Box::new(
                     Text::new(&self.status)
                         .with_size(13.0)
-                        .with_color(c.text_dim),
+                        .with_color(c.text_dim)
+                        .with_live(Politeness::Assertive),
                 )),
                 StatusKind::Error => {
                     rows.push(Box::new(
@@ -764,7 +778,8 @@ impl GreeterApp {
                             .push(Box::new(
                                 Text::new(&self.status)
                                     .with_size(13.0)
-                                    .with_color(c.semantic.danger),
+                                    .with_color(c.semantic.danger)
+                                    .with_live(Politeness::Assertive),
                             )),
                     ));
                     if !self.detail.is_empty() {
@@ -1742,6 +1757,17 @@ mod tests {
         out
     }
 
+    fn live_politeness_for(w: &dyn Widget, name: &str) -> Option<Politeness> {
+        if let Some(node) = w.accessibility()
+            && node.name.as_deref() == Some(name)
+        {
+            return node.live;
+        }
+        w.children()
+            .into_iter()
+            .find_map(|child| live_politeness_for(child, name))
+    }
+
     #[test]
     fn session_label_reflects_selection() {
         let mut app = GreeterApp::with_sessions(test_sessions());
@@ -2101,6 +2127,35 @@ mod tests {
             said.iter().any(|s| s == "Place your finger on the reader"),
             "the prompt must reach the card, got {said:?}"
         );
+        assert_eq!(
+            live_politeness_for(card_of(&app).as_ref(), "Place your finger on the reader"),
+            Some(Politeness::Assertive),
+            "a time-sensitive PAM instruction must be announced without moving focus"
+        );
+    }
+
+    #[test]
+    fn login_feedback_is_a_live_region_with_appropriate_urgency() {
+        for (scenario, message, expected) in [
+            (
+                AuthScenario::Hint,
+                "Enter your password",
+                Politeness::Assertive,
+            ),
+            (
+                AuthScenario::Error,
+                "Incorrect username or password",
+                Politeness::Assertive,
+            ),
+            (AuthScenario::Starting, STARTING_MESSAGE, Politeness::Polite),
+        ] {
+            let app = GreeterApp::for_shot(scenario);
+            assert_eq!(
+                live_politeness_for(card_of(&app).as_ref(), message),
+                Some(expected),
+                "{scenario:?} feedback must be announced at the right urgency"
+            );
+        }
     }
 
     #[test]

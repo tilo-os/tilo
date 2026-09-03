@@ -39,6 +39,9 @@ pub struct Text {
     semantic_role: Option<TextRole>,
     follows_role_style: bool,
     heading_level: Option<u8>,
+    /// Announce changes to this text without moving keyboard focus. Static
+    /// copy leaves this unset; status and error text opt in explicitly.
+    live: Option<crate::a11y::Politeness>,
     layout_engine: Option<Box<dyn TextLayoutEngine>>,
     engine_revision: u64,
     /// `None` (default) renders with the theme's `text_primary`.
@@ -76,6 +79,7 @@ impl Text {
             semantic_role: None,
             follows_role_style: false,
             heading_level: None,
+            live: None,
             layout_engine: None,
             engine_revision: 0,
             color: None,
@@ -313,6 +317,18 @@ impl Text {
     #[must_use]
     pub fn with_heading_level(mut self, level: u8) -> Self {
         self.heading_level = Some(level.clamp(1, 6));
+        self
+    }
+
+    /// Mark this text as a live accessibility region.
+    ///
+    /// Use [`crate::a11y::Politeness::Assertive`] for feedback that must be
+    /// heard before the person can proceed (for example, a rejected login),
+    /// and `Polite` for non-blocking progress. This does not move focus or
+    /// change visual styling.
+    #[must_use]
+    pub fn with_live(mut self, politeness: crate::a11y::Politeness) -> Self {
+        self.live = Some(politeness);
         self
     }
 
@@ -792,7 +808,11 @@ impl Widget for Text {
         let role = self
             .accessible_heading_level()
             .map_or(Role::StaticText, |level| Role::Heading { level });
-        Some(AccessNode::new(role).with_name(label))
+        let mut node = AccessNode::new(role).with_name(label);
+        if let Some(politeness) = self.live {
+            node = node.with_live(politeness);
+        }
+        Some(node)
     }
 
     fn presence_key(&self) -> Option<PresenceKey> {
@@ -1149,6 +1169,17 @@ mod tests {
             Widget::accessibility(&t).is_none(),
             "empty text collapses out of the a11y tree",
         );
+    }
+
+    #[test]
+    fn accessibility_exposes_opt_in_live_text_without_changing_its_role() {
+        use crate::a11y::Politeness;
+
+        let t = Text::new("Incorrect password").with_live(Politeness::Assertive);
+        let node = Widget::accessibility(&t).expect("live status remains accessible text");
+        assert_eq!(node.role, Role::StaticText);
+        assert_eq!(node.name.as_deref(), Some("Incorrect password"));
+        assert_eq!(node.live, Some(Politeness::Assertive));
     }
 
     use crate::i18n::I18nManager;
