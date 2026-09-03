@@ -157,6 +157,8 @@ fn demo_iso_source() -> crate::model::Source {
         size: 2_113_929_216,
         label: "Fedora-WS-Live-42-1-1".into(),
         installable: false,
+        identity: None,
+        expected_sha256: None,
     }
 }
 
