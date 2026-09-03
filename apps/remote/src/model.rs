@@ -19,9 +19,9 @@ pub type ConnectionId = Uuid;
 
 /// The transport / protocol a connection speaks.
 ///
-/// RDP and qOS relay remain variants so saved, older connection profiles can
-/// round-trip without data loss. They are intentionally not offered for new
-/// profiles until qOS has an actual transport behind them.
+/// RDP remains a variant so saved, older connection profiles can round-trip
+/// without data loss. qOS device control is backed by the shell's authenticated
+/// workspace transport and is available for new profiles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConnectionKind {
     /// Secure shell — an interactive terminal session.
@@ -30,11 +30,10 @@ pub enum ConnectionKind {
     Vnc,
     /// Remote Desktop Protocol — a streamed remote desktop.
     Rdp,
-    /// A peer qOS device in **relay mode**. The remote machine doesn't
-    /// stream pixels; it relays application + workspace state over the
-    /// P2P fabric and we render it *locally* with our own toolkit. This
-    /// is why qOS-to-qOS sessions stay crisp and theme-consistent: there
-    /// is no framebuffer, only a CRDT/event stream.
+    /// A peer qOS device reached through the canonical device mesh. The shell
+    /// prefers an authenticated direct route and falls back to an eligible
+    /// encrypted relay, while reusing the target's consented surface stream
+    /// and input firewall.
     Qos,
 }
 
@@ -55,7 +54,7 @@ impl ConnectionKind {
             ConnectionKind::Ssh => "SSH",
             ConnectionKind::Vnc => "VNC",
             ConnectionKind::Rdp => "RDP",
-            ConnectionKind::Qos => "qOS Relay",
+            ConnectionKind::Qos => "qOS device",
         }
     }
 
@@ -65,41 +64,49 @@ impl ConnectionKind {
             ConnectionKind::Ssh => 22,
             ConnectionKind::Vnc => 5900,
             ConnectionKind::Rdp => 3389,
-            // qOS relay rides the compositor's P2P fabric; the "port" is
-            // a logical relay channel rather than a TCP port.
+            // qOS device control rides the compositor's P2P fabric and has no
+            // application-owned TCP port.
             ConnectionKind::Qos => 0,
         }
     }
 
     /// Whether a session of this kind renders as a text terminal (true)
-    /// or as a graphical surface (false). qOS relay renders graphically
-    /// but *locally*, so it groups with the framebuffer kinds here.
+    /// or as a graphical surface (false).
     pub fn is_terminal(self) -> bool {
         matches!(self, ConnectionKind::Ssh)
     }
 
-    /// Whether the remote side streams a pixel framebuffer to us. False
-    /// for SSH (text) and for qOS relay (local render of relayed state).
+    /// Whether the remote side streams a graphical surface to us. qOS reuses
+    /// the compositor's existing consented surface stream rather than defining
+    /// a parallel remote-desktop protocol.
     pub fn streams_framebuffer(self) -> bool {
-        matches!(self, ConnectionKind::Vnc | ConnectionKind::Rdp)
+        matches!(
+            self,
+            ConnectionKind::Vnc | ConnectionKind::Rdp | ConnectionKind::Qos
+        )
     }
 
     /// Kinds available when creating a new profile.
     ///
     /// Keep the persisted enum broader than this list: hiding an unavailable
     /// transport from creation must not silently destroy an older profile.
-    pub fn available_to_create() -> [ConnectionKind; 2] {
-        [ConnectionKind::Ssh, ConnectionKind::Vnc]
+    pub fn available_to_create() -> [ConnectionKind; 3] {
+        [
+            ConnectionKind::Ssh,
+            ConnectionKind::Vnc,
+            ConnectionKind::Qos,
+        ]
     }
 
     /// Whether qOS can genuinely open this transport today.
     pub fn is_supported(self) -> bool {
-        matches!(self, ConnectionKind::Ssh | ConnectionKind::Vnc)
+        matches!(
+            self,
+            ConnectionKind::Ssh | ConnectionKind::Vnc | ConnectionKind::Qos
+        )
     }
 
-    /// Whether Remote can honestly start a connection attempt. qOS can check
-    /// authenticated direct/relay reachability even though its local workspace
-    /// session transport is still a separate integration seam.
+    /// Whether Remote can honestly start a connection attempt.
     pub fn can_attempt(self) -> bool {
         matches!(
             self,
@@ -455,13 +462,19 @@ mod tests {
     fn only_backed_transports_are_available_to_create() {
         assert_eq!(
             ConnectionKind::available_to_create(),
-            [ConnectionKind::Ssh, ConnectionKind::Vnc]
+            [
+                ConnectionKind::Ssh,
+                ConnectionKind::Vnc,
+                ConnectionKind::Qos
+            ]
         );
         assert!(ConnectionKind::Ssh.is_supported());
         assert!(ConnectionKind::Vnc.is_supported());
         assert!(!ConnectionKind::Rdp.is_supported());
-        assert!(!ConnectionKind::Qos.is_supported());
+        assert!(ConnectionKind::Qos.is_supported());
         assert!(ConnectionKind::Qos.can_attempt());
+        assert!(ConnectionKind::Qos.streams_framebuffer());
+        assert_eq!(ConnectionKind::Qos.label(), "qOS device");
         assert!(!ConnectionKind::Rdp.can_attempt());
     }
 
