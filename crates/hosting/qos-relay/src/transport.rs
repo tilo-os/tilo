@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 pub const ALPN: &[u8] = b"qos-relay/1";
 /// Authenticated one-shot discovery of direct filesystem endpoints.
 pub const DISCOVERY_ALPN: &[u8] = b"qos-relay-discovery/2";
+/// Authenticated owner-only health and lifecycle management protocol.
+pub const MANAGEMENT_ALPN: &[u8] = b"qos-home-peer-management/1";
 
 /// Small, stable discovery reply consumed directly by filesystem workers.
 /// Keeping this separate from the relay's richer placement profile avoids a
@@ -46,6 +48,38 @@ pub struct ContentPeerRegistration {
     pub endpoint: EndpointAddr,
     /// Encoded Files ticket binding a fresh daemon to the shared namespace.
     pub ticket: String,
+}
+
+/// Bounded owner operation for an enrolled home peer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HomePeerManagementRequest {
+    /// Read current service and full-replica health.
+    Status,
+    /// Change the operator-facing server name.
+    Rename {
+        /// New operator-facing label, bounded to 80 bytes.
+        label: String,
+    },
+    /// Revoke this host and stop all hosted services.
+    Decommission {
+        /// Root-signed permanent revocation targeting this host certificate.
+        revocation: qos_user_identity::RevocationEntry,
+    },
+}
+
+/// Authenticated result returned by a home peer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HomePeerManagementResponse {
+    /// Certified host device key.
+    pub device_public_key: [u8; 32],
+    /// Current operator-facing label.
+    pub label: String,
+    /// Whether the full filesystem replica currently proves readiness.
+    pub files_ready: bool,
+    /// Active service advertisement after capability clamping.
+    pub services: crate::mesh::ServiceCapabilities,
+    /// Whether this response completed permanent decommissioning.
+    pub decommissioned: bool,
 }
 
 /// A client must name the relay room it is resolving. The host never exposes

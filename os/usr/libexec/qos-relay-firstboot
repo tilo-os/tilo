@@ -6,6 +6,10 @@ token=/etc/qos/enrollment-token.txt
 cert=/var/lib/qos/device/cert.bin
 home_peer=/etc/qos/home-peer.toml
 
+if [[ -e /var/lib/qos-relay/decommissioned ]]; then
+    exit 0
+fi
+
 if [[ -s "$cert" && -s "$home_peer" ]]; then
     exit 0
 fi
