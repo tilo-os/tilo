@@ -17,6 +17,7 @@ use word_processor::actions::{self as wp, RegionKind, WordProcessorAction};
 use crate::apply::Editor;
 use crate::model::{Chooser, Route};
 use crate::plan::{self, Block, ConfirmationEvidence, Instruction, Plan};
+use crate::providers::{SecretResolver, UnavailableSecretResolver, default_selection};
 use crate::surface::{self, AppContract, View};
 use crate::wire::Link;
 
@@ -149,6 +150,13 @@ impl Session {
     /// be made, or the initial route join or presence announce fails to
     /// send.
     pub fn connect(cfg: Config) -> Result<Self> {
+        Self::connect_with_resolver(cfg, &UnavailableSecretResolver)
+    }
+
+    /// Connect using the desktop's credential resolver. Launchers that own a
+    /// Secret Service portal inject it here; the default headless path fails
+    /// closed rather than reading model credentials from the environment.
+    pub fn connect_with_resolver(cfg: Config, resolver: &dyn SecretResolver) -> Result<Self> {
         let mut link = match &cfg.endpoint {
             Some(path) => Link::connect_endpoint(
                 path,
@@ -180,12 +188,15 @@ impl Session {
             name = %cfg.name,
             "joined the room; waiting for the document"
         );
-        let chooser = Chooser::new(cfg.model, cfg.model_timeout);
+        let chooser = default_selection().map_or_else(
+            || Chooser::new(false, cfg.model_timeout),
+            |selection| Chooser::with_provider(cfg.model, cfg.model_timeout, selection, resolver),
+        );
         // Said once, at the top of the run: an operator should know which
         // path a recording is going to take before the beat, not after.
         tracing::info!(
             live = chooser.is_live(),
-            model = crate::model::MODEL,
+            model = ?default_selection().map(|selection| selection.model.id),
             timeout_ms = cfg.model_timeout.as_millis() as u64,
             "action choice: {}",
             if chooser.is_live() {

@@ -17,6 +17,20 @@ fn save_profile(profile: ProviderProfile) {
     let _ = config.save();
 }
 
+fn select_default(profile_id: String) {
+    let mut config = ProviderConfig::load();
+    // A profile with no discovered model cannot become an executable default;
+    // keeping the profile visible is useful, but guessing a model id is not.
+    if config
+        .profiles
+        .iter()
+        .any(|profile| profile.id == profile_id && profile.default_model.is_some())
+    {
+        config.default_profile = Some(profile_id);
+        let _ = config.save();
+    }
+}
+
 fn add_actions() -> Box<dyn Widget> {
     Box::new(
         Row::new()
@@ -103,6 +117,21 @@ pub fn build() -> Box<dyn Widget> {
             ));
         }
         details.push(caption("Model discovery, credential consent, and task-level model selection happen through the Agent Task Center so there is one audited execution surface."));
+        if profile.default_model.is_some() {
+            let profile_id = profile.id.clone();
+            details.push(Box::new(
+                Button::new(
+                    &format!("agent-models-default-{profile_id}"),
+                    if config.default_profile.as_deref() == Some(&profile.id) {
+                        "Default for new tasks"
+                    } else {
+                        "Use by default"
+                    },
+                    None,
+                )
+                .on_effect(move || select_default(profile_id.clone())),
+            ));
+        }
         surfaces.push(card_with_action(
             profile.display_label(),
             Box::new(
