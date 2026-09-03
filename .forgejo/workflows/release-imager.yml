@@ -136,7 +136,15 @@ jobs:
       - name: Install native schema compiler
         run: |
           if ! command -v capnp >/dev/null; then
-            dnf install -y capnproto
+            if command -v apt-get >/dev/null; then
+              apt-get update
+              apt-get install -y --no-install-recommends capnproto
+            elif command -v dnf >/dev/null; then
+              dnf install -y capnproto
+            else
+              printf 'cannot install capnproto: unsupported Linux runner image\n' >&2
+              exit 1
+            fi
           fi
           capnp --version
       - name: Configure release signing
