@@ -3,12 +3,10 @@ Description=qOS host first-boot — consume enrollment token and mint device cer
 Documentation=file:///usr/share/doc/qos/relay.md
 After=network-online.target
 Wants=network-online.target
-Before=qos-relay.service
-# Runs exactly once per fresh install; the script writes a marker
-# at /var/lib/qos/device/cert.bin and refuses to re-run once the
-# cert is present.
+Before=qos-relay.service qos-fs-replica.service
+# Runs until both the signed device certificate and home-peer bundle
+# are durable, then becomes an immediate no-op on later service starts.
 ConditionPathExists=/etc/qos/enrollment-token.txt
-ConditionPathExists=!/var/lib/qos/device/cert.bin
 
 [Service]
 Type=oneshot

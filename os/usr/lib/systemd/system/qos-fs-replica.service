@@ -1,7 +1,8 @@
 [Unit]
 Description=qOS complete authenticated filesystem replica
-After=network-online.target
+After=network-online.target qos-relay-firstboot.service
 Wants=network-online.target
+Requires=qos-relay-firstboot.service
 ConditionPathExists=/etc/qos/home-peer.toml
 
 [Service]
