@@ -469,9 +469,32 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
         // that person access to every shell room wired to the namespace.
         // Only a governor-signed, explicit Scope::Room(<relay id>) grant
         // admits a user to that particular relay topic.
+        // Do not seed a just-restarted relay from the enrollment copy when a
+        // newer materialized authority has already been observed.  The
+        // refresh task starts after the router, so this check closes the
+        // otherwise-real admission window during startup.
+        let high_water = load_authority_high_water(&workspace.cache_dir).map_err(|error| {
+            RelayError::Identity(format!("invalid authority high-water: {error}"))
+        })?;
+        let authority = match current_workspace_authority(&workspace) {
+            Ok(authority) => {
+                verify_and_advance_authority(&workspace, &ticket, &authority).map_err(|error| {
+                    RelayError::Identity(format!("home-peer authority rejected: {error}"))
+                })?;
+                Some(authority)
+            }
+            // Preserve compatibility with pre-authority bundles only when
+            // this relay has never accepted an authority for the workspace.
+            Err(_) if high_water.is_none() && workspace.authority.is_none() => None,
+            Err(error) => {
+                return Err(RelayError::Identity(format!(
+                    "home-peer current authority is unavailable: {error}"
+                )));
+            }
+        };
         let mut authority_users = Vec::new();
         let mut governor = None;
-        if let Some(authority) = workspace.authority.as_ref() {
+        if let Some(authority) = authority.as_ref() {
             governor = Some(authority.governor);
             authority_users.push(hex::encode(authority.governor));
         }
@@ -482,7 +505,7 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
             let mut room_users = governor
                 .map(|governor| vec![hex::encode(governor)])
                 .unwrap_or_default();
-            if let Some(authority) = workspace.authority.as_ref()
+            if let Some(authority) = authority.as_ref()
                 && id != crate::personal_continuity_workspace_id(&authority.governor)
             {
                 let room = id.to_string();
@@ -660,10 +683,276 @@ fn spawn_background_tasks(
     peer_relay_tasks
 }
 
+const AUTHORITY_HIGH_WATER_FILE: &str = "workspace-authority-high-water.bin";
+
+/// The part of a workspace authority that must survive a relay restart.  The
+/// digest also makes equal-revision equivocation fail closed: a different
+/// signed payload is not a retry of the authority we already accepted.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorityHighWater {
+    workspace: uuid::Uuid,
+    governor: [u8; 32],
+    revision: u64,
+    digest: [u8; 32],
+}
+
+#[derive(Default)]
+struct AuthorityRefreshState {
+    /// Rooms previously governed by this bundle.  Keep them so a malformed
+    /// bundle/current authority revokes their live admission rather than
+    /// leaving the last good projection active forever.
+    governed_rooms: std::collections::HashSet<u64>,
+}
+
+fn authority_high_water_path(cache_dir: &std::path::Path) -> PathBuf {
+    cache_dir.join(AUTHORITY_HIGH_WATER_FILE)
+}
+
+fn authority_digest(
+    authority: &fs::workspace_authority::WorkspaceAuthorityEnvelope,
+) -> Result<[u8; 32], String> {
+    postcard::to_allocvec(authority)
+        .map(|bytes| *blake3::hash(&bytes).as_bytes())
+        .map_err(|error| format!("could not encode signed authority: {error}"))
+}
+
+fn load_authority_high_water(
+    cache_dir: &std::path::Path,
+) -> Result<Option<AuthorityHighWater>, String> {
+    let path = authority_high_water_path(cache_dir);
+    match std::fs::read(&path) {
+        Ok(bytes) => postcard::from_bytes(&bytes)
+            .map(Some)
+            .map_err(|error| format!("{} is corrupt: {error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("could not read {}: {error}", path.display())),
+    }
+}
+
+fn persist_authority_high_water(
+    cache_dir: &std::path::Path,
+    authority: &fs::workspace_authority::WorkspaceAuthorityEnvelope,
+    digest: [u8; 32],
+) -> Result<(), String> {
+    let high_water = AuthorityHighWater {
+        workspace: authority.workspace,
+        governor: authority.governor,
+        revision: authority.revision,
+        digest,
+    };
+    let bytes = postcard::to_allocvec(&high_water)
+        .map_err(|error| format!("could not encode authority high-water mark: {error}"))?;
+    let path = authority_high_water_path(cache_dir);
+    atomic_file::write_creating_parent(&path, &bytes)
+        .map_err(|error| format!("could not persist {}: {error}", path.display()))
+}
+
+/// Read the current materialized authority.  A corrupt materialized file is
+/// never silently replaced by the enrollment bundle: after a newer revision
+/// was observed that would resurrect an old revocation or tombstone.
+fn current_workspace_authority(
+    workspace: &fs::full_replica::HomePeerBundle,
+) -> Result<fs::workspace_authority::WorkspaceAuthorityEnvelope, String> {
+    let path = workspace.cache_dir.join("workspace-authority.bin");
+    match std::fs::read(&path) {
+        Ok(bytes) => postcard::from_bytes(&bytes)
+            .map_err(|error| format!("{} is corrupt: {error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            workspace.authority.clone().ok_or_else(|| {
+                format!(
+                    "{} is missing and the enrollment bundle has no authority",
+                    path.display()
+                )
+            })
+        }
+        Err(error) => Err(format!("could not read {}: {error}", path.display())),
+    }
+}
+
+fn verify_and_advance_authority(
+    workspace: &fs::full_replica::HomePeerBundle,
+    ticket: &fs::Ticket,
+    authority: &fs::workspace_authority::WorkspaceAuthorityEnvelope,
+) -> Result<(), String> {
+    let high_water = load_authority_high_water(&workspace.cache_dir)?;
+    let expected_governor = high_water
+        .as_ref()
+        .map(|record| record.governor)
+        // The enrollment bundle is the governor trust anchor before the
+        // relay has persisted an authority itself.
+        .or_else(|| {
+            workspace
+                .authority
+                .as_ref()
+                .map(|authority| authority.governor)
+        })
+        .unwrap_or(authority.governor);
+    authority
+        .verify(ticket.workspace_id(), expected_governor)
+        .map_err(|error| format!("authority signature or governor is invalid: {error}"))?;
+    let digest = authority_digest(authority)?;
+
+    if let Some(record) = high_water {
+        if record.workspace != authority.workspace {
+            return Err("authority high-water workspace does not match the bundle".into());
+        }
+        if record.governor != authority.governor {
+            return Err("authority governor regressed from the durable high-water mark".into());
+        }
+        if authority.revision < record.revision {
+            return Err(format!(
+                "authority revision {} regressed below durable revision {}",
+                authority.revision, record.revision
+            ));
+        }
+        if authority.revision == record.revision {
+            if digest != record.digest {
+                return Err("authority equivocated at its durable revision".into());
+            }
+            return Ok(());
+        }
+    }
+    persist_authority_high_water(&workspace.cache_dir, authority, digest)
+}
+
+async fn apply_home_peer_projection(
+    live_policy: &Arc<std::sync::RwLock<TrustPolicy>>,
+    workspaces: &WorkspaceRegistry,
+    own_user: [u8; 32],
+    state: &mut AuthorityRefreshState,
+    users: Vec<String>,
+    room_users: HashMap<u64, std::collections::HashSet<[u8; 32]>>,
+    next_governed_rooms: std::collections::HashSet<u64>,
+) {
+    if let Ok(mut policy) = live_policy.write() {
+        *policy = TrustPolicy::AllowList { users };
+    }
+    let affected_rooms = state
+        .governed_rooms
+        .union(&next_governed_rooms)
+        .copied()
+        .collect::<Vec<_>>();
+    let runtimes = workspaces.lock().await;
+    for room in affected_rooms {
+        if let Some(runtime) = runtimes.get(&room) {
+            runtime.lock().await.admitted_users =
+                room_users.get(&room).cloned().unwrap_or_default();
+        }
+    }
+    state.governed_rooms = next_governed_rooms;
+    let _ = own_user; // Documents that the always-admitted local user is in `users`.
+}
+
+/// Re-evaluate the materialized authority at `now`, even when no file bytes
+/// changed.  Capability expiry is wall-clock state, not source-file state.
+/// A rejected/missing current authority clears every previously governed room
+/// and leaves only this relay's own user admitted.
+async fn refresh_home_peer_authority_once(
+    bundle_path: &std::path::Path,
+    own_user: [u8; 32],
+    live_policy: &Arc<std::sync::RwLock<TrustPolicy>>,
+    workspaces: &WorkspaceRegistry,
+    state: &mut AuthorityRefreshState,
+    now: u64,
+) -> bool {
+    let refresh = || -> Result<
+        (
+            Vec<String>,
+            HashMap<u64, std::collections::HashSet<[u8; 32]>>,
+            std::collections::HashSet<u64>,
+        ),
+        String,
+    > {
+        let bytes = std::fs::read(bundle_path)
+            .map_err(|error| format!("could not read {}: {error}", bundle_path.display()))?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| format!("{} is not UTF-8", bundle_path.display()))?;
+        let bundle = toml::from_str::<fs::full_replica::HomePeerSet>(text)
+            .map_err(|error| format!("{} is invalid: {error}", bundle_path.display()))?;
+        let global_namespace = bundle.workspaces.len() == 1;
+        let mut users = vec![hex::encode(own_user)];
+        let mut room_users = HashMap::new();
+        let mut governed_rooms = std::collections::HashSet::new();
+
+        for workspace in bundle.workspaces {
+            let ticket = fs::Ticket::decode(&workspace.ticket)
+                .map_err(|_| "home-peer authority refresh rejected an invalid Files ticket".to_string())?;
+            governed_rooms.extend(workspace.relay_workspace_ids.iter().copied());
+            // Remember rooms as soon as their bundle mapping is readable, so
+            // an invalid current authority clears them below.
+            state.governed_rooms.extend(governed_rooms.iter().copied());
+            let authority = current_workspace_authority(&workspace)?;
+            verify_and_advance_authority(&workspace, &ticket, &authority)?;
+
+            if authority.tombstoned {
+                continue;
+            }
+            users.push(hex::encode(authority.governor));
+            for room in &workspace.relay_workspace_ids {
+                room_users.entry(*room).or_default().insert(authority.governor);
+            }
+            for capability in &authority.capabilities {
+                let collab_types::Scope::Room(room) = &capability.scope else {
+                    continue;
+                };
+                let Ok(room) = room.parse::<u64>() else {
+                    continue;
+                };
+                if (!global_namespace && !workspace.relay_workspace_ids.contains(&room))
+                    || room == crate::personal_continuity_workspace_id(&authority.governor)
+                    || capability.effect != collab_types::Effect::Grant
+                    || !capability.is_live_at(Some(now))
+                {
+                    continue;
+                }
+                let collab_types::Subject::User(user) = &capability.subject else {
+                    continue;
+                };
+                users.push(hex::encode(user.as_bytes()));
+                governed_rooms.insert(room);
+                room_users.entry(room).or_default().insert(*user.as_bytes());
+            }
+        }
+        users.sort_unstable();
+        users.dedup();
+        Ok((users, room_users, governed_rooms))
+    };
+
+    match refresh() {
+        Ok((users, room_users, governed_rooms)) => {
+            apply_home_peer_projection(
+                live_policy,
+                workspaces,
+                own_user,
+                state,
+                users,
+                room_users,
+                governed_rooms,
+            )
+            .await;
+            true
+        }
+        Err(error) => {
+            tracing::warn!(path = %bundle_path.display(), "home-peer authority refresh failed closed: {error}");
+            let governed_rooms = std::mem::take(&mut state.governed_rooms);
+            apply_home_peer_projection(
+                live_policy,
+                workspaces,
+                own_user,
+                state,
+                vec![hex::encode(own_user)],
+                HashMap::new(),
+                governed_rooms,
+            )
+            .await;
+            false
+        }
+    }
+}
+
 /// Keep relay handshake admission derived from the same durable signed
-/// authority that the filesystem worker materializes. A malformed update is
-/// ignored (the last verified policy remains live); an empty valid authority
-/// denies every cross-user collaborator on the next handshake.
+/// authority that the filesystem worker materializes.
 fn spawn_home_peer_authority_refresh(
     bundle_path: PathBuf,
     own_user: [u8; 32],
@@ -673,118 +962,18 @@ fn spawn_home_peer_authority_refresh(
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut last_source_digest = None;
-        let mut authority_paths = Vec::<PathBuf>::new();
+        let mut state = AuthorityRefreshState::default();
         loop {
             interval.tick().await;
-            let Ok(bytes) = std::fs::read(&bundle_path) else {
-                continue;
-            };
-            let mut source = bytes.clone();
-            for path in &authority_paths {
-                if let Ok(bytes) = std::fs::read(path) {
-                    source.extend(bytes);
-                }
-            }
-            let digest = *blake3::hash(&source).as_bytes();
-            if last_source_digest == Some(digest) {
-                continue;
-            }
-            last_source_digest = Some(digest);
-            let Ok(text) = std::str::from_utf8(&bytes) else {
-                tracing::warn!(path = %bundle_path.display(), "home-peer authority bundle is not UTF-8");
-                continue;
-            };
-            let Ok(bundle) = toml::from_str::<fs::full_replica::HomePeerSet>(text) else {
-                tracing::warn!(path = %bundle_path.display(), "home-peer authority bundle is invalid");
-                continue;
-            };
-            let global_namespace = bundle.workspaces.len() == 1;
-            let mut users = vec![hex::encode(own_user)];
-            let mut room_users: HashMap<u64, std::collections::HashSet<[u8; 32]>> = HashMap::new();
-            let mut governed_rooms = std::collections::HashSet::new();
-            let mut next_authority_paths = Vec::new();
-            let now = unix_now_secs();
-            let mut valid = true;
-            for workspace in bundle.workspaces {
-                let Ok(ticket) = fs::Ticket::decode(&workspace.ticket) else {
-                    tracing::warn!("home-peer authority refresh rejected an invalid Files ticket");
-                    valid = false;
-                    break;
-                };
-                governed_rooms.extend(workspace.relay_workspace_ids.iter().copied());
-                let authority_path = workspace.cache_dir.join("workspace-authority.bin");
-                next_authority_paths.push(authority_path.clone());
-                let cached = std::fs::read(authority_path)
-                    .ok()
-                    .and_then(|bytes| postcard::from_bytes(&bytes).ok());
-                let Some(authority) = cached.or(workspace.authority) else {
-                    tracing::warn!("home-peer authority refresh found no signed authority");
-                    valid = false;
-                    break;
-                };
-                if authority
-                    .verify(ticket.workspace_id(), authority.governor)
-                    .is_err()
-                {
-                    tracing::warn!("home-peer authority refresh rejected a bad signature");
-                    valid = false;
-                    break;
-                }
-                // Keep a distinct membership set for every relay room.  A
-                // Files-path capability is not a shell-room invitation.
-                // This is intentionally rebuilt from verified, signed
-                // Scope::Room grants on each refresh so revocation removes
-                // an existing collaborator from the affected topic.
-                if !authority.tombstoned {
-                    users.push(hex::encode(authority.governor));
-                    for room in &workspace.relay_workspace_ids {
-                        room_users
-                            .entry(*room)
-                            .or_default()
-                            .insert(authority.governor);
-                    }
-                    for capability in &authority.capabilities {
-                        let collab_types::Scope::Room(room) = &capability.scope else {
-                            continue;
-                        };
-                        let Ok(room) = room.parse::<u64>() else {
-                            continue;
-                        };
-                        // A signed authority may contain room grants for a
-                        // different host; they have no force outside this
-                        // bundle's explicit room binding.
-                        if (!global_namespace && !workspace.relay_workspace_ids.contains(&room))
-                            || room == crate::personal_continuity_workspace_id(&authority.governor)
-                            || capability.effect != collab_types::Effect::Grant
-                            || !capability.is_live_at(Some(now))
-                        {
-                            continue;
-                        }
-                        let collab_types::Subject::User(user) = &capability.subject else {
-                            continue;
-                        };
-                        users.push(hex::encode(user.as_bytes()));
-                        governed_rooms.insert(room);
-                        room_users.entry(room).or_default().insert(*user.as_bytes());
-                    }
-                }
-            }
-            if valid {
-                authority_paths = next_authority_paths;
-                users.sort_unstable();
-                users.dedup();
-                if let Ok(mut policy) = live_policy.write() {
-                    *policy = TrustPolicy::AllowList { users };
-                }
-                let runtimes = workspaces.lock().await;
-                for room in governed_rooms {
-                    if let Some(runtime) = runtimes.get(&room) {
-                        runtime.lock().await.admitted_users =
-                            room_users.get(&room).cloned().unwrap_or_default();
-                    }
-                }
-            }
+            let _ = refresh_home_peer_authority_once(
+                &bundle_path,
+                own_user,
+                &live_policy,
+                &workspaces,
+                &mut state,
+                unix_now_secs(),
+            )
+            .await;
         }
     })
 }
@@ -2022,6 +2211,282 @@ mod tests {
             .clone();
         assert_eq!(users, std::collections::HashSet::from([revoked.governor]));
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn authority_refresh_rechecks_expiry_without_a_source_change() {
+        use collab_types::{CapOverride, Effect, Expiry, Scope, Subject, Verb};
+
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("cache");
+        let bundle_path = temp.path().join("home-peer.toml");
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
+        let collaborator = [0x62; 32];
+        let ticket = fs::Ticket {
+            node: EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
+            workspace: [9; 32],
+        };
+        let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+            ticket.workspace_id(),
+            1,
+            vec![
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                    Scope::Room("42".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                )
+                // It is initially a future deadline, then becomes expired while
+                // both authority files remain byte-for-byte unchanged.
+                .expiring(Expiry::AtUnix(20)),
+            ],
+            false,
+            &governor,
+        )
+        .unwrap();
+        let bundle = fs::full_replica::HomePeerSet {
+            status_file: temp.path().join("status.json"),
+            workspaces: vec![fs::full_replica::HomePeerBundle {
+                ticket: ticket.encode().unwrap(),
+                cache_dir: cache,
+                capability_json: "[]".into(),
+                authority: Some(authority),
+                principals: Vec::new(),
+                relay_workspace_ids: vec![42],
+            }],
+        };
+        std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
+        let config = RelayConfig {
+            state_root: temp.path().join("relay"),
+            workspaces: Vec::new(),
+            ..RelayConfig::default()
+        };
+        let workspaces = build_workspace_registry(&config).unwrap();
+        get_or_autobind_workspace(
+            &workspaces,
+            Some(&WorkspaceAutobind {
+                state_root: config.state_root.clone(),
+            }),
+            42,
+        )
+        .await
+        .unwrap();
+        let policy = Arc::new(std::sync::RwLock::new(TrustPolicy::AllowList {
+            users: Vec::new(),
+        }));
+        let mut state = AuthorityRefreshState::default();
+
+        assert!(
+            refresh_home_peer_authority_once(
+                &bundle_path,
+                governor.verifying_key().to_bytes(),
+                &policy,
+                &workspaces,
+                &mut state,
+                19,
+            )
+            .await
+        );
+        assert!(
+            workspaces
+                .lock()
+                .await
+                .get(&42)
+                .unwrap()
+                .lock()
+                .await
+                .admitted_users
+                .contains(&collaborator)
+        );
+
+        assert!(
+            refresh_home_peer_authority_once(
+                &bundle_path,
+                governor.verifying_key().to_bytes(),
+                &policy,
+                &workspaces,
+                &mut state,
+                20,
+            )
+            .await
+        );
+        assert!(
+            !workspaces
+                .lock()
+                .await
+                .get(&42)
+                .unwrap()
+                .lock()
+                .await
+                .admitted_users
+                .contains(&collaborator)
+        );
+    }
+
+    #[tokio::test]
+    async fn authority_high_water_rejects_rollback_and_missing_cache_after_restart() {
+        use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let bundle_path = temp.path().join("home-peer.toml");
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[0x71; 32]);
+        let other_governor = ed25519_dalek::SigningKey::from_bytes(&[0x72; 32]);
+        let collaborator = [0x73; 32];
+        let ticket = fs::Ticket {
+            node: EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
+            workspace: [9; 32],
+        };
+        let granted = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+            ticket.workspace_id(),
+            1,
+            vec![CapOverride::new(
+                Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                Scope::Room("42".into()),
+                Effect::Grant,
+                Verb::Read,
+            )],
+            false,
+            &governor,
+        )
+        .unwrap();
+        let tombstone = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+            ticket.workspace_id(),
+            2,
+            Vec::new(),
+            true,
+            &governor,
+        )
+        .unwrap();
+        let bundle = fs::full_replica::HomePeerSet {
+            status_file: temp.path().join("status.json"),
+            workspaces: vec![fs::full_replica::HomePeerBundle {
+                ticket: ticket.encode().unwrap(),
+                cache_dir: cache.clone(),
+                capability_json: "[]".into(),
+                authority: Some(granted.clone()),
+                principals: Vec::new(),
+                relay_workspace_ids: vec![42],
+            }],
+        };
+        std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
+        std::fs::write(
+            cache.join("workspace-authority.bin"),
+            postcard::to_allocvec(&tombstone).unwrap(),
+        )
+        .unwrap();
+        let config = RelayConfig {
+            state_root: temp.path().join("relay"),
+            workspaces: Vec::new(),
+            ..RelayConfig::default()
+        };
+        let workspaces = build_workspace_registry(&config).unwrap();
+        get_or_autobind_workspace(
+            &workspaces,
+            Some(&WorkspaceAutobind {
+                state_root: config.state_root.clone(),
+            }),
+            42,
+        )
+        .await
+        .unwrap();
+        let policy = Arc::new(std::sync::RwLock::new(TrustPolicy::AllowList {
+            users: Vec::new(),
+        }));
+        let own_user = governor.verifying_key().to_bytes();
+        let mut first_process = AuthorityRefreshState::default();
+        assert!(
+            refresh_home_peer_authority_once(
+                &bundle_path,
+                own_user,
+                &policy,
+                &workspaces,
+                &mut first_process,
+                1,
+            )
+            .await
+        );
+        assert_eq!(
+            workspaces
+                .lock()
+                .await
+                .get(&42)
+                .unwrap()
+                .lock()
+                .await
+                .admitted_users,
+            std::collections::HashSet::new()
+        );
+
+        // A validly signed pre-tombstone authority must not resurrect the
+        // collaborator.  A new state models a relay process restart.
+        std::fs::write(
+            cache.join("workspace-authority.bin"),
+            postcard::to_allocvec(&granted).unwrap(),
+        )
+        .unwrap();
+        let mut restarted = AuthorityRefreshState::default();
+        assert!(
+            !refresh_home_peer_authority_once(
+                &bundle_path,
+                own_user,
+                &policy,
+                &workspaces,
+                &mut restarted,
+                1,
+            )
+            .await
+        );
+        assert_eq!(
+            policy.read().unwrap().clone(),
+            TrustPolicy::AllowList {
+                users: vec![hex::encode(own_user)]
+            }
+        );
+
+        // Deleting the live cache would otherwise fall back to `granted` in
+        // the enrollment bundle.  The durable high-water mark rejects it.
+        std::fs::remove_file(cache.join("workspace-authority.bin")).unwrap();
+        let mut restarted_after_deletion = AuthorityRefreshState::default();
+        assert!(
+            !refresh_home_peer_authority_once(
+                &bundle_path,
+                own_user,
+                &policy,
+                &workspaces,
+                &mut restarted_after_deletion,
+                1,
+            )
+            .await
+        );
+
+        // A governor switch cannot bypass the high-water mark either.
+        let foreign = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+            ticket.workspace_id(),
+            3,
+            Vec::new(),
+            false,
+            &other_governor,
+        )
+        .unwrap();
+        std::fs::write(
+            cache.join("workspace-authority.bin"),
+            postcard::to_allocvec(&foreign).unwrap(),
+        )
+        .unwrap();
+        let mut restarted_after_governor_change = AuthorityRefreshState::default();
+        assert!(
+            !refresh_home_peer_authority_once(
+                &bundle_path,
+                own_user,
+                &policy,
+                &workspaces,
+                &mut restarted_after_governor_change,
+                1,
+            )
+            .await
+        );
     }
 
     #[tokio::test]
