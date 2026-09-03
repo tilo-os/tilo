@@ -60,6 +60,11 @@ pub fn month_title(anchor: NaiveDate) -> String {
     format!("{} {}", month_name(anchor.month()), anchor.year())
 }
 
+/// Compact month title for constrained navigation bars, e.g. `Sep 2026`.
+pub(crate) fn month_title_short(anchor: NaiveDate) -> String {
+    format!("{} {}", month_abbr(anchor.month()), anchor.year())
+}
+
 /// Full English month name. `m` is expected to be `1..=12`; out-of-range
 /// values clamp to the nearest end rather than panicking.
 pub fn month_name(m: u32) -> &'static str {
