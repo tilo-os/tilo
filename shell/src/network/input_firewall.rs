@@ -354,8 +354,15 @@ impl RemoteInputFirewall {
         }
 
         let outcome = self.check(peer, surface, event, now);
-        if let Ok(InputEvent::PointerMotion { x, y }) = &outcome {
-            // Latch where the peer's pointer now is, so a coordinate-less button is checked against a point that already passed region + z-order.
+        if outcome.is_ok()
+            && let InputEvent::PointerMotion { x, y } = event
+        {
+            // Keep the coordinate in the same surface-local space it arrived
+            // in. The accepted event is translated to output space for seat
+            // delivery, but a later coordinate-less button has to be checked
+            // with `locate` again against the current tile position/z-order.
+            // Caching the translated coordinate made every click fail as soon
+            // as a real app's tile had a non-zero origin.
             self.peer_mut(peer).cursor = Some((surface, (*x, *y)));
         }
         outcome
@@ -408,6 +415,19 @@ impl RemoteInputFirewall {
             InputEvent::PointerLeave { surface: target } => {
                 if *target != surface {
                     return Err(Denial::SurfaceMismatch);
+                }
+                self.spend_budget(peer, now, false)?;
+                Ok(event.clone())
+            }
+            InputEvent::KeyboardFocus {
+                surface: target,
+                focused,
+            } => {
+                if *target != surface {
+                    return Err(Denial::SurfaceMismatch);
+                }
+                if *focused && self.view.rect(surface).is_none() {
+                    return Err(Denial::NotOnScreen);
                 }
                 self.spend_budget(peer, now, false)?;
                 Ok(event.clone())
@@ -689,6 +709,37 @@ mod tests {
                 Instant::now()
             ),
             Err(Denial::NoPointerPosition),
+        );
+    }
+
+    #[test]
+    fn button_rechecks_surface_local_position_after_nonzero_origin_motion() {
+        let mut fw = firewall();
+        let now = Instant::now();
+        let motion = fw
+            .review(
+                PEER,
+                SHARED,
+                &InputEvent::PointerMotion { x: 10.0, y: 20.0 },
+                now,
+            )
+            .expect("motion inside offset tile");
+        assert_eq!(motion, InputEvent::PointerMotion { x: 110.0, y: 70.0 });
+        assert_eq!(
+            fw.review(
+                PEER,
+                SHARED,
+                &InputEvent::PointerButton {
+                    button: 272,
+                    pressed: true,
+                },
+                now + Duration::from_millis(1),
+            ),
+            Ok(InputEvent::PointerButton {
+                button: 272,
+                pressed: true,
+            }),
+            "button must revalidate the original (10,20), not add the tile origin twice",
         );
     }
 
@@ -1097,6 +1148,7 @@ mod production_path {
             false,
             false,
         ));
+        let _ = state.remote_seats.seat_mut(PEER).enter(SHARED);
         state
     }
 
@@ -1116,7 +1168,7 @@ mod production_path {
             .expect("seat has a keyboard")
             .pressed_keys()
             .iter()
-            .any(|k| u32::from(*k) == keycode)
+            .any(|k| u32::from(*k) == keycode.saturating_add(8))
     }
 
     /// Put the peer's pointer somewhere legitimate so button events have a coordinate to be judged at.
@@ -1527,9 +1579,13 @@ mod production_path {
         let verdict =
             state.review_remote_input(PEER, SHARED, InputEvent::PointerEnter { surface: PRIVATE });
         assert_eq!(verdict, Err(Denial::SurfaceMismatch));
-        assert!(
-            state.remote_seats.seat(PEER).is_none(),
-            "a refused grab still moved the peer's seat",
+        assert_eq!(
+            state
+                .remote_seats
+                .seat(PEER)
+                .and_then(|seat| seat.focused_surface),
+            Some(SHARED),
+            "a refused grab changed the peer's existing focus",
         );
     }
 

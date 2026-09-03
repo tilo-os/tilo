@@ -2,13 +2,13 @@
 //! accepted bindings are validated and atomically persisted through the
 //! shared typed contract the compositor consumes.
 
-use crate::widgets::{caption, card, rows, setting_row_described};
+use crate::widgets::{card, rows, setting_row};
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
-use ui::widget::{TextInput, Widget};
+use ui::widget::{ShortcutRecorder, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
@@ -17,8 +17,9 @@ const SEARCH: &str = "shortcuts.search";
 const OVERVIEW: &str = "shortcuts.overview";
 const LOCK: &str = "shortcuts.lock";
 const QUICK_SETTINGS: &str = "shortcuts.quick_settings";
+const VIM_MODE: &str = "shortcuts.vim_mode";
 
-fn entries() -> [(ShortcutAction, &'static str, &'static str, &'static str); 4] {
+fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> {
     [
         (
             ShortcutAction::Search,
@@ -44,11 +45,103 @@ fn entries() -> [(ShortcutAction, &'static str, &'static str, &'static str); 4] 
             "Quick Settings",
             "Open the shell control surface",
         ),
+        (
+            ShortcutAction::ShortcutHelp,
+            "shortcuts.help",
+            "Shortcut guide",
+            "Show the always-available desktop controls overlay",
+        ),
+        (
+            ShortcutAction::FocusPreviousWindow,
+            "shortcuts.focus_previous_window",
+            "Focus previous window",
+            "Move the viewport left along the current strip",
+        ),
+        (
+            ShortcutAction::FocusNextWindow,
+            "shortcuts.focus_next_window",
+            "Focus next window",
+            "Move the viewport right along the current strip",
+        ),
+        (
+            ShortcutAction::PreviousTab,
+            "shortcuts.previous_tab",
+            "Previous tab",
+            "Cycle tabs in the focused window group",
+        ),
+        (
+            ShortcutAction::NextTab,
+            "shortcuts.next_tab",
+            "Next tab",
+            "Cycle tabs in the focused window group",
+        ),
+        (
+            ShortcutAction::PreviousStrip,
+            "shortcuts.previous_strip",
+            "Previous strip",
+            "Move the view to the strip above",
+        ),
+        (
+            ShortcutAction::NextStrip,
+            "shortcuts.next_strip",
+            "Next strip",
+            "Move the view to the strip below",
+        ),
+        (
+            ShortcutAction::PreviousWorkspace,
+            "shortcuts.previous_workspace",
+            "Previous workspace",
+            "Move the view to the workspace above",
+        ),
+        (
+            ShortcutAction::NextWorkspace,
+            "shortcuts.next_workspace",
+            "Next workspace",
+            "Move the view to the workspace below",
+        ),
+        (
+            ShortcutAction::MoveGroupLeft,
+            "shortcuts.move_group_left",
+            "Move group left",
+            "Reorder the focused window group",
+        ),
+        (
+            ShortcutAction::MoveGroupRight,
+            "shortcuts.move_group_right",
+            "Move group right",
+            "Reorder the focused window group",
+        ),
+        (
+            ShortcutAction::ResizeNarrower,
+            "shortcuts.resize_narrower",
+            "Make window narrower",
+            "Reduce the focused group's width",
+        ),
+        (
+            ShortcutAction::ResizeWider,
+            "shortcuts.resize_wider",
+            "Make window wider",
+            "Increase the focused group's width",
+        ),
     ]
+    .to_vec()
+}
+
+fn is_desktop_navigation(action: ShortcutAction) -> bool {
+    !matches!(
+        action,
+        ShortcutAction::Search
+            | ShortcutAction::WorkspaceOverview
+            | ShortcutAction::Lock
+            | ShortcutAction::QuickSettings
+            | ShortcutAction::ShortcutHelp
+    )
 }
 
 pub struct ShortcutPane {
     config: ShortcutConfig,
+    desktop_controls: settings_store::hardware::DesktopControlsConfig,
+    last_vim_mode: bool,
     last_text: HashMap<ShortcutAction, String>,
     needs_seed: bool,
     commit_context_pending: bool,
@@ -59,6 +152,7 @@ pub struct ShortcutPane {
 impl Default for ShortcutPane {
     fn default() -> Self {
         let config = ShortcutConfig::load();
+        let desktop_controls = settings_store::hardware::DesktopControlsConfig::load();
         let last_text = config
             .bindings
             .iter()
@@ -66,6 +160,8 @@ impl Default for ShortcutPane {
             .collect();
         Self {
             config,
+            last_vim_mode: desktop_controls.vim_mode,
+            desktop_controls,
             last_text,
             needs_seed: true,
             commit_context_pending: false,
@@ -77,40 +173,39 @@ impl Default for ShortcutPane {
 
 impl ShortcutPane {
     fn composition(&self) -> Box<dyn Widget> {
-        let mut system = Vec::new();
-        for (action, key, label, description) in entries() {
-            let placeholder = self
+        let mut system: Vec<Box<dyn Widget>> = Vec::new();
+        let mut desktop: Vec<Box<dyn Widget>> = vec![setting_row(
+            "Vim navigation (H J K L)",
+            Box::new(
+                Toggle::new("settings.shortcuts.vim_mode", VIM_MODE).with_id("shortcuts.vim_mode"),
+            ),
+        )];
+        let defaults = ShortcutConfig::default();
+        for (action, key, label, _) in entries() {
+            let value = self
                 .config
                 .bindings
                 .get(&action)
                 .map(KeyChord::display)
                 .unwrap_or_default();
-            system.push(setting_row_described(
+            let default = defaults
+                .bindings
+                .get(&action)
+                .map(KeyChord::display)
+                .unwrap_or_default();
+            let row = setting_row(
                 label,
-                description,
-                Box::new(
-                    TextInput::new(Vec::new())
-                        .with_id(key)
-                        .with_on_change_path(key)
-                        .with_placeholder(&placeholder)
-                        .with_font_size(13.0),
-                ),
-            ));
+                Box::new(ShortcutRecorder::new(key, key, &value, &default)),
+            );
+            if is_desktop_navigation(action) {
+                desktop.push(row);
+            } else {
+                system.push(row);
+            }
         }
         crate::widgets::cards(vec![
             card("System", rows(system)),
-            card(
-                "Safety and conflicts",
-                rows(vec![caption(
-                    "Type a chord such as Super+K. Printable keys require a modifier. Reserved emergency and virtual-terminal chords cannot be changed; duplicate chords are rejected without replacing the working binding.",
-                )]),
-            ),
-            card(
-                "Application shortcuts",
-                rows(vec![caption(
-                    "Applications own commands inside their windows. System bindings win only for the actions above, so apps remain free to expose their own shortcut editor.",
-                )]),
-            ),
+            card("Desktop navigation", rows(desktop)),
         ])
     }
 
@@ -143,7 +238,21 @@ impl Widget for ShortcutPane {
                 let _ = state.put(root, key, value.clone());
                 self.last_text.insert(action, value);
             }
+            let _ = state.put(root, VIM_MODE, self.desktop_controls.vim_mode);
             self.needs_seed = false;
+        }
+        if let Ok(Some((Value::Scalar(value), _))) = state.get(root, VIM_MODE)
+            && let automerge::ScalarValue::Boolean(enabled) = value.as_ref()
+            && *enabled != self.last_vim_mode
+        {
+            let previous = self.last_vim_mode;
+            self.desktop_controls.vim_mode = *enabled;
+            if self.desktop_controls.save().is_ok() {
+                self.last_vim_mode = *enabled;
+            } else {
+                self.desktop_controls.vim_mode = previous;
+                let _ = state.put(root, VIM_MODE, previous);
+            }
         }
         for (action, key, _, _) in entries() {
             let Some(value) = Self::read_text(state, root, key) else {
@@ -159,8 +268,10 @@ impl Widget for ShortcutPane {
             });
             if valid.is_ok() && self.config.save().is_ok() {
                 self.last_text.insert(action, value);
+                let _ = state.put(root, format!("{key}.error"), false);
             } else if let Some(previous) = self.last_text.get(&action) {
                 let _ = state.put(root, key, previous.clone());
+                let _ = state.put(root, format!("{key}.error"), true);
             }
         }
         if let Some(c) = &mut self.composed {
@@ -304,5 +415,16 @@ mod tests {
             ShortcutPane::read_text(&doc, &automerge::ROOT, LOCK).as_deref(),
             Some("Super+l")
         );
+    }
+
+    #[test]
+    fn vim_mode_toggle_persists_to_the_shell_contract() {
+        let _guard = crate::prefs::test_env::ConfigGuard::new("shortcut_vim_mode");
+        let mut pane = ShortcutPane::default();
+        let mut doc = AutoCommit::new();
+        pane.sync(&mut doc, &automerge::ROOT);
+        let _ = doc.put(&automerge::ROOT, VIM_MODE, true);
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert!(settings_store::hardware::DesktopControlsConfig::load().vim_mode);
     }
 }
