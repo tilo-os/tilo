@@ -6274,6 +6274,14 @@ impl ShellOverlayHost {
                 "Saved in this workspace's history, so everyone here sees it.",
             );
         }
+        if outcome.task_changed {
+            let mut state = chrome.borrow_mut();
+            state.bump();
+            state.push_notification(
+                "Task Center updated",
+                "The task and its audit trail are shared with this workspace.",
+            );
+        }
     }
 
     fn open_room_activity_target(chrome: &Chrome, target: &ui::HistoryResourceTarget) {
@@ -17479,6 +17487,7 @@ mod maximize_harvest_tests {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
+            tasks: Vec::new(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),
@@ -17662,6 +17671,7 @@ mod resync_strips_tests {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
+            tasks: Vec::new(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),
