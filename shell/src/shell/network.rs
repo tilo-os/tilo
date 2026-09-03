@@ -142,17 +142,19 @@ struct RegisteredHomePeer {
 fn registered_home_peer_addrs(
     local_user: Option<[u8; 32]>,
     relay_workspace_ids: &std::collections::BTreeSet<u64>,
-) -> Vec<RegisteredHomePeer> {
+) -> Result<Vec<RegisteredHomePeer>, String> {
     let Some(local_user) = local_user else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let path = home_peer_registry_path();
-    let Ok(metadata) = std::fs::metadata(&path) else {
-        return Vec::new();
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("could not inspect home-peer registry: {error}")),
     };
     if metadata.len() > MAX_HOME_PEER_REGISTRY_BYTES {
         tracing::warn!(path = %path.display(), "home-peer registry exceeds its bounded schema");
-        return Vec::new();
+        return Err("home-peer registry exceeds its bounded schema".into());
     }
     let registrations: Vec<qos_relay::HomePeerRegistration> =
         match std::fs::read(&path).ok().and_then(|bytes| {
@@ -161,7 +163,7 @@ fn registered_home_peer_addrs(
             Some(registrations) if registrations.len() <= MAX_HOME_PEERS => registrations,
             _ => {
                 tracing::warn!(path = %path.display(), "home-peer registry is invalid");
-                return Vec::new();
+                return Err("home-peer registry is invalid".into());
             }
         };
     let mut addrs = Vec::new();
@@ -201,7 +203,7 @@ fn registered_home_peer_addrs(
     }
     addrs.sort_by_key(|host| host.addr.id.to_string());
     addrs.dedup_by_key(|host| host.addr.id);
-    addrs
+    Ok(addrs)
 }
 
 /// How often a shell asks the rooms it is in for anything it is
@@ -414,6 +416,10 @@ pub struct ShellNetwork {
     listen_addrs: Arc<Mutex<Vec<iroh::EndpointAddr>>>,
     /// Always-on hosts included in newly issued invites.
     host_addrs: Mutex<Vec<iroh::EndpointAddr>>,
+    /// Home-peer ids sourced specifically from the mutable enrollment
+    /// registry. This lets refresh remove revoked/decommissioned entries
+    /// without disturbing hosts carried by workspace invitations.
+    registered_home_peer_ids: Mutex<std::collections::HashSet<iroh::EndpointId>>,
     /// Last bounded scan of the enrollment registry. A paired home peer may
     /// be approved after this shell started, so startup-only loading is not
     /// sufficient.
@@ -653,7 +659,8 @@ impl ShellNetwork {
         if let Some(user) = personal_continuity_user {
             relay_workspace_ids.insert(personal_continuity_topic_id(&user));
         }
-        let home_peers = registered_home_peer_addrs(personal_continuity_user, &relay_workspace_ids);
+        let home_peers = registered_home_peer_addrs(personal_continuity_user, &relay_workspace_ids)
+            .unwrap_or_default();
         let home_peer_ids = home_peers
             .iter()
             .map(|host| host.addr.id)
@@ -716,6 +723,7 @@ impl ShellNetwork {
             local_peer_id,
             listen_addrs,
             host_addrs: Mutex::new(host_addrs),
+            registered_home_peer_ids: Mutex::new(home_peer_ids),
             last_home_peer_refresh: Mutex::new(None),
             last_sync_kick: Mutex::new(None),
             personal_continuity: Mutex::new(persisted_continuity.continuity),
@@ -1159,26 +1167,62 @@ impl ShellNetwork {
         if let Some(user) = self.personal_continuity_user {
             relay_workspace_ids.insert(personal_continuity_topic_id(&user));
         }
+        let Ok(desired) =
+            registered_home_peer_addrs(self.personal_continuity_user, &relay_workspace_ids)
+        else {
+            // Preserve the last known-good routing set across a partial or
+            // malformed registry write. A subsequent bounded refresh retries.
+            return false;
+        };
+        let desired_ids: std::collections::HashSet<_> =
+            desired.iter().map(|host| host.addr.id).collect();
+        let previous_ids = self
+            .registered_home_peer_ids
+            .lock()
+            .map(|ids| ids.clone())
+            .unwrap_or_default();
+        let mut applied_ids = previous_ids.clone();
         let mut changed = false;
-        for host in registered_home_peer_addrs(self.personal_continuity_user, &relay_workspace_ids)
-        {
+        for removed in previous_ids.difference(&desired_ids).copied() {
+            if self
+                .cmd_tx
+                .try_send(NetCmd::DisconnectHost { id: removed })
+                .is_ok()
+            {
+                if let Ok(mut hosts) = self.host_addrs.lock() {
+                    hosts.retain(|host| host.id != removed);
+                }
+                applied_ids.remove(&removed);
+                changed = true;
+            }
+        }
+        for host in desired {
             let addr = host.addr;
-            let known = self
+            let current = self
                 .host_addrs
                 .lock()
-                .is_ok_and(|hosts| hosts.iter().any(|known| known.id == addr.id));
-            if !known {
-                if let Ok(mut hosts) = self.host_addrs.lock() {
-                    hosts.push(addr.clone());
-                }
-                changed |= self
+                .ok()
+                .and_then(|hosts| hosts.iter().find(|known| known.id == addr.id).cloned());
+            if current.as_ref() != Some(&addr) {
+                if self
                     .cmd_tx
                     .try_send(NetCmd::ConnectHost {
-                        addr,
+                        addr: addr.clone(),
                         expectation: Some(host.expectation),
                     })
-                    .is_ok();
+                    .is_ok()
+                {
+                    if let Ok(mut hosts) = self.host_addrs.lock() {
+                        hosts.retain(|known| known.id != addr.id);
+                        hosts.push(addr.clone());
+                    }
+                    applied_ids.insert(addr.id);
+                    changed = true;
+                }
             }
+        }
+        if let Ok(mut ids) = self.registered_home_peer_ids.lock() {
+            *ids = applied_ids;
         }
         changed
     }
@@ -1417,6 +1461,7 @@ impl ShellNetwork {
                         Some(user),
                         &std::collections::BTreeSet::from([room_topic_id(ws.room)]),
                     )
+                    .unwrap_or_default()
                     .into_iter()
                     .map(|host| crate::network::invite::HomeHostPin {
                         addr: host.addr,
@@ -2887,6 +2932,7 @@ pub(crate) fn shell_network_for_test(
         local_peer_id,
         listen_addrs: Arc::new(Mutex::new(Vec::new())),
         host_addrs: Mutex::new(Vec::new()),
+        registered_home_peer_ids: Mutex::new(std::collections::HashSet::new()),
         last_home_peer_refresh: Mutex::new(None),
         last_sync_kick: Mutex::new(None),
         personal_continuity: Mutex::new(
@@ -3934,8 +3980,8 @@ mod tests {
         // SAFETY: guarded by the process_env serial group.
         unsafe { std::env::set_var("QOS_HOME_PEERS_PATH", &registry) };
         let rooms = std::collections::BTreeSet::from([42]);
-        let first_boot = registered_home_peer_addrs(Some(own_user), &rooms);
-        let restarted = registered_home_peer_addrs(Some(own_user), &rooms);
+        let first_boot = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
+        let restarted = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
         assert_eq!(first_boot, restarted, "registry is durable across restart");
         assert_eq!(first_boot.len(), 1);
         assert_eq!(first_boot[0].addr.id, service);
@@ -4015,6 +4061,20 @@ mod tests {
             panic!("registry refresh must queue a host connection");
         };
         assert_eq!(addr.id, service);
+
+        std::fs::write(&registry, b"{").expect("partial registry write");
+        assert!(!net.refresh_home_peer_hosts());
+        assert!(commands.try_recv().is_err());
+        assert_eq!(net.host_addrs.lock().unwrap()[0].id, service);
+
+        std::fs::write(&registry, b"[]").expect("remove registration");
+        assert!(net.refresh_home_peer_hosts());
+        let NetCmd::DisconnectHost { id } = commands.try_recv().expect("queued relay removal")
+        else {
+            panic!("registry removal must tear down the live host");
+        };
+        assert_eq!(id, service);
+        assert!(net.host_addrs.lock().unwrap().is_empty());
 
         // SAFETY: guarded by the process_env serial group.
         unsafe {

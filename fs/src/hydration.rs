@@ -7,11 +7,12 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use futures_lite::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use iroh::endpoint::Endpoint;
 use iroh_base::EndpointAddr;
 use iroh_blobs::Hash;
@@ -25,11 +26,25 @@ type FetchResult = std::result::Result<Bytes, String>;
 type FetchCell = Arc<OnceCell<FetchResult>>;
 type FetchMap = HashMap<Hash, FetchCell>;
 
+const PEER_STALE_AFTER: Duration = Duration::from_secs(5 * 60);
+const PEER_FETCH_TIMEOUT: Duration = Duration::from_secs(4);
+const FETCH_DEADLINE: Duration = Duration::from_secs(6);
+const HEDGE_DELAY: Duration = Duration::from_millis(150);
+
+#[derive(Clone)]
+struct PeerHealth {
+    addr: EndpointAddr,
+    last_seen: Instant,
+    consecutive_failures: u8,
+    retry_after: Instant,
+    latency: Option<Duration>,
+}
+
 pub struct Hydrator {
     pub endpoint: Endpoint,
     pub store: Arc<ContentStore>,
     /// Peers we may hydrate missing blobs from (populated by the sync layer).
-    peers: Arc<RwLock<Vec<EndpointAddr>>>,
+    peers: Arc<RwLock<Vec<PeerHealth>>>,
     /// Number of hydration fetches currently in flight for each blob. This is
     /// refcounted rather than a set: two overlapping guards for the same hash
     /// must keep the file `downloading` until the final fetch ends.
@@ -142,16 +157,77 @@ impl Hydrator {
             .peers
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !peers.iter().any(|a| a.id == addr.id) {
-            peers.push(addr);
+        let now = Instant::now();
+        if let Some(peer) = peers.iter_mut().find(|peer| peer.addr.id == addr.id) {
+            // A stable node id can acquire new direct/relay hints after a
+            // network move. Keep the health history, but always use the fresh
+            // address rather than requiring a daemon restart.
+            peer.addr = addr;
+            peer.last_seen = now;
+        } else {
+            peers.push(PeerHealth {
+                addr,
+                last_seen: now,
+                consecutive_failures: 0,
+                retry_after: now,
+                latency: None,
+            });
         }
     }
 
+    /// Forget a peer removed from authenticated discovery or local policy.
+    pub fn remove_peer(&self, id: iroh_base::PublicKey) -> bool {
+        let mut peers = self
+            .peers
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = peers.len();
+        peers.retain(|peer| peer.addr.id != id);
+        before != peers.len()
+    }
+
     pub fn known_peers(&self) -> Vec<EndpointAddr> {
-        self.peers
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        let now = Instant::now();
+        let mut peers = self
+            .peers
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        peers.retain(|peer| now.duration_since(peer.last_seen) <= PEER_STALE_AFTER);
+        let any_ready = peers.iter().any(|peer| peer.retry_after <= now);
+        let mut ranked: Vec<_> = peers
+            .iter()
+            .filter(|peer| !any_ready || peer.retry_after <= now)
+            .cloned()
+            .collect();
+        ranked.sort_by_key(|peer| {
+            (
+                peer.consecutive_failures,
+                peer.latency.unwrap_or(Duration::from_secs(60)),
+                peer.addr.id,
+            )
+        });
+        ranked.into_iter().map(|peer| peer.addr).collect()
+    }
+
+    fn record_peer_result(&self, id: iroh_base::PublicKey, elapsed: Duration, success: bool) {
+        let now = Instant::now();
+        let mut peers = self
+            .peers
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(peer) = peers.iter_mut().find(|peer| peer.addr.id == id) else {
+            return;
+        };
+        if success {
+            peer.last_seen = now;
+            peer.consecutive_failures = 0;
+            peer.retry_after = now;
+            peer.latency = Some(peer.latency.map_or(elapsed, |old| (old * 3 + elapsed) / 4));
+        } else {
+            peer.consecutive_failures = peer.consecutive_failures.saturating_add(1);
+            let exponent = peer.consecutive_failures.min(6);
+            peer.retry_after = now + Duration::from_millis(250 * (1u64 << exponent));
+        }
     }
 
     /// Local residency and the exact physical blobs that comprise one file.
@@ -247,14 +323,30 @@ impl Hydrator {
                 if peers.is_empty() {
                     return Err(format!("no peers available to hydrate {hash}"));
                 }
-                let mut last_err = format!("hydration failed for {hash}");
-                for peer in peers {
-                    match self.fetch_from(hash, peer).await {
-                        Ok(bytes) => return Ok(bytes),
-                        Err(e) => last_err = e.to_string(),
-                    }
+                let mut attempts = FuturesUnordered::new();
+                for (index, peer) in peers.into_iter().enumerate() {
+                    attempts.push(async move {
+                        if index > 0 {
+                            tokio::time::sleep(HEDGE_DELAY.saturating_mul(index as u32)).await;
+                        }
+                        self.fetch_from(hash, peer).await
+                    });
                 }
-                Err(last_err)
+                let result = tokio::time::timeout(FETCH_DEADLINE, async {
+                    let mut last_err = format!("hydration failed for {hash}");
+                    while let Some(result) = attempts.next().await {
+                        match result {
+                            Ok(bytes) => return Ok(bytes),
+                            Err(error) => last_err = error.to_string(),
+                        }
+                    }
+                    Err(last_err)
+                })
+                .await;
+                match result {
+                    Ok(result) => result,
+                    Err(_) => Err(format!("hydration deadline exceeded for {hash}")),
+                }
             })
             .await
             .clone();
@@ -339,15 +431,34 @@ impl Hydrator {
     /// Returns an error when the manifest or any required chunk cannot be
     /// fetched, verified, decoded, or persisted.
     pub async fn prefetch(&self, manifest_hash: Hash, max_bytes: u64) -> Result<bool> {
+        self.prefetch_with_progress(manifest_hash, max_bytes, |_, _| {})
+            .await
+    }
+
+    /// Hydrate a complete manifest while reporting verified file-byte
+    /// progress. The callback is deliberately synchronous and cheap: callers
+    /// can atomically project progress without holding a namespace lock across
+    /// network I/O.
+    pub async fn prefetch_with_progress(
+        &self,
+        manifest_hash: Hash,
+        max_bytes: u64,
+        mut progress: impl FnMut(u64, u64),
+    ) -> Result<bool> {
         let manifest = self.load_manifest(manifest_hash).await?;
-        if manifest.total_len() > max_bytes {
+        let total = manifest.total_len();
+        if total > max_bytes {
             return Ok(false);
         }
+        let mut completed = 0_u64;
+        progress(completed, total);
         for chunk in manifest.chunks {
             let hash = Hash::from(chunk.hash);
             if !self.store.has(hash).await {
                 let _ = self.read_blob(hash, 0, u64::from(chunk.len)).await?;
             }
+            completed = completed.saturating_add(u64::from(chunk.len)).min(total);
+            progress(completed, total);
         }
         Ok(true)
     }
@@ -367,7 +478,9 @@ impl Hydrator {
         // Publish that this blob is downloading so `sync_state` reports it; the guard clears on completion or failure.
         let _guard = self.mark_fetching(hash);
         // Bounded so an unreachable/stalled peer can't hang a read forever.
-        tokio::time::timeout(Duration::from_secs(20), async {
+        let started = Instant::now();
+        let peer_id = peer.id;
+        let result = match tokio::time::timeout(PEER_FETCH_TIMEOUT, async {
             let conn = self
                 .endpoint
                 .connect(peer.clone(), iroh_blobs::ALPN)
@@ -383,7 +496,12 @@ impl Hydrator {
             Ok::<_, anyhow::Error>(bytes)
         })
         .await
-        .map_err(|_| anyhow!("hydration from peer timed out"))?
+        {
+            Ok(result) => result,
+            Err(_) => Err(anyhow!("hydration from peer timed out")),
+        };
+        self.record_peer_result(peer_id, started.elapsed(), result.is_ok());
+        result
     }
 }
 
@@ -617,6 +735,47 @@ mod tests {
         assert!(!hyd.is_fetching(a));
     }
 
+    #[tokio::test]
+    async fn peer_registration_refreshes_address_and_reclaims_stale_entries() {
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let hydrator = Hydrator::new(endpoint, store);
+        let key = iroh::SecretKey::from_bytes(&[0x41; 32]).public();
+        let old = EndpointAddr::new(key).with_ip_addr("127.0.0.1:4101".parse().unwrap());
+        let fresh = EndpointAddr::new(key).with_ip_addr("127.0.0.1:4102".parse().unwrap());
+
+        hydrator.add_peer(old);
+        hydrator.add_peer(fresh.clone());
+        assert_eq!(hydrator.known_peers(), vec![fresh]);
+
+        hydrator
+            .peers
+            .write()
+            .unwrap()
+            .first_mut()
+            .unwrap()
+            .last_seen = Instant::now() - PEER_STALE_AFTER - Duration::from_secs(1);
+        assert!(hydrator.known_peers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_peer_is_backed_off_behind_a_healthy_peer() {
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let hydrator = Hydrator::new(endpoint, store);
+        let failed = iroh::SecretKey::from_bytes(&[0x51; 32]).public();
+        let healthy = iroh::SecretKey::from_bytes(&[0x52; 32]).public();
+        hydrator.add_peer(EndpointAddr::new(failed));
+        hydrator.add_peer(EndpointAddr::new(healthy));
+
+        hydrator.record_peer_result(failed, Duration::from_secs(2), false);
+        assert_eq!(hydrator.known_peers()[0].id, healthy);
+        assert!(hydrator.remove_peer(healthy));
+        // If every peer is cooling down, return the best remaining candidate
+        // so a foreground retry is never permanently starved.
+        assert_eq!(hydrator.known_peers()[0].id, failed);
+    }
+
     // A blob ingested only on node A is read on node B by fetching it over a real iroh connection (bao-verified), then cached.
     #[tokio::test]
     async fn hydrates_real_bytes_from_a_peer() {
@@ -656,6 +815,37 @@ mod tests {
         assert!(
             client_store.has(hash).await,
             "fetched blob must be cached on B"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_first_peer_does_not_block_a_healthy_replica() {
+        let server_ep = Endpoint::bind(presets::N0).await.unwrap();
+        let server_store = ContentStore::memory();
+        let payload = Bytes::from_static(b"healthy replica wins the hedge");
+        let hash = server_store.ingest(payload.clone()).await.unwrap();
+        let _router = Router::builder(server_ep.clone())
+            .accept(iroh_blobs::ALPN, server_store.blobs_protocol(None))
+            .spawn();
+
+        let client_ep = Endpoint::bind(presets::N0).await.unwrap();
+        let client_store = Arc::new(ContentStore::memory());
+        let hydrator = Hydrator::new(client_ep, client_store);
+        let ghost = iroh::SecretKey::from_bytes(&[0x61; 32]).public();
+        hydrator.add_peer(EndpointAddr::new(ghost));
+        let server_addr = server_ep.addr();
+        let server_id = server_addr.id;
+        hydrator.add_peer(server_addr);
+        hydrator.record_peer_result(ghost, Duration::from_millis(1), true);
+        hydrator.record_peer_result(server_id, Duration::from_millis(2), true);
+        assert_eq!(hydrator.known_peers()[0].id, ghost);
+
+        let started = Instant::now();
+        let got = hydrator.read_blob(hash, 0, u64::MAX).await.unwrap();
+        assert_eq!(got.as_slice(), payload.as_ref());
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "a dead first peer must not consume its full timeout before the healthy peer is tried"
         );
     }
 
