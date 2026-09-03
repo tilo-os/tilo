@@ -72,7 +72,7 @@ has "$snapshot_workflow" "if: github.ref == 'refs/heads/main'" \
 has "$snapshot_workflow" 'no-cache: true' 'WPE snapshot refresh cannot reuse a stale Fedora transaction layer'
 has "$snapshot_workflow" 'actual_arch="$(docker run --rm --entrypoint cat "$ref"' \
   'WPE snapshot proves each image was built on its declared native architecture'
-has "$snapshot_workflow" 'cosign sign --yes --key "$COSIGN_KEY_REF"' \
+has "$snapshot_workflow" 'cosign sign --yes --key env://COSIGN_PRIVATE_KEY' \
   'WPE buildroots are signed before promotion'
 has "$snapshot_workflow" 'cosign verify --key keys/cosign.pub "$ref"' \
   'WPE buildroot promotion verifies both signatures'
