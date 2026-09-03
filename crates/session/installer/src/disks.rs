@@ -117,11 +117,12 @@ impl Disk {
 
 /// The `lsblk` argument vector. Kept as a constant so the call site and
 /// any docs/tests reference exactly one source of truth.
-pub const LSBLK_ARGS: [&str; 4] = [
+pub const LSBLK_ARGS: [&str; 5] = [
     "-J",
     "-b",
     "-p",
-    "-o=NAME,SIZE,MODEL,TYPE,FSTYPE,LABEL,MOUNTPOINT,PARTTYPE,RM,RO",
+    "--output",
+    "NAME,SIZE,MODEL,TYPE,FSTYPE,LABEL,MOUNTPOINT,PARTTYPE,RM,RO",
 ];
 
 /// Parse the output of `lsblk -dnpo NAME,SIZE,MODEL,TYPE` into the set of
@@ -176,7 +177,7 @@ fn parse_lsblk_json(json: &Value) -> Vec<Disk> {
         .filter_map(|d| {
             let name = field(d, "name");
             let size_bytes = number(d, "size");
-            if name.is_empty() || size_bytes == 0 {
+            if !is_installable_device_name(&name) || size_bytes == 0 {
                 return None;
             }
             let partitions: Vec<DiskPartition> = d
@@ -199,6 +200,14 @@ fn parse_lsblk_json(json: &Value) -> Vec<Disk> {
             })
         })
         .collect()
+}
+
+fn is_installable_device_name(name: &str) -> bool {
+    !name.is_empty()
+        && !matches!(
+            name.strip_prefix("/dev/").unwrap_or(name),
+            n if n.starts_with("zram") || n.starts_with("ram") || n.starts_with("loop")
+        )
 }
 
 fn parse_partition(value: &Value) -> Option<DiskPartition> {
@@ -260,6 +269,22 @@ pub fn read_disks() -> Vec<Disk> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lsblk_arguments_use_the_portable_output_form() {
+        assert_eq!(LSBLK_ARGS[3], "--output");
+        assert!(!LSBLK_ARGS[4].starts_with('='));
+    }
+
+    #[test]
+    fn memory_and_loop_backed_pseudo_disks_are_never_targets() {
+        for name in ["/dev/zram0", "/dev/ram0", "/dev/loop0"] {
+            assert!(!is_installable_device_name(name), "accepted {name}");
+        }
+        for name in ["/dev/sda", "/dev/nvme0n1", "/dev/vdb", "/dev/mmcblk0"] {
+            assert!(is_installable_device_name(name), "rejected {name}");
+        }
+    }
 
     #[test]
     fn parses_multiword_model() {

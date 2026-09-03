@@ -2,6 +2,9 @@
 Description=qOS Windows temporary egress lease reaper
 Documentation=file:///usr/share/doc/qos/windows-vm.md
 After=virtqemud.service virtnetworkd.service
+# No Windows VM may own an egress lease on the disposable installer. Avoid a
+# guaranteed controller failure; the installed UKI does not carry this marker.
+ConditionKernelCommandLine=!qos.install
 
 [Service]
 Type=oneshot
@@ -25,7 +28,10 @@ RestrictAddressFamilies=AF_UNIX
 RestrictNamespaces=yes
 LockPersonality=yes
 RestrictRealtime=yes
-RestrictSUIDSGID=yes
+# The controller repairs /run/qos/windows-egress to mode 2750 before publishing
+# status for the qos-identity group. RestrictSUIDSGID would make that defensive
+# chmod fail with EPERM even though tmpfiles normally creates the directory with
+# the same setgid mode.
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
