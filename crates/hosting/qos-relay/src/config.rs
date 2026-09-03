@@ -139,6 +139,7 @@ fn default_priority() -> i32 {
 pub struct WorkspaceBinding {
     /// Workspace id (matches
     /// [`qos_user_identity::WorkspaceId`]).
+    #[serde(with = "workspace_id_serde")]
     pub id: u64,
 
     /// When true, the relay holds a full replica of the
@@ -158,6 +159,34 @@ pub struct WorkspaceBinding {
     /// room-scoped rather than a relay-wide collaborator union.
     #[serde(default)]
     pub admitted_users: Vec<String>,
+}
+
+mod workspace_id_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Encoded {
+        Decimal(String),
+        Legacy(u64),
+    }
+
+    pub fn serialize<S>(id: &u64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&id.to_string())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match Encoded::deserialize(deserializer)? {
+            Encoded::Decimal(value) => value.parse().map_err(serde::de::Error::custom),
+            Encoded::Legacy(value) => Ok(value),
+        }
+    }
 }
 
 fn true_default() -> bool {
@@ -334,6 +363,23 @@ mod tests {
         cfg.save(&path).unwrap();
         let back = RelayConfig::load(&path).unwrap();
         assert_eq!(cfg, back);
+    }
+
+    #[test]
+    fn workspace_ids_round_trip_above_toml_integer_range_and_parse_legacy_integers() {
+        let high = (i64::MAX as u64) + 42;
+        let binding = WorkspaceBinding {
+            id: high,
+            pin: true,
+            replication: ReplicationIntent::FullWorkspace,
+            admitted_users: Vec::new(),
+        };
+        let text = toml::to_string(&binding).unwrap();
+        assert!(text.contains(&format!("id = \"{high}\"")));
+        assert_eq!(toml::from_str::<WorkspaceBinding>(&text).unwrap().id, high);
+
+        let legacy: WorkspaceBinding = toml::from_str("id = 42").unwrap();
+        assert_eq!(legacy.id, 42);
     }
 
     #[test]
