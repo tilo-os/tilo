@@ -39,7 +39,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-for tool in blockdev flock lsblk mkfs.vfat partx python3 readlink sfdisk sort; do need "$tool"; done
+for tool in blkid blockdev findmnt flock lsblk mkfs.vfat partx python3 readlink sfdisk sort; do need "$tool"; done
 case "$DISK" in /dev/*) : ;; *) die "disk must be an absolute /dev path" ;; esac
 [ -b "$DISK" ] || die "$DISK is not a block device"
 DISK="$(readlink -f "$DISK")"
@@ -99,6 +99,11 @@ for part in table.get("partitions", []):
 }
 
 EXPECTED_MAP="$(canonical_expected)"
+FINAL_EXPECTED_MAP="$({
+  [ -z "$EXPECTED_MAP" ] || printf '%s\n' "$EXPECTED_MAP"
+  printf '%s:%s:%s\n' "${EFI_UUID,,}" "$EFI_START" "$EFI_SIZE"
+  printf '%s:%s:%s\n' "${ROOT_UUID,,}" "$ROOT_START" "$ROOT_SIZE"
+} | sort -t: -k2,2n)"
 
 # Hold one exclusive advisory lock from the last validation through the GPT
 # write, kernel reread, formatting, and post-write identity checks.
@@ -118,17 +123,28 @@ fi
 [ "$(lsblk -dno LOG-SEC "$DISK" | xargs)" = "$EXPECT_SECTOR" ] \
   || die "logical sector size changed after review"
 ACTUAL_MAP="$(canonical_actual | sort -t: -k2,2n)"
-[ "$ACTUAL_MAP" = "$EXPECTED_MAP" ] || die "partition map changed after review"
+if [ "$ACTUAL_MAP" = "$EXPECTED_MAP" ]; then
+  NEEDS_APPEND=1
+elif [ "$ACTUAL_MAP" = "$FINAL_EXPECTED_MAP" ]; then
+  # An interrupted invocation may have committed the exact reviewed GPT pair
+  # before formatting its ESP. Resume only when every UUID and byte extent is
+  # identical; no name or filesystem-label heuristic establishes ownership.
+  NEEDS_APPEND=0
+else
+  die "partition map changed after review"
+fi
 
 # The complete-map equality above is the TOCTOU binding. Repeat the geometric
 # assertion explicitly so this safety property remains obvious and testable.
-while IFS=: read -r _ start size; do
-  [ -n "${start:-}" ] || continue
-  end=$((start + size))
-  free_end=$((FREE_START + FREE_SIZE))
-  [ "$end" -le "$FREE_START" ] || [ "$start" -ge "$free_end" ] \
-    || die "reviewed free extent now overlaps an existing partition"
-done <<<"$EXPECTED_MAP"
+if [ "$NEEDS_APPEND" -eq 1 ]; then
+  while IFS=: read -r _ start size; do
+    [ -n "${start:-}" ] || continue
+    end=$((start + size))
+    free_end=$((FREE_START + FREE_SIZE))
+    [ "$end" -le "$FREE_START" ] || [ "$start" -ge "$free_end" ] \
+      || die "reviewed free extent now overlaps an existing partition"
+  done <<<"$EXPECTED_MAP"
+fi
 
 disk_bytes="$(blockdev --getsize64 "$DISK")"
 [ $((FREE_START + FREE_SIZE)) -le $((disk_bytes - 1048576)) ] \
@@ -138,10 +154,12 @@ efi_sector=$((EFI_START / EXPECT_SECTOR))
 efi_sectors=$((EFI_SIZE / EXPECT_SECTOR))
 root_sector=$((ROOT_START / EXPECT_SECTOR))
 root_sectors=$((ROOT_SIZE / EXPECT_SECTOR))
-printf 'start=%s, size=%s, type=%s, uuid=%s, name="qOS EFI"\nstart=%s, size=%s, type=%s, uuid=%s, name="qOS root"\n' \
-  "$efi_sector" "$efi_sectors" c12a7328-f81f-11d2-ba4b-00a0c93ec93b "${EFI_UUID,,}" \
-  "$root_sector" "$root_sectors" 0fc63daf-8483-4772-8e79-3d69d8477de4 "${ROOT_UUID,,}" \
-  | sfdisk --append --no-reread --lock=no --wipe never --wipe-partitions never "$DISK"
+if [ "$NEEDS_APPEND" -eq 1 ]; then
+  printf 'start=%s, size=%s, type=%s, uuid=%s, name="qOS EFI"\nstart=%s, size=%s, type=%s, uuid=%s, name="qOS root"\n' \
+    "$efi_sector" "$efi_sectors" c12a7328-f81f-11d2-ba4b-00a0c93ec93b "${EFI_UUID,,}" \
+    "$root_sector" "$root_sectors" 0fc63daf-8483-4772-8e79-3d69d8477de4 "${ROOT_UUID,,}" \
+    | sfdisk --append --no-reread --lock=no --wipe never --wipe-partitions never "$DISK"
+fi
 blockdev --rereadpt "$DISK"
 partx -u "$DISK"
 
@@ -166,16 +184,38 @@ done
   || die "kernel did not expose the new partition devices"
 [ "$(blockdev --getsize64 "$EFI_PARTITION")" = "$EFI_SIZE" ] || die "new EFI size differs from plan"
 [ "$(blockdev --getsize64 "$ROOT_PARTITION")" = "$ROOT_SIZE" ] || die "new root size differs from plan"
-FINAL_EXPECTED_MAP="$({
-  [ -z "$EXPECTED_MAP" ] || printf '%s\n' "$EXPECTED_MAP"
-  printf '%s:%s:%s\n' "${EFI_UUID,,}" "$EFI_START" "$EFI_SIZE"
-  printf '%s:%s:%s\n' "${ROOT_UUID,,}" "$ROOT_START" "$ROOT_SIZE"
-} | sort -t: -k2,2n)"
 [ "$(canonical_actual | sort -t: -k2,2n)" = "$FINAL_EXPECTED_MAP" ] \
   || die "final PARTUUID/geometry map differs from the reviewed plan"
 
-# Formatting is confined to the UUID-bound partition created above. The root
-# remains signature-free for qos-install's normal encrypted alongside path.
-mkfs.vfat -n QOS-EFI "$EFI_PARTITION" >/dev/null
+partition_type_by_uuid() {
+  sfdisk --json "$DISK" | python3 -c '
+import json, sys
+wanted = sys.argv[1].lower()
+for part in json.load(sys.stdin)["partitiontable"].get("partitions", []):
+    if str(part.get("uuid", "")).lower() == wanted:
+        print(str(part.get("type", "")).lower())
+        raise SystemExit(0)
+raise SystemExit(1)
+' "${1,,}"
+}
+[ "$(partition_type_by_uuid "$EFI_UUID")" = c12a7328-f81f-11d2-ba4b-00a0c93ec93b ] \
+  || die "reviewed EFI partition type changed"
+[ "$(partition_type_by_uuid "$ROOT_UUID")" = 0fc63daf-8483-4772-8e79-3d69d8477de4 ] \
+  || die "reviewed root partition type changed"
+findmnt -rn -S "$EFI_PARTITION" >/dev/null 2>&1 && die "reviewed EFI partition is mounted"
+findmnt -rn -S "$ROOT_PARTITION" >/dev/null 2>&1 && die "reviewed root partition is mounted"
+
+root_signature="$(blkid -p -s TYPE -o value "$ROOT_PARTITION" 2>/dev/null || true)"
+[ -z "$root_signature" ] || die "reviewed root partition unexpectedly contains a $root_signature signature"
+efi_signature="$(blkid -p -s TYPE -o value "$EFI_PARTITION" 2>/dev/null || true)"
+case "$efi_signature" in
+  "") mkfs.vfat -n QOS-EFI "$EFI_PARTITION" >/dev/null ;;
+  vfat)
+    [ "$(blkid -p -s LABEL -o value "$EFI_PARTITION" 2>/dev/null || true)" = QOS-EFI ] \
+      || die "reviewed EFI partition has an unexpected filesystem label"
+    ;;
+  *) die "reviewed EFI partition unexpectedly contains a $efi_signature signature" ;;
+esac
+
 sync "$DISK" "$EFI_PARTITION"
 printf 'EFI_PARTITION=%s\nROOT_PARTITION=%s\n' "$EFI_PARTITION" "$ROOT_PARTITION"
