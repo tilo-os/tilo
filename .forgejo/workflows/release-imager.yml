@@ -133,6 +133,12 @@ jobs:
           name: qos-installer-catalog
           path: release-catalog
       - run: cp release-catalog/qos-installer-catalog-v1.json apps/imager/release-catalog.json
+      - name: Install native schema compiler
+        run: |
+          if ! command -v capnp >/dev/null; then
+            dnf install -y capnproto
+          fi
+          capnp --version
       - name: Configure release signing
         env:
           CREDENTIAL_BROKER: ${{ vars.IMAGER_CREDENTIAL_BROKER }}
