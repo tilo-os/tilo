@@ -4,8 +4,12 @@
 import math
 import os
 import struct
+import subprocess
 import sys
 import zlib
+
+from PIL import Image as PillowImage
+from PIL import ImageDraw, ImageFont
 
 
 def png(path, width, height, pixel):
@@ -89,6 +93,28 @@ def progress_pixel(width, first, second):
     return pixel
 
 
+def text_png(path, text, size, color, weight="Regular"):
+    """Rasterize text now so the tiny initramfs never needs fonts or Pango."""
+    font_path = subprocess.run(
+        ["fc-match", "-f", "%{file}", f"Noto Sans:style={weight}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    if not font_path:
+        raise RuntimeError("fontconfig could not resolve Noto Sans")
+    font = ImageFont.truetype(font_path, size)
+    probe = PillowImage.new("RGBA", (1, 1))
+    bounds = ImageDraw.Draw(probe).textbbox((0, 0), text, font=font)
+    width = bounds[2] - bounds[0] + 4
+    height = bounds[3] - bounds[1] + 4
+    image = PillowImage.new("RGBA", (width, height), (0, 0, 0, 0))
+    ImageDraw.Draw(image).text(
+        (2 - bounds[0], 2 - bounds[1]), text, font=font, fill=(*color, 255)
+    )
+    image.save(path, format="PNG", optimize=True)
+
+
 def main(directory):
     os.makedirs(directory, exist_ok=True)
     png(os.path.join(directory, "qos-logo.png"), 220, 220, logo_pixel)
@@ -96,6 +122,10 @@ def main(directory):
         rounded_rect(360, 56, 14, (31, 34, 51), (91, 79, 156), 2))
     png(os.path.join(directory, "lock.png"), 26, 26, lock_pixel)
     png(os.path.join(directory, "bullet.png"), 8, 8, circle_pixel(8, (226, 224, 255)))
+    text_png(os.path.join(directory, "unlock-heading.png"), "Unlock qOS", 30,
+             (240, 240, 250), "SemiBold")
+    text_png(os.path.join(directory, "unlock-help.png"),
+             "Enter your disk passphrase or recovery key", 18, (158, 163, 186))
     png(os.path.join(directory, "progress-background.png"), 280, 4,
         progress_pixel(280, (54, 57, 75), (54, 57, 75)))
     png(os.path.join(directory, "progress-fill.png"), 280, 4,
