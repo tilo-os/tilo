@@ -80,6 +80,8 @@ pub struct PeerContext {
     pub autobind: Option<WorkspaceAutobind>,
     /// Live revocation list, refreshed independently of this session.
     pub revocations: Arc<std::sync::RwLock<qos_user_identity::RevocationList>>,
+    /// Live signed-workspace-derived collaborator admission policy.
+    pub trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     /// The user pubkey this relay itself chains to.
     pub own_user_public_key: [u8; 32],
     /// Metrics — cheap counters.
@@ -96,6 +98,7 @@ struct SessionCtx<'a> {
     outbound: &'a mpsc::Sender<Envelope>,
     own_user_public_key: &'a [u8; 32],
     metrics: &'a crate::metrics::Metrics,
+    trust_policy: &'a Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     disconnect: &'a mpsc::Sender<()>,
 }
 
@@ -126,6 +129,7 @@ where
         workspaces,
         autobind,
         revocations,
+        trust_policy,
         own_user_public_key,
         metrics,
     } = ctx;
@@ -147,6 +151,7 @@ where
         outbound: &tx,
         own_user_public_key: &own_user_public_key,
         metrics: &metrics,
+        trust_policy: &trust_policy,
         disconnect: &disconnect_tx,
     };
 
@@ -221,6 +226,16 @@ async fn audit_subscriber_access(
             "authenticated device was revoked".into(),
         ));
     }
+    if !session
+        .trust_policy
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .admits(&peer.cert, session.own_user_public_key)
+    {
+        return Err(PeerError::Protocol(
+            "collaborator was removed from signed workspace authority".into(),
+        ));
+    }
     for workspace_id in subscribed {
         let Some(workspace) = session.workspaces.lock().await.get(workspace_id).cloned() else {
             continue;
@@ -234,6 +249,7 @@ async fn audit_subscriber_access(
                 .known_peer_relays
                 .contains(&peer.device_public_key);
         if !workspace.admit_authenticated
+            && !workspace.admitted_users.contains(&peer.user_public_key)
             && !workspace.membership.contains(&peer.device_public_key)
             && !is_federated
         {
@@ -358,7 +374,10 @@ async fn handle_subscribe(
     let is_federated = peer.role == crate::auth::PeerRole::PeerRelay
         && peer.user_public_key == *session.own_user_public_key
         && wr.known_peer_relays.contains(&peer.device_public_key);
-    if !wr.membership.contains(&peer.device_public_key) && !is_federated {
+    if !wr.membership.contains(&peer.device_public_key)
+        && !wr.admitted_users.contains(&peer.user_public_key)
+        && !is_federated
+    {
         if wr.admit_authenticated {
             wr.admit_device(peer.device_public_key)?;
         } else {
@@ -655,7 +674,10 @@ async fn handle_sync_request(
     let is_federated = peer.role == crate::auth::PeerRole::PeerRelay
         && peer.user_public_key == *session.own_user_public_key
         && wr.known_peer_relays.contains(&peer.device_public_key);
-    if !wr.membership.contains(&peer.device_public_key) && !is_federated && !wr.admit_authenticated
+    if !wr.membership.contains(&peer.device_public_key)
+        && !wr.admitted_users.contains(&peer.user_public_key)
+        && !is_federated
+        && !wr.admit_authenticated
     {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,

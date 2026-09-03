@@ -72,6 +72,7 @@ async fn start_relay_at(
             id: *id,
             pin: true,
             replication: qos_relay::ReplicationIntent::FullWorkspace,
+            admitted_users: Vec::new(),
         });
     }
     let identity = RelayIdentity {

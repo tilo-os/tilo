@@ -36,6 +36,7 @@ runtime-fs = { path = "../crates/runtime/runtime-fs" }
 libc.workspace = true
 moka = { version = "0.12.15", features = ["sync"] }
 serde.workspace = true
+serde_bytes.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 uuid.workspace = true
