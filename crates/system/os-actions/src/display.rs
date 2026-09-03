@@ -355,14 +355,14 @@ mod tests {
     #[test]
     fn parse_brightness_machine_handles_zero() {
         let s = "acpi_video0,backlight,0,0%,10";
-        assert_eq!(parse_brightness_machine(s).unwrap(), 0.0);
+        assert!(parse_brightness_machine(s).unwrap().abs() < f32::EPSILON);
     }
 
     #[test]
     fn parse_brightness_machine_clamps_above_one() {
         // brightnessctl will never emit >100%, but a hypothetical 110% must not surface as a >1.0 fraction.
         let s = "x,b,11,110%,10";
-        assert_eq!(parse_brightness_machine(s).unwrap(), 1.0);
+        assert!((parse_brightness_machine(s).unwrap() - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]

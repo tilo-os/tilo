@@ -404,9 +404,7 @@ impl NotificationStack {
     /// Cards keep their designed width on ordinary displays and shrink on
     /// compact viewports instead of painting beyond the left edge.
     fn toast_width(&self) -> f64 {
-        (self.viewport.width() - EDGE_INSET * 2.0)
-            .min(TOAST_WIDTH)
-            .max(0.0)
+        (self.viewport.width() - EDGE_INSET * 2.0).clamp(0.0, TOAST_WIDTH)
     }
 
     /// Locked-session collapse: a single redacted card showing only
@@ -521,6 +519,7 @@ impl NotificationStack {
     /// Paint each live toast card, top to bottom starting at `y`,
     /// recording its dismiss hit-rect and folding its bounds into
     /// `stack_min_y`/`stack_max_y`. Split out of [`Widget::draw`].
+    #[allow(clippy::too_many_arguments)]
     fn draw_toast_cards(
         &mut self,
         ctx: &mut PaintCtx,

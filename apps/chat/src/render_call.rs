@@ -1133,7 +1133,11 @@ impl ChatApp {
     }
 
     /// A pill control button. `on` = active/highlighted, `danger` = red.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::fn_params_excessive_bools,
+        reason = "the four flags are independent visual states of one control; wrapping them would only move the boolean fields into a one-use parameter struct"
+    )]
     fn ctl(
         scene: &mut Scene,
         tf: Affine,
@@ -1352,6 +1356,10 @@ impl ChatApp {
     }
 
     // ------------------------------------------------------ history popover
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the popover is one linear measure-layout-paint pass whose row measurements and cursor positions must remain visibly adjacent"
+    )]
     pub(crate) fn draw_history_popover(
         &self,
         scene: &mut Scene,

@@ -259,7 +259,7 @@ impl PlayerApp {
         match operation {
             PlayerOperation::Open { path: None } => self.trigger_open(),
             PlayerOperation::Open { path: Some(path) } => {
-                let _ = self.open_path(Path::new(&path));
+                self.open_path(Path::new(&path));
             }
             PlayerOperation::TogglePlayback => self.player.toggle_play(),
             PlayerOperation::ToggleMute => self.player.toggle_mute(),

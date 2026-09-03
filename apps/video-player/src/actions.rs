@@ -99,6 +99,12 @@ pub fn resources(title: &str, has_media: bool, _doc: &AutoCommit) -> Vec<Resourc
     vec![player]
 }
 
+/// Decode a Video Player operation payload when `type_id` belongs to this app.
+///
+/// # Errors
+///
+/// Returns an error when a Video Player payload is not valid JSON for
+/// [`PlayerOperation`]. Unknown operation types return `Ok(None)`.
 pub fn decode(type_id: &str, payload: &[u8]) -> Result<Option<PlayerOperation>, String> {
     if type_id != OPERATION_TYPE {
         return Ok(None);

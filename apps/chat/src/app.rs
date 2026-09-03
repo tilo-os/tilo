@@ -257,7 +257,7 @@ pub(crate) enum Hit {
     CallAudioOnly,
     /// Internal start/stop seam for a restored or remote-mediated screen
     /// share. The shipped call chrome does not expose it until production has
-    /// a real PipeWire capture producer.
+    /// a real `PipeWire` capture producer.
     #[allow(
         dead_code,
         reason = "kept for defensive stop handling and the tested screen-share transport seam"

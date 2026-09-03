@@ -1,6 +1,6 @@
 //! Small in-process MP4 sink for compositor recordings.
 //!
-//! OpenH264 gives the capture path Annex-B access units. MP4 carries the same
+//! `OpenH264` gives the capture path Annex-B access units. MP4 carries the same
 //! compressed pictures with length-prefixed NAL units and an `avcC` codec
 //! configuration record, so this module only repackages bytes; it does not run
 //! a second encoder or spawn an external media process.
@@ -96,7 +96,8 @@ impl Mp4Recording {
         // MP4 commonly replaces the requested 1/fps clock with a finer track
         // time base while writing its header. Rescale every packet into that
         // final clock or a five-second recording can play in milliseconds.
-        packet.rescale_ts((1, self.fps as i32), mux_time_base);
+        let fps = i32::try_from(self.fps).map_err(|_| "recording FPS is too large".to_string())?;
+        packet.rescale_ts((1, fps), mux_time_base);
         packet
             .write_interleaved(output)
             .map_err(|error| format!("mux MP4 sample: {error}"))?;
@@ -115,7 +116,7 @@ impl Mp4Recording {
         if pcm.is_empty() {
             return Ok(());
         }
-        if pcm.len() % 4 != 0 {
+        if !pcm.len().is_multiple_of(4) {
             return Err("stereo S16 audio buffer is not sample-frame aligned".into());
         }
         let sample_frames =
@@ -162,6 +163,11 @@ fn open_output(
     codec_private: &[u8],
     audio_track_names: &[String],
 ) -> Result<ffmpeg::format::context::Output, String> {
+    let width = i32::try_from(width).map_err(|_| "video width is too large".to_string())?;
+    let height = i32::try_from(height).map_err(|_| "video height is too large".to_string())?;
+    let fps = i32::try_from(fps).map_err(|_| "video FPS is too large".to_string())?;
+    let extradata_size = i32::try_from(codec_private.len())
+        .map_err(|_| "MP4 codec metadata is too large".to_string())?;
     ffmpeg::init().map_err(|error| format!("initialize media muxer: {error}"))?;
     let mut output = ffmpeg::format::output(path)
         .map_err(|error| format!("create MP4 {}: {error}", path.display()))?;
@@ -170,8 +176,8 @@ fn open_output(
         let raw = parameters.as_mut_ptr();
         (*raw).codec_type = ffmpeg::ffi::AVMediaType::AVMEDIA_TYPE_VIDEO;
         (*raw).codec_id = ffmpeg::ffi::AVCodecID::AV_CODEC_ID_H264;
-        (*raw).width = width as i32;
-        (*raw).height = height as i32;
+        (*raw).width = width;
+        (*raw).height = height;
         (*raw).format = ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_YUV420P as i32;
         let padding = ffmpeg::ffi::AV_INPUT_BUFFER_PADDING_SIZE as usize;
         let allocation = ffmpeg::ffi::av_mallocz(codec_private.len().saturating_add(padding));
@@ -181,16 +187,16 @@ fn open_output(
         let extradata = allocation.cast::<u8>();
         std::ptr::copy_nonoverlapping(codec_private.as_ptr(), extradata, codec_private.len());
         (*raw).extradata = extradata;
-        (*raw).extradata_size = codec_private.len() as i32;
+        (*raw).extradata_size = extradata_size;
     }
     {
         let mut stream = output
             .add_stream(Option::<ffmpeg::Codec>::None)
             .map_err(|error| format!("add MP4 video stream: {error}"))?;
         stream.set_parameters(parameters);
-        stream.set_time_base((1, fps as i32));
-        stream.set_rate((fps as i32, 1));
-        stream.set_avg_frame_rate((fps as i32, 1));
+        stream.set_time_base((1, fps));
+        stream.set_rate((fps, 1));
+        stream.set_avg_frame_rate((fps, 1));
     }
     for track_name in audio_track_names {
         let mut parameters = ffmpeg::codec::Parameters::new();
@@ -237,12 +243,20 @@ fn avc_configuration(sps: &[u8], pps: &[u8]) -> Result<Vec<u8>, String> {
     {
         return Err("invalid H.264 SPS/PPS metadata".into());
     }
-    let mut out = Vec::with_capacity(11 + sps.len() + pps.len());
-    out.extend_from_slice(&[1, sps[1], sps[2], sps[3], 0xff, 0xe1]);
-    out.extend_from_slice(&(sps.len() as u16).to_be_bytes());
+    let profile = sps
+        .get(1..4)
+        .ok_or_else(|| "invalid H.264 SPS metadata".to_string())?;
+    let [profile_idc, constraints, level] = profile else {
+        return Err("invalid H.264 SPS metadata".into());
+    };
+    let sps_len = u16::try_from(sps.len()).map_err(|_| "H.264 SPS is too large".to_string())?;
+    let pps_len = u16::try_from(pps.len()).map_err(|_| "H.264 PPS is too large".to_string())?;
+    let mut out = Vec::with_capacity(11usize.saturating_add(sps.len()).saturating_add(pps.len()));
+    out.extend_from_slice(&[1, *profile_idc, *constraints, *level, 0xff, 0xe1]);
+    out.extend_from_slice(&sps_len.to_be_bytes());
     out.extend_from_slice(sps);
     out.push(1);
-    out.extend_from_slice(&(pps.len() as u16).to_be_bytes());
+    out.extend_from_slice(&pps_len.to_be_bytes());
     out.extend_from_slice(pps);
     Ok(out)
 }
@@ -252,7 +266,7 @@ fn mp4_sample(nals: &[&[u8]]) -> Result<Vec<u8>, String> {
     for nal in nals {
         // Parameter sets live once in `avcC`; repeating them in every sample
         // wastes space and confuses stricter importers.
-        if matches!(nal_type(nal), 7 | 8 | 9) {
+        if matches!(nal_type(nal), 7..=9) {
             continue;
         }
         let len =
@@ -267,6 +281,9 @@ fn nal_type(nal: &[u8]) -> u8 {
     nal.first().map_or(0, |byte| byte & 0x1f)
 }
 
+// Indices advance monotonically within `bytes` and every resulting range is
+// validated by `get`; keeping the parser's offsets explicit mirrors Annex-B.
+#[allow(clippy::arithmetic_side_effects)]
 fn annex_b_nals(bytes: &[u8]) -> Vec<&[u8]> {
     let mut starts = Vec::new();
     let mut i = 0;
@@ -287,8 +304,10 @@ fn annex_b_nals(bytes: &[u8]) -> Vec<&[u8]> {
         let payload_end = starts
             .get(index + 1)
             .map_or(bytes.len(), |(start, _)| *start);
-        if payload_start < payload_end {
-            out.push(&bytes[payload_start..payload_end]);
+        if payload_start < payload_end
+            && let Some(nal) = bytes.get(payload_start..payload_end)
+        {
+            out.push(nal);
         }
     }
     out
@@ -296,6 +315,11 @@ fn annex_b_nals(bytes: &[u8]) -> Vec<&[u8]> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::cast_precision_loss,
+        reason = "test media durations are tiny and exactly representable in f64"
+    )]
+
     use super::*;
 
     #[test]

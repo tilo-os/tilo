@@ -99,7 +99,7 @@ pub struct OverlayFlags {
     /// Device-local wireless display picker (Win+P).
     pub projection: bool,
     /// Screenshot / recording / arbitrary-region `PiP` selector
-    /// (`Super+Shift+S`, or direct PiP via `Super+Shift+P`).
+    /// (`Super+Shift+S`, or direct `PiP` via `Super+Shift+P`).
     pub capture: bool,
 }
 

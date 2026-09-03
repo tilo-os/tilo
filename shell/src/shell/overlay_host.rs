@@ -133,12 +133,12 @@ struct CaptureMirrorLayer {
 struct CaptureMirrorImage {
     image: Image,
     /// Independently movable source regions. Keeping them separate lets a
-    /// Grid/Stack PiP pack itself during the flight without crossfading or
+    /// Grid/Stack `PiP` pack itself during the flight without crossfading or
     /// teleporting high-contrast pixels.
     handoff_layers: Vec<CaptureMirrorLayer>,
     /// Pinned stills use their receipt-scale preview as a calm launch proxy,
     /// then resolve into the exact artifact as the surface becomes readable.
-    /// Multi-source live PiP uses spatial layer motion instead.
+    /// Multi-source live `PiP` uses spatial layer motion instead.
     crossfade_handoff: bool,
     /// Original pixel aspect for tall frozen documents. `Some` switches the
     /// image from whole-artifact preview into a width-fitted scroll viewport
@@ -240,7 +240,7 @@ impl CaptureMirrorImage {
             return;
         };
         let raw = ((mix - 0.58) / 0.42).clamp(0.0, 1.0);
-        let alpha = (raw * raw * (3.0 - 2.0 * raw) * 0.46) as f32;
+        let alpha = f64_to_f32_lossy(raw * raw * (3.0 - 2.0 * raw) * 0.46);
         if alpha <= 0.001 {
             return;
         }
@@ -326,14 +326,14 @@ impl Widget for CaptureMirrorImage {
                 self.draw_document_scrollbar(scene, transform, theme, mix);
                 return;
             }
-            self.handoff_layers[0]
-                .image
-                .paint_at(scene, transform, target);
+            if let Some(layer) = self.handoff_layers.first_mut() {
+                layer.image.paint_at(scene, transform, target);
+            }
             if mix > 0.001 {
                 scene.push_layer(
                     Fill::NonZero,
                     BlendMode::default(),
-                    mix as f32,
+                    f64_to_f32_lossy(mix),
                     transform,
                     &self.rect,
                 );
@@ -431,19 +431,20 @@ fn capture_mirror_origin(
 /// Keep the ownership handoff meaningful when its source lives on the
 /// continuous desktop but wholly outside the physical output. Visible pixels
 /// are used exactly; off-screen pixels collapse to a small edge portal on the
-/// side where the source lives, so the resulting PiP arrives from its real
+/// side where the source lives, so the resulting `PiP` arrives from its real
 /// virtual direction instead of popping in at the destination.
 fn visible_capture_spawn(bounds: Rect, source: Option<Rect>) -> Option<Rect> {
+    const PORTAL_WIDTH: f64 = 84.0;
+    const PORTAL_HEIGHT: f64 = 52.0;
+    const EDGE_INSET: f64 = 6.0;
+    const TOP_SAFE: f64 = 48.0;
+
     let source = source.filter(|rect| rect.is_finite() && rect.area() > 1.0)?;
     let visible = source.intersect(bounds);
     if visible.width() > 1.0 && visible.height() > 1.0 {
         return Some(visible);
     }
 
-    const PORTAL_WIDTH: f64 = 84.0;
-    const PORTAL_HEIGHT: f64 = 52.0;
-    const EDGE_INSET: f64 = 6.0;
-    const TOP_SAFE: f64 = 48.0;
     let center = source.center();
     let x = if center.x < bounds.x0 {
         bounds.x0 + EDGE_INSET
@@ -731,7 +732,7 @@ pub struct ShellOverlayHost {
     /// the shell supplies only artifact bytes and drains semantic commands.
     screenshot_markup: Option<ui::widget::ScreenshotMarkup>,
     screenshot_markup_node: Option<NodeId>,
-    /// Live arbitrary-region PiP windows. Pixels are refreshed by the
+    /// Live arbitrary-region `PiP` windows. Pixels are refreshed by the
     /// compositor capture executor; placement/input/chrome stay in the shared
     /// widget layer so they behave exactly like other floating surfaces.
     capture_mirrors: Vec<(String, FloatingWindow<CaptureMirrorImage>)>,
@@ -1521,7 +1522,7 @@ impl ShellOverlayHost {
             .set_recording_transition_progress(permille);
     }
 
-    /// Freeze every newly-created capture PiP at a known source-handoff
+    /// Freeze every newly-created capture `PiP` at a known source-handoff
     /// phase. This is used by deterministic visual shots only; live windows
     /// continue to derive progress from elapsed time.
     pub fn set_capture_pip_transition_progress(&mut self, permille: u16) {
@@ -1621,6 +1622,10 @@ impl ShellOverlayHost {
     /// clipping them to the physical output. Used by the compositor's capture
     /// executor for `FullApp` and `WholeStrip`; the normal screen scene remains
     /// the source for visible-region/display captures.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "capture rendering needs the complete widget paint context"
+    )]
     pub fn draw_capture_targets(
         &mut self,
         target_ids: &[String],
@@ -1654,9 +1659,13 @@ impl ShellOverlayHost {
         rects
     }
 
-    /// Create or refresh a live captured-region PiP. Updating replaces only
+    /// Create or refresh a live captured-region `PiP`. Updating replaces only
     /// the image payload; the window's user-controlled position and size stay
     /// untouched across frames.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "capture payload geometry and handoff metadata form one lifecycle operation"
+    )]
     pub(crate) fn upsert_capture_mirror(
         &mut self,
         id: &str,
@@ -1688,6 +1697,10 @@ impl ShellOverlayHost {
     /// Create a frozen screenshot reference. Unlike a PiP/live capture this is
     /// inserted once and thereafter owned entirely by the surface host, so its
     /// pixels cannot drift when the underlying application changes.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "pinned capture creation carries the immutable artifact and its geometry"
+    )]
     pub(crate) fn insert_pinned_capture(
         &mut self,
         id: &str,
@@ -1711,7 +1724,7 @@ impl ShellOverlayHost {
         let preview_rgba: Vec<u8> = preview
             .pixels
             .into_iter()
-            .flat_map(|pixel| pixel.into_iter())
+            .flat_map(std::iter::IntoIterator::into_iter)
             .collect();
         let preview_image = Image::from_rgba(
             std::sync::Arc::from(preview_rgba),
@@ -1791,7 +1804,7 @@ impl ShellOverlayHost {
 
     /// Paint capture-owned presentation surfaces as a distinct compositor
     /// pass. Keeping mirrors and status chrome out of the ordinary desktop
-    /// scene prevents recursive PiP feedback and keeps the recording pill out
+    /// scene prevents recursive `PiP` feedback and keeps the recording pill out
     /// of the encoded video.
     pub fn draw_capture_overlays(
         &mut self,
@@ -1825,6 +1838,7 @@ impl ShellOverlayHost {
 
     #[allow(
         clippy::too_many_arguments,
+        clippy::trivially_copy_pass_by_ref,
         reason = "Widget event-dispatch context plus the selected mirror node"
     )]
     fn route_capture_mirror_event(
@@ -1860,7 +1874,9 @@ impl ShellOverlayHost {
         let Some(node) = self.capture_mirror_nodes.get(index).copied() else {
             return false;
         };
-        let (_, mirror) = &mut self.capture_mirrors[index];
+        let Some((_, mirror)) = self.capture_mirrors.get_mut(index) else {
+            return false;
+        };
         mirror.handle_event(
             event,
             scale_factor,
@@ -7765,6 +7781,10 @@ impl Widget for ShellOverlayHost {
         self.harvest_floating_surface_source_updates();
         self.harvest_capture_studio_requests();
         let palette_dirty = self.palette.update(doc, path);
+        #[allow(
+            clippy::unnecessary_fold,
+            reason = "every mirror update has side effects and must run even after one reports dirty"
+        )]
         let mirror_dirty = self
             .capture_mirrors
             .iter_mut()
@@ -7838,6 +7858,10 @@ impl Widget for ShellOverlayHost {
             || follow_dirty
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the host assembles one ordered overlay layout lifecycle"
+    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -7995,6 +8019,10 @@ impl Widget for ShellOverlayHost {
         node
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the host applies one ordered overlay layout lifecycle"
+    )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         // A missing layout for `node` would mean taffy never computed
         // this frame's tree at all — nothing downstream has a sensible
@@ -8504,7 +8532,8 @@ impl Widget for ShellOverlayHost {
         if let Some(onboarding) = self.onboarding.as_ref() {
             return vec![onboarding];
         }
-        let mut out: Vec<&dyn Widget> = Vec::with_capacity(5 + self.capture_mirrors.len());
+        let mut out: Vec<&dyn Widget> =
+            Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
         out.push(self.content.as_ref());
         out.push(&self.palette);
         if let Some(s) = self.sidebar.as_ref() {
@@ -8527,7 +8556,7 @@ impl Widget for ShellOverlayHost {
             return vec![onboarding];
         }
         let mut out: Vec<&mut (dyn Widget + '_)> =
-            Vec::with_capacity(5 + self.capture_mirrors.len());
+            Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
         out.push(self.content.as_mut());
         out.push(&mut self.palette);
         if let Some(s) = self.sidebar.as_mut() {
@@ -8610,7 +8639,7 @@ impl Widget for ShellOverlayHost {
                 .and_then(|sidebar| sidebar.next_wake_deadline()),
             self.notification_stack
                 .as_ref()
-                .and_then(|stack| stack.next_wake_deadline()),
+                .and_then(Widget::next_wake_deadline),
         ]
         .into_iter()
         .flatten()
@@ -14517,6 +14546,9 @@ mod tests {
     fn pointer_over_the_sheet_reaches_the_timeline() {
         let mut h = build_harness();
         h.chrome.borrow_mut().overlays.room_activity = true;
+        h.host
+            .room_activity_mut()
+            .set_view(crate::shell::room_activity::ActivityView::Explore);
         h.host.force_room_activity_settled();
         paint(&mut h);
 
@@ -14798,6 +14830,9 @@ mod tests {
     fn typing_filters_by_contributor_without_stealing_escape() {
         let mut h = build_harness();
         h.chrome.borrow_mut().overlays.room_activity = true;
+        h.host
+            .room_activity_mut()
+            .set_view(crate::shell::room_activity::ActivityView::Explore);
         h.host.force_room_activity_settled();
         paint(&mut h);
         assert!(h.host.room_activity().visible_len() > 0);

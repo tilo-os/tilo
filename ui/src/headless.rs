@@ -1393,8 +1393,8 @@ impl FrameHarness {
                             ),
                         })
                 }
-                ControlBindingKind::CollaborativeDocument(_) => None,
-                ControlBindingKind::SemanticAction(_) => None,
+                ControlBindingKind::CollaborativeDocument(_)
+                | ControlBindingKind::SemanticAction(_) => None,
                 ControlBindingKind::LegacyDocumentPath(path) => Some(NativeAppIssue {
                     control: binding.control_id,
                     code: "legacy-document-path".into(),

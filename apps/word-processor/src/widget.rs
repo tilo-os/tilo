@@ -7479,13 +7479,14 @@ impl Widget for WordProcessorWidget {
         doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
+        use crate::actions::WordProcessorOperation;
+
         if kind == qos_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
-        use crate::actions::WordProcessorOperation;
         match operation {
             WordProcessorOperation::Open { .. }
             | WordProcessorOperation::Save { .. }
@@ -7521,13 +7522,14 @@ impl Widget for WordProcessorWidget {
         doc: &AutoCommit,
         widget_path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        use crate::actions::WordProcessorOperation;
+
         if kind == qos_actions::OperationKind::Document {
             return Ok(None);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(None);
         };
-        use crate::actions::WordProcessorOperation;
         let (destination, force_picker) = match operation {
             WordProcessorOperation::Open { path } => {
                 if self.portal_rx.is_some() || self.pending_resource_open.is_some() {

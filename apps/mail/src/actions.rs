@@ -58,6 +58,11 @@ pub enum MailOperation {
     RefreshCurrentFolder,
 }
 
+/// Decode a Mail effect operation when `type_id` addresses this application.
+///
+/// # Errors
+///
+/// Returns the JSON decoding error when a Mail operation payload is malformed.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<MailOperation>, String> {
     if type_id != MAIL_OPERATION_TYPE {
         return Ok(None);
@@ -340,6 +345,59 @@ fn message_label(m: &MessageRow) -> String {
     }
 }
 
+fn message_resource(message: &MessageRow) -> Resource {
+    let mut resource = Resource::new(
+        format!("mail.message:{}", message.id),
+        "mail.message",
+        message_label(message),
+    );
+    resource = resource.with_action(immediate_spec(
+        "read",
+        if message.read {
+            "Mark unread"
+        } else {
+            "Mark read"
+        },
+        &set_read_action(vec![message.id.clone()], !message.read),
+    ));
+    resource = resource.with_action(immediate_spec(
+        "star",
+        if message.starred { "Unstar" } else { "Star" },
+        &set_starred_action(vec![message.id.clone()], !message.starred),
+    ));
+    resource = resource.with_action(immediate_spec(
+        "archive",
+        "Archive",
+        &move_action(vec![message.id.clone()], Folder::Archive),
+    ));
+    resource = resource.with_action(
+        immediate_spec(
+            "delete",
+            "Delete",
+            &move_action(vec![message.id.clone()], Folder::Trash),
+        )
+        .destructive(),
+    );
+
+    let message_id = message.id.clone();
+    resource = resource.with_action(ActionSpec::prompted(
+        "add-label",
+        "Add label…",
+        "Label",
+        "label…",
+        ExecutionLocus::ClientLocal,
+        move |label: &str| encode(&add_label_action(vec![message_id.clone()], label.trim())),
+    ));
+    for (index, label) in message.labels.iter().enumerate() {
+        resource = resource.with_action(immediate_spec(
+            &format!("remove-label-{index}"),
+            &format!("Remove label “{label}”"),
+            &remove_label_action(vec![message.id.clone()], label),
+        ));
+    }
+    resource
+}
+
 /// Build the resource tree Mail currently has open: the mailbox root (exporting
 /// "New folder"), the open folder with its messages nested (each exporting
 /// read / flag / move / delete + label actions), and one `mail.folder:<id>` per
@@ -399,61 +457,7 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
         );
     }
     for m in &ctx.messages {
-        let mut msg = Resource::new(
-            format!("mail.message:{}", m.id),
-            "mail.message",
-            message_label(m),
-        );
-
-        let read_label = if m.read { "Mark unread" } else { "Mark read" };
-        msg = msg.with_action(immediate_spec(
-            "read",
-            read_label,
-            &set_read_action(vec![m.id.clone()], !m.read),
-        ));
-
-        let star_label = if m.starred { "Unstar" } else { "Star" };
-        msg = msg.with_action(immediate_spec(
-            "star",
-            star_label,
-            &set_starred_action(vec![m.id.clone()], !m.starred),
-        ));
-
-        msg = msg.with_action(immediate_spec(
-            "archive",
-            "Archive",
-            &move_action(vec![m.id.clone()], Folder::Archive),
-        ));
-        msg = msg.with_action(
-            immediate_spec(
-                "delete",
-                "Delete",
-                &move_action(vec![m.id.clone()], Folder::Trash),
-            )
-            .destructive(),
-        );
-
-        // Add a label (prompted). The id is captured presentation-side.
-        let mid = m.id.clone();
-        msg = msg.with_action(ActionSpec::prompted(
-            "add-label",
-            "Add label…",
-            "Label",
-            "label…",
-            ExecutionLocus::ClientLocal,
-            move |label: &str| encode(&add_label_action(vec![mid.clone()], label.trim())),
-        ));
-
-        // Remove each label the message already carries.
-        for (i, l) in m.labels.iter().enumerate() {
-            msg = msg.with_action(immediate_spec(
-                &format!("remove-label-{i}"),
-                &format!("Remove label “{l}”"),
-                &remove_label_action(vec![m.id.clone()], l),
-            ));
-        }
-
-        folder_node = folder_node.with_child(msg);
+        folder_node = folder_node.with_child(message_resource(m));
     }
     root = root.with_child(folder_node);
 

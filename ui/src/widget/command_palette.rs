@@ -162,6 +162,7 @@ impl std::fmt::Debug for CommandEntry {
             .field("icon", &self.icon)
             .field("on_select", &self.on_select.as_ref().map(|_| "<fn>"))
             .field("action_address", &self.action_address)
+            .field("action_argument", &self.action_argument)
             .finish()
     }
 }
