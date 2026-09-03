@@ -258,7 +258,25 @@ fn commit_personal_device(
     user: [u8; 32],
     fleet: &[u8],
 ) -> anyhow::Result<()> {
-    atomic_file::write_creating_parent(&fleet_path(identity_dir, user), fleet)?;
+    let path = fleet_path(identity_dir, user);
+    #[cfg(unix)]
+    let owner = {
+        use std::os::unix::fs::MetadataExt as _;
+        std::fs::metadata(&path)
+            .or_else(|_| std::fs::metadata(identity_dir))
+            .map(|metadata| (metadata.uid(), metadata.gid()))?
+    };
+    atomic_file::write_creating_parent(&path, fleet)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+        // SAFETY: `path` is NUL-terminated and owner comes from the existing
+        // user-owned fleet file or identity directory.
+        if unsafe { libc::chown(path.as_ptr(), owner.0, owner.1) } != 0 {
+            return Err(std::io::Error::last_os_error()).context("restore fleet ownership");
+        }
+    }
     Ok(())
 }
 
@@ -1208,6 +1226,7 @@ fn approve(
     expected_device: Option<String>,
     expected_service: Option<String>,
     kind: EnrollmentKind,
+    ready: Option<std::sync::mpsc::Sender<()>>,
 ) -> anyhow::Result<()> {
     let expected: Option<([u8; 32], [u8; 32])> = match (expected_device, expected_service) {
         (Some(device), Some(service)) => Some((
@@ -1242,6 +1261,9 @@ fn approve(
     }
     let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, PORT))?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
+    if let Some(ready) = ready {
+        let _ = ready.send(());
+    }
     let mut packet = [0_u8; MAX_PACKET];
     let request_deadline = std::time::Instant::now() + socket_timeout(timeout);
     let mut selected_nearby: Option<(PairSolicitation, String, Vec<u8>)> = None;
@@ -1539,6 +1561,7 @@ fn main() -> anyhow::Result<()> {
             expected_device,
             expected_service,
             EnrollmentKind::HomePeer,
+            None,
         ),
         Command::ApproveDevice {
             identity_root,
@@ -1556,6 +1579,7 @@ fn main() -> anyhow::Result<()> {
             expected_device,
             expected_service,
             EnrollmentKind::PersonalDevice,
+            None,
         ),
     }
 }
@@ -1717,6 +1741,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(registry["default_identity"], hex::encode(user));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let uid = unsafe { libc::geteuid() };
+            assert_eq!(
+                std::fs::metadata(identity_dir.path().join("registry.json"))
+                    .unwrap()
+                    .uid(),
+                uid
+            );
+            assert_eq!(
+                std::fs::metadata(fleet_path(identity_dir.path(), user))
+                    .unwrap()
+                    .uid(),
+                uid
+            );
+        }
     }
 
     #[test]
@@ -1784,6 +1825,7 @@ mod tests {
 
         let server_root = approver_root.path().to_path_buf();
         let server_identities = approver_identities.path().to_path_buf();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let approval = std::thread::spawn(move || {
             approve(
                 server_root,
@@ -1795,9 +1837,12 @@ mod tests {
                 None,
                 None,
                 EnrollmentKind::PersonalDevice,
+                Some(ready_tx),
             )
         });
-        std::thread::sleep(Duration::from_millis(150));
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("approval listener became ready");
         let new_root = tempfile::tempdir().unwrap();
         let new_identities = tempfile::tempdir().unwrap();
         pair(

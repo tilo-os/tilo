@@ -537,6 +537,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn personal_device_ids_are_exact_ed25519_width_hex() {
+        assert!(validate_peer_ids(&"11".repeat(32), &"22".repeat(32)).is_ok());
+        assert!(validate_peer_ids("11", &"22".repeat(32)).is_err());
+        assert!(validate_peer_ids(&"zz".repeat(32), &"22".repeat(32)).is_err());
+    }
+
+    #[test]
     fn request_projects_only_bounded_role_services_and_workspace_ids() {
         let request = ApplyRequest {
             identity_root: PathBuf::from("/var/lib/qos"),
