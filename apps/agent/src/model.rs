@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::plan::{self, Block, Instruction};
+use crate::providers::{ProviderSelection, ResolvedSecret, SecretResolver};
 use crate::surface::Catalogue;
 use crate::tools::{self, Revealed};
 
@@ -138,8 +139,16 @@ pub struct Decision {
 /// Resolves the key once, then answers instructions.
 pub struct Chooser {
     key: Option<String>,
+    /// A Settings-selected provider. This takes precedence over the legacy
+    /// demo environment path and is the only route used by normal sessions.
+    provider: Option<ProviderConnection>,
     timeout: Duration,
     enabled: bool,
+}
+
+struct ProviderConnection {
+    selection: ProviderSelection,
+    secret: Option<ResolvedSecret>,
 }
 
 impl Chooser {
@@ -149,6 +158,28 @@ impl Chooser {
         let key = if enabled { api_key() } else { None };
         Self {
             key,
+            provider: None,
+            timeout,
+            enabled,
+        }
+    }
+
+    /// Construct a chooser over a profile selected in Settings. `resolver` is
+    /// injected by the desktop integration and receives a vault reference,
+    /// never a raw key from the settings document.
+    pub fn with_provider(
+        enabled: bool,
+        timeout: Duration,
+        selection: ProviderSelection,
+        resolver: &dyn SecretResolver,
+    ) -> Self {
+        let secret = selection
+            .credential
+            .as_ref()
+            .and_then(|reference| resolver.resolve(reference).ok());
+        Self {
+            key: None,
+            provider: Some(ProviderConnection { selection, secret }),
             timeout,
             enabled,
         }
@@ -158,7 +189,11 @@ impl Chooser {
     /// logging at startup so an operator knows before the beat which path
     /// this run will take.
     pub fn is_live(&self) -> bool {
-        self.enabled && self.key.is_some()
+        self.enabled
+            && self.provider.as_ref().is_some_and(|provider| {
+                provider.selection.credential.is_none() || provider.secret.is_some()
+            })
+            || self.enabled && self.key.is_some()
     }
 
     /// Decide what `rest` asks for, given the document it was written into.
@@ -173,10 +208,17 @@ impl Chooser {
         if !self.enabled {
             return fallback(Fallback::Disabled);
         }
-        let Some(key) = self.key.as_deref() else {
+        let answer = if let Some(provider) = &self.provider {
+            if provider.selection.credential.is_some() && provider.secret.is_none() {
+                return fallback(Fallback::NoKey);
+            }
+            self.ask_provider(provider, rest, blocks)
+        } else if let Some(key) = self.key.as_deref() {
+            self.ask(key, rest, blocks)
+        } else {
             return fallback(Fallback::NoKey);
         };
-        match self.ask(key, rest, blocks) {
+        match answer {
             Ok(answer) => match Instruction::from_id(&answer.action, rest) {
                 Some(instruction) => Decision {
                     instruction,
@@ -224,10 +266,17 @@ impl Chooser {
         if !self.enabled {
             return fallback(Fallback::Disabled);
         }
-        let Some(key) = self.key.as_deref() else {
+        let answer = if let Some(provider) = &self.provider {
+            if provider.selection.credential.is_some() && provider.secret.is_none() {
+                return fallback(Fallback::NoKey);
+            }
+            self.ask_actions_provider(provider, rest, blocks, catalogue, most_steps)
+        } else if let Some(key) = self.key.as_deref() {
+            self.ask_actions(key, rest, blocks, catalogue, most_steps)
+        } else {
             return fallback(Fallback::NoKey);
         };
-        match self.ask_actions(key, rest, blocks, catalogue, most_steps) {
+        match answer {
             Ok(answer) => Ok(answer),
             Err(AskError::Timeout) => fallback(Fallback::Timeout),
             Err(AskError::Failed(error)) => fallback(Fallback::Failed(error)),
@@ -296,6 +345,51 @@ impl Chooser {
         ))
     }
 
+    fn ask_actions_provider(
+        &self,
+        provider: &ProviderConnection,
+        rest: &str,
+        blocks: &[Block],
+        catalogue: &Catalogue,
+        most_steps: usize,
+    ) -> Result<tools::Answer, AskError> {
+        if provider.selection.protocol != agent_provider_config::ProviderProtocol::Anthropic {
+            return Err(AskError::Failed(
+                "OpenAI-compatible action discovery has not been negotiated for this provider"
+                    .to_string(),
+            ));
+        }
+        let began = Instant::now();
+        let remaining = || self.timeout.checked_sub(began.elapsed());
+        let mut revealed = Revealed::new();
+        let mut messages = vec![serde_json::json!({
+            "role": "user",
+            "content": action_user_turn(rest, blocks),
+        })];
+        for _ in 0..12 {
+            let body =
+                action_request_body_for(&provider.selection, &messages, &revealed, most_steps);
+            let raw = post_provider(provider, &body, &remaining)?;
+            match parse_action_turn(&raw).map_err(AskError::Failed)? {
+                ActionTurn::Plan { input, .. } => {
+                    return tools::read_plan(&input, &revealed, most_steps)
+                        .map_err(AskError::Failed);
+                }
+                ActionTurn::Tools { content, calls } => {
+                    messages.push(serde_json::json!({ "role": "assistant", "content": content }));
+                    let results = calls.into_iter().map(|call| {
+                        let answer = tools::answer(&call.name, &call.input, catalogue, &mut revealed);
+                        serde_json::json!({ "type": "tool_result", "tool_use_id": call.id, "content": answer })
+                    }).collect::<Vec<_>>();
+                    messages.push(serde_json::json!({ "role": "user", "content": results }));
+                }
+            }
+        }
+        Err(AskError::Failed(
+            "the model exhausted the action-discovery turn limit".into(),
+        ))
+    }
+
     /// One bounded call, retried while the service is asking for that. The
     /// key travels in the header and nowhere else; no error path here
     /// carries it into a message, a log, or a document.
@@ -308,6 +402,19 @@ impl Chooser {
         let body = request_body(rest, blocks);
         let text = post(key, &body, &remaining)?;
         parse_answer(&text).map_err(AskError::Failed)
+    }
+
+    fn ask_provider(
+        &self,
+        provider: &ProviderConnection,
+        rest: &str,
+        blocks: &[Block],
+    ) -> Result<Answer, AskError> {
+        let began = Instant::now();
+        let remaining = || self.timeout.checked_sub(began.elapsed());
+        let body = request_body_for(&provider.selection, rest, blocks);
+        let text = post_provider(provider, &body, &remaining)?;
+        parse_answer_for(provider.selection.protocol, &text).map_err(AskError::Failed)
     }
 }
 
@@ -336,6 +443,17 @@ fn action_request_body(messages: &[Value], revealed: &Revealed, most_steps: usiz
         "tools": tools::definitions(revealed, most_steps),
         "messages": messages,
     })
+}
+
+fn action_request_body_for(
+    selection: &ProviderSelection,
+    messages: &[Value],
+    revealed: &Revealed,
+    most_steps: usize,
+) -> Value {
+    let mut body = action_request_body(messages, revealed, most_steps);
+    body["model"] = Value::String(selection.model.id.clone());
+    body
 }
 
 fn parse_action_turn(body: &str) -> Result<ActionTurn, String> {
@@ -431,6 +549,109 @@ fn post(
             })?;
         send(&client, key, body)
     })
+}
+
+/// Send through the provider profile selected for this task. Endpoint and
+/// model identity come from the captured selection, while the bearer value
+/// stays in a zeroising secret owned by the injected resolver.
+fn post_provider(
+    provider: &ProviderConnection,
+    body: &Value,
+    remaining: &dyn Fn() -> Option<Duration>,
+) -> Result<String, AskError> {
+    while_busy(&RETRIES, remaining, std::thread::sleep, |left| {
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT.min(left))
+            .timeout(left)
+            .build()
+            .map_err(|error| Attempt {
+                error: AskError::Failed(error.to_string()),
+                again: Again::Never,
+            })?;
+        send_provider(&client, provider, body)
+    })
+}
+
+fn provider_request_url(selection: &ProviderSelection) -> String {
+    let base = selection.endpoint.trim_end_matches('/');
+    match selection.protocol {
+        agent_provider_config::ProviderProtocol::Anthropic => {
+            if base.ends_with("/v1/messages") {
+                base.to_string()
+            } else {
+                format!("{base}/v1/messages")
+            }
+        }
+        agent_provider_config::ProviderProtocol::OpenAiCompatible => {
+            if base.ends_with("/chat/completions") {
+                base.to_string()
+            } else {
+                format!("{base}/chat/completions")
+            }
+        }
+    }
+}
+
+fn send_provider(
+    client: &reqwest::blocking::Client,
+    provider: &ProviderConnection,
+    body: &Value,
+) -> Result<String, Attempt> {
+    let mut request = client
+        .post(provider_request_url(&provider.selection))
+        .header("content-type", "application/json");
+    match provider.selection.protocol {
+        agent_provider_config::ProviderProtocol::Anthropic => {
+            request = request.header("anthropic-version", API_VERSION);
+            if let Some(secret) = &provider.secret {
+                request = request.header("x-api-key", secret.expose());
+            }
+        }
+        agent_provider_config::ProviderProtocol::OpenAiCompatible => {
+            if let Some(secret) = &provider.secret {
+                request = request.bearer_auth(secret.expose());
+            }
+        }
+    }
+    let resp = request.json(body).send().map_err(|error| {
+        if error.is_connect() {
+            Attempt {
+                error: AskError::Failed(strip(&error.to_string())),
+                again: Again::Soon(None),
+            }
+        } else if error.is_timeout() {
+            Attempt {
+                error: AskError::Timeout,
+                again: Again::Soon(None),
+            }
+        } else {
+            Attempt {
+                error: AskError::Failed(strip(&error.to_string())),
+                again: Again::Never,
+            }
+        }
+    })?;
+    let status = resp.status();
+    let retry_after = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let text = resp.text().map_err(|error| Attempt {
+        error: AskError::Failed(strip(&error.to_string())),
+        again: Again::Soon(None),
+    })?;
+    if !status.is_success() {
+        return Err(Attempt {
+            error: AskError::Failed(format!(
+                "http {}: {}",
+                status.as_u16(),
+                first_chars(&text, 300)
+            )),
+            again: again_after(status.as_u16(), retry_after.as_deref()),
+        });
+    }
+    Ok(text)
 }
 
 /// Post one Messages request and hand back the body.
@@ -794,6 +1015,29 @@ pub fn request_body(rest: &str, blocks: &[Block]) -> serde_json::Value {
     })
 }
 
+/// Provider-neutral decision request. Both dialects receive the same bounded
+/// instruction and catalogue; only the wire envelope changes.
+pub fn request_body_for(
+    selection: &ProviderSelection,
+    rest: &str,
+    blocks: &[Block],
+) -> serde_json::Value {
+    if selection.protocol == agent_provider_config::ProviderProtocol::Anthropic {
+        let mut body = request_body(rest, blocks);
+        body["model"] = Value::String(selection.model.id.clone());
+        return body;
+    }
+    serde_json::json!({
+        "model": selection.model.id,
+        "max_tokens": 1024,
+        "response_format": { "type": "json_object" },
+        "messages": [
+            { "role": "system", "content": SYSTEM },
+            { "role": "user", "content": user_turn(rest, blocks) }
+        ]
+    })
+}
+
 const SYSTEM: &str = "\
 You choose which one of an application's exported actions answers an instruction \
 somebody wrote into a shared document.
@@ -902,6 +1146,42 @@ pub fn parse_answer(body: &str) -> Result<Answer, String> {
     Ok(Answer {
         action: action.to_string(),
         why: first_chars(&why, 200),
+    })
+}
+
+/// Parse the provider's decision envelope into the same untrusted [`Answer`]
+/// checked against the app catalogue by the caller.
+pub fn parse_answer_for(
+    protocol: agent_provider_config::ProviderProtocol,
+    body: &str,
+) -> Result<Answer, String> {
+    if protocol == agent_provider_config::ProviderProtocol::Anthropic {
+        return parse_answer(body);
+    }
+    let value: Value =
+        serde_json::from_str(body).map_err(|error| format!("unreadable response: {error}"))?;
+    let text = value
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "OpenAI-compatible response had no message content".to_string())?;
+    parse_answer_json(text)
+}
+
+fn parse_answer_json(text: &str) -> Result<Answer, String> {
+    let answer: Value = serde_json::from_str(text.trim())
+        .map_err(|error| format!("answer was not json: {error}"))?;
+    let action = answer
+        .get("action")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "answer had no action".to_string())?;
+    let why = answer.get("why").and_then(Value::as_str).unwrap_or("");
+    Ok(Answer {
+        action: action.to_string(),
+        why: first_chars(why, 200),
     })
 }
 
@@ -1464,5 +1744,38 @@ mod tests {
         std::fs::write(&empty, "OPENAI_API_KEY=x\nnonsense line\n").unwrap();
         assert_eq!(key_from_env_file(&empty), None);
         assert_eq!(key_from_env_file(&dir.path().join("missing.env")), None);
+    }
+
+    #[test]
+    fn openai_compatible_profile_uses_its_model_and_chat_envelope() {
+        let mut profile = agent_provider_config::ProviderProfile::local_vllm();
+        profile
+            .models
+            .push(agent_provider_config::ModelDescriptor::new("local-qwen"));
+        let selection = ProviderSelection::from_profile(&profile, profile.models[0].clone());
+        let body = request_body_for(&selection, "make a title", &[]);
+        assert_eq!(body["model"], "local-qwen");
+        assert!(body.get("messages").is_some());
+        assert_eq!(
+            provider_request_url(&selection),
+            "http://127.0.0.1:8000/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn openai_compatible_response_uses_the_same_untrusted_answer_shape() {
+        let body = serde_json::json!({
+            "choices": [{"message": {"content": r#"{"action":"none","why":"not supported"}"#}}]
+        })
+        .to_string();
+        assert_eq!(
+            parse_answer_for(
+                agent_provider_config::ProviderProtocol::OpenAiCompatible,
+                &body
+            )
+            .unwrap()
+            .action,
+            "none"
+        );
     }
 }
