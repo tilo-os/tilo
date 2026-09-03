@@ -411,12 +411,28 @@ pub fn continuation_file_reference_for_surface(
         .iter()
         .find(|document| document.surface == Some(surface_id))?
         .path;
-    let record_bytes = xattr::get(path, "user.qos.record-id").ok()??;
-    let record_id: [u8; 16] = record_bytes.try_into().ok()?;
+    let record_id = xattr::get(path, "user.qos.record-id")
+        .ok()
+        .flatten()
+        .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+        .or_else(|| {
+            // Some filesystems do not expose per-file xattrs even though the
+            // mounted workspace root exposes the bounded record catalog.
+            // Match the already-open projected path there rather than losing
+            // the document and falling back to an app-only continuation.
+            let wanted = path.canonicalize().unwrap_or_else(|_| path.clone());
+            file_explorer::model::read_workspace_record_index(
+                &file_explorer::model::workspace_roots(),
+            )
+            .records
+            .into_iter()
+            .find(|entry| entry.path.canonicalize().unwrap_or(entry.path.clone()) == wanted)
+            .map(|entry| *entry.record_id.as_bytes())
+        })?;
     let content_hash = xattr::get(path, "user.qos.content-hash")
-        .ok()??
-        .try_into()
-        .ok();
+        .ok()
+        .flatten()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
     // FUSE exposes preview bytes, never a path. Persist only their hash so
     // the receiver can request/cache its own projected thumbnail.
     let thumbnail_hash = xattr::get(path, "user.qos.thumb")
@@ -703,9 +719,56 @@ mod tests {
             std::env::remove_var("QOS_APPS_DATA_DIR");
             std::env::remove_var("QOS_LAUNCHER_BIN");
             std::env::remove_var("XDG_RUNTIME_DIR");
+            std::env::remove_var("QOS_WORKSPACE_ROOTS");
         }
         launcher::set_wayland_socket_path(None);
         reset_session_state();
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn continuation_uses_root_catalog_when_file_xattr_is_unavailable() {
+        let root = tempfile::tempdir().unwrap();
+        let document = root.path().join("deep/report.pdf");
+        std::fs::create_dir_all(document.parent().unwrap()).unwrap();
+        std::fs::write(&document, b"report").unwrap();
+        let record_id = uuid::Uuid::from_u128(0x5151);
+        let projection = serde_json::json!({
+            "schema_version": 1,
+            "truncated": false,
+            "records": [{
+                "record_id": record_id,
+                "path": "/deep/report.pdf",
+                "is_dir": false
+            }]
+        });
+        xattr::set(
+            root.path(),
+            file_explorer::model::RECORD_INDEX_XATTR,
+            &serde_json::to_vec(&projection).unwrap(),
+        )
+        .unwrap();
+        // SAFETY: guarded by the process_env serial group.
+        unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", root.path()) };
+        clear_open_documents();
+        note_opening(
+            &RecordId::for_file(&document),
+            &document,
+            "dev.qos.pdf-viewer",
+        );
+        claim_surface_for_document("dev.qos.pdf-viewer", 77);
+
+        let reference = continuation_file_reference_for_surface(77)
+            .expect("the root catalog supplies stable identity without a file xattr");
+        assert!(matches!(
+            reference,
+            crate::shell::personal_continuity::LaunchIntent::FileReference {
+                record_id: ref id,
+                content_hash: None,
+                ..
+            } if id == &format!("file-record-{}", hex::encode(record_id.as_bytes()))
+        ));
+        clear_launch_env();
     }
 
     /// Three formats, three owning packages. Asserted against the
