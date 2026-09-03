@@ -124,20 +124,23 @@ pub fn load_persisted_content_peers(cache_dir: &Path) -> anyhow::Result<Vec<Pers
 fn persist_content_peer(cache_dir: &Path, peer: PersistedContentPeer) -> anyhow::Result<()> {
     peer.validate()?;
     let mut peers = load_persisted_content_peers(cache_dir)?;
-    if let Some(existing) = peers
-        .iter_mut()
-        .find(|known| known.endpoint.id == peer.endpoint.id)
+    if let Some(index) = peers
+        .iter()
+        .position(|known| known.endpoint.id == peer.endpoint.id)
     {
         // A later authenticated discovery can upgrade a legacy address with
-        // the authoritative workspace ticket. Never discard that binding.
-        if peer.ticket.is_some() {
-            *existing = peer;
+        // the authoritative workspace ticket. Move every refresh to the back:
+        // vector order is a bounded, durable least-recently-discovered queue.
+        let previous = peers.remove(index);
+        let mut refreshed = peer;
+        if refreshed.ticket.is_none() {
+            refreshed.ticket = previous.ticket;
         }
+        peers.push(refreshed);
     } else {
-        anyhow::ensure!(
-            peers.len() < MAX_PERSISTED_CONTENT_PEERS,
-            "content peer limit of {MAX_PERSISTED_CONTENT_PEERS} reached"
-        );
+        if peers.len() == MAX_PERSISTED_CONTENT_PEERS {
+            peers.remove(0);
+        }
         peers.push(peer);
     }
     atomic_file::write(&content_peers_path(cache_dir), &serde_json::to_vec(&peers)?)?;
@@ -550,6 +553,53 @@ fn project(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persisted_peer_catalog_refreshes_and_reclaims_oldest_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        for byte in 1..=u8::try_from(MAX_PERSISTED_CONTENT_PEERS).unwrap() {
+            persist_content_peer(
+                temp.path(),
+                PersistedContentPeer {
+                    endpoint: iroh_base::EndpointAddr::new(
+                        iroh::SecretKey::from_bytes(&[byte; 32]).public(),
+                    ),
+                    ticket: None,
+                },
+            )
+            .unwrap();
+        }
+        let refreshed_id = iroh::SecretKey::from_bytes(&[1; 32]).public();
+        persist_content_peer(
+            temp.path(),
+            PersistedContentPeer {
+                endpoint: iroh_base::EndpointAddr::new(refreshed_id)
+                    .with_ip_addr("127.0.0.1:4788".parse().unwrap()),
+                ticket: None,
+            },
+        )
+        .unwrap();
+        let replacement_id = iroh::SecretKey::from_bytes(&[0x7f; 32]).public();
+        persist_content_peer(
+            temp.path(),
+            PersistedContentPeer {
+                endpoint: iroh_base::EndpointAddr::new(replacement_id),
+                ticket: None,
+            },
+        )
+        .unwrap();
+
+        let peers = load_persisted_content_peers(temp.path()).unwrap();
+        assert_eq!(peers.len(), MAX_PERSISTED_CONTENT_PEERS);
+        assert!(peers.iter().any(|peer| {
+            peer.endpoint
+                == iroh_base::EndpointAddr::new(refreshed_id)
+                    .with_ip_addr("127.0.0.1:4788".parse().unwrap())
+        }));
+        assert!(peers.iter().any(|peer| peer.endpoint.id == replacement_id));
+        let evicted = iroh::SecretKey::from_bytes(&[2; 32]).public();
+        assert!(!peers.iter().any(|peer| peer.endpoint.id == evicted));
+    }
     use crate::Access;
     use collab_types::{Effect, Scope, Subject, Verb};
     use std::sync::Arc;
