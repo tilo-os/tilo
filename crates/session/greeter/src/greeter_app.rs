@@ -389,8 +389,11 @@ pub enum AuthPhase {
 }
 
 impl AuthPhase {
-    /// Whether an attempt currently owns the form: inputs disabled, submit
-    /// ignored, the primary action inert.
+    /// Whether an attempt currently owns the form: inputs disabled and
+    /// submit ignored. The primary action stays enabled — it is inert
+    /// because [`GreeterApp::attempt_login`] refuses a second attempt, not
+    /// because it is greyed out — so it remains the card's keyboard home
+    /// instead of the focus ring falling through to the power actions.
     pub fn is_busy(self) -> bool {
         matches!(self, AuthPhase::Authenticating | AuthPhase::Starting)
     }
@@ -723,7 +726,9 @@ impl GreeterApp {
     /// While an attempt is in flight the inputs are **disabled** (dimmed and
     /// dropped from the focus order), which deliberately changes the
     /// focusable set; the phase transition raises `take_focus_reset` so the
-    /// App re-seats focus rather than preserving a now-invalid ordinal.
+    /// App re-seats focus rather than preserving a now-invalid ordinal. The
+    /// primary action remains enabled while its handler rejects a second
+    /// submit, ensuring that reset cannot land on a power action.
     fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
         let busy = self.phase.is_busy();
         let c = &theme.tokens.colors;
@@ -821,8 +826,7 @@ impl GreeterApp {
                 Box::new(
                     Button::new("greeter.login", self.login_label(), Some(SUBMIT_PATH))
                         .primary()
-                        .with_size(CONTENT_WIDTH, ACTION_HEIGHT)
-                        .with_enabled(!busy),
+                        .with_size(CONTENT_WIDTH, ACTION_HEIGHT),
                 ),
                 Box::new(self.build_status(theme)),
             ],
@@ -1427,7 +1431,7 @@ mod tests {
     /// builds `focusable_order` in.
     fn collect_focusables(w: &dyn Widget, out: &mut Vec<String>) {
         for child in w.children() {
-            if child.is_focusable() {
+            if child.is_focusable() && child.is_enabled() {
                 out.push(ident(child));
             }
             collect_focusables(child, out);
@@ -2070,6 +2074,15 @@ mod tests {
             !live.contains(&"greeter.password".to_string()),
             "password disabled during auth, got {live:?}"
         );
+        assert_eq!(
+            live,
+            vec![
+                "greeter.login".to_string(),
+                "greeter.reboot".to_string(),
+                "greeter.poweroff".to_string(),
+            ],
+            "the primary action must remain the first focusable control during auth"
+        );
         // The power actions stay reachable — you must always be able to
         // turn the machine off, even from a stuck login.
         assert!(
@@ -2085,6 +2098,33 @@ mod tests {
         assert!(
             !Widget::take_focus_reset(&mut app),
             "focus reset is one-shot"
+        );
+    }
+
+    /// Exercise the real App focus reset, not just the greeter's widget-tree
+    /// inventory. When auth disables both fields, the reset must land on the
+    /// inert primary action rather than on Restart or Shut down.
+    #[test]
+    fn authenticating_focus_reset_lands_on_primary_action() {
+        let mut greeter = GreeterApp::with_sessions(test_sessions());
+        greeter.begin_authenticating();
+
+        let mut app = ui::App::new(ui::State::new(), Box::new(greeter));
+        app.autofocus_first = true;
+        app.autofocus_on_structure_change = true;
+        app.init_layout();
+        app.rebuild_structure();
+        app.refresh_semantic_tree();
+
+        let focused = app
+            .semantic_tree()
+            .iter()
+            .find(|node| node.state.focused)
+            .and_then(|node| node.name.as_deref());
+        assert_eq!(
+            focused,
+            Some("Signing you in…"),
+            "auth focus reset must not land on a power action"
         );
     }
 
