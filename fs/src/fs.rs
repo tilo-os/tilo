@@ -3551,6 +3551,34 @@ async fn reconcile_pinned_hydration(
         .iter()
         .filter(|candidate| candidate.kind == RecordKind::File && candidate.hash.is_some())
     {
+        // Policy is metadata-only and cheap to evaluate. Do it before probing
+        // the chunk store so an automatic workspace does not re-walk every
+        // manifest on each reconciliation tick.
+        let pinned = {
+            let mut registry = registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let pinned = matches!(
+                registry.effective_policy(candidate.record_id),
+                Ok(Some(AvailabilityPolicy::Pinned))
+            );
+            if !pinned
+                && let Some(mut record) = registry.get(candidate.record_id).cloned()
+                && (record.transfer.retry_count > 0
+                    || matches!(
+                        record.transfer.phase,
+                        TransferPhase::Queued | TransferPhase::Downloading
+                    ))
+            {
+                record.transfer = crate::availability::TransferState::default();
+                let _ = registry.put(record);
+            }
+            pinned
+        };
+        if !pinned {
+            continue;
+        }
+
         let state = hydrator
             .sync_state(candidate.hash.expect("filtered hash"))
             .await;
@@ -3572,22 +3600,6 @@ async fn reconcile_pinned_hydration(
             let mut registry = registry
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Ok(Some(policy)) = registry.effective_policy(candidate.record_id) else {
-                continue;
-            };
-            if policy != AvailabilityPolicy::Pinned {
-                if let Some(mut record) = registry.get(candidate.record_id).cloned()
-                    && (record.transfer.retry_count > 0
-                        || matches!(
-                            record.transfer.phase,
-                            TransferPhase::Queued | TransferPhase::Downloading
-                        ))
-                {
-                    record.transfer = crate::availability::TransferState::default();
-                    let _ = registry.put(record);
-                }
-                continue;
-            }
             let Some(mut record) = registry.get(candidate.record_id).cloned() else {
                 continue;
             };
