@@ -155,6 +155,58 @@ else
   bad "with no passphrase the recovery key is the only way in, and it does not open the volume"
 fi
 
+# Enrollment must fail while the throwaway key is still present when the
+# recovery value cannot be shown, or when a FIDO2 factor the owner explicitly
+# requested cannot be enrolled. Wrapping the real cryptenroll keeps the test on
+# a genuine LUKS2 volume while deterministically injecting each boundary fault.
+REAL_CRYPTENROLL="$(command -v systemd-cryptenroll)"
+mkdir "$WORK/bin"
+cat > "$WORK/bin/systemd-cryptenroll" <<'EOF'
+#!/bin/bash
+set -e
+case " $* " in
+  *" --recovery-key "*)
+    "$REAL_CRYPTENROLL" "$@" >/dev/null
+    ;;
+  *) exec "$REAL_CRYPTENROLL" "$@" ;;
+esac
+EOF
+chmod 0755 "$WORK/bin/systemd-cryptenroll"
+
+printf '## unreadable recovery value fails closed\n'
+IMG4="$WORK/no-recovery-output.luks"; KEY4="$WORK/no-recovery-output.key"
+new_volume "$IMG4" "$KEY4" || { bad "could not create the fourth test volume"; exit 1; }
+if PATH="$WORK/bin:$PATH" REAL_CRYPTENROLL="$REAL_CRYPTENROLL" \
+    "$DISK_ENCRYPT" enrol "$IMG4" --key-file "$KEY4" > "$WORK/no-recovery-output.out" 2>&1; then
+  bad "enrol succeeded without returning a recovery key to its owner"
+elif grep -q 'could not be read back' "$WORK/no-recovery-output.out"; then
+  ok "enrol refuses to finish when the recovery key cannot be shown"
+else
+  bad "unreadable recovery-key failure did not explain what must be fixed"
+fi
+
+cat > "$WORK/bin/systemd-cryptenroll" <<'EOF'
+#!/bin/bash
+set -e
+case " $* " in
+  *" --fido2-device=auto "*) exit 23 ;;
+  *) exec "$REAL_CRYPTENROLL" "$@" ;;
+esac
+EOF
+chmod 0755 "$WORK/bin/systemd-cryptenroll"
+
+printf '## requested FIDO2 factor fails closed\n'
+IMG5="$WORK/fido-failure.luks"; KEY5="$WORK/fido-failure.key"
+new_volume "$IMG5" "$KEY5" || { bad "could not create the fifth test volume"; exit 1; }
+if PATH="$WORK/bin:$PATH" REAL_CRYPTENROLL="$REAL_CRYPTENROLL" \
+    "$DISK_ENCRYPT" enrol "$IMG5" --key-file "$KEY5" --fido2 > "$WORK/fido-failure.out" 2>&1; then
+  bad "enrol silently accepted a requested FIDO2 factor that failed"
+elif grep -q 'FIDO2 enrolment failed' "$WORK/fido-failure.out"; then
+  ok "enrol fails with an actionable error when requested FIDO2 setup fails"
+else
+  bad "FIDO2 setup failure did not explain what must be fixed"
+fi
+
 # `finish` must refuse while the install key is the only other slot, since
 # removing it would be what destroys the data.
 printf '## finish refuses to strip the last real factor\n'
