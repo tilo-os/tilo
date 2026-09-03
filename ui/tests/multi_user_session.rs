@@ -72,6 +72,30 @@ fn memory_relay_fans_out_presence_as_remote_presence_update() {
 }
 
 #[test]
+fn continuation_reports_stay_on_the_shell_control_plane() {
+    let mut relay = MemoryRelay::new();
+    let alice = relay.attach("alice");
+    let bob = relay.attach("bob");
+
+    alice.send(CollabRequest::ReportContinuation {
+        app_id: "browser".into(),
+        schema_version: 1,
+        metadata: vec![1, 2, 3],
+    });
+    alice.send(CollabRequest::ClearContinuation {
+        app_id: "browser".into(),
+    });
+    relay.drain_peer_outbox(&alice);
+    pump(&mut relay);
+
+    assert!(alice.poll().is_empty(), "control reports are one-way");
+    assert!(
+        bob.poll().is_empty(),
+        "continuation metadata must not leak into peer document events"
+    );
+}
+
+#[test]
 fn app_broadcast_presence_completes_loop_to_remote_peer() {
     let mut relay = MemoryRelay::new();
     let alice_peer = relay.attach("alice");
