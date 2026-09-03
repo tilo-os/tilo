@@ -2,6 +2,7 @@
 //! `ui` toolkit).
 //!
 //! Layers:
+//!   * [`engine`] — atomic local snapshots, SHA-256 verification, and safe restore.
 //!   * [`model`] — the catalog (sources, snapshots, destinations) + sample
 //!     seed data used offline by `--shots` and as the demo state.
 //!   * [`doc`] — the Automerge-backed UI/collaborative state (open view,
@@ -11,7 +12,7 @@
 //!     a source rail, snapshot timeline, storage gauges, a retention editor,
 //!     and a restore sheet.
 //!
-//! `app_root()` builds the live tree (an empty catalog → onboarding); the
+//! `app_root()` builds the live tree (saved local repository or onboarding); the
 //! headless `--shots` renderer uses `app_root_demo()` for the sample catalog.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
@@ -45,6 +46,7 @@
 pub mod actions;
 pub mod app;
 pub mod doc;
+pub mod engine;
 pub mod model;
 pub mod paint;
 

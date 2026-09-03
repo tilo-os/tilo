@@ -10,11 +10,11 @@ not replace the host's boot chain, greeter, or package manager.
 
 | Distribution | Release files | Architectures |
 | --- | --- | --- |
-| Ubuntu 24.04 | `qos-session_*+ubuntu24.04*.deb` | `amd64`, `arm64` |
-| Debian 13 | `qos-session_*+deb13*.deb` | `amd64`, `arm64` |
-| Fedora 44 | `qos-session-*.rpm`, `qos-session-devel-*.rpm` | `x86_64`, `aarch64` |
-| Arch / Arch Linux ARM | `qos-session-*.pkg.tar.zst`, `qos-session-devel-*.pkg.tar.zst` | `x86_64`, `aarch64` |
-| Nix / NixOS | flake package and NixOS module; tagged store-closure export | `x86_64-linux`, `aarch64-linux` |
+| Ubuntu 24.04 | `qos-session_*+ubuntu24.04*.deb` | `amd64` (`arm64` packaging implemented, release lane deferred) |
+| Debian 13 | `qos-session_*+deb13*.deb` | `amd64` (`arm64` packaging implemented, release lane deferred) |
+| Fedora 44 | `qos-session-*.rpm`, `qos-session-devel-*.rpm` | `x86_64` (`aarch64` deferred) |
+| Arch Linux | `qos-session-*.pkg.tar.zst`, `qos-session-devel-*.pkg.tar.zst` | `x86_64` (`aarch64` deferred) |
+| NixOS | flake package and NixOS module; tagged store-closure export | `x86_64-linux` (`aarch64-linux` deferred) |
 
 `qos-session-devel` is optional and is only for machines developing qOS. It
 adds a second login entry that can start a user-selected local build after
@@ -115,24 +115,22 @@ Nix can build or substitute the package declaratively.
 ## CI and publishing
 
 `.forgejo/workflows/package-desktop.yml` is the release gate. Pull requests
-that touch packaging or the packaged binaries execute the complete matrix.
-Version tags execute it regardless of changed paths, wait for every install
-test, download the artifacts, require all 16 unique outputs, and only then
+that touch packaging or the packaged binaries execute the current x86-64 matrix.
+Version tags execute it regardless of changed paths, wait for every x86-64 install
+test, download the artifacts, require the complete current output set, and only then
 publish the apt, RPM, pacman, and generic Nix registries plus a checksummed
-Forgejo release. Ubuntu 24.04 and Debian 13 are independent build/test jobs.
+Forgejo release. The five target userspaces run sequentially in one
+capacity-bounded lane.
 
-The workflow uses the existing `runner` Forgejo label for every job. amd64
-containers run directly. ARM64 jobs export the target container into a
-job-private root filesystem and execute it through checksum-pinned PRoot plus
-digest-pinned static QEMU. This works entirely in the job's user space: it does
-not register a host binfmt handler, require a privileged runner mutation, or
-leave an emulator installed after the job. It also keeps every emulated build
-in CI rather than on developer machines. Declared Docker volumes are copied
-into the private root before execution, including the Nix image's `/nix` store.
-Every target userspace is pinned to its verified architecture-specific OCI
-manifest rather than a mutable distribution tag.
-The package matrix runs at most two targets concurrently; native Cargo builds
-use at most four compiler jobs, while emulated Cargo and Nix builds use two.
+The workflow uses the existing `runner` Forgejo label. amd64 containers run
+directly, and every target userspace is pinned to a verified OCI digest rather
+than a mutable distribution tag. The `dist/ci` runner can execute other
+architectures through a job-private PRoot and checksum-pinned QEMU without
+registering a host binfmt handler, but that mechanism is not the release gate:
+the Nix closure must be validated on a native ARM64 runner first.
+The package matrix runs as one sequential x86-64 lane; native Cargo builds use
+at most four compiler jobs. ARM64 packaging remains implemented in `dist/ci`,
+but is deliberately excluded until a native runner can verify its Nix closure.
 This leaves capacity for main-branch checks on the shared runner pool.
 The Debian-family, Fedora, and Arch jobs reuse the runners' optional remote
 compiler cache in isolated distro/architecture namespaces and fail open to an
@@ -144,8 +142,8 @@ The build is not a generic cross-compile: Cargo and the target package manager
 both execute inside the selected Ubuntu, Debian, Fedora, Arch, or Nix userspace,
 so dependency resolution, ELF linkage, package metadata, installation, and
 `ldd` verification all exercise the target ABI. The runner must expose Docker
-and allow ordinary Docker create/copy/export/start operations plus unprivileged
-`ptrace`, which PRoot uses to translate ARM processes. No publishing secret
+and allow ordinary Docker create/copy/export/start operations. The deferred
+cross-architecture path additionally needs unprivileged `ptrace`. No publishing secret
 beyond the existing `REGISTRY_TOKEN` is introduced; it must have repository and
 package write permission for tag releases.
 

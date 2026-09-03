@@ -1373,6 +1373,7 @@ COPY --from=builder /out/qos /usr/bin/qos
 COPY os/usr/libexec/qos-deployment /usr/libexec/qos-deployment
 COPY os/usr/libexec/qos-boot-health /usr/libexec/qos-boot-health
 COPY os/usr/libexec/qos-repair /usr/libexec/qos-repair
+COPY os/usr/libexec/qos-recovery /usr/libexec/qos-recovery
 COPY os/dev/uki-cmdline.py /usr/libexec/qos-uki-cmdline
 COPY os/usr/lib/systemd/system-generators/qos-boot-mode-generator /usr/lib/systemd/system-generators/qos-boot-mode-generator
 COPY os/usr/lib/systemd/system/qos-boot-entries.service /usr/lib/systemd/system/qos-boot-entries.service
@@ -1395,7 +1396,7 @@ COPY docs/security/repair-mode.md /usr/share/doc/qos/repair-mode.md
 # only place several of these facts can be established at all — see its header.
 COPY os/tests/recovery-boot-check.sh /usr/libexec/qos-recovery-boot-check
 RUN chmod 0755 /usr/libexec/qos-deployment /usr/libexec/qos-boot-health \
-        /usr/libexec/qos-repair /usr/libexec/qos-uki-cmdline \
+        /usr/libexec/qos-repair /usr/libexec/qos-recovery /usr/libexec/qos-uki-cmdline \
         /usr/libexec/qos-update-policy-set /usr/libexec/qos-update-policy-check \
         /usr/libexec/qos-recovery-boot-check /usr/bin/qos \
         /usr/lib/systemd/system-generators/qos-boot-mode-generator
