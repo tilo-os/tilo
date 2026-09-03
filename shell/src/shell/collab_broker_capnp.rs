@@ -3169,6 +3169,8 @@ impl context_stream::Server for ContextStreamServer {
                     slot.set_user_id(&c.id);
                     slot.set_display_name(&c.name);
                     slot.set_color(pack_color(c.color));
+                    slot.set_is_agent(c.is_agent);
+                    slot.set_is_self(c.is_self);
                 }
             }
             let perm_count = u32::try_from(permissions.len()).map_err(|_| {

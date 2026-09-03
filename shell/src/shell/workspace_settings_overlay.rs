@@ -17,8 +17,8 @@ use ui::theme::Theme;
 use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::state::{UserId, WorkspaceTree};
 use crate::shell::workspace_settings::{
-    DefaultAppsCtx, default_app_rows, draw_default_apps_pane, draw_members_pane,
-    draw_permissions_pane, members_pane_rows, permissions_pane_layout,
+    DefaultAppsCtx, agents_pane_rows, default_app_rows, draw_agents_pane, draw_default_apps_pane,
+    draw_members_pane, draw_permissions_pane, members_pane_rows, permissions_pane_layout,
 };
 
 /// Duration shared by the workspace-settings lens and the global-search
@@ -46,6 +46,7 @@ pub enum EventOutcome {
     ComposerSubmit,
     MemberRole(UserId),
     RemoveMember(UserId),
+    RemoveAgent(String),
     Revoke(String),
     SelectTab(WsTab),
     CreateInvite,
@@ -66,11 +67,12 @@ pub struct DrawPlan {
 pub struct WorkspaceSettingsOverlay {
     viewport: Rect,
     transition: ui::Transition,
-    tab_pill_rects: [Rect; 4],
+    tab_pill_rects: [Rect; 5],
     default_app_rects: Vec<(desktop_policy::ResourceKind, Rect, Rect)>,
     revoke_rects: Vec<(String, Rect)>,
     grant_composer_rects: Option<GrantComposerRects>,
     member_control_rects: Vec<(UserId, Rect, Rect)>,
+    agent_control_rects: Vec<(String, Rect)>,
 }
 
 impl Default for WorkspaceSettingsOverlay {
@@ -78,11 +80,12 @@ impl Default for WorkspaceSettingsOverlay {
         Self {
             viewport: Rect::ZERO,
             transition: ui::Transition::closed(),
-            tab_pill_rects: [Rect::ZERO; 4],
+            tab_pill_rects: [Rect::ZERO; 5],
             default_app_rects: Vec::new(),
             revoke_rects: Vec::new(),
             grant_composer_rects: None,
             member_control_rects: Vec::new(),
+            agent_control_rects: Vec::new(),
         }
     }
 }
@@ -191,8 +194,9 @@ impl WorkspaceSettingsOverlay {
             .get(match tab {
                 WsTab::General => 0,
                 WsTab::Members => 1,
-                WsTab::Permissions => 2,
-                WsTab::Apps => 3,
+                WsTab::Agents => 2,
+                WsTab::Permissions => 3,
+                WsTab::Apps => 4,
             })
             .copied()
             .unwrap_or(Rect::ZERO)
@@ -211,11 +215,12 @@ impl WorkspaceSettingsOverlay {
     }
 
     fn clear_hits(&mut self) {
-        self.tab_pill_rects = [Rect::ZERO; 4];
+        self.tab_pill_rects = [Rect::ZERO; 5];
         self.default_app_rects.clear();
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
         self.member_control_rects.clear();
+        self.agent_control_rects.clear();
     }
 
     /// Paint the transition-owned marker, shadow and card, returning the
@@ -357,6 +362,11 @@ impl WorkspaceSettingsOverlay {
             }
             if remove.area() > 0.0 && remove.contains(point) {
                 return EventOutcome::RemoveMember(user.clone());
+            }
+        }
+        for (agent, remove) in &self.agent_control_rects {
+            if remove.area() > 0.0 && remove.contains(point) {
+                return EventOutcome::RemoveAgent(agent.clone());
             }
         }
         for (id, rect) in &self.revoke_rects {
@@ -681,7 +691,7 @@ impl WorkspaceSettingsOverlay {
         let segment_w = nav.width() / usize_to_f64_lossy(tabs.len());
         // Written into the component's cache after the loop
         // so one source of geometry feeds draw and click-routing.
-        let mut pill_rects = [Rect::ZERO; 4];
+        let mut pill_rects = [Rect::ZERO; 5];
         for (i, tab) in tabs.iter().enumerate() {
             let active = *tab == active_tab;
             let label = if rect.width() < 680.0 {
@@ -725,6 +735,7 @@ impl WorkspaceSettingsOverlay {
             let icon = match tab {
                 WsTab::General => ui::icons::Icon::Settings2,
                 WsTab::Members => ui::icons::Icon::Home,
+                WsTab::Agents => ui::icons::Icon::Sparkles,
                 WsTab::Permissions => ui::icons::Icon::Shield,
                 WsTab::Apps => ui::icons::Icon::LayoutGrid,
             };
@@ -796,6 +807,18 @@ impl WorkspaceSettingsOverlay {
                 );
                 true
             }
+            WsTab::Agents => {
+                self.draw_ws_settings_agents_tab(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    rect,
+                    state,
+                    tree,
+                );
+                true
+            }
             WsTab::Permissions => {
                 self.draw_ws_settings_permissions_tab(
                     scene,
@@ -825,6 +848,7 @@ impl WorkspaceSettingsOverlay {
                 self.revoke_rects.clear();
                 self.grant_composer_rects = None;
                 self.member_control_rects.clear();
+                self.agent_control_rects.clear();
                 self.default_app_rects.clear();
                 false
             }
@@ -850,6 +874,7 @@ impl WorkspaceSettingsOverlay {
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
         self.member_control_rects.clear();
+        self.agent_control_rects.clear();
         let body_rect = Self::body_rect(rect);
         let is_owner = is_active_workspace_owner(state);
         if let Some(ws) = tree.active_workspace() {
@@ -863,6 +888,47 @@ impl WorkspaceSettingsOverlay {
                 body_rect,
                 ws,
                 &state.local_user_id,
+                is_owner,
+                text_renderer,
+                theme,
+            );
+        }
+        Self::draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
+    }
+
+    /// The Agents tab body: an explicitly non-human roster backed by the
+    /// same signed membership and revocation policy as the broker.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "matches the other workspace-settings tab paint helpers"
+    )]
+    fn draw_ws_settings_agents_tab(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        state: &crate::shell::chrome_state::ChromeState,
+        tree: &WorkspaceTree,
+    ) {
+        self.revoke_rects.clear();
+        self.grant_composer_rects = None;
+        self.member_control_rects.clear();
+        self.agent_control_rects.clear();
+        self.default_app_rects.clear();
+        let body_rect = Self::body_rect(rect);
+        let is_owner = is_active_workspace_owner(state);
+        if let Some(ws) = tree.active_workspace() {
+            for row in agents_pane_rows(ws, body_rect) {
+                self.agent_control_rects
+                    .push((row.agent.clone(), row.remove_rect));
+            }
+            draw_agents_pane(
+                scene,
+                transform,
+                body_rect,
+                ws,
                 is_owner,
                 text_renderer,
                 theme,
@@ -1371,7 +1437,7 @@ mod tests {
         let mut overlay = WorkspaceSettingsOverlay::default();
         overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
         let hit_rect = Rect::new(700.0, 200.0, 760.0, 240.0);
-        overlay.tab_pill_rects = [hit_rect, Rect::ZERO, Rect::ZERO, Rect::ZERO];
+        overlay.tab_pill_rects = [hit_rect, Rect::ZERO, Rect::ZERO, Rect::ZERO, Rect::ZERO];
         let Ok(resource) = desktop_policy::ResourceKind::extension("pdf") else {
             panic!("pdf is a valid extension resource");
         };
@@ -1381,6 +1447,18 @@ mod tests {
         assert_eq!(
             overlay.hit_test(hit_rect.center(), WsTab::General),
             EventOutcome::WorkspaceDefault(resource)
+        );
+    }
+
+    #[test]
+    fn agent_revoke_hit_keeps_the_typed_agent_identity() {
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        let revoke = Rect::new(900.0, 300.0, 980.0, 334.0);
+        overlay.agent_control_rects.push(("scribe".into(), revoke));
+        assert_eq!(
+            overlay.hit_test(revoke.center(), WsTab::Agents),
+            EventOutcome::RemoveAgent("scribe".into()),
         );
     }
 }
