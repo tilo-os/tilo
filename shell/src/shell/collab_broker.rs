@@ -405,6 +405,7 @@ pub struct BrokerHandle {
     capnp_quit: Arc<AtomicBool>,
     pub(crate) fanout: Arc<FanoutState>,
     channels: Arc<Mutex<BrokerChannels>>,
+    peer_departures: Option<Arc<crate::shell::network::PeerDepartureHistory>>,
 }
 
 /// Cloneable, thread-safe slice of the broker used by shell chrome. Keeping
@@ -663,6 +664,14 @@ impl BrokerHandle {
             .lock()
             .map(|g| g.redactions.for_artifact(artifact))
             .unwrap_or_default()
+    }
+
+    /// Recent authenticated peer departures observed by the attached network.
+    /// Empty when this broker was started without peer sync.
+    pub fn peer_departures(&self) -> Vec<crate::shell::network::PeerDeparture> {
+        self.peer_departures
+            .as_ref()
+            .map_or_else(Vec::new, |history| history.snapshot())
     }
 }
 
@@ -1086,6 +1095,7 @@ fn spawn_inner(
         capnp_quit,
         fanout: table,
         channels,
+        peer_departures: peer_sync.map(|net| net.peer_departure_history()),
     })
 }
 
