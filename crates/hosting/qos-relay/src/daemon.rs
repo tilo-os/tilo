@@ -244,6 +244,7 @@ impl Relay {
             own_sk: identity.device_signing_key.clone(),
             mesh_profile: mesh_profile.clone(),
             full_replica_status: cfg.full_replica_status.clone(),
+            home_peer_bundle: cfg.home_peer_bundle.clone(),
         };
         let router = Router::builder(endpoint.clone())
             .accept(ALPN, handler)
@@ -858,6 +859,7 @@ struct DiscoveryProtocol {
     own_sk: ed25519_dalek::SigningKey,
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     full_replica_status: PathBuf,
+    home_peer_bundle: PathBuf,
 }
 
 impl std::fmt::Debug for DiscoveryProtocol {
@@ -949,11 +951,27 @@ impl ProtocolHandler for DiscoveryProtocol {
             })
             .unwrap_or_default();
         profile.services.full_content_replication &= !profile.filesystem_endpoints.is_empty();
+        let filesystem_ticket = std::fs::read_to_string(&self.home_peer_bundle)
+            .ok()
+            .and_then(|text| toml::from_str::<fs::full_replica::HomePeerSet>(&text).ok())
+            .and_then(|set| {
+                set.workspaces
+                    .into_iter()
+                    .find(|bundle| bundle.relay_workspace_ids.contains(&request.workspace_id))
+            })
+            .map(|bundle| bundle.ticket)
+            .ok_or_else(|| {
+                AcceptError::from_err(std::io::Error::other(
+                    "workspace has no authenticated filesystem binding",
+                ))
+            })?;
         write_frame(
             &mut send,
             &postcard::to_allocvec(&ContentEndpointAdvertisement {
+                schema_version: 1,
                 workspace_id: request.workspace_id,
                 filesystem_endpoints: profile.filesystem_endpoints,
+                filesystem_ticket,
             })
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
         )
@@ -1744,10 +1762,31 @@ mod tests {
         status.full_content_replication = true;
         status.filesystem_endpoints.push(filesystem.clone());
         fs::full_replica::save_status(&status_path, &status).unwrap();
+        let owner_endpoint = EndpointAddr::new(iroh::SecretKey::from_bytes(&[91; 32]).public());
+        let workspace_topic = [29; 32];
+        let bundle_path = temp.path().join("home-peer.toml");
+        let bundle = fs::full_replica::HomePeerSet {
+            status_file: status_path.clone(),
+            workspaces: vec![fs::full_replica::HomePeerBundle {
+                ticket: fs::Ticket {
+                    node: owner_endpoint.clone(),
+                    workspace: workspace_topic,
+                }
+                .encode()
+                .unwrap(),
+                cache_dir: temp.path().join("replica"),
+                capability_json: "[]".into(),
+                authority: None,
+                principals: Vec::new(),
+                relay_workspace_ids: vec![0],
+            }],
+        };
+        std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
         let relay = Relay::start(
             RelayConfig {
                 state_root: temp.path().join("relay"),
                 full_replica_status: status_path,
+                home_peer_bundle: bundle_path,
                 device_role: crate::mesh::DeviceRole::AlwaysOnServer,
                 services: crate::mesh::ServiceCapabilities::home_peer(),
                 workspaces: vec![crate::config::WorkspaceBinding {
@@ -1787,6 +1826,23 @@ mod tests {
         .unwrap();
         assert_eq!(discovered, filesystem);
         assert_ne!(discovered, relay.node_addr());
+        let registration = crate::client::RelayClient::discover_content_peer(
+            &client_endpoint,
+            relay.node_addr(),
+            0,
+            user.public_key,
+            host.public_key,
+            client_cert.clone(),
+            client_key.clone(),
+            RevocationList::new(),
+        )
+        .await
+        .unwrap();
+        let advertised_ticket = fs::Ticket::decode(&registration.ticket).unwrap();
+        assert_ne!(owner_endpoint, filesystem);
+        assert_eq!(advertised_ticket.node, owner_endpoint);
+        assert_ne!(advertised_ticket.node, registration.endpoint);
+        assert_eq!(advertised_ticket.workspace, workspace_topic);
         let wrong_device = [0x55; 32];
         assert!(
             crate::client::RelayClient::discover_content_endpoint(

@@ -249,6 +249,7 @@ struct ActorState {
     hosts: HashMap<EndpointId, (EndpointAddr, Option<HomePeerExpectation>)>,
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
+    content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
     peers_seen: HashMap<(WorkspaceId, EndpointId), Instant>,
     recent: HashSet<(WorkspaceId, [u8; 32])>,
     recent_order: VecDeque<(WorkspaceId, [u8; 32])>,
@@ -277,6 +278,17 @@ impl ActorState {
                 for key in leaving {
                     if let Some(runtime) = self.host_sessions.remove(&key) {
                         runtime.pump.abort();
+                    }
+                }
+                let discoveries: Vec<_> = self
+                    .content_discovery_tasks
+                    .keys()
+                    .filter(|(task_ws, _)| *task_ws == ws)
+                    .copied()
+                    .collect();
+                for key in discoveries {
+                    if let Some(task) = self.content_discovery_tasks.remove(&key) {
+                        task.abort();
                     }
                 }
             }
@@ -314,6 +326,7 @@ impl ActorState {
                         &self.internal_tx,
                         &self.host_sessions,
                         &mut self.connecting_hosts,
+                        &mut self.content_discovery_tasks,
                     );
                 }
             }
@@ -364,6 +377,7 @@ impl ActorState {
                     &self.internal_tx,
                     &self.host_sessions,
                     &mut self.connecting_hosts,
+                    &mut self.content_discovery_tasks,
                 );
             }
         }
@@ -538,6 +552,7 @@ impl ActorState {
                         &self.internal_tx,
                         &self.host_sessions,
                         &mut self.connecting_hosts,
+                        &mut self.content_discovery_tasks,
                     );
                 }
             }
@@ -624,6 +639,7 @@ async fn run(
         hosts: HashMap::new(),
         host_sessions: HashMap::new(),
         connecting_hosts: HashSet::new(),
+        content_discovery_tasks: HashMap::new(),
         peers_seen: HashMap::new(),
         recent: HashSet::new(),
         recent_order: VecDeque::new(),
@@ -791,8 +807,62 @@ fn schedule_host_topic(
     internal_tx: &mpsc::Sender<InternalEvent>,
     sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     connecting: &mut HashSet<(WorkspaceId, EndpointId)>,
+    content_discovery_tasks: &mut HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
 ) {
     let host = addr.id;
+    if let Some(expectation) = expectation.clone()
+        && !content_discovery_tasks.contains_key(&(ws, host))
+    {
+        let discovery_endpoint = endpoint.clone();
+        let discovery_addr = addr.clone();
+        let discovery_cert = identity.material_for(ws).0;
+        let discovery_signing_key = identity.device_signing_key.clone();
+        let mut discovery_revocations = RevocationList::new();
+        for entry in identity.material_for(ws).1 {
+            if discovery_revocations.insert(entry).is_err() {
+                tracing::warn!(ws, "workspace identity has an invalid revocation entry");
+                return;
+            }
+        }
+        let task = tokio::spawn(async move {
+            let mut retry = Duration::from_secs(1);
+            loop {
+                let discovered = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    RelayClient::discover_content_peer(
+                        &discovery_endpoint,
+                        discovery_addr.clone(),
+                        ws,
+                        expectation.user_public_key,
+                        expectation.device_public_key,
+                        discovery_cert.clone(),
+                        discovery_signing_key.clone(),
+                        discovery_revocations.clone(),
+                    ),
+                )
+                .await;
+                match discovered {
+                    Ok(Ok(content_peer)) => {
+                        let _ = register_content_peer(content_peer).await;
+                        // Re-advertise periodically. Registration persists the
+                        // peer, while this also repairs a daemon replacement
+                        // without coupling its lifecycle to the relay session.
+                        retry = Duration::from_secs(30);
+                    }
+                    Ok(Err(error)) => {
+                        tracing::debug!(%error, ws, "relay content discovery is not ready");
+                        retry = retry.saturating_mul(2).min(Duration::from_secs(10));
+                    }
+                    Err(_) => {
+                        tracing::debug!(ws, "relay content discovery timed out");
+                        retry = retry.saturating_mul(2).min(Duration::from_secs(10));
+                    }
+                }
+                tokio::time::sleep(retry).await;
+            }
+        });
+        content_discovery_tasks.insert((ws, host), task);
+    }
     if sessions.contains_key(&(ws, host)) || !connecting.insert((ws, host)) {
         return;
     }
@@ -807,12 +877,7 @@ fn schedule_host_topic(
             return;
         }
     }
-    // Content discovery has a separate authenticated ALPN and must not hold
-    // up collaborative session establishment.  `ws` is the stable relay room
-    // shard used by `room_topic_id`, not a process-local tab/workspace id.
-    let discovery_endpoint = endpoint.clone();
-    let discovery_addr = addr.clone();
-    let Some(expectation) = expectation else {
+    let Some(_expectation) = expectation else {
         // Invited/provider hosts can carry collaboration state, but only an
         // enrolled home peer may nominate a Files hydration endpoint.
         let tx = internal_tx.clone();
@@ -848,30 +913,6 @@ fn schedule_host_topic(
         });
         return;
     };
-    let discovery_cert = device_cert.clone();
-    let discovery_signing_key = identity.device_signing_key.clone();
-    let discovery_revocations = revocations.clone();
-    tokio::spawn(async move {
-        let discovered = tokio::time::timeout(
-            Duration::from_secs(10),
-            RelayClient::discover_content_endpoint(
-                &discovery_endpoint,
-                discovery_addr,
-                ws,
-                expectation.user_public_key,
-                expectation.device_public_key,
-                discovery_cert,
-                discovery_signing_key,
-                discovery_revocations,
-            ),
-        )
-        .await;
-        match discovered {
-            Ok(Ok(content_endpoint)) => schedule_content_peer_registration(content_endpoint),
-            Ok(Err(error)) => tracing::debug!(%error, ws, "relay content discovery is not ready"),
-            Err(_) => tracing::debug!(ws, "relay content discovery timed out"),
-        }
-    });
     let tx = internal_tx.clone();
     tokio::spawn(async move {
         let result = tokio::time::timeout(
@@ -909,9 +950,9 @@ fn schedule_host_topic(
 /// daemon. This is deliberately a detached worker: endpoint registration may
 /// wait on the group-restricted daemon socket but must never delay networking
 /// or the compositor. The filesystem owns persistence and hydration policy.
-fn schedule_content_peer_registration(endpoint: EndpointAddr) {
+async fn register_content_peer(registration: qos_relay::ContentPeerRegistration) -> bool {
     if cfg!(test) && std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER").is_none() {
-        return;
+        return true;
     }
     let publisher = std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER")
         .filter(|value| !value.is_empty())
@@ -925,44 +966,50 @@ fn schedule_content_peer_registration(endpoint: EndpointAddr) {
             || std::path::PathBuf::from("/var/cache/quick-fs"),
             std::path::PathBuf::from,
         );
-    let Ok(payload) = serde_json::to_vec(&endpoint) else {
-        tracing::warn!("could not serialize relay-discovered filesystem endpoint");
-        return;
+    let Ok(payload) = serde_json::to_vec(&registration) else {
+        tracing::warn!("could not serialize relay-discovered filesystem registration");
+        return false;
     };
-    let _ = std::thread::Builder::new()
-        .name("qos-fs-content-peer".to_string())
-        .spawn(move || {
-            use std::io::Write as _;
-
-            let mut child = match std::process::Command::new(&publisher)
-                .arg("register-content-peer")
-                .arg("--cache-dir")
-                .arg(&cache_dir)
-                .arg("--endpoint-stdin")
-                .stdin(std::process::Stdio::piped())
-                .spawn()
-            {
-                Ok(child) => child,
-                Err(error) => {
-                    tracing::warn!(%error, publisher = %publisher.display(), "could not start filesystem content-peer registration");
-                    return;
-                }
-            };
-            let Some(mut stdin) = child.stdin.take() else {
-                tracing::warn!("filesystem content-peer registration has no stdin");
-                return;
-            };
-            if let Err(error) = stdin.write_all(&payload) {
-                tracing::warn!(%error, "could not send discovered endpoint to filesystem daemon");
-                return;
-            }
-            drop(stdin);
-            match child.wait() {
-                Ok(status) if status.success() => {}
-                Ok(status) => tracing::warn!(?status, "filesystem content-peer registration failed"),
-                Err(error) => tracing::warn!(%error, "could not wait for filesystem content-peer registration"),
-            }
-        });
+    let mut child = match tokio::process::Command::new(&publisher)
+        .arg("register-content-peer")
+        .arg("--cache-dir")
+        .arg(&cache_dir)
+        .arg("--endpoint-stdin")
+        .stdin(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            tracing::warn!(%error, publisher = %publisher.display(), "could not start filesystem content-peer registration");
+            return false;
+        }
+    };
+    use tokio::io::AsyncWriteExt as _;
+    let Some(mut stdin) = child.stdin.take() else {
+        tracing::warn!("filesystem content-peer registration has no stdin");
+        return false;
+    };
+    if let Err(error) = stdin.write_all(&payload).await {
+        tracing::warn!(%error, "could not send discovered endpoint to filesystem daemon");
+        return false;
+    }
+    drop(stdin);
+    match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
+        Ok(Ok(status)) if status.success() => true,
+        Ok(Ok(status)) => {
+            tracing::warn!(?status, "filesystem content-peer registration failed");
+            false
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "could not wait for filesystem content-peer registration");
+            false
+        }
+        Err(_) => {
+            tracing::warn!("filesystem content-peer registration timed out");
+            false
+        }
+    }
 }
 
 fn spawn_host_pump(
