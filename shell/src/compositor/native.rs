@@ -4026,6 +4026,7 @@ pub fn run() -> ! {
             // `pump_apps` just observed the trusted onboarding completion.
             // Apps were withheld until this edge, so their first service
             // descriptor always sees the live transport-backed broker.
+            frame_builder.host_mut().set_peer_sync_enabled(true);
             peer_sync = spawn_session_peer_sync(&mut frame_builder, tree_handle.clone());
             collab_broker =
                 spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
