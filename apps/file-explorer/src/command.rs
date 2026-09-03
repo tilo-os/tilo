@@ -182,6 +182,20 @@ pub enum FileCommand {
     },
     /// Open recent immutable versions and conflict state for the selected record.
     ShowHistory,
+    /// Select an exact immutable version in the dedicated history sheet.
+    SelectHistoryVersion {
+        version_id: collab_types::FileVersionId,
+    },
+    /// Switch the history sheet between the selected version's details and a
+    /// signed content/metadata identity comparison with the current version.
+    ToggleHistoryCompare,
+    /// Hand the selected file/version identity to the host's Workspace
+    /// Activity destination. The file explorer retains no activity data; this
+    /// is an intent rather than a second, unsynchronised history implementation.
+    ShowInWorkspaceActivity {
+        record_id: String,
+        version_id: collab_types::FileVersionId,
+    },
     /// Restore one immutable version by appending a new Restore version.
     RestoreVersion {
         version_id: collab_types::FileVersionId,
