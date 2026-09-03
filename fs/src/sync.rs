@@ -1487,6 +1487,27 @@ impl Workspace {
             ticket.workspace_id(),
             records,
         )?;
+        // A full namespace bootstrap contains the structural tree, but signed
+        // file hashes and byte lengths live in the authenticated record mesh.
+        // Pull that projection before exposing the mount: otherwise a fresh
+        // collaborator can briefly observe real files as zero-byte entries,
+        // and an eager application may cache that false empty state.
+        if let Some(records) = &record_plane
+            && let Err(error) = pull_record_mesh_from_peer(
+                &endpoint,
+                ticket.node.clone(),
+                &identity,
+                &policy,
+                records,
+            )
+            .await
+            && !identity.partitioned()
+        {
+            // Persisted/offline mounts remain available. The periodic mesh
+            // worker below keeps retrying a temporarily unavailable or older
+            // peer after startup.
+            eprintln!("initial record mesh reconciliation failed: {error}");
+        }
         Self::start(
             endpoint,
             lookup,
@@ -4697,6 +4718,82 @@ mod tests {
         assert!(
             ns_a.lock().unwrap().entry_at("readers-change").is_none(),
             "the owner's reconcile must not symmetrically sync with a read-only peer"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fresh_record_join_finishes_initial_projection_before_returning() {
+        let server_temp = tempfile::tempdir().unwrap();
+        let client_temp = tempfile::tempdir().unwrap();
+        let (server_ep, server_lookup, server_identity, server_root, server_device) =
+            bind_certified_test_endpoint_with_root().await;
+        let (client_ep, client_lookup, client_identity, _client_root, _client_device) =
+            bind_certified_test_endpoint_with_root().await;
+        let workspace_id = Ticket::workspace_id_for_topic(*server_ep.id().as_bytes());
+        let record_id = FileRecordId::new();
+        let server_actor = FileActor {
+            person: Ed25519PublicKey(server_root.verifying_key().to_bytes()),
+            device: Ed25519PublicKey(server_identity.device_public_key()),
+        };
+        let server_services = record_services(server_temp.path());
+        publish_record_metadata(
+            Arc::clone(&server_services.repository),
+            workspace_id,
+            record_id,
+            server_actor,
+            server_device,
+            37,
+        );
+        let server_store = Arc::new(ContentStore::memory());
+        let server_hydrator = Arc::new(Hydrator::new(server_ep.clone(), Arc::clone(&server_store)));
+        let server_policy = Some(policy_granting(&[client_identity.user_public_key()]));
+        let (_server_workspace, ticket) = Workspace::host_with_records(
+            server_ep.clone(),
+            server_lookup,
+            server_store,
+            server_hydrator,
+            Arc::new(Mutex::new(Namespace::new("initial-record-server").unwrap())),
+            server_identity.clone(),
+            server_policy,
+            server_services,
+        )
+        .await
+        .unwrap();
+
+        let document = fetch_remote_doc(&client_ep, ticket.node.clone(), &client_identity)
+            .await
+            .unwrap();
+        let client_services = record_services(client_temp.path());
+        let client_repository = Arc::clone(&client_services.repository);
+        let client_store = Arc::new(ContentStore::memory());
+        let client_hydrator = Arc::new(Hydrator::new(client_ep.clone(), Arc::clone(&client_store)));
+        let client_policy = Some(policy_read_write(&[server_identity.user_public_key()], &[]));
+        let _client_workspace = Workspace::join_with_records(
+            client_ep,
+            client_lookup,
+            client_store,
+            client_hydrator,
+            Arc::new(Mutex::new(
+                Namespace::from_bytes("initial-record-client", &document).unwrap(),
+            )),
+            ticket,
+            client_identity,
+            client_policy,
+            client_services,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            client_repository.highest_sequence(
+                RecordRepositoryKey {
+                    workspace_id,
+                    record_id,
+                },
+                &server_actor,
+            ),
+            Some(1),
+            "join must not return before the bootstrap peer's signed projection is local"
         );
     }
 
