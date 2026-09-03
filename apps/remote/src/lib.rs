@@ -25,11 +25,10 @@
 //!
 //! A qOS device is modelled as a distinct connection [`kind`] because it
 //! does not create an app-owned remote-desktop protocol. It asks the session
-//! broker for the canonical device-mesh route, then consumes the compositor's
-//! existing consented workspace-surface stream and sends input through the
-//! existing target-side firewall. Direct and encrypted-relay paths therefore
-//! preserve the same sharing, revocation, and authentication boundaries as a
-//! peer view opened elsewhere in the shell.
+//! broker for an authenticated exact-target device-mesh route, then consumes
+//! the compositor's existing consented workspace-surface stream and sends
+//! input through the existing target-side firewall. Workspace-wide relay
+//! fan-out is refused because it cannot keep control input target-confidential.
 //!
 //! [`kind`]: model::ConnectionKind
 
