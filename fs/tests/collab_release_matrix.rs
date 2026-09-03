@@ -34,6 +34,27 @@ struct MountProcess {
     mount: PathBuf,
 }
 
+struct ReplicaProcess {
+    child: Child,
+    logs: Arc<Mutex<Vec<String>>>,
+}
+
+impl ReplicaProcess {
+    fn kill_and_wait(&mut self) {
+        self.child.kill().unwrap();
+        self.child.wait().unwrap();
+    }
+}
+
+impl Drop for ReplicaProcess {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
 impl MountProcess {
     fn wait_line(&mut self, expected: &str) -> String {
         let deadline = Instant::now().checked_add(PROCESS_TIMEOUT).unwrap();
@@ -253,18 +274,26 @@ fn publish_authority(binary: &Path, identity: &Path, workspace_cache: &Path, acl
     assert!(status.success(), "authority publication failed: {status}");
 }
 
-fn spawn_replica(binary: &Path, identity: &Path, config: &Path) -> Child {
-    Command::new(binary)
+fn spawn_replica(binary: &Path, identity: &Path, config: &Path) -> ReplicaProcess {
+    let mut child = Command::new(binary)
         .env(fs::identity::IDENTITY_ROOT_ENV, identity)
         .args(["replica", "--config", config.to_str().unwrap()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
-        .unwrap()
+        .unwrap();
+    let (_lines, logs) = capture(&mut child);
+    ReplicaProcess { child, logs }
 }
 
-fn ready_replica_endpoint(status: &Path) -> iroh_base::EndpointAddr {
+fn ready_replica_endpoint(status: &Path, process: &mut ReplicaProcess) -> iroh_base::EndpointAddr {
     wait_for(PROCESS_TIMEOUT, || {
+        if let Some(exit) = process.child.try_wait().unwrap() {
+            panic!(
+                "replica exited {exit}; logs:\n{}",
+                process.logs.lock().unwrap().join("\n")
+            );
+        }
         let status = fs::full_replica::load_status(status).ok().flatten()?;
         (status.full_content_replication && !status.filesystem_endpoints.is_empty())
             .then(|| status.filesystem_endpoints[0].clone())
@@ -290,6 +319,25 @@ fn wait_for<T>(timeout: Duration, mut inspect: impl FnMut() -> Option<T>) -> T {
         assert!(Instant::now() < deadline, "state barrier timed out");
         std::thread::park_timeout(Duration::from_millis(10));
     }
+}
+
+fn real_fuse_available(scenario: &str) -> bool {
+    let available = std::fs::metadata("/dev/fuse")
+        .is_ok_and(|fuse| std::os::unix::fs::FileTypeExt::is_char_device(&fuse.file_type()))
+        && Command::new("fusermount3")
+            .arg("--version")
+            .status()
+            .is_ok_and(|status| status.success());
+    if available {
+        return true;
+    }
+    assert_ne!(
+        std::env::var("QOS_FS_FUSE_REQUIRED").as_deref(),
+        Ok("1"),
+        "mandatory real-FUSE scenario {scenario} has no usable /dev/fuse"
+    );
+    eprintln!("skipping {scenario}: real FUSE is covered by the dedicated mandatory CI job");
+    false
 }
 
 fn wait_for_process<T>(process: &mut MountProcess, mut inspect: impl FnMut() -> Option<T>) -> T {
@@ -599,17 +647,9 @@ fn forced_partition_offline_edits_restart_and_converge_as_a_conflict() {
 #[allow(clippy::too_many_lines)]
 #[test]
 fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
-    let fuse = std::fs::metadata("/dev/fuse").expect("mandatory matrix requires /dev/fuse");
-    assert!(std::os::unix::fs::FileTypeExt::is_char_device(
-        &fuse.file_type()
-    ));
-    assert!(
-        Command::new("fusermount3")
-            .arg("--version")
-            .status()
-            .unwrap()
-            .success()
-    );
+    if !real_fuse_available("partition/restart convergence") {
+        return;
+    }
 
     let temp = tempfile::tempdir().unwrap();
     let host_identity = temp.path().join("host-identity");
@@ -874,17 +914,7 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
 /// the only reachable source across both owner loss and its own restart.
 #[test]
 fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() {
-    let Ok(fuse) = std::fs::metadata("/dev/fuse") else {
-        eprintln!("skipping NAS FUSE matrix: /dev/fuse is unavailable");
-        return;
-    };
-    if !std::os::unix::fs::FileTypeExt::is_char_device(&fuse.file_type())
-        || !Command::new("fusermount3")
-            .arg("--version")
-            .status()
-            .is_ok_and(|status| status.success())
-    {
-        eprintln!("skipping NAS FUSE matrix: FUSE userspace support is unavailable");
+    if !real_fuse_available("owner/NAS/collaborator lifecycle") {
         return;
     }
 
@@ -970,13 +1000,12 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
         &status,
     );
     let mut nas = spawn_replica(binary, &nas_identity, &bundle);
-    let nas_endpoint = ready_replica_endpoint(&status);
+    let nas_endpoint = ready_replica_endpoint(&status, &mut nas);
 
     // Update/delete after the NAS is ready. Its next coalesced generation
     // must be complete before the owner is removed.
     std::fs::write(owner_mount.join("survivor.txt"), b"updated-through-nas").unwrap();
     std::fs::remove_file(owner_mount.join("deleted.txt")).unwrap();
-    std::thread::sleep(Duration::from_secs(5));
 
     let original = fs::Ticket::decode(&owner_ticket).unwrap();
     let nas_ticket = fs::Ticket {
@@ -1034,7 +1063,23 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     ];
     std::fs::write(&revoked_acl, serde_json::to_vec(&revoked_caps).unwrap()).unwrap();
     publish_authority(binary, &owner_identity, &owner_cache, &revoked_acl);
-    std::thread::sleep(Duration::from_secs(5));
+    let replica_authority = replica_cache
+        .join(original.workspace_id().to_string())
+        .join("workspace-authority.bin");
+    wait_for(PROCESS_TIMEOUT, || {
+        let authority = fs::workspace_authority::WorkspaceAuthority::open(
+            &replica_authority,
+            original.workspace_id(),
+            owner,
+            owner,
+            Vec::new(),
+        )
+        .ok()?;
+        (!authority
+            .handle()
+            .permits(&reader, "/survivor.txt", fs::Access::Read))
+        .then_some(())
+    });
     let revoked_mount = temp.path().join("revoked-reader-mount");
     std::fs::create_dir(&revoked_mount).unwrap();
     let revoked_cache = temp.path().join("revoked-reader-cache");
@@ -1059,10 +1104,9 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     // Crash/restart the NAS while the owner remains offline. The second fresh
     // collaborator reads the same retained namespace and bytes from its
     // durable cache, proving startup does not require the owner endpoint.
-    nas.kill().unwrap();
-    nas.wait().unwrap();
+    nas.kill_and_wait();
     let mut nas = spawn_replica(binary, &nas_identity, &bundle);
-    let nas_endpoint = ready_replica_endpoint(&status);
+    let nas_endpoint = ready_replica_endpoint(&status, &mut nas);
     let restart_ticket = fs::Ticket {
         node: nas_endpoint,
         workspace: original.workspace,
@@ -1094,8 +1138,7 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     });
     restarted.stop();
 
-    nas.kill().unwrap();
-    nas.wait().unwrap();
+    nas.kill_and_wait();
     // Inspect the stopped daemon's real durable store: removal from the
     // namespace is insufficient if obsolete manifests/chunks still consume a
     // home peer's bounded disk indefinitely.
