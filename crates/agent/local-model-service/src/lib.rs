@@ -72,7 +72,7 @@ pub struct VllmCommand {
 /// transaction. The content-addressed runtime artifact itself is the program;
 /// a production OCI supervisor may interpret that verified object as an image
 /// instead, but callers cannot supply an entrypoint or mutable image tag.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignedRuntime {
     pub accepted: AcceptedExtension,
     pub release: RuntimeRelease,
@@ -380,6 +380,8 @@ fn verify_file(path: &Path, artifact: &PinnedArtifact) -> Result<(), ServiceErro
 
 #[derive(Debug, Error)]
 pub enum ServiceError {
+    #[error("backend error: {0}")]
+    Backend(String),
     #[error("artifact is not HTTPS")]
     NonHttpsArtifact,
     #[error("invalid pinned artifact")]
