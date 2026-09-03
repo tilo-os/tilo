@@ -356,6 +356,17 @@ fn save_pending_decommissions(
 fn retry_pending_removals(identity_root: &std::path::Path) -> anyhow::Result<()> {
     let mut pending = load_pending_decommissions(identity_root)?;
     for intent in pending.clone() {
+        let paths = qos_user_identity::IdentityPaths::under(identity_root);
+        let target = device_key(&intent.device)?;
+        persist_canonical_revocation(&paths, &intent.revocation)?;
+        let mut relay_revocations = qos_relay::store::load_revocations(identity_root)?;
+        relay_revocations.retain(|entry| entry.revoked_device_public_key != target);
+        relay_revocations.push(intent.revocation.clone());
+        qos_relay::store::save_revocations(identity_root, &relay_revocations)?;
+        persist_fleet_revocation(&intent.revocation)?;
+        if identity_root.join("home-peers.json").exists() {
+            update_home_peer_registry(identity_root, &intent.device, None)?;
+        }
         if remote_home_peer(
             identity_root,
             &intent.device,
