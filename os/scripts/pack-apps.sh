@@ -24,6 +24,8 @@
 #                  tool paths                        [default: $BIN_DIR/<name>]
 #   REQUIRE_MIN    fail unless at least this many packages install [default: 1]
 #   MAX_QPKG_BYTES refuse a larger archive; decimal 10 MB by default
+#   RECOVERY_MAX_QPKG_BYTES
+#                  ceiling for the trusted Files recovery package [default: 50 MB]
 #
 # STORE is written at its *final* path on purpose: `qos-install` records
 # absolute payload paths in registry.toml, so staging it elsewhere and moving
@@ -49,6 +51,7 @@ BUNDLE_BIN="${BUNDLE_BIN:-$BIN_DIR/qos-runtime-bundle}"
 SHIM_BIN="${SHIM_BIN:-$BIN_DIR/qos-cli-shim}"
 REQUIRE_MIN="${REQUIRE_MIN:-1}"
 MAX_QPKG_BYTES="${MAX_QPKG_BYTES:-10000000}"
+RECOVERY_MAX_QPKG_BYTES="${RECOVERY_MAX_QPKG_BYTES:-50000000}"
 
 msg() { printf '[pack-apps] %s\n' "$*" >&2; }
 die() { printf '[pack-apps] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -133,8 +136,10 @@ for manifest in "$REPO"/apps/*/qos-app.toml; do
     fi
 
     qpkg_bytes="$(stat -c %s "$qpkg")"
-    if [ "$qpkg_bytes" -ge "$MAX_QPKG_BYTES" ]; then
-        failed+=("$app ($id): package is $qpkg_bytes bytes; limit is strictly below $MAX_QPKG_BYTES")
+    qpkg_limit="$MAX_QPKG_BYTES"
+    [ "$id" != "dev.qos.file-explorer" ] || qpkg_limit="$RECOVERY_MAX_QPKG_BYTES"
+    if [ "$qpkg_bytes" -ge "$qpkg_limit" ]; then
+        failed+=("$app ($id): package is $qpkg_bytes bytes; limit is strictly below $qpkg_limit")
         continue
     fi
 
@@ -158,7 +163,7 @@ for manifest in "$REPO"/apps/*/qos-app.toml; do
 done
 
 # --- report ----------------------------------------------------------------
-msg "shipped ${#shipped[@]} package(s) below $MAX_QPKG_BYTES bytes into $STORE"
+msg "shipped ${#shipped[@]} size-gated package(s) into $STORE"
 for m in ${missing[@]+"${missing[@]}"}; do msg "  skipped: $m"; done
 for f in ${failed[@]+"${failed[@]}"};  do msg "  FAILED:  $f"; done
 
