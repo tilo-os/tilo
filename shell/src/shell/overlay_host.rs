@@ -1275,6 +1275,7 @@ impl ShellOverlayHost {
         &mut self,
         broker: crate::shell::collab_broker::AppActionBroker,
     ) {
+        self.room_activity.attach_task_broker(broker.clone());
         self.search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::LiveAppActionsProvider::new(broker),
         ));
