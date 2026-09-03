@@ -264,7 +264,7 @@ if [ "$MODE" = repair ]; then
     bad "systemctl get-default says '$d'. The generator did not take, and this boot
         is not the mode it claims to be."
   fi
-  for u in greetd.service fs.service bootc-fetch-apply-updates.timer sshd.service; do
+  for u in greetd.service fs.service fs-identity.path bootc-fetch-apply-updates.timer sshd.service; do
     systemctl cat "$u" >/dev/null 2>&1 || { info "$u is not installed here"; continue; }
     if [ "$(systemctl is-enabled "$u" 2>/dev/null)" = masked ]; then
       ok "$u is masked"

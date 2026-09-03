@@ -59,6 +59,10 @@ impl DiskRow {
     fn fire(&self, state: &mut AutoCommit, root: &ObjId) {
         let _ = state.put(root, self.select_path.as_str(), true);
     }
+
+    fn disabled(&self) -> bool {
+        self.disk.is_system || self.disk.read_only
+    }
 }
 
 impl Widget for DiskRow {
@@ -143,7 +147,11 @@ impl Widget for DiskRow {
             scene,
             &head,
             NAME_SIZE,
-            theme.text_primary,
+            if self.disabled() {
+                theme.text_dim
+            } else {
+                theme.text_primary
+            },
             transform.pre_translate(Vec2::new(self.rect.x0 + PAD, y1)),
             None,
         );
@@ -154,9 +162,11 @@ impl Widget for DiskRow {
         details.push(self.disk.contents_summary());
         if self.disk.is_system {
             details.push("running system disk".to_string());
+            details.push("not selectable".to_string());
         }
         if self.disk.read_only {
             details.push("read-only".to_string());
+            details.push("not selectable".to_string());
         }
         if !details.is_empty() {
             let y2 = y1 + f64::from(NAME_SIZE) + 4.0;
@@ -197,7 +207,7 @@ impl Widget for DiskRow {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.is_hovered {
+                if self.is_hovered && !self.disabled() {
                     *focus_target = Some(node_id);
                     *handled = true;
                 }
@@ -207,7 +217,7 @@ impl Widget for DiskRow {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.is_hovered {
+                if self.is_hovered && !self.disabled() {
                     self.fire(state, root);
                     *handled = true;
                 }
@@ -220,10 +230,12 @@ impl Widget for DiskRow {
                         ..
                     },
                 ..
-            } if self.is_focused => {
-                // Space selects when focused. (Enter is reserved for the
-                // app-level "advance" handler so it can't double-fire.)
-                if matches!(logical_key, Key::Named(NamedKey::Space)) {
+            } if self.is_focused && !self.disabled() => {
+                // A focused row behaves like every other selectable control.
+                // Consuming Enter here is important: otherwise the wizard's
+                // app-level Enter shortcut tries to advance the page before a
+                // disk has been selected.
+                if matches!(logical_key, Key::Named(NamedKey::Enter | NamedKey::Space)) {
                     self.fire(state, root);
                     *handled = true;
                 }
@@ -245,12 +257,85 @@ impl Widget for DiskRow {
     }
 
     fn is_focusable(&self) -> bool {
-        true
+        !self.disabled()
     }
     fn set_focus(&mut self, focused: bool) {
         self.is_focused = focused;
     }
     fn is_focused(&self) -> bool {
         self.is_focused
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use automerge::{ROOT, ReadDoc};
+    use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+
+    use super::*;
+
+    fn disk() -> Disk {
+        Disk {
+            name: "/dev/vdb".into(),
+            size: "40.0 GiB".into(),
+            model: String::new(),
+            size_bytes: 40 * 1024 * 1024 * 1024,
+            removable: false,
+            read_only: false,
+            is_system: false,
+            partitions: Vec::new(),
+        }
+    }
+
+    fn press(key: NamedKey) -> WindowEvent {
+        // SAFETY: DiskRow reads only the initialized KeyEvent fields below.
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = Key::Named(key);
+        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        event.location = KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        event.text = None;
+        WindowEvent::KeyboardInput {
+            // SAFETY: DiskRow does not inspect the device id.
+            device_id: unsafe { std::mem::zeroed() },
+            event,
+            is_synthetic: false,
+        }
+    }
+
+    fn assert_key_selects(key: NamedKey) {
+        let mut row = DiskRow::new(disk(), "select", false);
+        row.set_focus(true);
+        let mut doc = AutoCommit::new();
+        let mut taffy = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        let node = row.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let mut handled = false;
+        let mut focus_target = None;
+        row.handle_event(
+            &press(key),
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        assert!(handled);
+        assert_eq!(
+            doc.get(&ROOT, "select")
+                .unwrap()
+                .and_then(|(v, _)| v.to_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn enter_and_space_select_a_focused_disk() {
+        assert_key_selects(NamedKey::Enter);
+        assert_key_selects(NamedKey::Space);
     }
 }
