@@ -53,6 +53,8 @@ need "$entrypoint" "/usr/bin/fs replica"
 need "$entrypoint" "/usr/bin/qos-relay"
 need "$entrypoint" "/usr/bin/qos-enroll join"
 need "$entrypoint" "/usr/bin/qos-enroll pair"
+need "$entrypoint" "/var/lib/qos-relay/decommissioned"
+need "$entrypoint" "exec sleep infinity"
 need "$entrypoint" "wait -n"
 
 echo "qos-relay container contract: PASS"

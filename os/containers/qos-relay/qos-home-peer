@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -eu
 
+if [ -e /var/lib/qos-relay/decommissioned ]; then
+    echo "qOS home peer is decommissioned; services remain stopped"
+    exec sleep infinity
+fi
+
 if [ ! -s /var/lib/qos/device/cert.bin ]; then
     enrollment_source="${QOS_ENROLLMENT_TOKEN_FILE:-/run/secrets/qos-enrollment-token}"
     if [ -s "$enrollment_source" ]; then

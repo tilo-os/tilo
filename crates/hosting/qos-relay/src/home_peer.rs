@@ -33,3 +33,17 @@ impl HomePeerRegistration {
     /// Schema version written by this build.
     pub const CURRENT_SCHEMA: u16 = 2;
 }
+
+/// Whether an operator-facing device label is safe to render as one line.
+pub fn valid_home_peer_label(label: &str) -> bool {
+    let label = label.trim();
+    !label.is_empty()
+        && label.len() <= 80
+        && label.chars().all(|character| {
+            !character.is_control()
+                && !matches!(
+                    character,
+                    '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+                )
+        })
+}
