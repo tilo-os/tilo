@@ -1,5 +1,6 @@
 .env
 os/output/
+os/external-assets/cache/
 os/quick-desktop
 **/target/
 # rpmbuild's _topdir for the host session package (dist/rpm/build-rpm.sh):

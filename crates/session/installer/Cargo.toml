@@ -26,8 +26,10 @@ tracing-subscriber.workspace = true
 os-actions = { path = "../../system/os-actions" }
 zeroize.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

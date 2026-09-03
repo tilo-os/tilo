@@ -31,10 +31,18 @@ use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender};
 
 use crate::model::{Action, InstallProfile, JobPhase, Progress, Source, TargetDrive};
+use sha2::{Digest, Sha256};
 
 /// The chunk size of the streaming copy / verify loop (4 MiB) — large enough
 /// to keep the device busy, small enough to report smooth progress.
 pub const CHUNK: usize = 4 * 1024 * 1024;
+
+/// Fixed block at the end of a flashed device carrying a secret-free profile.
+/// Keeping it outside the image partitions makes the handoff identical on
+/// Linux, macOS and Windows and lets the live medium read it before touching
+/// any target disk.
+pub const PROFILE_BLOCK_SIZE: usize = 64 * 1024;
+pub const PROFILE_MAGIC: &str = "QOS_INSTALL_PROFILE_V1";
 
 /// Outcome of asking to start a job.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,13 +124,83 @@ pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
     if req.source.size == 0 || req.target.name.is_empty() {
         return JobStart::Incomplete;
     }
-    if !req.target.fits(req.source.size) {
+    let required = if req.source.installable {
+        req.source.size.saturating_add(PROFILE_BLOCK_SIZE as u64)
+    } else {
+        req.source.size
+    };
+    if !req.target.fits(required) {
         return JobStart::TooSmall;
     }
     if !req.confirmation_matches(typed_confirmation) {
         return JobStart::ConfirmationMismatch;
     }
     JobStart::Started
+}
+
+/// Encode the on-media profile block. The compact JSON contains no secrets;
+/// SHA-256 detects incomplete writes and accidental corruption. It is not an
+/// authenticity claim: the installer treats every field as untrusted input,
+/// validates it, and displays the result again on Review.
+///
+/// # Errors
+///
+/// Returns an error if the profile cannot be serialized or does not fit in the
+/// reserved block.
+pub fn encode_profile_block(profile: &InstallProfile) -> io::Result<Vec<u8>> {
+    let payload = profile
+        .to_media_profile_json()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let digest = format!("{:x}", Sha256::digest(&payload));
+    let header = format!("{PROFILE_MAGIC}\n{digest}\n{}\n", payload.len());
+    if header.len() + payload.len() > PROFILE_BLOCK_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "installation profile exceeds reserved media block",
+        ));
+    }
+    let mut block = vec![0u8; PROFILE_BLOCK_SIZE];
+    let payload_at = header.len();
+    block
+        .get_mut(..payload_at)
+        .ok_or_else(|| io::Error::other("installation profile header is out of bounds"))?
+        .copy_from_slice(header.as_bytes());
+    block
+        .get_mut(payload_at..payload_at + payload.len())
+        .ok_or_else(|| io::Error::other("installation profile payload is out of bounds"))?
+        .copy_from_slice(&payload);
+    Ok(block)
+}
+
+/// Write and read back the complete profile block at the device tail.
+///
+/// # Errors
+///
+/// Returns an error if the target is too small, cannot be opened or written,
+/// or if the complete read-back differs from the encoded profile block.
+pub fn write_profile_block(
+    dst: &Path,
+    target_size: u64,
+    profile: &InstallProfile,
+) -> io::Result<()> {
+    let block = encode_profile_block(profile)?;
+    let offset = target_size
+        .checked_sub(PROFILE_BLOCK_SIZE as u64)
+        .ok_or_else(|| io::Error::other("target is too small for installation profile"))?;
+    let mut device = OpenOptions::new().read(true).write(true).open(dst)?;
+    device.seek(SeekFrom::Start(offset))?;
+    device.write_all(&block)?;
+    device.flush()?;
+    device.sync_all()?;
+    let mut actual = vec![0u8; PROFILE_BLOCK_SIZE];
+    device.seek(SeekFrom::Start(offset))?;
+    read_exact_fill(&mut device, &mut actual)?;
+    if actual != block {
+        return Err(io::Error::other(
+            "installation profile read-back did not match",
+        ));
+    }
+    Ok(())
 }
 
 /// The terminal result of running a job to completion.
@@ -334,9 +412,23 @@ fn run_system_job(req: &WriteRequest, tx: &Sender<Progress>) -> JobResult {
     if let Err(error) = prepare_target(&req.target) {
         return JobResult::WriteFailed(format!("could not safely unmount target: {error}"));
     }
-    let result = run_job_paths(&src, &dst, req.source.size, |p| {
+    let mut result = run_job_paths(&src, &dst, req.source.size, |p| {
         let _ = tx.send(p);
     });
+    if result.is_success()
+        && req.source.installable
+        && let Err(error) = write_profile_block(&dst, req.target.size, &req.profile)
+    {
+        result = JobResult::VerifyFailed(format!(
+            "could not embed and verify installation profile: {error}"
+        ));
+        let _ = tx.send(Progress {
+            phase: JobPhase::Failed,
+            write_frac: 1.0,
+            verify_frac: 1.0,
+            rate_bps: 0,
+        });
+    }
     finish_target(&req.target);
     result
 }
@@ -532,6 +624,40 @@ mod tests {
         let mut r = req();
         r.source.size = 40_000_000_000; // bigger than the 30 GB stick
         assert_eq!(begin_job(&r, "sdb"), JobStart::TooSmall);
+    }
+
+    #[test]
+    fn q_os_media_reserves_room_for_the_profile() {
+        let mut r = req();
+        r.source.installable = true;
+        r.source.size = r.target.size - PROFILE_BLOCK_SIZE as u64 + 1;
+        assert_eq!(begin_job(&r, "sdb"), JobStart::TooSmall);
+    }
+
+    #[test]
+    fn media_profile_is_secret_free_and_read_back_verified() {
+        let mut profile = InstallProfile {
+            hostname: "studio".into(),
+            ..InstallProfile::default()
+        };
+        profile.user.username = "ada".into();
+        profile.user.password = "account-secret".into();
+        profile.encryption_passphrase = "disk-secret".into();
+        let block = encode_profile_block(&profile).unwrap();
+        let text = String::from_utf8_lossy(&block);
+        assert!(text.contains(PROFILE_MAGIC));
+        assert!(text.contains("studio"));
+        assert!(!text.contains("account-secret"));
+        assert!(!text.contains("disk-secret"));
+
+        let target = tempfile::NamedTempFile::new().unwrap();
+        target
+            .as_file()
+            .set_len(PROFILE_BLOCK_SIZE as u64 * 2)
+            .unwrap();
+        write_profile_block(target.path(), PROFILE_BLOCK_SIZE as u64 * 2, &profile).unwrap();
+        let bytes = std::fs::read(target.path()).unwrap();
+        assert_eq!(&bytes[PROFILE_BLOCK_SIZE..], block.as_slice());
     }
 
     #[test]
