@@ -354,6 +354,12 @@ struct CertifyArgs {
     /// Certify every graphical application in this qOS workspace.
     #[arg(long)]
     workspace: bool,
+
+    /// After workspace certification, render every graphical app at the
+    /// supported phone, tablet, laptop, and desktop sizes in default,
+    /// expanded-copy, 200%-text, and high-contrast modes.
+    #[arg(long, requires = "workspace", value_name = "DIR")]
+    responsive_artifacts: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -1181,6 +1187,13 @@ fn run_certify(args: CertifyArgs) -> Result<()> {
         .context("waiting for the workspace certification build")?;
     anyhow::ensure!(status.success(), "workspace certification build failed");
 
+    let responsive_root = args.responsive_artifacts.map(|artifacts| {
+        if artifacts.is_absolute() {
+            artifacts
+        } else {
+            path.join(artifacts)
+        }
+    });
     for (app, _, binary) in &packages {
         println!(
             "[certify] {}",
@@ -1202,9 +1215,109 @@ fn run_certify(args: CertifyArgs) -> Result<()> {
             "{} production root failed qOS-native certification",
             app.display()
         );
+        if let Some(root) = responsive_root.as_deref() {
+            let app_name = app.file_name().unwrap_or_default();
+            for run in responsive_acceptance_runs(&root.join(app_name)) {
+                println!("[responsive] {} / {}", app_name.to_string_lossy(), run.name);
+                let mut command = ProcessCommand::new(executable);
+                command.current_dir(app).args(&run.args);
+                if let Some(theme) = run.shot_theme {
+                    command.env("QOS_SHOTS_THEME", theme);
+                }
+                let status = command.status().with_context(|| {
+                    format!(
+                        "running {} responsive acceptance mode {}",
+                        executable.display(),
+                        run.name
+                    )
+                })?;
+                anyhow::ensure!(
+                    status.success(),
+                    "{} failed responsive acceptance mode {}",
+                    app.display(),
+                    run.name
+                );
+                for (viewport_name, (width, height)) in RESPONSIVE_AUDIT_VIEWPORTS {
+                    let audit_path = root
+                        .join(app_name)
+                        .join(run.name)
+                        .join(format!("{viewport_name}.audit.json"));
+                    let mut audit = ProcessCommand::new(executable);
+                    audit.current_dir(app).args([
+                        OsString::from("--native-audit"),
+                        OsString::from("--viewport"),
+                        OsString::from(format!("{width}x{height}")),
+                    ]);
+                    audit.args(&run.audit_extra);
+                    if let Some(theme) = run.shot_theme {
+                        audit.env("QOS_SHOTS_THEME", theme);
+                    }
+                    let output = audit.output().with_context(|| {
+                        format!(
+                            "auditing {} responsive mode {} at {viewport_name}",
+                            executable.display(),
+                            run.name
+                        )
+                    })?;
+                    anyhow::ensure!(
+                        output.status.success(),
+                        "{} failed semantic audit mode {} at {viewport_name}: {}",
+                        app.display(),
+                        run.name,
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    );
+                    if let Some(parent) = audit_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&audit_path, output.stdout).with_context(|| {
+                        format!("writing responsive audit {}", audit_path.display())
+                    })?;
+                }
+            }
+        }
     }
     println!("Certified {} graphical qOS applications", app_dirs.len());
     Ok(())
+}
+
+struct ResponsiveAcceptanceRun {
+    name: &'static str,
+    args: Vec<OsString>,
+    audit_extra: Vec<OsString>,
+    shot_theme: Option<&'static str>,
+}
+
+const RESPONSIVE_AUDIT_VIEWPORTS: [(&str, (u32, u32)); 4] = [
+    ("phone", (390, 844)),
+    ("tablet", (768, 1024)),
+    ("laptop", (1366, 768)),
+    ("desktop", (1920, 1080)),
+];
+
+fn responsive_acceptance_runs(app_root: &Path) -> Vec<ResponsiveAcceptanceRun> {
+    let run = |name: &'static str,
+               extra: &[&str],
+               shot_theme: Option<&'static str>|
+     -> ResponsiveAcceptanceRun {
+        let mut args = vec![
+            OsString::from("--responsive-matrix"),
+            app_root.join(name).into_os_string(),
+        ];
+        let audit_extra = extra.iter().map(OsString::from).collect::<Vec<_>>();
+        args.extend(audit_extra.iter().cloned());
+        ResponsiveAcceptanceRun {
+            name,
+            args,
+            audit_extra,
+            shot_theme,
+        }
+    };
+    vec![
+        run("default", &[], None),
+        run("expanded-copy", &["--pseudo-locale"], None),
+        run("large-type", &["--text-scale", "2"], None),
+        run("high-contrast", &[], Some("high-contrast")),
+    ]
 }
 
 fn run_new(args: NewArgs) -> Result<()> {
@@ -1608,14 +1721,68 @@ mod tests {
         };
         assert_eq!(app.path, Some(PathBuf::from("apps/demo/src")));
         assert!(!app.workspace);
+        assert!(app.responsive_artifacts.is_none());
 
-        let workspace = Cli::try_parse_from(["qos-dev", "certify", ".", "--workspace"])
-            .expect("workspace certification CLI");
+        let workspace = Cli::try_parse_from([
+            "qos-dev",
+            "certify",
+            ".",
+            "--workspace",
+            "--responsive-artifacts",
+            "target/acceptance",
+        ])
+        .expect("workspace certification CLI");
         let Command::Certify(workspace) = workspace.command else {
             panic!("expected certify command");
         };
         assert_eq!(workspace.path, Some(PathBuf::from(".")));
         assert!(workspace.workspace);
+        assert_eq!(
+            workspace.responsive_artifacts,
+            Some(PathBuf::from("target/acceptance"))
+        );
+
+        assert!(
+            Cli::try_parse_from([
+                "qos-dev",
+                "certify",
+                "apps/demo",
+                "--responsive-artifacts",
+                "target/acceptance",
+            ])
+            .is_err(),
+            "a fleet artifact request without --workspace is ambiguous"
+        );
+    }
+
+    #[test]
+    fn responsive_acceptance_covers_shape_copy_type_and_contrast() {
+        let runs = responsive_acceptance_runs(Path::new("/tmp/acceptance/browser"));
+        assert_eq!(
+            runs.iter().map(|run| run.name).collect::<Vec<_>>(),
+            ["default", "expanded-copy", "large-type", "high-contrast"]
+        );
+        assert!(runs.iter().all(|run| {
+            run.args.first() == Some(&OsString::from("--responsive-matrix"))
+                && run
+                    .args
+                    .get(1)
+                    .is_some_and(|path| Path::new(path).is_absolute())
+        }));
+        assert!(runs[1].args.contains(&OsString::from("--pseudo-locale")));
+        assert_eq!(runs[1].audit_extra, [OsString::from("--pseudo-locale")]);
+        assert!(
+            runs[2]
+                .args
+                .windows(2)
+                .any(|pair| { pair == [OsString::from("--text-scale"), OsString::from("2")] })
+        );
+        assert_eq!(RESPONSIVE_AUDIT_VIEWPORTS[0], ("phone", (390, 844)));
+        assert_eq!(
+            RESPONSIVE_AUDIT_VIEWPORTS.last(),
+            Some(&("desktop", (1920, 1080)))
+        );
+        assert_eq!(runs[3].shot_theme, Some("high-contrast"));
     }
 
     #[test]
