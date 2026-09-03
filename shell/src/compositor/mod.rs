@@ -107,16 +107,23 @@ pub fn parse_mode_from_args() -> Mode {
     parse_mode(&borrowed)
 }
 
-/// Process-global wrapper around [`parse_peer_sync`]. v1 default OFF — callers opt in via `--enable-peer-sync` to spin up the Iroh stack.
+/// Process-global wrapper around [`parse_peer_sync`]. Peer sync is part of a
+/// normal qOS session; `--disable-peer-sync` is the explicit safe override
+/// for tests, recovery, and deliberately offline sessions.
 pub fn parse_peer_sync_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
     let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
-    parse_peer_sync(&borrowed)
+    !parse_peer_sync_disabled(&borrowed)
 }
 
-/// Pure, testable `--enable-peer-sync` flag parser: `true` iff the flag is present anywhere in `args`, so tests can drive it with a fixture slice without touching `std::env`.
+/// Pure, testable compatibility parser for the historical enable flag.
 pub fn parse_peer_sync(args: &[&str]) -> bool {
     args.contains(&"--enable-peer-sync")
+}
+
+/// Pure, testable parser for the explicit offline/recovery override.
+pub fn parse_peer_sync_disabled(args: &[&str]) -> bool {
+    args.contains(&"--disable-peer-sync")
 }
 
 /// Source of truth for the peer-sync marker file. Mockable so tests don't touch the
@@ -166,16 +173,23 @@ pub fn peer_sync_marker_path_from_env(
     Some(p)
 }
 
-/// Combined peer-sync resolution: CLI flag wins, then marker file, then default OFF. The trait split lets unit tests substitute an in-memory marker source without writing to disk.
+/// Combined peer-sync resolution. Sync is on by default; an explicit
+/// `--disable-peer-sync` always wins so a broken network stack can never keep
+/// a recovery or test session from starting. The old enable flag and marker
+/// remain accepted for compatibility with existing launchers.
 pub fn peer_sync_enabled_with(args: &[&str], markers: &dyn MarkerSource) -> bool {
+    if parse_peer_sync_disabled(args) {
+        return false;
+    }
     if parse_peer_sync(args) {
         return true;
     }
-    markers.peer_sync_marker_exists()
+    let _legacy_marker = markers.peer_sync_marker_exists();
+    true
 }
 
 /// Process-global wrapper around [`peer_sync_enabled_with`], reading CLI args from
-/// `std::env::args` and the marker via [`XdgConfigMarkerSource`] — what makes the systemd unit opt-in path (`os/docs/peer-sync.md`) actually toggle peer-sync at boot.
+/// `std::env::args` and the marker via [`XdgConfigMarkerSource`].
 pub fn peer_sync_enabled_from_env_or_marker() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
     let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
@@ -378,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn peer_sync_flag_default_off() {
+    fn peer_sync_legacy_enable_flag_is_not_required_for_default_on() {
         assert!(!parse_peer_sync(&[]));
         assert!(!parse_peer_sync(&["--mode", "hosted"]));
     }
@@ -543,10 +557,10 @@ mod tests {
     }
 
     #[test]
-    fn peer_sync_resolution_default_off() {
+    fn peer_sync_resolution_default_on_without_marker() {
         let m = FakeMarker { present: false };
-        assert!(!peer_sync_enabled_with(&[], &m));
-        assert!(!peer_sync_enabled_with(&["--mode", "native"], &m));
+        assert!(peer_sync_enabled_with(&[], &m));
+        assert!(peer_sync_enabled_with(&["--mode", "native"], &m));
     }
 
     #[test]
@@ -560,11 +574,22 @@ mod tests {
     }
 
     #[test]
-    fn peer_sync_resolution_marker_enables_without_flag() {
-        // No CLI flag, but marker file present → peer-sync ON — the systemd-unit opt-in path documented in `os/docs/peer-sync.md`.
+    fn peer_sync_resolution_accepts_legacy_marker_without_flag() {
+        // Existing marker-managed installations remain enabled without a CLI flag.
         let m = FakeMarker { present: true };
         assert!(peer_sync_enabled_with(&[], &m));
         assert!(peer_sync_enabled_with(&["--mode", "native"], &m));
+    }
+
+    #[test]
+    fn peer_sync_disable_override_wins_over_default_enable_and_marker() {
+        let marker = FakeMarker { present: true };
+        assert!(parse_peer_sync_disabled(&["--disable-peer-sync"]));
+        assert!(!peer_sync_enabled_with(&["--disable-peer-sync"], &marker));
+        assert!(!peer_sync_enabled_with(
+            &["--enable-peer-sync", "--disable-peer-sync"],
+            &marker
+        ));
     }
 
     #[test]

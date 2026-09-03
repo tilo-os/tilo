@@ -139,6 +139,7 @@ os-actions = { path = "../crates/system/os-actions" }
 # persists intent; the compositor is the single long-lived actuator.
 media = { path = "../crates/media" }
 hex.workspace = true
+xattr = "1.6.1"
 # Power management: suspend-on-idle, lid / power-key policy, suspend
 # inhibitors, and battery thresholds over systemd-logind + UPower. The pure
 # policy core is unit-testable without a bus; the service actuates via zbus.

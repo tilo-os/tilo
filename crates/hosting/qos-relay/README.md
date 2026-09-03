@@ -29,6 +29,20 @@ and, if a peer is offline, its deltas are store-and-forwarded.
 - Ships a `qos-relay-admin` CLI for binding/unbinding workspaces
   and listing what a running relay is pinning.
 
+## Composite home-peer deployment
+
+The headless home-peer deployment runs `qos-relay` with the authenticated
+filesystem replica. It retains workspace/app collaboration records,
+checkpoints, offline queues, and all filesystem blobs, media/book bytes, and
+thumbnails for every workspace in `/etc/qos/home-peer.toml`.
+
+`ReplicationIntent::FullWorkspace` is backed by the composite host. The relay
+reads the replica's aggregate freshness proof for every advertisement and
+withdraws full-content capacity until every configured workspace is complete.
+See
+[`os/containers/qos-relay/README.md`](../../../os/containers/qos-relay/README.md)
+for the persistent-volume and identity requirements.
+
 ## Binaries
 
 - `qos-relay` — daemon. Systemd `Type=notify`; subcommands `init`,

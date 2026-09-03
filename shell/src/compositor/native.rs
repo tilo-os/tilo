@@ -2675,6 +2675,10 @@ fn load_session_tree(
             adopted.len()
         );
     }
+    // Replay the persisted aggregate on every boot. A previous session may
+    // have stopped while the authority socket was unavailable; the
+    // background publisher coalesces this with any immediate mutation.
+    tree.export_fs_capabilities();
     (tree.shared(), peer_sync_possible, state_notice)
 }
 
@@ -2746,6 +2750,155 @@ fn spawn_session_collab_broker(
                 .set_collab_unavailable(format!("The broker could not start: {e}"));
             None
         }
+    }
+}
+
+/// Start the authenticated peer transport and install the chrome commands
+/// that use it. Kept as one operation so first-login can call the exact same
+/// path after the identity ceremony releases the desktop.
+fn spawn_session_peer_sync(
+    frame_builder: &mut FrameBuilder,
+    state: &mut State,
+    tree_handle: crate::shell::state::WorkspaceTreeHandle,
+) -> Option<Arc<crate::shell::network::ShellNetwork>> {
+    match crate::shell::network::ShellNetwork::spawn(
+        tree_handle.clone(),
+        &crate::shell::network::peer_key_path(),
+    ) {
+        Ok(handle) => {
+            let _ = handle.join_default_workspace();
+            tracing::info!("peer-sync: actor spawned, default workspace joined");
+            let net = Arc::new(handle);
+            let stream_net = Arc::clone(&net);
+            state.set_legacy_stream_publisher(Arc::new(move |message| {
+                stream_net.publish_legacy_active(message)
+            }));
+            let bridge_net = Arc::clone(&net);
+            frame_builder
+                .host_mut()
+                .set_peer_sync_bridge(std::rc::Rc::new(move |req| {
+                    let active = tree_handle.read().active;
+                    match req {
+                        PeerSyncRequest::IssueInvite => bridge_net
+                            .issue_invite(active, INVITE_EXPIRY_SECONDS)
+                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                        PeerSyncRequest::ExportIdentity => bridge_net
+                            .person_identity_card(active)
+                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                        PeerSyncRequest::IssueInviteFor {
+                            name,
+                            role,
+                            recipient_user_public_key,
+                        } => bridge_net
+                            .issue_invite_bound_with_role(
+                                active,
+                                INVITE_EXPIRY_SECONDS,
+                                &name,
+                                recipient_user_public_key,
+                                role,
+                            )
+                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                        PeerSyncRequest::AcceptInvite(token) => bridge_net
+                            .accept_invite(active, &token)
+                            .map(|room| room.to_string())
+                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                        PeerSyncRequest::ListPendingInvitations => {
+                            let room = tree_handle
+                                .read()
+                                .active_workspace()
+                                .map(|workspace| workspace.room)
+                                .ok_or_else(|| "no active workspace".to_string())?;
+                            Ok(
+                                crate::shell::overlay_host::PeerSyncResponse::PendingInvitations(
+                                    bridge_net
+                                        .pending_invitations(room)
+                                        .into_iter()
+                                        .map(|invite| {
+                                            crate::shell::overlay_host::PendingInvitationSummary {
+                                                id: invite.id,
+                                                name: invite.name,
+                                                role: invite.role,
+                                                expiry_unix_seconds: invite.expiry_unix_seconds,
+                                            }
+                                        })
+                                        .collect(),
+                                ),
+                            )
+                        }
+                        PeerSyncRequest::ResendInvitation(id) => bridge_net
+                            .resend_invitation(&id)
+                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                        PeerSyncRequest::CancelInvitation(id) => {
+                            if bridge_net.cancel_invitation(&id) {
+                                Ok(crate::shell::overlay_host::PeerSyncResponse::Message(
+                                    "canceled".into(),
+                                ))
+                            } else {
+                                Err("invitation is no longer pending".into())
+                            }
+                        }
+                    }
+                }));
+            Some(net)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "peer-sync: spawn failed; continuing without sync");
+            None
+        }
+    }
+}
+
+fn attach_collab_broker_bridges(
+    frame_builder: &mut FrameBuilder,
+    broker: &crate::shell::collab_broker::BrokerHandle,
+) {
+    let dispatcher = broker.follow_dispatcher();
+    frame_builder
+        .host_mut()
+        .set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
+            dispatcher.set(&room.to_string(), peer_id);
+        }));
+    if let Some(action_broker) = broker.app_action_broker() {
+        frame_builder
+            .host_mut()
+            .attach_app_action_broker(action_broker);
+    }
+}
+
+fn attach_peer_presence(
+    frame_builder: &mut FrameBuilder,
+    broker: &crate::shell::collab_broker::BrokerHandle,
+    net: &Arc<crate::shell::network::ShellNetwork>,
+) {
+    let rooms = {
+        let chrome = frame_builder.chrome_handle();
+        let chrome = chrome.borrow();
+        let tree = chrome.tree();
+        tree.workspaces
+            .iter()
+            .map(|workspace| workspace.room.to_string())
+            .collect::<Vec<_>>()
+    };
+    tracing::info!(
+        "collab: subscribed to {} room(s) for peer presence",
+        rooms.len()
+    );
+    frame_builder.set_peer_presence(crate::shell::peer_presence::PeerPresence::attach(
+        broker,
+        Arc::clone(net),
+        rooms,
+    ));
+}
+
+/// A deferred first-login transport starts precisely once: after the trusted
+/// identity ceremony has released the desktop, never while it is still
+/// collecting secrets.
+fn take_deferred_peer_sync_activation(deferred: &mut bool, onboarding_active: bool) -> bool {
+    if *deferred && !onboarding_active {
+        *deferred = false;
+        true
+    } else {
+        false
     }
 }
 
@@ -3440,15 +3593,14 @@ pub fn run() -> ! {
         } else {
             None
         };
-    // A first-login compositor may allocate a non-secret workspace id
-    // namespace, but it must not create or advertise a transport identity
-    // before the person has completed the identity ceremony. Peer sync starts
-    // on the next session, after the certified device chain exists.
+    // A first-login compositor must not create or advertise a transport
+    // identity before the identity ceremony completes. Keep a one-shot
+    // deferred start so that completion brings this session online, rather
+    // than requiring the person to restart the desktop they just set up.
     let enable_peer_sync = peer_sync_requested && onboarding_identity_dir.is_none();
-    if peer_sync_requested && !enable_peer_sync {
-        tracing::info!(
-            "peer-sync: deferred until the next session while first-login identity setup is active"
-        );
+    let mut deferred_peer_sync = peer_sync_requested && onboarding_identity_dir.is_some();
+    if deferred_peer_sync {
+        tracing::info!("peer-sync: waiting for first-login identity setup to complete");
     }
 
     // The desktop's own state, loaded from disk not bootstrapped fresh — room
@@ -3513,96 +3665,11 @@ pub fn run() -> ! {
         state.selection_store(),
     );
 
-    // Peer sync, constructed here (not only in the hosted entry point) because
-    // this is the compositor that boots as the qOS session.
-    let peer_sync: Option<Arc<crate::shell::network::ShellNetwork>> = if enable_peer_sync {
-        match crate::shell::network::ShellNetwork::spawn(
-            tree_handle.clone(),
-            &crate::shell::network::peer_key_path(),
-        ) {
-            Ok(handle) => {
-                let _ = handle.join_default_workspace();
-                tracing::info!("peer-sync: actor spawned, default workspace joined");
-                let net = Arc::new(handle);
-                let stream_net = Arc::clone(&net);
-                state.set_legacy_stream_publisher(Arc::new(move |message| {
-                    stream_net.publish_legacy_active(message)
-                }));
-                let bridge_net = Arc::clone(&net);
-                let bridge_tree = tree_handle;
-                frame_builder
-                    .host_mut()
-                    .set_peer_sync_bridge(std::rc::Rc::new(move |req| {
-                        let active = bridge_tree.read().active;
-                        match req {
-                            PeerSyncRequest::IssueInvite => {
-                                bridge_net.issue_invite(active, INVITE_EXPIRY_SECONDS)
-                                    .map(crate::shell::overlay_host::PeerSyncResponse::Message)
-                            }
-                            PeerSyncRequest::ExportIdentity => {
-                                bridge_net
-                                    .person_identity_card(active)
-                                    .map(crate::shell::overlay_host::PeerSyncResponse::Message)
-                            }
-                            PeerSyncRequest::IssueInviteFor {
-                                name,
-                                role,
-                                recipient_user_public_key,
-                            } => bridge_net.issue_invite_bound_with_role(
-                                active,
-                                INVITE_EXPIRY_SECONDS,
-                                &name,
-                                recipient_user_public_key,
-                                role,
-                            )
-                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                            PeerSyncRequest::AcceptInvite(token) => bridge_net
-                                .accept_invite(active, &token)
-                                .map(|room| room.to_string())
-                                .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                            PeerSyncRequest::ListPendingInvitations => {
-                                let room = bridge_tree
-                                    .read()
-                                    .active_workspace()
-                                    .map(|workspace| workspace.room)
-                                    .ok_or_else(|| "no active workspace".to_string())?;
-                                Ok(crate::shell::overlay_host::PeerSyncResponse::PendingInvitations(
-                                    bridge_net
-                                        .pending_invitations(room)
-                                        .into_iter()
-                                        .map(|invite| crate::shell::overlay_host::PendingInvitationSummary {
-                                            id: invite.id,
-                                            name: invite.name,
-                                            role: invite.role,
-                                            expiry_unix_seconds: invite.expiry_unix_seconds,
-                                        })
-                                        .collect(),
-                                ))
-                            }
-                            PeerSyncRequest::ResendInvitation(id) => bridge_net
-                                .resend_invitation(&id)
-                                .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                            PeerSyncRequest::CancelInvitation(id) => {
-                                if bridge_net.cancel_invitation(&id) {
-                                    Ok(crate::shell::overlay_host::PeerSyncResponse::Message(
-                                        "canceled".into(),
-                                    ))
-                                } else {
-                                    Err("invitation is no longer pending".into())
-                                }
-                            }
-                        }
-                    }));
-                Some(net)
-            }
-            Err(e) => {
-                tracing::warn!("peer-sync: spawn failed ({e}); continuing without sync");
-                None
-            }
-        }
-    } else {
-        None
-    };
+    // Peer sync is constructed here (not only in hosted mode) because this is
+    // the compositor that boots as the qOS session.
+    let mut peer_sync = enable_peer_sync
+        .then(|| spawn_session_peer_sync(&mut frame_builder, &mut state, tree_handle.clone()))
+        .flatten();
     // The session's CRDT fan-out broker, bound before the wayland socket is
     // published (before any app launches) — an app resolves its collab
     // descriptor once at spawn, so a broker arriving later is one it never gets.
@@ -3610,20 +3677,14 @@ pub fn run() -> ! {
     // Lives in this process, not a unit of its own: a listener + fanout
     // table over `ShellNetwork` (the Iroh handle above), since the shell
     // already owns the network stack, identity and permissions. Held to the end of `run()` so the socket outlives every app and unlinks with the session.
-    let collab_broker =
-        spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
+    // Onboarding withholds every app, so defer its broker too. That lets the
+    // freshly authenticated transport be its outbound route as soon as the
+    // person completes setup, with no stale local-only broker to replace.
+    let mut collab_broker = (!deferred_peer_sync)
+        .then(|| spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref()))
+        .flatten();
     if let Some(broker) = collab_broker.as_ref() {
-        let dispatcher = broker.follow_dispatcher();
-        frame_builder
-            .host_mut()
-            .set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
-                dispatcher.set(&room.to_string(), peer_id);
-            }));
-        if let Some(action_broker) = broker.app_action_broker() {
-            frame_builder
-                .host_mut()
-                .attach_app_action_broker(action_broker);
-        }
+        attach_collab_broker_bridges(&mut frame_builder, broker);
     }
     let _identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
     // Settings can request a small, typed set of contextual tools through a
@@ -3642,24 +3703,7 @@ pub fn run() -> ! {
     // apps read as one peer moving, since presence is room-scoped. Only stood
     // up when both halves exist — without peer sync, the overlay paints nothing.
     if let (Some(broker), Some(net)) = (collab_broker.as_ref(), peer_sync.as_ref()) {
-        let rooms = {
-            let chrome = frame_builder.chrome_handle();
-            let chrome = chrome.borrow();
-            let tree = chrome.tree();
-            tree.workspaces
-                .iter()
-                .map(|w| w.room.to_string())
-                .collect::<Vec<_>>()
-        };
-        tracing::info!(
-            "collab: subscribed to {} room(s) for peer presence",
-            rooms.len()
-        );
-        frame_builder.set_peer_presence(crate::shell::peer_presence::PeerPresence::attach(
-            broker,
-            Arc::clone(net),
-            rooms,
-        ));
+        attach_peer_presence(&mut frame_builder, broker, net);
     }
 
     // Seed the fullscreen-configure size so an early `set_fullscreen` fills the output before the first resize.
@@ -4701,8 +4745,28 @@ pub fn run() -> ! {
         } else {
             false
         };
-        let apps_changed =
+        let mut apps_changed =
             frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
+        if take_deferred_peer_sync_activation(
+            &mut deferred_peer_sync,
+            frame_builder.host().onboarding_active(),
+        ) {
+            // `pump_apps` just observed the trusted onboarding completion.
+            // Apps were withheld until this edge, so their first service
+            // descriptor always sees the live transport-backed broker.
+            frame_builder.host_mut().set_peer_sync_enabled(true);
+            peer_sync =
+                spawn_session_peer_sync(&mut frame_builder, &mut state, tree_handle.clone());
+            collab_broker =
+                spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
+            if let Some(broker) = collab_broker.as_ref() {
+                attach_collab_broker_bridges(&mut frame_builder, broker);
+                if let Some(net) = peer_sync.as_ref() {
+                    attach_peer_presence(&mut frame_builder, broker, net);
+                }
+            }
+            apps_changed = true;
+        }
         let revision = frame_builder.chrome_revision();
         let revision_changed = revision != last_revision;
         let animating = frame_builder.needs_animation_frame();
@@ -5258,6 +5322,16 @@ mod tests {
     //! `#[ignore]` by default; these exercise the same `execute_planned_action`
     //! → `FrameBuilder::dispatch_event` wire without a process, so CI without winit still gates here.
     use super::*;
+
+    #[test]
+    fn deferred_peer_sync_starts_in_the_session_that_finishes_onboarding() {
+        let mut deferred = true;
+        assert!(!take_deferred_peer_sync_activation(&mut deferred, true));
+        assert!(deferred, "onboarding retains the pending start");
+        assert!(take_deferred_peer_sync_activation(&mut deferred, false));
+        assert!(!deferred, "the current-session start is one-shot");
+        assert!(!take_deferred_peer_sync_activation(&mut deferred, false));
+    }
 
     #[test]
     fn portal_screencast_never_publishes_a_locked_frame() {

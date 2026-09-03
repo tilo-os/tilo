@@ -9,6 +9,8 @@ ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
 bash -n "$repo/apps/imager/packaging/package-host.sh" \
+  "$repo/apps/imager/packaging/linux/qos-imager" \
+  "$repo/apps/imager/packaging/macos/qos-imager" \
   "$repo/apps/imager/packaging/package-install-medium.sh" \
   "$repo/apps/imager/packaging/build-release-catalog.sh" \
   "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
@@ -20,6 +22,13 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
 
 bash "$repo/os/tests/forgejo_release_publication.sh" \
   || bad 'Forgejo release publication is not idempotent and immutable'
+
+if command -v appstreamcli >/dev/null 2>&1; then
+  appstreamcli validate --no-net \
+    "$repo/apps/imager/packaging/linux/org.qos.Imager.metainfo.xml" \
+    && ok 'Linux application metadata validates offline' \
+    || bad 'Linux application metadata is invalid'
+fi
 
 grep -Fq 'QOS_REQUIRE_SIGNING=1' "$workflow" \
   && grep -Fq 'QOS_REQUIRE_NATIVE_PACKAGES=1' "$workflow" \
@@ -64,6 +73,18 @@ grep -Fq 'Require the complete native release matrix' "$workflow" \
   && [ "$(grep -Fc 'if-no-files-found: error' "$workflow")" -ge 3 ] \
   && ok 'publication fails closed on any missing native artifact or digest' \
   || bad 'partial native artifact sets can reach publication'
+
+grep -Fq 'Build the complete native Linux package set' "$workflow" \
+  && grep -Fq 'Build the complete native Windows package set' "$workflow" \
+  && grep -Fq 'Build the complete native macOS package set' "$workflow" \
+  && [ "$(grep -Fc 'QOS_REQUIRE_NATIVE_PACKAGES: "1"' "$workflow")" -eq 3 ] \
+  && grep -Fq 'Launch the packaged Linux UI offscreen' "$workflow" \
+  && grep -Fq 'Install and launch the packaged Windows UI offscreen' "$workflow" \
+  && grep -Fq 'Mount and launch the packaged macOS UI offscreen' "$workflow" \
+  && grep -Fq 'system bin/"qos-imager-bin", "--shots"' \
+    "$repo/apps/imager/packaging/homebrew/qos-imager.rb.in" \
+  && ok 'every native package is required and executes its packaged UI before publication' \
+  || bad 'native packaging can pass without building and launching an installable artifact'
 grep -Fq 'qos-imager-linux-aarch64.tar.gz' \
     "$repo/apps/imager/packaging/homebrew/qos-imager.rb.in" \
   && grep -Fq 'qos-imager-linux-x86_64.tar.gz' \
@@ -102,10 +123,22 @@ grep -Fq 'key: imager-medium-inputs-' "$workflow" \
   && ok 'installer media restores pinned inputs and can authenticate/verify frozen images' \
   || bad 'installer-media release lane lacks immutable inputs or private-image prerequisites'
 
-grep -Fq 'group: release-imager-promotion' "$workflow" \
+grep -Fq 'key: imager-linux-tools-${{ matrix.arch }}-' "$workflow" \
+  && grep -Fq 'linuxdeploy-1-alpha-20251107-1-${arch}.AppImage' "$workflow" \
+  && grep -Fq 'appimagetool-1.9.1-${arch}.AppImage' "$workflow" \
+  && grep -Fq 'type2-runtime-20251108-${arch}' "$workflow" \
+  && grep -Fq -- '--runtime-file "$QOS_APPIMAGE_RUNTIME"' \
+    "$repo/apps/imager/packaging/package-host.sh" \
+  && grep -Fq 'implicit runtime downloads are forbidden' \
+    "$repo/apps/imager/packaging/package-host.sh" \
+  && ok 'AppImage tooling and runtime are checksum-pinned, cached, and offline at packaging time' \
+  || bad 'AppImage packaging still depends on mutable or repeated GitHub downloads'
+
+grep -Fq "group: release-imager-\${{ startsWith(github.ref, 'refs/tags/imager-v') && 'promotion' || github.ref }}" "$workflow" \
+  && grep -Fq "cancel-in-progress: \${{ !startsWith(github.ref, 'refs/tags/imager-v') }}" "$workflow" \
   && grep -Fq 'refusing to replace newer Homebrew release' "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   && grep -Fq 'refusing to replace newer landing-page release' "$repo/apps/imager/packaging/publish-site-release.sh" \
-  && ok 'release promotion is serialized and monotonic' \
-  || bad 'an older release can overwrite a newer promoted release'
+  && ok 'tag promotion is serialized while stale branch validation is superseded' \
+  || bad 'release promotion can regress or stale validation can block the current commit'
 
 exit "$fail"

@@ -1,0 +1,20 @@
+[Unit]
+Description=Grow the root filesystem to fill its partition
+Documentation=man:systemd-growfs@.service(8)
+# The stock systemd-growfs-root.service grows `/`. On this image `/` is a
+# composefs overlay, not a block device, so systemd-growfs refuses it with
+# "File system \"/\" not backed by block device". The real block-backed
+# filesystem is mounted at /sysroot, and must be grown instead.
+ConditionPathIsMountPoint=/sysroot
+After=systemd-repart.service sysroot.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Growing an already-full filesystem is idempotent, so this is safe on every
+# boot and also handles installations onto a larger-than-image partition.
+ExecStart=/usr/lib/systemd/systemd-growfs /sysroot
+TimeoutSec=infinity
+
+[Install]
+WantedBy=multi-user.target

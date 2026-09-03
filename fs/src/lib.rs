@@ -24,6 +24,7 @@ pub mod docstore;
 pub mod durable_backup;
 pub mod eviction;
 pub mod fs;
+pub mod full_replica;
 pub mod history;
 pub mod hydration;
 pub mod identity;
@@ -57,6 +58,7 @@ pub mod syncstate;
 pub mod thumbs;
 pub mod transaction_coordinator;
 pub mod transport_gate;
+pub mod workspace_authority;
 
 #[cfg(test)]
 mod tests;

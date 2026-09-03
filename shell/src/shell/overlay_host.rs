@@ -679,8 +679,8 @@ pub struct ShellOverlayHost {
     /// flows. A chooser is a concrete user selection, not a broad grant.
     portal_dialogs: PortalDialogController,
     /// Whether peer-sync palette commands (`/invite`, `/connect`) are
-    /// surfaced. Off by default; set via `--enable-peer-sync` or
-    /// [`Self::with_peer_sync_enabled`].
+    /// surfaced. It follows the live session transport and can be enabled
+    /// when first-login provisioning completes.
     peer_sync_enabled: bool,
     /// Queue of peer-sync actions from [`Self::dispatch_palette_command`],
     /// drained by the compositor into its `ShellNetwork` handle.
@@ -2174,17 +2174,22 @@ impl ShellOverlayHost {
         self
     }
 
-    /// Toggle the peer-sync palette commands (`/invite`, `/connect`). Off
-    /// by default; flipped on by `--enable-peer-sync`. Idempotent: the
-    /// rows are appended once and can't be removed by toggling back off.
+    /// Configure peer-sync palette commands during host construction.
     #[must_use]
     pub fn with_peer_sync_enabled(mut self, enabled: bool) -> Self {
+        self.set_peer_sync_enabled(enabled);
+        self
+    }
+
+    /// Update peer-sync command availability for a live session. This is
+    /// needed when trusted first-login provisioning releases the desktop and
+    /// starts its transport without a restart.
+    pub fn set_peer_sync_enabled(&mut self, enabled: bool) {
         // `ActionsProvider` reads the flag off chrome, not this struct.
         self.peer_sync_enabled = enabled;
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().peer_sync_enabled = enabled;
         }
-        self
     }
 
     /// Whether peer-sync palette entries are registered.
@@ -3010,6 +3015,11 @@ impl ShellOverlayHost {
         // pill was clicked; stamp `active_strip`/`active_group` after the
         // writeback, or Ctrl+K's scope stays on the old group.
         let mut focus_writes: Vec<(WorkspaceId, StripId, GroupId)> = Vec::new();
+        // A FileReference card is inert until the person explicitly selects
+        // its tab.  Capture that activation while holding the tree, then
+        // resolve/open it after releasing chrome so the normal document
+        // launcher can apply its capability and hydration path.
+        let mut activated_file_tabs = Vec::new();
         {
             let mut tree = st.tree_mut();
             for w in &writes {
@@ -3031,6 +3041,7 @@ impl ShellOverlayHost {
                             }
                             group.active_tab = w.tab;
                             focus_writes.push((ws.id, w.strip, w.group));
+                            activated_file_tabs.push(w.tab);
                         }
                     }
                 }
@@ -3043,6 +3054,16 @@ impl ShellOverlayHost {
                 tree.active_strip.insert(ws_id, strip_id);
                 tree.active_group.insert(strip_id, group_id);
             }
+            let activated_file_tabs: Vec<_> = activated_file_tabs
+                .into_iter()
+                .filter(|tab| tree.continuation_file_references.contains_key(tab))
+                .collect();
+            drop(tree);
+            drop(st);
+            for tab in activated_file_tabs {
+                let _ = crate::shell::doc_open::activate_continuity_file_tab(&chrome, tab);
+            }
+            return;
         }
     }
 
@@ -8645,6 +8666,21 @@ impl Widget for ShellOverlayHost {
     }
 
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
+        let open_desktop_tour = self.onboarding.is_none()
+            && self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome.borrow().overlays.desktop_tour);
+        if open_desktop_tour {
+            if let Some(chrome) = self.chrome.as_ref() {
+                let mut state = chrome.borrow_mut();
+                state.overlays.desktop_tour = false;
+                state.bump();
+            }
+            self.onboarding = Some(crate::onboarding_view::OnboardingView::new_tour());
+            self.onboarding_released = false;
+            self.onboarding_focus_reset = false;
+        }
         if let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.sync(s, p);
             let finished = onboarding.finished();
@@ -14284,6 +14320,21 @@ mod palette_dispatch_tests {
         assert_eq!(h.take_peer_sync_actions().len(), 1);
     }
 
+    #[test]
+    fn peer_sync_can_be_enabled_after_first_login_host_is_built() {
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+        let mut host =
+            ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
+        assert!(!host.peer_sync_enabled());
+        assert!(!chrome.borrow().peer_sync_enabled);
+
+        host.set_peer_sync_enabled(true);
+
+        assert!(host.peer_sync_enabled());
+        assert!(chrome.borrow().peer_sync_enabled);
+        assert!(host.dispatch_palette_command("peer.invite"));
+    }
+
     // Proves both halves of the invite-token crossing (mint → clipboard
     // → paste) against the process clipboard.
 
@@ -15985,6 +16036,28 @@ mod tests {
         assert!(host.take_structure_dirty());
         assert!(host.take_focus_reset());
         assert!(!host.take_focus_reset(), "focus reset must remain one-shot");
+    }
+
+    #[test]
+    fn desktop_tour_request_opens_once_and_is_consumed() {
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        let mut host =
+            ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
+        chrome.borrow_mut().overlays.desktop_tour = true;
+
+        host.sync(&mut AutoCommit::new(), &automerge::ROOT);
+
+        assert!(host.onboarding_active());
+        assert!(
+            host.onboarding
+                .as_ref()
+                .is_some_and(|view| !view.flow().is_done())
+        );
+        assert!(
+            !chrome.borrow().overlays.desktop_tour,
+            "the request edge is consumed so dismissing does not reopen it"
+        );
     }
 
     /// Bundle of host + chrome + the taffy state needed to dispatch

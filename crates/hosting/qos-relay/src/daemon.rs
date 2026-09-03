@@ -16,17 +16,58 @@ use iroh_base::{EndpointAddr, PublicKey};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
 
-use qos_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
+use qos_user_identity::{
+    DeviceCert, RevocationList, verify_device_cert_at, verify_revocation_entry,
+};
 
 use crate::auth::{self, Hello, HelloAck2, PeerRole};
 use crate::client::RelayClient;
 use crate::config::{PeerRelayConfig, RelayConfig};
 use crate::metrics::Metrics;
-use crate::peer::{PeerContext, WorkspaceAutobind, WorkspaceRegistry, now_ns, run_peer};
+use crate::peer::{
+    PeerContext, WorkspaceAutobind, WorkspaceRegistry, get_or_autobind_workspace, now_ns, run_peer,
+};
 use crate::policy::TrustPolicy;
-use crate::store::load_or_create_iroh_secret;
-use crate::transport::{ALPN, Envelope, MAX_FRAME_BYTES};
+use crate::transport::{
+    ALPN, ContentEndpointAdvertisement, ContentEndpointRequest, DISCOVERY_ALPN, Envelope,
+    HomePeerManagementRequest, HomePeerManagementResponse, MANAGEMENT_ALPN, MAX_FRAME_BYTES,
+};
 use crate::workspace::{Membership, SharedWorkspace, WorkspaceRuntime};
+
+#[derive(serde::Deserialize)]
+struct FullReplicaStatusProof {
+    state: String,
+    full_content_replication: bool,
+    updated_at_ms: u64,
+    #[serde(default)]
+    filesystem_endpoints: Vec<EndpointAddr>,
+}
+
+fn full_replica_proof(path: &std::path::Path) -> Option<FullReplicaStatusProof> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<FullReplicaStatusProof>(&bytes).ok())
+        .filter(|proof| {
+            proof.state == "ready"
+                && proof.full_content_replication
+                && !proof.filesystem_endpoints.is_empty()
+                && unix_now_ms().saturating_sub(proof.updated_at_ms) <= 5_000
+        })
+}
+
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
 
 /// Failure modes for `Relay::start`.
 #[derive(Debug, thiserror::Error)]
@@ -73,6 +114,8 @@ pub struct Relay {
     /// to the shell/fs orchestrators because service claims were intersected
     /// with the verified certificate at startup.
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
+    /// Atomic filesystem completeness proof shared with the headless replica.
+    full_replica_status: PathBuf,
 }
 
 /// A tokio `JoinHandle` that aborts on drop — used so that dropping
@@ -112,7 +155,8 @@ pub struct RelayHandle {
     /// Metrics view — read-only.
     pub metrics: Arc<Metrics>,
     /// Effective device-mesh policy for routing and replication consumers.
-    pub mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
+    mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
+    full_replica_status: PathBuf,
 }
 
 /// Bundle of identity material the relay needs to run. Loaded by
@@ -149,15 +193,20 @@ impl Relay {
     /// configured workspace can't be loaded, and [`RelayError::Iroh`] if
     /// the listen address is invalid or the endpoint fails to bind.
     pub async fn start(mut cfg: RelayConfig, identity: RelayIdentity) -> Result<Self, RelayError> {
+        import_home_peer_bindings(&mut cfg)?;
         validate_relay_identity(&identity)?;
         if !cfg.device_role.can_serve() {
             return Err(RelayError::Identity(
                 "qos-relay requires an always-on-server or hybrid device role".into(),
             ));
         }
+        // A certificate authorises a service, but it cannot make a service
+        // exist. The composite process starts relay + filesystem planes; app,
+        // compute, and remote-control claims remain unavailable here.
         cfg.services = cfg
             .services
-            .authorized_by(&identity.device_cert.capabilities);
+            .authorized_by(&identity.device_cert.capabilities)
+            .limited_to(&crate::mesh::ServiceCapabilities::home_peer());
         let mesh_profile = Arc::new(crate::mesh::DeviceMeshProfile {
             device: identity.device_cert.device_public_key,
             role: cfg.device_role,
@@ -167,16 +216,18 @@ impl Relay {
                 .iter()
                 .map(|binding| (binding.id, binding.replication.clone()))
                 .collect(),
+            filesystem_endpoints: Vec::new(),
         });
         std::fs::create_dir_all(&cfg.state_root)?;
-        let endpoint = bind_endpoint(&cfg).await?;
+        let endpoint = bind_endpoint(&cfg, &identity.device_signing_key).await?;
         let workspaces = build_workspace_registry(&cfg)?;
         let metrics = Arc::new(Metrics::default());
         let revocations = Arc::new(std::sync::RwLock::new(identity.revocations.clone()));
 
+        let live_trust_policy = Arc::new(std::sync::RwLock::new(cfg.trust_policy.clone()));
         let handler = RelayProtocol {
             workspaces: workspaces.clone(),
-            trust_policy: cfg.trust_policy.clone(),
+            trust_policy: live_trust_policy.clone(),
             revocations: revocations.clone(),
             own_user_pk: identity.user_public_key,
             own_cert: identity.device_cert.clone(),
@@ -188,8 +239,36 @@ impl Relay {
                 }
             }),
         };
+        let discovery = DiscoveryProtocol {
+            workspaces: workspaces.clone(),
+            own_user_pk: identity.user_public_key,
+            trust_policy: live_trust_policy.clone(),
+            revocations: revocations.clone(),
+            own_cert: identity.device_cert.clone(),
+            own_sk: identity.device_signing_key.clone(),
+            mesh_profile: mesh_profile.clone(),
+            full_replica_status: cfg.full_replica_status.clone(),
+            home_peer_bundle: cfg.home_peer_bundle.clone(),
+            autobind: matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser).then(|| {
+                WorkspaceAutobind {
+                    state_root: cfg.state_root.clone(),
+                }
+            }),
+        };
+        let management = ManagementProtocol {
+            endpoint: endpoint.clone(),
+            own_user_pk: identity.user_public_key,
+            own_cert: identity.device_cert.clone(),
+            own_sk: identity.device_signing_key.clone(),
+            revocations: revocations.clone(),
+            mesh_profile: mesh_profile.clone(),
+            full_replica_status: cfg.full_replica_status.clone(),
+            state_root: cfg.state_root.clone(),
+        };
         let router = Router::builder(endpoint.clone())
             .accept(ALPN, handler)
+            .accept(DISCOVERY_ALPN, discovery)
+            .accept(MANAGEMENT_ALPN, management)
             .spawn();
 
         let peer_relay_tasks = spawn_background_tasks(
@@ -200,6 +279,19 @@ impl Relay {
             &metrics,
             revocations,
         );
+        if matches!(cfg.trust_policy, TrustPolicy::AllowList { .. })
+            && cfg.home_peer_bundle.exists()
+        {
+            push_peer_relay_task(
+                &peer_relay_tasks,
+                spawn_home_peer_authority_refresh(
+                    cfg.home_peer_bundle.clone(),
+                    identity.user_public_key,
+                    live_trust_policy,
+                    workspaces.clone(),
+                ),
+            );
+        }
 
         Ok(Self {
             endpoint,
@@ -211,6 +303,7 @@ impl Relay {
             own_user_public_key: identity.user_public_key,
             peer_relay_tasks,
             mesh_profile,
+            full_replica_status: cfg.full_replica_status.clone(),
         })
     }
 
@@ -284,6 +377,7 @@ impl Relay {
             node_addr: self.endpoint.addr(),
             metrics: self.metrics.clone(),
             mesh_profile: self.mesh_profile.clone(),
+            full_replica_status: self.full_replica_status.clone(),
         }
     }
 
@@ -337,11 +431,183 @@ impl Relay {
     }
 }
 
-/// Bind the iroh endpoint on the persistent secret at
-/// `<state_root>/iroh-secret.bin`.
-async fn bind_endpoint(cfg: &RelayConfig) -> Result<Endpoint, RelayError> {
-    let secret_bytes = load_or_create_iroh_secret(&cfg.state_root)?;
-    let secret = iroh::SecretKey::from_bytes(&secret_bytes);
+/// Import full-workspace residency from the same bundle the filesystem worker
+/// consumes. The operator cannot accidentally advertise a relay-only binding
+/// for a workspace whose NAS worker is configured to retain complete content.
+fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
+    if !cfg.home_peer_bundle.exists() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&cfg.home_peer_bundle)?;
+    let bundle: fs::full_replica::HomePeerSet = toml::from_str(&text)
+        .map_err(|error| RelayError::Identity(format!("invalid home-peer bundle: {error}")))?;
+    fs::full_replica::validate_home_peer_set(&bundle)
+        .map_err(|error| RelayError::Identity(error.to_string()))?;
+    if bundle.status_file != cfg.full_replica_status {
+        return Err(RelayError::Identity(
+            "home-peer status path differs from relay status path".into(),
+        ));
+    }
+    let mut collaborators = Vec::new();
+    let now = unix_now_secs();
+    for workspace in bundle.workspaces {
+        let ticket = fs::Ticket::decode(&workspace.ticket)
+            .map_err(|error| RelayError::Identity(format!("invalid home-peer ticket: {error}")))?;
+        let relay_workspace_ids = if workspace.relay_workspace_ids.is_empty() {
+            // Bundles exported before room bindings existed have one stable
+            // fallback shard. New enrollment always writes explicit ids.
+            vec![
+                crate::room_workspace_id(&ticket.workspace_id().to_string()).map_err(|error| {
+                    RelayError::Identity(format!("invalid workspace id: {error}"))
+                })?,
+            ]
+        } else {
+            workspace.relay_workspace_ids.clone()
+        };
+        // An FS authority is deliberately *not* a relay-room membership
+        // list.  In particular, an FsPath grant lets a collaborator read a
+        // path in the global Files namespace; it must never silently give
+        // that person access to every shell room wired to the namespace.
+        // Only a governor-signed, explicit Scope::Room(<relay id>) grant
+        // admits a user to that particular relay topic.
+        // Do not seed a just-restarted relay from the enrollment copy when a
+        // newer materialized authority has already been observed.  The
+        // refresh task starts after the router, so this check closes the
+        // otherwise-real admission window during startup.
+        let high_water = load_authority_high_water(&workspace.cache_dir).map_err(|error| {
+            RelayError::Identity(format!("invalid authority high-water: {error}"))
+        })?;
+        let authority = match current_workspace_authority(&workspace) {
+            Ok(authority) => {
+                verify_and_advance_authority(&workspace, &ticket, &authority).map_err(|error| {
+                    RelayError::Identity(format!("home-peer authority rejected: {error}"))
+                })?;
+                Some(authority)
+            }
+            // Preserve compatibility with pre-authority bundles only when
+            // this relay has never accepted an authority for the workspace.
+            Err(_) if high_water.is_none() && workspace.authority.is_none() => None,
+            Err(error) => {
+                return Err(RelayError::Identity(format!(
+                    "home-peer current authority is unavailable: {error}"
+                )));
+            }
+        };
+        let mut authority_users = Vec::new();
+        let mut governor = None;
+        if let Some(authority) = authority.as_ref() {
+            governor = Some(authority.governor);
+            authority_users.push(hex::encode(authority.governor));
+        }
+        authority_users.sort_unstable();
+        authority_users.dedup();
+        collaborators.extend(authority_users.iter().cloned());
+        for id in relay_workspace_ids {
+            let mut room_users = governor
+                .map(|governor| vec![hex::encode(governor)])
+                .unwrap_or_default();
+            if let Some(authority) = authority.as_ref()
+                && id != crate::personal_continuity_workspace_id(&authority.governor)
+            {
+                let room = id.to_string();
+                for capability in &authority.capabilities {
+                    if capability.effect == collab_types::Effect::Grant
+                        && capability.is_live_at(Some(now))
+                        && matches!(&capability.scope, collab_types::Scope::Room(scope) if scope == &room)
+                        && let collab_types::Subject::User(user) = &capability.subject
+                    {
+                        let user = hex::encode(user.as_bytes());
+                        room_users.push(user.clone());
+                        collaborators.push(user);
+                    }
+                }
+            }
+            room_users.sort_unstable();
+            room_users.dedup();
+            if !cfg.workspaces.iter().any(|binding| binding.id == id) {
+                cfg.workspaces.push(crate::config::WorkspaceBinding {
+                    id,
+                    pin: true,
+                    replication: crate::mesh::ReplicationIntent::FullWorkspace,
+                    admitted_users: room_users.clone(),
+                });
+            } else if let Some(binding) = cfg.workspaces.iter_mut().find(|binding| binding.id == id)
+            {
+                binding.admitted_users.extend(room_users);
+                binding.admitted_users.sort_unstable();
+                binding.admitted_users.dedup();
+            }
+        }
+    }
+    collaborators.sort_unstable();
+    collaborators.dedup();
+    if !collaborators.is_empty() && matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser) {
+        cfg.trust_policy = TrustPolicy::AllowList {
+            users: collaborators,
+        };
+    }
+    cfg.services.full_content_replication = true;
+    Ok(())
+}
+
+impl RelayHandle {
+    /// Services safe to advertise at this instant.  The filesystem proof is
+    /// read for every advertisement, so an edit immediately withdraws the
+    /// full-content claim until its new blobs are resident.
+    pub fn advertised_services(&self) -> crate::mesh::ServiceCapabilities {
+        let mut services = self.mesh_profile.services.clone();
+        services.full_content_replication &= !self.filesystem_endpoints().is_empty();
+        services
+    }
+
+    /// Filesystem endpoints that proved complete residency in the current
+    /// heartbeat. Consumers use these for blob and namespace protocols while
+    /// retaining `node_addr` for relay traffic.
+    pub fn filesystem_endpoints(&self) -> Vec<EndpointAddr> {
+        full_replica_proof(&self.full_replica_status)
+            .map(|proof| {
+                proof
+                    .filesystem_endpoints
+                    .into_iter()
+                    .filter(|endpoint| endpoint.id.as_bytes() == &self.mesh_profile.device)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Current profile safe to publish to placement/discovery consumers.
+    pub fn mesh_profile(&self) -> crate::mesh::DeviceMeshProfile {
+        let mut profile = (*self.mesh_profile).clone();
+        profile.services = self.advertised_services();
+        profile.filesystem_endpoints = self.filesystem_endpoints();
+        profile
+    }
+}
+
+/// Derive the relay transport key from the enrolled device secret. The relay
+/// application handshake still proves possession of the certified device key;
+/// this domain-separated transport key prevents the relay and filesystem
+/// processes from publishing competing address records for one Iroh NodeId.
+pub fn relay_service_node_id(device_key: &ed25519_dalek::SigningKey) -> [u8; 32] {
+    let service_secret =
+        blake3::derive_key("qos-relay-iroh-service-key-v1", &device_key.to_bytes());
+    iroh::SecretKey::from_bytes(&service_secret)
+        .public()
+        .as_bytes()
+        .to_owned()
+}
+
+/// Bind the relay plane with a domain-separated transport key. This is one
+/// physical certified device, not a second user identity: protocol auth uses
+/// `device_key` and its device certificate after QUIC connects.
+async fn bind_endpoint(
+    cfg: &RelayConfig,
+    device_key: &ed25519_dalek::SigningKey,
+) -> Result<Endpoint, RelayError> {
+    let secret = iroh::SecretKey::from_bytes(&blake3::derive_key(
+        "qos-relay-iroh-service-key-v1",
+        &device_key.to_bytes(),
+    ));
     Endpoint::builder(presets::N0)
         .secret_key(secret)
         .bind_addr(cfg.iroh_listen)
@@ -364,6 +630,12 @@ fn build_workspace_registry(cfg: &RelayConfig) -> Result<WorkspaceRegistry, Rela
             Membership::default(),
         )?;
         rt.admit_authenticated = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser);
+        rt.admitted_users = binding
+            .admitted_users
+            .iter()
+            .filter_map(|encoded| hex::decode(encoded).ok())
+            .filter_map(|bytes| bytes.try_into().ok())
+            .collect();
         wsmap.insert(binding.id, Arc::new(AsyncMutex::new(rt)));
     }
     Ok(Arc::new(AsyncMutex::new(wsmap)))
@@ -410,6 +682,301 @@ fn spawn_background_tasks(
     }
 
     peer_relay_tasks
+}
+
+const AUTHORITY_HIGH_WATER_FILE: &str = "workspace-authority-high-water.bin";
+
+/// The part of a workspace authority that must survive a relay restart.  The
+/// digest also makes equal-revision equivocation fail closed: a different
+/// signed payload is not a retry of the authority we already accepted.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorityHighWater {
+    workspace: uuid::Uuid,
+    governor: [u8; 32],
+    revision: u64,
+    digest: [u8; 32],
+}
+
+#[derive(Default)]
+struct AuthorityRefreshState {
+    /// Rooms previously governed by this bundle.  Keep them so a malformed
+    /// bundle/current authority revokes their live admission rather than
+    /// leaving the last good projection active forever.
+    governed_rooms: std::collections::HashSet<u64>,
+}
+
+fn authority_high_water_path(cache_dir: &std::path::Path) -> PathBuf {
+    cache_dir.join(AUTHORITY_HIGH_WATER_FILE)
+}
+
+fn authority_digest(
+    authority: &fs::workspace_authority::WorkspaceAuthorityEnvelope,
+) -> Result<[u8; 32], String> {
+    postcard::to_allocvec(authority)
+        .map(|bytes| *blake3::hash(&bytes).as_bytes())
+        .map_err(|error| format!("could not encode signed authority: {error}"))
+}
+
+fn load_authority_high_water(
+    cache_dir: &std::path::Path,
+) -> Result<Option<AuthorityHighWater>, String> {
+    let path = authority_high_water_path(cache_dir);
+    match std::fs::read(&path) {
+        Ok(bytes) => postcard::from_bytes(&bytes)
+            .map(Some)
+            .map_err(|error| format!("{} is corrupt: {error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("could not read {}: {error}", path.display())),
+    }
+}
+
+fn persist_authority_high_water(
+    cache_dir: &std::path::Path,
+    authority: &fs::workspace_authority::WorkspaceAuthorityEnvelope,
+    digest: [u8; 32],
+) -> Result<(), String> {
+    let high_water = AuthorityHighWater {
+        workspace: authority.workspace,
+        governor: authority.governor,
+        revision: authority.revision,
+        digest,
+    };
+    let bytes = postcard::to_allocvec(&high_water)
+        .map_err(|error| format!("could not encode authority high-water mark: {error}"))?;
+    let path = authority_high_water_path(cache_dir);
+    atomic_file::write_creating_parent(&path, &bytes)
+        .map_err(|error| format!("could not persist {}: {error}", path.display()))
+}
+
+/// Read the current materialized authority.  A corrupt materialized file is
+/// never silently replaced by the enrollment bundle: after a newer revision
+/// was observed that would resurrect an old revocation or tombstone.
+fn current_workspace_authority(
+    workspace: &fs::full_replica::HomePeerBundle,
+) -> Result<fs::workspace_authority::WorkspaceAuthorityEnvelope, String> {
+    let path = workspace.cache_dir.join("workspace-authority.bin");
+    match std::fs::read(&path) {
+        Ok(bytes) => postcard::from_bytes(&bytes)
+            .map_err(|error| format!("{} is corrupt: {error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            workspace.authority.clone().ok_or_else(|| {
+                format!(
+                    "{} is missing and the enrollment bundle has no authority",
+                    path.display()
+                )
+            })
+        }
+        Err(error) => Err(format!("could not read {}: {error}", path.display())),
+    }
+}
+
+fn verify_and_advance_authority(
+    workspace: &fs::full_replica::HomePeerBundle,
+    ticket: &fs::Ticket,
+    authority: &fs::workspace_authority::WorkspaceAuthorityEnvelope,
+) -> Result<(), String> {
+    let high_water = load_authority_high_water(&workspace.cache_dir)?;
+    let expected_governor = high_water
+        .as_ref()
+        .map(|record| record.governor)
+        // The enrollment bundle is the governor trust anchor before the
+        // relay has persisted an authority itself.
+        .or_else(|| {
+            workspace
+                .authority
+                .as_ref()
+                .map(|authority| authority.governor)
+        })
+        .unwrap_or(authority.governor);
+    authority
+        .verify(ticket.workspace_id(), expected_governor)
+        .map_err(|error| format!("authority signature or governor is invalid: {error}"))?;
+    let digest = authority_digest(authority)?;
+
+    if let Some(record) = high_water {
+        if record.workspace != authority.workspace {
+            return Err("authority high-water workspace does not match the bundle".into());
+        }
+        if record.governor != authority.governor {
+            return Err("authority governor regressed from the durable high-water mark".into());
+        }
+        if authority.revision < record.revision {
+            return Err(format!(
+                "authority revision {} regressed below durable revision {}",
+                authority.revision, record.revision
+            ));
+        }
+        if authority.revision == record.revision {
+            if digest != record.digest {
+                return Err("authority equivocated at its durable revision".into());
+            }
+            return Ok(());
+        }
+    }
+    persist_authority_high_water(&workspace.cache_dir, authority, digest)
+}
+
+async fn apply_home_peer_projection(
+    live_policy: &Arc<std::sync::RwLock<TrustPolicy>>,
+    workspaces: &WorkspaceRegistry,
+    own_user: [u8; 32],
+    state: &mut AuthorityRefreshState,
+    users: Vec<String>,
+    room_users: HashMap<u64, std::collections::HashSet<[u8; 32]>>,
+    next_governed_rooms: std::collections::HashSet<u64>,
+) {
+    if let Ok(mut policy) = live_policy.write() {
+        *policy = TrustPolicy::AllowList { users };
+    }
+    let affected_rooms = state
+        .governed_rooms
+        .union(&next_governed_rooms)
+        .copied()
+        .collect::<Vec<_>>();
+    let runtimes = workspaces.lock().await;
+    for room in affected_rooms {
+        if let Some(runtime) = runtimes.get(&room) {
+            runtime.lock().await.admitted_users =
+                room_users.get(&room).cloned().unwrap_or_default();
+        }
+    }
+    state.governed_rooms = next_governed_rooms;
+    let _ = own_user; // Documents that the always-admitted local user is in `users`.
+}
+
+/// Re-evaluate the materialized authority at `now`, even when no file bytes
+/// changed.  Capability expiry is wall-clock state, not source-file state.
+/// A rejected/missing current authority clears every previously governed room
+/// and leaves only this relay's own user admitted.
+async fn refresh_home_peer_authority_once(
+    bundle_path: &std::path::Path,
+    own_user: [u8; 32],
+    live_policy: &Arc<std::sync::RwLock<TrustPolicy>>,
+    workspaces: &WorkspaceRegistry,
+    state: &mut AuthorityRefreshState,
+    now: u64,
+) -> bool {
+    let mut refresh = || -> Result<
+        (
+            Vec<String>,
+            HashMap<u64, std::collections::HashSet<[u8; 32]>>,
+            std::collections::HashSet<u64>,
+        ),
+        String,
+    > {
+        let bytes = std::fs::read(bundle_path)
+            .map_err(|error| format!("could not read {}: {error}", bundle_path.display()))?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| format!("{} is not UTF-8", bundle_path.display()))?;
+        let bundle = toml::from_str::<fs::full_replica::HomePeerSet>(text)
+            .map_err(|error| format!("{} is invalid: {error}", bundle_path.display()))?;
+        let global_namespace = bundle.workspaces.len() == 1;
+        let mut users = vec![hex::encode(own_user)];
+        let mut room_users: HashMap<u64, std::collections::HashSet<[u8; 32]>> = HashMap::new();
+        let mut governed_rooms = std::collections::HashSet::new();
+
+        for workspace in bundle.workspaces {
+            let ticket = fs::Ticket::decode(&workspace.ticket)
+                .map_err(|_| "home-peer authority refresh rejected an invalid Files ticket".to_string())?;
+            governed_rooms.extend(workspace.relay_workspace_ids.iter().copied());
+            // Remember rooms as soon as their bundle mapping is readable, so
+            // an invalid current authority clears them below.
+            state.governed_rooms.extend(governed_rooms.iter().copied());
+            let authority = current_workspace_authority(&workspace)?;
+            verify_and_advance_authority(&workspace, &ticket, &authority)?;
+
+            if authority.tombstoned {
+                continue;
+            }
+            users.push(hex::encode(authority.governor));
+            for room in &workspace.relay_workspace_ids {
+                room_users.entry(*room).or_default().insert(authority.governor);
+            }
+            for capability in &authority.capabilities {
+                let collab_types::Scope::Room(room) = &capability.scope else {
+                    continue;
+                };
+                let Ok(room) = room.parse::<u64>() else {
+                    continue;
+                };
+                if (!global_namespace && !workspace.relay_workspace_ids.contains(&room))
+                    || room == crate::personal_continuity_workspace_id(&authority.governor)
+                    || capability.effect != collab_types::Effect::Grant
+                    || !capability.is_live_at(Some(now))
+                {
+                    continue;
+                }
+                let collab_types::Subject::User(user) = &capability.subject else {
+                    continue;
+                };
+                users.push(hex::encode(user.as_bytes()));
+                governed_rooms.insert(room);
+                room_users.entry(room).or_default().insert(*user.as_bytes());
+            }
+        }
+        users.sort_unstable();
+        users.dedup();
+        Ok((users, room_users, governed_rooms))
+    };
+
+    match refresh() {
+        Ok((users, room_users, governed_rooms)) => {
+            apply_home_peer_projection(
+                live_policy,
+                workspaces,
+                own_user,
+                state,
+                users,
+                room_users,
+                governed_rooms,
+            )
+            .await;
+            true
+        }
+        Err(error) => {
+            tracing::warn!(path = %bundle_path.display(), "home-peer authority refresh failed closed: {error}");
+            let governed_rooms = std::mem::take(&mut state.governed_rooms);
+            apply_home_peer_projection(
+                live_policy,
+                workspaces,
+                own_user,
+                state,
+                vec![hex::encode(own_user)],
+                HashMap::new(),
+                governed_rooms,
+            )
+            .await;
+            false
+        }
+    }
+}
+
+/// Keep relay handshake admission derived from the same durable signed
+/// authority that the filesystem worker materializes.
+fn spawn_home_peer_authority_refresh(
+    bundle_path: PathBuf,
+    own_user: [u8; 32],
+    live_policy: Arc<std::sync::RwLock<TrustPolicy>>,
+    workspaces: WorkspaceRegistry,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut state = AuthorityRefreshState::default();
+        loop {
+            interval.tick().await;
+            let _ = refresh_home_peer_authority_once(
+                &bundle_path,
+                own_user,
+                &live_policy,
+                &workspaces,
+                &mut state,
+                unix_now_secs(),
+            )
+            .await;
+        }
+    })
 }
 
 /// The revocation-refresh loop: every second, re-read the on-disk
@@ -512,13 +1079,321 @@ fn validate_relay_identity(identity: &RelayIdentity) -> Result<(), RelayError> {
 #[derive(Clone)]
 struct RelayProtocol {
     workspaces: WorkspaceRegistry,
-    trust_policy: TrustPolicy,
+    trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
     revocations: Arc<std::sync::RwLock<RevocationList>>,
     own_user_pk: [u8; 32],
     own_cert: DeviceCert,
     own_sk: ed25519_dalek::SigningKey,
     metrics: Arc<Metrics>,
     autobind: Option<WorkspaceAutobind>,
+}
+
+#[derive(Clone)]
+struct DiscoveryProtocol {
+    workspaces: WorkspaceRegistry,
+    own_user_pk: [u8; 32],
+    trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
+    revocations: Arc<std::sync::RwLock<RevocationList>>,
+    own_cert: DeviceCert,
+    own_sk: ed25519_dalek::SigningKey,
+    mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
+    full_replica_status: PathBuf,
+    home_peer_bundle: PathBuf,
+    autobind: Option<WorkspaceAutobind>,
+}
+
+#[derive(Clone)]
+struct ManagementProtocol {
+    endpoint: Endpoint,
+    own_user_pk: [u8; 32],
+    own_cert: DeviceCert,
+    own_sk: ed25519_dalek::SigningKey,
+    revocations: Arc<std::sync::RwLock<RevocationList>>,
+    mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
+    full_replica_status: PathBuf,
+    state_root: PathBuf,
+}
+
+impl std::fmt::Debug for ManagementProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ManagementProtocol")
+    }
+}
+
+impl ProtocolHandler for ManagementProtocol {
+    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
+        if self.state_root.join("decommissioned").exists() {
+            return Err(AcceptError::from_err(std::io::Error::other(
+                "home peer is decommissioned",
+            )));
+        }
+        let (mut send, mut recv) = connection.accept_bi().await?;
+        let hello: Hello = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        let revocations = self
+            .revocations
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let peer = auth::accept_hello(
+            &hello,
+            &self.own_user_pk,
+            &TrustPolicy::AllowMatchingUser,
+            &revocations,
+            crate::peer::now_ns(),
+        )
+        .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        let mut nonce = [0; 32];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+        let ack = auth::build_hello_ack(
+            self.own_cert.clone(),
+            &self.own_sk,
+            nonce,
+            &hello.client_nonce,
+        );
+        write_frame(
+            &mut send,
+            &postcard::to_allocvec(&ack)
+                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
+        )
+        .await
+        .map_err(AcceptError::from_err)?;
+        let ack2: HelloAck2 = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        auth::verify_hello_ack2(&ack2, &peer.device_public_key, &nonce)
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        let request: HomePeerManagementRequest =
+            postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
+                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        let mut decommissioned = false;
+        match request {
+            HomePeerManagementRequest::Status => {}
+            HomePeerManagementRequest::Rename { label } => {
+                if !peer.cert.capabilities.can_admit_devices {
+                    return Err(AcceptError::from_err(std::io::Error::other(
+                        "device is not authorized to rename home peers",
+                    )));
+                }
+                let label = label.trim();
+                if !crate::valid_home_peer_label(label) {
+                    return Err(AcceptError::from_err(std::io::Error::other(
+                        "home-peer name must be 1 to 80 bytes",
+                    )));
+                }
+                atomic_file::write_with_mode(
+                    &self.state_root.join("home-peer-name"),
+                    label.as_bytes(),
+                    0o644,
+                )
+                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+            }
+            HomePeerManagementRequest::Decommission { revocation } => {
+                if !peer.cert.capabilities.can_admit_devices {
+                    return Err(AcceptError::from_err(std::io::Error::other(
+                        "device is not authorized to remove home peers",
+                    )));
+                }
+                verify_revocation_entry(&revocation).map_err(|error| {
+                    AcceptError::from_err(std::io::Error::other(error.to_string()))
+                })?;
+                if revocation.user_public_key != self.own_user_pk
+                    || revocation.revoked_device_public_key != self.own_cert.device_public_key
+                {
+                    return Err(AcceptError::from_err(std::io::Error::other(
+                        "revocation does not target this home peer",
+                    )));
+                }
+                let mut entries =
+                    crate::store::load_revocations(&self.state_root).map_err(|error| {
+                        AcceptError::from_err(std::io::Error::other(error.to_string()))
+                    })?;
+                if !entries.iter().any(|entry| {
+                    entry.revoked_device_public_key == revocation.revoked_device_public_key
+                }) {
+                    entries.push(revocation);
+                    crate::store::save_revocations(&self.state_root, &entries).map_err(
+                        |error| AcceptError::from_err(std::io::Error::other(error.to_string())),
+                    )?;
+                }
+                atomic_file::write_with_mode(
+                    &self.state_root.join("decommissioned"),
+                    b"decommissioned\n",
+                    0o600,
+                )
+                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+                decommissioned = true;
+            }
+        }
+        let label = std::fs::read_to_string(self.state_root.join("home-peer-name"))
+            .ok()
+            .filter(|label| !label.trim().is_empty())
+            .unwrap_or_else(|| self.own_cert.device_label.clone());
+        let files_ready = full_replica_proof(&self.full_replica_status).is_some();
+        write_frame(
+            &mut send,
+            &postcard::to_allocvec(&HomePeerManagementResponse {
+                device_public_key: self.own_cert.device_public_key,
+                relay_endpoint: self.endpoint.addr(),
+                label: label.trim().to_string(),
+                files_ready,
+                services: self.mesh_profile.services.clone(),
+                decommissioned,
+            })
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
+        )
+        .await
+        .map_err(AcceptError::from_err)?;
+        send.finish().map_err(AcceptError::from_err)?;
+        if decommissioned && !cfg!(test) {
+            tokio::spawn(async {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                std::process::exit(0);
+            });
+        }
+        connection.closed().await;
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for DiscoveryProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DiscoveryProtocol")
+    }
+}
+
+impl ProtocolHandler for DiscoveryProtocol {
+    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
+        if self
+            .autobind
+            .as_ref()
+            .is_some_and(|autobind| autobind.state_root.join("decommissioned").exists())
+        {
+            return Err(AcceptError::from_err(std::io::Error::other(
+                "home peer is decommissioned",
+            )));
+        }
+        let (mut send, mut recv) = connection.accept_bi().await?;
+        let hello: Hello = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        let revocations = self
+            .revocations
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let peer = auth::accept_hello(
+            &hello,
+            &self.own_user_pk,
+            &self
+                .trust_policy
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            &revocations,
+            crate::peer::now_ns(),
+        )
+        .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        let mut nonce = [0; 32];
+        {
+            use rand::RngCore;
+            rand::thread_rng().fill_bytes(&mut nonce);
+        }
+        let ack = auth::build_hello_ack(
+            self.own_cert.clone(),
+            &self.own_sk,
+            nonce,
+            &hello.client_nonce,
+        );
+        write_frame(
+            &mut send,
+            &postcard::to_allocvec(&ack)
+                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
+        )
+        .await
+        .map_err(AcceptError::from_err)?;
+        let ack2: HelloAck2 = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        auth::verify_hello_ack2(&ack2, &peer.device_public_key, &nonce)
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        let request: ContentEndpointRequest =
+            postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
+                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        if peer.user_public_key == self.own_user_pk {
+            get_or_autobind_workspace(
+                &self.workspaces,
+                self.autobind.as_ref(),
+                request.workspace_id,
+            )
+            .await
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        }
+        // A discovery request is scoped to a relay room. Do not turn the
+        // host into a global filesystem endpoint directory for arbitrary
+        // authenticated peers.
+        let workspace = self
+            .workspaces
+            .lock()
+            .await
+            .get(&request.workspace_id)
+            .cloned();
+        let permitted = match workspace {
+            Some(workspace) => {
+                let workspace = workspace.lock().await;
+                workspace.admit_authenticated
+                    || workspace.admitted_users.contains(&peer.user_public_key)
+                    || workspace.membership.contains(&peer.device_public_key)
+            }
+            None => false,
+        };
+        if !permitted {
+            return Err(AcceptError::from_err(std::io::Error::other(
+                "workspace is not bound or not authorised on this relay",
+            )));
+        }
+        let mut profile = (*self.mesh_profile).clone();
+        let proof = full_replica_proof(&self.full_replica_status);
+        profile.filesystem_endpoints = proof
+            .as_ref()
+            .map(|proof| {
+                proof
+                    .filesystem_endpoints
+                    .iter()
+                    .filter(|endpoint| endpoint.id.as_bytes() == &profile.device)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        profile.services.full_content_replication &= !profile.filesystem_endpoints.is_empty();
+        let same_owner = peer.user_public_key == self.own_user_pk;
+        let filesystem_ticket = std::fs::read_to_string(&self.home_peer_bundle)
+            .ok()
+            .and_then(|text| toml::from_str::<fs::full_replica::HomePeerSet>(&text).ok())
+            .and_then(|set| {
+                let sole_workspace = same_owner && set.workspaces.len() == 1;
+                set.workspaces.into_iter().find(|bundle| {
+                    bundle.relay_workspace_ids.contains(&request.workspace_id) || sole_workspace
+                })
+            })
+            .map(|bundle| bundle.ticket)
+            .ok_or_else(|| {
+                AcceptError::from_err(std::io::Error::other(
+                    "workspace has no authenticated filesystem binding",
+                ))
+            })?;
+        write_frame(
+            &mut send,
+            &postcard::to_allocvec(&ContentEndpointAdvertisement {
+                schema_version: 1,
+                workspace_id: request.workspace_id,
+                filesystem_endpoints: profile.filesystem_endpoints,
+                filesystem_ticket,
+            })
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
+        )
+        .await
+        .map_err(AcceptError::from_err)?;
+        send.finish().map_err(AcceptError::from_err)?;
+        connection.closed().await;
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for RelayProtocol {
@@ -529,6 +1404,15 @@ impl std::fmt::Debug for RelayProtocol {
 
 impl ProtocolHandler for RelayProtocol {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
+        if self
+            .autobind
+            .as_ref()
+            .is_some_and(|autobind| autobind.state_root.join("decommissioned").exists())
+        {
+            return Err(AcceptError::from_err(std::io::Error::other(
+                "home peer is decommissioned",
+            )));
+        }
         let this = self.clone();
         let (send, recv) = connection.accept_bi().await?;
         // Run the whole session in a separate task so we return
@@ -562,14 +1446,21 @@ async fn handle_conn(
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    let client_peer =
-        match auth::accept_hello(&hello, &ctx.own_user_pk, &ctx.trust_policy, &revs, now_ns) {
-            Ok(p) => p,
-            Err(e) => {
-                ctx.metrics.inc_auth_rejected();
-                return Err(RelayError::Iroh(format!("auth reject: {e}")));
-            }
-        };
+    let client_peer = match auth::accept_hello(
+        &hello,
+        &ctx.own_user_pk,
+        &ctx.trust_policy
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        &revs,
+        now_ns,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            ctx.metrics.inc_auth_rejected();
+            return Err(RelayError::Iroh(format!("auth reject: {e}")));
+        }
+    };
     // 2. Reply with HelloAck.
     let mut server_nonce = [0u8; 32];
     {
@@ -610,6 +1501,7 @@ async fn handle_conn(
             workspaces: ctx.workspaces.clone(),
             autobind: ctx.autobind,
             revocations: ctx.revocations,
+            trust_policy: ctx.trust_policy,
             own_user_public_key: ctx.own_user_pk,
             metrics: ctx.metrics,
         },
@@ -1061,5 +1953,839 @@ mod tests {
         relay.device_signing_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
         let error = validate_relay_identity(&relay).unwrap_err();
         assert!(error.to_string().contains("does not match"));
+    }
+
+    #[tokio::test]
+    async fn composite_relay_clamps_only_unhosted_service_advertisements() {
+        let state = tempfile::tempdir().unwrap();
+        let relay = Relay::start(
+            RelayConfig {
+                state_root: state.path().to_path_buf(),
+                services: crate::mesh::ServiceCapabilities::personal_server(),
+                ..RelayConfig::default()
+            },
+            identity(DeviceCapabilities::host()),
+        )
+        .await
+        .unwrap();
+
+        let services = relay.handle().mesh_profile().services;
+        assert!(services.workspace_replication);
+        assert!(services.inbound_relay);
+        assert!(!services.full_content_replication);
+        assert!(!services.app_serving);
+        assert!(!services.compute);
+        assert!(!services.remote_control_relay);
+        relay.shutdown().await;
+    }
+
+    #[test]
+    fn bundle_imports_the_shared_workspace_shard_as_full_replication() {
+        let temp = tempfile::tempdir().unwrap();
+        let status = temp.path().join("status.json");
+        let bundle_path = temp.path().join("home-peer.toml");
+        let ticket = fs::Ticket {
+            node: EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
+            workspace: [9; 32],
+        };
+        let bundle = fs::full_replica::HomePeerSet {
+            status_file: status.clone(),
+            workspaces: vec![fs::full_replica::HomePeerBundle {
+                ticket: ticket.encode().unwrap(),
+                cache_dir: temp.path().join("cache"),
+                capability_json: "[]".into(),
+                authority: None,
+                principals: Vec::new(),
+                relay_workspace_ids: vec![42],
+            }],
+        };
+        std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
+        let mut config = RelayConfig {
+            home_peer_bundle: bundle_path,
+            full_replica_status: status,
+            ..RelayConfig::default()
+        };
+
+        import_home_peer_bindings(&mut config).unwrap();
+        assert!(config.services.full_content_replication);
+        assert!(config.workspaces.iter().any(|binding| {
+            binding.id == 42
+                && binding.pin
+                && binding.replication == crate::mesh::ReplicationIntent::FullWorkspace
+        }));
+    }
+
+    #[test]
+    fn room_scoped_authority_admits_only_its_signed_room() {
+        use collab_types::{CapOverride, Effect, Expiry, Scope, Subject, Verb};
+
+        let temp = tempfile::tempdir().unwrap();
+        let status = temp.path().join("status.json");
+        let bundle_path = temp.path().join("home-peer.toml");
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[0x31; 32]);
+        let collaborator_a = [0x32; 32];
+        let path_only_collaborator = [0x33; 32];
+        let ticket = fs::Ticket {
+            node: EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
+            workspace: [9; 32],
+        };
+        let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+            ticket.workspace_id(),
+            1,
+            vec![
+                // The only capability that maps to a relay topic.
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(collaborator_a)),
+                    Scope::Room("42".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                ),
+                // A Files grant is intentionally insufficient to subscribe
+                // to any room, including unrelated room 43.
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(path_only_collaborator)),
+                    Scope::FsPath("/".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                ),
+                // Expired room grants must not resurrect a former member
+                // merely because the NAS reloads the signed authority.
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(collaborator_a)),
+                    Scope::Room("43".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                )
+                .expiring(Expiry::AtUnix(0)),
+            ],
+            false,
+            &governor,
+        )
+        .unwrap();
+        let continuity = crate::personal_continuity_workspace_id(&authority.governor);
+        let bundle = fs::full_replica::HomePeerSet {
+            status_file: status.clone(),
+            workspaces: vec![fs::full_replica::HomePeerBundle {
+                ticket: ticket.encode().unwrap(),
+                cache_dir: temp.path().join("cache"),
+                capability_json: "[]".into(),
+                authority: Some(authority.clone()),
+                principals: Vec::new(),
+                relay_workspace_ids: vec![42, 43, continuity],
+            }],
+        };
+        std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
+        let mut config = RelayConfig {
+            home_peer_bundle: bundle_path,
+            full_replica_status: status,
+            ..RelayConfig::default()
+        };
+        import_home_peer_bindings(&mut config).unwrap();
+        let normal = config
+            .workspaces
+            .iter()
+            .find(|binding| binding.id == 42)
+            .unwrap();
+        assert!(normal.admitted_users.contains(&hex::encode(collaborator_a)));
+        assert!(
+            !normal
+                .admitted_users
+                .contains(&hex::encode(path_only_collaborator))
+        );
+        let unrelated = config
+            .workspaces
+            .iter()
+            .find(|binding| binding.id == 43)
+            .unwrap();
+        assert_eq!(
+            unrelated.admitted_users,
+            vec![hex::encode(authority.governor)]
+        );
+        let private = config
+            .workspaces
+            .iter()
+            .find(|binding| binding.id == continuity)
+            .unwrap();
+        assert_eq!(
+            private.admitted_users,
+            vec![hex::encode(authority.governor)]
+        );
+    }
+
+    #[tokio::test]
+    async fn live_authority_refresh_removes_the_last_room_collaborator() {
+        use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let bundle_path = temp.path().join("home-peer.toml");
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
+        let collaborator = [0x52; 32];
+        let ticket = fs::Ticket {
+            node: EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
+            workspace: [9; 32],
+        };
+        let granted = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+            ticket.workspace_id(),
+            1,
+            vec![CapOverride::new(
+                Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                Scope::Room("42".into()),
+                Effect::Grant,
+                Verb::Read,
+            )],
+            false,
+            &governor,
+        )
+        .unwrap();
+        let bundle = fs::full_replica::HomePeerSet {
+            status_file: temp.path().join("status.json"),
+            workspaces: vec![fs::full_replica::HomePeerBundle {
+                ticket: ticket.encode().unwrap(),
+                cache_dir: cache.clone(),
+                capability_json: "[]".into(),
+                authority: Some(granted),
+                principals: Vec::new(),
+                relay_workspace_ids: vec![42],
+            }],
+        };
+        std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
+        let config = RelayConfig {
+            state_root: temp.path().join("relay"),
+            workspaces: Vec::new(),
+            ..RelayConfig::default()
+        };
+        let workspaces = build_workspace_registry(&config).unwrap();
+        get_or_autobind_workspace(
+            &workspaces,
+            Some(&WorkspaceAutobind {
+                state_root: config.state_root.clone(),
+            }),
+            42,
+        )
+        .await
+        .unwrap()
+        .expect("owner autobinds the newly opened room");
+        let policy = Arc::new(std::sync::RwLock::new(TrustPolicy::AllowList {
+            users: Vec::new(),
+        }));
+        let task = spawn_home_peer_authority_refresh(
+            bundle_path,
+            governor.verifying_key().to_bytes(),
+            policy,
+            workspaces.clone(),
+        );
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(
+            workspaces
+                .lock()
+                .await
+                .get(&42)
+                .unwrap()
+                .lock()
+                .await
+                .admitted_users
+                .contains(&collaborator)
+        );
+
+        let revoked = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+            ticket.workspace_id(),
+            2,
+            Vec::new(),
+            false,
+            &governor,
+        )
+        .unwrap();
+        std::fs::write(
+            cache.join("workspace-authority.bin"),
+            postcard::to_allocvec(&revoked).unwrap(),
+        )
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let users = workspaces
+            .lock()
+            .await
+            .get(&42)
+            .unwrap()
+            .lock()
+            .await
+            .admitted_users
+            .clone();
+        assert_eq!(users, std::collections::HashSet::from([revoked.governor]));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn authority_refresh_rechecks_expiry_without_a_source_change() {
+        use collab_types::{CapOverride, Effect, Expiry, Scope, Subject, Verb};
+
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("cache");
+        let bundle_path = temp.path().join("home-peer.toml");
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
+        let collaborator = [0x62; 32];
+        let ticket = fs::Ticket {
+            node: EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
+            workspace: [9; 32],
+        };
+        let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+            ticket.workspace_id(),
+            1,
+            vec![
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                    Scope::Room("42".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                )
+                // It is initially a future deadline, then becomes expired while
+                // both authority files remain byte-for-byte unchanged.
+                .expiring(Expiry::AtUnix(20)),
+            ],
+            false,
+            &governor,
+        )
+        .unwrap();
+        let bundle = fs::full_replica::HomePeerSet {
+            status_file: temp.path().join("status.json"),
+            workspaces: vec![fs::full_replica::HomePeerBundle {
+                ticket: ticket.encode().unwrap(),
+                cache_dir: cache,
+                capability_json: "[]".into(),
+                authority: Some(authority),
+                principals: Vec::new(),
+                relay_workspace_ids: vec![42],
+            }],
+        };
+        std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
+        let config = RelayConfig {
+            state_root: temp.path().join("relay"),
+            workspaces: Vec::new(),
+            ..RelayConfig::default()
+        };
+        let workspaces = build_workspace_registry(&config).unwrap();
+        get_or_autobind_workspace(
+            &workspaces,
+            Some(&WorkspaceAutobind {
+                state_root: config.state_root.clone(),
+            }),
+            42,
+        )
+        .await
+        .unwrap();
+        let policy = Arc::new(std::sync::RwLock::new(TrustPolicy::AllowList {
+            users: Vec::new(),
+        }));
+        let mut state = AuthorityRefreshState::default();
+
+        assert!(
+            refresh_home_peer_authority_once(
+                &bundle_path,
+                governor.verifying_key().to_bytes(),
+                &policy,
+                &workspaces,
+                &mut state,
+                19,
+            )
+            .await
+        );
+        assert!(
+            workspaces
+                .lock()
+                .await
+                .get(&42)
+                .unwrap()
+                .lock()
+                .await
+                .admitted_users
+                .contains(&collaborator)
+        );
+
+        assert!(
+            refresh_home_peer_authority_once(
+                &bundle_path,
+                governor.verifying_key().to_bytes(),
+                &policy,
+                &workspaces,
+                &mut state,
+                20,
+            )
+            .await
+        );
+        assert!(
+            !workspaces
+                .lock()
+                .await
+                .get(&42)
+                .unwrap()
+                .lock()
+                .await
+                .admitted_users
+                .contains(&collaborator)
+        );
+    }
+
+    #[tokio::test]
+    async fn authority_high_water_rejects_rollback_and_missing_cache_after_restart() {
+        use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let bundle_path = temp.path().join("home-peer.toml");
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[0x71; 32]);
+        let other_governor = ed25519_dalek::SigningKey::from_bytes(&[0x72; 32]);
+        let collaborator = [0x73; 32];
+        let ticket = fs::Ticket {
+            node: EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
+            workspace: [9; 32],
+        };
+        let granted = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+            ticket.workspace_id(),
+            1,
+            vec![CapOverride::new(
+                Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                Scope::Room("42".into()),
+                Effect::Grant,
+                Verb::Read,
+            )],
+            false,
+            &governor,
+        )
+        .unwrap();
+        let tombstone = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+            ticket.workspace_id(),
+            2,
+            Vec::new(),
+            true,
+            &governor,
+        )
+        .unwrap();
+        let bundle = fs::full_replica::HomePeerSet {
+            status_file: temp.path().join("status.json"),
+            workspaces: vec![fs::full_replica::HomePeerBundle {
+                ticket: ticket.encode().unwrap(),
+                cache_dir: cache.clone(),
+                capability_json: "[]".into(),
+                authority: Some(granted.clone()),
+                principals: Vec::new(),
+                relay_workspace_ids: vec![42],
+            }],
+        };
+        std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
+        std::fs::write(
+            cache.join("workspace-authority.bin"),
+            postcard::to_allocvec(&tombstone).unwrap(),
+        )
+        .unwrap();
+        let config = RelayConfig {
+            state_root: temp.path().join("relay"),
+            workspaces: Vec::new(),
+            ..RelayConfig::default()
+        };
+        let workspaces = build_workspace_registry(&config).unwrap();
+        get_or_autobind_workspace(
+            &workspaces,
+            Some(&WorkspaceAutobind {
+                state_root: config.state_root.clone(),
+            }),
+            42,
+        )
+        .await
+        .unwrap();
+        let policy = Arc::new(std::sync::RwLock::new(TrustPolicy::AllowList {
+            users: Vec::new(),
+        }));
+        let own_user = governor.verifying_key().to_bytes();
+        let mut first_process = AuthorityRefreshState::default();
+        assert!(
+            refresh_home_peer_authority_once(
+                &bundle_path,
+                own_user,
+                &policy,
+                &workspaces,
+                &mut first_process,
+                1,
+            )
+            .await
+        );
+        assert_eq!(
+            workspaces
+                .lock()
+                .await
+                .get(&42)
+                .unwrap()
+                .lock()
+                .await
+                .admitted_users,
+            std::collections::HashSet::new()
+        );
+
+        // A validly signed pre-tombstone authority must not resurrect the
+        // collaborator.  A new state models a relay process restart.
+        std::fs::write(
+            cache.join("workspace-authority.bin"),
+            postcard::to_allocvec(&granted).unwrap(),
+        )
+        .unwrap();
+        let mut restarted = AuthorityRefreshState::default();
+        assert!(
+            !refresh_home_peer_authority_once(
+                &bundle_path,
+                own_user,
+                &policy,
+                &workspaces,
+                &mut restarted,
+                1,
+            )
+            .await
+        );
+        assert_eq!(
+            policy.read().unwrap().clone(),
+            TrustPolicy::AllowList {
+                users: vec![hex::encode(own_user)]
+            }
+        );
+
+        // Deleting the live cache would otherwise fall back to `granted` in
+        // the enrollment bundle.  The durable high-water mark rejects it.
+        std::fs::remove_file(cache.join("workspace-authority.bin")).unwrap();
+        let mut restarted_after_deletion = AuthorityRefreshState::default();
+        assert!(
+            !refresh_home_peer_authority_once(
+                &bundle_path,
+                own_user,
+                &policy,
+                &workspaces,
+                &mut restarted_after_deletion,
+                1,
+            )
+            .await
+        );
+
+        // A governor switch cannot bypass the high-water mark either.
+        let foreign = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+            ticket.workspace_id(),
+            3,
+            Vec::new(),
+            false,
+            &other_governor,
+        )
+        .unwrap();
+        std::fs::write(
+            cache.join("workspace-authority.bin"),
+            postcard::to_allocvec(&foreign).unwrap(),
+        )
+        .unwrap();
+        let mut restarted_after_governor_change = AuthorityRefreshState::default();
+        assert!(
+            !refresh_home_peer_authority_once(
+                &bundle_path,
+                own_user,
+                &policy,
+                &workspaces,
+                &mut restarted_after_governor_change,
+                1,
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn ready_profile_serializes_the_direct_filesystem_endpoint() {
+        let temp = tempfile::tempdir().unwrap();
+        let status_path = temp.path().join("full-replica.json");
+        let relay_identity = identity(DeviceCapabilities::host());
+        let filesystem_endpoint = EndpointAddr::new(
+            iroh::SecretKey::from_bytes(&relay_identity.device_signing_key.to_bytes()).public(),
+        )
+        .with_ip_addr("127.0.0.1:43210".parse().unwrap());
+        let mut status = fs::full_replica::FullReplicaStatus::syncing();
+        status.state = "ready".into();
+        status.full_content_replication = true;
+        status
+            .filesystem_endpoints
+            .push(filesystem_endpoint.clone());
+        fs::full_replica::save_status(&status_path, &status).unwrap();
+        let relay = Relay::start(
+            RelayConfig {
+                state_root: temp.path().join("relay-state"),
+                full_replica_status: status_path,
+                device_role: crate::mesh::DeviceRole::AlwaysOnServer,
+                services: crate::mesh::ServiceCapabilities::home_peer(),
+                ..RelayConfig::default()
+            },
+            relay_identity,
+        )
+        .await
+        .unwrap();
+
+        let profile = relay.handle().mesh_profile();
+        let wire = serde_json::to_vec(&profile).unwrap();
+        let published: crate::mesh::DeviceMeshProfile = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(published.content_endpoint(), Some(filesystem_endpoint));
+        assert!(published.services.full_content_replication);
+        relay.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn authenticated_discovery_returns_filesystem_not_relay_endpoint() {
+        let temp = tempfile::tempdir().unwrap();
+        let (root, user) = UserIdentity::generate("owner", 1);
+        let (host_key, host) = DeviceIdentity::generate("home", 2);
+        let (client_key, client) = DeviceIdentity::generate("laptop", 3);
+        let (admin_key, admin) = DeviceIdentity::generate("primary", 5);
+        let mut host_cert = DeviceCert {
+            user_public_key: user.public_key,
+            device_public_key: host.public_key,
+            device_label: host.label,
+            capabilities: DeviceCapabilities::host(),
+            issued_at_ns: 4,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        let mut client_cert = DeviceCert {
+            user_public_key: user.public_key,
+            device_public_key: client.public_key,
+            device_label: client.label,
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 4,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        let mut admin_cert = DeviceCert {
+            user_public_key: user.public_key,
+            device_public_key: admin.public_key,
+            device_label: admin.label,
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 4,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut host_cert, &root).unwrap();
+        sign_device_cert(&mut client_cert, &root).unwrap();
+        sign_device_cert(&mut admin_cert, &root).unwrap();
+        let filesystem =
+            EndpointAddr::new(iroh::SecretKey::from_bytes(&host_key.to_bytes()).public())
+                .with_ip_addr("127.0.0.1:40123".parse().unwrap());
+        let status_path = temp.path().join("status.json");
+        let mut status = fs::full_replica::FullReplicaStatus::syncing();
+        status.state = "ready".into();
+        status.full_content_replication = true;
+        status.filesystem_endpoints.push(filesystem.clone());
+        fs::full_replica::save_status(&status_path, &status).unwrap();
+        let owner_endpoint = EndpointAddr::new(iroh::SecretKey::from_bytes(&[91; 32]).public());
+        let workspace_topic = [29; 32];
+        let bundle_path = temp.path().join("home-peer.toml");
+        let bundle = fs::full_replica::HomePeerSet {
+            status_file: status_path.clone(),
+            workspaces: vec![fs::full_replica::HomePeerBundle {
+                ticket: fs::Ticket {
+                    node: owner_endpoint.clone(),
+                    workspace: workspace_topic,
+                }
+                .encode()
+                .unwrap(),
+                cache_dir: temp.path().join("replica"),
+                capability_json: "[]".into(),
+                authority: None,
+                principals: Vec::new(),
+                relay_workspace_ids: vec![0],
+            }],
+        };
+        std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
+        let relay = Relay::start(
+            RelayConfig {
+                state_root: temp.path().join("relay"),
+                full_replica_status: status_path,
+                home_peer_bundle: bundle_path,
+                device_role: crate::mesh::DeviceRole::AlwaysOnServer,
+                services: crate::mesh::ServiceCapabilities::home_peer(),
+                workspaces: vec![crate::config::WorkspaceBinding {
+                    id: 0,
+                    pin: true,
+                    replication: crate::mesh::ReplicationIntent::FullWorkspace,
+                    admitted_users: vec![hex::encode(user.public_key)],
+                }],
+                ..RelayConfig::default()
+            },
+            RelayIdentity {
+                user_public_key: user.public_key,
+                device_signing_key: host_key,
+                device_cert: host_cert,
+                revocations: RevocationList::new(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_ne!(
+            relay.node_addr().id.as_bytes(),
+            host.public_key.as_slice(),
+            "relay transport discovery must not collide with the filesystem node"
+        );
+        let client_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let discovered = crate::client::RelayClient::discover_content_endpoint(
+            &client_endpoint,
+            relay.node_addr(),
+            0,
+            user.public_key,
+            host.public_key,
+            client_cert.clone(),
+            client_key.clone(),
+            RevocationList::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(discovered, filesystem);
+        assert_ne!(discovered, relay.node_addr());
+        let registration = crate::client::RelayClient::discover_content_peer(
+            &client_endpoint,
+            relay.node_addr(),
+            0,
+            user.public_key,
+            host.public_key,
+            client_cert.clone(),
+            client_key.clone(),
+            RevocationList::new(),
+        )
+        .await
+        .unwrap();
+        let advertised_ticket = fs::Ticket::decode(&registration.ticket).unwrap();
+        assert_ne!(owner_endpoint, filesystem);
+        assert_eq!(advertised_ticket.node, owner_endpoint);
+        assert_ne!(advertised_ticket.node, registration.endpoint);
+        assert_eq!(advertised_ticket.workspace, workspace_topic);
+        let auto_bound = crate::client::RelayClient::discover_content_peer(
+            &client_endpoint,
+            relay.node_addr(),
+            99,
+            user.public_key,
+            host.public_key,
+            client_cert.clone(),
+            client_key.clone(),
+            RevocationList::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(auto_bound.endpoint, filesystem);
+        assert!(relay.workspaces.lock().await.contains_key(&99));
+        let wrong_device = [0x55; 32];
+        assert!(
+            crate::client::RelayClient::discover_content_endpoint(
+                &client_endpoint,
+                relay.node_addr(),
+                0,
+                user.public_key,
+                wrong_device,
+                // The client certificate remains valid; only the enrolled host
+                // device pin changes, proving discovery does not accept an
+                // arbitrary host certificate at the derived service NodeId.
+                client_cert.clone(),
+                client_key.clone(),
+                RevocationList::new(),
+            )
+            .await
+            .is_err()
+        );
+        let status = crate::client::RelayClient::manage_home_peer(
+            &client_endpoint,
+            relay.node_addr(),
+            user.public_key,
+            host.public_key,
+            client_cert.clone(),
+            client_key.clone(),
+            RevocationList::new(),
+            HomePeerManagementRequest::Status,
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.label, "home");
+        assert!(status.files_ready);
+        assert!(
+            crate::client::RelayClient::manage_home_peer(
+                &client_endpoint,
+                relay.node_addr(),
+                user.public_key,
+                host.public_key,
+                client_cert.clone(),
+                client_key.clone(),
+                RevocationList::new(),
+                HomePeerManagementRequest::Rename {
+                    label: "Not authorized".into(),
+                },
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            crate::client::RelayClient::manage_home_peer(
+                &client_endpoint,
+                relay.node_addr(),
+                user.public_key,
+                host.public_key,
+                admin_cert.clone(),
+                admin_key.clone(),
+                RevocationList::new(),
+                HomePeerManagementRequest::Rename {
+                    label: "NAS\u{202e}hidden".into(),
+                },
+            )
+            .await
+            .is_err()
+        );
+        let renamed = crate::client::RelayClient::manage_home_peer(
+            &client_endpoint,
+            relay.node_addr(),
+            user.public_key,
+            host.public_key,
+            admin_cert.clone(),
+            admin_key.clone(),
+            RevocationList::new(),
+            HomePeerManagementRequest::Rename {
+                label: "Living room NAS".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(renamed.label, "Living room NAS");
+        let mut revocation = qos_user_identity::RevocationEntry {
+            user_public_key: user.public_key,
+            revoked_device_public_key: host.public_key,
+            revoked_at_ns: now_ns(),
+            reason: qos_user_identity::RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        qos_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
+        let removed = crate::client::RelayClient::manage_home_peer(
+            &client_endpoint,
+            relay.node_addr(),
+            user.public_key,
+            host.public_key,
+            admin_cert.clone(),
+            admin_key.clone(),
+            RevocationList::new(),
+            HomePeerManagementRequest::Decommission { revocation },
+        )
+        .await
+        .unwrap();
+        assert!(removed.decommissioned);
+        assert!(temp.path().join("relay/decommissioned").exists());
+        assert!(
+            crate::client::RelayClient::manage_home_peer(
+                &client_endpoint,
+                relay.node_addr(),
+                user.public_key,
+                host.public_key,
+                admin_cert,
+                admin_key,
+                RevocationList::new(),
+                HomePeerManagementRequest::Status,
+            )
+            .await
+            .is_err()
+        );
+        client_endpoint.close().await;
+        relay.shutdown().await;
     }
 }

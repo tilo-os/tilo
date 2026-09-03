@@ -1,6 +1,8 @@
 use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 mod shared_surfaces;
 pub use shared_surfaces::SharedSurfaces;
@@ -19,6 +21,134 @@ pub use collab_types::caps::{
     decide_capability,
 };
 pub use collab_types::role::Role as CapRole;
+
+const DEFAULT_FS_AUTHORITY_CACHE_DIR: &str = "/var/cache/quick-fs";
+const DEFAULT_FS_AUTHORITY_PUBLISHER: &str = "/usr/bin/fs";
+const MAX_FS_AUTHORITY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[derive(Clone, Debug)]
+struct FsAuthorityPublication {
+    acl: PathBuf,
+    cache_dir: PathBuf,
+    publisher: PathBuf,
+}
+
+#[derive(Default)]
+struct FsAuthorityPublicationQueue {
+    pending: Option<FsAuthorityPublication>,
+    running: bool,
+}
+
+fn fs_authority_publication_queue() -> &'static Mutex<FsAuthorityPublicationQueue> {
+    static QUEUE: OnceLock<Mutex<FsAuthorityPublicationQueue>> = OnceLock::new();
+    QUEUE.get_or_init(|| Mutex::new(FsAuthorityPublicationQueue::default()))
+}
+
+fn fs_authority_publisher() -> PathBuf {
+    std::env::var_os("QOS_FS_AUTHORITY_PUBLISHER")
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || PathBuf::from(DEFAULT_FS_AUTHORITY_PUBLISHER),
+            PathBuf::from,
+        )
+}
+
+fn fs_authority_cache_dir() -> PathBuf {
+    std::env::var_os("QOS_FS_AUTHORITY_CACHE_DIR")
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || PathBuf::from(DEFAULT_FS_AUTHORITY_CACHE_DIR),
+            PathBuf::from,
+        )
+}
+
+/// Coalesce exports and submit them outside the compositor's mutation path.
+/// The filesystem authority socket may be unavailable while its service is
+/// starting; capped-backoff retries cover that normal boot ordering and a
+/// later capability mutation always replaces the queued projection.
+fn schedule_fs_authority_publication(acl: PathBuf) {
+    // Unit tests exercise this only with an explicit harmless publisher;
+    // never let an isolated tree submit a fixture ACL to a real service.
+    if cfg!(test) && std::env::var_os("QOS_FS_AUTHORITY_PUBLISHER").is_none() {
+        return;
+    }
+    let publication = FsAuthorityPublication {
+        acl,
+        cache_dir: fs_authority_cache_dir(),
+        publisher: fs_authority_publisher(),
+    };
+    let Ok(mut queue) = fs_authority_publication_queue().lock() else {
+        tracing::warn!("filesystem authority publication queue is unavailable");
+        return;
+    };
+    queue.pending = Some(publication);
+    if queue.running {
+        return;
+    }
+    queue.running = true;
+    let spawned = std::thread::Builder::new()
+        .name("qos-fs-authority-publish".to_string())
+        .spawn(run_fs_authority_publication_queue);
+    if let Err(error) = spawned {
+        queue.running = false;
+        tracing::warn!(%error, "could not start filesystem authority publisher");
+    }
+}
+
+fn run_fs_authority_publication_queue() {
+    loop {
+        let publication = match fs_authority_publication_queue().lock() {
+            Ok(mut queue) => queue.pending.take(),
+            Err(error) => {
+                tracing::warn!(%error, "filesystem authority publication queue is poisoned");
+                return;
+            }
+        };
+        let Some(mut publication) = publication else {
+            if let Ok(mut queue) = fs_authority_publication_queue().lock() {
+                queue.running = false;
+            }
+            return;
+        };
+        let mut retry_delay = std::time::Duration::from_millis(100);
+        loop {
+            let result = std::process::Command::new(&publication.publisher)
+                .arg("publish-authority")
+                .arg("--cache-dir")
+                .arg(&publication.cache_dir)
+                .arg("--acl")
+                .arg(&publication.acl)
+                .status();
+            match result {
+                Ok(status) if status.success() => break,
+                Ok(status) => tracing::warn!(
+                    ?status,
+                    acl = %publication.acl.display(),
+                    "filesystem authority publication failed; will retry"
+                ),
+                Err(error) => tracing::warn!(
+                    %error,
+                    publisher = %publication.publisher.display(),
+                    "filesystem authority publisher could not start; will retry"
+                ),
+            }
+            // A new mutation supersedes the failed projection immediately;
+            // otherwise retain this exact latest ACL until the daemon is
+            // ready. The delay is bounded, while the background worker is
+            // deliberately persistent rather than silently losing a grant.
+            std::thread::sleep(retry_delay);
+            retry_delay = retry_delay
+                .saturating_mul(2)
+                .min(MAX_FS_AUTHORITY_RETRY_DELAY);
+            if let Ok(mut queue) = fs_authority_publication_queue().lock()
+                && let Some(newer) = queue.pending.take()
+            {
+                publication = newer;
+                retry_delay = std::time::Duration::from_millis(100);
+            }
+        }
+    }
+}
 
 /// Monotonic workspace identifier, newtype-wrapped over `u64`.
 #[derive(
@@ -41,6 +171,141 @@ impl WorkspaceId {
 #[cfg(test)]
 mod identity_fs_tests {
     use super::*;
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn capability_export_publishes_to_authority_in_the_background() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
+
+        let temp = tempfile::tempdir().expect("temp");
+        let publisher = temp.path().join("publisher.sh");
+        let log = temp.path().join("authority-arguments");
+        std::fs::write(
+            &publisher,
+            "#!/bin/sh\nsleep 0.2\nprintf '%s\\n' \"$@\" > \"$QOS_FS_AUTHORITY_TEST_LOG\"\n",
+        )
+        .expect("publisher script");
+        let mut permissions = std::fs::metadata(&publisher)
+            .expect("metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
+        let acl = temp.path().join("fs-capabilities.json");
+        let cache = temp.path().join("cache");
+        let old_publisher = std::env::var_os("QOS_FS_AUTHORITY_PUBLISHER");
+        let old_cache = std::env::var_os("QOS_FS_AUTHORITY_CACHE_DIR");
+        let old_log = std::env::var_os("QOS_FS_AUTHORITY_TEST_LOG");
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            std::env::set_var("QOS_FS_AUTHORITY_PUBLISHER", &publisher);
+            std::env::set_var("QOS_FS_AUTHORITY_CACHE_DIR", &cache);
+            std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", &log);
+        }
+
+        let mut tree = WorkspaceTree::default();
+        tree.fs_acl_path = Some(acl.clone());
+        let started = Instant::now();
+        tree.export_fs_capabilities();
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "a slow authority socket must not block the compositor mutation path"
+        );
+        for _ in 0..100 {
+            if log.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let arguments = std::fs::read_to_string(&log).expect("background publication");
+        assert!(arguments.contains("publish-authority"));
+        assert!(arguments.contains(cache.to_str().unwrap()));
+        assert!(arguments.contains(acl.to_str().unwrap()));
+
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            match old_publisher {
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_PUBLISHER", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_PUBLISHER"),
+            }
+            match old_cache {
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_CACHE_DIR", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_CACHE_DIR"),
+            }
+            match old_log {
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_TEST_LOG"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn capability_export_retries_until_a_late_authority_service_is_ready() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::Duration;
+
+        let temp = tempfile::tempdir().expect("temp");
+        let publisher = temp.path().join("late-publisher.sh");
+        let count = temp.path().join("attempts");
+        let log = temp.path().join("authority-arguments");
+        std::fs::write(
+            &publisher,
+            "#!/bin/sh\ncount=0\n[ -f \"$QOS_FS_AUTHORITY_TEST_COUNT\" ] && count=$(cat \"$QOS_FS_AUTHORITY_TEST_COUNT\")\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$QOS_FS_AUTHORITY_TEST_COUNT\"\n[ \"$count\" -le 4 ] && exit 1\nprintf '%s\\n' \"$@\" > \"$QOS_FS_AUTHORITY_TEST_LOG\"\n",
+        )
+        .expect("publisher script");
+        let mut permissions = std::fs::metadata(&publisher)
+            .expect("metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
+        let acl = temp.path().join("fs-capabilities.json");
+        let old_publisher = std::env::var_os("QOS_FS_AUTHORITY_PUBLISHER");
+        let old_count = std::env::var_os("QOS_FS_AUTHORITY_TEST_COUNT");
+        let old_log = std::env::var_os("QOS_FS_AUTHORITY_TEST_LOG");
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            std::env::set_var("QOS_FS_AUTHORITY_PUBLISHER", &publisher);
+            std::env::set_var("QOS_FS_AUTHORITY_TEST_COUNT", &count);
+            std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", &log);
+        }
+        let mut tree = WorkspaceTree::default();
+        tree.fs_acl_path = Some(acl);
+        tree.export_fs_capabilities();
+        for _ in 0..300 {
+            if log.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            log.exists(),
+            "the queued ACL survives more than three failures"
+        );
+        assert!(
+            std::fs::read_to_string(&count)
+                .expect("attempt count")
+                .parse::<u8>()
+                .expect("numeric attempt count")
+                > 3
+        );
+
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            match old_publisher {
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_PUBLISHER", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_PUBLISHER"),
+            }
+            match old_count {
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_TEST_COUNT", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_TEST_COUNT"),
+            }
+            match old_log {
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_TEST_LOG"),
+            }
+        }
+    }
 
     #[test]
     #[serial_test::serial(identity_env)]
@@ -117,6 +382,89 @@ mod identity_fs_tests {
                 None => std::env::remove_var("QOS_IDENTITY_ROOT"),
             }
         }
+    }
+
+    #[test]
+    fn filesystem_export_projects_room_membership_per_workspace_and_preserves_revocation() {
+        let temp = tempfile::tempdir().expect("temp");
+        let output = temp.path().join("fs-caps.json");
+        let alice = collab_types::Ed25519PublicKey::from_bytes([0xa1; 32]);
+        let bob = collab_types::Ed25519PublicKey::from_bytes([0xb2; 32]);
+        let mut room_a = Workspace::test_default(WorkspaceId(1), "A");
+        let mut room_b = Workspace::test_default(WorkspaceId(2), "B");
+        let room_a_id = room_a.room;
+        let room_a_scope = room_a.room.to_string();
+        let room_b_scope = room_b.room.to_string();
+        let relay_a = crate::shell::network::room_topic_id(room_a.room).to_string();
+        let relay_b = crate::shell::network::room_topic_id(room_b.room).to_string();
+        room_a.capabilities.extend([
+            CapOverride::new(
+                Subject::User(alice),
+                Scope::Room(room_a_scope),
+                Effect::Grant,
+                Verb::Read,
+            ),
+            // A Files share remains Files authority, not an implicit relay
+            // membership on either room.
+            CapOverride::new(
+                Subject::User(alice),
+                Scope::FsPath("/var/workspace/a".into()),
+                Effect::Grant,
+                Verb::Read,
+            ),
+            CapOverride::new(
+                Subject::User(alice),
+                Scope::Room(room_a.room.to_string()),
+                Effect::Restrict,
+                Verb::Read,
+            ),
+        ]);
+        room_b.capabilities.push(CapOverride::new(
+            Subject::User(bob),
+            Scope::Room(room_b_scope),
+            Effect::Grant,
+            Verb::Read,
+        ));
+        let mut tree = WorkspaceTree::default();
+        tree.fs_acl_path = Some(output.clone());
+        tree.workspaces = vec![room_a, room_b];
+        tree.export_fs_capabilities();
+
+        let exported: Vec<CapOverride> =
+            serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
+        assert!(exported.iter().any(|capability| {
+            capability.subject == Subject::User(alice)
+                && capability.scope == Scope::Room(relay_a.clone())
+                && capability.effect == Effect::Grant
+        }));
+        assert!(exported.iter().any(|capability| {
+            capability.subject == Subject::User(alice)
+                && capability.scope == Scope::Room(relay_a.clone())
+                && capability.effect == Effect::Restrict
+        }));
+        assert!(exported.iter().any(|capability| {
+            capability.subject == Subject::User(bob)
+                && capability.scope == Scope::Room(relay_b.clone())
+        }));
+        assert!(exported.iter().all(|capability| {
+            !(capability.subject == Subject::User(alice)
+                && capability.scope == Scope::Room(relay_b.clone()))
+        }));
+        assert!(exported.iter().any(|capability| {
+            capability.subject == Subject::User(alice)
+                && capability.scope == Scope::FsPath("/var/workspace/a".into())
+        }));
+
+        tree.workspaces[0]
+            .capabilities
+            .retain(|capability| !matches!(&capability.scope, Scope::Room(room) if room == &room_a_id.to_string()));
+        tree.export_fs_capabilities();
+        let after_revoke: Vec<CapOverride> =
+            serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
+        assert!(after_revoke.iter().all(|capability| {
+            !(capability.subject == Subject::User(alice)
+                && capability.scope == Scope::Room(relay_a.clone()))
+        }));
     }
 }
 
@@ -1696,6 +2044,30 @@ pub struct WorkspaceTree {
     /// counter, not a timestamp, so the line survives a restart.
     #[serde(default)]
     pub room_share_floor: HashMap<RoomId, u64>,
+    /// Tabs created from same-identity continuation rather than from this
+    /// machine's ordinary layout.  Persisting this marker lets a later
+    /// checkpoint remove a remote close without ever deleting a local tab
+    /// that happened to use the same app id.
+    #[serde(default)]
+    pub continuation_tabs: BTreeSet<TabId>,
+    /// Rooms introduced only by another device's private continuation offer.
+    /// Once a person takes ownership of an offered tab the room becomes local
+    /// and is removed from this set.
+    #[serde(default)]
+    pub continuation_rooms: BTreeSet<RoomId>,
+    /// Offered tabs this device has actively taken over. Kept separately so
+    /// a launch immediately followed by a close still emits a tombstone even
+    /// if no periodic checkpoint ran between those events.
+    #[serde(default)]
+    pub continuation_owned_tabs: HashMap<TabId, RoomId>,
+    #[serde(default)]
+    pub continuation_closed_tabs: HashMap<TabId, RoomId>,
+    /// Safe record-only file cards received through personal continuity.
+    /// The value has hashes/references only; it intentionally never contains
+    /// a local pathname or thumbnail bytes.
+    #[serde(default)]
+    pub continuation_file_references:
+        HashMap<TabId, crate::shell::personal_continuity::LaunchIntent>,
     /// This tree's own peer salt, overriding the process-wide one — the
     /// static is wrong when one process holds **two** trees (e.g. two
     /// simulated peers). [`Self::local_salt`] prefers this field;
@@ -1732,6 +2104,11 @@ impl Default for WorkspaceTree {
             room_records_held: HashMap::new(),
             room_records_inbound: Vec::new(),
             room_share_floor: HashMap::new(),
+            continuation_tabs: BTreeSet::new(),
+            continuation_rooms: BTreeSet::new(),
+            continuation_owned_tabs: HashMap::new(),
+            continuation_closed_tabs: HashMap::new(),
+            continuation_file_references: HashMap::new(),
             peer_salt_override: None,
             persist_path: None,
             fs_acl_path: None,
@@ -4362,6 +4739,52 @@ impl WorkspaceTree {
         self.export_fs_capabilities();
     }
 
+    /// Turn the room's signed membership authority into the exact numeric
+    /// relay shard it owns.  Files-path grants deliberately do not pass
+    /// through here: filesystem residency is global, while relay admission
+    /// is per room.  A `Workspace` capability is also room authority for its
+    /// containing workspace, so it is projected to that workspace's shard.
+    ///
+    /// The relay authenticates public keys, not display names. A canonical
+    /// hex person id is equivalent to a `Subject::User` in collab-types and
+    /// is converted here; an arbitrary named person cannot be safely made
+    /// into a network principal and is omitted fail-closed.
+    fn relay_room_capability(
+        workspace: &Workspace,
+        capability: &CapOverride,
+    ) -> Option<CapOverride> {
+        if !capability.persists_across_restart() {
+            return None;
+        }
+        let applies_to_workspace = match &capability.scope {
+            Scope::Workspace => true,
+            // Current room documents use the durable UUID. Older shell
+            // mutation paths wrote the local workspace handle instead;
+            // accept it only while exporting that exact workspace, then
+            // normalize to the durable relay shard below.
+            Scope::Room(room) => {
+                room == &workspace.room.to_string() || room == &workspace.id.raw().to_string()
+            }
+            _ => false,
+        };
+        if !applies_to_workspace {
+            return None;
+        }
+        let subject = match &capability.subject {
+            Subject::User(user) => Subject::User(*user),
+            Subject::Principal(Principal::Person(person)) => {
+                let bytes: [u8; 32] = hex::decode(person).ok()?.try_into().ok()?;
+                Subject::User(collab_types::Ed25519PublicKey::from_bytes(bytes))
+            }
+            Subject::Role(_) | Subject::Principal(_) => return None,
+        };
+        let mut projected = capability.clone();
+        projected.subject = subject;
+        projected.scope =
+            Scope::Room(crate::shell::network::room_topic_id(workspace.room).to_string());
+        Some(projected)
+    }
+
     /// Write the capability list the filesystem enforces. The FUSE mount
     /// is a separate process reading a JSON array from the path its
     /// `--acl` names, written atomically so it never reads a half-written
@@ -4416,11 +4839,9 @@ impl WorkspaceTree {
                     collab_types::crypto::Ed25519PublicKey::from_bytes(profile.user_public_key),
                 )],
             });
-            for capability in workspace
-                .capabilities
-                .iter()
-                .filter(|capability| matches!(capability.scope, Scope::FsPath(_)))
-            {
+            for capability in workspace.capabilities.iter().filter(|capability| {
+                matches!(capability.scope, Scope::FsPath(_)) && capability.persists_across_restart()
+            }) {
                 caps.push(capability.clone());
                 if let (Some(device), Some(actor)) = (device_public_key, identity_actor.as_ref())
                     && capability.subject.matches_actor(actor)
@@ -4431,13 +4852,24 @@ impl WorkspaceTree {
                     caps.push(device_capability);
                 }
             }
+            // Signed room membership is a separate projection from Files
+            // access. Keep all Effects, including Restrict, so a relay
+            // revocation can never be widened by this export.
+            caps.extend(
+                workspace
+                    .capabilities
+                    .iter()
+                    .filter_map(|capability| Self::relay_room_capability(workspace, capability)),
+            );
         }
         let Ok(json) = serde_json::to_vec_pretty(&caps) else {
             return;
         };
         if let Err(e) = atomic_file::write_creating_parent(path, &json) {
             tracing::warn!("filesystem capability export failed: {e}");
+            return;
         }
+        schedule_fs_authority_publication(path.clone());
     }
 
     /// Give every workspace with no recorded owner to `user`, returning
@@ -5357,6 +5789,309 @@ impl WorkspaceTree {
         // exists, or it hydrates one it can't address.
         let _ = self.doc.put(&entry, "room", room.to_string());
         ws_id
+    }
+
+    /// Add a dormant local entry for a room discovered through the private
+    /// same-identity continuation lane. Unlike [`Self::append_empty_workspace`]
+    /// this creates no strip or window and never changes focus, so merely
+    /// learning that another device has a workspace open cannot publish an
+    /// empty local layout into that room or pull the current session away.
+    /// The room's authenticated sync response supplies its real name/layout.
+    pub fn adopt_continuation_room(&mut self, room: RoomId, _source_device: &str) -> bool {
+        if room.is_nil()
+            || self
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.room == room)
+        {
+            return false;
+        }
+        let id = WorkspaceId::new();
+        let mut workspace = Workspace::new(id, "From another device");
+        workspace.room = room;
+        self.workspaces.push(workspace);
+        self.continuation_rooms.insert(room);
+        self.room_authority.insert(room, RoomAuthority::Unpinned);
+        self.room_share_floor
+            .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
+        self.seed_doc_from_cache();
+        self.flush_to_disk();
+        true
+    }
+
+    /// Turn a synchronized offer into a locally-owned live app. The Wayland
+    /// toplevel adoption handshake is the only caller: merely receiving or
+    /// painting an offer must not make this device echo it.
+    pub fn claim_continuation_tab(&mut self, tab: TabId) -> bool {
+        if !self.continuation_tabs.remove(&tab) {
+            return false;
+        }
+        self.continuation_file_references.remove(&tab);
+        if let Some(room) = self.workspaces.iter().find_map(|workspace| {
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .any(|candidate| candidate.id == tab)
+                .then_some(workspace.room)
+        }) {
+            self.continuation_rooms.remove(&room);
+            self.continuation_closed_tabs.remove(&tab);
+            self.continuation_owned_tabs.insert(tab, room);
+        }
+        true
+    }
+
+    pub fn note_continuation_tab_closed(&mut self, tab: TabId) {
+        if let Some(room) = self.continuation_owned_tabs.remove(&tab) {
+            self.continuation_closed_tabs.insert(tab, room);
+        }
+    }
+
+    /// Remove rooms which exist here solely because of a continuation offer
+    /// and are no longer offered by any device.
+    pub fn reconcile_continuation_rooms(&mut self, desired: &BTreeSet<RoomId>) -> bool {
+        let stale: BTreeSet<_> = self
+            .continuation_rooms
+            .difference(desired)
+            .copied()
+            .collect();
+        if stale.is_empty() {
+            return false;
+        }
+        let stale_tabs: BTreeSet<_> = self
+            .workspaces
+            .iter()
+            .filter(|workspace| stale.contains(&workspace.room))
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .filter(|tab| self.continuation_tabs.contains(tab))
+            .collect();
+        self.workspaces
+            .retain(|workspace| !stale.contains(&workspace.room));
+        self.continuation_rooms.retain(|room| !stale.contains(room));
+        self.continuation_tabs
+            .retain(|tab| !stale_tabs.contains(tab));
+        self.continuation_file_references
+            .retain(|tab, _| !stale_tabs.contains(tab));
+        if let Ok(mut registry) =
+            crate::shell::personal_continuity_registry::global_registry().lock()
+        {
+            for tab in stale_tabs {
+                registry.remove_remote_tab(crate::shell::personal_continuity::AppInstanceId(tab));
+            }
+        }
+        self.room_authority.retain(|room, _| !stale.contains(room));
+        self.room_share_floor
+            .retain(|room, _| !stale.contains(room));
+        if !self
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.id == self.active)
+        {
+            self.active = self
+                .workspaces
+                .first()
+                .map_or_else(WorkspaceId::default, |workspace| workspace.id);
+        }
+        self.seed_doc_from_cache();
+        self.flush_to_disk();
+        true
+    }
+
+    /// Materialize another device's continuation as synchronized placeholder
+    /// tabs. This never activates a workspace, strip, or group; the compositor
+    /// opens the matching local apps through its normal authorized launch path.
+    pub fn materialize_continuation_workspace(
+        &mut self,
+        _source_device: &str,
+        continuation: &crate::shell::personal_continuity::WorkspaceContinuation,
+    ) -> bool {
+        let existing_continuation_tabs = self.continuation_tabs.clone();
+        let (changed, file_references, file_reference_removals, inserted_continuation_tabs) = {
+            let mut file_references = Vec::new();
+            let mut file_reference_removals = Vec::new();
+            let mut inserted_continuation_tabs = Vec::new();
+            let Some(workspace) = self
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room == continuation.room)
+            else {
+                return false;
+            };
+            let mut changed = false;
+            let mut apps = continuation.apps.clone();
+            apps.sort_by_key(|app| (app.placement.strip, app.placement.group, app.placement.tab));
+            for app in apps {
+                let (title, tile) = match &app.launch {
+                    crate::shell::personal_continuity::LaunchIntent::App { app_id } => {
+                        // A newer app winner may reuse the durable tab id of
+                        // an earlier file-reference card.  Do not let the
+                        // old reference override capture after that change.
+                        file_reference_removals.push(app.id.0);
+                        if let Some(resume) = app.resume.clone()
+                            && let Ok(mut registry) =
+                                crate::shell::personal_continuity_registry::global_registry().lock()
+                        {
+                            registry.store_remote_resume(
+                                continuation.room,
+                                app.id,
+                                app_id.clone(),
+                                resume,
+                                app.record_instance.unwrap_or(app.id),
+                            );
+                        } else if let Ok(mut registry) =
+                            crate::shell::personal_continuity_registry::global_registry().lock()
+                        {
+                            registry.store_remote_record(
+                                continuation.room,
+                                app.id,
+                                app_id.clone(),
+                                app.record_instance.unwrap_or(app.id),
+                            );
+                        }
+                        (
+                            crate::shell::launcher::installed_apps()
+                                .ok()
+                                .and_then(|apps| {
+                                    apps.into_iter()
+                                        .find(|installed| installed.package_id == *app_id)
+                                })
+                                .map_or_else(|| app_id.clone(), |installed| installed.display_name),
+                            TileContent::PeerWindow {
+                                app_id: app_id.clone(),
+                                label: "Available on another device".to_string(),
+                                note: String::new(),
+                            },
+                        )
+                    }
+                    crate::shell::personal_continuity::LaunchIntent::FileReference { .. } => {
+                        file_references.push((app.id.0, app.launch.clone()));
+                        (
+                            crate::shell::doc_open::continuity_file_reference_label(&app.launch),
+                            TileContent::Stub {
+                                kind: AppKind::FileExplorer,
+                                label: "Available on another device".to_string(),
+                            },
+                        )
+                    }
+                };
+                let exists = workspace.strips.iter().any(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .flat_map(|group| &group.tabs)
+                        .any(|tab| tab.id == app.id.0)
+                });
+                if exists && !existing_continuation_tabs.contains(&app.id.0) {
+                    continue;
+                }
+                // An offer is a projection of its source placement, not a
+                // one-time insertion. Remove the old projected card before
+                // inserting it at the latest ordinal coordinates. Locally
+                // claimed tabs are excluded above and never moved remotely.
+                if exists {
+                    for strip in &mut workspace.strips {
+                        for group in &mut strip.window_groups {
+                            group.tabs.retain(|tab| tab.id != app.id.0);
+                            if group.active_tab == app.id.0 {
+                                group.active_tab = group.tabs.first().map_or(0, |tab| tab.id);
+                            }
+                        }
+                    }
+                }
+                while workspace.strips.len() <= app.placement.strip as usize {
+                    workspace
+                        .strips
+                        .push(Strip::new(StripId::new(), "Available elsewhere"));
+                }
+                let strip = &mut workspace.strips[app.placement.strip as usize];
+                while strip.window_groups.len() <= app.placement.group as usize {
+                    strip.window_groups.push(WindowGroup {
+                        id: next_id(),
+                        tabs: Vec::new(),
+                        active_tab: 0,
+                        width: WindowWidth::Normal,
+                        maximized: false,
+                    });
+                }
+                let group = &mut strip.window_groups[app.placement.group as usize];
+                let tab = Tab {
+                    id: app.id.0,
+                    title,
+                    tile,
+                };
+                if !existing_continuation_tabs.contains(&app.id.0) {
+                    inserted_continuation_tabs.push(app.id.0);
+                }
+                let index = (app.placement.tab as usize).min(group.tabs.len());
+                group.tabs.insert(index, tab);
+                if group.active_tab == 0 {
+                    // This only defines the group's internal default when the
+                    // person later enters it; it does not touch tree focus maps.
+                    group.active_tab = app.id.0;
+                }
+                changed = true;
+            }
+            (
+                changed,
+                file_references,
+                file_reference_removals,
+                inserted_continuation_tabs,
+            )
+        };
+        self.continuation_tabs.extend(inserted_continuation_tabs);
+        for tab in file_reference_removals {
+            self.continuation_file_references.remove(&tab);
+        }
+        for (tab, reference) in file_references {
+            self.continuation_file_references.insert(tab, reference);
+        }
+        if changed {
+            self.seed_doc_from_cache();
+            self.flush_to_disk();
+        }
+        changed
+    }
+
+    /// Remove continuation-owned tabs absent from the current deterministic
+    /// winner set. Local user-created tabs are deliberately unmarked and are
+    /// never touched by this reconciliation.
+    pub fn reconcile_continuation_tabs(&mut self, desired: &BTreeSet<TabId>) -> bool {
+        let stale: BTreeSet<_> = self
+            .continuation_tabs
+            .difference(desired)
+            .copied()
+            .collect();
+        if stale.is_empty() {
+            return false;
+        }
+        for workspace in &mut self.workspaces {
+            for strip in &mut workspace.strips {
+                for group in &mut strip.window_groups {
+                    group.tabs.retain(|tab| !stale.contains(&tab.id));
+                    if stale.contains(&group.active_tab) {
+                        group.active_tab = group.tabs.first().map_or(0, |tab| tab.id);
+                    }
+                }
+            }
+        }
+        self.continuation_tabs.retain(|tab| !stale.contains(tab));
+        self.continuation_file_references
+            .retain(|tab, _| !stale.contains(tab));
+        if let Ok(mut registry) =
+            crate::shell::personal_continuity_registry::global_registry().lock()
+        {
+            for tab in &stale {
+                registry.remove_remote_tab(crate::shell::personal_continuity::AppInstanceId(*tab));
+            }
+        }
+        self.seed_doc_from_cache();
+        self.flush_to_disk();
+        true
     }
 
     pub fn set_active(&mut self, id: WorkspaceId) {
@@ -9098,5 +9833,308 @@ mod peer_window_merge_tests {
         assert_eq!(ws.owner.as_ref(), Some(&bob));
         assert_eq!(ws.role_of(&alice), None);
         assert_eq!(ws.role_of(&bob), Some(CapRole::Owner));
+    }
+
+    #[test]
+    fn continuity_room_is_dormant_and_does_not_steal_focus() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let active_before = tree.active;
+        let room = RoomId::new();
+
+        assert!(tree.adopt_continuation_room(room, "Laptop"));
+        assert!(!tree.adopt_continuation_room(room, "Laptop"));
+        assert_eq!(tree.active, active_before);
+        let adopted = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .expect("continuation workspace");
+        assert_eq!(adopted.name, "From another device");
+        assert!(!adopted.name.contains("Laptop"));
+        assert!(adopted.strips.is_empty());
+        assert_eq!(tree.room_authority(room), RoomAuthority::Unpinned);
+    }
+
+    #[test]
+    fn continuation_reconcile_removes_a_closed_remote_tab_but_not_local_tabs() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = RoomId::new();
+        tree.adopt_continuation_room(room, "Laptop");
+        let device = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
+        let app = crate::shell::personal_continuity::AppInstanceState::new(
+            crate::shell::personal_continuity::AppInstanceId(0x99),
+            crate::shell::personal_continuity::TabPlacement {
+                strip: 0,
+                group: 0,
+                tab: 0,
+            },
+            crate::shell::personal_continuity::LaunchIntent::app("dev.qos.browser").unwrap(),
+            None,
+            crate::shell::personal_continuity::ContinuityStamp { counter: 1, device },
+        );
+        assert!(tree.materialize_continuation_workspace(
+            "Laptop",
+            &crate::shell::personal_continuity::WorkspaceContinuation {
+                room,
+                apps: vec![app],
+            },
+        ));
+        assert!(tree.continuation_tabs.contains(&0x99));
+        assert!(tree.reconcile_continuation_tabs(&BTreeSet::new()));
+        assert!(!tree.continuation_tabs.contains(&0x99));
+    }
+
+    #[test]
+    fn claimed_continuation_tab_becomes_local_and_survives_remote_reconciliation() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = RoomId::new();
+        tree.adopt_continuation_room(room, "Laptop");
+        let app = crate::shell::personal_continuity::AppInstanceState::new(
+            crate::shell::personal_continuity::AppInstanceId(0x9a),
+            crate::shell::personal_continuity::TabPlacement {
+                strip: 0,
+                group: 0,
+                tab: 0,
+            },
+            crate::shell::personal_continuity::LaunchIntent::app("dev.qos.browser").unwrap(),
+            None,
+            crate::shell::personal_continuity::ContinuityStamp {
+                counter: 1,
+                device: crate::shell::personal_continuity::DeviceId::new("laptop").unwrap(),
+            },
+        );
+        tree.materialize_continuation_workspace(
+            "Laptop",
+            &crate::shell::personal_continuity::WorkspaceContinuation {
+                room,
+                apps: vec![app],
+            },
+        );
+
+        assert!(tree.claim_continuation_tab(0x9a));
+        assert!(!tree.continuation_tabs.contains(&0x9a));
+        assert!(!tree.continuation_rooms.contains(&room));
+        assert!(!tree.reconcile_continuation_tabs(&BTreeSet::new()));
+        assert!(tree.workspaces.iter().any(|workspace| {
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .any(|tab| tab.id == 0x9a)
+        }));
+    }
+
+    #[test]
+    fn continuation_offer_tracks_live_placement_and_title() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = RoomId::new();
+        tree.adopt_continuation_room(room, "Laptop");
+        let device = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
+        let make = |strip, title_app: &str| {
+            crate::shell::personal_continuity::AppInstanceState::new(
+                crate::shell::personal_continuity::AppInstanceId(0x9b),
+                crate::shell::personal_continuity::TabPlacement {
+                    strip,
+                    group: 0,
+                    tab: 0,
+                },
+                crate::shell::personal_continuity::LaunchIntent::app(title_app).unwrap(),
+                None,
+                crate::shell::personal_continuity::ContinuityStamp {
+                    counter: u64::from(strip) + 1,
+                    device: device.clone(),
+                },
+            )
+        };
+        tree.materialize_continuation_workspace(
+            "Laptop",
+            &crate::shell::personal_continuity::WorkspaceContinuation {
+                room,
+                apps: vec![make(0, "dev.qos.browser")],
+            },
+        );
+        tree.materialize_continuation_workspace(
+            "Laptop",
+            &crate::shell::personal_continuity::WorkspaceContinuation {
+                room,
+                apps: vec![make(1, "dev.qos.music")],
+            },
+        );
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .unwrap();
+        assert!(
+            !workspace.strips[0]
+                .window_groups
+                .iter()
+                .flat_map(|group| &group.tabs)
+                .any(|tab| tab.id == 0x9b)
+        );
+        let moved = workspace.strips[1]
+            .window_groups
+            .iter()
+            .flat_map(|group| &group.tabs)
+            .find(|tab| tab.id == 0x9b)
+            .unwrap();
+        assert!(matches!(
+            &moved.tile,
+            TileContent::PeerWindow { app_id, .. } if app_id == "dev.qos.music"
+        ));
+    }
+
+    #[test]
+    fn vanished_continuation_room_is_removed_but_claimed_room_is_not() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let offered = RoomId::new();
+        let claimed = RoomId::new();
+        tree.adopt_continuation_room(offered, "Laptop");
+        tree.adopt_continuation_room(claimed, "Laptop");
+        tree.continuation_rooms.remove(&claimed);
+
+        assert!(tree.reconcile_continuation_rooms(&BTreeSet::new()));
+        assert!(
+            !tree
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.room == offered)
+        );
+        assert!(
+            tree.workspaces
+                .iter()
+                .any(|workspace| workspace.room == claimed)
+        );
+    }
+
+    #[test]
+    fn relay_authority_never_turns_session_grants_into_timeless_nas_access() {
+        let mut workspace = Workspace::new(WorkspaceId::new(), "Private");
+        workspace.room = RoomId::new();
+        let subject = Subject::User(collab_types::Ed25519PublicKey::from_bytes([7; 32]));
+        for expiry in [Expiry::AfterUse, Expiry::EndOfSession] {
+            let capability =
+                CapOverride::membership(subject.clone(), workspace.room.to_string(), Verb::Read)
+                    .expiring(expiry);
+            assert!(WorkspaceTree::relay_room_capability(&workspace, &capability).is_none());
+        }
+        let persistent = CapOverride::membership(subject, workspace.room.to_string(), Verb::Read);
+        assert!(WorkspaceTree::relay_room_capability(&workspace, &persistent).is_some());
+    }
+
+    #[test]
+    fn newer_app_winner_clears_an_old_file_reference_for_the_same_tab() {
+        use crate::shell::personal_continuity::{
+            AppInstanceId, AppInstanceState, ContinuityStamp, DeviceId, LaunchIntent, TabPlacement,
+            WorkspaceContinuation,
+        };
+
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = RoomId::new();
+        tree.adopt_continuation_room(room, "Laptop");
+        let id = AppInstanceId(0x55);
+        let placement = TabPlacement {
+            strip: 0,
+            group: 0,
+            tab: 0,
+        };
+        let stamp = ContinuityStamp {
+            counter: 1,
+            device: DeviceId::new("laptop").unwrap(),
+        };
+        let file = AppInstanceState::new(
+            id,
+            placement,
+            LaunchIntent::file_reference("record:book-55", Some([1; 32]), None).unwrap(),
+            None,
+            stamp.clone(),
+        );
+        assert!(tree.materialize_continuation_workspace(
+            "Laptop",
+            &WorkspaceContinuation {
+                room,
+                apps: vec![file],
+            },
+        ));
+        assert!(tree.continuation_file_references.contains_key(&id.0));
+
+        let app = AppInstanceState::new(
+            id,
+            placement,
+            LaunchIntent::app("dev.qos.browser").unwrap(),
+            None,
+            stamp,
+        );
+        assert!(tree.materialize_continuation_workspace(
+            "Laptop",
+            &WorkspaceContinuation {
+                room,
+                apps: vec![app],
+            },
+        ));
+        assert!(!tree.continuation_file_references.contains_key(&id.0));
+        let replacement = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .into_iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|tab| tab.id == id.0)
+            .expect("the newer app offer remains in the same logical tab");
+        assert!(matches!(
+            &replacement.tile,
+            TileContent::PeerWindow { app_id, .. } if app_id == "dev.qos.browser"
+        ));
+    }
+
+    #[test]
+    fn continuation_placeholders_do_not_render_device_or_record_identifiers() {
+        use crate::shell::personal_continuity::{
+            AppInstanceId, AppInstanceState, ContinuityStamp, DeviceId, LaunchIntent, TabPlacement,
+            WorkspaceContinuation,
+        };
+
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = RoomId::new();
+        let source = "ab".repeat(32);
+        tree.adopt_continuation_room(room, &source);
+        let stamp = ContinuityStamp {
+            counter: 1,
+            device: DeviceId::new("laptop").unwrap(),
+        };
+        assert!(tree.materialize_continuation_workspace(
+            &source,
+            &WorkspaceContinuation {
+                room,
+                apps: vec![AppInstanceState::new(
+                    AppInstanceId(0x61),
+                    TabPlacement {
+                        strip: 0,
+                        group: 0,
+                        tab: 0,
+                    },
+                    LaunchIntent::file_reference("record:private-id", Some([2; 32]), None).unwrap(),
+                    None,
+                    stamp,
+                )],
+            },
+        ));
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .unwrap();
+        let tab = &workspace.strips[0].window_groups[0].tabs[0];
+        assert!(!workspace.name.contains(&source));
+        assert!(!tab.title.contains(&source));
+        assert!(!tab.title.contains("private-id"));
+        let TileContent::Stub { label, .. } = &tab.tile else {
+            panic!("continuation file remains a dormant file card");
+        };
+        assert!(!label.contains(&source));
+        assert!(!label.contains("private-id"));
     }
 }

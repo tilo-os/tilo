@@ -98,6 +98,15 @@ else
   bad "live-medium disk guard still relies on path-string equality"
 fi
 
+if grep -Fq -- '--confirm-erase)' "$backend" \
+   && grep -Fq '[ "$CONFIRM_ERASE" = "$DISK" ]' "$backend" \
+   && grep -Fq 'whole-disk install requires --confirm-erase matching --disk' "$backend" \
+   && grep -Fq -- '--confirm-erase cannot be used with --alongside' "$backend"; then
+  ok "whole-disk erasure requires an exact device confirmation at the privileged boundary"
+else
+  bad "whole-disk erasure can proceed without an exact privileged confirmation"
+fi
+
 if grep -Fq 'ENCRYPT=1' "$backend" \
    && grep -Fq 'native qOS requires --pin' "$backend" \
    && grep -Fq 'if verified_tpm; then' "$backend" \
@@ -224,9 +233,17 @@ if grep -Fq -- '--alongside' "$backend" \
    && [ "$(grep -c '^[[:space:]]*validate_alongside$' "$backend" || true)" -eq 3 ] \
    && grep -Fq 'signature_types="$(wipefs --noheadings --no-act --output TYPE "$part")"' "$encryptor" \
    && grep -Fq 'root and EFI partitions are not on the same disk' "$encryptor" \
+   && grep -Fq 'MIN_ALONGSIDE_ESP_BYTES=2147483648' "$backend" \
+   && grep -Fq 'MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824' "$backend" \
+   && grep -Fq 'MIN_ALONGSIDE_ESP_BYTES=2147483648' "$encryptor" \
+   && grep -Fq 'MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824' "$encryptor" \
+   && grep -Fq 'fsck.fat -n "$EFI_PARTITION"' "$backend" \
+   && grep -Fq 'fsck.fat -n "$esp"' "$encryptor" \
+   && grep -Fq 'mount -o ro,nosuid,nodev,noexec "$EFI_PARTITION" "$efi_probe"' "$backend" \
+   && grep -Fq 'mount -o ro,nosuid,nodev,noexec "$esp" "$esp_probe"' "$encryptor" \
    && grep -Fq 'existing OS partitions are preserved' "$backend" \
    && ! grep -Fq 'mkfs.vfat -n EFI-SYSTEM "$EFI_PARTITION"' "$backend"; then
-  ok "alongside install fails closed on signed roots and never formats the shared ESP"
+  ok "alongside install fails closed on signed roots or undersized ESPs and never formats the shared ESP"
 else
   bad "alongside install can overwrite an occupied root or shared ESP"
 fi

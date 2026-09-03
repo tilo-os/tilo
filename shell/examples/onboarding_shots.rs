@@ -212,5 +212,25 @@ fn main() -> Result<(), String> {
         800,
         640,
     )?;
+    shoot(
+        &Theme::dark(),
+        &dir.join("13-tour-move-narrow-dark.png"),
+        &[KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE, KEY_TOUR_START],
+        420,
+        640,
+    )?;
+    shoot(
+        &Theme::light().with_text_scale(1.3),
+        &dir.join("14-tour-arrange-large-text.png"),
+        &[
+            KEY_BEGIN,
+            KEY_UNDERSTOOD,
+            KEY_CREATE,
+            KEY_TOUR_START,
+            KEY_TOUR_NEXT,
+        ],
+        1000,
+        720,
+    )?;
     Ok(())
 }

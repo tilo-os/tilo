@@ -387,6 +387,35 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("QOS_PACKAGE_ID".to_string());
     argv.push(manifest.package_id.clone());
 
+    // Same-identity continuation is launcher-authored metadata. bwrap clears
+    // the parent environment, so forward only the compact identifiers/payload
+    // after rejecting control characters and an oversized resume blob.
+    for key in [
+        "QOS_CONTINUITY_INSTANCE",
+        "QOS_CONTINUITY_RESUME_SCHEMA",
+        "QOS_CONTINUITY_RESUME_HEX",
+    ] {
+        let Ok(value) = std::env::var(key) else {
+            continue;
+        };
+        let allowed =
+            !value.is_empty() && value.len() <= 64 * 1024 && !value.contains(['\0', '\n', '\r']);
+        if allowed
+            && (key != "QOS_CONTINUITY_INSTANCE"
+                || (value.len() <= 32 && value.bytes().all(|byte| byte.is_ascii_digit())))
+            && (key != "QOS_CONTINUITY_RESUME_SCHEMA"
+                || (value.len() <= 5
+                    && value.bytes().all(|byte| byte.is_ascii_digit())
+                    && value.parse::<u16>().is_ok_and(|version| version > 0)))
+            && (key != "QOS_CONTINUITY_RESUME_HEX"
+                || (value.len() <= 64 * 1024 && value.bytes().all(|byte| byte.is_ascii_hexdigit())))
+        {
+            argv.push("--setenv".to_string());
+            argv.push(key.to_string());
+            argv.push(value);
+        }
+    }
+
     // The human-readable app name from `[package].name`; omitted when
     // unset, and the toolkit derives one from the package id.
     if let Some(name) = manifest
@@ -1022,6 +1051,41 @@ mod tests {
         argv.windows(3)
             .find(|w| w[0] == "--setenv" && w[1] == key)
             .map(|w| w[2].as_str())
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn argv_forwards_the_complete_validated_continuation_envelope() {
+        // SAFETY: serialized with every test that mutates process env.
+        unsafe {
+            std::env::set_var("QOS_CONTINUITY_INSTANCE", "42");
+            std::env::set_var("QOS_CONTINUITY_RESUME_SCHEMA", "7");
+            std::env::set_var("QOS_CONTINUITY_RESUME_HEX", "7b7d");
+        }
+        let argv = build_bwrap_argv(
+            &mk_manifest("off"),
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
+        // SAFETY: same serialized scope as the writes above.
+        unsafe {
+            std::env::remove_var("QOS_CONTINUITY_INSTANCE");
+            std::env::remove_var("QOS_CONTINUITY_RESUME_SCHEMA");
+            std::env::remove_var("QOS_CONTINUITY_RESUME_HEX");
+        }
+        assert_eq!(setenv_value(&argv, "QOS_CONTINUITY_INSTANCE"), Some("42"));
+        assert_eq!(
+            setenv_value(&argv, "QOS_CONTINUITY_RESUME_SCHEMA"),
+            Some("7")
+        );
+        assert_eq!(
+            setenv_value(&argv, "QOS_CONTINUITY_RESUME_HEX"),
+            Some("7b7d")
+        );
     }
 
     #[test]
