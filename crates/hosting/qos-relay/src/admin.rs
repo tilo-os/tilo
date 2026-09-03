@@ -290,7 +290,7 @@ fn cmd_home_peer_remove(identity_root: PathBuf, device: &str, service: &str) -> 
     qos_relay::store::save_revocations(&identity_root, &fleet_revocations)?;
     persist_fleet_revocation(&intent.revocation)?;
     if identity_root.join("home-peers.json").exists() {
-        let _ = update_home_peer_registry(&identity_root, device, None);
+        update_home_peer_registry(&identity_root, device, None)?;
     }
 
     let remote = remote_home_peer(
@@ -469,11 +469,7 @@ fn update_home_peer_registry(
             .ok_or_else(|| anyhow::anyhow!("home peer is not registered"))?;
         registration.label = label.to_string();
     } else {
-        let previous = registrations.len();
         registrations.retain(|entry| entry.device_node_id != device);
-        if registrations.len() == previous {
-            anyhow::bail!("home peer is not registered");
-        }
     }
     atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&registrations)?, 0o644)?;
     Ok(())
