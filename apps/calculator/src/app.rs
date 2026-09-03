@@ -1162,9 +1162,15 @@ impl Widget for CalculatorApp {
             .collect();
         let top_bar = AccessNode::new(Role::Toolbar)
             .with_name("Calculator controls")
+            // Its siblings include the keyed Evaluate control; key this
+            // structural synthetic node too so AT identities never mix
+            // ordinal and durable addressing at the same level.
+            .with_hashed_key("calculator.controls")
             .with_children(vec![
                 AccessNode::new(Role::TabBar)
                     .with_name("Mode")
+                    // The tabs themselves carry action-derived keys.
+                    .with_hashed_key("calculator.mode-tabs")
                     .with_children(modes),
                 AccessNode::new(Role::ToggleButton)
                     .with_name("Radians")
@@ -1324,6 +1330,17 @@ mod tests {
         let tree = app.accessibility().expect("calculator semantics");
         assert_eq!(tree.name.as_deref(), Some("Calculator"));
         let mode_bar = &tree.children[0].children[0];
+        fn siblings_are_consistently_keyed(nodes: &[ui::a11y::AccessNode]) -> bool {
+            nodes.is_empty()
+                || nodes.iter().all(|node| node.key.is_some())
+                || nodes.iter().all(|node| node.key.is_none())
+        }
+        assert!(
+            siblings_are_consistently_keyed(&tree.children)
+                && siblings_are_consistently_keyed(&tree.children[0].children)
+                && siblings_are_consistently_keyed(&mode_bar.children),
+            "synthetic Calculator siblings must not mix stable and ordinal keys"
+        );
         assert!(mode_bar.children.iter().any(|node| {
             node.action_target.as_deref() == Some("calculator.mode:1")
                 && node.name.as_deref() == Some("Graph 2D")
