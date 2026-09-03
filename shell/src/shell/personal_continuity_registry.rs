@@ -138,6 +138,16 @@ impl ContinuationRegistry {
             .insert((room, app_id, tab), record_instance);
     }
 
+    /// Forget a remote offer once its continuation-owned shell tab was
+    /// removed.  Keeping it would let a subsequently recreated tab recover
+    /// a checkpoint that its source device has already closed.
+    pub fn remove_remote_tab(&mut self, tab: AppInstanceId) {
+        self.remote_resumes
+            .retain(|(_, _, candidate), _| *candidate != tab);
+        self.remote_records
+            .retain(|(_, _, candidate), _| *candidate != tab);
+    }
+
     pub fn record_instance_for_tab(
         &self,
         room: RoomId,
@@ -315,5 +325,32 @@ mod tests {
             .unwrap();
         assert_eq!(resolved.record_instance, AppInstanceId(101));
         assert_eq!(resolved.resume.bytes(), br#"{"url":"https://local.test"}"#);
+    }
+
+    #[test]
+    fn removing_a_closed_remote_tab_drops_its_staged_checkpoint() {
+        let room = RoomId::new();
+        let tab = AppInstanceId(10);
+        let launch = LaunchIntent::app("dev.qos.browser").unwrap();
+        let mut reports = ContinuationRegistry::default();
+        reports.store_remote_resume(
+            room,
+            tab,
+            "dev.qos.browser".into(),
+            ResumeMetadata::new(
+                1,
+                ResumeSensitivity::Syncable,
+                br#"{"url":"https://closed.test"}"#.to_vec(),
+            )
+            .unwrap(),
+            AppInstanceId(101),
+        );
+        reports.remove_remote_tab(tab);
+        assert!(reports.continuation_for_tab(room, tab, &launch).is_none());
+        assert!(
+            reports
+                .record_instance_for_tab(room, tab, &launch)
+                .is_none()
+        );
     }
 }
