@@ -154,6 +154,7 @@ pub enum NetEvent {
     PeerLeft {
         ws: WorkspaceId,
         peer: PeerId,
+        cause: PeerDepartureCause,
     },
     /// An authenticated durable host finished subscribing to this workspace.
     /// Distinct from a direct peer arrival: the shell uses this edge to seed
@@ -167,6 +168,20 @@ pub enum NetEvent {
         peer: PeerId,
         msg: NeighbourMsg,
     },
+}
+
+/// Why the transport stopped treating a peer as live on a workspace topic.
+///
+/// This is transport evidence, not a statement about the person's intent:
+/// a timeout can be an unreliable network just as easily as a closed app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerDepartureCause {
+    /// Iroh gossip reported that the neighbour went away.
+    GossipNeighborDown,
+    /// A durable host's relay session closed.
+    HostSessionClosed,
+    /// The peer stopped refreshing its liveness heartbeat.
+    LivenessTimedOut,
 }
 
 enum InternalEvent {
@@ -576,7 +591,11 @@ impl ActorState {
             }
             GossipEvent::NeighborDown(peer) => {
                 self.peers_seen.remove(&(ws, peer));
-                Some(NetEvent::PeerLeft { ws, peer })
+                Some(NetEvent::PeerLeft {
+                    ws,
+                    peer,
+                    cause: PeerDepartureCause::GossipNeighborDown,
+                })
             }
             GossipEvent::Received(message) => {
                 let peer = message.delivered_from;
@@ -659,7 +678,11 @@ impl ActorState {
                 if let Some(runtime) = self.host_sessions.remove(&(ws, peer)) {
                     runtime.pump.abort();
                 }
-                Some(NetEvent::PeerLeft { ws, peer })
+                Some(NetEvent::PeerLeft {
+                    ws,
+                    peer,
+                    cause: PeerDepartureCause::HostSessionClosed,
+                })
             }
         };
         if let (Some(event), Some(tx)) = (mapped, self.subscribers.get(&ws)) {
@@ -680,7 +703,13 @@ impl ActorState {
         for (ws, peer) in stale {
             self.peers_seen.remove(&(ws, peer));
             if let Some(tx) = self.subscribers.get(&ws) {
-                let _ = tx.send(NetEvent::PeerLeft { ws, peer }).await;
+                let _ = tx
+                    .send(NetEvent::PeerLeft {
+                        ws,
+                        peer,
+                        cause: PeerDepartureCause::LivenessTimedOut,
+                    })
+                    .await;
             }
         }
     }
