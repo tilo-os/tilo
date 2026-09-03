@@ -37,6 +37,9 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.REGISTRY_TOKEN }}
 
+      - name: Verify the relay-only Compose contract
+        run: bash os/containers/qos-relay/test-contract.sh
+
       # Login is required on every build now (build-only or push): the
       # Containerfile FROMs the private frozen RPM repo, which needs
       # registry auth to pull.

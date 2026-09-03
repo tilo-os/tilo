@@ -144,6 +144,15 @@ pub struct TransferState {
     pub phase: TransferPhase,
     pub progress: Option<TransferProgress>,
     pub last_error: Option<TransferError>,
+    /// Consecutive automatic hydration failures for the current version.
+    /// Persisting this prevents a restart from turning an unavailable peer
+    /// into a tight retry loop.
+    #[serde(default)]
+    pub retry_count: u32,
+    /// Absolute wall-clock deadline for the next automatic attempt. An
+    /// explicit user retry clears this field.
+    #[serde(default)]
+    pub retry_at_ms: Option<u64>,
 }
 
 /// Explicit local retention policy. Directory policy applies transitively.
@@ -308,6 +317,8 @@ pub enum AvailabilityError {
     ReplicaReplay,
     #[error("record exceeds {MAX_REPLICA_OBSERVATIONS_PER_RECORD} replica observations")]
     TooManyReplicaObservations,
+    #[error("current content revision is invalid")]
+    InvalidCurrentRevision,
 }
 
 /// Crash-safe per-device registry for local availability state.
@@ -359,6 +370,109 @@ impl AvailabilityRegistry {
 
     pub fn records(&self) -> impl Iterator<Item = &RecordAvailability> {
         self.records.values()
+    }
+
+    /// Whether any record explicitly promises offline residency. Descendants
+    /// inherit that promise, so one explicit row is enough to require a
+    /// namespace reconciliation; with none, the periodic worker can stay
+    /// idle without walking and sorting the complete workspace.
+    pub fn has_pinned_policy(&self) -> bool {
+        self.records
+            .values()
+            .any(|record| record.policy == AvailabilityPolicy::Pinned)
+    }
+
+    /// Cancel durable automatic-hydration state below a pin that was removed.
+    /// This is paid once by the explicit unpin action, allowing the periodic
+    /// worker to take the zero-scan fast path whenever no pins remain.
+    pub fn clear_automatic_transfer_subtree(
+        &mut self,
+        root: FileRecordId,
+    ) -> Result<bool, AvailabilityError> {
+        let is_in_subtree = |record_id: FileRecordId| {
+            let mut cursor = Some(record_id);
+            let mut remaining = self.records.len().saturating_add(1);
+            while let Some(id) = cursor {
+                if id == root {
+                    return true;
+                }
+                if remaining == 0 {
+                    return false;
+                }
+                remaining = remaining.saturating_sub(1);
+                cursor = self.records.get(&id).and_then(|record| record.parent);
+            }
+            false
+        };
+        let ids = self
+            .records
+            .values()
+            .filter(|record| {
+                is_in_subtree(record.record_id)
+                    && matches!(
+                        self.effective_policy(record.record_id),
+                        Ok(Some(AvailabilityPolicy::Automatic))
+                    )
+                    && record.transfer != TransferState::default()
+            })
+            .map(|record| record.record_id)
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            return Ok(false);
+        }
+        let previous = self.records.clone();
+        for id in ids {
+            if let Some(record) = self.records.get_mut(&id) {
+                record.transfer = TransferState::default();
+            }
+        }
+        if let Err(error) = self.persist() {
+            self.records = previous;
+            return Err(error);
+        }
+        Ok(true)
+    }
+
+    /// Install the authenticated current revision before accepting replica
+    /// evidence for it. Ordinary whole-workspace records use the same durable
+    /// availability path as record-scoped shares; without this row a valid NAS
+    /// acknowledgement would be discarded as `UnknownRecord`.
+    pub fn track_current_revision(
+        &mut self,
+        revision: collab_types::ContentRevisionV1,
+        kind: RecordKind,
+        parent: Option<FileRecordId>,
+        observed_at_ms: u64,
+    ) -> Result<bool, AvailabilityError> {
+        revision
+            .validate()
+            .map_err(|_| AvailabilityError::InvalidCurrentRevision)?;
+        let mut record = self
+            .records
+            .get(&revision.record_id)
+            .cloned()
+            .unwrap_or_else(|| RecordAvailability::new(revision.record_id, kind));
+        let version_changed = record.current_version != Some(revision.version_id);
+        let metadata_changed = record.kind != kind
+            || record.parent != parent
+            || record.freshness.metadata_observed_at_ms != Some(observed_at_ms);
+        if !version_changed && !metadata_changed {
+            return Ok(false);
+        }
+        record.kind = kind;
+        record.parent = parent;
+        record.freshness.metadata_observed_at_ms = Some(observed_at_ms);
+        if version_changed {
+            record.current_version = Some(revision.version_id);
+            record.residency = Residency::NotResident;
+            record.transfer = TransferState::default();
+            record.replicas = ReplicaEvidence::default();
+            record.replica_observations.clear();
+            record.freshness.local_verified_at_ms = None;
+            record.freshness.replicas_observed_at_ms = None;
+        }
+        self.put(record)?;
+        Ok(true)
     }
 
     /// Insert or replace a record and durably commit the complete registry.
@@ -940,6 +1054,26 @@ mod tests {
             ),
             EvictionDecision::AllowedDestructiveOverride
         );
+    }
+
+    #[test]
+    fn explicit_pin_presence_drives_periodic_namespace_reconciliation() {
+        let temp = TempDir::new().unwrap();
+        let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
+        assert!(!registry.has_pinned_policy());
+
+        let id = FileRecordId::new();
+        let mut record = file(id, FileVersionId::new());
+        registry.put(record.clone()).unwrap();
+        assert!(!registry.has_pinned_policy());
+
+        record.policy = AvailabilityPolicy::Pinned;
+        registry.put(record.clone()).unwrap();
+        assert!(registry.has_pinned_policy());
+
+        record.policy = AvailabilityPolicy::Automatic;
+        registry.put(record).unwrap();
+        assert!(!registry.has_pinned_policy());
     }
 
     #[test]

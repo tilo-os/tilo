@@ -20,7 +20,11 @@ use qos_user_identity::{DeviceCert, RevocationList};
 
 use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck};
 use crate::daemon::{read_frame, write_frame};
-use crate::transport::{ALPN, Envelope, FrameReader, MAX_FRAME_BYTES};
+use crate::transport::{
+    ALPN, ContentEndpointAdvertisement, ContentEndpointRequest, ContentPeerRegistration,
+    DISCOVERY_ALPN, Envelope, FrameReader, HomePeerManagementRequest, HomePeerManagementResponse,
+    MANAGEMENT_ALPN, MAX_FRAME_BYTES,
+};
 
 /// A live authenticated session with a relay. Handles are cheap;
 /// dropping the client tears down the connection.
@@ -95,6 +99,230 @@ pub enum ClientError {
 }
 
 impl RelayClient {
+    /// Execute an owner-authorized lifecycle operation against a pinned home
+    /// peer. The mutual handshake proves both enrolled device certificates.
+    pub async fn manage_home_peer(
+        endpoint: &Endpoint,
+        relay_addr: EndpointAddr,
+        expected_server_user: [u8; 32],
+        expected_server_device: [u8; 32],
+        own_cert: DeviceCert,
+        own_sk: ed25519_dalek::SigningKey,
+        revocations: RevocationList,
+        request: HomePeerManagementRequest,
+    ) -> Result<HomePeerManagementResponse, ClientError> {
+        let conn = endpoint
+            .connect(relay_addr, MANAGEMENT_ALPN)
+            .await
+            .map_err(|error| ClientError::Iroh(error.to_string()))?;
+        let (mut send, mut recv) = conn
+            .open_bi()
+            .await
+            .map_err(|error| ClientError::Iroh(error.to_string()))?;
+        let mut nonce = [0; 32];
+        {
+            use rand::RngCore;
+            rand::thread_rng().fill_bytes(&mut nonce);
+        }
+        write_frame(
+            &mut send,
+            &postcard::to_allocvec(&Hello {
+                cert: own_cert,
+                client_nonce: nonce,
+            })
+            .map_err(|error| ClientError::Codec(error.to_string()))?,
+        )
+        .await?;
+        let ack: HelloAck = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
+            .map_err(|error| ClientError::Codec(error.to_string()))?;
+        auth::verify_hello_ack(
+            &ack,
+            &expected_server_user,
+            &revocations,
+            crate::peer::now_ns(),
+            &nonce,
+        )?;
+        if ack.cert.device_public_key != expected_server_device {
+            return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
+        }
+        let ack2 = auth::build_hello_ack2(&own_sk, &ack.server_nonce);
+        write_frame(
+            &mut send,
+            &postcard::to_allocvec(&ack2).map_err(|error| ClientError::Codec(error.to_string()))?,
+        )
+        .await?;
+        write_frame(
+            &mut send,
+            &postcard::to_allocvec(&request)
+                .map_err(|error| ClientError::Codec(error.to_string()))?,
+        )
+        .await?;
+        let response = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
+            .map_err(|error| ClientError::Codec(error.to_string()))?;
+        conn.close(0u32.into(), b"");
+        Ok(response)
+    }
+    /// Resolve the authenticated direct filesystem endpoint advertised by a
+    /// relay. The returned address is never the relay socket itself.
+    pub async fn discover_content_endpoint(
+        endpoint: &Endpoint,
+        relay_addr: EndpointAddr,
+        workspace_id: u64,
+        own_user_public_key: [u8; 32],
+        expected_server_device: [u8; 32],
+        own_cert: DeviceCert,
+        own_sk: ed25519_dalek::SigningKey,
+        revocations: RevocationList,
+    ) -> Result<EndpointAddr, ClientError> {
+        Ok(Self::discover_content_peer_with_server_trust(
+            endpoint,
+            relay_addr,
+            workspace_id,
+            Some((own_user_public_key, expected_server_device)),
+            own_cert,
+            own_sk,
+            revocations,
+        )
+        .await?
+        .endpoint)
+    }
+
+    /// Resolve both the content endpoint and authenticated Files workspace
+    /// ticket needed by a fresh device to join the live record plane.
+    pub async fn discover_content_peer(
+        endpoint: &Endpoint,
+        relay_addr: EndpointAddr,
+        workspace_id: u64,
+        own_user_public_key: [u8; 32],
+        expected_server_device: [u8; 32],
+        own_cert: DeviceCert,
+        own_sk: ed25519_dalek::SigningKey,
+        revocations: RevocationList,
+    ) -> Result<ContentPeerRegistration, ClientError> {
+        Self::discover_content_peer_with_server_trust(
+            endpoint,
+            relay_addr,
+            workspace_id,
+            Some((own_user_public_key, expected_server_device)),
+            own_cert,
+            own_sk,
+            revocations,
+        )
+        .await
+    }
+
+    /// Resolve content from a relay whose certified user root differs from
+    /// this client. The caller pins its derived relay service NodeId; the
+    /// challenge still proves the server holds its certified device key.
+    pub async fn discover_content_endpoint_to_pinned_host(
+        endpoint: &Endpoint,
+        relay_addr: EndpointAddr,
+        workspace_id: u64,
+        expected_server_user: [u8; 32],
+        expected_server_device: [u8; 32],
+        own_cert: DeviceCert,
+        own_sk: ed25519_dalek::SigningKey,
+        revocations: RevocationList,
+    ) -> Result<EndpointAddr, ClientError> {
+        Ok(Self::discover_content_peer_with_server_trust(
+            endpoint,
+            relay_addr,
+            workspace_id,
+            Some((expected_server_user, expected_server_device)),
+            own_cert,
+            own_sk,
+            revocations,
+        )
+        .await?
+        .endpoint)
+    }
+
+    async fn discover_content_peer_with_server_trust(
+        endpoint: &Endpoint,
+        relay_addr: EndpointAddr,
+        workspace_id: u64,
+        expected_server: Option<([u8; 32], [u8; 32])>,
+        own_cert: DeviceCert,
+        own_sk: ed25519_dalek::SigningKey,
+        revocations: RevocationList,
+    ) -> Result<ContentPeerRegistration, ClientError> {
+        let relay_service_id = *relay_addr.id.as_bytes();
+        let conn = endpoint
+            .connect(relay_addr, DISCOVERY_ALPN)
+            .await
+            .map_err(|error| ClientError::Iroh(error.to_string()))?;
+        let (mut send, mut recv) = conn
+            .open_bi()
+            .await
+            .map_err(|error| ClientError::Iroh(error.to_string()))?;
+        let mut nonce = [0; 32];
+        {
+            use rand::RngCore;
+            rand::thread_rng().fill_bytes(&mut nonce);
+        }
+        write_frame(
+            &mut send,
+            &postcard::to_allocvec(&Hello {
+                cert: own_cert.clone(),
+                client_nonce: nonce,
+            })
+            .map_err(|error| ClientError::Codec(error.to_string()))?,
+        )
+        .await?;
+        let ack: HelloAck = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
+            .map_err(|error| ClientError::Codec(error.to_string()))?;
+        match expected_server.as_ref() {
+            Some((user, _)) => {
+                auth::verify_hello_ack(&ack, user, &revocations, crate::peer::now_ns(), &nonce)?
+            }
+            None => {
+                auth::verify_pinned_host_ack(&ack, &revocations, crate::peer::now_ns(), &nonce)?
+            }
+        };
+        if let Some((_, expected_device)) = expected_server
+            && ack.cert.device_public_key != expected_device
+        {
+            return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
+        }
+        let ack2 = auth::build_hello_ack2(&own_sk, &ack.server_nonce);
+        write_frame(
+            &mut send,
+            &postcard::to_allocvec(&ack2).map_err(|error| ClientError::Codec(error.to_string()))?,
+        )
+        .await?;
+        write_frame(
+            &mut send,
+            &postcard::to_allocvec(&ContentEndpointRequest { workspace_id })
+                .map_err(|error| ClientError::Codec(error.to_string()))?,
+        )
+        .await?;
+        let advertisement: ContentEndpointAdvertisement =
+            postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
+                .map_err(|error| ClientError::Codec(error.to_string()))?;
+        conn.close(0u32.into(), b"");
+        if advertisement.workspace_id != workspace_id {
+            return Err(ClientError::Iroh(
+                "relay returned a mismatched workspace".into(),
+            ));
+        }
+        if advertisement.schema_version != 1 || advertisement.filesystem_ticket.is_empty() {
+            return Err(ClientError::Codec(
+                "relay returned an unsupported content registration".into(),
+            ));
+        }
+        let endpoint = advertisement
+            .filesystem_endpoints
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                ClientError::Iroh("relay has no ready filesystem endpoint for workspace".into())
+            })?;
+        Ok(ContentPeerRegistration {
+            endpoint,
+            ticket: advertisement.filesystem_ticket,
+            relay_service_id,
+        })
+    }
     /// Dial `relay_addr` on the `qos-relay/1` ALPN, run the auth
     /// handshake with `own_cert` + `own_sk`, and return a
     /// bidirectional session.
@@ -124,6 +352,7 @@ impl RelayClient {
             endpoint,
             relay_addr,
             Some(own_user_public_key),
+            None,
             own_cert,
             own_sk,
             revocations,
@@ -148,14 +377,48 @@ impl RelayClient {
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
-        Self::connect_with_server_trust(endpoint, relay_addr, None, own_cert, own_sk, revocations)
-            .await
+        Self::connect_with_server_trust(
+            endpoint,
+            relay_addr,
+            None,
+            None,
+            own_cert,
+            own_sk,
+            revocations,
+        )
+        .await
+    }
+
+    /// Connect to an enrolled home peer, pinning both the user's root
+    /// certificate and the exact enrolled device certificate.  The relay
+    /// service endpoint is intentionally a separate Iroh key, so endpoint
+    /// pinning alone cannot establish the identity behind it.
+    pub async fn connect_to_enrolled_home_peer(
+        endpoint: Endpoint,
+        relay_addr: EndpointAddr,
+        expected_server_user: [u8; 32],
+        expected_server_device: [u8; 32],
+        own_cert: DeviceCert,
+        own_sk: ed25519_dalek::SigningKey,
+        revocations: RevocationList,
+    ) -> Result<Self, ClientError> {
+        Self::connect_with_server_trust(
+            endpoint,
+            relay_addr,
+            Some(expected_server_user),
+            Some(expected_server_device),
+            own_cert,
+            own_sk,
+            revocations,
+        )
+        .await
     }
 
     async fn connect_with_server_trust(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
         expected_server_user: Option<[u8; 32]>,
+        expected_server_device: Option<[u8; 32]>,
         own_cert: DeviceCert,
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
@@ -188,8 +451,20 @@ impl RelayClient {
             postcard::from_bytes(&ack_bytes).map_err(|e| ClientError::Codec(e.to_string()))?;
         let now_ns = crate::peer::now_ns();
         let relay_peer = match expected_server_user.as_ref() {
-            Some(expected) => {
-                auth::verify_hello_ack(&ack, expected, &revocations, now_ns, &client_nonce)?
+            Some(expected_user) => {
+                let relay_peer = auth::verify_hello_ack(
+                    &ack,
+                    expected_user,
+                    &revocations,
+                    now_ns,
+                    &client_nonce,
+                )?;
+                if expected_server_device.is_some_and(|expected_device| {
+                    relay_peer.cert.device_public_key != expected_device
+                }) {
+                    return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
+                }
+                relay_peer
             }
             None => auth::verify_pinned_host_ack(&ack, &revocations, now_ns, &client_nonce)?,
         };

@@ -64,17 +64,19 @@ ENV CARGO_HOME=/build/.cargo-home \
     LC_ALL=C.UTF-8 \
     TZ=UTC
 
-# Build only qos-relay and its runtime deps — trims build time to
+# Build qos-relay and the authenticated filesystem replica — trims build time to
 # minutes rather than tens. Match os/Containerfile.host's cache
 # mounts so incremental builds actually pick up on the runner.
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
     sed -i '/"apps\/browser",/d' Cargo.toml \
-    && cargo build --release -p qos-relay --bins \
+    && cargo build --release -p qos-relay -p fs --bins \
     && mkdir -p /out \
     && cp target/release/qos-relay \
           target/release/qos-relay-admin \
+          target/release/qos-enroll \
+          target/release/fs \
           /out/
 
 # ---- Stage 2: runtime --------------------------------------------------------
@@ -90,6 +92,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
 
 COPY --from=builder /out/qos-relay /usr/bin/qos-relay
 COPY --from=builder /out/qos-relay-admin /usr/bin/qos-relay-admin
+COPY --from=builder /out/qos-enroll /usr/bin/qos-enroll
+COPY --from=builder /out/fs /usr/bin/fs
+COPY os/containers/qos-relay/qos-home-peer /usr/bin/qos-home-peer
+RUN chmod 0755 /usr/bin/qos-home-peer
 COPY os/usr/lib/systemd/system/qos-relay.service /usr/lib/systemd/system/qos-relay.service
 
 # Where the daemon writes state + reads config. The container
@@ -102,5 +108,5 @@ VOLUME ["/var/lib/qos-relay", "/var/lib/qos", "/etc/qos"]
 EXPOSE 4433/udp
 
 # Default command: daemon. Operator can override with `admin`.
-ENTRYPOINT ["/usr/bin/qos-relay"]
+ENTRYPOINT ["/usr/bin/qos-home-peer"]
 CMD ["--config", "/etc/qos/relay.toml", "run"]

@@ -61,6 +61,17 @@ pub struct RelayConfig {
     #[serde(default = "default_state_root")]
     pub state_root: PathBuf,
 
+    /// Atomic readiness proof produced by `fs replica`.  Content-replication
+    /// capacity is advertised only while this says the complete current
+    /// namespace (manifests, chunks, and thumbnails) is resident.
+    #[serde(default = "default_full_replica_status")]
+    pub full_replica_status: PathBuf,
+
+    /// The filesystem home-peer bundle. When present, its workspace tickets
+    /// are imported as durable full-workspace relay bindings at startup.
+    #[serde(default = "default_home_peer_bundle")]
+    pub home_peer_bundle: PathBuf,
+
     /// Iroh endpoint bind hint. `0.0.0.0:0` = OS-chosen port.
     #[serde(default = "default_iroh_listen")]
     pub iroh_listen: SocketAddr,
@@ -77,7 +88,9 @@ pub struct RelayConfig {
     #[serde(default = "default_device_role")]
     pub device_role: DeviceRole,
 
-    /// Services advertised to same-identity clients and federated peers.
+    /// Services requested by the operator. Runtime advertisement is clamped
+    /// to the planes started by the composite home peer and its live residency
+    /// proof.
     #[serde(default = "default_services")]
     pub services: ServiceCapabilities,
 
@@ -126,6 +139,7 @@ fn default_priority() -> i32 {
 pub struct WorkspaceBinding {
     /// Workspace id (matches
     /// [`qos_user_identity::WorkspaceId`]).
+    #[serde(with = "workspace_id_serde")]
     pub id: u64,
 
     /// When true, the relay holds a full replica of the
@@ -135,10 +149,44 @@ pub struct WorkspaceBinding {
     #[serde(default = "true_default")]
     pub pin: bool,
 
-    /// Which existing collaboration/blob streams this device retains. A
-    /// server defaults to a full workspace replica, including file content.
+    /// Which existing collaboration/blob streams this device retains. The
+    /// standalone relay defaults to workspace records only because it does
+    /// not run the filesystem/blob host plane.
     #[serde(default = "default_server_replication")]
     pub replication: ReplicationIntent,
+    /// Signed filesystem-authority users permitted to use this relay room.
+    /// Home-peer import maintains this from the bundle; it is intentionally
+    /// room-scoped rather than a relay-wide collaborator union.
+    #[serde(default)]
+    pub admitted_users: Vec<String>,
+}
+
+mod workspace_id_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Encoded {
+        Decimal(String),
+        Legacy(u64),
+    }
+
+    pub fn serialize<S>(id: &u64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&id.to_string())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match Encoded::deserialize(deserializer)? {
+            Encoded::Decimal(value) => value.parse().map_err(serde::de::Error::custom),
+            Encoded::Legacy(value) => Ok(value),
+        }
+    }
 }
 
 fn true_default() -> bool {
@@ -150,11 +198,14 @@ fn default_device_role() -> DeviceRole {
 }
 
 fn default_services() -> ServiceCapabilities {
-    ServiceCapabilities::personal_server()
+    ServiceCapabilities::relay_only()
 }
 
 fn default_server_replication() -> ReplicationIntent {
-    ReplicationIntent::FullWorkspace
+    // CRDT persistence is the only replication plane present in qos-relay.
+    // FullWorkspace needs the separate filesystem/blob host, so an operator
+    // must opt into it only after deploying that service.
+    ReplicationIntent::WorkspaceOnly
 }
 
 fn default_identity_root() -> PathBuf {
@@ -163,6 +214,14 @@ fn default_identity_root() -> PathBuf {
 
 fn default_state_root() -> PathBuf {
     PathBuf::from("/var/lib/qos-relay")
+}
+
+fn default_full_replica_status() -> PathBuf {
+    PathBuf::from("/var/lib/qos/full-replica/status.json")
+}
+
+fn default_home_peer_bundle() -> PathBuf {
+    PathBuf::from("/etc/qos/home-peer.toml")
 }
 
 fn default_iroh_listen() -> SocketAddr {
@@ -176,6 +235,8 @@ impl Default for RelayConfig {
         Self {
             identity_root: default_identity_root(),
             state_root: default_state_root(),
+            full_replica_status: default_full_replica_status(),
+            home_peer_bundle: default_home_peer_bundle(),
             iroh_listen: default_iroh_listen(),
             trust_policy: TrustPolicy::default(),
             device_role: default_device_role(),
@@ -239,6 +300,7 @@ impl RelayConfig {
             id,
             pin,
             replication: default_server_replication(),
+            admitted_users: Vec::new(),
         });
         true
     }
@@ -285,6 +347,10 @@ mod tests {
         assert_eq!(cfg.device_role, DeviceRole::AlwaysOnServer);
         assert!(cfg.services.workspace_replication);
         assert!(cfg.services.inbound_relay);
+        assert!(!cfg.services.full_content_replication);
+        assert!(!cfg.services.remote_control_relay);
+        assert!(!cfg.services.app_serving);
+        assert!(!cfg.services.compute);
     }
 
     #[test]
@@ -297,6 +363,23 @@ mod tests {
         cfg.save(&path).unwrap();
         let back = RelayConfig::load(&path).unwrap();
         assert_eq!(cfg, back);
+    }
+
+    #[test]
+    fn workspace_ids_round_trip_above_toml_integer_range_and_parse_legacy_integers() {
+        let high = (i64::MAX as u64) + 42;
+        let binding = WorkspaceBinding {
+            id: high,
+            pin: true,
+            replication: ReplicationIntent::FullWorkspace,
+            admitted_users: Vec::new(),
+        };
+        let text = toml::to_string(&binding).unwrap();
+        assert!(text.contains(&format!("id = \"{high}\"")));
+        assert_eq!(toml::from_str::<WorkspaceBinding>(&text).unwrap().id, high);
+
+        let legacy: WorkspaceBinding = toml::from_str("id = 42").unwrap();
+        assert_eq!(legacy.id, 42);
     }
 
     #[test]
@@ -317,7 +400,7 @@ mod tests {
         assert_eq!(cfg.workspaces.len(), 1);
         assert_eq!(
             cfg.workspaces[0].replication,
-            ReplicationIntent::FullWorkspace
+            ReplicationIntent::WorkspaceOnly
         );
     }
 

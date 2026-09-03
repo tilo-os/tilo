@@ -6,6 +6,16 @@ operations used with another person are replicated between devices belonging
 to one identity. Same identity changes the authorization result, not the
 signature, revocation or record-validation path.
 
+The shell also has a private, user-root-derived continuation lane for the
+device-specific part of “continue on another device.” Its bounded checkpoint
+contains safe app launch intents, logical file references and per-device focus;
+it excludes local paths, credentials, compositor surface ids and file bytes.
+An authenticated same-identity peer merges the checkpoint, discovers missing
+workspaces, and opens matching local app instances in their synchronized tabs
+without stealing the active workspace or focus. The always-on relay retains
+the latest aggregate checkpoint so sleeping devices can catch up later without
+exposing personal session state to collaborators.
+
 ## One replication substrate
 
 `qos-relay::mesh::ReplicationIntent` maps a device's residency choice onto the
@@ -20,8 +30,10 @@ existing data planes:
 An app may register an `AppRecords` resource family, but may not create its own
 account, pairing, sync status or conflict protocol. Selecting ebook or media
 replication automatically includes the file tree and blobs on which it depends.
-An always-on server defaults to `FullWorkspace`; an interactive device defaults
-to on-demand hydration.
+An always-on composite server defaults to `FullWorkspace`; an interactive
+device defaults to on-demand hydration. The home-peer deployment starts the
+authenticated filesystem worker for every `workspaces[]` entry and advertises
+content residency only while its aggregate freshness proof is complete.
 
 ## Device roles and authority
 
@@ -32,9 +44,11 @@ all workspace content additionally requires `can_read_all_workspaces`.
 Revoked, expired, foreign-identity or wrongly scoped devices remain rejected by
 the existing authentication and operation validators.
 
-An always-on device can pin workspace state, retain content, store-and-forward,
-relay end-to-end collaboration/chat traffic, relay a remote-control connection,
-and advertise app/compute capacity. Relay permission is not control permission:
+An always-on device can pin workspace state and store-and-forward collaboration
+traffic. It can retain content, relay a remote-control connection, or advertise
+app/compute capacity only when the corresponding service has actually started
+and passed its own health checks; a certificate authorizes that service but does
+not create it. Relay permission is not control permission:
 the target compositor still creates the consented share, gates its surfaces and
 filters remote input. Direct control and relayed control therefore reach the
 same target-side authorization path.

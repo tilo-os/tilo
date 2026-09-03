@@ -8,6 +8,11 @@ use serde::{Deserialize, Serialize};
 /// Peer identifier — opaque numeric handle assigned per session.
 pub type PeerId = u64;
 
+/// Continuation is portable metadata, never an application backup. Keep this
+/// limit at the wire boundary so every transport (direct or store-forward)
+/// applies the same bound before decoding or retaining it.
+pub const MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES: usize = 4 * 1024 * 1024;
+
 /// Wayland surface identifier — local handle used for streaming/input routing.
 pub type SurfaceId = u64;
 
@@ -228,6 +233,26 @@ pub enum NeighbourMsg {
         /// announcing device, so omission can never resurrect a device.
         revocations: Vec<qos_user_identity::RevocationEntry>,
     },
+    /// Ask another certified device of the same person for its latest
+    /// continuation checkpoints. This rides a user-root-derived topic, never
+    /// a collaboration room: browser/session state must not become visible to
+    /// collaborators merely because they share a workspace.
+    ///
+    /// Appended to preserve all existing Postcard discriminants.
+    PersonalContinuityRequest {
+        user_public_key: [u8; 32],
+        requester: PeerId,
+    },
+    /// A bounded, validated aggregate of per-device
+    /// [`crate::shell::personal_continuity`] snapshots.
+    /// The receiving shell accepts it only when the authenticated transport
+    /// certificate has `user_public_key`. Certified devices may relay the
+    /// aggregate so an always-on peer retains the latest state for all of them.
+    PersonalContinuityCheckpoint {
+        user_public_key: [u8; 32],
+        publisher: PeerId,
+        snapshot: Vec<u8>,
+    },
 }
 
 #[cfg(test)]
@@ -396,6 +421,21 @@ mod tests {
                         signature: [3; 64],
                     }),
                     revocations: Vec::new(),
+                },
+            ),
+            (
+                "personal continuity request",
+                NeighbourMsg::PersonalContinuityRequest {
+                    user_public_key: [7; 32],
+                    requester: 0x00AB_CDEF,
+                },
+            ),
+            (
+                "personal continuity checkpoint",
+                NeighbourMsg::PersonalContinuityCheckpoint {
+                    user_public_key: [7; 32],
+                    publisher: 0x00AB_CDEF,
+                    snapshot: vec![1, 2, 3],
                 },
             ),
         ]

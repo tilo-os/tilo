@@ -56,6 +56,8 @@ pub mod peer_sync_overlay;
 pub mod peer_view;
 pub mod peer_windows;
 pub mod persist;
+pub mod personal_continuity;
+pub mod personal_continuity_registry;
 pub mod placement;
 pub mod portal_dialog;
 mod power_menu;
@@ -930,8 +932,8 @@ pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
     root
 }
 
-/// Lets the caller flip the peer-sync palette commands on (`/invite`,
-/// `/connect`), mirroring `--enable-peer-sync`. [`build_nirios_root`] keeps
+/// Lets the caller expose the peer-sync palette commands (`/invite`,
+/// `/connect`) for a network-enabled session. [`build_nirios_root`] keeps
 /// the zero-arg shape so call-sites that don't care don't have to thread it.
 pub fn build_nirios_root_with_options(
     tree: &WorkspaceTree,

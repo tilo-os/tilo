@@ -87,14 +87,14 @@ jobs:
           # The builder-image update and this workflow can race on the first
           # merge that introduces a new subject. Normally these packages are
           # already baked in; this fallback makes that transition self-hosting.
-          if ! command -v adwaita-1-demo >/dev/null ||
+          if ! command -v gnome-text-editor >/dev/null ||
              ! command -v libreoffice >/dev/null ||
              ! find /usr/lib64/qt6/examples /usr/lib/qt6/examples \
                  -type f -path '*/widgets/lineedits/*/lineedits' -perm /111 \
                  -print -quit 2>/dev/null | grep -q .; then
-            dnf install -y libadwaita-demo qt6-qtbase-examples libreoffice-writer
+            dnf install -y gnome-text-editor qt6-qtbase-examples libreoffice-writer
           fi
-          command -v adwaita-1-demo
+          command -v gnome-text-editor
           command -v libreoffice
           find /usr/lib64/qt6/examples /usr/lib/qt6/examples \
             -type f -path '*/widgets/lineedits/*/lineedits' -perm /111 \

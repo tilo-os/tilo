@@ -19,7 +19,7 @@ use qos_relay::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
 use qos_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use crate::network::protocol::NeighbourMsg;
+use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg};
 
 #[cfg(test)]
 static DEDICATED_SURFACE_FRAMES_RECEIVED: std::sync::atomic::AtomicUsize =
@@ -41,6 +41,13 @@ struct SurfaceWireFrame {
 
 pub type WorkspaceId = u64;
 pub type PeerId = EndpointId;
+
+/// Enrollment-bound identity expected behind a distinct relay service key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HomePeerExpectation {
+    pub user_public_key: [u8; 32],
+    pub device_public_key: [u8; 32],
+}
 
 /// Device certificate chain used to authenticate to a qOS workspace host.
 #[derive(Clone)]
@@ -142,6 +149,11 @@ pub enum NetCmd {
     /// direct gossip path too; the host adds persistence and offline delivery.
     ConnectHost {
         addr: EndpointAddr,
+        expectation: Option<HomePeerExpectation>,
+    },
+    /// Stop using a host removed from the authenticated local registry.
+    DisconnectHost {
+        id: EndpointId,
     },
 }
 
@@ -154,6 +166,7 @@ pub enum NetEvent {
     PeerLeft {
         ws: WorkspaceId,
         peer: PeerId,
+        cause: PeerDepartureCause,
     },
     /// An authenticated durable host finished subscribing to this workspace.
     /// Distinct from a direct peer arrival: the shell uses this edge to seed
@@ -169,6 +182,20 @@ pub enum NetEvent {
     },
 }
 
+/// Why the transport stopped treating a peer as live on a workspace topic.
+///
+/// This is transport evidence, not a statement about the person's intent:
+/// a timeout can be an unreliable network just as easily as a closed app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerDepartureCause {
+    /// Iroh gossip reported that the neighbour went away.
+    GossipNeighborDown,
+    /// A durable host's relay session closed.
+    HostSessionClosed,
+    /// The peer stopped refreshing its liveness heartbeat.
+    LivenessTimedOut,
+}
+
 enum InternalEvent {
     Topic {
         ws: WorkspaceId,
@@ -182,6 +209,7 @@ enum InternalEvent {
     HostConnected {
         ws: WorkspaceId,
         peer: EndpointId,
+        addr: EndpointAddr,
         // Boxed: `RelayCoeditSession` (an authenticated relay client plus
         // its subscription state) is far larger than every sibling variant,
         // so an unboxed `Result` here would size the whole enum to fit it.
@@ -317,9 +345,10 @@ struct ActorState {
     topics: HashMap<WorkspaceId, TopicRuntime>,
     subscribers: HashMap<WorkspaceId, mpsc::Sender<NetEvent>>,
     peers: HashMap<EndpointId, EndpointAddr>,
-    hosts: HashMap<EndpointId, EndpointAddr>,
+    hosts: HashMap<EndpointId, (EndpointAddr, Option<HomePeerExpectation>)>,
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
+    content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
     peers_seen: HashMap<(WorkspaceId, EndpointId), Instant>,
     recent: HashSet<(WorkspaceId, [u8; 32])>,
     recent_order: VecDeque<(WorkspaceId, [u8; 32])>,
@@ -353,6 +382,17 @@ impl ActorState {
                         runtime.pump.abort();
                     }
                 }
+                let discoveries: Vec<_> = self
+                    .content_discovery_tasks
+                    .keys()
+                    .filter(|(task_ws, _)| *task_ws == ws)
+                    .copied()
+                    .collect();
+                for key in discoveries {
+                    if let Some(task) = self.content_discovery_tasks.remove(&key) {
+                        task.abort();
+                    }
+                }
             }
             Some(NetCmd::Publish { ws, msg }) => {
                 let gossip_fallback = if matches!(msg, NeighbourMsg::SurfaceFrame { .. }) {
@@ -383,10 +423,23 @@ impl ActorState {
                     }
                 }
             }
-            Some(NetCmd::ConnectHost { addr }) => {
+            Some(NetCmd::ConnectHost { addr, expectation }) => {
                 let id = addr.id;
+                let changed = self
+                    .hosts
+                    .get(&id)
+                    .is_some_and(|known| known != &(addr.clone(), expectation.clone()));
+                if changed {
+                    // A new address for the same certified service replaces
+                    // only its relay session. Its already authenticated Files
+                    // endpoint remains usable until refreshed discovery proves
+                    // a replacement; treating a reconnect as removal creates
+                    // a needless offline window (and can strand hydration if
+                    // the new relay hint is temporarily unreachable).
+                    self.teardown_host(id, false);
+                }
                 self.lookup.add_endpoint_info(addr.clone());
-                self.hosts.insert(id, addr.clone());
+                self.hosts.insert(id, (addr.clone(), expectation.clone()));
                 let Some(identity) = self.host_identity.as_ref() else {
                     tracing::warn!(peer = %id, "cannot connect workspace host without a device certificate");
                     return true;
@@ -397,15 +450,60 @@ impl ActorState {
                         identity,
                         ws,
                         addr.clone(),
+                        expectation.clone(),
                         &self.internal_tx,
                         &self.host_sessions,
                         &mut self.connecting_hosts,
+                        &mut self.content_discovery_tasks,
                     );
                 }
             }
+            Some(NetCmd::DisconnectHost { id }) => self.teardown_host(id, true),
             None => return false,
         }
         true
+    }
+
+    /// Stop relay sessions and discovery tasks for one host.  `remove_content`
+    /// is reserved for an explicit enrolled-home-peer removal: an address
+    /// refresh must never revoke a still-valid Files hydration source.
+    fn teardown_host(&mut self, id: EndpointId, remove_content: bool) {
+        let enrolled_home_peer = self
+            .hosts
+            .remove(&id)
+            .is_some_and(|(_, expectation)| expectation.is_some());
+        self.connecting_hosts.retain(|(_, host)| *host != id);
+        let sessions: Vec<_> = self
+            .host_sessions
+            .keys()
+            .filter(|(_, host)| *host == id)
+            .copied()
+            .collect();
+        for key in sessions {
+            if let Some(runtime) = self.host_sessions.remove(&key) {
+                runtime.pump.abort();
+            }
+        }
+        let discoveries: Vec<_> = self
+            .content_discovery_tasks
+            .keys()
+            .filter(|(_, host)| *host == id)
+            .copied()
+            .collect();
+        for key in discoveries {
+            if let Some(task) = self.content_discovery_tasks.remove(&key) {
+                task.abort();
+            }
+        }
+        if remove_content && enrolled_home_peer {
+            // Discovery registrations are tied to the relay service identity,
+            // not merely the direct Files endpoint.  Tear down that durable
+            // route too: otherwise a removed home peer can return after an
+            // fs-daemon restart from its persisted hydration catalog.
+            tokio::spawn(async move {
+                let _ = unregister_content_peers_for_relay(id).await;
+            });
+        }
     }
 
     /// Send an encoded surface frame over the media ALPN to every directly
@@ -501,15 +599,17 @@ impl ActorState {
             }
         }
         if let Some(identity) = self.host_identity.as_ref() {
-            for addr in self.hosts.values().cloned() {
+            for (addr, expectation) in self.hosts.values().cloned() {
                 schedule_host_topic(
                     &self.endpoint,
                     identity,
                     ws,
-                    addr,
+                    addr.clone(),
+                    expectation,
                     &self.internal_tx,
                     &self.host_sessions,
                     &mut self.connecting_hosts,
+                    &mut self.content_discovery_tasks,
                 );
             }
         }
@@ -525,8 +625,13 @@ impl ActorState {
             Some(InternalEvent::Closed { ws }) => {
                 self.topics.remove(&ws);
             }
-            Some(InternalEvent::HostConnected { ws, peer, result }) => {
-                self.handle_host_connected(ws, peer, result);
+            Some(InternalEvent::HostConnected {
+                ws,
+                peer,
+                addr,
+                result,
+            }) => {
+                self.handle_host_connected(ws, peer, &addr, result);
             }
             Some(InternalEvent::Host { ws, peer, event }) => {
                 self.handle_host_event(ws, peer, event).await;
@@ -576,7 +681,11 @@ impl ActorState {
             }
             GossipEvent::NeighborDown(peer) => {
                 self.peers_seen.remove(&(ws, peer));
-                Some(NetEvent::PeerLeft { ws, peer })
+                Some(NetEvent::PeerLeft {
+                    ws,
+                    peer,
+                    cause: PeerDepartureCause::GossipNeighborDown,
+                })
             }
             GossipEvent::Received(message) => {
                 let peer = message.delivered_from;
@@ -616,10 +725,16 @@ impl ActorState {
         &mut self,
         ws: WorkspaceId,
         peer: EndpointId,
+        attempted_addr: &EndpointAddr,
         result: Box<Result<RelayCoeditSession, String>>,
     ) {
         self.connecting_hosts.remove(&(ws, peer));
-        if !self.topics.contains_key(&ws) {
+        if !self.topics.contains_key(&ws)
+            || !self
+                .hosts
+                .get(&peer)
+                .is_some_and(|(current, _)| current == attempted_addr)
+        {
             return;
         }
         match *result {
@@ -659,7 +774,11 @@ impl ActorState {
                 if let Some(runtime) = self.host_sessions.remove(&(ws, peer)) {
                     runtime.pump.abort();
                 }
-                Some(NetEvent::PeerLeft { ws, peer })
+                Some(NetEvent::PeerLeft {
+                    ws,
+                    peer,
+                    cause: PeerDepartureCause::HostSessionClosed,
+                })
             }
         };
         if let (Some(event), Some(tx)) = (mapped, self.subscribers.get(&ws)) {
@@ -680,7 +799,13 @@ impl ActorState {
         for (ws, peer) in stale {
             self.peers_seen.remove(&(ws, peer));
             if let Some(tx) = self.subscribers.get(&ws) {
-                let _ = tx.send(NetEvent::PeerLeft { ws, peer }).await;
+                let _ = tx
+                    .send(NetEvent::PeerLeft {
+                        ws,
+                        peer,
+                        cause: PeerDepartureCause::LivenessTimedOut,
+                    })
+                    .await;
             }
         }
     }
@@ -695,15 +820,17 @@ impl ActorState {
         }
         if let Some(identity) = self.host_identity.as_ref() {
             for ws in self.topics.keys().copied() {
-                for addr in self.hosts.values().cloned() {
+                for (addr, expectation) in self.hosts.values().cloned() {
                     schedule_host_topic(
                         &self.endpoint,
                         identity,
                         ws,
                         addr,
+                        expectation,
                         &self.internal_tx,
                         &self.host_sessions,
                         &mut self.connecting_hosts,
+                        &mut self.content_discovery_tasks,
                     );
                 }
             }
@@ -796,6 +923,7 @@ async fn run(
         hosts: HashMap::new(),
         host_sessions: HashMap::new(),
         connecting_hosts: HashSet::new(),
+        content_discovery_tasks: HashMap::new(),
         peers_seen: HashMap::new(),
         recent: HashSet::new(),
         recent_order: VecDeque::new(),
@@ -847,6 +975,16 @@ async fn publish(
     broadcast_gossip: bool,
 ) {
     let Some(topic) = topics.get(&ws) else { return };
+    if let NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. } = &msg
+        && snapshot.len() > MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES
+    {
+        tracing::warn!(
+            ws,
+            bytes = snapshot.len(),
+            "personal continuity checkpoint exceeds transport limit"
+        );
+        return;
+    }
     let bytes = match postcard::to_allocvec(&msg) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -910,6 +1048,14 @@ fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32], Re
             };
             return Some((*blake3::hash(route.as_bytes()).as_bytes(), retention));
         }
+        NeighbourMsg::PersonalContinuityCheckpoint {
+            user_public_key, ..
+        } => {
+            let mut route = Vec::with_capacity(20 + user_public_key.len());
+            route.extend_from_slice(b"personal-continuity\0");
+            route.extend_from_slice(user_public_key);
+            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
+        }
         _ => return None,
     };
     Some((*blake3::hash(route).as_bytes(), kind))
@@ -944,11 +1090,68 @@ fn schedule_host_topic(
     identity: &HostIdentity,
     ws: WorkspaceId,
     addr: EndpointAddr,
+    expectation: Option<HomePeerExpectation>,
     internal_tx: &mpsc::Sender<InternalEvent>,
     sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     connecting: &mut HashSet<(WorkspaceId, EndpointId)>,
+    content_discovery_tasks: &mut HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
 ) {
     let host = addr.id;
+    if let Some(expectation) = expectation.clone()
+        && !content_discovery_tasks.contains_key(&(ws, host))
+    {
+        let discovery_endpoint = endpoint.clone();
+        let discovery_addr = addr.clone();
+        let discovery_identity = identity.clone();
+        let task = tokio::spawn(async move {
+            let mut retry = Duration::from_secs(1);
+            loop {
+                let (discovery_cert, entries) = discovery_identity.material_for(ws);
+                let mut discovery_revocations = RevocationList::new();
+                if entries
+                    .into_iter()
+                    .any(|entry| discovery_revocations.insert(entry).is_err())
+                {
+                    tracing::warn!(ws, "workspace identity has an invalid revocation entry");
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    continue;
+                }
+                let discovered = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    RelayClient::discover_content_peer(
+                        &discovery_endpoint,
+                        discovery_addr.clone(),
+                        ws,
+                        expectation.user_public_key,
+                        expectation.device_public_key,
+                        discovery_cert.clone(),
+                        discovery_identity.device_signing_key.clone(),
+                        discovery_revocations.clone(),
+                    ),
+                )
+                .await;
+                match discovered {
+                    Ok(Ok(content_peer)) => {
+                        let _ = register_content_peer(content_peer).await;
+                        // Re-advertise periodically. Registration persists the
+                        // peer, while this also repairs a daemon replacement
+                        // without coupling its lifecycle to the relay session.
+                        retry = Duration::from_secs(30);
+                    }
+                    Ok(Err(error)) => {
+                        tracing::debug!(%error, ws, "relay content discovery is not ready");
+                        retry = retry.saturating_mul(2).min(Duration::from_secs(10));
+                    }
+                    Err(_) => {
+                        tracing::debug!(ws, "relay content discovery timed out");
+                        retry = retry.saturating_mul(2).min(Duration::from_secs(10));
+                    }
+                }
+                tokio::time::sleep(retry).await;
+            }
+        });
+        content_discovery_tasks.insert((ws, host), task);
+    }
     if sessions.contains_key(&(ws, host)) || !connecting.insert((ws, host)) {
         return;
     }
@@ -963,13 +1166,52 @@ fn schedule_host_topic(
             return;
         }
     }
+    let Some(expectation) = expectation else {
+        // Invited/provider hosts can carry collaboration state, but only an
+        // enrolled home peer may nominate a Files hydration endpoint.
+        let tx = internal_tx.clone();
+        tokio::spawn(async move {
+            let result = tokio::time::timeout(
+                Duration::from_secs(10),
+                RelayClient::connect_to_pinned_host(
+                    endpoint,
+                    addr.clone(),
+                    device_cert,
+                    identity.device_signing_key.clone(),
+                    revocations,
+                ),
+            )
+            .await
+            .map_err(|_| "workspace host connection timed out".to_string())
+            .and_then(|result| result.map_err(|error| error.to_string()))
+            .and_then(|client| {
+                RelayCoeditSession::join(
+                    client,
+                    ws,
+                    identity.device_signing_key.verifying_key().to_bytes(),
+                )
+                .map_err(|error| error.to_string())
+            });
+            let _ = tx
+                .send(InternalEvent::HostConnected {
+                    ws,
+                    peer: host,
+                    addr,
+                    result: Box::new(result),
+                })
+                .await;
+        });
+        return;
+    };
     let tx = internal_tx.clone();
     tokio::spawn(async move {
         let result = tokio::time::timeout(
             Duration::from_secs(10),
-            RelayClient::connect_to_pinned_host(
+            RelayClient::connect_to_enrolled_home_peer(
                 endpoint,
-                addr,
+                addr.clone(),
+                expectation.user_public_key,
+                expectation.device_public_key,
                 device_cert,
                 identity.device_signing_key.clone(),
                 revocations,
@@ -990,10 +1232,135 @@ fn schedule_host_topic(
             .send(InternalEvent::HostConnected {
                 ws,
                 peer: host,
+                addr,
                 result: Box::new(result),
             })
             .await;
     });
+}
+
+/// Submit an authenticated relay-discovered Files peer to the running FUSE
+/// daemon. This is deliberately a detached worker: endpoint registration may
+/// wait on the group-restricted daemon socket but must never delay networking
+/// or the compositor. The filesystem owns persistence and hydration policy.
+async fn register_content_peer(registration: qos_relay::ContentPeerRegistration) -> bool {
+    if cfg!(test) && std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER").is_none() {
+        return true;
+    }
+    let publisher = std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER")
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || std::path::PathBuf::from("/usr/bin/fs"),
+            std::path::PathBuf::from,
+        );
+    let cache_dir = std::env::var_os("QOS_FS_CONTENT_PEER_CACHE_DIR")
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || std::path::PathBuf::from("/var/cache/quick-fs"),
+            std::path::PathBuf::from,
+        );
+    let Ok(payload) = serde_json::to_vec(&registration) else {
+        tracing::warn!("could not serialize relay-discovered filesystem registration");
+        return false;
+    };
+    let mut child = match tokio::process::Command::new(&publisher)
+        .arg("register-content-peer")
+        .arg("--cache-dir")
+        .arg(&cache_dir)
+        .arg("--endpoint-stdin")
+        .stdin(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            tracing::warn!(%error, publisher = %publisher.display(), "could not start filesystem content-peer registration");
+            return false;
+        }
+    };
+    use tokio::io::AsyncWriteExt as _;
+    let Some(mut stdin) = child.stdin.take() else {
+        tracing::warn!("filesystem content-peer registration has no stdin");
+        return false;
+    };
+    if let Err(error) = stdin.write_all(&payload).await {
+        tracing::warn!(%error, "could not send discovered endpoint to filesystem daemon");
+        return false;
+    }
+    drop(stdin);
+    match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
+        Ok(Ok(status)) if status.success() => true,
+        Ok(Ok(status)) => {
+            tracing::warn!(?status, "filesystem content-peer registration failed");
+            false
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "could not wait for filesystem content-peer registration");
+            false
+        }
+        Err(_) => {
+            tracing::warn!("filesystem content-peer registration timed out");
+            false
+        }
+    }
+}
+
+/// Ask the running filesystem daemon to forget all endpoint/ticket pairs
+/// authenticated by a removed enrolled relay. The daemon owns both its live
+/// Hydrator and the durable catalog, so the shell cannot leave one stale.
+async fn unregister_content_peers_for_relay(relay: EndpointId) -> bool {
+    #[cfg(test)]
+    noted_content_peer_removals()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(relay);
+    if cfg!(test) && std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER").is_none() {
+        return true;
+    }
+    let publisher = std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER")
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || std::path::PathBuf::from("/usr/bin/fs"),
+            std::path::PathBuf::from,
+        );
+    let cache_dir = std::env::var_os("QOS_FS_CONTENT_PEER_CACHE_DIR")
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || std::path::PathBuf::from("/var/cache/quick-fs"),
+            std::path::PathBuf::from,
+        );
+    match tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new(&publisher)
+            .arg("unregister-content-peer")
+            .arg("--cache-dir")
+            .arg(cache_dir)
+            .arg("--relay-service-id")
+            .arg(hex::encode(relay.as_bytes()))
+            .status(),
+    )
+    .await
+    {
+        Ok(Ok(status)) if status.success() => true,
+        Ok(Ok(status)) => {
+            tracing::warn!(?status, relay = %relay, "filesystem content-peer removal failed");
+            false
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(%error, relay = %relay, "could not start filesystem content-peer removal");
+            false
+        }
+        Err(_) => {
+            tracing::warn!(relay = %relay, "filesystem content-peer removal timed out");
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+fn noted_content_peer_removals() -> &'static Mutex<Vec<EndpointId>> {
+    static REMOVALS: std::sync::OnceLock<Mutex<Vec<EndpointId>>> = std::sync::OnceLock::new();
+    REMOVALS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 fn spawn_host_pump(
@@ -1060,7 +1427,10 @@ mod tests {
     use qos_relay::{
         Relay, RelayConfig, ReplicationIntent, WorkspaceBinding, daemon::RelayIdentity,
     };
-    use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+    use qos_user_identity::{
+        DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
+        sign_revocation_entry,
+    };
     use tokio::time::timeout;
 
     fn document(mutation: &collab_types::DocumentMutation) -> NeighbourMsg {
@@ -1118,6 +1488,39 @@ mod tests {
             ),
             Some((_, Retention::Delta))
         ));
+        let root_a = [0xA1; 32];
+        let root_b = [0xB2; 32];
+        let checkpoint_a = NeighbourMsg::PersonalContinuityCheckpoint {
+            user_public_key: root_a,
+            publisher: 1,
+            snapshot: vec![7],
+        };
+        let checkpoint_b = NeighbourMsg::PersonalContinuityCheckpoint {
+            user_public_key: root_b,
+            publisher: 2,
+            snapshot: vec![8],
+        };
+        let Some((channel_a, Retention::Checkpoint)) = retention(&checkpoint_a, false) else {
+            panic!("personal continuity checkpoints must be retained baselines");
+        };
+        let Some((channel_b, Retention::Checkpoint)) = retention(&checkpoint_b, false) else {
+            panic!("personal continuity checkpoints must be retained baselines");
+        };
+        assert_ne!(
+            channel_a, channel_b,
+            "each user root has an isolated host channel"
+        );
+        assert!(
+            retention(
+                &NeighbourMsg::PersonalContinuityRequest {
+                    user_public_key: root_a,
+                    requester: 1,
+                },
+                false,
+            )
+            .is_none(),
+            "requests are live probes, never retained work"
+        );
         for live in [
             NeighbourMsg::RemoteInput {
                 peer: 1,
@@ -1366,7 +1769,7 @@ mod tests {
         root: &ed25519_dalek::SigningKey,
         a_pub: [u8; 32],
         b_pub: [u8; 32],
-    ) -> (Relay, tempfile::TempDir) {
+    ) -> (Relay, tempfile::TempDir, DeviceCert) {
         let (host_key, host_cert) = enrol(root, DeviceCapabilities::host(), "host");
         let state = tempfile::tempdir().unwrap();
         let config = RelayConfig {
@@ -1375,6 +1778,7 @@ mod tests {
                 id: 42,
                 pin: true,
                 replication: ReplicationIntent::FullWorkspace,
+                admitted_users: Vec::new(),
             }],
             ..RelayConfig::default()
         };
@@ -1383,7 +1787,7 @@ mod tests {
             RelayIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
                 device_signing_key: host_key,
-                device_cert: host_cert,
+                device_cert: host_cert.clone(),
                 revocations: RevocationList::new(),
             },
         )
@@ -1393,7 +1797,130 @@ mod tests {
             .set_workspace_membership(42, true, vec![a_pub, b_pub], state.path().to_path_buf())
             .await
             .unwrap();
-        (relay, state)
+        (relay, state, host_cert)
+    }
+
+    /// Exercise the exact scheduled enrolled-home-peer route, rather than a
+    /// direct RelayClient unit call. In particular, this protects against an
+    /// innocuous-looking refactor that drops `HomePeerExpectation` before the
+    /// relay dial.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn scheduled_enrolled_host_rejects_wrong_root_device_and_revocation() {
+        use rand_core::OsRng;
+        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let other_root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let (client_key, client_cert) = enrol(&root, DeviceCapabilities::primary(), "client");
+        let (host_key, host_cert) = enrol(&root, DeviceCapabilities::host(), "home");
+        let (_, wrong_device_cert) = enrol(&root, DeviceCapabilities::host(), "other-home");
+        let state = tempfile::tempdir().unwrap();
+        let relay = Relay::start(
+            RelayConfig {
+                state_root: state.path().to_path_buf(),
+                workspaces: vec![WorkspaceBinding {
+                    id: 42,
+                    pin: true,
+                    replication: ReplicationIntent::FullWorkspace,
+                    admitted_users: Vec::new(),
+                }],
+                ..RelayConfig::default()
+            },
+            RelayIdentity {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_signing_key: host_key,
+                device_cert: host_cert.clone(),
+                revocations: RevocationList::new(),
+            },
+        )
+        .await
+        .unwrap();
+        relay
+            .set_workspace_membership(
+                42,
+                true,
+                vec![client_key.verifying_key().to_bytes()],
+                state.path().to_path_buf(),
+            )
+            .await
+            .unwrap();
+
+        let attempt = |expectation: HomePeerExpectation,
+                       revocations: Vec<qos_user_identity::RevocationEntry>| {
+            let relay_addr = relay.node_addr();
+            let client_key = client_key.clone();
+            let client_cert = client_cert.clone();
+            async move {
+                let (endpoint, _) = identified_endpoint(&client_key).await;
+                let identity = HostIdentity {
+                    device_cert: client_cert,
+                    device_signing_key: client_key,
+                    workspace_device_certs: HashMap::new(),
+                    workspace_revocations: HashMap::from([(42, revocations)]),
+                    identity_paths: None,
+                };
+                let (tx, mut rx) = mpsc::channel(2);
+                let mut connecting = HashSet::new();
+                let mut discoveries = HashMap::new();
+                schedule_host_topic(
+                    &endpoint,
+                    &identity,
+                    42,
+                    relay_addr,
+                    Some(expectation),
+                    &tx,
+                    &HashMap::new(),
+                    &mut connecting,
+                    &mut discoveries,
+                );
+                let rejected = matches!(
+                    timeout(Duration::from_secs(5), rx.recv()).await,
+                    Ok(Some(InternalEvent::HostConnected { result, .. })) if result.is_err()
+                );
+                for (_, task) in discoveries {
+                    task.abort();
+                }
+                endpoint.close().await;
+                rejected
+            }
+        };
+        let host_device = host_cert.device_public_key;
+        assert!(
+            attempt(
+                HomePeerExpectation {
+                    user_public_key: other_root.verifying_key().to_bytes(),
+                    device_public_key: host_device,
+                },
+                Vec::new(),
+            )
+            .await
+        );
+        assert!(
+            attempt(
+                HomePeerExpectation {
+                    user_public_key: root.verifying_key().to_bytes(),
+                    device_public_key: wrong_device_cert.device_public_key,
+                },
+                Vec::new(),
+            )
+            .await
+        );
+        let mut revocation = RevocationEntry {
+            user_public_key: root.verifying_key().to_bytes(),
+            revoked_device_public_key: host_device,
+            revoked_at_ns: 1,
+            reason: RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut revocation, &root).unwrap();
+        assert!(
+            attempt(
+                HomePeerExpectation {
+                    user_public_key: root.verifying_key().to_bytes(),
+                    device_public_key: host_device,
+                },
+                vec![revocation],
+            )
+            .await
+        );
     }
 
     /// Spawn two actors, join workspace 42 on each, connect both to `relay`,
@@ -1444,12 +1971,14 @@ mod tests {
         cmd_a
             .send(NetCmd::ConnectHost {
                 addr: relay.node_addr(),
+                expectation: None,
             })
             .await
             .unwrap();
         cmd_b
             .send(NetCmd::ConnectHost {
                 addr: relay.node_addr(),
+                expectation: None,
             })
             .await
             .unwrap();
@@ -1473,7 +2002,7 @@ mod tests {
         let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
         let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
         let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-        let (relay, _state) = spawn_pinned_relay_for_two_members(
+        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
             &root,
             a_key.verifying_key().to_bytes(),
             b_key.verifying_key().to_bytes(),
@@ -1524,6 +2053,227 @@ mod tests {
                     ..
                 }
             ) {
+                break;
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn failed_host_address_refresh_retains_files_route_until_explicit_removal() {
+        use rand_core::OsRng;
+        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
+        let a_public = a_key.verifying_key().to_bytes();
+        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+        let (relay, _state, host_cert) =
+            spawn_pinned_relay_for_two_members(&root, a_public, b_key.verifying_key().to_bytes())
+                .await;
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let identity = |key, cert| HostIdentity {
+            device_cert: cert,
+            device_signing_key: key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let (cmd_a, mut rx_a, _cmd_b, _rx_b) = join_workspace_and_await_host_ready(
+            a,
+            lookup_a,
+            identity(a_key, a_cert),
+            b,
+            lookup_b,
+            identity(b_key, b_cert),
+            &relay,
+        )
+        .await;
+
+        // Upgrade the existing host route to an enrolled home-peer route.
+        // The subsequent address refresh must retain that route's Files
+        // endpoint; it is a reconnect, not a home-peer removal.
+        let expectation = HomePeerExpectation {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: host_cert.device_public_key,
+        };
+        cmd_a
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+                expectation: Some(expectation.clone()),
+            })
+            .await
+            .unwrap();
+        loop {
+            let event = timeout(Duration::from_secs(15), rx_a.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(event, NetEvent::HostReady { .. }) {
+                break;
+            }
+        }
+
+        // A replacement address that cannot respond must not tear down the
+        // already-discovered Files endpoint. The old actor implementation
+        // called the permanent-removal path before attempting this dial.
+        let refreshed =
+            EndpointAddr::new(relay.node_addr().id).with_ip_addr("192.0.2.1:9".parse().unwrap());
+        cmd_a
+            .send(NetCmd::ConnectHost {
+                addr: refreshed,
+                expectation: Some(expectation),
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !noted_content_peer_removals()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(&relay.node_addr().id),
+            "an address refresh must retain the enrolled peer's Files route"
+        );
+
+        cmd_a
+            .send(NetCmd::DisconnectHost {
+                id: relay.node_addr().id,
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if noted_content_peer_removals()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains(&relay.node_addr().id)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("explicit removal must revoke enrolled Files routes");
+        for _ in 0..100 {
+            if !relay.is_subscribed(42, &a_public).await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!relay.is_subscribed(42, &a_public).await);
+        tokio::time::sleep(HEARTBEAT_INTERVAL + Duration::from_millis(250)).await;
+        assert!(
+            !relay.is_subscribed(42, &a_public).await,
+            "a removed host must not be redialled by the heartbeat retry loop"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn host_replays_the_latest_personal_continuity_checkpoint_after_close() {
+        use rand_core::OsRng;
+        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
+        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
+            &root,
+            a_key.verifying_key().to_bytes(),
+            b_key.verifying_key().to_bytes(),
+        )
+        .await;
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let b_restart_key = b_key.clone();
+        let b_restart_cert = b_cert.clone();
+        let identity = |key, cert| HostIdentity {
+            device_cert: cert,
+            device_signing_key: key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
+            a,
+            lookup_a,
+            identity(a_key, a_cert),
+            b,
+            lookup_b,
+            identity(b_key, b_cert),
+            &relay,
+        )
+        .await;
+        let checkpoint = |bytes| NeighbourMsg::PersonalContinuityCheckpoint {
+            user_public_key: root.verifying_key().to_bytes(),
+            publisher: 7,
+            snapshot: bytes,
+        };
+        cmd_a
+            .send(NetCmd::PublishCheckpoint {
+                ws: 42,
+                msg: checkpoint(vec![1]),
+            })
+            .await
+            .unwrap();
+        loop {
+            if let Some(NetEvent::Msg {
+                msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
+                ..
+            }) = timeout(Duration::from_secs(10), rx_b.recv()).await.unwrap()
+            {
+                assert_eq!(snapshot, vec![1]);
+                break;
+            }
+        }
+        cmd_a
+            .send(NetCmd::PublishCheckpoint {
+                ws: 42,
+                msg: checkpoint(Vec::new()),
+            })
+            .await
+            .unwrap();
+        loop {
+            if let Some(NetEvent::Msg {
+                msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
+                ..
+            }) = timeout(Duration::from_secs(10), rx_b.recv()).await.unwrap()
+            {
+                assert!(snapshot.is_empty(), "closure replaces live checkpoint");
+                break;
+            }
+        }
+
+        // A fresh actor with B's durable device identity models a shell
+        // restart while A is offline. The host must replay the retained
+        // closure baseline rather than resurrecting A's earlier checkpoint.
+        let (b_restarted, lookup_restarted) = identified_endpoint(&b_restart_key).await;
+        let (cmd_restarted, _task_restarted) = Actor::spawn_reporting_addrs(
+            b_restarted,
+            lookup_restarted,
+            Some(identity(b_restart_key, b_restart_cert)),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (events, mut replay) = mpsc::channel(16);
+        cmd_restarted
+            .send(NetCmd::JoinWorkspace {
+                ws: 42,
+                on_event: events,
+            })
+            .await
+            .unwrap();
+        cmd_restarted
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+                expectation: None,
+            })
+            .await
+            .unwrap();
+        loop {
+            if let Some(NetEvent::Msg {
+                msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
+                ..
+            }) = timeout(Duration::from_secs(10), replay.recv())
+                .await
+                .unwrap()
+            {
+                assert!(snapshot.is_empty(), "restarted B receives retained closure");
                 break;
             }
         }

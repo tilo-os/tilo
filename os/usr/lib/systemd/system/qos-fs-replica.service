@@ -1,0 +1,35 @@
+[Unit]
+Description=qOS complete authenticated filesystem replica
+After=network-online.target qos-relay-firstboot.service
+Wants=network-online.target
+Requires=qos-relay-firstboot.service
+After=qos-relay.service
+BindsTo=qos-relay.service
+ConditionPathExists=/etc/qos/home-peer.toml
+ConditionPathExists=!/var/lib/qos-relay/decommissioned
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/fs replica --config /etc/qos/home-peer.toml
+Restart=always
+RestartSec=3
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadOnlyPaths=/etc/qos /var/lib/qos
+ReadWritePaths=/var/lib/qos/full-replica
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
