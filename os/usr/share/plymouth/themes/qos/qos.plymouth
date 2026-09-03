@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=qOS
+Description=A quiet qOS boot and encrypted-disk unlock experience
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/qos
+ScriptFile=/usr/share/plymouth/themes/qos/qos.script

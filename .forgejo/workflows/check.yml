@@ -62,7 +62,7 @@ jobs:
       shard_count: ${{ steps.plan.outputs.shard_count }}
     steps:
       - name: Checkout head for change selection
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
@@ -103,8 +103,13 @@ jobs:
         run: |
           bash os/tests/kernel_hardening_invariants.sh
           bash os/tests/release_security_invariants.sh
+          bash os/tests/selinux_policy_store_invariants.sh
+          bash os/tests/first_boot_service_readiness.sh
           bash os/tests/release_freshness_security.sh
           bash os/tests/installer_target_invariants.sh
+          bash os/tests/installer_profile_transport.sh
+          bash os/tests/imager_release_invariants.sh
+          bash os/tests/wpe_reproducibility_invariants.sh
           bash os/tests/generation_series_security.sh
 
       - name: Select and balance affected packages
@@ -147,14 +152,14 @@ jobs:
         password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
 
       - name: Restore Cargo downloads
         id: cargo-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         continue-on-error: true
         with:
           path: |
@@ -229,7 +234,7 @@ jobs:
       - name: Save Cargo downloads
         if: always() && matrix.shard == 1 && steps.cargo-cache.outputs.cache-hit != 'true'
         continue-on-error: true
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             /cargo-home/registry/index
@@ -248,7 +253,7 @@ jobs:
       SELECT_RESULT: ${{ needs.select.result }}
       AFFECTED_RESULT: ${{ needs.affected.result }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0

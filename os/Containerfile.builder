@@ -4,6 +4,8 @@
 # Rebuilt weekly by .forgejo/workflows/build-builder-image.yml. Fedora rather
 # than the runner's default Ubuntu image: the OS is Fedora-based, so the build
 # deps and their versions match what the image build uses.
+FROM github-assets AS github-assets
+
 FROM registry.fedoraproject.org/fedora:42
 
 # nodejs: actions/checkout. capnproto: runtime-collab build.rs.
@@ -65,17 +67,14 @@ RUN curl -fsSL https://sh.rustup.rs \
 # gets the same client without spending runner CPU compiling sccache itself.
 ARG SCCACHE_VERSION=0.17.0
 ARG SCCACHE_SHA256=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
-RUN archive="sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-    && curl -fsSL \
-      "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${archive}" \
-      -o "/tmp/${archive}" \
-    && echo "${SCCACHE_SHA256}  /tmp/${archive}" | sha256sum -c - \
-    && tar -xzf "/tmp/${archive}" -C /tmp \
+RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+    archive="sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+    && echo "${SCCACHE_SHA256}  /qos-assets/${archive}" | sha256sum -c - \
+    && tar -xzf "/qos-assets/${archive}" -C /tmp \
     && install -m 0755 \
       "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache" \
       /usr/local/bin/sccache \
-    && rm -rf "/tmp/${archive}" \
-      "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl" \
+    && rm -rf "/tmp/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl" \
     && sccache --version
 
 RUN cargo install --locked cargo-nextest cargo-deny cargo-machete \
