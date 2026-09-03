@@ -11432,6 +11432,7 @@ dependencies = [
  "clap",
  "fluent",
  "fluent-syntax",
+ "image",
  "libc",
  "notify",
  "pkg",
