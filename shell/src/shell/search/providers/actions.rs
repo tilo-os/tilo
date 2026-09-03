@@ -239,6 +239,15 @@ impl Action {
             },
         ),
         chrome(
+            "desktop-tour.open",
+            "Take the desktop tour",
+            "Revisit the three-minute introduction to navigation, organisation and collaboration",
+            |st, _| {
+                st.overlays.desktop_tour = true;
+                Ok(())
+            },
+        ),
+        chrome(
             "overview.toggle",
             "Toggle workspace overview",
             "Show all workspaces in the wheel view",
@@ -957,6 +966,30 @@ mod tests {
             state.ws_settings_tab,
             crate::shell::workspace_settings::WsTab::Permissions
         );
+    }
+
+    #[test]
+    fn desktop_tour_is_searchable_and_requests_the_trusted_chrome_modal() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let results = {
+            let state = chrome.borrow();
+            provider.query(SearchContext {
+                needle: "desktop tour",
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        let result = results
+            .iter()
+            .find(|result| result.id == "desktop-tour.open")
+            .expect("the completed first-use tour must remain discoverable");
+
+        (result.on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
+        assert!(chrome.borrow().overlays.desktop_tour);
     }
 
     #[test]

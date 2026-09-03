@@ -8645,6 +8645,21 @@ impl Widget for ShellOverlayHost {
     }
 
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
+        let open_desktop_tour = self.onboarding.is_none()
+            && self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome.borrow().overlays.desktop_tour);
+        if open_desktop_tour {
+            if let Some(chrome) = self.chrome.as_ref() {
+                let mut state = chrome.borrow_mut();
+                state.overlays.desktop_tour = false;
+                state.bump();
+            }
+            self.onboarding = Some(crate::onboarding_view::OnboardingView::new_tour());
+            self.onboarding_released = false;
+            self.onboarding_focus_reset = false;
+        }
         if let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.sync(s, p);
             let finished = onboarding.finished();
@@ -15985,6 +16000,28 @@ mod tests {
         assert!(host.take_structure_dirty());
         assert!(host.take_focus_reset());
         assert!(!host.take_focus_reset(), "focus reset must remain one-shot");
+    }
+
+    #[test]
+    fn desktop_tour_request_opens_once_and_is_consumed() {
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        let mut host =
+            ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
+        chrome.borrow_mut().overlays.desktop_tour = true;
+
+        host.sync(&mut AutoCommit::new(), &automerge::ROOT);
+
+        assert!(host.onboarding_active());
+        assert!(
+            host.onboarding
+                .as_ref()
+                .is_some_and(|view| !view.flow().is_done())
+        );
+        assert!(
+            !chrome.borrow().overlays.desktop_tour,
+            "the request edge is consumed so dismissing does not reopen it"
+        );
     }
 
     /// Bundle of host + chrome + the taffy state needed to dispatch

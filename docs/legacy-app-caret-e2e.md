@@ -20,7 +20,7 @@ its compositor log, application log, result JSON, and a final screenshot.
 
 ## Running locally
 
-Install `libadwaita-demo`, `qt6-qtbase-examples`, and `libreoffice-writer`,
+Install `gnome-text-editor`, `qt6-qtbase-examples`, and `libreoffice-writer`,
 build the shell, then run:
 
 ```sh
