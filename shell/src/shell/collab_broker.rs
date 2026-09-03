@@ -498,6 +498,17 @@ impl AppActionBroker {
         self.state.can_cancel(id, actor)
     }
 
+    /// True only while the named admitted agent has a live task subscription.
+    pub fn agent_is_live_task_capable(&self, room: &str, agent: &str) -> bool {
+        self.state.agent_is_live_task_capable(room, agent)
+    }
+
+    /// Dispatch a task to its assigned live agent. There is intentionally no
+    /// offline queue or application launch fallback in this boundary.
+    pub fn dispatch_task(&self, room: &str, task_id: &str) -> Result<u64, String> {
+        self.state.dispatch_workspace_task(room, task_id)
+    }
+
     #[allow(clippy::too_many_arguments)]
     /// Prepare a one-use confirmation token for the exact invocation inputs.
     ///

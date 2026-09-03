@@ -223,6 +223,20 @@ interface ChannelHandle {
   # their current state no longer has a safe resume projection, so stale
   # private metadata is not retained after serialization or policy changes.
   clearContinuation @26 (appId :Text) -> ();
+
+  # A delegated agent subscribes to broker-minted task leases addressed to
+  # its admitted live session. Offline agents are never queued here.
+  subscribeTaskRuns @27 () -> (stream :TaskRunStream);
+  # The agent may report only updates for the exact broker-minted run+lease.
+  # `updateJson` is a versioned TaskRunUpdate envelope.
+  reportTaskRun @28 (runId :UInt64, lease :Text, updateJson :Text) -> ();
+  # Invoke a published action while carrying the leased task's ActionContext.
+  # The broker derives both agent identity and context; no caller-supplied
+  # attribution/context crosses this method.
+  invokeTaskAction @29 (runId :UInt64, lease :Text, peerId :UInt64,
+                        resource :Text, action :Text, argument :Text,
+                        hasArgument :Bool, confirmationJson :Text)
+      -> (id :UInt64, updateJson :Text);
 }
 
 interface ActionCatalogueStream {
@@ -301,7 +315,13 @@ interface InvocationStream {
   # typed. An attribution, not an authority — the session has already
   # decided this invocation may happen.
   read @0 () -> (id :UInt64, resource :Text, action :Text,
-                 argument :Text, hasArgument :Bool, actor :Text);
+                 argument :Text, hasArgument :Bool, actor :Text,
+                 contextJson :Text);
+}
+
+# Agent-only task work sent by the broker after live-session admission.
+interface TaskRunStream {
+  read @0 () -> (taskJson :Text);
 }
 
 interface ActionStream {

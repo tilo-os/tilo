@@ -73,6 +73,7 @@ pub use collab_capnp::context_stream::Client as ContextStreamClient;
 pub use collab_capnp::invocation_stream::Client as InvocationStreamClient;
 pub use collab_capnp::presence_stream::Client as PresenceStreamClient;
 pub use collab_capnp::stream::Client as StreamClient;
+pub use collab_capnp::task_run_stream::Client as TaskRunStreamClient;
 
 /// Version tag distinguishing a certified join presentation from invalid
 /// identity bytes.
@@ -496,6 +497,76 @@ impl ChannelHandle {
         Ok(InvocationStream {
             inner: Rc::new(stream),
         })
+    }
+
+    /// Subscribe this admitted agent session to broker-addressed task runs.
+    /// A person session and an offline agent receive no substitute queue.
+    pub async fn subscribe_task_runs(&self) -> Result<TaskRunStream, NotAvailable> {
+        let reply = self
+            .inner
+            .subscribe_task_runs_request()
+            .send()
+            .promise
+            .await?;
+        Ok(TaskRunStream {
+            inner: Rc::new(reply.get()?.get_stream()?),
+        })
+    }
+
+    /// Report an update for one exact broker-minted task lease.
+    pub async fn report_task_run(
+        &self,
+        run_id: u64,
+        lease: &str,
+        update: &TaskRunUpdate,
+    ) -> Result<(), NotAvailable> {
+        let update_json = serde_json::to_string(update).map_err(|error| {
+            capnp::Error::failed(format!("task update serialization failed: {error}"))
+        })?;
+        let mut request = self.inner.report_task_run_request();
+        let mut params = request.get();
+        params.set_run_id(run_id);
+        params.set_lease(lease);
+        params.set_update_json(&update_json);
+        request.send().promise.await?;
+        Ok(())
+    }
+
+    /// Invoke a published application action under a leased task context.
+    pub async fn invoke_task_action(
+        &self,
+        run_id: u64,
+        lease: &str,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        confirmation_json: &str,
+    ) -> Result<(u64, String), NotAvailable> {
+        let mut request = self.inner.invoke_task_action_request();
+        {
+            let mut params = request.get();
+            params.set_run_id(run_id);
+            params.set_lease(lease);
+            params.set_peer_id(peer_id);
+            params.set_resource(resource);
+            params.set_action(action);
+            params.set_argument(argument.unwrap_or(""));
+            params.set_has_argument(argument.is_some());
+            params.set_confirmation_json(confirmation_json);
+        }
+        let reply = request.send().promise.await?;
+        let result = reply.get()?;
+        Ok((
+            result.get_id(),
+            result
+                .get_update_json()?
+                .to_str()
+                .map_err(|error| {
+                    capnp::Error::failed(format!("invalid task invocation update: {error}"))
+                })?
+                .to_owned(),
+        ))
     }
 
     /// Report what became of an invocation. An empty `code` means it ran;
@@ -988,6 +1059,10 @@ pub struct Invocation {
     /// resulting change commits under — not an authority; the session
     /// already decided this may happen.
     pub actor: String,
+    /// Serialized broker-owned [`qos_actions::ActionContext`] when this
+    /// invocation originated from a leased workspace task. Empty for ordinary
+    /// invocations so legacy application callers remain context-neutral.
+    pub context_json: String,
 }
 
 /// Client-pulled stream of invocations addressed to this application.
@@ -1016,6 +1091,7 @@ impl InvocationStream {
         let resource = text(r.get_resource()?, "invocation resource")?;
         let action = text(r.get_action()?, "invocation action")?;
         let actor = text(r.get_actor()?, "invocation actor")?;
+        let context_json = text(r.get_context_json()?, "invocation context")?;
         let argument = if r.get_has_argument() {
             Some(text(r.get_argument()?, "invocation argument")?)
         } else {
@@ -1027,7 +1103,90 @@ impl InvocationStream {
             action,
             argument,
             actor,
+            context_json,
         })
+    }
+}
+
+/// Broker-minted work for one admitted, currently connected agent.  `lease`
+/// is an opaque capability: an agent must echo it for progress and for any
+/// action invocation attributed to this task.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskRunEnvelope {
+    pub version: u16,
+    pub task_id: String,
+    pub title: String,
+    pub run_id: u64,
+    pub lease: String,
+    pub action_context: serde_json::Value,
+}
+
+/// Agent lifecycle information the broker may project into the shared Task
+/// Center audit.  There is no free-form status mutation: terminal direction is
+/// explicit and all messages are bounded by the broker.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TaskRunUpdate {
+    Accepted,
+    Progress { message: String },
+    Succeeded { message: String },
+    Failed { message: String },
+    Cancelled { message: String },
+}
+
+/// Client-pulled stream of broker-addressed task leases.
+#[derive(Clone)]
+pub struct TaskRunStream {
+    inner: Rc<TaskRunStreamClient>,
+}
+
+impl TaskRunStream {
+    /// Pull the next task run, rejecting malformed broker data rather than
+    /// presenting an agent with an ambiguous authority envelope.
+    pub async fn read(&self) -> Result<TaskRunEnvelope, NotAvailable> {
+        let reply = self.inner.read_request().send().promise.await?;
+        let json = reply
+            .get()?
+            .get_task_json()?
+            .to_str()
+            .map_err(|error| capnp::Error::failed(format!("invalid task envelope: {error}")))?;
+        serde_json::from_str(json).map_err(|error| {
+            capnp::Error::failed(format!("invalid task envelope JSON: {error}")).into()
+        })
+    }
+}
+
+#[cfg(test)]
+mod task_run_tests {
+    use super::{TaskRunEnvelope, TaskRunUpdate};
+
+    #[test]
+    fn task_run_wire_is_typed_and_rejects_unknown_fields() {
+        let envelope = TaskRunEnvelope {
+            version: 1,
+            task_id: "task:1".into(),
+            title: "Review proposal".into(),
+            run_id: 7,
+            lease: "broker-lease".into(),
+            action_context: serde_json::json!({"purpose": "Review proposal"}),
+        };
+        let json = serde_json::to_string(&envelope).unwrap();
+        assert_eq!(
+            serde_json::from_str::<TaskRunEnvelope>(&json).unwrap(),
+            envelope
+        );
+        assert!(serde_json::from_str::<TaskRunEnvelope>(
+            r#"{"version":1,"task_id":"t","title":"x","run_id":1,"lease":"l","action_context":{},"path":"/tmp"}"#
+        )
+        .is_err());
+        assert_eq!(
+            serde_json::from_str::<TaskRunUpdate>(r#"{"kind":"progress","message":"checking"}"#)
+                .unwrap(),
+            TaskRunUpdate::Progress {
+                message: "checking".into()
+            }
+        );
     }
 }
 

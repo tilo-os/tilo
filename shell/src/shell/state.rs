@@ -5431,6 +5431,41 @@ impl WorkspaceTree {
         true
     }
 
+    /// Append a broker-authenticated task event without allowing a caller to
+    /// alter task state. Agent progress is durable shared audit data, not a
+    /// substitute for an arbitrary document write.
+    pub fn append_workspace_task_audit(
+        &mut self,
+        workspace_id: WorkspaceId,
+        task_id: &str,
+        actor: &str,
+        summary: impl Into<String>,
+    ) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+            .unwrap_or_default();
+        let Some(task) = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == workspace_id)
+            .and_then(|workspace| workspace.tasks.iter_mut().find(|task| task.id == task_id))
+        else {
+            return false;
+        };
+        task.updated_at = now;
+        task.audit.push(WorkspaceTaskAuditEvent {
+            at: now,
+            actor: actor.to_string(),
+            summary: summary.into(),
+        });
+        let task = task.clone();
+        self.doc_upsert_workspace_task(workspace_id, &task);
+        self.flush_to_disk();
+        true
+    }
+
     fn doc_upsert_workspace_task(&mut self, workspace_id: WorkspaceId, task: &WorkspaceTask) {
         use automerge::{ObjType, ReadDoc, ScalarValue, transaction::Transactable};
         let Some(ws_entry) = self.locate_workspace(workspace_id) else {
