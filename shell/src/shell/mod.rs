@@ -39,6 +39,7 @@ mod file_picker_overlay;
 pub mod global_search;
 pub mod hdr_display;
 pub mod hdr_tonemap;
+pub mod history_narrative;
 pub mod host_apps;
 pub mod identity_provisioning;
 pub mod launcher;

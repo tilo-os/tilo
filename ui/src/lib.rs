@@ -243,8 +243,9 @@ pub use history_source::groups as history_groups;
 pub use history_source::{
     ActivityBrief, ActivityBriefAction, ActivityDigest, ActivityNarrator, AuthorDirectory,
     CompareError, GroundedNarrative, HistoryComparison, HistoryFacetIndex, HistoryResourceTarget,
-    HistorySeenFrontier, HistorySelectionDetail, HistorySource, NarrativeRequest, compare_entries,
-    deterministic_narrative, heads_for_entry, validate_narrative, version_index_for_entry,
+    HistorySeenFrontier, HistorySelectionDetail, HistorySource, NarrativeRequest, NarrativeSource,
+    compare_entries, deterministic_narrative, heads_for_entry, validate_narrative,
+    version_index_for_entry,
 };
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.
