@@ -20,6 +20,11 @@ use fs::full_replica::{
 };
 use fs::namespace::ROOT_INO;
 use fs::sync::{self, SyncHandle};
+use fs::workspace_authority::{
+    AuthorityRequest, WorkspaceAuthority, WorkspaceAuthorityEnvelope, local_authority_request,
+    local_authority_socket_path, local_content_socket_path, register_local_content_peer,
+    serve_local_authority, serve_local_content_peer,
+};
 use fs::{
     AclHandle, CapabilityFile, ContentStore, FileHistoryStore, FileShareLinkV2,
     FsTransportIdentity, Heuristics, Hydrator, IdentityKey, Namespace, QuickFS,
@@ -402,6 +407,22 @@ enum Command {
         #[arg(long = "relay-workspace-id")]
         relay_workspace_ids: Vec<u64>,
     },
+    /// Sign and atomically publish the current workspace capability policy.
+    PublishAuthority {
+        #[arg(long)]
+        cache_dir: PathBuf,
+        #[arg(long)]
+        acl: PathBuf,
+    },
+    /// Register a direct filesystem endpoint obtained from authenticated relay
+    /// discovery with the running local filesystem daemon.
+    RegisterContentPeer {
+        #[arg(long)]
+        cache_dir: PathBuf,
+        /// Read one JSON-serialized `EndpointAddr` from standard input.
+        #[arg(long)]
+        endpoint_stdin: bool,
+    },
 }
 
 #[tokio::main]
@@ -507,7 +528,65 @@ async fn main() -> Result<()> {
             principals,
             relay_workspace_ids,
         ),
+        Command::PublishAuthority { cache_dir, acl } => publish_authority(cache_dir, acl).await,
+        Command::RegisterContentPeer {
+            cache_dir,
+            endpoint_stdin,
+        } => register_content_peer(cache_dir, endpoint_stdin).await,
     }
+}
+
+async fn publish_authority(cache_dir: PathBuf, acl: PathBuf) -> Result<()> {
+    let ticket = Ticket::decode(&std::fs::read_to_string(workspace_ticket_path(&cache_dir))?)?;
+    let capabilities = serde_json::from_slice(&std::fs::read(&acl)?)?;
+    let paths = identity_paths();
+    let governor = qos_user_identity::persist::read_signing_key(&paths.user_privkey)?;
+    let socket = local_authority_socket_path(ticket.workspace_id());
+    let current = local_authority_request(
+        &socket,
+        AuthorityRequest {
+            workspace: ticket.workspace_id(),
+            publish: None,
+        },
+    )
+    .await?
+    .authority;
+    let revision = current.map_or(1, |current| current.revision.saturating_add(1));
+    let envelope = WorkspaceAuthorityEnvelope::sign(
+        ticket.workspace_id(),
+        revision,
+        capabilities,
+        false,
+        &governor,
+    )?;
+    let accepted = local_authority_request(
+        &socket,
+        AuthorityRequest {
+            workspace: ticket.workspace_id(),
+            publish: Some(envelope.clone()),
+        },
+    )
+    .await?
+    .authority;
+    anyhow::ensure!(
+        accepted.as_ref() == Some(&envelope),
+        "workspace authority publication lost a concurrent revision; retry"
+    );
+    Ok(())
+}
+
+async fn register_content_peer(cache_dir: PathBuf, endpoint_stdin: bool) -> Result<()> {
+    anyhow::ensure!(endpoint_stdin, "content endpoint must be supplied on stdin");
+    use std::io::Read;
+    let mut encoded = Vec::new();
+    std::io::stdin().take(64 * 1024).read_to_end(&mut encoded)?;
+    anyhow::ensure!(
+        !encoded.is_empty() && encoded.len() < 64 * 1024,
+        "content endpoint input is empty or too large"
+    );
+    let endpoint = serde_json::from_slice(&encoded).context("parse discovered content endpoint")?;
+    let ticket = Ticket::decode(&std::fs::read_to_string(workspace_ticket_path(&cache_dir))?)?;
+    register_local_content_peer(&local_content_socket_path(ticket.workspace_id()), endpoint).await
 }
 
 fn read_share_uri(link: Option<String>, link_stdin: bool) -> Result<String> {
@@ -653,6 +732,44 @@ fn spawn_acl_reload(file: Arc<CapabilityFile>, every: u64) -> Option<tokio::task
     }))
 }
 
+fn spawn_workspace_authority_reload(
+    path: PathBuf,
+    authority: Arc<WorkspaceAuthority>,
+    governor: ed25519_dalek::SigningKey,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut previous = std::fs::read(&path).ok();
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            tick.tick().await;
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            if previous.as_ref() == Some(&bytes) {
+                continue;
+            }
+            let Ok(capabilities) = serde_json::from_slice(&bytes) else {
+                continue;
+            };
+            let revision = authority
+                .current()
+                .map_or(1, |current| current.revision.saturating_add(1));
+            let Ok(envelope) = WorkspaceAuthorityEnvelope::sign(
+                authority.workspace(),
+                revision,
+                capabilities,
+                false,
+                &governor,
+            ) else {
+                continue;
+            };
+            if authority.apply(envelope).is_ok() {
+                previous = Some(bytes);
+            }
+        }
+    })
+}
+
 /// Bind and serve the document control socket (best-effort), using the same ACL/identity as the mount.
 fn spawn_control(
     sock: &Path,
@@ -737,10 +854,22 @@ fn export_home_peer(
         .with_context(|| format!("read capability list {}", acl.display()))?;
     let _: serde_json::Value =
         serde_json::from_str(&capability_json).context("capability list is not valid JSON")?;
+    let capabilities = serde_json::from_str(&capability_json)?;
+    let paths = identity_paths();
+    let governor = qos_user_identity::persist::read_signing_key(&paths.user_privkey)
+        .context("read workspace governor key")?;
+    let authority = WorkspaceAuthorityEnvelope::sign(
+        decoded_ticket.workspace_id(),
+        1,
+        capabilities,
+        false,
+        &governor,
+    )?;
     let workspace = HomePeerBundle {
         ticket: ticket.trim().to_owned(),
         cache_dir: replica_cache_dir.join(decoded_ticket.workspace_id().to_string()),
         capability_json,
+        authority: Some(authority),
         principals,
         relay_workspace_ids,
     };
@@ -815,8 +944,6 @@ async fn replica_workspace(
 ) -> Result<()> {
     let ticket = Ticket::decode(&bundle.ticket).context("decode home-peer ticket")?;
     std::fs::create_dir_all(&bundle.cache_dir)?;
-    let local_acl = bundle.cache_dir.join("capabilities.json");
-    atomic_file::write(&local_acl, bundle.capability_json.as_bytes())?;
 
     let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
     let paths = identity_paths();
@@ -825,18 +952,34 @@ async fn replica_workspace(
     let (device, credentials) = certified.into_parts();
     let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
         .with_transport_gate(transport_gate);
-    let caps = resolve_acl(
-        &AclArgs {
-            acl: Some(local_acl),
-            identity: None,
-            principals: bundle.principals.clone(),
-            acl_reload_secs: 1,
-        },
-        credentials.user_public_key(),
-    )?
-    .context("home-peer bundle requires a capability list")?;
-    let acl = (caps.handle(), caps.identity());
-    let _reload = spawn_acl_reload(caps, 1);
+    let governor = credentials.user_public_key();
+    let authority = WorkspaceAuthority::open(
+        bundle.cache_dir.join("workspace-authority.bin"),
+        ticket.workspace_id(),
+        governor,
+        governor,
+        bundle
+            .principals
+            .iter()
+            .map(|principal| parse_principal(principal))
+            .collect::<Result<Vec<_>>>()?,
+    )?;
+    let envelope = bundle
+        .authority
+        .clone()
+        .context("home-peer bundle requires signed workspace authority")?;
+    // A transferred bundle is bootstrap material, not an authority rollback.
+    // A NAS may already hold a newer signed revision after a previous
+    // enrollment; retain it across re-provisioning while still rejecting a
+    // malformed or wrong-workspace bundle before it reaches the worker.
+    envelope.verify(ticket.workspace_id(), governor)?;
+    if authority
+        .current()
+        .is_none_or(|current| envelope.revision > current.revision)
+    {
+        authority.apply(envelope)?;
+    }
+    let acl = authority.handle();
     let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret).await?;
     let store = Arc::new(open_store(Some(bundle.cache_dir.clone())).await?);
     let hydrator = Arc::new(Hydrator::new(endpoint.clone(), Arc::clone(&store)));
@@ -858,6 +1001,7 @@ async fn replica_workspace(
     let share_authority = open_share_authority(Some(&bundle.cache_dir))?;
     let mut record_services = open_record_services(Some(&bundle.cache_dir), share_authority)?
         .context("home-peer record repository unavailable")?;
+    record_services.workspace_authority = Some(Arc::new(authority));
     let history = open_history(Some(&bundle.cache_dir))?;
     let workspace_id = ticket.workspace_id();
     let materializer = Arc::new(RecordMaterializer::new(
@@ -866,7 +1010,7 @@ async fn replica_workspace(
         history,
     ));
     materializer.reconcile_repository(&record_services.repository)?;
-    record_services.mutation_sink = Some(Arc::clone(&materializer));
+    record_services.mutation_sink = Some(materializer.clone());
     record_services.materializer = Some(Arc::clone(&materializer));
     let workspace = Workspace::join_with_records(
         endpoint.clone(),
@@ -876,7 +1020,7 @@ async fn replica_workspace(
         Arc::clone(&namespace),
         ticket,
         transport_identity,
-        Some(acl.0),
+        Some(acl),
         record_services,
     )
     .await?;
@@ -1046,6 +1190,40 @@ async fn serve(
         .as_ref()
         .map(|records| Arc::clone(&records.repository));
     let workspace_id = Ticket::workspace_id_for_topic(*endpoint.id().as_bytes());
+    // The serving owner is the authority publisher. A capability file may
+    // bootstrap its first signed revision, but every peer thereafter enforces
+    // the durable governor-signed state exposed by the authority ALPN.
+    if let (Some(records), Some(cache_dir), Some(acl_path), Some(governor)) = (
+        record_services.as_mut(),
+        cache_dir.as_ref(),
+        acl_args.acl.as_ref(),
+        share_issuer.as_ref(),
+    ) {
+        let capabilities = serde_json::from_slice(&std::fs::read(acl_path)?)
+            .context("parse workspace authority bootstrap capabilities")?;
+        let principals = acl_args
+            .principals
+            .iter()
+            .map(|principal| parse_principal(principal))
+            .collect::<Result<Vec<_>>>()?;
+        let authority = Arc::new(WorkspaceAuthority::open(
+            cache_dir.join("workspace-authority.bin"),
+            workspace_id,
+            governor.verifying_key().to_bytes(),
+            credentials.user_public_key(),
+            principals,
+        )?);
+        if authority.current().is_none() {
+            authority.apply(WorkspaceAuthorityEnvelope::sign(
+                workspace_id,
+                1,
+                capabilities,
+                false,
+                governor,
+            )?)?;
+        }
+        records.workspace_authority = Some(authority);
+    }
     let record_publisher = record_repository
         .clone()
         .map(|repository| {
@@ -1078,7 +1256,55 @@ async fn serve(
     } else {
         false
     };
-    let workspace_args = acl.as_ref().map(|(handle, _)| handle.clone());
+    let authority_reload = record_services.as_ref().and_then(|records| {
+        records
+            .workspace_authority
+            .as_ref()
+            .zip(share_issuer.as_ref())
+            .zip(acl_args.acl.as_ref())
+            .map(|((authority, governor), path)| {
+                spawn_workspace_authority_reload(
+                    path.clone(),
+                    Arc::clone(authority),
+                    governor.clone(),
+                )
+            })
+    });
+    // The desktop publishes signed ACL revisions through this group-restricted
+    // local socket. It never receives write access to the daemon cache and the
+    // daemon remains the single serialising authority writer.
+    let authority_socket = record_services
+        .as_ref()
+        .and_then(|records| records.workspace_authority.as_ref())
+        .map(|authority| local_authority_socket_path(authority.workspace()));
+    let authority_socket_task = match (
+        authority_socket.as_ref(),
+        record_services
+            .as_ref()
+            .and_then(|records| records.workspace_authority.as_ref()),
+    ) {
+        (Some(socket), Some(authority)) => {
+            Some(serve_local_authority(socket.clone(), Arc::clone(authority)).await?)
+        }
+        _ => None,
+    };
+    let content_socket = record_services
+        .as_ref()
+        .and_then(|records| records.workspace_authority.as_ref())
+        .map(|authority| local_content_socket_path(authority.workspace()));
+    let content_socket_task = match content_socket.as_ref() {
+        Some(socket) => Some(serve_local_content_peer(socket.clone(), hydrator.clone()).await?),
+        None => None,
+    };
+    let workspace_args = record_services
+        .as_ref()
+        .and_then(|records| {
+            records
+                .workspace_authority
+                .as_ref()
+                .map(|authority| authority.handle())
+        })
+        .or_else(|| acl.as_ref().map(|(handle, _)| handle.clone()));
     let (workspace, ticket) = match record_services {
         Some(records) => {
             Workspace::host_with_records(
@@ -1215,6 +1441,21 @@ async fn serve(
     }
     if let Some(task) = named_delivery_task {
         task.abort();
+    }
+    if let Some(task) = authority_reload {
+        task.abort();
+    }
+    if let Some(task) = authority_socket_task {
+        task.abort();
+    }
+    if let Some(task) = content_socket_task {
+        task.abort();
+    }
+    if let Some(socket) = authority_socket {
+        let _ = std::fs::remove_file(socket);
+    }
+    if let Some(socket) = content_socket {
+        let _ = std::fs::remove_file(socket);
     }
     if let Some(h) = persist {
         h.abort();
@@ -2168,6 +2409,7 @@ fn open_record_services(
         mutation_sink: None,
         materializer: None,
         availability: None,
+        workspace_authority: None,
     }))
 }
 

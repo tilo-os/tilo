@@ -51,6 +51,10 @@ use crate::replica_ack::{
 use crate::share_authority::ShareAuthority;
 use crate::share_session::LiveActorCertification;
 use crate::store::ContentStore;
+use crate::workspace_authority::{
+    AuthorityRequest, AuthorityResponse, QOS_FS_AUTHORITY_ALPN, WorkspaceAuthority,
+    read_frame as read_authority_frame, write_frame as write_authority_frame,
+};
 
 /// Custom ALPN for the document exchange (bootstrap + incremental sync).
 pub const QOS_FS_SYNC_ALPN: &[u8] = b"qos-fs-sync/0";
@@ -526,6 +530,13 @@ impl ProtocolHandler for SyncProtocol {
                     // Responder: read-then-write each round (mirrors the initiator).
                     let mut state = automerge::sync::State::new();
                     for _ in 0..200 {
+                        // The authority handle is live. A newer signed
+                        // tombstone/revocation cuts an already-connected
+                        // writer off at the next protocol round.
+                        if !authenticated_peer_may_write_whole_workspace(&self.policy, &peer) {
+                            let _ = send.finish();
+                            break;
+                        }
                         let peer_msg =
                             read_frame(&mut recv).await.map_err(AcceptError::from_err)?;
                         if !peer_msg.is_empty() {
@@ -913,6 +924,8 @@ pub struct RecordServices {
     /// Durable verified remote-replica receipts. `None` preserves ephemeral
     /// test/workspace construction but cannot ever produce eviction proof.
     pub availability: Option<Arc<Mutex<crate::availability::AvailabilityRegistry>>>,
+    /// Signed workspace ACL state shared through the authority ALPN.
+    pub workspace_authority: Option<Arc<WorkspaceAuthority>>,
 }
 
 #[derive(Clone)]
@@ -924,6 +937,58 @@ struct RecordPlane {
     materializer: Option<Arc<crate::record_materializer::RecordMaterializer>>,
     workspace_id: uuid::Uuid,
     availability: Option<Arc<Mutex<crate::availability::AvailabilityRegistry>>>,
+    workspace_authority: Option<Arc<WorkspaceAuthority>>,
+}
+
+#[derive(Clone)]
+struct AuthorityProtocol {
+    endpoint: Endpoint,
+    identity: FsTransportIdentity,
+    policy: PeerPolicy,
+    authority: Arc<WorkspaceAuthority>,
+    workspace_id: uuid::Uuid,
+}
+
+impl std::fmt::Debug for AuthorityProtocol {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("AuthorityProtocol")
+    }
+}
+
+impl ProtocolHandler for AuthorityProtocol {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let (mut send, mut recv) = connection.accept_bi().await?;
+        let peer = authenticate_connection(
+            &self.endpoint,
+            &connection,
+            &mut recv,
+            &mut send,
+            &self.identity,
+        )
+        .await
+        .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        let request: AuthorityRequest = read_authority_frame(&mut recv)
+            .await
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        let authority = if request.workspace == self.workspace_id {
+            let governor = peer.user_public_key == self.authority.governor();
+            if let Some(published) = request.publish
+                && governor
+            {
+                let _ = self.authority.apply(published);
+            }
+            (governor || authenticated_peer_may_read_whole_workspace(&self.policy, &peer))
+                .then(|| self.authority.current())
+                .flatten()
+        } else {
+            None
+        };
+        write_authority_frame(&mut send, &AuthorityResponse { authority })
+            .await
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        send.finish().map_err(AcceptError::from_err)?;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -1151,6 +1216,7 @@ fn build_record_plane(
         materializer: records.materializer,
         workspace_id,
         availability: records.availability,
+        workspace_authority: records.workspace_authority,
     }))
 }
 
@@ -1403,6 +1469,24 @@ impl Workspace {
                 .accept(QOS_FS_REPLICA_ACK_ALPN, replica_ack),
             _ => builder,
         };
+        let builder = if let Some(records) = &record_plane {
+            if let Some(authority) = &records.workspace_authority {
+                builder.accept(
+                    QOS_FS_AUTHORITY_ALPN,
+                    AuthorityProtocol {
+                        endpoint: endpoint.clone(),
+                        identity: identity.clone(),
+                        policy: policy.clone(),
+                        authority: Arc::clone(authority),
+                        workspace_id: records.workspace_id,
+                    },
+                )
+            } else {
+                builder
+            }
+        } else {
+            builder
+        };
         // A gossip message records only the peer that relayed it, not the
         // original author, so a receiver cannot enforce a writer capability.
         // Enforced workspaces use the authenticated sync ALPN exclusively.
@@ -1575,6 +1659,51 @@ async fn record_mesh_request(
     let response = read_record_mesh_response(&mut recv).await?;
     connection.close(0u32.into(), b"");
     Ok((peer, response))
+}
+
+async fn pull_workspace_authority_from_peer(
+    endpoint: &Endpoint,
+    remote: EndpointAddr,
+    identity: &FsTransportIdentity,
+    authority: &WorkspaceAuthority,
+    workspace_id: uuid::Uuid,
+) -> Result<()> {
+    let connection = endpoint.connect(remote, QOS_FS_AUTHORITY_ALPN).await?;
+    let (mut send, mut recv) = connection.open_bi().await?;
+    let _peer =
+        authenticate_connection(endpoint, &connection, &mut recv, &mut send, identity).await?;
+    write_authority_frame(
+        &mut send,
+        &AuthorityRequest {
+            workspace: workspace_id,
+            publish: None,
+        },
+    )
+    .await?;
+    send.finish()?;
+    let response: AuthorityResponse = read_authority_frame(&mut recv).await?;
+    if let Some(envelope) = response.authority {
+        authority.apply(envelope)?;
+    }
+    connection.close(0u32.into(), b"");
+    Ok(())
+}
+
+pub async fn submit_workspace_authority(
+    endpoint: &Endpoint,
+    remote: EndpointAddr,
+    identity: &FsTransportIdentity,
+    workspace: uuid::Uuid,
+    publish: Option<crate::workspace_authority::WorkspaceAuthorityEnvelope>,
+) -> Result<Option<crate::workspace_authority::WorkspaceAuthorityEnvelope>> {
+    let connection = endpoint.connect(remote, QOS_FS_AUTHORITY_ALPN).await?;
+    let (mut send, mut recv) = connection.open_bi().await?;
+    let _ = authenticate_connection(endpoint, &connection, &mut recv, &mut send, identity).await?;
+    write_authority_frame(&mut send, &AuthorityRequest { workspace, publish }).await?;
+    send.finish()?;
+    let response: AuthorityResponse = read_authority_frame(&mut recv).await?;
+    connection.close(0u32.into(), b"");
+    Ok(response.authority)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1865,6 +1994,19 @@ async fn reconcile_loop(
                 }
             }
             if let Some(records) = &records {
+                if let Some(authority) = &records.workspace_authority
+                    && let Err(error) = pull_workspace_authority_from_peer(
+                        &endpoint,
+                        peer.clone(),
+                        &identity,
+                        authority,
+                        records.workspace_id,
+                    )
+                    .await
+                    && !identity.partitioned()
+                {
+                    eprintln!("workspace authority reconciliation failed: {error}");
+                }
                 if let Err(error) =
                     pull_record_mesh_from_peer(&endpoint, peer.clone(), &identity, &policy, records)
                         .await
@@ -2068,6 +2210,7 @@ mod tests {
             mutation_sink: None,
             materializer: None,
             availability: None,
+            workspace_authority: None,
         }
     }
 
@@ -2871,6 +3014,7 @@ mod tests {
                 mutation_sink: None,
                 materializer: Some(Arc::clone(&client_materializer)),
                 availability: None,
+                workspace_authority: None,
             };
             let client_records = build_record_plane(
                 &client_ep,
@@ -3039,6 +3183,7 @@ mod tests {
                 mutation_sink: None,
                 materializer: Some(Arc::clone(&restarted_materializer)),
                 availability: None,
+                workspace_authority: None,
             };
             let restarted_records = build_record_plane(
                 &client_ep,
@@ -3405,6 +3550,7 @@ mod tests {
             mutation_sink: None,
             materializer: None,
             availability: None,
+            workspace_authority: None,
         };
         let store = Arc::new(ContentStore::memory());
         let records = build_record_plane(
