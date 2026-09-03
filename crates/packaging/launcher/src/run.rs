@@ -1936,10 +1936,13 @@ fn minimal_loader_binds() -> &'static [&'static str] {
 pub const SHIM_MOUNT_PATH: &str = "/qos-launcher";
 
 /// Decide how to expose D-Bus per the manifest's portal declaration.
-/// Preferred: spawn `xdg-dbus-proxy` filtered to portals/notifications/MPRIS.
-/// Fallback (proxy missing/failed, logged): bind-mount the raw session
-/// bus path — abstract addresses can't be bind-mounted, so those hosts
-/// get `(None, None)` and need the proxy.
+/// Spawn `xdg-dbus-proxy` filtered to portals/notifications/MPRIS.
+///
+/// There is deliberately no raw-session-bus fallback. Giving an untrusted
+/// sandbox the complete user bus because a filtering helper is missing turns
+/// an availability problem into a privilege-escalation path (and lets the app
+/// call portal *implementation* services directly). A failed proxy therefore
+/// means portals are unavailable for that launch.
 fn resolve_dbus_bind(
     portals: &std::collections::BTreeMap<String, PortalPolicy>,
 ) -> (Option<DBusBindPlan>, Option<DBusProxyGuard>) {
@@ -1959,7 +1962,7 @@ fn resolve_dbus_bind(
     }
     let uid = current_uid();
 
-    // Preferred path: xdg-dbus-proxy filtered to portal-adjacent names.
+    // The only path: xdg-dbus-proxy filtered to portal-adjacent names.
     if let Some(binary) = dbus_proxy::find_proxy_binary() {
         let sock = dbus_proxy::proxy_socket_path(uid, std::process::id());
         match dbus_proxy::spawn_dbus_proxy(&binary, &bus_addr, &sock) {
@@ -1979,35 +1982,17 @@ fn resolve_dbus_bind(
             Err(e) => {
                 tracing::warn!(
                     error = %e,
-                    "xdg-dbus-proxy failed to spawn; falling back to raw bus bind"
+                    "xdg-dbus-proxy failed to spawn; portal access stays unavailable"
                 );
-                // Fall through to direct-bind fallback.
             }
         }
     } else {
         tracing::warn!(
-            "xdg-dbus-proxy not found on PATH; falling back to raw bus bind. \
-             Install `flatpak-xdg-utils` to filter portal traffic."
+            "xdg-dbus-proxy not found on PATH; portal access stays unavailable. \
+             Install `flatpak-xdg-utils` to enable filtered portal traffic."
         );
     }
-
-    // Fallback: raw bus path. Only works for unix:path=... — abstract
-    // sockets degrade to "portal unavailable".
-    if let Some(path) = crate::sandbox::parse_unix_path_bus_address(&bus_addr) {
-        let path_buf = PathBuf::from(&path);
-        let plan = DBusBindPlan {
-            host_socket: path_buf.clone(),
-            sandbox_path: path_buf,
-            kind: DBusBindKind::Direct,
-        };
-        (Some(plan), None)
-    } else {
-        tracing::warn!(
-            bus_addr = %bus_addr,
-            "cannot bind D-Bus into sandbox: address is not `unix:path=` and no proxy is available"
-        );
-        (None, None)
-    }
+    (None, None)
 }
 
 /// Current process UID via libc, avoiding a `users`/`nix` dependency.

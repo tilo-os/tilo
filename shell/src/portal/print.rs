@@ -41,11 +41,7 @@ use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
 use crate::shell::state::{Capability, GRANT_ONCE};
 
-use super::{CapabilityKind, PortalCaller, PortalContext, file_chooser::FileChooserBackend, flow};
-
-/// Interface version we advertise: `1`, the method set implemented here.
-/// Named lowercase to match the spec's `version` property (zbus would otherwise `PascalCase` it to `Version`), same as [`super::remote_desktop`].
-pub const PRINT_VERSION: u32 = 1;
+use super::{CapabilityKind, PortalCaller, PortalContext, auth::authenticate_call, flow, lockdown};
 
 /// Hard ceiling on the bytes we will read off the app's descriptor.
 ///
@@ -401,16 +397,6 @@ fn random_token() -> u32 {
 
 #[interface(name = "org.freedesktop.impl.portal.Print")]
 impl PrintBackend {
-    /// Interface version. Named lowercase to match the spec's `version` property (zbus would otherwise `PascalCase` it to `Version`).
-    #[zbus(property, name = "version")]
-    #[allow(
-        clippy::unused_self,
-        reason = "zbus's #[interface] macro dispatches D-Bus property getters as instance methods, even though this constant value doesn't depend on self"
-    )]
-    fn version(&self) -> u32 {
-        PRINT_VERSION
-    }
-
     /// `PreparePrint` — the print dialog, minus the dialog.
     ///
     /// **This prompts**, even though nothing has been printed yet: the reply
@@ -429,7 +415,7 @@ impl PrintBackend {
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
         app_id: String,
-        _parent_window: String,
+        parent_window: String,
         title: String,
         settings: HashMap<String, OwnedValue>,
         page_setup: HashMap<String, OwnedValue>,
@@ -437,7 +423,16 @@ impl PrintBackend {
     ) -> (u32, HashMap<String, OwnedValue>) {
         tracing::debug!("Print.PreparePrint: app={app_id} title={title:?}");
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let caller = FileChooserBackend::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
+        let Ok(auth) =
+            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
+        else {
+            tracing::warn!(app = %app_id, "Print.PreparePrint: unresolved portal caller");
+            return (2, HashMap::new());
+        };
+        if lockdown::current_policy().disable_printing {
+            return (1, HashMap::new());
+        }
+        let caller = auth.caller;
 
         let outcome = flow::resolve(
             &self.ctx,
@@ -488,14 +483,23 @@ impl PrintBackend {
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
         app_id: String,
-        _parent_window: String,
+        parent_window: String,
         title: String,
         fd: zbus::zvariant::OwnedFd,
         options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
         tracing::debug!("Print.Print: app={app_id} title={title:?}");
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let caller = FileChooserBackend::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
+        let Ok(auth) =
+            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
+        else {
+            tracing::warn!(app = %app_id, "Print.Print: unresolved portal caller");
+            return (2, HashMap::new());
+        };
+        if lockdown::current_policy().disable_printing {
+            return (1, HashMap::new());
+        }
+        let caller = auth.caller;
 
         // Consent first — before we read a byte, so a denial costs the compositor nothing and touches nothing.
         let outcome = flow::resolve(

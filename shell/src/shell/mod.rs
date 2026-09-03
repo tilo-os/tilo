@@ -57,6 +57,7 @@ pub mod peer_view;
 pub mod peer_windows;
 pub mod persist;
 pub mod placement;
+pub mod portal_dialog;
 mod power_menu;
 pub mod projection;
 mod projection_overlay;
@@ -1128,7 +1129,14 @@ pub fn build_workspace_root(
     // Full-screen siblings-underneath layer so the translucent topbar
     // (alpha 204) picks up the gradient tint behind it — a Vello stand-in
     // for backdrop-blur.
-    let backdrop: Box<dyn Widget> = Box::new(desktop_backdrop::DesktopBackdrop::new());
+    let backdrop: Box<dyn Widget> = tree.active_workspace().map_or_else(
+        || Box::new(desktop_backdrop::DesktopBackdrop::new()) as Box<dyn Widget>,
+        |workspace| {
+            Box::new(desktop_backdrop::DesktopBackdrop::for_workspace(
+                workspace.id.0.to_string(),
+            )) as Box<dyn Widget>
+        },
+    );
     let foreground_col = Column::new()
         .with_no_padding()
         .push(topbar)

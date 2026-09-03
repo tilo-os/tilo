@@ -11,6 +11,7 @@
 
 use std::rc::Rc;
 
+use crate::portal::desktop_services::DynamicLauncherRecord;
 use crate::shell::catalogue::{self, CatalogueApp};
 use crate::shell::chrome_state::{Chrome, OpenTarget};
 use crate::shell::launcher::{self, InstalledApp};
@@ -95,6 +96,85 @@ impl ApplicationsProvider {
 
     fn catalogue_apps() -> Vec<CatalogueApp> {
         catalogue::available_apps()
+    }
+
+    fn dynamic_apps() -> Vec<DynamicLauncherRecord> {
+        crate::portal::desktop_services::dynamic_launcher_records()
+    }
+
+    /// Reviewed `DynamicLauncher` entries are catalogue aliases, never command
+    /// lines. Application entries start only their authenticated owner package;
+    /// web entries pass their HTTPS target through the normal URI handler and
+    /// workspace policy.
+    fn dynamic_results_for(
+        &self,
+        needle: &str,
+        records: Vec<DynamicLauncherRecord>,
+        open_target: OpenTarget,
+    ) -> Vec<SearchResult> {
+        let needle_lower = needle.to_lowercase();
+        let installed_gui: Vec<String> = launcher::gui_apps()
+            .into_iter()
+            .map(|app| app.package_id)
+            .collect();
+        records
+            .into_iter()
+            .filter_map(|record| {
+                let name_lower = record.name.to_lowercase();
+                let id_lower = record.id.to_lowercase();
+                let score = match_score(&needle_lower, &name_lower, &id_lower, None, None)?;
+                let valid = match record.launcher_type {
+                    1 => record.target.is_none() && installed_gui.contains(&record.owner_app_id),
+                    2 => record.target.as_deref().is_some_and(|target| {
+                        target.starts_with("https://")
+                            && crate::shell::uri_open::resource_for_uri(target).is_ok()
+                    }),
+                    _ => false,
+                };
+                if !valid
+                    || record.name.trim().is_empty()
+                    || record.name.chars().any(char::is_control)
+                {
+                    return None;
+                }
+                let name = record.name.clone();
+                let owner = record.owner_app_id.clone();
+                let target = record.target.clone();
+                let launcher_type = record.launcher_type;
+                Some(SearchResult::nullary_fallible(
+                    ResourceKind::Application,
+                    self.id(),
+                    record.id,
+                    format!("Open {}", record.name),
+                    Some(format!("{} · Shortcut", open_target.result_hint())),
+                    score,
+                    move |_doc, _root, chrome: &Chrome| {
+                        if launcher_type == 1 {
+                            return launch_installed_app(chrome, &owner, &name);
+                        }
+                        let Some(target) = target.as_deref() else {
+                            return Err(ActionError::Refused("Shortcut target is missing".into()));
+                        };
+                        crate::shell::uri_open::open_in_workspace(target, chrome)
+                            .map(|_| ())
+                            .map_err(|error| {
+                                let message = format!("Couldn't open {name}: {error:?}");
+                                let mut state = chrome.borrow_mut();
+                                state.push_notification_full(
+                                    Notification::new(
+                                        format!("Couldn't open {name}"),
+                                        format!("{error:?}"),
+                                    )
+                                    .with_severity(NotificationSeverity::Error)
+                                    .with_app_name("Applications"),
+                                );
+                                state.bump();
+                                ActionError::Refused(message)
+                            })
+                    },
+                ))
+            })
+            .collect()
     }
 
     /// Score not-yet-installed apps and build their rows. Deliberately
@@ -401,6 +481,11 @@ impl SearchProvider for ApplicationsProvider {
         let installed = Self::apps();
         let installed_ids: Vec<String> = installed.iter().map(|a| a.package_id.clone()).collect();
         let mut out = self.results_for(ctx.needle, installed, ctx.chrome.open_target);
+        out.extend(self.dynamic_results_for(
+            ctx.needle,
+            Self::dynamic_apps(),
+            ctx.chrome.open_target,
+        ));
         out.extend(self.catalogue_results_for(
             ctx.needle,
             Self::catalogue_apps(),
@@ -1015,5 +1100,31 @@ mod tests {
             "an app that is here is just opened: {:?}",
             row.title
         );
+    }
+
+    #[test]
+    fn reviewed_web_shortcut_is_searchable_but_malformed_records_are_hidden() {
+        let p = ApplicationsProvider::new();
+        let record = |id: &str, target: Option<&str>| DynamicLauncherRecord {
+            id: id.into(),
+            owner_app_id: "org.example.creator".into(),
+            name: "Project board".into(),
+            launcher_type: 2,
+            target: target.map(str::to_string),
+            icon_kind: "qos-web".into(),
+            icon_bytes: None,
+        };
+        let out = p.dynamic_results_for(
+            "project",
+            vec![
+                record("portal-valid", Some("https://example.test/board")),
+                record("portal-invalid", Some("javascript:alert(1)")),
+            ],
+            OpenTarget::Beside,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "portal-valid");
+        assert_eq!(out[0].title, "Open Project board");
+        assert!(out[0].subtitle.as_deref().unwrap().contains("Shortcut"));
     }
 }

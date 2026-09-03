@@ -3,10 +3,9 @@
 //!
 //! Spec: `/usr/share/dbus-1/interfaces/org.freedesktop.impl.portal.Access.xml`.
 //! Camera reuses `Access.AccessDialog` rather than owning a separate
-//! `impl.portal.Camera` interface: `xdg-desktop-portal-camera` turns an
-//! `AccessCamera()` call into an `AccessDialog` call on the configured
-//! backend with `subtitle="Allow access to your camera?"` (or similar);
-//! the request is classified as a Camera capability from the title/subtitle/options dict — see [`classify`].
+//! `impl.portal.Camera` interface. This backend is therefore a camera consent
+//! surface. It never guesses a security capability from translated display
+//! text; microphone access has its own PipeWire/portal path.
 
 #![allow(
     clippy::used_underscore_binding,
@@ -17,6 +16,8 @@
 )]
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use zbus::interface;
 use zbus::names::OwnedUniqueName;
@@ -25,15 +26,22 @@ use zbus::zvariant::{ObjectPath, OwnedValue};
 
 use crate::shell::state::{Capability, GRANT_ONCE};
 
-use super::{CapabilityKind, PortalContext, PromptOutcome, file_chooser::FileChooserBackend, flow};
+use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+use super::{
+    CapabilityKind, PortalContext, PromptOutcome, auth::authenticate_call, flow, lockdown,
+};
 
 pub struct AccessBackend {
     ctx: PortalContext,
+    lifecycle: PortalLifecycle,
 }
 
 impl AccessBackend {
     pub fn new(ctx: PortalContext) -> Self {
-        Self { ctx }
+        Self::with_lifecycle(ctx, PortalLifecycle::new())
+    }
+    pub fn with_lifecycle(ctx: PortalContext, lifecycle: PortalLifecycle) -> Self {
+        Self { ctx, lifecycle }
     }
 }
 
@@ -48,13 +56,14 @@ impl AccessBackend {
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
-        _handle: ObjectPath<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+        handle: ObjectPath<'_>,
         app_id: String,
-        _parent_window: String,
+        parent_window: String,
         title: String,
-        subtitle: String,
+        _subtitle: String,
         body: String,
-        options: HashMap<String, OwnedValue>,
+        _options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
         tracing::debug!(
             "Access.AccessDialog: app={} title={:?} body={:?}",
@@ -63,38 +72,52 @@ impl AccessBackend {
             body
         );
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let caller = FileChooserBackend::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
-        let (kind, cap_template) = classify(&title, &subtitle, &body, &options);
-        let outcome = flow::resolve(&self.ctx, caller, kind, cap_template).await;
+        let Ok(auth) =
+            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
+        else {
+            return (2, HashMap::new());
+        };
+        if lockdown::current_policy().disable_camera {
+            return (1, HashMap::new());
+        }
+        let request = handle.to_string();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancellation = cancelled.clone();
+        let prompts = self.ctx.prompts.clone();
+        let cancellation_request = request.clone();
+        let entry = LifecycleEntry {
+            owner: auth.owner.to_string(),
+            app_id: auth.caller.app_id.clone(),
+            resource: LifecycleResource::Prompt,
+        };
+        if !matches!(
+            self.lifecycle
+                .register_request(connection, &request, entry, move |_| {
+                    cancellation.store(true, Ordering::Release);
+                    prompts.cancel_request(&cancellation_request);
+                })
+                .await,
+            Ok(true)
+        ) {
+            return (2, HashMap::new());
+        }
+        let (kind, cap_template) = camera_capability();
+        let outcome =
+            flow::resolve_for_request(&self.ctx, auth.caller, kind, cap_template, request.clone())
+                .await;
+        self.lifecycle
+            .complete_request_object(connection, &request)
+            .await;
+        if cancelled.load(Ordering::Acquire) {
+            return (1, HashMap::new());
+        }
         outcome_to_access_response(outcome)
     }
 }
 
-/// Pick a [`CapabilityKind`] + [`Capability`] template from the request
-/// metadata. Matches "microphone" / "audio" in the lowercased
-/// title+subtitle+body to route Microphone requests — substring rather
-/// than a fixed phrase, to keep working across locales the portal hasn't translated yet.
-///
-/// Falls back to `Camera` — the only consumer this backend's surface
-/// targets, since Microphone goes through Pipewire's own ACL and `RemoteDesktop` / Inhibit / Wallpaper aren't handled here.
-pub(super) fn classify(
-    title: &str,
-    subtitle: &str,
-    body: &str,
-    _options: &HashMap<String, OwnedValue>,
-) -> (CapabilityKind, Capability) {
-    let blob = format!(
-        "{} {} {}",
-        title.to_lowercase(),
-        subtitle.to_lowercase(),
-        body.to_lowercase()
-    );
-    if blob.contains("microphone") || blob.contains("audio") {
-        return (
-            CapabilityKind::Microphone,
-            Capability::Microphone { scope: GRANT_ONCE },
-        );
-    }
+/// The fixed security meaning of `impl.portal.Access` in qOS. Human-facing
+/// title/subtitle/body strings are presentation only and cannot affect policy.
+pub(super) fn camera_capability() -> (CapabilityKind, Capability) {
     (
         CapabilityKind::Camera,
         Capability::Camera { scope: GRANT_ONCE },
@@ -112,27 +135,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classify_camera_default() {
-        let opts = HashMap::new();
-        let (kind, cap) = classify("Camera Access", "Allow camera?", "wants access", &opts);
+    fn access_is_always_camera() {
+        let (kind, cap) = camera_capability();
         assert_eq!(kind, CapabilityKind::Camera);
         assert!(matches!(cap, Capability::Camera { .. }));
     }
 
     #[test]
-    fn classify_microphone_when_audio_in_body() {
-        let opts = HashMap::new();
-        let (kind, cap) = classify("Allow", "Microphone Access", "use audio input", &opts);
-        assert_eq!(kind, CapabilityKind::Microphone);
-        assert!(matches!(cap, Capability::Microphone { .. }));
-    }
-
-    #[test]
-    fn classify_falls_back_to_camera_on_unknown_text() {
-        let opts = HashMap::new();
-        // Anything that isn't microphone/audio is treated as Camera, so the prompt + grant model still mediates.
-        let (kind, _cap) = classify("Permission", "", "weird thing", &opts);
+    fn translated_or_hostile_ui_text_cannot_change_the_capability() {
+        let (kind, cap) = camera_capability();
         assert_eq!(kind, CapabilityKind::Camera);
+        assert!(matches!(cap, Capability::Camera { .. }));
     }
 
     #[test]
