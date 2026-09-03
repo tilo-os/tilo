@@ -158,18 +158,34 @@ case "$host" in
     sign_linux_artifact "$out/$artifact_base.tar.gz"
 
     appdir="$out/qOS_Imager.AppDir"
-    mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications"
+    mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" \
+      "$appdir/usr/share/metainfo" \
+      "$appdir/usr/share/icons/hicolor/scalable/apps"
     cp target/release/imager "$appdir/usr/bin/qos-imager-bin"
     cp apps/imager/packaging/linux/qos-imager "$appdir/usr/bin/qos-imager"
     cp apps/imager/packaging/linux/qos-imager.desktop \
       "$appdir/usr/share/applications/org.qos.Imager.desktop"
+    cp apps/imager/packaging/linux/org.qos.Imager.metainfo.xml \
+      "$appdir/usr/share/metainfo/"
     cp apps/imager/packaging/linux/AppRun "$appdir/AppRun"
     cp apps/imager/packaging/linux/qos-imager.svg "$appdir/qos-imager.svg"
     cp apps/imager/packaging/linux/qos-imager.svg "$appdir/.DirIcon"
+    cp apps/imager/packaging/linux/qos-imager.svg \
+      "$appdir/usr/share/icons/hicolor/scalable/apps/qos-imager.svg"
     chmod +x "$appdir/AppRun" "$appdir/usr/bin/qos-imager" "$appdir/usr/bin/qos-imager-bin"
     if command -v linuxdeploy >/dev/null 2>&1 && command -v appimagetool >/dev/null 2>&1; then
       linuxdeploy --appdir "$appdir" >/dev/null
-      ARCH="$package_arch" appimagetool "$appdir" "$out/$artifact_base.AppImage" >/dev/null
+      runtime_args=()
+      if [ -n "${QOS_APPIMAGE_RUNTIME:-}" ]; then
+        [ -f "$QOS_APPIMAGE_RUNTIME" ] \
+          || { printf 'QOS_APPIMAGE_RUNTIME does not name a file\n' >&2; exit 1; }
+        runtime_args=(--runtime-file "$QOS_APPIMAGE_RUNTIME")
+      elif [ "$require_native_packages" = 1 ]; then
+        printf 'QOS_APPIMAGE_RUNTIME is required; implicit runtime downloads are forbidden\n' >&2
+        exit 1
+      fi
+      ARCH="$package_arch" appimagetool "${runtime_args[@]}" \
+        "$appdir" "$out/$artifact_base.AppImage" >/dev/null
       chmod +x "$out/$artifact_base.AppImage"
       write_digest "$out/$artifact_base.AppImage"
       sign_linux_artifact "$out/$artifact_base.AppImage"
