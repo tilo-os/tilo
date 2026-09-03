@@ -382,6 +382,57 @@ impl AvailabilityRegistry {
             .any(|record| record.policy == AvailabilityPolicy::Pinned)
     }
 
+    /// Cancel durable automatic-hydration state below a pin that was removed.
+    /// This is paid once by the explicit unpin action, allowing the periodic
+    /// worker to take the zero-scan fast path whenever no pins remain.
+    pub fn clear_automatic_transfer_subtree(
+        &mut self,
+        root: FileRecordId,
+    ) -> Result<bool, AvailabilityError> {
+        let is_in_subtree = |record_id: FileRecordId| {
+            let mut cursor = Some(record_id);
+            let mut remaining = self.records.len().saturating_add(1);
+            while let Some(id) = cursor {
+                if id == root {
+                    return true;
+                }
+                if remaining == 0 {
+                    return false;
+                }
+                remaining = remaining.saturating_sub(1);
+                cursor = self.records.get(&id).and_then(|record| record.parent);
+            }
+            false
+        };
+        let ids = self
+            .records
+            .values()
+            .filter(|record| {
+                is_in_subtree(record.record_id)
+                    && matches!(
+                        self.effective_policy(record.record_id),
+                        Ok(Some(AvailabilityPolicy::Automatic))
+                    )
+                    && record.transfer != TransferState::default()
+            })
+            .map(|record| record.record_id)
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            return Ok(false);
+        }
+        let previous = self.records.clone();
+        for id in ids {
+            if let Some(record) = self.records.get_mut(&id) {
+                record.transfer = TransferState::default();
+            }
+        }
+        if let Err(error) = self.persist() {
+            self.records = previous;
+            return Err(error);
+        }
+        Ok(true)
+    }
+
     /// Install the authenticated current revision before accepting replica
     /// evidence for it. Ordinary whole-workspace records use the same durable
     /// availability path as record-scoped shares; without this row a valid NAS
