@@ -6,6 +6,39 @@
 //! variables or the replicated task state.
 
 use agent_provider_config::{ModelDescriptor, ProviderConfig, ProviderProfile, SecretReference};
+use zeroize::Zeroizing;
+
+/// A secret resolved just-in-time by a desktop-owned credential broker.
+/// It deliberately has no `Debug` implementation, so request tracing cannot
+/// accidentally render the bearer value.
+pub struct ResolvedSecret(Zeroizing<String>);
+
+impl ResolvedSecret {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(Zeroizing::new(value.into()))
+    }
+
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Boundary between the agent process and the desktop secret service. The
+/// resolver receives only a non-secret [`SecretReference`], so profile
+/// storage, Settings, and task records never have to carry a raw API key.
+pub trait SecretResolver: Send + Sync {
+    fn resolve(&self, reference: &SecretReference) -> Result<ResolvedSecret, String>;
+}
+
+/// A safe default for contexts that do not have the secret portal wired yet.
+/// It fails closed instead of falling back to environment variables.
+pub struct UnavailableSecretResolver;
+
+impl SecretResolver for UnavailableSecretResolver {
+    fn resolve(&self, _reference: &SecretReference) -> Result<ResolvedSecret, String> {
+        Err("the desktop credential broker is unavailable".to_string())
+    }
+}
 
 /// The non-secret endpoint selection captured by a new task.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,5 +113,25 @@ mod tests {
             profiles: vec![profile],
         };
         assert!(ProviderSelection::from_config(&config).is_none());
+    }
+
+    struct TestResolver;
+
+    impl SecretResolver for TestResolver {
+        fn resolve(&self, reference: &SecretReference) -> Result<ResolvedSecret, String> {
+            assert!(reference.locator.starts_with("agent-provider/"));
+            Ok(ResolvedSecret::new("test-only-secret"))
+        }
+    }
+
+    #[test]
+    fn resolver_receives_only_the_vault_reference() {
+        let profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+        let reference = profile.credential.as_ref().expect("hosted reference");
+        let resolver = TestResolver;
+        let secret = resolver.resolve(reference).expect("resolved test secret");
+        assert_eq!(secret.expose(), "test-only-secret");
+        let debug = format!("{reference:?}");
+        assert!(!debug.contains("test-only-secret"));
     }
 }
