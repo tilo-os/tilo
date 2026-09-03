@@ -42,13 +42,7 @@ pub fn room_topic_id(room: RoomId) -> u64 {
 /// person identity. The full root key is also carried in and authenticated on
 /// every message; this 64-bit value is routing, never authority.
 pub fn personal_continuity_topic_id(user_public_key: &[u8; 32]) -> u64 {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"qos-personal-continuity-v1\0");
-    hasher.update(user_public_key);
-    let mut bytes = [0_u8; 8];
-    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..8]);
-    let topic = u64::from_le_bytes(bytes);
-    if topic == DEFAULT_WS_TOPIC { 1 } else { topic }
+    qos_relay::personal_continuity_workspace_id(user_public_key)
 }
 
 /// Default on-disk path of the machine's device key, from which the

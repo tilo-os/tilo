@@ -115,3 +115,14 @@ pub fn room_workspace_id(room: &str) -> Result<u64, uuid::Error> {
     let id = u64::from_le_bytes(first8);
     Ok(if id == 0 { 1 } else { id })
 }
+
+/// Stable private relay shard for same-identity continuation checkpoints.
+/// This is not a user-visible workspace and is derived only from the root
+/// identity so every enrolled device/home peer agrees after restart.
+pub fn personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {
+    let hash = blake3::derive_key("qos-personal-continuity-v1\0", user_public_key);
+    let mut first8 = [0u8; 8];
+    first8.copy_from_slice(&hash[..8]);
+    let id = u64::from_le_bytes(first8);
+    if id == 0 { 1 } else { id }
+}

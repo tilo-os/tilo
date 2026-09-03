@@ -610,6 +610,9 @@ fn approve(
         .context("this device does not hold the identity root needed to approve enrollment")?;
     let device = qos_user_identity::persist::read_device_key(&paths.device_privkey)?;
     let user_public_key = root.verifying_key().to_bytes();
+    relay_workspace_ids.push(qos_relay::personal_continuity_workspace_id(
+        &user_public_key,
+    ));
     let issuer_cert =
         qos_user_identity::persist::read_device_cert(&paths.device_cert_for_user(&user_public_key))
             .or_else(|_| qos_user_identity::persist::read_device_cert(&paths.device_cert))?;
