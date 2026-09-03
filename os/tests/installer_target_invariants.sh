@@ -8,6 +8,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 backend="$repo_root/os/usr/libexec/qos-install"
 encryptor="$repo_root/os/usr/libexec/qos-disk-encrypt"
 containerfile="$repo_root/os/Containerfile.installer"
+production_containerfile="$repo_root/os/Containerfile"
 builder="$repo_root/os/dev/build-custom-installer.sh"
 firstboot_user="$repo_root/os/usr/libexec/qos-firstboot-user"
 profile_extractor="$repo_root/os/usr/libexec/qos-installer-profile-extract"
@@ -17,12 +18,24 @@ fail=0
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
+unlock_placeholder=qos.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000
+sample_uuid=00000000-0000-0000-0000-000000000000
+unlock_options="rd.luks.options=$sample_uuid=tpm2-device=auto,fido2-device=auto"
+if [ "${#unlock_placeholder}" -eq "${#unlock_options}" ] \
+   && [ "$(grep -Fc 'rd.luks.options=%s=tpm2-device=auto,fido2-device=auto' "$encryptor")" -eq 2 ]; then
+  ok "sealed unlock slot exactly fits TPM2 and FIDO2 initramfs discovery options"
+else
+  bad "encrypted-root producer and sealed UKI hardware-token options disagree"
+fi
+
 karg_deletes="$(grep -c -- '--karg-delete qos.install' "$backend" || true)"
 if [ "$karg_deletes" -eq 2 ] \
    && grep -Fq 'qos.root=0000000000000000000000000000000000000' "$backend" \
    && grep -Fq 'qos.luks=000000000000000000000000000000000000000000000' "$backend" \
+   && grep -Fq 'qos.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000' "$backend" \
+   && grep -Fq 'rd.luks.options=$LUKS_UUID=tpm2-device=auto,fido2-device=auto' "$backend" \
    && grep -Fq 'remove qos.install "$TARGET_UKI"' "$backend"; then
-  ok "sealed encrypted installs specialize UUID slots and remove the live marker"
+  ok "sealed encrypted installs specialize UUID and hardware-token slots, then remove the live marker"
 else
   bad "sealed target UKI handoff is incomplete (legacy deletions: $karg_deletes)"
 fi
@@ -31,6 +44,7 @@ if grep -Fq 'qos-uki-cmdline remove systemd.show_status' "$containerfile" \
    && grep -Fq 'qos-uki-cmdline remove rd.udev.log_level' "$containerfile" \
    && grep -Fq 'qos-uki-cmdline remove loglevel' "$containerfile" \
    && grep -Fq 'qos-uki-cmdline remove vt.global_cursor_default' "$containerfile" \
+   && grep -Fq 'qos-uki-cmdline append qos.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000' "$containerfile" \
    && grep -Fq 'qos-uki-cmdline show | grep -qw qos.mode=normal' "$containerfile" \
    && grep -Fq 'qos-uki-cmdline show | grep -qw qos.install' "$containerfile"; then
   ok "installer reserves measured UKI cmdline space without losing splash or mode"
@@ -107,6 +121,53 @@ else
   bad "whole-disk erasure can proceed without an exact privileged confirmation"
 fi
 
+if grep -Fq -- '--confirm-root)' "$backend" \
+   && grep -Fq '[ "$CONFIRM_ROOT" = "$ROOT_PARTITION" ]' "$backend" \
+   && grep -Fq 'alongside install requires --confirm-root matching --root-partition' "$backend"; then
+  ok "alongside formatting requires an exact root-partition confirmation at the privileged boundary"
+else
+  bad "alongside formatting can proceed without an exact privileged root confirmation"
+fi
+
+if grep -Fq -- '--expect-disk-size-bytes)' "$backend" \
+   && grep -Fq -- '--expect-disk-devnum)' "$backend" \
+   && grep -Fq -- '--expect-disk-wwn)' "$backend" \
+   && grep -Fq -- '--expect-disk-serial)' "$backend" \
+   && grep -Fq -- '--expect-root-partuuid)' "$backend" \
+   && grep -Fq -- '--expect-root-size-bytes)' "$backend" \
+   && grep -Fq -- '--expect-efi-partuuid)' "$backend" \
+   && grep -Fq -- '--expect-efi-size-bytes)' "$backend" \
+   && grep -Fq 'missing stable disk identity (expected WWN or serial)' "$backend" \
+   && grep -Fq 'validate_partition_identity "$ROOT_PARTITION"' "$backend" \
+   && grep -Fq 'validate_partition_identity "$EFI_PARTITION"' "$backend" \
+   && [ "$(grep -c '^[[:space:]]*validate_disk_identity$' "$backend" || true)" -eq 2 ]; then
+  ok "reviewed disk and alongside partition identities are revalidated before destructive work"
+else
+  bad "installer target identity is not bound across discovery and destructive execution"
+fi
+
+identity_error="$(
+  id() { printf 0; }
+  export -f id
+  QOS_INSTALL_TRANSIENT=1 "$backend" \
+    --disk /dev/qos-test-missing --confirm-erase /dev/qos-test-missing \
+    --user identitytest --pin --yes </dev/null 2>&1 || true
+)"
+stable_error="$(
+  id() { printf 0; }
+  export -f id
+  QOS_INSTALL_TRANSIENT=1 "$backend" \
+    --disk /dev/qos-test-missing --confirm-erase /dev/qos-test-missing \
+    --expect-disk-size-bytes 68719476736 --expect-disk-devnum 252:0 \
+    --user identitytest --pin --yes </dev/null 2>&1 || true
+)"
+if grep -Fq 'missing or invalid --expect-disk-size-bytes' <<<"$identity_error" \
+   && grep -Fq 'missing stable disk identity (expected WWN or serial)' <<<"$stable_error"; then
+  ok "privileged installer rejects missing discovery identity before touching a block device"
+else
+  bad "privileged installer does not fail closed when discovery identity is omitted"
+fi
+
 if grep -Fq 'ENCRYPT=1' "$backend" \
    && grep -Fq 'native qOS requires --pin' "$backend" \
    && grep -Fq 'if verified_tpm; then' "$backend" \
@@ -139,6 +200,27 @@ if grep -Fq -- '--passphrase) force_passphrase=1' "$disk_encrypt" \
   ok "TPM short-PIN enrollment requires a verified-boot decision"
 else
   bad "disk helper can create a misleading TPM slot while boot is unverified"
+fi
+
+# Generation-bound TPM enrollment cannot be enabled as a one-line replacement
+# for systemd-cryptenroll. The installer changes measured UKI bytes after the
+# release image is built; the release carries no matching signed prediction, and
+# there is not yet an early-boot consumer for a qos-rollback token. Until all
+# three prerequisites arrive together, retain the honest PCR-7 token plus the
+# independent recovery/FIDO paths and reject any partial enrollment wiring.
+rollback_enrollment_calls="$(
+  grep -hE 'qos-rollback[[:space:]]+enroll' "$backend" "$encryptor" 2>/dev/null \
+    | grep -vE '^[[:space:]]*#' || true
+)"
+if [ -z "$rollback_enrollment_calls" ] \
+   && grep -Fq 'install -d -m 0755 /usr/share/qos/pcr-predictions' "$production_containerfile" \
+   && grep -Fq 'the directory ships empty' "$production_containerfile" \
+   && grep -Fq -- '--tpm2-pcrs=7 --tpm2-with-pin=yes' "$encryptor" \
+   && grep -Fq -- '--recovery-key "$dev"' "$encryptor" \
+   && grep -Fq -- '--fido2-device=auto "$dev"' "$encryptor"; then
+  ok "PCR11 rollback enrollment stays fail-closed until target predictions and initramfs unlock exist"
+else
+  bad "installer partially enables generation enrollment without its target prediction/unlock prerequisites"
 fi
 
 if grep -Fq 'CONF_TMP="$(mktemp ' "$backend" \
@@ -249,7 +331,8 @@ else
 fi
 
 if grep -Fq 'prepare-partition "$ROOT_PARTITION" --efi "$EFI_PARTITION"' "$backend" \
-   && grep -Fq 'ROOT_FS_UUID=' "$backend"; then
+   && grep -Fq 'ROOT_FS_UUID=' "$backend" \
+   && grep -Fq 'ENC_CLEANUP_TARGET="$ROOT_PARTITION"' "$backend"; then
   ok "encrypted and unencrypted alongside paths preserve the partition table"
 else
   bad "alongside mode is not wired through both encryption paths"

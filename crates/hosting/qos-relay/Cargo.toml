@@ -97,6 +97,7 @@ toml.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 libc.workspace = true
+socket2 = "0.6"
 
 # Observability.
 tracing.workspace = true

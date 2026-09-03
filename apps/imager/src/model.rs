@@ -205,13 +205,27 @@ pub struct TargetDrive {
     pub kind: TargetKind,
     pub tran: Option<String>,
     pub removable: bool,
-    /// `true` for the root/system disk — writing here destroys the running
-    /// OS, so it is hidden unless the user explicitly opts in.
+    /// `true` for the root/system disk. The media creator never accepts it;
+    /// internal installation belongs to the booted qOS installer.
     pub is_system: bool,
     pub partitions: Vec<TargetPartition>,
 }
 
 impl TargetDrive {
+    /// Whether this is external installation media the desktop imager may
+    /// safely offer. Some USB readers report `RM=0`, so the transport is also
+    /// considered; system disks are unconditionally excluded.
+    pub fn is_media_target(&self) -> bool {
+        !self.is_system
+            && (self.removable
+                || self.tran.as_deref().is_some_and(|transport| {
+                    matches!(
+                        transport.to_ascii_lowercase().as_str(),
+                        "usb" | "sd" | "mmc"
+                    )
+                }))
+    }
+
     pub fn dev_path(&self) -> String {
         if self.name.starts_with('/') || self.name.starts_with(r"\\.\") {
             return self.name.clone();
@@ -567,7 +581,121 @@ impl Default for InstallProfile {
     }
 }
 
+const INSTALLER_KEYBOARDS: &[&str] = &[
+    "us", "gb", "de", "fr", "es", "it", "pt", "br", "ru", "se", "no", "dk", "ch", "pl", "dvorak",
+    "colemak",
+];
+
 impl InstallProfile {
+    /// Validate the exact secret-free subset accepted by the live installer.
+    ///
+    /// This intentionally mirrors `installer::media_profile` locally: the
+    /// imager cannot depend on the graphical installer crate without pulling a
+    /// second application into every host build. Keeping the checks beside the
+    /// media serializer still lets us reject a bad profile before spending time
+    /// flashing it; the live installer repeats every check across the trust
+    /// boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns a field-specific message when any transported value would be
+    /// rejected by the live installer.
+    pub fn validate_media_profile(&self) -> Result<(), String> {
+        let hostname = self.hostname.trim();
+        if hostname.is_empty()
+            || hostname.len() > 63
+            || !hostname
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+            || hostname.starts_with('-')
+            || hostname.ends_with('-')
+        {
+            return Err(
+                "Hostname must be 1–63 letters, numbers or hyphens, without a hyphen at either end."
+                    .into(),
+            );
+        }
+
+        let username = self.user.username.trim();
+        let username_bytes = username.as_bytes();
+        let reserved = matches!(
+            username,
+            "root"
+                | "bin"
+                | "daemon"
+                | "adm"
+                | "lp"
+                | "sync"
+                | "shutdown"
+                | "halt"
+                | "mail"
+                | "operator"
+                | "games"
+                | "ftp"
+                | "nobody"
+                | "dbus"
+                | "polkitd"
+                | "sshd"
+                | "chrony"
+                | "tss"
+                | "greetd"
+                | "qos"
+        );
+        if username_bytes.is_empty()
+            || username_bytes.len() > 32
+            || !username_bytes
+                .first()
+                .is_some_and(|c| matches!(c, b'a'..=b'z' | b'_'))
+            || !username_bytes
+                .iter()
+                .skip(1)
+                .all(|c| matches!(c, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
+            || reserved
+        {
+            return Err(
+                "Username must be a non-reserved Linux account name of at most 32 characters."
+                    .into(),
+            );
+        }
+
+        let full_name = self.user.full_name.trim();
+        if full_name.chars().count() > 100
+            || full_name
+                .chars()
+                .any(|c| c.is_control() || matches!(c, ':' | '\n' | '\r'))
+        {
+            return Err("Full name must be at most 100 characters and contain no control characters or colon."
+                .into());
+        }
+
+        let locale = self.locale.trim();
+        if locale.is_empty()
+            || locale.len() > 64
+            || !locale
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'@' | b'-'))
+        {
+            return Err("Locale must be a valid locale name such as en_US.UTF-8.".into());
+        }
+
+        if !INSTALLER_KEYBOARDS.contains(&self.keyboard.trim()) {
+            return Err("Keyboard layout is not supported by the qOS installer.".into());
+        }
+
+        let timezone = self.timezone.trim();
+        if timezone.is_empty()
+            || timezone.len() > 128
+            || timezone.starts_with('/')
+            || timezone.contains("..")
+            || !timezone
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'/' | b'+' | b'-'))
+        {
+            return Err("Time zone must be a safe IANA name such as Europe/Berlin.".into());
+        }
+        Ok(())
+    }
+
     /// Secret-free configuration embedded into qOS installation media.
     ///
     /// Destructive choices and credentials deliberately do not cross the
@@ -943,6 +1071,42 @@ mod tests {
         assert!(!cfg.contains("password"));
         assert!(!cfg.contains("passphrase"));
         assert!(!cfg.contains(&prof.user.password) || prof.user.password.contains('•'));
+    }
+
+    #[test]
+    fn media_profile_validation_rejects_each_consumer_invalid_field() {
+        let good = InstallProfile::default();
+        good.validate_media_profile().unwrap();
+
+        let mut cases = Vec::new();
+        let mut profile = good.clone();
+        profile.hostname = "bad host".into();
+        cases.push(("hostname", profile));
+        let mut profile = good.clone();
+        profile.user.username = "root".into();
+        cases.push(("username", profile));
+        let mut profile = good.clone();
+        profile.user.full_name = "Bad:Name".into();
+        cases.push(("full name", profile));
+        let mut profile = good.clone();
+        profile.locale = "../../etc".into();
+        cases.push(("locale", profile));
+        let mut profile = good.clone();
+        profile.keyboard = "not-a-layout".into();
+        cases.push(("keyboard", profile));
+        let mut profile = good;
+        profile.timezone = "../../etc".into();
+        cases.push(("time zone", profile));
+
+        for (field, profile) in cases {
+            let message = profile
+                .validate_media_profile()
+                .expect_err("invalid producer field must be rejected before writing");
+            assert!(
+                message.to_ascii_lowercase().contains(field),
+                "{field} produced an unhelpful error: {message}"
+            );
+        }
     }
 
     #[test]

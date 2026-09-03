@@ -332,7 +332,36 @@ run. Ordering the hook `Before=systemd-cryptsetup@luks-<uuid>.service` inside th
 initramfs is the remaining work, and it needs the `qos-rollback` binary installed
 into the initramfs by a dracut module.
 
-None of this is wired up here, because the crate is not on this branch.
+The rollback crate and late-boot confirmation services are now shipped, but the
+generation-bound unlock path is deliberately **not enrolled by the installer**.
+Three prerequisites have to land as one tested change before that is safe:
+
+1. The installer rewrites the installed UKI's measured `.cmdline` with the new
+   root filesystem UUID, LUKS UUID, token-discovery options, and live-media marker
+   removal. Consequently PCR 11 is unique to that installed UKI. A prediction
+   made for the release UKI before those rewrites does not describe the target.
+2. The production image intentionally contains only the prediction authority's
+   public key and an empty `/usr/share/qos/pcr-predictions`. Its private key must
+   not be copied to installation media. There is therefore no authority present
+   that can sign the target-specific PCR 11 prediction during an offline install.
+3. The production initramfs has no `qos-rollback unlock` dracut hook yet. Even a
+   correctly enrolled generation slot would not be offered to
+   `systemd-cryptsetup` on the first installed boot.
+
+Calling `qos-rollback enroll` despite those facts would not add rollback
+protection: sealing against the live installer's PCRs produces an unusable target,
+while omitting PCR 11 silently reduces the policy to the existing PCR 7 boundary.
+The current `systemd-cryptenroll` PCR-7 TPM slot therefore remains the honest
+short-PIN path, with independent recovery-key and optional FIDO2 slots.
+
+A complete integration must either make the installed UKI independent of
+per-device command-line values, so a release-signed prediction remains valid, or
+introduce a machine authority whose public half and predictions are available in
+early userspace and whose update-time custody is no weaker than the owner Secure
+Boot key. It must also add the initramfs unlock hook and enroll every staged
+generation before reboot. The installer invariant test rejects a lone rollback
+enrollment call until those prerequisites exist; this prevents an apparently
+enabled but non-bootable partial deployment.
 
 ## Disk encryption
 
@@ -345,14 +374,25 @@ hardware absence into no encryption at all — the opposite of what absence shou
 do. So qOS builds the layout itself (ESP + `/boot` + LUKS2 root) and installs
 `bootc ... to-filesystem` into the opened mapping.
 
-The volume is always created with a **recovery key**, shown once during install.
-Everything else is a slot layered on top of it:
+The volume is always created with a **recovery key**, shown once during install
+and verified against the finished LUKS header before the temporary install key
+may be removed. If that value cannot be shown and verified, installation stops
+while the temporary key still exists. Everything else is a slot layered on top
+of it:
 
 | Machine | Slots after install | Boot experience |
 |---|---|---|
 | TPM + continuous target verified-boot preflight | recovery key, TPM2+PIN | type the PIN |
 | TPM without verified boot | recovery key, passphrase | type the passphrase |
 | No TPM | recovery key, passphrase | type the passphrase |
+
+An optional FIDO2 security key adds another slot to any row. Selecting it is a
+requirement: enrollment failure stops installation with an actionable retry
+message rather than silently finishing without the requested factor. The sealed
+target UKI carries both `tpm2-device=auto` and `fido2-device=auto` in its
+per-volume `rd.luks.options=` token. LUKS2 metadata tells systemd-cryptsetup
+which of those handlers has enrolled material; without the FIDO2 boot option a
+security key could be successfully enrolled yet never tried by the initramfs.
 
 The installer and privileged backend both require a startup secret. A short PIN
 is accepted only when TPM2 and Secure Boot are active, the running kernel

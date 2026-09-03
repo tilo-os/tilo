@@ -4138,7 +4138,10 @@ impl Filesystem for QuickFS {
         });
         match res {
             Ok(data) => reply.data(&data),
-            Err(_) => reply.error(to_errno(EIO)),
+            Err(error) => {
+                eprintln!("content hydration failed for {hash}: {error:#}");
+                reply.error(to_errno(EIO));
+            }
         }
     }
 

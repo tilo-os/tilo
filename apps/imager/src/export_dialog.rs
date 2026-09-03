@@ -20,6 +20,7 @@ const TITLE: &str = "Embedded setup profile";
 const MAX_WIDTH: f64 = 640.0;
 const MAX_HEIGHT: f64 = 620.0;
 const WIDTH_FRACTION: f64 = 0.62;
+const COMPACT_WIDTH_FRACTION: f64 = 0.9;
 const HEIGHT_FRACTION: f64 = 0.8;
 
 struct ExportConfigBody {
@@ -98,17 +99,26 @@ impl Widget for ExportConfigBody {
         let colors = &theme.tokens.colors;
         // ModalDialog's body begins six pixels below the original subtitle
         // baseline. Drawing upward preserves the established card rhythm.
+        let compact = self.rect.width() < 360.0;
+        let subtitle = if compact {
+            "Exact embedded profile; secrets are referenced, not embedded."
+        } else {
+            "qos-install.conf — the same options this wizard sets; secrets are referenced, not embedded."
+        };
+        let text_width = (self.rect.width() - 8.0).max(0.0) as f32;
         text_renderer.draw_text_weighted(
             scene,
-            "qos-install.conf — the same options this wizard sets; secrets are referenced, not embedded.",
+            subtitle,
             11.5,
             colors.text_dim,
             transform * Affine::translate((self.rect.x0 + 4.0, self.rect.y0 - 6.0)),
-            Some((self.rect.width() - 8.0) as f32),
+            Some(text_width),
             TextWeight::Regular,
         );
 
-        let mut y = self.rect.y0 + 22.0;
+        let (_, subtitle_height) =
+            text_renderer.measure_weighted(subtitle, 11.5, Some(text_width), TextWeight::Regular);
+        let mut y = self.rect.y0 - 6.0 + f64::from(subtitle_height) + 10.0;
         for line in self.text.lines() {
             if y > self.rect.y1 {
                 break;
@@ -119,10 +129,12 @@ impl Widget for ExportConfigBody {
                 12.0,
                 Self::line_color(theme, line),
                 transform * Affine::translate((self.rect.x0 + 4.0, y)),
-                Some((self.rect.width() - 8.0) as f32),
+                Some(text_width),
                 TextWeight::Regular,
             );
-            y += 17.0;
+            let (_, line_height) =
+                text_renderer.measure_weighted(line, 12.0, Some(text_width), TextWeight::Regular);
+            y += f64::from(line_height).max(17.0) + 3.0;
         }
         let hint = "click anywhere or press Esc to close";
         let (hint_width, _) = text_renderer.measure(hint, 11.0, None);
@@ -199,8 +211,13 @@ impl ExportDialog {
         theme: &Theme,
         text_renderer: &mut TextRenderer,
     ) {
+        let width_fraction = if viewport.width() < 600.0 {
+            COMPACT_WIDTH_FRACTION
+        } else {
+            WIDTH_FRACTION
+        };
         self.dialog.set_max_size(
-            (viewport.width() * WIDTH_FRACTION).min(MAX_WIDTH),
+            (viewport.width() * width_fraction).min(MAX_WIDTH),
             (viewport.height() * HEIGHT_FRACTION).min(MAX_HEIGHT),
         );
         self.dialog.layout_in(viewport, theme, text_renderer);
@@ -325,6 +342,15 @@ mod tests {
         let narrow = dialog.dialog_rect();
         assert_eq!(narrow.width(), 800.0 * WIDTH_FRACTION);
         assert_eq!(narrow.height(), 600.0 * HEIGHT_FRACTION);
+
+        dialog.layout_in(
+            Rect::new(0.0, 0.0, 320.0, 640.0),
+            &Theme::dark(),
+            &mut TextRenderer::new(),
+        );
+        let compact = dialog.dialog_rect();
+        assert_eq!(compact.width(), 320.0 * COMPACT_WIDTH_FRACTION);
+        assert_eq!(compact.height(), 640.0 * HEIGHT_FRACTION);
     }
 
     #[test]

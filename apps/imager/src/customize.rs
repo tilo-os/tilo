@@ -201,11 +201,12 @@ impl CustomizePanel {
     fn geom(content: Rect) -> CzGeom {
         let x0 = content.x0;
         let x1 = content.x1;
+        let compact = content.width() < 520.0;
         let fw = (content.width() - 16.0) / 2.0;
         let fh = 38.0;
-        let row_pitch = fh + 40.0; // input + label + gap
-        let identity_label_y = content.y0 + 52.0;
-        let host_y = content.y0 + 92.0;
+        let row_pitch = fh + if compact { 32.0 } else { 40.0 }; // input + label + gap
+        let identity_label_y = content.y0 + if compact { 72.0 } else { 52.0 };
+        let host_y = content.y0 + if compact { 104.0 } else { 92.0 };
         let hostname = Rect::new(x0, host_y, x1, host_y + fh);
         let r2 = host_y + row_pitch;
         let full_name = Rect::new(x0, r2, x0 + fw, r2 + fh);
