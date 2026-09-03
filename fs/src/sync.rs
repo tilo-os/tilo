@@ -2003,16 +2003,43 @@ async fn collect_replica_acks_from_peer(
             continue;
         };
         let observed_at = observation.observed_at_ms;
-        let _ = registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .observe_replica(
-                revision.record_id,
-                collab_types::Ed25519PublicKey(identity.device_public_key()),
-                observation,
-                observed_at,
-            );
+        let _ = persist_workspace_replica_observation(
+            registry,
+            revision,
+            collab_types::Ed25519PublicKey(identity.device_public_key()),
+            observation,
+            observed_at,
+        );
     }
+}
+
+#[allow(clippy::significant_drop_tightening)]
+fn persist_workspace_replica_observation(
+    registry: &Arc<Mutex<crate::availability::AvailabilityRegistry>>,
+    revision: collab_types::ContentRevisionV1,
+    local_device: collab_types::Ed25519PublicKey,
+    observation: crate::availability::ReplicaObservation,
+    observed_at: u64,
+) -> Result<(), crate::availability::AvailabilityError> {
+    let mut registry = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Whole-workspace records historically never created availability rows,
+    // so valid NAS receipts were silently rejected as `UnknownRecord`.
+    let parent = registry
+        .get(revision.record_id)
+        .and_then(|record| record.parent);
+    let metadata_observed = registry
+        .get(revision.record_id)
+        .and_then(|record| record.freshness.metadata_observed_at_ms)
+        .unwrap_or(observed_at);
+    registry.track_current_revision(
+        revision,
+        crate::availability::RecordKind::File,
+        parent,
+        metadata_observed,
+    )?;
+    registry.observe_replica(revision.record_id, local_device, observation, observed_at)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2833,21 +2860,23 @@ mod tests {
         .unwrap();
 
         let path = temp.path().join("availability.json");
-        let mut registry = crate::availability::AvailabilityRegistry::open(&path).unwrap();
-        let mut availability = crate::availability::RecordAvailability::new(
-            record_id,
-            crate::availability::RecordKind::File,
+        let registry = Arc::new(Mutex::new(
+            crate::availability::AvailabilityRegistry::open(&path).unwrap(),
+        ));
+        persist_workspace_replica_observation(
+            &registry,
+            revision,
+            Ed25519PublicKey(client_identity.device_public_key()),
+            observation.clone(),
+            observation.observed_at_ms,
+        )
+        .unwrap();
+        let mut registry = registry.lock().unwrap();
+        assert_eq!(
+            registry.get(record_id).unwrap().current_version,
+            Some(version_id),
+            "the shipped whole-workspace ACK path creates the ordinary record row first"
         );
-        availability.current_version = Some(version_id);
-        registry.put(availability).unwrap();
-        registry
-            .observe_replica(
-                record_id,
-                Ed25519PublicKey(client_identity.device_public_key()),
-                observation.clone(),
-                observation.observed_at_ms,
-            )
-            .unwrap();
         assert!(matches!(
             registry.observe_replica(
                 record_id,

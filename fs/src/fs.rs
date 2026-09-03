@@ -59,6 +59,9 @@ use crate::smart::Heuristics;
 use crate::sync::SyncHandle;
 
 const TTL: Duration = Duration::from_secs(10);
+const PINNED_HYDRATION_INTERVAL: Duration = Duration::from_secs(1);
+const MAX_PINNED_FETCHES_PER_PASS: usize = 4;
+const HYDRATION_PROGRESS_PERSIST_BYTES: u64 = 8 * 1024 * 1024;
 
 type DocExports = HashMap<u64, (Vec<automerge::ChangeHash>, Vec<u8>)>;
 
@@ -181,6 +184,28 @@ struct OpenFileHandleState {
     writable: bool,
 }
 
+struct PinnedHydrationTask {
+    wake: tokio::sync::mpsc::UnboundedSender<()>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for PinnedHydrationTask {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+#[derive(Clone)]
+struct PinnedCandidate {
+    record_id: collab_types::FileRecordId,
+    parent: Option<collab_types::FileRecordId>,
+    kind: RecordKind,
+    version: Option<collab_types::FileVersionId>,
+    hash: Option<Hash>,
+    size: u64,
+    path: String,
+}
+
 pub struct QuickFS {
     pub namespace: Arc<Mutex<Namespace>>,
     pub hydrator: Arc<Hydrator>,
@@ -218,6 +243,10 @@ pub struct QuickFS {
     /// Durable local pin/replica/transfer registry. The FUSE path only reads
     /// its in-memory state; persistence happens at mutation points.
     availability: Option<Arc<Mutex<AvailabilityRegistry>>>,
+    /// One bounded worker owns automatic hydration for durable file/folder
+    /// pins. It is woken by policy changes and also reconciles periodically so
+    /// later descendants and later immutable versions inherit the promise.
+    pinned_hydration: Option<PinnedHydrationTask>,
     eviction_queue: Option<Arc<tokio::sync::Mutex<EvictionQueue>>>,
     /// Durable signed-grant authority used for the bounded read-only share
     /// projection. The FUSE callback never holds or reconstructs link secrets.
@@ -272,6 +301,7 @@ impl QuickFS {
             enforcement: None,
             thumbs: None,
             availability: None,
+            pinned_hydration: None,
             eviction_queue: None,
             share_authority: None,
             history: None,
@@ -467,6 +497,37 @@ impl QuickFS {
     #[must_use]
     pub fn with_availability(mut self, registry: Arc<Mutex<AvailabilityRegistry>>) -> Self {
         self.availability = Some(registry);
+        self
+    }
+
+    /// Start the mount-lifetime worker that turns durable pin policy into
+    /// verified local residency. Call this after attaching the live ACL so the
+    /// worker never hydrates records outside this mount's current view.
+    #[must_use]
+    pub fn with_pinned_hydration(mut self) -> Self {
+        let Some(registry) = self.availability.clone() else {
+            return self;
+        };
+        if self.pinned_hydration.is_some() {
+            return self;
+        }
+        let namespace = Arc::clone(&self.namespace);
+        let hydrator = Arc::clone(&self.hydrator);
+        let enforcement = self.enforcement.clone();
+        let (wake, mut wakes) = tokio::sync::mpsc::unbounded_channel();
+        let task = self.hydrator.runtime_handle.spawn(async move {
+            let mut interval = tokio::time::interval(PINNED_HYDRATION_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {}
+                    message = wakes.recv() => if message.is_none() { break; },
+                }
+                reconcile_pinned_hydration(&namespace, &hydrator, &registry, enforcement.as_ref())
+                    .await;
+            }
+        });
+        self.pinned_hydration = Some(PinnedHydrationTask { wake, task });
         self
     }
 
@@ -1845,7 +1906,7 @@ impl QuickFS {
     fn set_pin_policy(&self, ino: u64, policy: AvailabilityPolicy) -> Result<(), i32> {
         self.check_access(ino, Access::Read)?;
         let registry = self.availability.as_ref().ok_or(libc::ENOTSUP)?;
-        let (record_id, mut ancestry, hashes) = {
+        let (record_id, mut ancestry) = {
             let mut ns = self.ns();
             let record_id = ns.record_id_for(ino).ok_or(ENOENT)?;
             let mut ancestry = Vec::new();
@@ -1863,22 +1924,7 @@ impl QuickFS {
                 ancestry.push((current_id, kind, parent));
                 cursor = parent_ino;
             }
-            let root_path = ns.path_for(ino).ok_or(ENOENT)?;
-            let hashes = ns
-                .live_node_ids()
-                .into_iter()
-                .filter_map(|id| {
-                    let path = ns.path_for_id(&id)?;
-                    let covered = root_path == "/"
-                        || path == root_path
-                        || (path.starts_with(&root_path)
-                            && path.as_bytes().get(root_path.len()) == Some(&b'/'));
-                    (covered && self.in_view(&path))
-                        .then(|| ns.node_hash(&id))
-                        .flatten()
-                })
-                .collect::<Vec<_>>();
-            (record_id, ancestry, hashes)
+            (record_id, ancestry)
         };
         {
             let mut registry = registry
@@ -1898,13 +1944,8 @@ impl QuickFS {
                 registry.put(record).map_err(|_| EIO)?;
             }
         }
-        if policy == AvailabilityPolicy::Pinned {
-            for hash in hashes {
-                let hydrator = self.hydrator.clone();
-                self.hydrator.runtime_handle.spawn(async move {
-                    let _ = hydrator.prefetch(hash, u64::MAX).await;
-                });
-            }
+        if let Some(worker) = &self.pinned_hydration {
+            let _ = worker.wake.send(());
         }
         Ok(())
     }
@@ -1936,11 +1977,16 @@ impl QuickFS {
                 record.transfer.phase = TransferPhase::Idle;
                 record.transfer.progress = None;
                 record.transfer.last_error = None;
+                record.transfer.retry_count = 0;
+                record.transfer.retry_at_ms = None;
                 record.freshness.local_verified_at_ms = Some(now_ms());
                 registry.put(record).map_err(|_| EIO)?;
                 return Ok(());
             }
             record.transfer.phase = TransferPhase::Queued;
+            record.transfer.last_error = None;
+            record.transfer.retry_count = 0;
+            record.transfer.retry_at_ms = None;
             record.transfer.progress = Some(crate::availability::TransferProgress {
                 completed_bytes: 0,
                 total_bytes: Some(size),
@@ -1954,12 +2000,33 @@ impl QuickFS {
             update_retry_state(&registry, record_id, |record| {
                 record.transfer.phase = TransferPhase::Downloading;
             });
-            match hydrator.prefetch(hash, size).await {
+            let mut last_persisted = 0_u64;
+            match hydrator
+                .prefetch_with_progress(hash, size, |completed_bytes, total_bytes| {
+                    if completed_bytes != total_bytes
+                        && completed_bytes.saturating_sub(last_persisted)
+                            < HYDRATION_PROGRESS_PERSIST_BYTES
+                    {
+                        return;
+                    }
+                    last_persisted = completed_bytes;
+                    update_retry_state(&registry, record_id, |record| {
+                        record.transfer.phase = TransferPhase::Downloading;
+                        record.transfer.progress = Some(crate::availability::TransferProgress {
+                            completed_bytes,
+                            total_bytes: Some(total_bytes),
+                        });
+                    });
+                })
+                .await
+            {
                 Ok(true) => update_retry_state(&registry, record_id, |record| {
                     record.residency = Residency::Resident { bytes: size };
                     record.transfer.phase = TransferPhase::Idle;
                     record.transfer.progress = None;
                     record.transfer.last_error = None;
+                    record.transfer.retry_count = 0;
+                    record.transfer.retry_at_ms = None;
                     record.freshness.local_verified_at_ms = Some(now_ms());
                 }),
                 Ok(false) => update_retry_state(&registry, record_id, |record| {
@@ -1969,6 +2036,8 @@ impl QuickFS {
                         message: "The file exceeds this device's retry limit".into(),
                         occurred_at_ms: now_ms(),
                     });
+                    record.transfer.retry_count = 1;
+                    record.transfer.retry_at_ms = None;
                 }),
                 Err(_) => update_retry_state(&registry, record_id, |record| {
                     record.transfer.phase = TransferPhase::Idle;
@@ -1977,6 +2046,8 @@ impl QuickFS {
                         message: "No available replica could provide this file".into(),
                         occurred_at_ms: now_ms(),
                     });
+                    record.transfer.retry_count = 1;
+                    record.transfer.retry_at_ms = None;
                 }),
             }
         });
@@ -3345,6 +3416,282 @@ fn update_retry_state(
     }
 }
 
+fn pinned_candidates(
+    namespace: &Arc<Mutex<Namespace>>,
+    enforcement: Option<&(AclHandle, crate::acl::IdentityKey)>,
+) -> Vec<PinnedCandidate> {
+    let namespace = namespace
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let visible =
+        |path: &str| enforcement.is_none_or(|(acl, identity)| acl.visible(identity, path));
+    let mut candidates = Vec::new();
+    if let Some(record_id) = namespace.record_id_for(crate::namespace::ROOT_INO)
+        && visible("/")
+    {
+        candidates.push(PinnedCandidate {
+            record_id,
+            parent: None,
+            kind: RecordKind::Directory,
+            version: None,
+            hash: None,
+            size: 0,
+            path: "/".into(),
+        });
+    }
+    for id in namespace.live_node_ids() {
+        let Some(entry) = namespace.entry_for_node(&id) else {
+            continue;
+        };
+        let Some(path) = namespace.path_for_id(&id) else {
+            continue;
+        };
+        if !visible(&path) {
+            continue;
+        }
+        candidates.push(PinnedCandidate {
+            record_id: entry.record_id,
+            parent: namespace.record_id_for_id(&entry.parent),
+            kind: if namespace.node_is_dir(&id) == Some(true) {
+                RecordKind::Directory
+            } else {
+                RecordKind::File
+            },
+            version: namespace
+                .content_revision_for_id(&id)
+                .map(|revision| revision.version_id),
+            hash: entry.hash,
+            size: entry.size,
+            path,
+        });
+    }
+    // Parents must enter the durable registry before descendants so ancestry
+    // validation remains fail-closed without making initial scans fail.
+    candidates.sort_by_key(|candidate| candidate.path.matches('/').count());
+    candidates
+}
+
+fn update_candidate_state(
+    registry: &Arc<Mutex<AvailabilityRegistry>>,
+    candidate: &PinnedCandidate,
+    update: impl FnOnce(&mut RecordAvailability),
+) {
+    let mut registry = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(mut record) = registry.get(candidate.record_id).cloned() else {
+        return;
+    };
+    if record.current_version != candidate.version {
+        return;
+    }
+    update(&mut record);
+    if let Err(error) = registry.put(record) {
+        eprintln!("could not persist pinned hydration state: {error}");
+    }
+}
+
+async fn reconcile_pinned_hydration(
+    namespace: &Arc<Mutex<Namespace>>,
+    hydrator: &Arc<Hydrator>,
+    registry: &Arc<Mutex<AvailabilityRegistry>>,
+    enforcement: Option<&(AclHandle, crate::acl::IdentityKey)>,
+) {
+    let candidates = pinned_candidates(namespace, enforcement);
+    let observed_at = now_ms();
+
+    // First reconcile the complete visible ancestry. This makes a pin on a
+    // stable directory automatically cover children introduced by a later
+    // namespace generation and preserves that relation across restart.
+    for candidate in &candidates {
+        let mut registry = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut record = registry
+            .get(candidate.record_id)
+            .cloned()
+            .unwrap_or_else(|| RecordAvailability::new(candidate.record_id, candidate.kind));
+        let version_changed = record.current_version != candidate.version;
+        let mut changed = record.kind != candidate.kind || record.parent != candidate.parent;
+        record.kind = candidate.kind;
+        record.parent = candidate.parent;
+        if version_changed {
+            record.current_version = candidate.version;
+            record.residency = Residency::NotResident;
+            record.transfer = crate::availability::TransferState::default();
+            record.replica_observations.clear();
+            record.replicas = crate::availability::ReplicaEvidence::default();
+            record.freshness.local_verified_at_ms = None;
+            record.freshness.replicas_observed_at_ms = None;
+            record.freshness.metadata_observed_at_ms = Some(observed_at);
+            changed = true;
+        }
+        if record.freshness.metadata_observed_at_ms.is_none() {
+            record.freshness.metadata_observed_at_ms = Some(observed_at);
+            changed = true;
+        }
+        if candidate.kind == RecordKind::Directory || candidate.hash.is_none() {
+            let resident = Residency::Resident {
+                bytes: candidate.size,
+            };
+            if record.residency != resident || record.transfer.phase != TransferPhase::Idle {
+                record.residency = resident;
+                record.transfer = crate::availability::TransferState::default();
+                record.freshness.local_verified_at_ms = Some(observed_at);
+                changed = true;
+            }
+        }
+        if changed && let Err(error) = registry.put(record) {
+            eprintln!("could not reconcile pinned record topology: {error}");
+        }
+    }
+
+    let mut fetches = Vec::new();
+    for candidate in candidates
+        .iter()
+        .filter(|candidate| candidate.kind == RecordKind::File && candidate.hash.is_some())
+    {
+        let state = hydrator
+            .sync_state(candidate.hash.expect("filtered hash"))
+            .await;
+        if state == crate::syncstate::SyncState::Local {
+            update_candidate_state(registry, candidate, |record| {
+                record.residency = Residency::Resident {
+                    bytes: candidate.size,
+                };
+                record.transfer = crate::availability::TransferState::default();
+                record.freshness.local_verified_at_ms = Some(observed_at);
+            });
+            continue;
+        }
+        let partial = hydrator
+            .residency(candidate.hash.expect("filtered hash"))
+            .await;
+        let resident_bytes = partial.hydrated_bytes.min(candidate.size);
+        let due = {
+            let mut registry = registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Ok(Some(policy)) = registry.effective_policy(candidate.record_id) else {
+                continue;
+            };
+            if policy != AvailabilityPolicy::Pinned {
+                if let Some(mut record) = registry.get(candidate.record_id).cloned()
+                    && (record.transfer.retry_count > 0
+                        || matches!(
+                            record.transfer.phase,
+                            TransferPhase::Queued | TransferPhase::Downloading
+                        ))
+                {
+                    record.transfer = crate::availability::TransferState::default();
+                    let _ = registry.put(record);
+                }
+                continue;
+            }
+            let Some(mut record) = registry.get(candidate.record_id).cloned() else {
+                continue;
+            };
+            record.residency = if resident_bytes == 0 {
+                Residency::NotResident
+            } else {
+                Residency::Partial { resident_bytes }
+            };
+            record.transfer.phase = TransferPhase::Queued;
+            record.transfer.progress = Some(crate::availability::TransferProgress {
+                completed_bytes: resident_bytes,
+                total_bytes: Some(candidate.size),
+            });
+            let due = record
+                .transfer
+                .retry_at_ms
+                .is_none_or(|deadline| deadline <= observed_at);
+            if let Err(error) = registry.put(record) {
+                eprintln!("could not queue pinned hydration: {error}");
+                false
+            } else {
+                due
+            }
+        };
+        if due && fetches.len() < MAX_PINNED_FETCHES_PER_PASS {
+            fetches.push(candidate.clone());
+        }
+    }
+
+    for candidate in fetches {
+        let Some(hash) = candidate.hash else { continue };
+        update_candidate_state(registry, &candidate, |record| {
+            record.transfer.phase = TransferPhase::Downloading;
+        });
+        let mut last_persisted = 0_u64;
+        let hydration = hydrator.prefetch_with_progress(
+            hash,
+            candidate.size,
+            |completed_bytes, total_bytes| {
+                if completed_bytes != total_bytes
+                    && completed_bytes.saturating_sub(last_persisted)
+                        < HYDRATION_PROGRESS_PERSIST_BYTES
+                {
+                    return;
+                }
+                last_persisted = completed_bytes;
+                update_candidate_state(registry, &candidate, |record| {
+                    record.transfer.phase = TransferPhase::Downloading;
+                    record.transfer.progress = Some(crate::availability::TransferProgress {
+                        completed_bytes,
+                        total_bytes: Some(total_bytes),
+                    });
+                });
+            },
+        );
+        tokio::pin!(hydration);
+        let result = loop {
+            tokio::select! {
+                result = &mut hydration => break Some(result),
+                () = tokio::time::sleep(Duration::from_millis(50)) => {
+                    let pinned = registry
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .effective_policy(candidate.record_id)
+                        .is_ok_and(|policy| policy == Some(AvailabilityPolicy::Pinned));
+                    if !pinned {
+                        break None;
+                    }
+                }
+            }
+        };
+        match result {
+            Some(Ok(true)) => update_candidate_state(registry, &candidate, |record| {
+                record.residency = Residency::Resident {
+                    bytes: candidate.size,
+                };
+                record.transfer = crate::availability::TransferState::default();
+                record.freshness.local_verified_at_ms = Some(now_ms());
+            }),
+            Some(Ok(false)) => update_candidate_state(registry, &candidate, |record| {
+                record.transfer.phase = TransferPhase::Idle;
+                record.transfer.last_error = Some(crate::availability::TransferError {
+                    message: "The file exceeds this device's hydration limit".into(),
+                    occurred_at_ms: now_ms(),
+                });
+                record.transfer.retry_at_ms = None;
+            }),
+            Some(Err(_)) => update_candidate_state(registry, &candidate, |record| {
+                record.transfer.phase = TransferPhase::Queued;
+                record.transfer.retry_count = record.transfer.retry_count.saturating_add(1);
+                let delay = 1_u64 << record.transfer.retry_count.min(6);
+                record.transfer.retry_at_ms = Some(now_ms().saturating_add(delay * 1_000));
+                record.transfer.last_error = Some(crate::availability::TransferError {
+                    message: "No available replica could provide this file".into(),
+                    occurred_at_ms: now_ms(),
+                });
+            }),
+            None => update_candidate_state(registry, &candidate, |record| {
+                record.transfer = crate::availability::TransferState::default();
+            }),
+        }
+    }
+}
+
 /// `offset`/`size` cross the FUSE boundary as untrusted request values,
 /// so clamp rather than trust them to fit `usize` before bounding against `bytes.len()`.
 fn slice(bytes: &[u8], offset: u64, size: u32) -> Vec<u8> {
@@ -4289,6 +4636,29 @@ mod availability_control_tests {
     use crate::namespace::ROOT_INO;
     use crate::store::ContentStore;
     use iroh::endpoint::{Endpoint, presets};
+    use iroh::protocol::Router;
+
+    async fn wait_for_availability(
+        registry: &Arc<Mutex<AvailabilityRegistry>>,
+        record: collab_types::FileRecordId,
+        predicate: impl Fn(&RecordAvailability) -> bool,
+    ) {
+        tokio::time::timeout(Duration::from_secs(8), async {
+            loop {
+                if registry
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(record)
+                    .is_some_and(&predicate)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("availability state barrier");
+    }
 
     #[tokio::test]
     async fn pin_policy_persists_and_a_directory_covers_future_descendants() {
@@ -4338,6 +4708,205 @@ mod availability_control_tests {
             reopened.get(folder_id).map(|record| record.policy),
             Some(AvailabilityPolicy::Pinned)
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pinned_folder_hydrates_future_child_retries_after_restart_and_tracks_new_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry_path = dir.path().join("availability.json");
+        let source_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let source_store = ContentStore::memory();
+        let first = source_store
+            .write_content(b"first remote version")
+            .await
+            .unwrap()
+            .unwrap();
+        let second = source_store
+            .write_content(b"second remote version")
+            .await
+            .unwrap()
+            .unwrap();
+        let source_router = Router::builder(source_endpoint.clone())
+            .accept(iroh_blobs::ALPN, source_store.blobs_protocol(None))
+            .spawn();
+
+        let client_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let client_store = Arc::new(ContentStore::memory());
+        let hydrator = Arc::new(Hydrator::new(client_endpoint.clone(), client_store));
+        let namespace = Arc::new(Mutex::new(Namespace::new("pinned-client").unwrap()));
+        let folder = namespace
+            .lock()
+            .unwrap()
+            .create_dir(ROOT_INO, "offline", 1)
+            .unwrap();
+        let heuristics = Arc::new(Heuristics::new(
+            Arc::clone(&hydrator),
+            Arc::clone(&namespace),
+        ));
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(&registry_path).unwrap(),
+        ));
+        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+            .with_availability(Arc::clone(&registry))
+            .with_pinned_hydration();
+        fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
+            .unwrap();
+
+        // This file did not exist when its stable parent was pinned.
+        let child = namespace
+            .lock()
+            .unwrap()
+            .create_file(folder, "later.txt", Some(&first), 20, 2)
+            .unwrap();
+        let record_id = namespace.lock().unwrap().record_id_for(child).unwrap();
+        let first_version = collab_types::FileVersionId::new();
+        let first_revision = collab_types::ContentRevisionV1 {
+            schema_version: collab_types::CONTENT_REVISION_VERSION,
+            record_id,
+            version_id: first_version,
+            content_hash: Some(collab_types::ContentHash(*first.as_bytes())),
+            byte_len: 20,
+            metadata_hash: collab_types::ContentHash([1; 32]),
+        };
+        assert!(
+            namespace
+                .lock()
+                .unwrap()
+                .set_content_revision(child, &first_revision, 2)
+        );
+
+        // No peer is configured yet. The worker records an actionable error
+        // and a durable backoff rather than spinning or claiming success.
+        wait_for_availability(&registry, record_id, |record| {
+            record.transfer.last_error.is_some()
+                && record.transfer.retry_count > 0
+                && record.transfer.retry_at_ms.is_some()
+        })
+        .await;
+        drop(fs);
+        drop(registry);
+
+        // A process restart reopens the queued policy/error state. Once the
+        // peer is reachable the inherited promise completes without another
+        // user action.
+        hydrator.add_peer(source_endpoint.addr());
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(&registry_path).unwrap(),
+        ));
+        let heuristics = Arc::new(Heuristics::new(
+            Arc::clone(&hydrator),
+            Arc::clone(&namespace),
+        ));
+        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+            .with_availability(Arc::clone(&registry))
+            .with_pinned_hydration();
+        wait_for_availability(&registry, record_id, |record| {
+            record.current_version == Some(first_version)
+                && record.residency == Residency::Resident { bytes: 20 }
+                && record.transfer.last_error.is_none()
+        })
+        .await;
+
+        // A later immutable version invalidates the old residency proof and
+        // is hydrated under the same durable ancestor pin.
+        let second_version = collab_types::FileVersionId::new();
+        let second_revision = collab_types::ContentRevisionV1 {
+            version_id: second_version,
+            content_hash: Some(collab_types::ContentHash(*second.as_bytes())),
+            byte_len: 21,
+            metadata_hash: collab_types::ContentHash([2; 32]),
+            ..first_revision
+        };
+        assert!(
+            namespace
+                .lock()
+                .unwrap()
+                .set_content_revision(child, &second_revision, 3)
+        );
+        wait_for_availability(&registry, record_id, |record| {
+            record.current_version == Some(second_version)
+                && record.residency == Residency::Resident { bytes: 21 }
+                && record.transfer.last_error.is_none()
+        })
+        .await;
+
+        drop(fs);
+        source_router.shutdown().await.unwrap();
+        source_endpoint.close().await;
+        client_endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn pinned_hydration_is_bounded_and_unpin_cancels_queued_retries() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store));
+        let namespace = Arc::new(Mutex::new(Namespace::new("bounded-pins").unwrap()));
+        let folder = namespace
+            .lock()
+            .unwrap()
+            .create_dir(ROOT_INO, "offline", 1)
+            .unwrap();
+        for index in 0..10_u8 {
+            namespace
+                .lock()
+                .unwrap()
+                .create_file(
+                    folder,
+                    &format!("{index}.bin"),
+                    Some(&Hash::from([index.saturating_add(1); 32])),
+                    1,
+                    2,
+                )
+                .unwrap();
+        }
+        let heuristics = Arc::new(Heuristics::new(
+            Arc::clone(&hydrator),
+            Arc::clone(&namespace),
+        ));
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+        ));
+        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+            .with_availability(Arc::clone(&registry));
+        fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
+            .unwrap();
+
+        reconcile_pinned_hydration(&namespace, &hydrator, &registry, None).await;
+        let (attempted, queued) = {
+            let registry = registry.lock().unwrap();
+            let children = registry
+                .records()
+                .filter(|record| record.kind == RecordKind::File)
+                .collect::<Vec<_>>();
+            (
+                children
+                    .iter()
+                    .filter(|record| record.transfer.retry_count == 1)
+                    .count(),
+                children
+                    .iter()
+                    .filter(|record| {
+                        record.transfer.phase == TransferPhase::Queued
+                            && record.transfer.retry_count == 0
+                    })
+                    .count(),
+            )
+        };
+        assert_eq!(attempted, MAX_PINNED_FETCHES_PER_PASS);
+        assert_eq!(queued, 10 - MAX_PINNED_FETCHES_PER_PASS);
+
+        fs.set_pin_policy(folder, AvailabilityPolicy::Automatic)
+            .unwrap();
+        reconcile_pinned_hydration(&namespace, &hydrator, &registry, None).await;
+        assert!(registry.lock().unwrap().records().all(|record| {
+            record.kind == RecordKind::Directory
+                || (record.transfer.phase == TransferPhase::Idle
+                    && record.transfer.retry_count == 0
+                    && record.transfer.retry_at_ms.is_none())
+        }));
+        endpoint.close().await;
     }
 
     #[tokio::test]

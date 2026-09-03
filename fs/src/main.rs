@@ -2828,6 +2828,9 @@ async fn run_mount(
         Some((acl, identity)) => fs.with_acl(acl, identity),
         None => fs,
     };
+    // Durable pins become an active residency promise only after the live ACL
+    // is attached, so inherited folder hydration cannot cross the mount view.
+    let fs = fs.with_pinned_hydration();
     // Host-side thumbnails: generate previews as metadata, served via the `user.qos.thumb` xattr.
     let fs = match thumb_dir {
         Some(dir) => match fs::ThumbProvider::open(&dir) {
