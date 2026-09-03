@@ -4575,7 +4575,13 @@ mod tests {
         let mode_controls: Vec<_> = tree
             .children
             .iter()
-            .filter(|node| node.role == Role::RadioButton)
+            .filter(|node| {
+                node.role == Role::RadioButton
+                    && node
+                        .action_target
+                        .as_deref()
+                        .is_some_and(|target| target.starts_with("camera.mode:"))
+            })
             .collect();
         assert_eq!(mode_controls.len(), 2, "Photo and Video are reachable");
         assert!(mode_controls.iter().all(|node| {
