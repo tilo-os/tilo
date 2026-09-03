@@ -201,7 +201,7 @@ fn remote_home_peer(
         .or_else(|_| qos_user_identity::persist::read_device_cert(&paths.device_cert))?;
     let expected_device = device_key(device)?;
     let service = device_key(service)?;
-    let relay_addr = iroh_base::EndpointAddr::new(iroh_base::PublicKey::from_bytes(&service)?);
+    let relay_addr = registered_home_peer_addr(identity_root, device, service)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -242,7 +242,58 @@ fn cmd_home_peer(
     if let Some(label) = requested_label {
         update_home_peer_registry(&identity_root, device, Some(label))?;
     }
+    refresh_home_peer_endpoint(
+        &identity_root,
+        device,
+        device_key(service)?,
+        &response.relay_endpoint,
+    )?;
     println!("{}", serde_json::to_string(&response)?);
+    Ok(())
+}
+
+fn registered_home_peer_addr(
+    identity_root: &std::path::Path,
+    device: &str,
+    service: [u8; 32],
+) -> anyhow::Result<iroh_base::EndpointAddr> {
+    let service_id = iroh_base::PublicKey::from_bytes(&service)?;
+    let path = identity_root.join("home-peers.json");
+    let registrations: Vec<qos_relay::HomePeerRegistration> =
+        serde_json::from_slice(&std::fs::read(path)?)?;
+    let registration = registrations
+        .into_iter()
+        .find(|entry| {
+            entry.device_node_id == device && entry.relay_service_node_id == hex::encode(service)
+        })
+        .ok_or_else(|| anyhow::anyhow!("home peer is not registered"))?;
+    Ok(registration
+        .relay_endpoint
+        .filter(|endpoint| endpoint.id == service_id && !endpoint.is_empty())
+        .unwrap_or_else(|| iroh_base::EndpointAddr::new(service_id)))
+}
+
+fn refresh_home_peer_endpoint(
+    identity_root: &std::path::Path,
+    device: &str,
+    service: [u8; 32],
+    endpoint: &iroh_base::EndpointAddr,
+) -> anyhow::Result<()> {
+    if endpoint.id.as_bytes() != &service || endpoint.is_empty() {
+        anyhow::bail!("home peer returned an invalid relay endpoint advertisement");
+    }
+    let path = identity_root.join("home-peers.json");
+    let mut registrations: Vec<qos_relay::HomePeerRegistration> =
+        serde_json::from_slice(&std::fs::read(&path)?)?;
+    let registration = registrations
+        .iter_mut()
+        .find(|entry| {
+            entry.device_node_id == device && entry.relay_service_node_id == hex::encode(service)
+        })
+        .ok_or_else(|| anyhow::anyhow!("home peer is not registered"))?;
+    registration.relay_endpoint = Some(endpoint.clone());
+    registration.schema_version = qos_relay::HomePeerRegistration::CURRENT_SCHEMA;
+    atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&registrations)?, 0o644)?;
     Ok(())
 }
 
@@ -310,6 +361,9 @@ fn cmd_home_peer_remove(identity_root: PathBuf, device: &str, service: &str) -> 
     }
     let response = remote.unwrap_or(qos_relay::transport::HomePeerManagementResponse {
         device_public_key: target,
+        relay_endpoint: iroh_base::EndpointAddr::new(iroh_base::PublicKey::from_bytes(
+            &device_key(&intent.service)?,
+        )?),
         label: "Removed".into(),
         files_ready: false,
         services: Default::default(),
