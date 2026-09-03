@@ -162,6 +162,7 @@ struct ReplayPointer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TaskAction {
     OpenResource,
+    Launch,
     Start,
     Complete,
     Cancel,
@@ -171,6 +172,7 @@ impl TaskAction {
     fn label(self) -> &'static str {
         match self {
             Self::OpenResource => "Open resource",
+            Self::Launch => "Launch agent",
             Self::Start => "Mark started",
             Self::Complete => "Mark done",
             Self::Cancel => "Cancel task",
@@ -425,6 +427,8 @@ pub struct RoomActivityPane {
     task_cancel_rect: Option<Rect>,
     task_attachment: Option<WorkspaceTaskResource>,
     task_agent: Option<String>,
+    task_broker: Option<crate::shell::collab_broker::AppActionBroker>,
+    task_room: String,
     facet_index: HistoryFacetIndex,
     lens: LensSelection,
     lens_rects: Vec<(LensSelection, Rect)>,
@@ -456,6 +460,12 @@ impl Default for RoomActivityPane {
 }
 
 impl RoomActivityPane {
+    /// Attach the live broker after the session binds. Without it, agent tasks
+    /// remain visible but cannot be launched into an imaginary offline queue.
+    pub fn attach_task_broker(&mut self, broker: crate::shell::collab_broker::AppActionBroker) {
+        self.task_broker = Some(broker);
+    }
+
     fn detail_action_label(&self, action: DetailAction) -> &'static str {
         if action == DetailAction::Open
             && self.selection_detail().is_some_and(|detail| {
@@ -548,6 +558,8 @@ impl RoomActivityPane {
             task_cancel_rect: None,
             task_attachment: None,
             task_agent: None,
+            task_broker: None,
+            task_room: String::new(),
             facet_index: HistoryFacetIndex::default(),
             lens: LensSelection::default(),
             lens_rects: Vec::new(),
@@ -1122,6 +1134,10 @@ impl RoomActivityPane {
         if name != self.room_name {
             self.room_name = name;
         }
+        self.task_room = tree
+            .active_workspace()
+            .map(|workspace| workspace.room.to_string())
+            .unwrap_or_default();
         self.tasks = tree
             .active_workspace()
             .map(|workspace| workspace.tasks.clone())
@@ -2766,7 +2782,7 @@ impl RoomActivityPane {
                 execution_notice,
             );
             if selected {
-                let actions = task_actions(task);
+                let actions = self.task_actions_for(task);
                 let items = actions
                     .iter()
                     .map(|action| (*action, action.label().to_string()))
@@ -3283,7 +3299,7 @@ impl RoomActivityPane {
         // and rules-only tasks need an admitted runtime run before their state
         // may advance; presenting the same transition as "Start" would claim
         // execution that never happened.
-        if !task_actions(task).contains(&action) {
+        if !self.task_actions_for(task).contains(&action) {
             return handled_outcome();
         }
         if action == TaskAction::OpenResource {
@@ -3305,11 +3321,27 @@ impl RoomActivityPane {
                 ..RoomActivityOutcome::default()
             };
         }
+        if action == TaskAction::Launch {
+            let dispatched = self
+                .task_broker
+                .as_ref()
+                .ok_or_else(|| "agent task dispatch is unavailable".to_string())
+                .and_then(|broker| broker.dispatch_task(&self.task_room, &task_id));
+            if dispatched.is_ok() {
+                self.refresh(tree);
+            }
+            return RoomActivityOutcome {
+                handled: true,
+                task_changed: dispatched.is_ok(),
+                ..RoomActivityOutcome::default()
+            };
+        }
         let status = match action {
             TaskAction::Start => WorkspaceTaskStatus::InProgress,
             TaskAction::Complete => WorkspaceTaskStatus::Done,
             TaskAction::Cancel => WorkspaceTaskStatus::Cancelled,
             TaskAction::OpenResource => return handled_outcome(),
+            TaskAction::Launch => return handled_outcome(),
         };
         let changed = tree.set_workspace_task_status(
             tree.active,
@@ -3325,6 +3357,25 @@ impl RoomActivityPane {
             task_changed: changed,
             ..RoomActivityOutcome::default()
         }
+    }
+
+    fn task_actions_for(&self, task: &WorkspaceTask) -> Vec<TaskAction> {
+        let mut actions = task_actions(task);
+        let live = task.assigned_agent.as_ref().is_some_and(|agent| {
+            self.task_broker
+                .as_ref()
+                .is_some_and(|broker| broker.agent_is_live_task_capable(&self.task_room, agent))
+        });
+        if task.route != WorkspaceTaskRoute::Manual
+            && matches!(
+                task.status,
+                WorkspaceTaskStatus::Queued | WorkspaceTaskStatus::Waiting
+            )
+            && live
+        {
+            actions.insert(0, TaskAction::Launch);
+        }
+        actions
     }
 
     fn handle_catchup_click(&mut self, point: Point) -> Option<RoomActivityOutcome> {
@@ -5993,6 +6044,14 @@ mod tests {
 
         assert!(task_actions(manual).contains(&TaskAction::Start));
         assert!(!task_actions(automated).contains(&TaskAction::Start));
+        let mut pane = RoomActivityPane::new();
+        pane.task_room = "room".into();
+        assert!(
+            !pane
+                .task_actions_for(automated)
+                .contains(&TaskAction::Launch),
+            "membership without a live task subscription must not enable Launch"
+        );
         assert_eq!(
             task_execution_notice(automated),
             Some("Agent runtime not connected · this task has not started")
