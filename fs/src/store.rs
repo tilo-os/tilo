@@ -364,13 +364,20 @@ impl ContentStore {
                     break;
                 }
             }
-            if !remaining || tokio::time::Instant::now() >= deadline {
+            if !remaining {
                 *self
                     .gc_live
                     .write()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 let after_count = self.store().blobs().list().hashes().await?.len();
                 return Ok(before_count.saturating_sub(after_count) as u64);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                *self
+                    .gc_live
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                anyhow::bail!("selected blobs remained after eviction deadline");
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }

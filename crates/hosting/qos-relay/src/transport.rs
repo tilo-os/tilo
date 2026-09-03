@@ -13,6 +13,7 @@
 //! - Postcard keeps the encoding compact + deterministic (no field-
 //!   reorder) so integration tests can byte-compare fixtures.
 
+use iroh_base::EndpointAddr;
 use serde::{Deserialize, Serialize};
 
 /// ALPN identifier for the relay protocol. Frozen wire ABI —
@@ -20,6 +21,27 @@ use serde::{Deserialize, Serialize};
 /// stops talking to the new version. Change only via a v2 side-by-
 /// side rollout.
 pub const ALPN: &[u8] = b"qos-relay/1";
+/// Authenticated one-shot discovery of direct filesystem endpoints.
+pub const DISCOVERY_ALPN: &[u8] = b"qos-relay-discovery/1";
+
+/// Small, stable discovery reply consumed directly by filesystem workers.
+/// Keeping this separate from the relay's richer placement profile avoids a
+/// relay-only address ever being mistaken for a content endpoint.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentEndpointAdvertisement {
+    /// Relay room whose signed filesystem authority authorised this lookup.
+    pub workspace_id: u64,
+    /// Direct authenticated filesystem/blob endpoints currently ready for it.
+    pub filesystem_endpoints: Vec<EndpointAddr>,
+}
+
+/// A client must name the relay room it is resolving. The host never exposes
+/// its filesystem endpoints as a global, unauthorised discovery answer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentEndpointRequest {
+    /// Relay room whose filesystem endpoint the caller wants to resolve.
+    pub workspace_id: u64,
+}
 
 /// Hard cap for a single framed envelope on the wire. Guards
 /// against a peer that sends `u32::MAX` as a length prefix to
