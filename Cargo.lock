@@ -4634,6 +4634,7 @@ dependencies = [
  "rand 0.8.8",
  "runtime-fs",
  "serde",
+ "serde_bytes",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
@@ -11438,8 +11439,11 @@ dependencies = [
  "atomic-file",
  "automerge",
  "blake3",
+ "chacha20poly1305",
  "clap",
+ "collab-types",
  "ed25519-dalek 2.2.0",
+ "fs",
  "hex",
  "iroh",
  "iroh-base",
@@ -11457,6 +11461,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "x25519-dalek 2.0.1",
 ]
 
 [[package]]
@@ -13253,6 +13258,7 @@ dependencies = [
  "automerge",
  "collab-types",
  "desktop-policy",
+ "dirs 6.0.0",
  "launcher",
  "mail",
  "media",
@@ -13502,6 +13508,7 @@ dependencies = [
  "windows-vm",
  "winit",
  "word-processor",
+ "xattr",
  "zbus 4.4.0",
  "zeroize",
 ]
