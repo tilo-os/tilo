@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.qos.Imager</id>
+  <name>qOS Imager</name>
+  <summary>Create and verify customised qOS installation media</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-only</project_license>
+  <developer id="dev.qos">
+    <name>qOS Project</name>
+  </developer>
+  <description>
+    <p>
+      qOS Imager authenticates a qOS installer image, writes it to removable
+      media, verifies every written byte, and can embed non-secret setup
+      choices for the live installer.
+    </p>
+  </description>
+  <launchable type="desktop-id">org.qos.Imager.desktop</launchable>
+  <url type="homepage">https://code.podesta.ai/qos/qos</url>
+  <provides>
+    <binary>qos-imager</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+</component>

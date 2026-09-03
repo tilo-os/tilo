@@ -5,7 +5,7 @@ publishes only from protected `imager-v*` tags. Configure these runner labels:
 
 | Label | Host | Required tooling |
 |---|---|---|
-| `runner` | Linux x86-64 | Rust, GPG or KMS client, Podman, QEMU tools, zstd, `linuxdeploy`, `appimagetool`, Homebrew, Ruby, curl, jq, Node.js and npm |
+| `runner` | Linux x86-64 | Rust, GPG or KMS client, Podman, QEMU tools, zstd, Homebrew, Ruby, curl, jq, Node.js and npm |
 | `runner-arm64` | Linux ARM64 | same Linux toolchain and release utilities, running natively |
 | `windows` | Windows x86-64 | Rust MSVC, Windows SDK `signtool`, Inno Setup 6, WinGet client |
 | `macos-x64` | Intel macOS | Xcode CLI tools, Rust, `hdiutil`, `notarytool`, Homebrew |
@@ -15,6 +15,11 @@ Register release runners at repository scope and provision them as ephemeral
 one-job machines. On Forgejo Runner that means registration with `--ephemeral`
 and execution with `forgejo-runner one-job`. Do not expose native signing
 runners to pull-request workflows; only protected tags may reach them.
+
+The workflow materializes checksum-pinned `linuxdeploy`, `appimagetool`, and
+type-2 runtime binaries from the Forgejo cache separately for each Linux
+architecture. They do not need to be baked into the runner, and AppImage
+creation is forbidden from downloading an implicit “latest” runtime.
 
 ## Short-lived credentials
 
