@@ -67,6 +67,11 @@ pub struct RelayConfig {
     #[serde(default = "default_full_replica_status")]
     pub full_replica_status: PathBuf,
 
+    /// The filesystem home-peer bundle. When present, its workspace tickets
+    /// are imported as durable full-workspace relay bindings at startup.
+    #[serde(default = "default_home_peer_bundle")]
+    pub home_peer_bundle: PathBuf,
+
     /// Iroh endpoint bind hint. `0.0.0.0:0` = OS-chosen port.
     #[serde(default = "default_iroh_listen")]
     pub iroh_listen: SocketAddr,
@@ -181,6 +186,10 @@ fn default_full_replica_status() -> PathBuf {
     PathBuf::from("/var/lib/qos/full-replica/status.json")
 }
 
+fn default_home_peer_bundle() -> PathBuf {
+    PathBuf::from("/etc/qos/home-peer.toml")
+}
+
 fn default_iroh_listen() -> SocketAddr {
     // Constructed directly rather than parsed — `0.0.0.0:0` is
     // infallible either way, but this has no panic path to document.
@@ -193,6 +202,7 @@ impl Default for RelayConfig {
             identity_root: default_identity_root(),
             state_root: default_state_root(),
             full_replica_status: default_full_replica_status(),
+            home_peer_bundle: default_home_peer_bundle(),
             iroh_listen: default_iroh_listen(),
             trust_policy: TrustPolicy::default(),
             device_role: default_device_role(),

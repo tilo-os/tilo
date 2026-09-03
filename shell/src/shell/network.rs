@@ -2641,6 +2641,32 @@ mod tests {
     }
 
     #[test]
+    fn personal_continuity_counter_and_checkpoint_survive_restart_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal-continuity.postcard");
+        let device = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
+        let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
+            device.clone(),
+            41,
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        let mut continuity = crate::shell::personal_continuity::PersonalContinuity::default();
+        continuity.upsert(snapshot.clone()).unwrap();
+        persist_personal_continuity(
+            &path,
+            &PersistedPersonalContinuity {
+                counter: 41,
+                continuity,
+            },
+        );
+        let restored = load_personal_continuity(&path);
+        assert_eq!(restored.counter, 41);
+        assert_eq!(restored.continuity.snapshot_for(&device), Some(&snapshot));
+    }
+
+    #[test]
     fn personal_continuity_topic_is_stable_and_root_bound() {
         let root_a = [0xA1; 32];
         let root_b = [0xB2; 32];
