@@ -105,6 +105,7 @@ pub struct CustomizePanel {
     timezone: TextInput,
     keyboard: TextInput,
     focused: Option<CzField>,
+    export_focused: bool,
     last_mouse: Point,
 }
 
@@ -129,6 +130,7 @@ impl CustomizePanel {
             timezone: field(),
             keyboard: field(),
             focused: None,
+            export_focused: false,
             last_mouse: Point::ZERO,
         }
     }
@@ -170,7 +172,7 @@ impl CustomizePanel {
 
     /// Whether the panel currently owns keyboard focus (a field is editing).
     pub fn is_focused(&self) -> bool {
-        self.focused.is_some()
+        self.focused.is_some() || self.export_focused
     }
 
     /// Drop keyboard focus from whichever field held it (the host calls this on
@@ -490,6 +492,9 @@ impl CustomizePanel {
             if hov { c.neutral[3] } else { c.neutral[2] },
         );
         Self::stroke_rr(scene, t, g.export, 9.0, c.accent[6], 1.0);
+        if self.export_focused {
+            Self::stroke_rr(scene, t, g.export, 9.0, c.border_focus, 2.0);
+        }
         let (ew, _) =
             tr.measure_weighted("Preview embedded setup", 12.0, None, TextWeight::Semibold);
         Self::txt(
@@ -665,6 +670,25 @@ impl CustomizePanel {
         node_id: taffy::NodeId,
         taffy: &taffy::TaffyTree<()>,
     ) -> CzResponse {
+        if self.export_focused {
+            return match &key_ev.logical_key {
+                Key::Named(NamedKey::Enter) => CzResponse {
+                    handled: true,
+                    export_requested: true,
+                },
+                Key::Named(NamedKey::Escape) => {
+                    self.blur();
+                    CzResponse {
+                        handled: true,
+                        export_requested: false,
+                    }
+                }
+                _ => CzResponse {
+                    handled: false,
+                    export_requested: false,
+                },
+            };
+        }
         let Some(f) = self.focused else {
             return CzResponse {
                 handled: false,
@@ -733,6 +757,7 @@ impl CustomizePanel {
     }
 
     fn blur(&mut self) {
+        self.export_focused = false;
         if let Some(f) = self.focused.take() {
             self.input(f).set_focus(false);
         }
@@ -758,5 +783,34 @@ impl CustomizePanel {
     #[cfg(test)]
     pub fn field_value(&mut self, f: CzField) -> String {
         self.input(f).value().to_string()
+    }
+
+    /// Zero-based keyboard slot: six editable fields followed by Preview.
+    pub(crate) fn keyboard_slot(&self) -> Option<usize> {
+        self.focused
+            .and_then(|field| {
+                CzField::ALL
+                    .iter()
+                    .position(|candidate| *candidate == field)
+            })
+            .or_else(|| self.export_focused.then_some(CzField::ALL.len()))
+    }
+
+    pub(crate) fn focus_keyboard_slot(&mut self, slot: usize) {
+        self.blur();
+        if let Some(field) = CzField::ALL.get(slot).copied() {
+            self.focused = Some(field);
+            self.input(field).set_focus(true);
+        } else if slot == CzField::ALL.len() {
+            self.export_focused = true;
+        }
+    }
+
+    pub(crate) fn keyboard_slot_rect(content: Rect, slot: usize) -> Option<Rect> {
+        let geom = Self::geom(content);
+        CzField::ALL
+            .get(slot)
+            .map(|field| geom.field(*field))
+            .or_else(|| (slot == CzField::ALL.len()).then_some(geom.export))
     }
 }
