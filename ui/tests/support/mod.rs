@@ -192,6 +192,8 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::InvokePublishedAction { .. }
             | CollabRequest::PublishedInvocationStatus { .. }
             | CollabRequest::CancelPublishedInvocation { .. }
+            | CollabRequest::ReportContinuation { .. }
+            | CollabRequest::ClearContinuation { .. }
             | CollabRequest::LaunchPublishedApplication { .. } => {
                 // The memory relay has no fan-out or shell-owned action directory.
             }
