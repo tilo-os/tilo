@@ -89,33 +89,28 @@ pub enum ReplicationResource {
     FileThumbnails,
     /// File bytes addressed by their existing content hash.
     FileBlobs,
-    /// Ebook records and reading state; book bytes resolve through FileBlobs.
+    /// Ebook records and reading state; book bytes resolve through `FileBlobs`.
     EbookLibrary,
-    /// Music/video library records; media bytes resolve through FileBlobs.
+    /// Music/video library records; media bytes resolve through `FileBlobs`.
     MediaLibrary,
     /// An app-defined record family carried by the collaboration runtime.
     AppRecords(String),
 }
 
 /// Replication residency requested by a device for one workspace.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplicationIntent {
     /// Keep the small workspace collaboration graph available.
     WorkspaceOnly,
     /// Hydrate selected data when opened, retaining the ordinary cache policy.
+    #[default]
     OnDemand,
     /// Retain all user-visible workspace records and content bytes.
     FullWorkspace,
     /// Explicit app/resource selection. This still uses the same collaboration
     /// and blob transports; it is not an app-owned sync implementation.
     Resources(BTreeSet<ReplicationResource>),
-}
-
-impl Default for ReplicationIntent {
-    fn default() -> Self {
-        Self::OnDemand
-    }
 }
 
 impl ReplicationIntent {
@@ -227,6 +222,7 @@ impl ServiceCapabilities {
     /// Intersect a mutable service advertisement with the immutable authority
     /// in a verified device certificate. A peer cannot turn itself into a host
     /// by merely claiming services in discovery metadata.
+    #[must_use]
     pub fn authorized_by(&self, certified: &qos_user_identity::DeviceCapabilities) -> Self {
         if !certified.can_act_as_host {
             return Self::default();

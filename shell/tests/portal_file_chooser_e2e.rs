@@ -19,7 +19,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,7 +29,7 @@ use shell::portal::{
     PromptResolver, RemoteInputInjectorHandle, ScreenCastStreamProvisionerHandle,
 };
 use shell::shell::overlay_host::ShellOverlayHost;
-use shell::shell::state::{Capability, FsMode, Workspace, WorkspaceId, WorkspaceTree};
+use shell::shell::state::{Capability, Workspace, WorkspaceId, WorkspaceTree};
 use tokio::net::UnixStream;
 use zbus::connection::Builder;
 use zbus::zvariant::{ObjectPath, OwnedValue};
@@ -205,6 +205,7 @@ fn context(
     // The p2p transport surfaces no unique name, so pin the caller the way
     // the bridge accept path would in production.
     caller_map.force_caller_for_tests(PortalCaller::new(ws, APP));
+    let resolver_map = caller_map.clone();
     PortalContext {
         grants,
         prompts,
@@ -214,8 +215,19 @@ fn context(
             MockScreenCastProvisioner::new_with_node(1, "t"),
         )),
         remote_input_injector: RemoteInputInjectorHandle::null(),
+        input_capture: shell::portal::InputCaptureCompositorHandle::unavailable(),
         print_spooler: shell::portal::PrintSpoolerHandle::null(),
         documents: portal::documents_for_session(),
+        notifications: shell::notifications::NotificationBridge::new(),
+        desktop_services: shell::portal::DesktopPortalServices::default(),
+        authenticator: Some(shell::portal::PortalAuthenticator::fixed_for_tests(
+            ":1.0".try_into().expect("fixed p2p owner"),
+            Arc::new(move |app_id: &str, _: Option<&str>| {
+                resolver_map
+                    .lookup("")
+                    .filter(|caller| caller.app_id == app_id)
+            }),
+        )),
     }
 }
 
@@ -357,7 +369,10 @@ async fn an_app_opens_a_file_the_user_picked_and_reads_it() {
         "the app must get the file the user picked"
     );
 
-    // And the grant that was recorded names that file — not "/".
+    // The implementation backend returns the host selection only to the
+    // trusted xdg-desktop-portal frontend, which exports it through the
+    // document portal. It must not turn a personal pick into replicated room
+    // filesystem authority.
     let tree = grants.tree_handle();
     let paths: Vec<PathBuf> = {
         let guard = tree.read();
@@ -375,12 +390,8 @@ async fn an_app_opens_a_file_the_user_picked_and_reads_it() {
             .collect()
     };
     assert!(
-        paths.contains(&target),
-        "the picked file must be granted; got {paths:?}"
-    );
-    assert!(
-        !paths.iter().any(|p| p == Path::new("/")),
-        "opening one file must never grant the filesystem root; got {paths:?}"
+        paths.is_empty(),
+        "a file pick must remain private; got {paths:?}"
     );
 }
 
@@ -473,10 +484,10 @@ async fn an_app_saves_into_a_directory_it_did_not_previously_have() {
         "the bytes must land on disk at the path the user chose"
     );
 
-    // The grant is writable, and it covers the file — so the next save
-    // does not ask again.
+    // Writable access is conferred by the frontend's document export, never
+    // by adding a collaborative workspace capability.
     let tree = grants.tree_handle();
-    let writable = {
+    let replicated = {
         let guard = tree.read();
         guard
             .workspaces
@@ -485,16 +496,16 @@ async fn an_app_saves_into_a_directory_it_did_not_previously_have() {
             .expect("workspace")
             .app_capabilities(APP)
             .into_iter()
-            .filter_map(|c| match Capability::from_capability(c) {
-                Some(Capability::Filesystem { path, mode, .. }) if path == handed => Some(mode),
-                _ => None,
+            .any(|c| {
+                matches!(
+                    Capability::from_capability(c),
+                    Some(Capability::Filesystem { .. })
+                )
             })
-            .any(|m| matches!(m, FsMode::ReadWrite))
     };
     assert!(
-        writable,
-        "a Save must grant write access to the chosen file, or the app's \
-         next save prompts again for a file the user already chose"
+        !replicated,
+        "a private Save choice must not add collaborative filesystem authority"
     );
 }
 

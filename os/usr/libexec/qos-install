@@ -3,7 +3,7 @@
 # installer. The qos-installer UI (a ui::App, run under cage on the live
 # medium) shells out to this with:
 #
-#     /usr/libexec/qos-install --disk <dev> --user <name> --yes
+#     /usr/libexec/qos-install --disk <dev> --confirm-erase <dev> --user <name> --yes
 #
 # and the account password on **stdin** (a single line). Optional flags:
 #
@@ -22,6 +22,8 @@
 #                                     preserve the disk's partition table;
 #                                     format only a prepared empty Linux root
 #                                     and reuse (never format) its existing ESP
+#     --confirm-erase <dev>           required for whole-disk installs and must
+#                                     exactly match --disk
 #
 # An older UI may omit `--encrypt`, but the backend still encrypts. It must
 # provide `--pin`; otherwise installation fails closed. We:
@@ -66,6 +68,13 @@ LOCAL_IMG="localhost/bootc"
 # The block-level half of an encrypted install (partitioning, LUKS2, factor
 # enrolment). Overridable so it can be driven directly in a test VM.
 DISK_ENCRYPT="${QOS_DISK_ENCRYPT:-/usr/libexec/qos-disk-encrypt}"
+
+# Alongside installs share a firmware-visible FAT ESP with qOS's retained,
+# staged, and repair UKIs. Six 160 MiB image slots plus filesystem slack need
+# 1 GiB available; requiring a 2 GiB partition also leaves room for firmware
+# metadata and any other vendor boot files already present.
+MIN_ALONGSIDE_ESP_BYTES=2147483648
+MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824
 
 log()  { printf '%s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }
@@ -179,10 +188,11 @@ fi
 #
 # We are already root here (via the sudoers drop-in), so `systemd-run` talks to
 # the system manager directly — no second sudo, and the existing sudoers rule
-# is unchanged. `--pipe` forwards our stdin (the password) and stdout/stderr
-# (progress) straight through to the unit; `--wait` blocks and propagates the
-# unit's exit code; `--collect` reaps the unit afterwards; `--quiet` suppresses
-# systemd-run's own "Running as unit:" chatter so it never leaks into the log.
+# is unchanged. Do not use `systemd-run --pipe`: Fedora/systemd can reset the
+# transient-unit D-Bus request while passing the greeter process's anonymous
+# pipes as file descriptors. A private /run bridge gives the unit ordinary
+# root-only files instead. We tail its output back to the UI while it runs; the
+# startup secret and recovery key never enter the journal or command line.
 # The QOS_INSTALL_TRANSIENT guard breaks the re-exec recursion: the unit runs
 # this same script again, already in the system domain, and falls through to
 # the real work below.
@@ -191,12 +201,46 @@ fi
 # (the historical behaviour) — correct on a permissive medium, and the live
 # medium also carries a scoped SELinux module (qos-installer.cil) as a backstop.
 if [ -z "${QOS_INSTALL_TRANSIENT:-}" ] && command -v systemd-run >/dev/null 2>&1; then
-  exec systemd-run \
-    --pipe --collect --quiet --wait \
+  # qos-installer-setup creates this from PID 1 before the greeter starts, so
+  # it has a system runtime SELinux label rather than xdm_tmp_t. The latter is
+  # deliberately inaccessible to an enforcing transient system service.
+  [ -d /run/qos-installer/bridge ] \
+    || die "installer runtime bridge is missing (qos-installer-setup did not complete)"
+  BRIDGE="$(mktemp -d /run/qos-installer/bridge/run.XXXXXX)"
+  chmod 0700 "$BRIDGE"
+  INPUT="$BRIDGE/stdin"
+  OUTPUT="$BRIDGE/output"
+  umask 077
+  cat > "$INPUT"
+  : > "$OUTPUT"
+  # xdm_t has a file-creation type transition even below a var_run_t parent.
+  # Match the PID-1-created directory explicitly before the service manager
+  # opens these paths; otherwise systemd reports EXIT_STDIN (209) before exec.
+  chcon --reference=/run/qos-installer/bridge "$BRIDGE" "$INPUT" "$OUTPUT"
+  cleanup_bridge() { rm -rf "$BRIDGE"; }
+  trap cleanup_bridge EXIT
+  systemd-run \
+    --collect --quiet --wait \
     --unit="qos-install-$$" \
+    --property=Type=exec \
+    --property="StandardInput=file:$INPUT" \
+    --property="StandardOutput=append:$OUTPUT" \
+    --property="StandardError=append:$OUTPUT" \
     --setenv=QOS_INSTALL_TRANSIENT=1 \
     --setenv=QOS_TARGET_IMGREF="$QOS_TARGET_IMGREF" \
-    -- "$0" "$@"
+    -- "$0" "$@" &
+  RUNNER=$!
+  tail --pid="$RUNNER" -n +1 -F "$OUTPUT" &
+  TAILER=$!
+  set +e
+  wait "$RUNNER"
+  RC=$?
+  wait "$TAILER" 2>/dev/null
+  if [ ! -s "$OUTPUT" ]; then
+    printf 'error: transient installer service failed before producing output (status %s)\n' "$RC" >&2
+  fi
+  set -e
+  exit "$RC"
 fi
 
 # --- parse args --------------------------------------------------------------
@@ -206,6 +250,8 @@ ASSUME_YES=0
 # New, optional options (UI passes these; older UIs omit them → defaults).
 FILESYSTEM="btrfs"   # btrfs | ext4 | xfs
 HOSTNAME_VAL="qos"
+FULL_NAME=""
+LOCALE_VAL="en_US.UTF-8"
 TIMEZONE_VAL=""      # empty → leave system default (UTC)
 KEYMAP_VAL="us"      # xkb layout (default us)
 KEYVARIANT_VAL=""    # xkb variant (empty → none)
@@ -215,6 +261,7 @@ WANT_FIDO2=0         # --fido2 → also enroll a FIDO2 security key if present
 ALONGSIDE=0
 ROOT_PARTITION=""
 EFI_PARTITION=""
+CONFIRM_ERASE=""
 PIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -222,6 +269,8 @@ while [ $# -gt 0 ]; do
     --user) USERNAME="${2:-}"; shift 2 ;;
     --filesystem) FILESYSTEM="${2:-}"; shift 2 ;;
     --hostname) HOSTNAME_VAL="${2:-}"; shift 2 ;;
+    --full-name) FULL_NAME="${2:-}"; shift 2 ;;
+    --locale) LOCALE_VAL="${2:-}"; shift 2 ;;
     --timezone) TIMEZONE_VAL="${2:-}"; shift 2 ;;
     --keymap) KEYMAP_VAL="${2:-}"; shift 2 ;;
     --keyvariant) KEYVARIANT_VAL="${2:-}"; shift 2 ;;
@@ -231,6 +280,7 @@ while [ $# -gt 0 ]; do
     --alongside) ALONGSIDE=1; shift ;;
     --root-partition) ROOT_PARTITION="${2:-}"; shift 2 ;;
     --efi-partition) EFI_PARTITION="${2:-}"; shift 2 ;;
+    --confirm-erase) CONFIRM_ERASE="${2:-}"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) sed -n '2,49p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -243,9 +293,12 @@ done
 if [ "$ALONGSIDE" -eq 1 ]; then
   [ -n "$ROOT_PARTITION" ] && [ -n "$EFI_PARTITION" ] \
     || die "--alongside requires --root-partition and --efi-partition"
+  [ -z "$CONFIRM_ERASE" ] || die "--confirm-erase cannot be used with --alongside"
 else
   [ -z "$ROOT_PARTITION" ] && [ -z "$EFI_PARTITION" ] \
     || die "partition arguments require --alongside"
+  [ "$CONFIRM_ERASE" = "$DISK" ] \
+    || die "whole-disk install requires --confirm-erase matching --disk"
 fi
 
 # Use the portable Linux login-name subset accepted consistently by useradd
@@ -288,6 +341,22 @@ case "$HOSTNAME_VAL" in
   *[!A-Za-z0-9-]*) die "invalid hostname '$HOSTNAME_VAL' (letters, digits, hyphens only)" ;;
 esac
 
+# The human-readable account name is passed only to useradd's GECOS field.
+# Keep the first-boot seed line-oriented and reject delimiters/control bytes.
+[ "${#FULL_NAME}" -le 100 ] || die "full name is longer than 100 characters"
+case "$FULL_NAME" in
+  *:*) die "full name cannot contain ':'" ;;
+esac
+if printf '%s' "$FULL_NAME" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+  die "full name contains control characters"
+fi
+
+[ -n "$LOCALE_VAL" ] || die "missing --locale <locale>"
+[ "${#LOCALE_VAL}" -le 64 ] || die "locale is too long"
+case "$LOCALE_VAL" in
+  *[!A-Za-z0-9_.@-]*) die "invalid --locale '$LOCALE_VAL'" ;;
+esac
+
 # Validate timezone shape if provided (defends the symlink target below).
 if [ -n "$TIMEZONE_VAL" ]; then
   case "$TIMEZONE_VAL" in
@@ -319,9 +388,8 @@ esac
 
 # --- guards ------------------------------------------------------------------
 # Refuse to do anything unless we are clearly on the qOS installer live medium.
-grep -qw 'qos.installer' /proc/cmdline 2>/dev/null \
-  || grep -q 'qos.installer=1' /proc/cmdline 2>/dev/null \
-  || die "refusing: 'qos.installer' not present on the kernel cmdline (not the installer medium)"
+grep -qw 'qos.install' /proc/cmdline 2>/dev/null \
+  || die "refusing: 'qos.install' not present on the kernel cmdline (not the installer medium)"
 
 # Non-interactive: the UI must pass --yes. This is a destructive (wipe) op.
 [ "$ASSUME_YES" -eq 1 ] \
@@ -348,7 +416,9 @@ while read -r SOURCE MOUNTPOINT; do
     /|/boot|/boot/*|/sysroot|/sysroot/*|/run/initramfs/live|/run/initramfs/live/*|/run/rootfsbase|/run/rootfsbase/*) ;;
     *) continue ;;
   esac
-  LIVE_DISK="$(lsblk -spno NAME,TYPE "$SOURCE" 2>/dev/null | awk '$2 == "disk" || $2 == "rom" { print $1; exit }')"
+  # Raw output matters: normal lsblk tree output prefixes the parent with
+  # `\u2514\u2500`, turning /dev/vda into the invalid path `\u2514\u2500/dev/vda`.
+  LIVE_DISK="$(lsblk -srpno NAME,TYPE "$SOURCE" 2>/dev/null | awk '$2 == "disk" || $2 == "rom" { print $1; exit }')"
   [ -n "$LIVE_DISK" ] || continue
   LIVE_MAJ_MIN="$(lsblk -dno MAJ:MIN "$LIVE_DISK" 2>/dev/null || true)"
   [ -n "$LIVE_MAJ_MIN" ] && break
@@ -360,7 +430,8 @@ done < <(findmnt -rn -o SOURCE,TARGET 2>/dev/null)
 
 validate_alongside() {
   local root_parent efi_parent root_type efi_type efi_fs mountpoints signature_types tool
-  for tool in blockdev blkid lsblk wipefs "mkfs.$FILESYSTEM" mount; do
+  local efi_mountpoints efi_probe efi_available
+  for tool in blockdev blkid df fsck.fat lsblk wipefs "mkfs.$FILESYSTEM" mount umount; do
     command -v "$tool" >/dev/null 2>&1 || die "missing required tool for alongside install: $tool"
   done
   [ -b "$ROOT_PARTITION" ] && [ "$(lsblk -dno TYPE "$ROOT_PARTITION" 2>/dev/null)" = part ] \
@@ -381,6 +452,25 @@ validate_alongside() {
     || die "$EFI_PARTITION is not an EFI System Partition"
   efi_fs="$(blkid -s TYPE -o value "$EFI_PARTITION" 2>/dev/null || true)"
   [ "$efi_fs" = vfat ] || die "$EFI_PARTITION is not a FAT EFI System Partition"
+  [ "$(blockdev --getsize64 "$EFI_PARTITION")" -ge "$MIN_ALONGSIDE_ESP_BYTES" ] \
+    || die "$EFI_PARTITION is smaller than the 2 GiB qOS EFI minimum"
+  fsck.fat -n "$EFI_PARTITION" >/dev/null 2>&1 \
+    || die "$EFI_PARTITION is not a clean FAT filesystem; repair it before installing qOS"
+  efi_mountpoints="$(lsblk -nro MOUNTPOINT "$EFI_PARTITION")" \
+    || die "could not inspect $EFI_PARTITION mount state"
+  [ -z "$(printf '%s' "$efi_mountpoints" | tr -d '[:space:]')" ] \
+    || die "$EFI_PARTITION is mounted"
+  efi_probe="$(mktemp -d)"
+  if ! mount -o ro,nosuid,nodev,noexec "$EFI_PARTITION" "$efi_probe"; then
+    rmdir "$efi_probe"
+    die "could not inspect available space on $EFI_PARTITION"
+  fi
+  efi_available="$(df -B1 --output=avail "$efi_probe" 2>/dev/null | tail -n 1 | tr -d '[:space:]')"
+  umount "$efi_probe"
+  rmdir "$efi_probe"
+  case "$efi_available" in *[!0-9]*|'') die "could not read available space on $EFI_PARTITION" ;; esac
+  [ "$efi_available" -ge "$MIN_ALONGSIDE_ESP_FREE_BYTES" ] \
+    || die "$EFI_PARTITION has less than 1 GiB available for qOS boot images"
   [ "$(blockdev --getsize64 "$ROOT_PARTITION")" -ge 34359738368 ] \
     || die "$ROOT_PARTITION is smaller than the 32 GiB alongside minimum"
   mountpoints="$(lsblk -nro MOUNTPOINT "$ROOT_PARTITION")" \
@@ -429,8 +519,10 @@ fi
 log "qOS installer"
 log "  target disk : $DISK"
 log "  username    : $USERNAME"
+log "  full name   : ${FULL_NAME:-<not set>}"
 log "  filesystem  : $FILESYSTEM"
 log "  hostname    : $HOSTNAME_VAL"
+log "  locale      : $LOCALE_VAL"
 log "  timezone    : ${TIMEZONE_VAL:-<system default>}"
 log "  keymap      : $KEYMAP_VAL${KEYVARIANT_VAL:+ ($KEYVARIANT_VAL)}"
 log "  update ref  : $QOS_TARGET_IMGREF"
@@ -479,11 +571,6 @@ if [ "$ENCRYPT" -eq 1 ]; then
   # left alone; only `finish` removes the install key.
   trap '"$DISK_ENCRYPT" teardown "$DISK" --mnt "$ENC_MNT" >/dev/null 2>&1 || true' EXIT
 
-  # Every karg the volume needs becomes a --karg; word-splitting KARGS is
-  # intentional (it is a space-separated list this script produced).
-  KARG_ARGS=()
-  for k in $ENC_KARGS; do KARG_ARGS+=(--karg "$k"); done
-
   # --skip-finalize because bootc's finalize step remounts the target READ-ONLY,
   # and the account/hostname/keyboard seeding below writes into the deployment's
   # /etc on that same mount. qos-disk-encrypt finish unmounts and closes the
@@ -497,12 +584,26 @@ if [ "$ENCRYPT" -eq 1 ]; then
     --security-opt label=type:unconfined_t \
     "$LOCAL_IMG" \
     bootc install to-filesystem \
-      --root-mount-spec "UUID=$ENC_ROOT_UUID" \
-      --karg-delete qos.installer=1 \
-      "${KARG_ARGS[@]}" \
       --target-imgref "$QOS_TARGET_IMGREF" \
       --skip-finalize \
       /target
+
+  # A sealed UKI cannot accept bootc --karg/--karg-delete arguments. The live
+  # UKI carries fixed-width, signed UUID placeholders; specialize only those
+  # bytes on the installed ESP, then remove its live-only marker. Verified
+  # TPM mode subsequently re-signs and validates this exact target UKI.
+  TARGET_UKI="$(find "$ENC_MNT/boot/efi/EFI/Linux" -type f \
+    -path '*/bootc/bootc_composefs-*.efi' -print -quit)"
+  [ -n "$TARGET_UKI" ] || die "installed target has no bootc UKI on its ESP"
+  LUKS_UUID="$(cryptsetup luksUUID "$ENC_LUKS")"
+  [ -n "$LUKS_UUID" ] || die "could not read the installed LUKS UUID"
+  /usr/libexec/qos-uki-cmdline replace \
+    qos.root=0000000000000000000000000000000000000 \
+    "root=UUID=$ENC_ROOT_UUID" "$TARGET_UKI"
+  /usr/libexec/qos-uki-cmdline replace \
+    qos.luks=000000000000000000000000000000000000000000000 \
+    "rd.luks.uuid=luks-$LUKS_UUID" "$TARGET_UKI"
+  /usr/libexec/qos-uki-cmdline remove qos.install "$TARGET_UKI"
 elif [ "$ALONGSIDE" -eq 1 ]; then
   validate_alongside
   step "Formatting only $ROOT_PARTITION for qOS; preserving every other partition"
@@ -528,7 +629,7 @@ elif [ "$ALONGSIDE" -eq 1 ]; then
     -v "$ALONGSIDE_MNT:/target" --security-opt label=type:unconfined_t \
     "$LOCAL_IMG" bootc install to-filesystem \
       --root-mount-spec "UUID=$ROOT_FS_UUID" \
-      --karg-delete qos.installer=1 --target-imgref "$QOS_TARGET_IMGREF" \
+      --karg-delete qos.install --target-imgref "$QOS_TARGET_IMGREF" \
       --skip-finalize /target
 else
   step "Installing qOS onto $DISK (this ERASES the disk; unencrypted)"
@@ -539,7 +640,7 @@ else
     "$LOCAL_IMG" \
     bootc install to-disk \
       --wipe \
-      --karg-delete qos.installer=1 \
+      --karg-delete qos.install \
       --filesystem "$FILESYSTEM" \
       --block-setup direct \
       --target-imgref "$QOS_TARGET_IMGREF" \
@@ -607,6 +708,14 @@ find_deploy_etc() {
 if [ "$ENCRYPT" -eq 1 ]; then
   MNT="$ENC_MNT"
   DEPLOY_ETC="$(find_deploy_etc "$MNT")"
+  # The composefs backend has no ostree checkout and does not assemble /etc on
+  # the physical root at install time. Its persistent mutable state is stored
+  # as state/deploy/<composefs-digest>/etc and bound into the assembled root by
+  # initramfs. Seed that backend-owned directory directly.
+  if [ -z "$DEPLOY_ETC" ] && [ -d "$MNT/state/deploy" ]; then
+    DEPLOY_ETC="$(find "$MNT/state/deploy" -mindepth 2 -maxdepth 2 \
+      -type d -name etc -print -quit)"
+  fi
 elif [ "$ALONGSIDE" -eq 1 ]; then
   MNT="$ALONGSIDE_MNT"
   DEPLOY_ETC="$(find_deploy_etc "$MNT")"
@@ -643,6 +752,12 @@ fi
 install -D -m 0644 /usr/share/qos/greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"
 printf '\n[initial_session]\ncommand = "/usr/bin/shell --backend drm"\nuser = "%s"\n' \
   "$USERNAME" >> "$DEPLOY_ETC/greetd/config.toml"
+# DEPLOY_ETC is reached through a transient /run mount. SELinux therefore
+# cannot infer the eventual /etc pathname while we are offline and otherwise
+# gives this file var_run_t. Enforcing greetd (xdm_t) then refuses to read its
+# own configuration on the first installed boot. Copy the label from the
+# correctly labelled live /etc counterpart; only the contents differ.
+chcon --reference=/etc/greetd/config.toml "$DEPLOY_ETC/greetd/config.toml"
 rm -f "$DEPLOY_ETC/sudoers.d/qos-installer"
 # Release media mask sshd, while an explicit diagnostic image may enable it.
 # Neither live-only state belongs on the installed system; the base qOS image
@@ -684,6 +799,13 @@ chmod 0600 "$CONF_TMP"
 printf '%s:%s\n' "$USERNAME" "$HASH" > "$CONF_TMP"
 mv -f "$CONF_TMP" "$CONF"
 log "  wrote $CONF (consumed by qos-firstboot-user.service on first boot)"
+if [ -n "$FULL_NAME" ]; then
+  FULL_NAME_CONF="$DEPLOY_ETC/qos/install-user-full-name"
+  FULL_NAME_TMP="$(mktemp "$DEPLOY_ETC/qos/.install-user-full-name.XXXXXX")"
+  chmod 0600 "$FULL_NAME_TMP"
+  printf '%s\n' "$FULL_NAME" > "$FULL_NAME_TMP"
+  mv -f "$FULL_NAME_TMP" "$FULL_NAME_CONF"
+fi
 
 # --- 4. seed hostname + time zone into the installed deployment's /etc -------
 # Same writable-/etc technique as the user file: write into the per-deployment
@@ -693,6 +815,10 @@ step "Setting hostname '$HOSTNAME_VAL' and time zone '${TIMEZONE_VAL:-<system de
 printf '%s\n' "$HOSTNAME_VAL" > "$DEPLOY_ETC/hostname"
 chmod 0644 "$DEPLOY_ETC/hostname"
 log "  wrote $DEPLOY_ETC/hostname"
+
+printf 'LANG=%s\n' "$LOCALE_VAL" > "$DEPLOY_ETC/locale.conf"
+chmod 0644 "$DEPLOY_ETC/locale.conf"
+log "  set locale to $LOCALE_VAL"
 
 if [ -n "$TIMEZONE_VAL" ]; then
   # /etc/localtime is a relative symlink into zoneinfo; create it pointing at

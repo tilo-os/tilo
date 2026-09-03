@@ -183,12 +183,12 @@ struct SessionVmDelegate {
 
 impl SessionVmDelegate {
     fn get(&self) -> Result<Arc<dyn VmDelegate>, String> {
-        if let Some(delegate) = self
+        let current = self
             .live
             .lock()
             .map_err(|_| "Windows VM delegate state is unavailable".to_string())?
-            .clone()
-        {
+            .clone();
+        if let Some(delegate) = current {
             return Ok(delegate);
         }
         let candidate = live_vm_delegate()?;

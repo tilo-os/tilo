@@ -29,10 +29,16 @@ QOS_DISK="${QOS_DISK:-$QOS_OUTPUT/qcow2/disk.qcow2}"
 QOS_INSTALLER_IMAGE="${QOS_INSTALLER_IMAGE:-localhost/qos-installer:latest}"
 QOS_INSTALLER_OUTPUT="${QOS_INSTALLER_OUTPUT:-$QOS_OUTPUT/installer}"   # distinct subdir
 QOS_INSTALLER_DISK="${QOS_INSTALLER_DISK:-$QOS_INSTALLER_OUTPUT/qcow2/disk.qcow2}"
+# Writable overlay used by VM install cycles. The live installer needs scratch
+# space for its offline image copy, but a test must never mutate the pristine
+# release artifact it is validating.
+QOS_INSTALLER_WORK_DISK="${QOS_INSTALLER_WORK_DISK:-$QOS_INSTALLER_OUTPUT/test-installer-work.qcow2}"
 
 # Runtime/scratch dir for the VM. MUST be short: AF_UNIX socket paths are capped
-# at 108 bytes, and a deep scratch path overflows it. /tmp/qos-vm is safe.
-QOS_RUN="${QOS_RUN:-/tmp/qos-vm}"
+# at 108 bytes, and a deep scratch path overflows it. Prefer the per-user runtime
+# directory: unlike shared /tmp it is private and cannot consume or inherit an
+# unrelated per-user quota. Fall back to /tmp for non-desktop/CI sessions.
+QOS_RUN="${QOS_RUN:-${XDG_RUNTIME_DIR:-/tmp}/qos-vm}"
 QOS_MON="$QOS_RUN/mon.sock"
 QOS_SERIAL="$QOS_RUN/serial.log"
 QOS_QEMU_LOG="$QOS_RUN/qemu.log"
@@ -41,8 +47,12 @@ QOS_PIDFILE="$QOS_RUN/qemu.pid"
 # The blank disk the custom installer writes onto (becomes the installed
 # system), attached as a SECOND virtio disk (/dev/vdb) by vm.sh boot-installer
 # and booted on its own by vm.sh boot-target.
-QOS_TARGET_DISK="${QOS_TARGET_DISK:-$QOS_RUN/target.qcow2}"
-QOS_TARGET_SIZE="${QOS_TARGET_SIZE:-20G}"
+# OS targets are multi-gigabyte even when qcow2-sparse. Keep them on the build
+# filesystem, not QOS_RUN's commonly-tmpfs /tmp directory, or a realistic
+# encrypted install can exhaust RAM-backed storage and surface as guest I/O
+# errors. 40 GiB also matches the installer's supported whole-disk envelope.
+QOS_TARGET_DISK="${QOS_TARGET_DISK:-$QOS_INSTALLER_OUTPUT/test-target.qcow2}"
+QOS_TARGET_SIZE="${QOS_TARGET_SIZE:-40G}"
 
 # Software TPM 2.0 (swtpm) so encrypted/TPM-bound installs can be booted and
 # unlock-tested, and so a measured boot can be observed at all. Off by default;
@@ -66,6 +76,7 @@ QOS_SMP="${QOS_SMP:-4}"
 # Kata-isolated CI runner without exposing the Kubernetes node's /dev/kvm.
 QOS_ACCEL="${QOS_ACCEL:-auto}"
 QOS_BOOT_WAIT_ATTEMPTS="${QOS_BOOT_WAIT_ATTEMPTS:-90}"
+QOS_QEMU_START_ATTEMPTS="${QOS_QEMU_START_ATTEMPTS:-100}"
 
 # virtio-gpu resolution (the compositor modesets the connector's preferred
 # mode, which these set). Bigger = more software-render cost.
@@ -119,6 +130,23 @@ hmp() {
   else
     inenv "printf '%s\n' \"$1\" | socat - 'unix:$QOS_MON'"
   fi
+}
+
+# Keep the distrobox command scope alive until QEMU has finished its cold-start
+# work and published the monitor socket. Returning immediately after `disown`
+# races distrobox's scope cleanup on large, cold images and can kill a healthy
+# QEMU before the caller's separate one-second probe sees it.
+start_qemu() {
+  local args="$1"
+  inenv "setsid nohup qemu-system-x86_64 $args >'$QOS_QEMU_LOG' 2>&1 &
+    qemu_pid=\$!
+    for _ in \$(seq 1 '$QOS_QEMU_START_ATTEMPTS'); do
+      test -S '$QOS_MON' && exit 0
+      kill -0 \$qemu_pid 2>/dev/null || break
+      sleep 0.1
+    done
+    wait \$qemu_pid 2>/dev/null || true
+    exit 1"
 }
 
 # Run a command in the guest over SSH (password auth via sshpass, on the host
@@ -342,6 +370,14 @@ swtpm_start() {
   [ "$QOS_TPM" = "1" ] || return 0
   inenv "command -v swtpm >/dev/null || { echo 'swtpm not installed in ${QOS_DISTROBOX:-env}'; exit 1; }" \
     || die "swtpm missing (sudo dnf install swtpm swtpm-tools in ${QOS_DISTROBOX:-the env})"
+
+  # A listening emulator is not enough: swtpm enters permanent TPM failure mode
+  # when its NVRAM backend cannot persist state. Catch full/quota-limited runtime
+  # storage before firmware boots into a misleading PCR-service reboot loop.
+  inenv "mkdir -p '$QOS_TPM_DIR' && \
+    printf 'qOS TPM state preflight\n' >'$QOS_TPM_DIR/.write-test' && \
+    sync '$QOS_TPM_DIR/.write-test' && rm -f '$QOS_TPM_DIR/.write-test'" \
+    || die "cannot persist software-TPM state in $QOS_TPM_DIR (filesystem full or quota exceeded)"
 
   # A leftover swtpm from before this fix would be reused silently and put the
   # unstarted TPM back, so check what is actually listening rather than trusting

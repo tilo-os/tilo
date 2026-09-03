@@ -1,0 +1,13 @@
+cask "qos-imager" do
+  arch arm: "aarch64", intel: "x86_64"
+
+  version "@VERSION@"
+  sha256 arm: "@MACOS_ARM64_SHA256@", intel: "@MACOS_X86_64_SHA256@"
+
+  url "@BASE_URL@/qos-imager-macos-#{arch}.dmg"
+  name "qOS Imager"
+  desc "Create and verify customised qOS installation media"
+  homepage "https://code.sandbox.example/qos/qos"
+
+  app "qOS Imager.app"
+end

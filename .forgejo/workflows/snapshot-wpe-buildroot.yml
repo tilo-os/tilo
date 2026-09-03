@@ -1,0 +1,145 @@
+name: Snapshot WPE buildroots
+
+# This is the only CI boundary allowed to resolve WPE build dependencies from
+# Fedora. It promotes signed, per-architecture immutable refs; OS release jobs
+# consume those refs and cannot fall back to the network.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - os/Containerfile.wpe-buildroot
+      - os/base-snapshot.env
+      - .forgejo/workflows/snapshot-wpe-buildroot.yml
+
+concurrency:
+  group: snapshot-wpe-buildroot
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: x86_64
+            runner: runner
+          - arch: aarch64
+            runner: runner-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Load the mirrored Fedora base
+        run: grep '^BASE_REF=' os/base-snapshot.env >> "$GITHUB_ENV"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: code.sandbox.example
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Resolve, build, and push the native buildroot
+        id: image
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: os/Containerfile.wpe-buildroot
+          push: true
+          provenance: false
+          no-cache: true
+          build-args: |
+            BASE_REF=${{ env.BASE_REF }}
+          tags: code.sandbox.example/qos/qos-wpe-buildroot:${{ matrix.arch }}-${{ github.sha }}
+      - uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
+      - name: Audit and sign the immutable buildroot
+        env:
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          case "$COSIGN_KEY_REF" in
+            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) printf 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key\n' >&2; exit 1 ;;
+          esac
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          ref="code.sandbox.example/qos/qos-wpe-buildroot@$DIGEST"
+          actual_arch="$(docker run --rm --entrypoint cat "$ref" /usr/lib/qos/wpe-buildroot-arch)"
+          test "$actual_arch" = '${{ matrix.arch }}'
+          docker run --rm --entrypoint sh "$ref" -c \
+            'test -s /usr/lib/qos/wpe-buildroot-packages.txt && ! find /etc/yum.repos.d -type f -print -quit | grep -q .'
+          cosign sign --yes --key "$COSIGN_KEY_REF" \
+            "$ref"
+          mkdir -p refs
+          case '${{ matrix.arch }}' in
+            x86_64) key=WPE_BUILDROOT_X86_64_REF ;;
+            aarch64) key=WPE_BUILDROOT_AARCH64_REF ;;
+          esac
+          printf '%s=%s\n' "$key" \
+            "$ref" > "refs/${{ matrix.arch }}.env"
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: wpe-buildroot-${{ matrix.arch }}
+          path: refs/${{ matrix.arch }}.env
+
+  promote:
+    needs: build
+    runs-on: runner
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          path: refs
+      - uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: code.sandbox.example
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Verify signatures and advance both architecture pins atomically
+        run: |
+          set -euo pipefail
+          x86="$(find refs -type f -name x86_64.env -print -quit)"
+          arm="$(find refs -type f -name aarch64.env -print -quit)"
+          test -n "$x86" && test -n "$arm"
+          . "$x86"
+          . "$arm"
+          for ref in "$WPE_BUILDROOT_X86_64_REF" "$WPE_BUILDROOT_AARCH64_REF"; do
+            [[ "$ref" =~ ^code\.podesta\.ai/qos/qos-wpe-buildroot@sha256:[0-9a-f]{64}$ ]]
+            cosign verify --key keys/cosign.pub "$ref" >/dev/null
+          done
+          git fetch --no-tags origin main
+          if ! git diff --quiet "$GITHUB_SHA..origin/main" -- \
+              os/Containerfile.wpe-buildroot os/base-snapshot.env \
+              .forgejo/workflows/snapshot-wpe-buildroot.yml; then
+            printf 'WPE buildroot inputs changed after this run started; refusing stale promotion\n' >&2
+            exit 1
+          fi
+          printf '%s\n' \
+            '# Per-architecture WPE buildroots, signed and pinned by digest.' \
+            '# Updated only by snapshot-wpe-buildroot.yml.' \
+            "WPE_BUILDROOT_X86_64_REF=$WPE_BUILDROOT_X86_64_REF" \
+            "WPE_BUILDROOT_AARCH64_REF=$WPE_BUILDROOT_AARCH64_REF" \
+            > os/wpe-buildroot-snapshot.env
+          git config user.name 'qOS CI'
+          git config user.email 'ci@qos.invalid'
+          git add os/wpe-buildroot-snapshot.env
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'os: refresh WPE buildroot snapshots'
+          git pull --rebase origin main
+          if ! git diff --quiet "$GITHUB_SHA..origin/main" -- \
+              os/Containerfile.wpe-buildroot os/base-snapshot.env \
+              .forgejo/workflows/snapshot-wpe-buildroot.yml; then
+            printf 'WPE buildroot inputs changed during promotion; refusing stale push\n' >&2
+            exit 1
+          fi
+          git push origin HEAD:main

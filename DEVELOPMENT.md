@@ -201,10 +201,8 @@ $ rpm -qlp dist/rpm/build/RPMS/x86_64/qos-session-0.1.0-1.fc43.x86_64.rpm
 /etc/pam.d/qos-unlock
 /usr/bin/qos-launcher
 /usr/bin/qos-shell
-/usr/lib/systemd/user/qos-portal.service
 /usr/libexec/qos-session
 /usr/libexec/qos-unlock-helper
-/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service
 /usr/share/wayland-sessions/qos.desktop
 /usr/share/xdg-desktop-portal/portals/qos.portal
 

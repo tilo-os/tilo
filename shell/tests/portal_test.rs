@@ -63,6 +63,42 @@ async fn bring_up_pair(
     .await
 }
 
+/// The `PipeWire` remote is a frontend-portal operation.  The implementation
+/// backend returns source node ids only; adding a backend `OpenPipeWireRemote`
+/// method would bypass `xdg-desktop-portal`'s restricted portal connection.
+#[tokio::test]
+async fn screencast_backend_introspection_matches_the_impl_contract() {
+    let (store, map, _ws) = screencast_always(205, "org.example.contract");
+    let (_server, client, _ctx) =
+        bring_up_pair(store, PromptQueueHandle::new(PromptResolver::Channel), map).await;
+    let proxy = Proxy::new(
+        &client,
+        BUS_NAME,
+        OBJECT_PATH,
+        "org.freedesktop.DBus.Introspectable",
+    )
+    .await
+    .expect("introspection proxy");
+    let xml: String = proxy
+        .call("Introspect", &())
+        .await
+        .expect("introspection XML");
+    let start = xml
+        .find("org.freedesktop.impl.portal.ScreenCast")
+        .expect("ScreenCast interface");
+    let screen_cast = &xml[start..];
+    for method in ["CreateSession", "SelectSources", "Start"] {
+        assert!(
+            screen_cast.contains(&format!("method name=\"{method}\"")),
+            "missing standard ScreenCast backend method {method}"
+        );
+    }
+    assert!(
+        !screen_cast.contains("OpenPipeWireRemote"),
+        "OpenPipeWireRemote belongs to org.freedesktop.portal.ScreenCast on the frontend"
+    );
+}
+
 async fn bring_up_pair_with_spawners(
     grants: GrantStoreHandle,
     prompts: PromptQueueHandle,
@@ -73,10 +109,22 @@ async fn bring_up_pair_with_spawners(
     print_spooler: PrintSpoolerHandle,
 ) -> (Connection, Connection, PortalContext) {
     use shell::portal::{
-        AccessBackend, FileChooserBackend, PrintBackend, RemoteDesktopBackend, ScreenCastBackend,
+        AccessBackend, FileChooserBackend, NotificationBackend, PrintBackend, RemoteDesktopBackend,
+        ScreenCastBackend,
     };
     let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
 
+    let resolver_grants = grants.clone();
+    let resolver_callers = caller_map.clone();
+    let resolver = Arc::new(move |app_id: &str, _: Option<&str>| {
+        resolver_callers.lookup("").or_else(|| {
+            resolver_grants
+                .tree_handle()
+                .read()
+                .active_workspace()
+                .map(|workspace| PortalCaller::new(workspace.id, app_id))
+        })
+    });
     let ctx = PortalContext {
         grants,
         prompts,
@@ -84,8 +132,15 @@ async fn bring_up_pair_with_spawners(
         file_picker,
         screencast_provisioner,
         remote_input_injector,
+        input_capture: shell::portal::InputCaptureCompositorHandle::unavailable(),
         documents: shell::portal::DocumentStoreHandle::host_paths(),
         print_spooler,
+        notifications: shell::notifications::NotificationBridge::new(),
+        desktop_services: shell::portal::DesktopPortalServices::default(),
+        authenticator: Some(shell::portal::PortalAuthenticator::fixed_for_tests(
+            ":1.0".try_into().expect("fixed p2p owner"),
+            resolver,
+        )),
     };
     let ctx_clone = ctx.clone();
 
@@ -97,6 +152,7 @@ async fn bring_up_pair_with_spawners(
     let ac = AccessBackend::new(ctx.clone());
     let rd = RemoteDesktopBackend::new(ctx.clone());
     let pr = PrintBackend::new(ctx.clone());
+    let no = NotificationBackend::new(ctx.clone());
 
     let server_builder = Builder::unix_stream(server_sock)
         .server(TEST_GUID)
@@ -111,7 +167,9 @@ async fn bring_up_pair_with_spawners(
         .serve_at(OBJECT_PATH, rd)
         .expect("serve_at rd")
         .serve_at(OBJECT_PATH, pr)
-        .expect("serve_at pr");
+        .expect("serve_at pr")
+        .serve_at(OBJECT_PATH, no)
+        .expect("serve_at notification");
     let client_builder = Builder::unix_stream(client_sock).p2p();
 
     let (server_conn, client_conn) =
@@ -135,6 +193,106 @@ async fn portal_proxy<'a>(client: &'a Connection, interface: &'static str) -> Pr
         .build()
         .await
         .expect("proxy build")
+}
+
+fn string_value(value: &str) -> OwnedValue {
+    OwnedValue::from(zbus::zvariant::Str::from(value))
+}
+
+#[tokio::test]
+async fn notification_add_replace_isolate_and_remove_round_trip() {
+    let (store, _ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(100, "ws"));
+    let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
+    let caller_map = CallerMap::new();
+    let (_server, client, ctx) = bring_up_pair(store, queue, caller_map).await;
+    let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.Notification").await;
+
+    let mut payload = HashMap::new();
+    payload.insert("title", string_value("Build complete"));
+    payload.insert("body", string_value("All checks passed"));
+    payload.insert("priority", string_value("high"));
+    proxy
+        .call_method(
+            "AddNotification",
+            &("org.example.build", "result", &payload),
+        )
+        .await
+        .expect("add notification");
+
+    let first = ctx.notifications.drain_incoming();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].summary, "Build complete");
+    assert_eq!(first[0].body, "All checks passed");
+    assert_eq!(first[0].urgency, 2);
+    assert_eq!(
+        first[0]
+            .caller
+            .as_ref()
+            .map(|caller| caller.app_id.as_str()),
+        Some("org.example.build")
+    );
+    let first_numeric_id = first[0].dbus_id;
+
+    payload.insert("title", string_value("Build updated"));
+    proxy
+        .call_method(
+            "AddNotification",
+            &("org.example.build", "result", &payload),
+        )
+        .await
+        .expect("replace notification");
+    let replacement = ctx.notifications.drain_incoming();
+    assert_eq!(replacement.len(), 1);
+    assert_eq!(replacement[0].dbus_id, first_numeric_id);
+    assert_eq!(replacement[0].summary, "Build updated");
+
+    proxy
+        .call_method(
+            "AddNotification",
+            &("org.example.other", "result", &payload),
+        )
+        .await
+        .expect("same string id for another app");
+    let other = ctx.notifications.drain_incoming();
+    assert_eq!(other.len(), 1);
+    assert_ne!(other[0].dbus_id, first_numeric_id);
+
+    proxy
+        .call_method("RemoveNotification", &("org.example.build", "result"))
+        .await
+        .expect("remove notification");
+    assert_eq!(
+        ctx.notifications.drain_close_requests(),
+        vec![first_numeric_id]
+    );
+
+    // Removal consumes the app-local mapping. Repeating it is a harmless
+    // no-op and cannot close the other application's same-named entry.
+    proxy
+        .call_method("RemoveNotification", &("org.example.build", "result"))
+        .await
+        .expect("remove missing notification");
+    assert!(ctx.notifications.drain_close_requests().is_empty());
+}
+
+#[tokio::test]
+async fn notification_properties_match_version_two_contract() {
+    let (store, _ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(1001, "ws"));
+    let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
+    let caller_map = CallerMap::new();
+    let (_server, client, _ctx) = bring_up_pair(store, queue, caller_map).await;
+    let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.Notification").await;
+
+    let version: u32 = proxy
+        .get_property("version")
+        .await
+        .expect("version property");
+    assert_eq!(version, 2);
+    let options: HashMap<String, OwnedValue> = proxy
+        .get_property("SupportedOptions")
+        .await
+        .expect("supported options property");
+    assert!(options.is_empty());
 }
 
 #[tokio::test]
@@ -203,10 +361,17 @@ async fn screencast_select_sources_round_trips_auto_allow() {
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
 
     // SelectSources(handle, session_handle, app_id, options) → (u, a{sv})
-    let handle: ObjectPath<'_> = "/h/1".try_into().unwrap();
-    let session: ObjectPath<'_> = "/s/1".try_into().unwrap();
+    let handle: ObjectPath<'_> = "/org/freedesktop/portal/desktop/request/test/h1"
+        .try_into()
+        .unwrap();
+    let session: ObjectPath<'_> = "/org/freedesktop/portal/desktop/session/test/s1"
+        .try_into()
+        .unwrap();
     let app_id: &str = "org.example.screencast";
     let opts: HashMap<&str, OwnedValue> = HashMap::new();
+
+    let (created, _) = sc_call(&proxy, "CreateSession", &(&handle, &session, app_id, &opts)).await;
+    assert_eq!(created, 0);
 
     let (response, _results): (u32, HashMap<String, OwnedValue>) = proxy
         .call_method("SelectSources", &(&handle, &session, app_id, &opts))
@@ -229,7 +394,9 @@ async fn access_dialog_camera_round_trips_auto_allow() {
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.Access").await;
 
     // AccessDialog(handle, app_id, parent_window, title, subtitle, body, options)
-    let handle: ObjectPath<'_> = "/h/2".try_into().unwrap();
+    let handle: ObjectPath<'_> = "/org/freedesktop/portal/desktop/request/test/access2"
+        .try_into()
+        .unwrap();
     let app_id: &str = "org.example.cam";
     let parent: &str = "";
     let title: &str = "Camera Access";
@@ -278,7 +445,9 @@ async fn always_grant_skips_prompt_queue() {
     let (_server, client, ctx) = bring_up_pair(store, queue.clone(), caller_map).await;
 
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.Access").await;
-    let handle: ObjectPath<'_> = "/h/3".try_into().unwrap();
+    let handle: ObjectPath<'_> = "/org/freedesktop/portal/desktop/request/test/access3"
+        .try_into()
+        .unwrap();
     let opts: HashMap<&str, OwnedValue> = HashMap::new();
     // 30s timeout so a fast-path regression (e.g. accidentally pumping
     // every request through the queue) fails explicitly instead of hanging CI.
@@ -351,7 +520,9 @@ async fn session_outcome_persists_into_grant_store() {
     let (_server, client, ctx) = bring_up_pair(store.clone(), queue, caller_map).await;
 
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.Access").await;
-    let handle: ObjectPath<'_> = "/h/5".try_into().unwrap();
+    let handle: ObjectPath<'_> = "/org/freedesktop/portal/desktop/request/test/access5"
+        .try_into()
+        .unwrap();
     let opts: HashMap<&str, OwnedValue> = HashMap::new();
     let (response, _): (u32, HashMap<String, OwnedValue>) = proxy
         .call_method(
@@ -381,8 +552,8 @@ async fn session_outcome_persists_into_grant_store() {
 
 #[test]
 fn bus_name_matches_freedesktop_portal_convention() {
-    // Must match the shipped `os/.../portals/qos.portal` `DBusName`, its
-    // D-Bus activation `.service`, and `shell-portal.service`.
+    // Must match the shipped `os/.../portals/qos.portal` `DBusName`; the
+    // compositor owns it directly rather than racing an activation service.
     assert_eq!(BUS_NAME, "org.freedesktop.impl.portal.desktop.qos");
     assert_eq!(OBJECT_PATH, "/org/freedesktop/portal/desktop");
 }
@@ -422,11 +593,31 @@ async fn screencast_start_provisions_pipewire_stream() {
     .await;
 
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
-    let handle: ObjectPath<'_> = "/h/6".try_into().unwrap();
-    let session: ObjectPath<'_> = "/s/6".try_into().unwrap();
+    let handle: ObjectPath<'_> = "/org/freedesktop/portal/desktop/request/test/h6"
+        .try_into()
+        .unwrap();
+    let session: ObjectPath<'_> = "/org/freedesktop/portal/desktop/session/test/s6"
+        .try_into()
+        .unwrap();
     let mut opts: HashMap<&str, OwnedValue> = HashMap::new();
     let size: (u32, u32) = (1280, 720);
     opts.insert("size", OwnedValue::try_from(Value::new(size)).unwrap());
+
+    let empty: HashMap<&str, OwnedValue> = HashMap::new();
+    let (created, _) = sc_call(
+        &proxy,
+        "CreateSession",
+        &(&handle, &session, "org.example.cast", &empty),
+    )
+    .await;
+    assert_eq!(created, 0);
+    let (selected, _) = sc_call(
+        &proxy,
+        "SelectSources",
+        &(&handle, &session, "org.example.cast", &empty),
+    )
+    .await;
+    assert_eq!(selected, 0);
 
     let (response, results): (u32, HashMap<String, OwnedValue>) = proxy
         .call_method("Start", &(&handle, &session, "org.example.cast", "", &opts))
@@ -472,8 +663,8 @@ fn capability_kind_round_trips_through_grant_store() {
     );
 }
 
-// ScreenCast: source types, cursor modes, `multiple`, restore_token
-// round-trip, OpenPipeWireRemote, interface properties.
+// ScreenCast: source types, cursor modes, `multiple`, restore-token
+// round-trip, and exact backend interface properties.
 
 /// Pre-seeded with an `Always` Screencast grant + a forced caller, so the
 /// handshake fast-paths past the prompt.
@@ -535,8 +726,12 @@ async fn screencast_start_honors_selected_source_type_and_cursor_mode() {
     )
     .await;
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
-    let h: ObjectPath<'_> = "/h/a".try_into().unwrap();
-    let session: ObjectPath<'_> = "/sc/win".try_into().unwrap();
+    let h: ObjectPath<'_> = "/org/freedesktop/portal/desktop/request/test/ha"
+        .try_into()
+        .unwrap();
+    let session: ObjectPath<'_> = "/org/freedesktop/portal/desktop/session/test/win"
+        .try_into()
+        .unwrap();
     let empty: HashMap<&str, OwnedValue> = HashMap::new();
     let _ = sc_call(&proxy, "CreateSession", &(&h, &session, app, &empty)).await;
 
@@ -577,8 +772,12 @@ async fn screencast_multiple_yields_one_stream_per_source() {
     )
     .await;
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
-    let h: ObjectPath<'_> = "/h/m".try_into().unwrap();
-    let session: ObjectPath<'_> = "/sc/m".try_into().unwrap();
+    let h: ObjectPath<'_> = "/org/freedesktop/portal/desktop/request/test/hm"
+        .try_into()
+        .unwrap();
+    let session: ObjectPath<'_> = "/org/freedesktop/portal/desktop/session/test/multi"
+        .try_into()
+        .unwrap();
     let empty: HashMap<&str, OwnedValue> = HashMap::new();
     let _ = sc_call(&proxy, "CreateSession", &(&h, &session, app, &empty)).await;
     let mut opts: HashMap<&str, OwnedValue> = HashMap::new();
@@ -592,7 +791,7 @@ async fn screencast_multiple_yields_one_stream_per_source() {
 }
 
 #[tokio::test]
-async fn screencast_restore_token_skips_reprompt() {
+async fn screencast_restore_data_skips_reprompt() {
     let app = "org.example.persist";
     let (store, map, ws_id) = screencast_always(203, app);
     let queue = PromptQueueHandle::new(PromptResolver::Channel);
@@ -609,11 +808,15 @@ async fn screencast_restore_token_skips_reprompt() {
     )
     .await;
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
-    let h: ObjectPath<'_> = "/h/p".try_into().unwrap();
+    let h: ObjectPath<'_> = "/org/freedesktop/portal/desktop/request/test/hp"
+        .try_into()
+        .unwrap();
     let empty: HashMap<&str, OwnedValue> = HashMap::new();
 
-    // Issue a token first (fast-path via the Always grant).
-    let s1: ObjectPath<'_> = "/sc/p1".try_into().unwrap();
+    // Issue standard restore data first (fast-path via the Always grant).
+    let s1: ObjectPath<'_> = "/org/freedesktop/portal/desktop/session/test/p1"
+        .try_into()
+        .unwrap();
     let _ = sc_call(&proxy, "CreateSession", &(&h, &s1, app, &empty)).await;
     let mut opts1: HashMap<&str, OwnedValue> = HashMap::new();
     opts1.insert("types", OwnedValue::try_from(Value::U32(2)).unwrap()); // window
@@ -622,46 +825,41 @@ async fn screencast_restore_token_skips_reprompt() {
     assert_eq!(r, 0);
     let (rs, results) = sc_call(&proxy, "Start", &(&h, &s1, app, "", &empty)).await;
     assert_eq!(rs, 0);
-    let token: String = String::try_from(
-        results
-            .get("restore_token")
-            .expect("token")
-            .try_clone()
-            .unwrap(),
-    )
-    .unwrap();
-    assert!(!token.is_empty());
+    let restore_data = results
+        .get("restore_data")
+        .expect("standard restore_data")
+        .try_clone()
+        .unwrap();
     assert_eq!(queue.queued_len(), 0, "fast path: no prompt queued");
 
-    // Remove the Always grant so only the token can authorize what follows.
+    // Remove the Always grant so only restore_data can authorize what follows.
     {
         let handle = ctx.grants.tree_handle();
         let mut t = handle.write();
         if let Some(ws) = t.workspaces.iter_mut().find(|w| w.id == ws_id) {
-            // Revoking every app-subject grant proves a restore token
-            // can't resurrect access after a revoke.
+            // Removing the ordinary capability proves this second request is
+            // using the separately app-bound portal restore authority.
             ws.revoke_matching(|c| matches!(&c.subject, Subject::Principal(Principal::App(_))));
         }
     }
 
-    // Present the restore token — under the Channel resolver (never
+    // Present restore_data — under the Channel resolver (never
     // fulfils a queued prompt), an un-restored path would enqueue and hang.
-    let s2: ObjectPath<'_> = "/sc/p2".try_into().unwrap();
+    let s2: ObjectPath<'_> = "/org/freedesktop/portal/desktop/session/test/p2"
+        .try_into()
+        .unwrap();
     let _ = sc_call(&proxy, "CreateSession", &(&h, &s2, app, &empty)).await;
     let mut opts2: HashMap<&str, OwnedValue> = HashMap::new();
-    opts2.insert(
-        "restore_token",
-        OwnedValue::try_from(Value::new(token.clone())).unwrap(),
-    );
+    opts2.insert("restore_data", restore_data);
     let sel2 = timeout(
         Duration::from_secs(10),
         proxy.call_method("SelectSources", &(&h, &s2, app, &opts2)),
     )
     .await
-    .expect("restore token must skip the prompt (would hang otherwise)")
+    .expect("restore data must skip the prompt (would hang otherwise)")
     .expect("SelectSources");
     let (r2, _): (u32, HashMap<String, OwnedValue>) = sel2.body().deserialize().unwrap();
-    assert_eq!(r2, 0, "valid restore token authorizes without a prompt");
+    assert_eq!(r2, 0, "valid restore data authorizes without a prompt");
     assert_eq!(queue.queued_len(), 0, "no prompt should have been queued");
 
     let start2 = timeout(
@@ -678,41 +876,6 @@ async fn screencast_restore_token_skips_reprompt() {
         u32_prop(&streams2[0].1, "source_type"),
         2,
         "restored session recovers the WINDOW selection"
-    );
-}
-
-#[tokio::test]
-async fn screencast_open_pipewire_remote_returns_real_fd() {
-    use std::os::fd::{AsFd, AsRawFd};
-    let app = "org.example.fd";
-    let (store, map, _ws) = screencast_always(204, app);
-    let (_s, client, _ctx) = bring_up_pair_with_spawners(
-        store,
-        PromptQueueHandle::new(PromptResolver::Channel),
-        map,
-        FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
-        ScreenCastStreamProvisionerHandle::new(Arc::new(MockScreenCastProvisioner::new_with_node(
-            1, "t",
-        ))),
-        RemoteInputInjectorHandle::null(),
-        PrintSpoolerHandle::null(),
-    )
-    .await;
-    let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
-    let h: ObjectPath<'_> = "/h/fd".try_into().unwrap();
-    let session: ObjectPath<'_> = "/sc/fd".try_into().unwrap();
-    let empty: HashMap<&str, OwnedValue> = HashMap::new();
-    let _ = sc_call(&proxy, "CreateSession", &(&h, &session, app, &empty)).await;
-    let fd: zbus::zvariant::OwnedFd = proxy
-        .call_method("OpenPipeWireRemote", &(&session, app, &empty))
-        .await
-        .expect("OpenPipeWireRemote")
-        .body()
-        .deserialize()
-        .expect("fd");
-    assert!(
-        fd.as_fd().as_raw_fd() >= 0,
-        "app must receive a real PipeWire remote fd over D-Bus"
     );
 }
 
@@ -743,7 +906,7 @@ async fn screencast_properties_advertise_capabilities() {
 // RemoteDesktop: consent -> Start -> Notify* seat injection.
 
 #[tokio::test]
-async fn remote_desktop_notify_injects_after_consent() {
+async fn remote_desktop_senderless_transport_cannot_inject_after_consent() {
     let app = "org.example.remote";
     let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(210, "ws"));
     let map = CallerMap::new();
@@ -762,8 +925,12 @@ async fn remote_desktop_notify_injects_after_consent() {
     )
     .await;
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.RemoteDesktop").await;
-    let h: ObjectPath<'_> = "/h/rd".try_into().unwrap();
-    let session: ObjectPath<'_> = "/rd/1".try_into().unwrap();
+    let h: ObjectPath<'_> = "/org/freedesktop/portal/desktop/request/test/hrd"
+        .try_into()
+        .unwrap();
+    let session: ObjectPath<'_> = "/org/freedesktop/portal/desktop/session/test/rd1"
+        .try_into()
+        .unwrap();
     let empty: HashMap<&str, OwnedValue> = HashMap::new();
     let _ = sc_call(&proxy, "CreateSession", &(&h, &session, app, &empty)).await;
 
@@ -785,25 +952,10 @@ async fn remote_desktop_notify_injects_after_consent() {
         .expect("NotifyKeyboardKeycode");
 
     let actions = rec.actions();
-    assert_eq!(
-        actions.len(),
-        2,
-        "both Notify* injected after consent+Start"
+    assert!(
+        actions.is_empty(),
+        "a p2p message has no D-Bus unique sender and must never acquire the live session's injection authority"
     );
-    assert!(matches!(
-        actions[0],
-        shell::network::RemoteAction::PointerButton {
-            button: 272,
-            pressed: true
-        }
-    ));
-    assert!(matches!(
-        actions[1],
-        shell::network::RemoteAction::KeyboardKeycode {
-            keycode: 30,
-            pressed: true
-        }
-    ));
 }
 
 #[tokio::test]
@@ -826,8 +978,12 @@ async fn remote_desktop_denial_blocks_injection() {
     )
     .await;
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.RemoteDesktop").await;
-    let h: ObjectPath<'_> = "/h/rdd".try_into().unwrap();
-    let session: ObjectPath<'_> = "/rd/deny".try_into().unwrap();
+    let h: ObjectPath<'_> = "/org/freedesktop/portal/desktop/request/test/hrdd"
+        .try_into()
+        .unwrap();
+    let session: ObjectPath<'_> = "/org/freedesktop/portal/desktop/session/test/deny"
+        .try_into()
+        .unwrap();
     let empty: HashMap<&str, OwnedValue> = HashMap::new();
     let _ = sc_call(&proxy, "CreateSession", &(&h, &session, app, &empty)).await;
     let mut dev: HashMap<&str, OwnedValue> = HashMap::new();

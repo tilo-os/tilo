@@ -17,7 +17,10 @@ use std::path::{Path, PathBuf};
 
 use automerge::{ScalarValue, transaction::Transactable};
 use shell::onboarding::MintedIdentity;
-use shell::onboarding_view::{KEY_BEGIN, KEY_CONNECT, KEY_CREATE, KEY_UNDERSTOOD, OnboardingView};
+use shell::onboarding_view::{
+    KEY_BEGIN, KEY_CONNECT, KEY_CREATE, KEY_TOUR_NEXT, KEY_TOUR_START, KEY_UNDERSTOOD,
+    OnboardingView,
+};
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use ui::State;
 use ui::offscreen::OffscreenRenderer;
@@ -91,6 +94,10 @@ fn shoot(theme: &Theme, out: &Path, steps: &[&str], width: u32, height: u32) -> 
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the declarative snapshot matrix is clearest as one ordered review manifest"
+)]
 fn main() -> Result<(), String> {
     ui::i18n::I18nManager::init("en-US");
     let dir = std::env::var("ONBOARDING_SHOTS_OUT")
@@ -139,25 +146,59 @@ fn main() -> Result<(), String> {
             WIDTH,
             HEIGHT,
         )?;
+        shoot(
+            &theme,
+            &dir.join(format!("6-tour-move-{suffix}.png")),
+            &[KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE, KEY_TOUR_START],
+            WIDTH,
+            HEIGHT,
+        )?;
+        shoot(
+            &theme,
+            &dir.join(format!("7-tour-arrange-{suffix}.png")),
+            &[
+                KEY_BEGIN,
+                KEY_UNDERSTOOD,
+                KEY_CREATE,
+                KEY_TOUR_START,
+                KEY_TOUR_NEXT,
+            ],
+            WIDTH,
+            HEIGHT,
+        )?;
+        shoot(
+            &theme,
+            &dir.join(format!("8-tour-share-{suffix}.png")),
+            &[
+                KEY_BEGIN,
+                KEY_UNDERSTOOD,
+                KEY_CREATE,
+                KEY_TOUR_START,
+                KEY_TOUR_NEXT,
+                KEY_TOUR_NEXT,
+            ],
+            WIDTH,
+            HEIGHT,
+        )?;
     }
 
     shoot(
         &Theme::dark(),
-        &dir.join("6-intro-narrow-dark.png"),
+        &dir.join("9-intro-narrow-dark.png"),
         &[],
         420,
         640,
     )?;
     shoot(
         &Theme::dark().with_reduce_motion(true),
-        &dir.join("7-no-recovery-reduced-motion.png"),
+        &dir.join("10-no-recovery-reduced-motion.png"),
         &[KEY_BEGIN],
         800,
         600,
     )?;
     shoot(
         &Theme::dark().with_text_scale(1.3),
-        &dir.join("8-done-large-text.png"),
+        &dir.join("11-done-large-text.png"),
         &[KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE],
         1000,
         720,
@@ -166,10 +207,30 @@ fn main() -> Result<(), String> {
         &Theme::high_contrast()
             .with_ui_scale(1.25)
             .with_reduce_motion(true),
-        &dir.join("9-connect-scaled-high-contrast.png"),
+        &dir.join("12-connect-scaled-high-contrast.png"),
         &[KEY_CONNECT],
         800,
         640,
+    )?;
+    shoot(
+        &Theme::dark(),
+        &dir.join("13-tour-move-narrow-dark.png"),
+        &[KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE, KEY_TOUR_START],
+        420,
+        640,
+    )?;
+    shoot(
+        &Theme::light().with_text_scale(1.3),
+        &dir.join("14-tour-arrange-large-text.png"),
+        &[
+            KEY_BEGIN,
+            KEY_UNDERSTOOD,
+            KEY_CREATE,
+            KEY_TOUR_START,
+            KEY_TOUR_NEXT,
+        ],
+        1000,
+        720,
     )?;
     Ok(())
 }

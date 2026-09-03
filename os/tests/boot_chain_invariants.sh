@@ -114,7 +114,7 @@ for kver in "${kvers[@]}"; do
   # and an initramfs that does carry cryptsetup looks like one that does not.
   mods="$OS_ROOT/usr/lib/qos/initramfs-modules.txt"
   if [ -s "$mods" ]; then
-    for want in crypt systemd-cryptsetup tpm2-tss; do
+    for want in crypt systemd-cryptsetup tpm2-tss plymouth; do
       if grep -qx "$want" "$mods"; then
         ok "initramfs includes the $want module"
       else
@@ -140,6 +140,62 @@ done
 for f in /usr/libexec/qos-disk-encrypt /usr/libexec/qos-secureboot; do
   if [ -x "$OS_ROOT$f" ]; then ok "$f present"; else bad "$f missing or not executable"; fi
 done
+
+# 6. Exactly one unit grows the root filesystem on the composefs layout.
+#    `GrowFileSystem=yes` gives the root partition the GPT attribute that makes
+#    systemd-gpt-auto-generator start systemd-growfs-root.service. In qOS `/`
+#    is a composefs overlay, while the block-backed btrfs is mounted at
+#    `/sysroot`; masking the stock unit without a replacement leaves the
+#    installation's extra space unused.
+growfs_unit="$OS_ROOT/usr/lib/systemd/system/qos-growfs-sysroot.service"
+growfs_dropin="$OS_ROOT/usr/lib/systemd/system/systemd-growfs-root.service.d/10-qos-composefs.conf"
+if [ ! -f "$growfs_unit" ]; then
+  bad "qos-growfs-sysroot.service missing — nothing grows the root filesystem"
+else
+  ours="$(grep -E '^ConditionPathIsMountPoint=' "$growfs_unit" | head -1)"
+  exec_line="$(grep -E '^ExecStart=' "$growfs_unit" | head -1)"
+  [ "$ours" = "ConditionPathIsMountPoint=/sysroot" ] \
+    && ok "qos growfs is gated on /sysroot" \
+    || bad "qos growfs does not require /sysroot (${ours:-none})"
+  [ "$exec_line" = "ExecStart=/usr/lib/systemd/systemd-growfs /sysroot" ] \
+    && ok "qos growfs targets the block-backed /sysroot" \
+    || bad "qos growfs targets the wrong path (${exec_line:-none})"
+fi
+
+if [ ! -f "$growfs_dropin" ]; then
+  bad "systemd-growfs-root.service drop-in missing — the stock unit can target the composefs overlay"
+else
+  theirs="$(grep -E '^ConditionPathIsMountPoint=' "$growfs_dropin" | head -1)"
+  [ "$theirs" = "ConditionPathIsMountPoint=!/sysroot" ] \
+    && ok "stock growfs is gated away when /sysroot is mounted" \
+    || bad "stock growfs condition is not the opposite of the replacement (${theirs:-none})"
+fi
+
+if [ -L "$OS_ROOT/etc/systemd/system/systemd-growfs-root.service" ] \
+   && [ "$(readlink "$OS_ROOT/etc/systemd/system/systemd-growfs-root.service")" = /dev/null ]; then
+  bad "systemd-growfs-root.service is masked, so its composefs drop-in cannot select the layout"
+else
+  ok "systemd-growfs-root.service is not masked"
+fi
+
+# Ask systemctl rather than guessing which wants directory contains the link.
+# The path fallback keeps this invariant useful in a minimal unpacked root.
+growfs_enabled=""
+if command -v systemctl >/dev/null 2>&1; then
+  case "$(systemctl --root="$OS_ROOT" is-enabled qos-growfs-sysroot.service 2>/dev/null)" in
+    enabled|enabled-runtime|static) growfs_enabled=yes ;;
+    *) growfs_enabled=no ;;
+  esac
+elif [ -e "$OS_ROOT/etc/systemd/system/multi-user.target.wants/qos-growfs-sysroot.service" ]; then
+  growfs_enabled=yes
+else
+  growfs_enabled=no
+fi
+if [ "$growfs_enabled" = yes ]; then
+  ok "qos-growfs-sysroot.service is enabled"
+else
+  bad "qos-growfs-sysroot.service is not enabled — the filesystem is never grown"
+fi
 
 [ "$fail" -eq 0 ] && printf '\nall boot-chain invariants hold\n'
 exit "$fail"

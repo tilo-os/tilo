@@ -5,11 +5,6 @@ edition = "2024"
 license.workspace = true
 publish = false
 
-# cargo-machete does not inspect build-script references or sources brought in
-# with include!. These dependencies compile generated and template fixtures.
-[package.metadata.cargo-machete]
-ignored = ["qos-dev", "serde", "serde_json"]
-
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -17,6 +12,12 @@ ui = { package = "qos-app", path = "../../app/qos-app" }
 
 [build-dependencies]
 qos-dev = { path = "../qos-dev" }
+
+# The smoke crate compiles sources emitted by qos-dev through `include!`, so
+# cargo-machete cannot observe these dependencies in the crate's handwritten
+# source or its build script even though removing them breaks the compile.
+[package.metadata.cargo-machete]
+ignored = ["qos-actions", "qos-dev", "serde", "serde_json"]
 
 [lints]
 workspace = true

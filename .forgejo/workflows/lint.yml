@@ -23,7 +23,7 @@ jobs:
         password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 2
@@ -53,6 +53,9 @@ jobs:
 
       - name: CI selector unit tests
         run: python3 -m unittest tools/tests/test_ci_select.py
+
+      - name: Immutable workflow dependency contract
+        run: bash os/tests/workflow_dependency_invariants.sh
 
       - name: Codex CI watcher unit tests
         run: |

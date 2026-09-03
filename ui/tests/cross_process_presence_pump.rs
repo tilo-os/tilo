@@ -20,6 +20,17 @@ use ui::presence::PresenceKey;
 use ui::state::State;
 use ui::widget::Container;
 
+fn wait_until(deadline: Duration, mut condition: impl FnMut() -> bool) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < deadline {
+        if condition() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
 #[test]
 fn cross_process_pump_lands_remote_cursor_on_peer_b() {
     let broker = TypedBroker::new();
@@ -33,14 +44,22 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
         Box::new(Container::new()),
         broker.manager("peer-b"),
     );
-    thread::sleep(Duration::from_millis(100));
 
     let key = PresenceKey::Workspace { id: "home".into() };
-    app_a.broadcast_presence(key.clone(), PresencePayload::Pointer { x: 320.0, y: 240.0 });
-    thread::sleep(Duration::from_millis(100));
     assert!(
-        app_b.pump_collab_presence(),
-        "App B processes typed presence"
+        wait_until(Duration::from_secs(2), || {
+            // A manager can return just before the peer's subscription RPC is
+            // registered. Re-publishing this stateful position makes the test
+            // wait on the protocol outcome rather than a scheduler delay.
+            app_a.broadcast_presence(key.clone(), PresencePayload::Pointer { x: 320.0, y: 240.0 });
+            thread::sleep(Duration::from_millis(10));
+            app_b.pump_collab_presence();
+            app_b
+                .presence_ctx()
+                .pointer_for(&key, &ui::permissions::UserId("peer-a".into()))
+                == Some((320.0, 240.0))
+        }),
+        "App B processes typed presence before the deadline"
     );
 
     let presence = app_b.presence_ctx();
@@ -56,13 +75,15 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
     );
 
     app_a.broadcast_presence(key, PresencePayload::Left);
-    thread::sleep(Duration::from_millis(100));
-    app_b.pump_collab_presence();
     assert!(
-        app_b
-            .presence_ctx()
-            .remote_cursors
-            .iter()
-            .all(|c| c.user_id != "peer-a")
+        wait_until(Duration::from_secs(2), || {
+            app_b.pump_collab_presence();
+            app_b
+                .presence_ctx()
+                .remote_cursors
+                .iter()
+                .all(|c| c.user_id != "peer-a")
+        }),
+        "App B processes peer-a's departure before the deadline"
     );
 }

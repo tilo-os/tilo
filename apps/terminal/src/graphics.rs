@@ -79,11 +79,13 @@ impl GraphicsScanner {
                     ScanState::Ground
                 }
                 ScanState::ApcStart if byte == b'G' => ScanState::Kitty(Vec::new()),
-                ScanState::ApcStart => ScanState::GenericApc,
                 ScanState::GenericApc if byte == 0x1b => ScanState::GenericApcEscape,
-                ScanState::GenericApc => ScanState::GenericApc,
-                ScanState::GenericApcEscape if byte == b'\\' => ScanState::Ground,
-                ScanState::GenericApcEscape => ScanState::GenericApc,
+                ScanState::GenericApcEscape | ScanState::OversizeKittyEscape if byte == b'\\' => {
+                    ScanState::Ground
+                }
+                ScanState::ApcStart | ScanState::GenericApc | ScanState::GenericApcEscape => {
+                    ScanState::GenericApc
+                }
                 ScanState::Kitty(payload) if byte == 0x1b => ScanState::KittyEscape(payload),
                 ScanState::Kitty(mut payload) => {
                     if payload.len() >= MAX_APC_BYTES {
@@ -106,9 +108,9 @@ impl GraphicsScanner {
                     }
                 }
                 ScanState::OversizeKitty if byte == 0x1b => ScanState::OversizeKittyEscape,
-                ScanState::OversizeKitty => ScanState::OversizeKitty,
-                ScanState::OversizeKittyEscape if byte == b'\\' => ScanState::Ground,
-                ScanState::OversizeKittyEscape => ScanState::OversizeKitty,
+                ScanState::OversizeKitty | ScanState::OversizeKittyEscape => {
+                    ScanState::OversizeKitty
+                }
             };
         }
         Self::flush_bytes(&mut self.ordinary, &mut events);

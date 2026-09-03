@@ -9,7 +9,7 @@
 #
 # Like qos-install it self-escalates via the live-medium-only passwordless
 # sudoers drop-in (installed by qos-installer-setup.service, which only
-# fires when `qos.installer` is on the kernel cmdline). On success the
+# fires when `qos.install` is on the kernel cmdline). On success the
 # machine goes down and this never returns; a failure exits non-zero and
 # the UI surfaces it.
 set -euo pipefail
