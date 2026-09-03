@@ -92,6 +92,22 @@ impl WriteBackend {
             WriteBackend::Disabled
         }
     }
+
+    /// Whether this backend can perform a real write. Both the deliberately
+    /// allow-gated direct backend and the normal live UI's short-lived helper
+    /// are usable; tests and screenshot rendering remain disabled.
+    pub fn is_available(self) -> bool {
+        self != WriteBackend::Disabled
+    }
+}
+
+/// Whether the running process has a real raw-media write path.
+///
+/// The live application normally returns `true` because it authenticates a
+/// narrow privileged helper at write time. `QOS_IMAGER_ALLOW_WRITE` is only
+/// the explicit diagnostic opt-in for writing directly in this process.
+pub fn write_available() -> bool {
+    WriteBackend::system().is_available()
 }
 
 /// The env allow-gate. `QOS_IMAGER_ALLOW_WRITE=1` is the single switch that
@@ -933,7 +949,15 @@ mod tests {
         unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
         unsafe { std::env::set_var("IMAGER_LIVE", "1") };
         assert_eq!(WriteBackend::system(), WriteBackend::PrivilegedHelper);
+        assert!(write_available());
         unsafe { std::env::remove_var("IMAGER_LIVE") };
+    }
+
+    #[test]
+    fn only_disabled_backend_is_unavailable() {
+        assert!(!WriteBackend::Disabled.is_available());
+        assert!(WriteBackend::System.is_available());
+        assert!(WriteBackend::PrivilegedHelper.is_available());
     }
 
     #[test]

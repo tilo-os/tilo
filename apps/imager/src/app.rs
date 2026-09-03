@@ -231,14 +231,19 @@ impl ImagerApp {
 
     /// Can the flow move forward from `from`? (Also gates the step-indicator.)
     fn can_advance(&self, from: Step) -> bool {
+        self.can_advance_with_writer(from, crate::write::write_available())
+    }
+
+    /// Pure half of the advance gate, split so the live-helper capability is
+    /// covered without mutating process-wide environment variables in UI
+    /// tests that run concurrently.
+    fn can_advance_with_writer(&self, from: Step, writer_available: bool) -> bool {
         match from {
             Step::Source => self.source.is_some(),
             Step::Drive => self.selected.is_some(),
             Step::Customize => true,
             // Confirm advances into the (destructive) write only once armed.
-            Step::Confirm => {
-                self.confirm_matches() && self.image_fits() && crate::write::allow_write()
-            }
+            Step::Confirm => self.confirm_matches() && self.image_fits() && writer_available,
             // Write is in-progress and Done is terminal — neither advances.
             Step::Write | Step::Done => false,
         }
@@ -2266,7 +2271,7 @@ impl ImagerApp {
         }
         // Keep implementation switches out of the product language. Shot mode
         // poses this as ready for documentation, but never enables the backend.
-        let note = if crate::write::allow_write() || self.shot_confirmation_ready {
+        let note = if crate::write::write_available() || self.shot_confirmation_ready {
             "Ready to write. Check the selected device before continuing."
         } else {
             "Writing is disabled in this preview."
@@ -3506,7 +3511,7 @@ impl Widget for ImagerApp {
             self.target().map(TargetDrive::dev_path).as_deref(),
             available,
             self.job_rx.is_some(),
-            crate::write::allow_write(),
+            crate::write::write_available(),
         );
         job.actions.push(
             crate::actions::operation_spec(
@@ -3634,7 +3639,7 @@ impl Widget for ImagerApp {
     /// Keep the event loop ticking while a job or file picker is in flight, so
     /// the progress bars animate and the portal result is drained promptly.
     fn needs_animation_frame(&self) -> bool {
-        self.job_rx.is_some() || self.portal_rx.is_some()
+        self.job_rx.is_some() || self.portal_rx.is_some() || self.release_rx.is_some()
     }
 
     fn draw_with_presence(
@@ -4203,6 +4208,37 @@ mod tests {
         assert_eq!(app.step, Step::Customize);
         app.advance(&mut doc);
         assert_eq!(app.step, Step::Confirm);
+    }
+
+    #[test]
+    fn privileged_helper_capability_enables_confirm_but_disabled_backend_does_not() {
+        let (mut app, mut doc) = seeded_app();
+        app.select_target(&mut doc, 0);
+        app.goto(&mut doc, Step::Confirm);
+        app.confirm_input.set_text("sdb");
+
+        assert!(crate::write::WriteBackend::PrivilegedHelper.is_available());
+        assert!(app.can_advance_with_writer(
+            Step::Confirm,
+            crate::write::WriteBackend::PrivilegedHelper.is_available()
+        ));
+        assert!(!app.can_advance_with_writer(
+            Step::Confirm,
+            crate::write::WriteBackend::Disabled.is_available()
+        ));
+    }
+
+    #[test]
+    fn pending_release_download_keeps_the_event_loop_awake() {
+        let (mut app, _doc) = seeded_app();
+        assert!(!app.needs_animation_frame());
+
+        let (_tx, rx) = std::sync::mpsc::channel();
+        app.release_rx = Some(rx);
+        assert!(app.needs_animation_frame());
+
+        app.release_rx = None;
+        assert!(!app.needs_animation_frame());
     }
 
     #[test]
