@@ -1,15 +1,17 @@
 //! qOS graphical greeter — library root.
 //!
 //! The greeter is a thin `ui`-toolkit app that runs inside `cage` (a
-//! kiosk wlroots compositor) at the greetd login VT. It collects a
-//! username + password, lets the user pick a Wayland session, and speaks
-//! greetd's IPC protocol to authenticate and launch the session.
+//! kiosk wlroots compositor) at the greetd login VT. On an unambiguous
+//! personal machine it asks only for the installed user's passcode; ambiguous
+//! machines retain username + passcode fields. It lets the user pick a Wayland
+//! session and speaks greetd's IPC protocol to authenticate and launch it.
 //!
 //! Modules:
 //! * [`sessions`] — parse `/usr/share/wayland-sessions/*.desktop`.
 //! * [`greetd_client`] — the greetd auth/start exchange over `$GREETD_SOCK`.
 //! * [`auth`] — background auth worker + the UI-facing update protocol.
 //! * [`greeter_app`] — the root [`GreeterApp`] `Widget` (the login card).
+//! * [`local_users`] — conservative local-account discovery for one-passcode login.
 
 #![cfg_attr(
     test,
@@ -27,6 +29,7 @@
 pub mod auth;
 pub mod greetd_client;
 pub mod greeter_app;
+pub mod local_users;
 pub mod sessions;
 
 pub use greeter_app::GreeterApp;

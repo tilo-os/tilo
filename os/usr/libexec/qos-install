@@ -22,6 +22,10 @@
 #                                     preserve the disk's partition table;
 #                                     format only a prepared empty Linux root
 #                                     and reuse (never format) its existing ESP
+#     --guided-alongside [reviewed free-space geometry and partition map]
+#                                     append a dedicated ESP and root inside one
+#                                     exact unallocated GPT extent; never resize,
+#                                     move, or delete an existing partition
 #     --confirm-erase <dev>           required for whole-disk installs and must
 #                                     exactly match --disk
 #     --confirm-root <partition>      required for alongside installs and must
@@ -79,6 +83,7 @@ LOCAL_IMG="localhost/bootc"
 # The block-level half of an encrypted install (partitioning, LUKS2, factor
 # enrolment). Overridable so it can be driven directly in a test VM.
 DISK_ENCRYPT="${QOS_DISK_ENCRYPT:-/usr/libexec/qos-disk-encrypt}"
+GUIDED_PARTITION="${QOS_GUIDED_PARTITION:-/usr/libexec/qos-guided-partition}"
 
 # Alongside installs share a firmware-visible FAT ESP with qOS's retained,
 # staged, and repair UKIs. Six 160 MiB image slots plus filesystem slack need
@@ -270,6 +275,7 @@ ENCRYPT=1            # Native qOS is always installed into a LUKS2 root.
 WANT_PIN=0           # --pin is mandatory; secret arrives on stdin line 2.
 WANT_FIDO2=0         # --fido2 → also enroll a FIDO2 security key if present
 ALONGSIDE=0
+GUIDED_ALONGSIDE=0
 ROOT_PARTITION=""
 EFI_PARTITION=""
 CONFIRM_ERASE=""
@@ -282,6 +288,18 @@ EXPECT_ROOT_PARTUUID=""
 EXPECT_ROOT_SIZE_BYTES=""
 EXPECT_EFI_PARTUUID=""
 EXPECT_EFI_SIZE_BYTES=""
+FREE_START_BYTES=""
+FREE_SIZE_BYTES=""
+EFI_START_BYTES=""
+EFI_SIZE_BYTES=""
+ROOT_START_BYTES=""
+ROOT_SIZE_BYTES=""
+EXPECT_DISK_PTUUID=""
+EXPECT_LOGICAL_SECTOR_SIZE=""
+NEW_EFI_PARTUUID=""
+NEW_ROOT_PARTUUID=""
+CONFIRM_FREE_SPACE=""
+EXPECTED_PARTITIONS=()
 PIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -298,6 +316,7 @@ while [ $# -gt 0 ]; do
     --pin) WANT_PIN=1; shift ;;
     --fido2) WANT_FIDO2=1; shift ;;
     --alongside) ALONGSIDE=1; shift ;;
+    --guided-alongside) ALONGSIDE=1; GUIDED_ALONGSIDE=1; shift ;;
     --root-partition) ROOT_PARTITION="${2:-}"; shift 2 ;;
     --efi-partition) EFI_PARTITION="${2:-}"; shift 2 ;;
     --confirm-erase) CONFIRM_ERASE="${2:-}"; shift 2 ;;
@@ -310,6 +329,18 @@ while [ $# -gt 0 ]; do
     --expect-root-size-bytes) EXPECT_ROOT_SIZE_BYTES="${2:-}"; shift 2 ;;
     --expect-efi-partuuid) EXPECT_EFI_PARTUUID="${2:-}"; shift 2 ;;
     --expect-efi-size-bytes) EXPECT_EFI_SIZE_BYTES="${2:-}"; shift 2 ;;
+    --free-start-bytes) FREE_START_BYTES="${2:-}"; shift 2 ;;
+    --free-size-bytes) FREE_SIZE_BYTES="${2:-}"; shift 2 ;;
+    --efi-start-bytes) EFI_START_BYTES="${2:-}"; shift 2 ;;
+    --efi-size-bytes) EFI_SIZE_BYTES="${2:-}"; shift 2 ;;
+    --root-start-bytes) ROOT_START_BYTES="${2:-}"; shift 2 ;;
+    --root-size-bytes) ROOT_SIZE_BYTES="${2:-}"; shift 2 ;;
+    --expect-disk-ptuuid) EXPECT_DISK_PTUUID="${2:-}"; shift 2 ;;
+    --expect-logical-sector-size) EXPECT_LOGICAL_SECTOR_SIZE="${2:-}"; shift 2 ;;
+    --new-efi-partuuid) NEW_EFI_PARTUUID="${2:-}"; shift 2 ;;
+    --new-root-partuuid) NEW_ROOT_PARTUUID="${2:-}"; shift 2 ;;
+    --expect-partition) EXPECTED_PARTITIONS+=("${2:-}"); shift 2 ;;
+    --confirm-free-space) CONFIRM_FREE_SPACE="${2:-}"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) sed -n '2,49p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -332,21 +363,37 @@ if printf '%s%s' "$EXPECT_DISK_WWN" "$EXPECT_DISK_SERIAL" | LC_ALL=C grep -q '[[
 fi
 
 if [ "$ALONGSIDE" -eq 1 ]; then
-  [ -n "$ROOT_PARTITION" ] && [ -n "$EFI_PARTITION" ] \
-    || die "--alongside requires --root-partition and --efi-partition"
   [ -z "$CONFIRM_ERASE" ] || die "--confirm-erase cannot be used with --alongside"
-  [ "$CONFIRM_ROOT" = "$ROOT_PARTITION" ] \
-    || die "alongside install requires --confirm-root matching --root-partition"
-  case "$EXPECT_ROOT_SIZE_BYTES" in
-    ''|*[!0-9]*|0) die "missing or invalid --expect-root-size-bytes" ;;
-  esac
-  case "$EXPECT_EFI_SIZE_BYTES" in
-    ''|*[!0-9]*|0) die "missing or invalid --expect-efi-size-bytes" ;;
-  esac
-  [[ "$EXPECT_ROOT_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
-    || die "missing or invalid --expect-root-partuuid"
-  [[ "$EXPECT_EFI_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
-    || die "missing or invalid --expect-efi-partuuid"
+  if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
+    [ -z "$ROOT_PARTITION$EFI_PARTITION$CONFIRM_ROOT" ] \
+      || die "guided alongside creates its own partitions; prepared partition arguments are not allowed"
+    [ "$CONFIRM_FREE_SPACE" = "$DISK" ] \
+      || die "guided alongside requires --confirm-free-space matching --disk"
+    for value in FREE_START_BYTES FREE_SIZE_BYTES EFI_START_BYTES EFI_SIZE_BYTES ROOT_START_BYTES ROOT_SIZE_BYTES EXPECT_LOGICAL_SECTOR_SIZE; do
+      case "${!value}" in ''|*[!0-9]*|0) die "missing or invalid guided value $value" ;; esac
+    done
+    [[ "$EXPECT_DISK_PTUUID" =~ ^[0-9A-Fa-f-]{8,64}$ ]] \
+      || die "missing or invalid --expect-disk-ptuuid"
+    [[ "$NEW_ROOT_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+      || die "missing or invalid --new-root-partuuid"
+    [[ "$NEW_EFI_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+      || die "missing or invalid --new-efi-partuuid"
+  else
+    [ -n "$ROOT_PARTITION" ] && [ -n "$EFI_PARTITION" ] \
+      || die "--alongside requires --root-partition and --efi-partition"
+    [ "$CONFIRM_ROOT" = "$ROOT_PARTITION" ] \
+      || die "alongside install requires --confirm-root matching --root-partition"
+    case "$EXPECT_ROOT_SIZE_BYTES" in
+      ''|*[!0-9]*|0) die "missing or invalid --expect-root-size-bytes" ;;
+    esac
+    case "$EXPECT_EFI_SIZE_BYTES" in
+      ''|*[!0-9]*|0) die "missing or invalid --expect-efi-size-bytes" ;;
+    esac
+    [[ "$EXPECT_ROOT_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+      || die "missing or invalid --expect-root-partuuid"
+    [[ "$EXPECT_EFI_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+      || die "missing or invalid --expect-efi-partuuid"
+  fi
 else
   [ -z "$ROOT_PARTITION" ] && [ -z "$EFI_PARTITION" ] \
     || die "partition arguments require --alongside"
@@ -355,6 +402,8 @@ else
     || die "whole-disk install requires --confirm-erase matching --disk"
   [ -z "$EXPECT_ROOT_PARTUUID$EXPECT_ROOT_SIZE_BYTES$EXPECT_EFI_PARTUUID$EXPECT_EFI_SIZE_BYTES" ] \
     || die "expected partition identity arguments require --alongside"
+  [ "$GUIDED_ALONGSIDE" -eq 0 ] && [ -z "$FREE_START_BYTES$FREE_SIZE_BYTES$EFI_START_BYTES$EFI_SIZE_BYTES$ROOT_START_BYTES$ROOT_SIZE_BYTES$EXPECT_DISK_PTUUID$EXPECT_LOGICAL_SECTOR_SIZE$NEW_EFI_PARTUUID$NEW_ROOT_PARTUUID$CONFIRM_FREE_SPACE" ] \
+    && [ "${#EXPECTED_PARTITIONS[@]}" -eq 0 ] || die "guided partition arguments require --guided-alongside"
 fi
 
 # Use the portable Linux login-name subset accepted consistently by useradd
@@ -581,6 +630,37 @@ validate_alongside() {
   [ -z "$(printf '%s' "$signature_types" | tr -d '[:space:]')" ] \
     || die "$ROOT_PARTITION contains a filesystem or volume signature; refusing to guess that its data is disposable"
 }
+
+if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
+  step "Creating qOS partitions in the reviewed unallocated space (existing partitions are preserved)"
+  GUIDED_ARGS=(
+    create --disk "$DISK"
+    --expect-disk-size-bytes "$EXPECT_DISK_SIZE_BYTES"
+    --expect-disk-devnum "$EXPECT_DISK_DEVNUM"
+    --expect-disk-ptuuid "$EXPECT_DISK_PTUUID"
+    --expect-logical-sector-size "$EXPECT_LOGICAL_SECTOR_SIZE"
+    --free-start-bytes "$FREE_START_BYTES" --free-size-bytes "$FREE_SIZE_BYTES"
+    --efi-start-bytes "$EFI_START_BYTES" --efi-size-bytes "$EFI_SIZE_BYTES"
+    --root-start-bytes "$ROOT_START_BYTES" --root-size-bytes "$ROOT_SIZE_BYTES"
+    --new-efi-partuuid "$NEW_EFI_PARTUUID" --new-root-partuuid "$NEW_ROOT_PARTUUID"
+  )
+  [ -z "$EXPECT_DISK_WWN" ] || GUIDED_ARGS+=(--expect-disk-wwn "$EXPECT_DISK_WWN")
+  [ -z "$EXPECT_DISK_SERIAL" ] || GUIDED_ARGS+=(--expect-disk-serial "$EXPECT_DISK_SERIAL")
+  for expected_partition in "${EXPECTED_PARTITIONS[@]}"; do
+    GUIDED_ARGS+=(--expect-partition "$expected_partition")
+  done
+  GUIDED_RESULT="$("$GUIDED_PARTITION" "${GUIDED_ARGS[@]}")"
+  EFI_PARTITION="$(printf '%s\n' "$GUIDED_RESULT" | sed -n 's/^EFI_PARTITION=//p' | tail -n 1)"
+  ROOT_PARTITION="$(printf '%s\n' "$GUIDED_RESULT" | sed -n 's/^ROOT_PARTITION=//p' | tail -n 1)"
+  [ -n "$EFI_PARTITION" ] && [ -n "$ROOT_PARTITION" ] \
+    || die "guided partition helper did not report the partitions it created"
+  EXPECT_EFI_PARTUUID="$NEW_EFI_PARTUUID"
+  EXPECT_EFI_SIZE_BYTES="$EFI_SIZE_BYTES"
+  EXPECT_ROOT_PARTUUID="$NEW_ROOT_PARTUUID"
+  EXPECT_ROOT_SIZE_BYTES="$ROOT_SIZE_BYTES"
+  log "  created EFI : $EFI_PARTITION"
+  log "  created root: $ROOT_PARTITION"
+fi
 
 if [ "$ALONGSIDE" -eq 1 ]; then
   ROOT_PARTITION="$(readlink -f "$ROOT_PARTITION")"
