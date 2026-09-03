@@ -205,7 +205,7 @@ jobs:
           url: ${{ github.server_url }}
           repo: ${{ github.repository }}
           tag: ${{ github.ref_name }}
-          token: ${{ secrets.REGISTRY_TOKEN }}
+          token: ${{ secrets.RELEASE_TOKEN }}
           release-dir: release
           override: true
           release-notes: "qOS desktop session ${{ github.ref_name }}. Every attached package was built and install-tested inside its target distribution and architecture userspace."
