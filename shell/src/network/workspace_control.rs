@@ -258,7 +258,7 @@ mod tests {
     use super::*;
 
     fn endpoint(byte: u8) -> EndpointId {
-        EndpointId::from_bytes(&[byte; 32]).expect("valid endpoint")
+        iroh::SecretKey::from_bytes(&[byte; 32]).public()
     }
 
     fn start(target: EndpointId, surface: u64) -> NeighbourMsg {
