@@ -95,6 +95,13 @@ const ENV_PATH: &str = "sel_env";
 /// Label used for the "no environment selected" dropdown option.
 const NO_ENV: &str = "No Environment";
 
+/// A status hint may sit beside request tabs only when it has its own space.
+/// On a phone the tab strip consumes the full row, so painting the hint at the
+/// right edge would overlap the tab labels.
+fn tab_strip_has_room_for_hint(layout: &Layout, hint_width: f64) -> bool {
+    layout.tabs.x1 + 12.0 + hint_width <= layout.main.x1 - PAD
+}
+
 /// Outcome of the background send worker.
 enum SendOutcome {
     Ok(ResponseData),
@@ -1143,6 +1150,9 @@ impl ApiTesterApp {
             )
         };
         let (hw, _) = tr.measure(&hint, theme.tokens.typography.scale.sm, None);
+        if !tab_strip_has_room_for_hint(l, f64::from(hw)) {
+            return;
+        }
         tr.draw_text(
             scene,
             &hint,
@@ -2649,6 +2659,21 @@ mod tests {
             "sidebar rows are real focusable widgets"
         );
         assert_eq!(a.nav_rows.len(), a.nav_meta.len());
+    }
+
+    #[test]
+    fn compact_tab_strip_reserves_no_overlapping_hint_space() {
+        let mut a = app();
+        a.rect = Rect::new(0.0, 0.0, 400.0, 844.0);
+        let layout = a.compute_layout();
+        assert!(
+            layout.tabs.x1 <= layout.main.x1,
+            "tabs stay inside phone width"
+        );
+        assert!(
+            !tab_strip_has_room_for_hint(&layout, 112.0),
+            "a status hint would overlap the compact request tabs and must be hidden"
+        );
     }
 
     #[test]
