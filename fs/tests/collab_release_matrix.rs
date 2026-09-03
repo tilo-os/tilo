@@ -287,17 +287,28 @@ fn spawn_replica(binary: &Path, identity: &Path, config: &Path) -> ReplicaProces
 }
 
 fn ready_replica_endpoint(status: &Path, process: &mut ReplicaProcess) -> iroh_base::EndpointAddr {
-    wait_for(PROCESS_TIMEOUT, || {
+    let deadline = Instant::now().checked_add(PROCESS_TIMEOUT).unwrap();
+    let mut last_status = None;
+    loop {
         if let Some(exit) = process.child.try_wait().unwrap() {
             panic!(
                 "replica exited {exit}; logs:\n{}",
                 process.logs.lock().unwrap().join("\n")
             );
         }
-        let status = fs::full_replica::load_status(status).ok().flatten()?;
-        (status.full_content_replication && !status.filesystem_endpoints.is_empty())
-            .then(|| status.filesystem_endpoints[0].clone())
-    })
+        if let Some(current) = fs::full_replica::load_status(status).ok().flatten() {
+            if current.full_content_replication && !current.filesystem_endpoints.is_empty() {
+                return current.filesystem_endpoints[0].clone();
+            }
+            last_status = Some(current);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "replica readiness timed out; last status: {last_status:#?}; logs:\n{}",
+            process.logs.lock().unwrap().join("\n")
+        );
+        std::thread::park_timeout(Duration::from_millis(10));
+    }
 }
 
 fn gate(socket: &Path, command: &str) -> String {
