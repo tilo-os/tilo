@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "production": false,
+  "key_id": "example-release-key",
+  "recommendation": "example/tiny-model",
+  "runtimes": [
+    {
+      "id": "example-vllm-cpu",
+      "kind": "cpu",
+      "version": "0.0.0-example",
+      "oci_image": "registry.example.invalid/qos/vllm@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "artifact": {
+        "file": "example-runtime.bin",
+        "url": "https://artifacts.example.invalid/qos/runtime/8f4a7e9dfd2b174f2dc92326a7ca2a3f96bf6741/runtime.bin",
+        "sha256": "a0cc2a990ae223086ce347a3ad4e9c33a8f12f79e3b624fcdb9cfdfaccd2abf1",
+        "size_bytes": 43
+      },
+      "base_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "architecture": "x86_64",
+      "kernel_abi": null,
+      "requires_reboot": false
+    }
+  ],
+  "models": [
+    {
+      "id": "example/tiny-model",
+      "label": "Example tiny model — fixture only",
+      "description": "Non-production catalog compiler fixture; contains no usable model weights.",
+      "revision": "0123456789abcdef0123456789abcdef01234567",
+      "artifact": {
+        "file": "example-model.bin",
+        "url": "https://huggingface.example.invalid/example/tiny-model/resolve/0123456789abcdef0123456789abcdef01234567/model.bin",
+        "sha256": "c1e3d7703bb12d93efc36db0cf4bb613214d7b08ab6f88903c2e5b4205b83b43",
+        "size_bytes": 41
+      },
+      "license_id": "Apache-2.0",
+      "license_url": "https://huggingface.example.invalid/example/tiny-model/blob/0123456789abcdef0123456789abcdef01234567/LICENSE",
+      "requires_acceptance": true,
+      "installed_size_bytes": 64,
+      "allowed_runtimes": ["cpu"],
+      "required_memory_mib": 1024,
+      "required_accelerator_mib": 0,
+      "context_window": 4096
+    }
+  ]
+}
