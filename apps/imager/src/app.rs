@@ -479,11 +479,16 @@ impl ImagerApp {
 // Layout
 // =========================================================================
 impl ImagerApp {
+    fn compact_content(content: Rect) -> bool {
+        content.width() < 520.0
+    }
+
     fn content_rect(&self) -> Rect {
         let v = self.rect;
         let top = CRUMB_TOP + CRUMB_H + 30.0;
         let bottom = v.y1 - FOOTER_H - 10.0;
-        let avail_w = v.width() - OUTER * 2.0;
+        let margin = if v.width() < 600.0 { 16.0 } else { OUTER };
+        let avail_w = v.width() - margin * 2.0;
         let w = avail_w.min(CONTENT_MAX_W);
         let x0 = v.x0 + (v.width() - w) / 2.0;
         Rect::new(x0, v.y0 + top, x0 + w, v.y0 + bottom)
@@ -543,7 +548,12 @@ impl ImagerApp {
         let (mut back, mut primary) = (None, None);
         let show_back = matches!(self.step, Step::Drive | Step::Customize | Step::Confirm);
         if show_back {
-            let r = Rect::new(content.x0, by, content.x0 + 120.0, by + 44.0);
+            let width = if Self::compact_content(content) {
+                (content.width() - 12.0) / 2.0
+            } else {
+                120.0
+            };
+            let r = Rect::new(content.x0, by, content.x0 + width, by + 44.0);
             hits.push((r, Hit::Back));
             back = Some(r);
         }
@@ -574,10 +584,15 @@ impl ImagerApp {
         if self.step == Step::Write {
             return None;
         }
-        let w = match self.step {
-            Step::Confirm => 250.0,
-            Step::Done => 190.0,
-            _ => 170.0,
+        let has_back = matches!(self.step, Step::Drive | Step::Customize | Step::Confirm);
+        let w = if has_back && Self::compact_content(content) {
+            (content.width() - 12.0) / 2.0
+        } else {
+            match self.step {
+                Step::Confirm => 250.0,
+                Step::Done => 190.0,
+                _ => 170.0,
+            }
         };
         Some(Rect::new(content.x1 - w, by, content.x1, by + 44.0))
     }
@@ -585,13 +600,14 @@ impl ImagerApp {
     fn layout_source(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
         let x0 = content.x0;
         let x1 = content.x1;
-        let mut y = content.y0 + 44.0;
+        let compact = Self::compact_content(content);
+        let mut y = content.y0 + if compact { 64.0 } else { 44.0 };
         // Browse drop-zone.
         let browse = Rect::new(x0, y, x1, y + 96.0);
         hits.push((browse, Hit::PickFile));
         y = browse.y1 + (if self.source.is_some() { 16.0 } else { 28.0 });
         if self.source.is_some() {
-            y += 92.0 + 24.0; // selected card
+            y += if compact { 108.0 } else { 92.0 } + 24.0; // selected card
         }
         // qOS releases list. With none known, the zero-state card takes the
         // space and there is nothing here to click.
@@ -622,9 +638,11 @@ impl ImagerApp {
         let x0 = content.x0;
         let x1 = content.x1;
         // Rescan button top-right of the header row.
-        let rescan = Rect::new(x1 - 104.0, content.y0, x1, content.y0 + 30.0);
+        let compact = Self::compact_content(content);
+        let rescan_y = content.y0 + if compact { 52.0 } else { 0.0 };
+        let rescan = Rect::new(x1 - 104.0, rescan_y, x1, rescan_y + 30.0);
         hits.push((rescan, Hit::Rescan));
-        let mut y = content.y0 + 52.0;
+        let mut y = content.y0 + if compact { 94.0 } else { 52.0 };
         let vis = self.visible_targets();
         if vis.is_empty() {
             // Empty state occupies the body; Rescan remains available above.
@@ -821,7 +839,9 @@ impl ImagerApp {
         }
 
         // A hint between them (center) — e.g. what's still needed.
-        if let Some(hint) = self.footer_hint() {
+        if !Self::compact_content(lay.content)
+            && let Some(hint) = self.footer_hint()
+        {
             Self::txt_center(
                 scene,
                 tr,
@@ -876,11 +896,12 @@ impl ImagerApp {
                     .unwrap_or_default();
                 // "Erase & write /dev/sdb" for a stick; "Erase & install
                 // /dev/nvme0n1" for a disk install — the verb reads plainly.
-                (
-                    format!("Erase & {}  {dev}", self.action.verb().to_ascii_lowercase()),
-                    self.can_advance(Step::Confirm),
-                    true,
-                )
+                let label = if r.width() < 220.0 {
+                    format!("Erase & {}", self.action.verb().to_ascii_lowercase())
+                } else {
+                    format!("Erase & {}  {dev}", self.action.verb().to_ascii_lowercase())
+                };
+                (label, self.can_advance(Step::Confirm), true)
             }
             // The Write station has no primary (returned None above); Done
             // offers a fresh start.
@@ -987,7 +1008,8 @@ impl ImagerApp {
         content: Rect,
     ) -> Rect {
         let c = &theme.tokens.colors;
-        let y = content.y0 + 44.0;
+        let compact = Self::compact_content(content);
+        let y = content.y0 + if compact { 64.0 } else { 44.0 };
         let browse = Rect::new(content.x0, y, content.x1, y + 96.0);
         let hov = browse.contains(self.last_mouse);
         Self::fill_rr(
@@ -1014,7 +1036,7 @@ impl ImagerApp {
             1.6,
         );
         // Download/arrow glyph.
-        let gx = browse.x0 + 46.0;
+        let gx = browse.x0 + if compact { 30.0 } else { 46.0 };
         let gy = f64::midpoint(browse.y0, browse.y1);
         let mut arr = BezPath::new();
         arr.move_to((gx, gy - 14.0));
@@ -1035,26 +1057,32 @@ impl ImagerApp {
                 Point::new(gx + 12.0, gy + 15.0),
             ),
         );
+        let text_x = browse.x0 + if compact { 58.0 } else { 84.0 };
+        let text_w = (browse.x1 - text_x - 12.0).max(0.0) as f32;
         Self::txt(
             scene,
             tr,
             "Browse for an image…",
             16.0,
             c.text_primary,
-            browse.x0 + 84.0,
+            text_x,
             browse.y0 + 30.0,
-            None,
+            Some(text_w),
             TextWeight::Semibold,
         );
         Self::txt(
             scene,
             tr,
-            "Opens the system file picker · .iso, .img, .raw",
+            if compact {
+                "Choose an .iso, .img, or .raw file"
+            } else {
+                "Opens the system file picker · .iso, .img, .raw"
+            },
             12.5,
             c.text_dim,
-            browse.x0 + 84.0,
+            text_x,
             browse.y0 + 54.0,
-            None,
+            Some(text_w),
             TextWeight::Regular,
         );
         browse
@@ -1063,6 +1091,10 @@ impl ImagerApp {
     /// Draws the selected-source summary card below the drop-zone (or draws
     /// nothing, if no source is selected yet), returning the y for the next
     /// section.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the compact and regular source-card variants intentionally share one renderer so their visual state cannot drift"
+    )]
     fn draw_source_selected_card(
         &self,
         scene: &mut Scene,
@@ -1077,7 +1109,9 @@ impl ImagerApp {
         let Some(src) = &self.source else {
             return browse.y1 + 28.0;
         };
-        let card = Rect::new(content.x0, y, content.x1, y + 92.0);
+        let compact = Self::compact_content(content);
+        let card_h = if compact { 108.0 } else { 92.0 };
+        let card = Rect::new(content.x0, y, content.x1, y + card_h);
         Self::fill_rr(scene, t, card, 14.0, c.surfaces.raised);
         Self::stroke_rr(
             scene,
@@ -1090,15 +1124,22 @@ impl ImagerApp {
         Self::check_disc(
             scene,
             t,
-            Point::new(card.x0 + 28.0, f64::midpoint(card.y0, card.y1)),
+            Point::new(
+                card.x0 + if compact { 22.0 } else { 28.0 },
+                if compact {
+                    card.y0 + 29.0
+                } else {
+                    f64::midpoint(card.y0, card.y1)
+                },
+            ),
             13.0,
             c.semantic.success,
             Color::WHITE,
         );
         let badge = Rect::new(
-            card.x0 + 52.0,
+            card.x0 + if compact { 42.0 } else { 52.0 },
             card.y0 + 18.0,
-            card.x0 + 52.0 + 46.0,
+            card.x0 + if compact { 88.0 } else { 98.0 },
             card.y0 + 18.0 + 22.0,
         );
         Self::fill_rr(scene, t, badge, 6.0, source_color(theme, src.kind));
@@ -1112,26 +1153,32 @@ impl ImagerApp {
             badge.y0 + 4.0,
             TextWeight::Bold,
         );
+        let detail_x = card.x0 + if compact { 42.0 } else { 108.0 };
+        let title_x = card.x0 + if compact { 98.0 } else { 108.0 };
         Self::txt(
             scene,
             tr,
             &src.name,
             15.5,
             c.text_primary,
-            card.x0 + 108.0,
+            title_x,
             card.y0 + 18.0,
-            Some((card.width() - 130.0) as f32),
+            Some((card.x1 - title_x - 16.0).max(0.0) as f32),
             TextWeight::Semibold,
         );
         Self::txt(
             scene,
             tr,
-            &src.summary(),
+            &if compact {
+                format!("{}  ·  {}", src.label, fmt_size(src.size))
+            } else {
+                src.summary()
+            },
             12.0,
             c.text_dim,
-            card.x0 + 108.0,
-            card.y0 + 42.0,
-            Some((card.width() - 130.0) as f32),
+            detail_x,
+            card.y0 + if compact { 52.0 } else { 42.0 },
+            Some((card.x1 - detail_x - 16.0).max(0.0) as f32),
             TextWeight::Regular,
         );
         if src.installable {
@@ -1141,9 +1188,9 @@ impl ImagerApp {
                 "● Can be pre-configured",
                 11.5,
                 c.semantic.success,
-                card.x0 + 108.0,
-                card.y0 + 62.0,
-                None,
+                detail_x,
+                card.y0 + if compact { 78.0 } else { 62.0 },
+                Some((card.x1 - detail_x - 16.0).max(0.0) as f32),
                 TextWeight::Medium,
             );
         } else {
@@ -1153,9 +1200,9 @@ impl ImagerApp {
                 "Written as-is",
                 11.5,
                 c.text_dim,
-                card.x0 + 108.0,
-                card.y0 + 62.0,
-                None,
+                detail_x,
+                card.y0 + if compact { 78.0 } else { 62.0 },
+                Some((card.x1 - detail_x - 16.0).max(0.0) as f32),
                 TextWeight::Medium,
             );
         }
@@ -1301,7 +1348,7 @@ impl ImagerApp {
             c.text_primary,
             r.x0 + 68.0,
             r.y0 + 9.0,
-            None,
+            Some((r.width() - 160.0).max(72.0) as f32),
             TextWeight::Semibold,
         );
         let where_ = if rel.local_path.is_empty() {
@@ -1317,7 +1364,7 @@ impl ImagerApp {
             c.text_dim,
             r.x0 + 68.0,
             r.y0 + 30.0,
-            None,
+            Some((r.width() - 84.0).max(0.0) as f32),
             TextWeight::Regular,
         );
         Self::txt_right(
@@ -1327,7 +1374,7 @@ impl ImagerApp {
             11.0,
             c.semantic.success,
             r.x1 - 16.0,
-            r.y0 + 20.0,
+            r.y0 + 9.0,
             TextWeight::Medium,
         );
         y + 54.0 + 10.0
@@ -1415,25 +1462,36 @@ impl ImagerApp {
             "Select the target drive",
             "The drive to write to — everything on it will be erased.",
         );
+        let compact = Self::compact_content(content);
         // Detected count (to the left of the Rescan button).
         let detected = format!("{} removable", self.removable_count());
-        Self::txt_right(
-            scene,
-            tr,
-            &detected,
-            11.5,
-            c.text_dim,
-            content.x1 - 116.0,
-            content.y0 + 8.0,
-            TextWeight::Medium,
-        );
+        if compact {
+            Self::txt(
+                scene,
+                tr,
+                &detected,
+                11.5,
+                c.text_dim,
+                content.x0,
+                content.y0 + 60.0,
+                None,
+                TextWeight::Medium,
+            );
+        } else {
+            Self::txt_right(
+                scene,
+                tr,
+                &detected,
+                11.5,
+                c.text_dim,
+                content.x1 - 116.0,
+                content.y0 + 8.0,
+                TextWeight::Medium,
+            );
+        }
         // Rescan button (top-right).
-        let rescan = Rect::new(
-            content.x1 - 104.0,
-            content.y0,
-            content.x1,
-            content.y0 + 30.0,
-        );
+        let rescan_y = content.y0 + if compact { 52.0 } else { 0.0 };
+        let rescan = Rect::new(content.x1 - 104.0, rescan_y, content.x1, rescan_y + 30.0);
         let hov = rescan.contains(self.last_mouse);
         Self::fill_rr(
             scene,
@@ -1455,9 +1513,9 @@ impl ImagerApp {
         );
 
         let vis = self.visible_targets();
-        let mut y = content.y0 + 52.0;
+        let mut y = content.y0 + if compact { 94.0 } else { 52.0 };
         if vis.is_empty() {
-            Self::draw_drive_empty(scene, tr, theme, t, content);
+            Self::draw_drive_empty(scene, tr, theme, t, content, compact);
         } else {
             for (idx, drive) in &vis {
                 if y + 112.0 > content.y1 {
@@ -1476,13 +1534,14 @@ impl ImagerApp {
         theme: &Theme,
         t: Affine,
         content: Rect,
+        compact: bool,
     ) {
         let c = &theme.tokens.colors;
         let card = Rect::new(
             content.x0,
-            content.y0 + 60.0,
+            content.y0 + if compact { 94.0 } else { 60.0 },
             content.x1,
-            content.y0 + 60.0 + 240.0,
+            content.y0 + if compact { 334.0 } else { 300.0 },
         );
         Self::fill_rr(scene, t, card, 16.0, c.surfaces.raised);
         Self::dashed_rr(scene, t, card, 16.0, c.border_standard, 1.4);
@@ -1503,26 +1562,49 @@ impl ImagerApp {
             card.y0 + 140.0,
             TextWeight::Semibold,
         );
-        Self::txt_center(
-            scene,
-            tr,
-            "Plug in a USB stick or SD card, then press Rescan.",
-            13.0,
-            c.text_dim,
-            cx,
-            card.y0 + 168.0,
-            TextWeight::Regular,
-        );
-        Self::txt_center(
-            scene,
-            tr,
-            "Internal disks are available after booting this installation medium.",
-            12.0,
-            c.neutral[6],
-            cx,
-            card.y0 + 196.0,
-            TextWeight::Regular,
-        );
+        if compact {
+            for (line, y) in [
+                ("Plug in a USB stick or SD card,", card.y0 + 166.0),
+                ("then press Rescan.", card.y0 + 184.0),
+                ("Internal disks are shown after boot.", card.y0 + 212.0),
+            ] {
+                Self::txt_center(
+                    scene,
+                    tr,
+                    line,
+                    if y < card.y0 + 200.0 { 12.5 } else { 12.0 },
+                    if y < card.y0 + 200.0 {
+                        c.text_dim
+                    } else {
+                        c.neutral[6]
+                    },
+                    cx,
+                    y,
+                    TextWeight::Regular,
+                );
+            }
+        } else {
+            Self::txt_center(
+                scene,
+                tr,
+                "Plug in a USB stick or SD card, then press Rescan.",
+                13.0,
+                c.text_dim,
+                cx,
+                card.y0 + 168.0,
+                TextWeight::Regular,
+            );
+            Self::txt_center(
+                scene,
+                tr,
+                "Internal disks are available after booting this installation medium.",
+                12.0,
+                c.neutral[6],
+                cx,
+                card.y0 + 196.0,
+                TextWeight::Regular,
+            );
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1780,12 +1862,10 @@ impl ImagerApp {
         content: Rect,
     ) -> f64 {
         let c = &theme.tokens.colors;
-        let card = Rect::new(
-            content.x0,
-            content.y0 + 46.0,
-            content.x1,
-            content.y0 + 46.0 + 150.0,
-        );
+        let compact = Self::compact_content(content);
+        let top = content.y0 + if compact { 64.0 } else { 46.0 };
+        let height = if compact { 188.0 } else { 150.0 };
+        let card = Rect::new(content.x0, top, content.x1, top + height);
         Self::fill_rr(scene, t, card, 14.0, c.surfaces.raised);
         Self::stroke_rr(scene, t, card, 14.0, c.border_standard, 1.0);
         self.draw_confirm_review_rows(scene, tr, theme, card);
@@ -1802,6 +1882,7 @@ impl ImagerApp {
         card: Rect,
     ) {
         let c = &theme.tokens.colors;
+        let compact = card.width() < 520.0;
         let row =
             |scene: &mut Scene, tr: &mut TextRenderer, y: f64, k: &str, v: String, ok: bool| {
                 Self::txt(
@@ -1839,7 +1920,7 @@ impl ImagerApp {
         row(
             scene,
             tr,
-            card.y0 + 24.0,
+            card.y0 + 20.0,
             "Image",
             src_v,
             self.source.is_some(),
@@ -1851,7 +1932,7 @@ impl ImagerApp {
         row(
             scene,
             tr,
-            card.y0 + 58.0,
+            card.y0 + if compact { 54.0 } else { 58.0 },
             "Drive",
             tgt_v,
             self.target().is_some(),
@@ -1867,6 +1948,7 @@ impl ImagerApp {
         card: Rect,
     ) {
         let c = &theme.tokens.colors;
+        let compact = card.width() < 520.0;
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
             let fit = if tgt.fits(src.size) {
                 (
@@ -1886,7 +1968,7 @@ impl ImagerApp {
                 12.0,
                 c.text_dim,
                 card.x0 + 20.0,
-                card.y0 + 92.0,
+                card.y0 + if compact { 98.0 } else { 92.0 },
                 None,
                 TextWeight::Semibold,
             );
@@ -1897,8 +1979,8 @@ impl ImagerApp {
                 13.0,
                 fit.1,
                 card.x0 + 96.0,
-                card.y0 + 91.0,
-                None,
+                card.y0 + if compact { 97.0 } else { 91.0 },
+                Some((card.width() - 116.0).max(0.0) as f32),
                 TextWeight::Medium,
             );
         }
@@ -1920,7 +2002,7 @@ impl ImagerApp {
             12.0,
             c.text_dim,
             card.x0 + 20.0,
-            card.y0 + 122.0,
+            card.y0 + if compact { 132.0 } else { 122.0 },
             None,
             TextWeight::Semibold,
         );
@@ -1931,7 +2013,7 @@ impl ImagerApp {
             13.0,
             c.text_primary,
             card.x0 + 96.0,
-            card.y0 + 121.0,
+            card.y0 + if compact { 131.0 } else { 121.0 },
             Some((card.width() - 116.0) as f32),
             TextWeight::Medium,
         );
@@ -1951,11 +2033,13 @@ impl ImagerApp {
         let c = &theme.tokens.colors;
         let internal = self.target().is_some_and(|d| !d.removable);
         let system = self.target().is_some_and(|d| d.is_system);
+        let compact = Self::compact_content(content);
+        let banner_h = if compact { 58.0 } else { 44.0 };
         let banner = Rect::new(
             content.x0,
             card_bottom + 16.0,
             content.x1,
-            card_bottom + 16.0 + 44.0,
+            card_bottom + 16.0 + banner_h,
         );
         Self::fill_rr(
             scene,
@@ -1979,17 +2063,49 @@ impl ImagerApp {
         } else {
             "⚠  This permanently erases the drive. This cannot be undone."
         };
-        Self::txt(
-            scene,
-            tr,
-            warn,
-            13.0,
-            c.semantic.danger,
-            banner.x0 + 16.0,
-            banner.y0 + 14.0,
-            Some((banner.width() - 32.0) as f32),
-            TextWeight::Semibold,
-        );
+        if compact {
+            let (first, second) = if system {
+                (
+                    "⚠ This is your system disk; it will be erased.",
+                    "This cannot be undone.",
+                )
+            } else if internal {
+                (
+                    "⚠ This erases the entire internal disk.",
+                    "This cannot be undone.",
+                )
+            } else {
+                (
+                    "⚠ This permanently erases the drive.",
+                    "This cannot be undone.",
+                )
+            };
+            for (line, y) in [(first, banner.y0 + 10.0), (second, banner.y0 + 31.0)] {
+                Self::txt(
+                    scene,
+                    tr,
+                    line,
+                    12.5,
+                    c.semantic.danger,
+                    banner.x0 + 14.0,
+                    y,
+                    Some((banner.width() - 28.0) as f32),
+                    TextWeight::Semibold,
+                );
+            }
+        } else {
+            Self::txt(
+                scene,
+                tr,
+                warn,
+                13.0,
+                c.semantic.danger,
+                banner.x0 + 16.0,
+                banner.y0 + 14.0,
+                Some((banner.width() - 32.0) as f32),
+                TextWeight::Semibold,
+            );
+        }
     }
 
     /// The typed confirmation field and the write-gate note below it.
@@ -2067,6 +2183,8 @@ impl ImagerApp {
         // Gate note.
         let note = if crate::write::allow_write() {
             "Direct privileged writer enabled."
+        } else if Self::compact_content(content) {
+            "Administrator approval comes next."
         } else {
             "Your device will ask for administrator approval when writing begins."
         };
@@ -2305,13 +2423,12 @@ impl ImagerApp {
         ok: bool,
     ) {
         let content = lay.content;
-        let cxp = f64::midpoint(content.x0, content.x1);
         let cyp = content.y0 + 120.0;
         let install = self.action == Action::Install;
         if ok {
-            Self::draw_write_done_ok_hero(scene, tr, theme, t, cxp, cyp, install);
+            Self::draw_write_done_ok_hero(scene, tr, theme, t, content, cyp, install);
         } else {
-            Self::draw_write_done_failed_hero(scene, tr, theme, t, cxp, cyp, install);
+            Self::draw_write_done_failed_hero(scene, tr, theme, t, content, cyp, install);
         }
         self.draw_write_done_summary(scene, tr, theme, t, content, ok);
     }
@@ -2322,11 +2439,13 @@ impl ImagerApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         t: Affine,
-        cxp: f64,
+        content: Rect,
         cyp: f64,
         install: bool,
     ) {
         let c = &theme.tokens.colors;
+        let cxp = f64::midpoint(content.x0, content.x1);
+        let compact = Self::compact_content(content);
         Self::check_disc(
             scene,
             t,
@@ -2356,16 +2475,36 @@ impl ImagerApp {
             cyp + 66.0,
             TextWeight::Bold,
         );
-        Self::txt_center(
-            scene,
-            tr,
-            sub,
-            14.0,
-            c.text_dim,
-            cxp,
-            cyp + 100.0,
-            TextWeight::Regular,
-        );
+        if compact {
+            let lines = if install {
+                ["Written and verified.", "Remove the media and reboot."]
+            } else {
+                ["Written and verified.", "You can safely remove the drive."]
+            };
+            for (line, y) in [(lines[0], cyp + 100.0), (lines[1], cyp + 120.0)] {
+                Self::txt_center(
+                    scene,
+                    tr,
+                    line,
+                    13.5,
+                    c.text_dim,
+                    cxp,
+                    y,
+                    TextWeight::Regular,
+                );
+            }
+        } else {
+            Self::txt_center(
+                scene,
+                tr,
+                sub,
+                14.0,
+                c.text_dim,
+                cxp,
+                cyp + 100.0,
+                TextWeight::Regular,
+            );
+        }
     }
 
     /// The failure hero: danger disc with an "!", headline + sub.
@@ -2374,11 +2513,13 @@ impl ImagerApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         t: Affine,
-        cxp: f64,
+        content: Rect,
         cyp: f64,
         install: bool,
     ) {
         let c = &theme.tokens.colors;
+        let cxp = f64::midpoint(content.x0, content.x1);
+        let compact = Self::compact_content(content);
         scene.fill(
             Fill::NonZero,
             t,
@@ -2411,16 +2552,34 @@ impl ImagerApp {
             cyp + 66.0,
             TextWeight::Bold,
         );
-        Self::txt_center(
-            scene,
-            tr,
-            "Writing did not verify. The drive may be incomplete; retry before using it.",
-            14.0,
-            c.text_dim,
-            cxp,
-            cyp + 100.0,
-            TextWeight::Regular,
-        );
+        if compact {
+            for (line, y) in [
+                ("The drive may be incomplete.", cyp + 100.0),
+                ("Retry before using it.", cyp + 120.0),
+            ] {
+                Self::txt_center(
+                    scene,
+                    tr,
+                    line,
+                    13.5,
+                    c.text_dim,
+                    cxp,
+                    y,
+                    TextWeight::Regular,
+                );
+            }
+        } else {
+            Self::txt_center(
+                scene,
+                tr,
+                "Writing did not verify. The drive may be incomplete; retry before using it.",
+                14.0,
+                c.text_dim,
+                cxp,
+                cyp + 100.0,
+                TextWeight::Regular,
+            );
+        }
     }
 
     /// The Image/Drive summary card below the hero, when both are known.
@@ -2436,12 +2595,10 @@ impl ImagerApp {
         let c = &theme.tokens.colors;
         let cyp = content.y0 + 120.0;
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
-            let card = Rect::new(
-                content.x0 + 80.0,
-                cyp + 140.0,
-                content.x1 - 80.0,
-                cyp + 140.0 + 84.0,
-            );
+            let compact = Self::compact_content(content);
+            let inset = if compact { 0.0 } else { 80.0 };
+            let top = cyp + if compact { 154.0 } else { 140.0 };
+            let card = Rect::new(content.x0 + inset, top, content.x1 - inset, top + 84.0);
             Self::fill_rr(scene, t, card, 12.0, c.surfaces.raised);
             Self::stroke_rr(scene, t, card, 12.0, c.border_standard, 1.0);
             Self::txt(
@@ -2461,9 +2618,18 @@ impl ImagerApp {
                 &src.name,
                 13.5,
                 c.text_primary,
-                card.x0 + 90.0,
+                card.x0 + if compact { 76.0 } else { 90.0 },
                 card.y0 + 17.0,
-                Some((card.width() - 110.0) as f32),
+                Some(
+                    if compact && ok {
+                        card.width() - 176.0
+                    } else if compact {
+                        card.width() - 94.0
+                    } else {
+                        card.width() - 110.0
+                    }
+                    .max(0.0) as f32,
+                ),
                 TextWeight::Medium,
             );
             Self::txt(
@@ -2483,9 +2649,9 @@ impl ImagerApp {
                 &format!("{} · {}", tgt.model, tgt.dev_path()),
                 13.5,
                 c.text_primary,
-                card.x0 + 90.0,
+                card.x0 + if compact { 76.0 } else { 90.0 },
                 card.y0 + 47.0,
-                Some((card.width() - 110.0) as f32),
+                Some((card.width() - if compact { 94.0 } else { 110.0 }).max(0.0) as f32),
                 TextWeight::Medium,
             );
             if ok {
@@ -3673,6 +3839,53 @@ mod tests {
                     hit_rect == rect && matches!(hit, Hit::StepJump(hit_step) if hit_step == step)
                 }));
             }
+        }
+    }
+
+    #[test]
+    fn compact_body_controls_reserve_space_for_wrapped_headings() {
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
+
+        let source = app.compute_layout();
+        let browse = source
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, Hit::PickFile).then_some(*rect))
+            .unwrap();
+        assert!(browse.y0 >= source.content.y0 + 64.0);
+        assert!(browse.x0 >= source.content.x0 && browse.x1 <= source.content.x1);
+
+        app.goto(&mut doc, Step::Drive);
+        let drive = app.compute_layout();
+        let rescan = drive
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, Hit::Rescan).then_some(*rect))
+            .unwrap();
+        let target = drive
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, Hit::Target(_)).then_some(*rect))
+            .unwrap();
+        assert!(rescan.y0 >= drive.content.y0 + 52.0);
+        assert!(target.y0 >= rescan.y1 + 12.0);
+    }
+
+    #[test]
+    fn compact_footer_actions_never_overlap() {
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
+
+        for step in [Step::Drive, Step::Customize, Step::Confirm] {
+            app.goto(&mut doc, step);
+            let lay = app.compute_layout();
+            let back = lay.back.unwrap();
+            let primary = lay.primary.unwrap();
+            assert!(back.x0 >= lay.content.x0);
+            assert!(primary.x1 <= lay.content.x1);
+            assert!(back.x1 + 12.0 <= primary.x0);
+            assert!(back.width() >= 130.0 && primary.width() >= 130.0);
         }
     }
 
