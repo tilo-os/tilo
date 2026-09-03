@@ -509,11 +509,27 @@ impl OnboardingView {
             .with_gap(theme.tokens.spacing.s6)
             .push(Box::new(progress))
             .push(Self::tour_page(theme, page));
+        // Keep navigation out of the scrolling lesson. On a compact laptop,
+        // portrait display, or large-text setup the cards can be much taller
+        // than the panel; making Continue part of that content forced people
+        // to discover scrolling before they could finish the introduction.
+        // The identity Done screen uses the same sticky-footer contract.
+        let footer_height = 48.0;
+        let footer_gap = theme.tokens.spacing.s3;
+        let outer_vertical_padding = theme.padding_standard * 4.0;
+        let scroll_height =
+            (panel_height - footer_height - footer_gap - outer_vertical_padding).max(120.0);
         Box::new(
-            Scrollable::new_vertical()
-                .with_height(panel_height)
-                .with_content_gutter(theme.tokens.spacing.s3)
-                .with_child(Box::new(content)),
+            Column::new()
+                .with_no_padding()
+                .with_gap(footer_gap)
+                .push(Box::new(
+                    Scrollable::new_vertical()
+                        .with_height(scroll_height)
+                        .with_content_gutter(theme.tokens.spacing.s3)
+                        .with_child(Box::new(content)),
+                ))
+                .push(Self::tour_actions(page)),
         )
     }
 
@@ -557,27 +573,31 @@ impl OnboardingView {
         for (card_title, copy) in cards {
             body = body.push(Box::new(Card::titled(*card_title, paragraph(copy, theme))));
         }
-        let primary_label = if page == TourPage::Collaborate {
-            "Enter qOS"
+        Box::new(body)
+    }
+
+    /// Sticky tour navigation, kept outside the scrollable lesson body.
+    fn tour_actions(page: TourPage) -> Box<dyn Widget> {
+        let (primary_label, primary_key) = if page == TourPage::Collaborate {
+            ("Enter qOS", KEY_FINISH)
         } else {
-            "Continue"
+            ("Continue", KEY_TOUR_NEXT)
         };
-        let primary_key = if page == TourPage::Collaborate {
-            KEY_FINISH
-        } else {
-            KEY_TOUR_NEXT
-        };
-        Box::new(body.push(actions(vec![
+        actions(vec![
             Box::new(
                 Button::new("onboarding.tour.back.button", "Back", Some(KEY_TOUR_BACK))
                     .with_icon(ui::icons::Icon::ArrowLeft),
             ),
             Box::new(
-                Button::new("onboarding.tour.next.button", primary_label, Some(primary_key))
-                    .with_icon(ui::icons::Icon::ArrowRight)
-                    .with_style(ui::widget::ButtonStyle::Primary),
+                Button::new(
+                    "onboarding.tour.next.button",
+                    primary_label,
+                    Some(primary_key),
+                )
+                .with_icon(ui::icons::Icon::ArrowRight)
+                .with_style(ui::widget::ButtonStyle::Primary),
             ),
-        ])))
+        ])
     }
 
     fn intro(&self, theme: &Theme) -> Box<dyn Widget> {
@@ -2256,6 +2276,69 @@ mod tests {
                 action.x0 >= 0.0 && action.x1 <= 1000.0 && action.y0 >= 0.0 && action.y1 <= 720.0,
                 "the action must stay fully in the viewport, id={id}, action={action:?}"
             );
+        }
+    }
+
+    #[test]
+    fn tour_navigation_stays_visible_on_every_page_at_narrow_large_text_size() {
+        const WIDTH: f32 = 420.0;
+        const HEIGHT: f32 = 640.0;
+
+        for next_presses in 0..=2 {
+            let (mut view, _) = view();
+            let mut doc = AutoCommit::new();
+            for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE, KEY_TOUR_START] {
+                press(&mut doc, key);
+                view.sync(&mut doc, &automerge::ROOT);
+            }
+            for _ in 0..next_presses {
+                press(&mut doc, KEY_TOUR_NEXT);
+                view.sync(&mut doc, &automerge::ROOT);
+            }
+
+            let theme = Theme::dark().with_text_scale(1.3);
+            let mut text = ui::text_render::TextRenderer::new();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+            let measure_map = node_map.clone();
+            taffy
+                .compute_layout_with_measure(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(WIDTH),
+                        height: taffy::AvailableSpace::Definite(HEIGHT),
+                    },
+                    |known, available, node_id, _, _| {
+                        measure_map
+                            .get(&node_id)
+                            .map_or(taffy::Size::ZERO, |&ptr| unsafe {
+                                (*ptr).measure(known, available, &mut text)
+                            })
+                    },
+                )
+                .expect("narrow large-text tour layout");
+            view.apply_layout(&taffy, node, Point::ZERO);
+
+            for id in ["onboarding.tour.back.button", "onboarding.tour.next.button"] {
+                let action = node_map
+                    .values()
+                    .find_map(|&ptr| unsafe {
+                        ((*ptr).test_id() == Some(id)).then(|| (*ptr).get_rect())
+                    })
+                    .unwrap_or_else(|| panic!("tour page exposes {id}"));
+                assert!(
+                    action.area() > 0.0,
+                    "page={next_presses}, action={action:?}"
+                );
+                assert!(
+                    action.x0 >= 0.0
+                        && action.x1 <= f64::from(WIDTH)
+                        && action.y0 >= 0.0
+                        && action.y1 <= f64::from(HEIGHT),
+                    "sticky tour action must stay in the viewport, page={next_presses}, id={id}, action={action:?}"
+                );
+            }
         }
     }
 }
