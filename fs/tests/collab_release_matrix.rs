@@ -296,8 +296,20 @@ fn ready_replica_endpoint(status: &Path, process: &mut ReplicaProcess) -> iroh_b
                 process.logs.lock().unwrap().join("\n")
             );
         }
+        let current_process_joined = process
+            .logs
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.contains("Home peer joined workspace"));
         if let Some(current) = fs::full_replica::load_status(status).ok().flatten() {
-            if current.full_content_replication && !current.filesystem_endpoints.is_empty() {
+            // A status file deliberately survives daemon restarts for
+            // diagnostics. Do not mistake the previous process's last ready
+            // snapshot for this process becoming reachable.
+            if current_process_joined
+                && current.full_content_replication
+                && !current.filesystem_endpoints.is_empty()
+            {
                 return current.filesystem_endpoints[0].clone();
             }
             last_status = Some(current);
