@@ -13255,6 +13255,7 @@ name = "settings"
 version = "0.1.0"
 dependencies = [
  "accounts",
+ "atomic-file",
  "automerge",
  "collab-types",
  "desktop-policy",

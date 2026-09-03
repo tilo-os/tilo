@@ -804,11 +804,10 @@ mod tests {
                 .create_file(ROOT_INO, "arrived-during-gc", None, 0, 1)
                 .unwrap();
         };
-        let (gc, ()) = tokio::time::timeout(Duration::from_secs(6), async {
-            tokio::join!(gc, mutation)
-        })
-            .await
-            .expect("large stale cache must not monopolize namespace mutations");
+        let (gc, ()) =
+            tokio::time::timeout(Duration::from_secs(6), async { tokio::join!(gc, mutation) })
+                .await
+                .expect("large stale cache must not monopolize namespace mutations");
         gc.unwrap();
         assert!(
             namespace
