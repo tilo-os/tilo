@@ -319,6 +319,7 @@ impl RelayClient {
         Ok(ContentPeerRegistration {
             endpoint,
             ticket: advertisement.filesystem_ticket,
+            relay_service_id: *relay_addr.id.as_bytes(),
         })
     }
     /// Dial `relay_addr` on the `qos-relay/1` ALPN, run the auth
@@ -350,6 +351,7 @@ impl RelayClient {
             endpoint,
             relay_addr,
             Some(own_user_public_key),
+            None,
             own_cert,
             own_sk,
             revocations,
@@ -374,14 +376,48 @@ impl RelayClient {
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
-        Self::connect_with_server_trust(endpoint, relay_addr, None, own_cert, own_sk, revocations)
-            .await
+        Self::connect_with_server_trust(
+            endpoint,
+            relay_addr,
+            None,
+            None,
+            own_cert,
+            own_sk,
+            revocations,
+        )
+        .await
+    }
+
+    /// Connect to an enrolled home peer, pinning both the user's root
+    /// certificate and the exact enrolled device certificate.  The relay
+    /// service endpoint is intentionally a separate Iroh key, so endpoint
+    /// pinning alone cannot establish the identity behind it.
+    pub async fn connect_to_enrolled_home_peer(
+        endpoint: Endpoint,
+        relay_addr: EndpointAddr,
+        expected_server_user: [u8; 32],
+        expected_server_device: [u8; 32],
+        own_cert: DeviceCert,
+        own_sk: ed25519_dalek::SigningKey,
+        revocations: RevocationList,
+    ) -> Result<Self, ClientError> {
+        Self::connect_with_server_trust(
+            endpoint,
+            relay_addr,
+            Some(expected_server_user),
+            Some(expected_server_device),
+            own_cert,
+            own_sk,
+            revocations,
+        )
+        .await
     }
 
     async fn connect_with_server_trust(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
         expected_server_user: Option<[u8; 32]>,
+        expected_server_device: Option<[u8; 32]>,
         own_cert: DeviceCert,
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
@@ -414,8 +450,20 @@ impl RelayClient {
             postcard::from_bytes(&ack_bytes).map_err(|e| ClientError::Codec(e.to_string()))?;
         let now_ns = crate::peer::now_ns();
         let relay_peer = match expected_server_user.as_ref() {
-            Some(expected) => {
-                auth::verify_hello_ack(&ack, expected, &revocations, now_ns, &client_nonce)?
+            Some(expected_user) => {
+                let relay_peer = auth::verify_hello_ack(
+                    &ack,
+                    expected_user,
+                    &revocations,
+                    now_ns,
+                    &client_nonce,
+                )?;
+                if expected_server_device.is_some_and(|expected_device| {
+                    relay_peer.cert.device_public_key != expected_device
+                }) {
+                    return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
+                }
+                relay_peer
             }
             None => auth::verify_pinned_host_ack(&ack, &revocations, now_ns, &client_nonce)?,
         };

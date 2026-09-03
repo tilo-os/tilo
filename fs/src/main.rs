@@ -23,7 +23,8 @@ use fs::sync::{self, SyncHandle};
 use fs::workspace_authority::{
     AuthorityRequest, WorkspaceAuthority, WorkspaceAuthorityEnvelope, load_persisted_content_peers,
     local_authority_request, local_authority_socket_path, local_content_socket_path,
-    register_local_content_peer, serve_local_authority, serve_local_content_peer,
+    register_local_content_peer, remove_local_content_peers, serve_local_authority,
+    serve_local_content_peer,
 };
 use fs::{
     AclHandle, CapabilityFile, ContentStore, FileHistoryStore, FileShareLinkV2,
@@ -442,6 +443,16 @@ enum Command {
         #[arg(long)]
         endpoint_stdin: bool,
     },
+    /// Remove direct filesystem endpoints previously nominated by an enrolled
+    /// home-peer relay. This goes through the daemon's authenticated local
+    /// control socket; callers never edit its durable catalog directly.
+    UnregisterContentPeer {
+        #[arg(long)]
+        cache_dir: PathBuf,
+        /// Hex-encoded relay service NodeId from the removed home-peer record.
+        #[arg(long)]
+        relay_service_id: String,
+    },
 }
 
 #[tokio::main]
@@ -552,6 +563,10 @@ async fn main() -> Result<()> {
             cache_dir,
             endpoint_stdin,
         } => register_content_peer(cache_dir, endpoint_stdin).await,
+        Command::UnregisterContentPeer {
+            cache_dir,
+            relay_service_id,
+        } => unregister_content_peer(cache_dir, &relay_service_id).await,
     }
 }
 
@@ -613,6 +628,7 @@ async fn register_content_peer(cache_dir: PathBuf, endpoint_stdin: bool) -> Resu
                     fs::workspace_authority::ContentPeerRequest {
                         endpoint,
                         ticket: None,
+                        relay_service_id: None,
                     }
                 })
             })
@@ -629,6 +645,20 @@ async fn register_content_peer(cache_dir: PathBuf, endpoint_stdin: bool) -> Resu
             "content peer was saved, but this ad-hoc fs daemon must be restarted to join its workspace"
         );
     }
+    Ok(())
+}
+
+async fn unregister_content_peer(cache_dir: PathBuf, relay_service_id: &str) -> Result<()> {
+    let decoded = hex::decode(relay_service_id).context("decode relay service id")?;
+    let relay_service_id: [u8; 32] = decoded
+        .try_into()
+        .map_err(|_: Vec<u8>| anyhow::anyhow!("relay service id must be 32 bytes"))?;
+    let ticket = Ticket::decode(&std::fs::read_to_string(workspace_ticket_path(&cache_dir))?)?;
+    remove_local_content_peers(
+        &local_content_socket_path(ticket.workspace_id()),
+        relay_service_id,
+    )
+    .await?;
     Ok(())
 }
 
@@ -3072,6 +3102,7 @@ mod tests {
         let peers = vec![fs::workspace_authority::PersistedContentPeer {
             endpoint: nas,
             ticket: Some(ticket),
+            relay_service_id: None,
         }];
         atomic_file::write(
             &fs::workspace_authority::content_peers_path(temp.path()),
