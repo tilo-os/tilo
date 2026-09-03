@@ -44,6 +44,7 @@ members = [
     "crates/system/swipe",
     "crates/system/tts",
     "crates/system/accounts",
+    "crates/agent/provider-config",
     "crates/system/app-state",
     "crates/system/desktop-policy",
     "crates/doc/qdoc",

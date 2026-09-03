@@ -52,6 +52,9 @@ runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg" }
 # writes email + CalDAV accounts through this one canonical store, so it and
 # the Mail / Calendar apps can no longer disagree on the on-disk shape.
 accounts = { path = "../../crates/system/accounts" }
+# Provider metadata is shared with the headless agent runner. This dependency
+# contains no HTTP client and no secret values.
+agent-provider-config = { path = "../../crates/agent/provider-config" }
 # The audio graph client: enumerate the PipeWire/WirePlumber node graph and
 # route per-application streams. The Sound pane drives real audio routing
 # through it (default features only — no gstreamer decode stack pulled in).

@@ -42,6 +42,10 @@ qos-actions = { path = "../../crates/collab/actions" }
 # something — what `listen`'s `Subject::Carried` reads, so the agent never
 # has to work out what "this" meant on its own.
 qos-reference = { path = "../../crates/collab/reference" }
+# The runner reads the same provider profile Settings writes. Resolving the
+# profile's vault reference remains a desktop-secret-broker operation; no key
+# is linked into this binary through configuration.
+agent-provider-config = { path = "../../crates/agent/provider-config" }
 qdoc = { path = "../../crates/doc/qdoc" }
 # The decision — which exported action answers an instruction — is a model
 # call. Blocking, because the agent's loop is a plain blocking loop; rustls so
