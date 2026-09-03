@@ -9,6 +9,8 @@ ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
 bash -n "$repo/apps/imager/packaging/package-host.sh" \
+  "$repo/apps/imager/packaging/linux/qos-imager" \
+  "$repo/apps/imager/packaging/macos/qos-imager" \
   "$repo/apps/imager/packaging/package-install-medium.sh" \
   "$repo/apps/imager/packaging/build-release-catalog.sh" \
   "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
@@ -64,6 +66,18 @@ grep -Fq 'Require the complete native release matrix' "$workflow" \
   && [ "$(grep -Fc 'if-no-files-found: error' "$workflow")" -ge 3 ] \
   && ok 'publication fails closed on any missing native artifact or digest' \
   || bad 'partial native artifact sets can reach publication'
+
+grep -Fq 'Build the complete native Linux package set' "$workflow" \
+  && grep -Fq 'Build the complete native Windows package set' "$workflow" \
+  && grep -Fq 'Build the complete native macOS package set' "$workflow" \
+  && [ "$(grep -Fc 'QOS_REQUIRE_NATIVE_PACKAGES: "1"' "$workflow")" -eq 3 ] \
+  && grep -Fq 'Launch the packaged Linux UI offscreen' "$workflow" \
+  && grep -Fq 'Install and launch the packaged Windows UI offscreen' "$workflow" \
+  && grep -Fq 'Mount and launch the packaged macOS UI offscreen' "$workflow" \
+  && grep -Fq 'system bin/"qos-imager-bin", "--shots"' \
+    "$repo/apps/imager/packaging/homebrew/qos-imager.rb.in" \
+  && ok 'every native package is required and executes its packaged UI before publication' \
+  || bad 'native packaging can pass without building and launching an installable artifact'
 grep -Fq 'qos-imager-linux-aarch64.tar.gz' \
     "$repo/apps/imager/packaging/homebrew/qos-imager.rb.in" \
   && grep -Fq 'qos-imager-linux-x86_64.tar.gz' \
