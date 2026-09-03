@@ -53,6 +53,12 @@ const RAIL_COLLAPSED: f64 = 56.0;
 pub(crate) const HEADER_HEIGHT: f64 = 64.0;
 pub(crate) const ROW_HEIGHT: f64 = 64.0;
 pub(crate) const DETAIL_WIDTH: f64 = 420.0;
+/// Below this width there is not enough room for both the navigation rail and
+/// a useful master/detail surface. Large text gets the same treatment even on
+/// a tablet: preserving readable controls matters more than preserving the
+/// desktop split.
+const COMPACT_VIEWPORT_WIDTH: f64 = 600.0;
+const LARGE_TEXT_BASE_SIZE: f32 = 20.0;
 const TOAST_MS: u128 = 4000;
 
 /// A clickable region recorded during draw and resolved in `handle_event`.
@@ -256,6 +262,10 @@ pub struct ContainersApp {
     /// and at the tail of every `handle_event`; `draw` reads it because the
     /// draw pass has no document access.
     view: ViewState,
+    /// Layout mode used by the last drawn frame. Event routing deliberately
+    /// follows this instead of guessing from width alone, because 200% text
+    /// also switches the surface to a single detail pane.
+    compact_layout_active: bool,
 }
 
 impl ContainersApp {
@@ -321,6 +331,7 @@ impl ContainersApp {
             seeded: false,
             structure_dirty: false,
             view: ViewState::default(),
+            compact_layout_active: false,
         }
     }
 
@@ -1368,9 +1379,14 @@ impl Widget for ContainersApp {
         // snapshot refreshed in `sync` / `handle_event`.
         let view = self.view.clone();
 
-        // --- Navigation rail (animated width) ---
-        let rail = Rect::new(r.x0, r.y0, r.x0 + self.rail_width(), r.y1);
-        self.draw_rail(scene, tr, theme, rail, &view);
+        // --- Navigation rail ---
+        // Compact is deliberately a navigation rail, not a squeezed desktop
+        // sidebar. It keeps every section one tap away while leaving a full
+        // pane for the current list or detail.
+        let compact = self.uses_compact_layout(theme);
+        self.compact_layout_active = compact;
+        let rail = Rect::new(r.x0, r.y0, r.x0 + self.rail_width_for(compact), r.y1);
+        self.draw_rail(scene, tr, theme, rail, &view, compact);
 
         // --- Content area ---
         let content = Rect::new(rail.x1, r.y0, r.x1, r.y1);
@@ -1541,8 +1557,15 @@ impl Widget for ContainersApp {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                 };
-                // Scroll the panel under the cursor.
-                if self.cursor.x > self.rect.x0 + RAIL_WIDTH + self.list_area_width(doc) {
+                // Scroll the panel under the cursor. A compact selected
+                // container *is* the detail panel, so it must not leak wheel
+                // events into an invisible master list.
+                let compact_detail = self.compact_layout_active
+                    && self.view.section == Section::Containers
+                    && self.view.selected.is_some();
+                if compact_detail
+                    || self.cursor.x > self.rect.x0 + RAIL_WIDTH + self.list_area_width(doc)
+                {
                     self.detail_scroll = (self.detail_scroll - dy).max(0.0);
                 } else {
                     self.list_scroll = (self.list_scroll - dy).max(0.0);
@@ -1776,11 +1799,52 @@ impl ContainersApp {
     /// Width of the list panel (full content width when no detail is open,
     /// otherwise content minus the detail column).
     fn list_area_width(&self, _doc: &AutoCommit) -> f64 {
-        let content_w = (self.rect.width() - self.rail_width()).max(0.0);
-        if self.view.selected.is_some() && self.view.section == Section::Containers {
+        // Event routing has no Theme reference. This conservative viewport
+        // check still prevents wheel events from being routed into an invisible
+        // detail column on phone-sized surfaces; large-text layouts are also
+        // single-pane when drawn.
+        let compact = self.compact_layout_active || self.rect.width() < COMPACT_VIEWPORT_WIDTH;
+        let content_w = (self.rect.width() - self.rail_width_for(compact)).max(0.0);
+        if self.view.selected.is_some() && self.view.section == Section::Containers && !compact {
             (content_w - DETAIL_WIDTH).max(240.0)
         } else {
             content_w
+        }
+    }
+
+    /// The compact breakpoint is intentionally based on both available width
+    /// and the rendered text scale. This makes 200% text a first-class layout
+    /// mode instead of letting it silently overlap a desktop geometry.
+    pub(crate) fn compact_layout_for(viewport_width: f64, base_text_size: f32) -> bool {
+        viewport_width < COMPACT_VIEWPORT_WIDTH || base_text_size >= LARGE_TEXT_BASE_SIZE
+    }
+
+    pub(crate) fn uses_compact_layout(&self, theme: &Theme) -> bool {
+        Self::compact_layout_for(self.rect.width(), theme.tokens.typography.scale.base)
+    }
+
+    /// A selected container is a full-page drill-in on compact surfaces. The
+    /// close/back control and Escape return to the list; no content is hidden
+    /// in a sliver beside it.
+    pub(crate) fn uses_single_pane_detail(&self, theme: &Theme) -> bool {
+        self.uses_compact_layout(theme)
+            && self.view.section == Section::Containers
+            && self.view.selected.is_some()
+    }
+
+    pub(crate) fn header_height(&self, theme: &Theme) -> f64 {
+        if self.uses_compact_layout(theme) {
+            120.0
+        } else {
+            HEADER_HEIGHT
+        }
+    }
+
+    pub(crate) fn row_height(&self, theme: &Theme) -> f64 {
+        if theme.tokens.typography.scale.base >= LARGE_TEXT_BASE_SIZE {
+            84.0
+        } else {
+            ROW_HEIGHT
         }
     }
 
@@ -1790,6 +1854,14 @@ impl ContainersApp {
     pub fn rail_width(&self) -> f64 {
         let reveal = self.sidebar_flap.reveal();
         RAIL_COLLAPSED + (RAIL_WIDTH - RAIL_COLLAPSED) * reveal
+    }
+
+    fn rail_width_for(&self, compact: bool) -> f64 {
+        if compact {
+            RAIL_COLLAPSED
+        } else {
+            self.rail_width()
+        }
     }
 
     /// `true` once the rail has revealed enough to show its text labels.
@@ -1868,6 +1940,46 @@ mod palette_launcher_tests {
         let mut t = TaffyTree::<()>::new();
         let n = t.new_leaf(Style::default()).unwrap();
         (t, n)
+    }
+
+    #[test]
+    fn compact_breakpoint_preserves_tablet_desktop_but_protects_large_text() {
+        let normal = ui::theme::Theme::dark();
+        let large = ui::theme::Theme::dark().with_text_scale(2.0);
+        assert!(
+            !ContainersApp::compact_layout_for(768.0, normal.tokens.typography.scale.base),
+            "a normal-size tablet keeps the familiar split layout"
+        );
+        assert!(
+            ContainersApp::compact_layout_for(390.0, normal.tokens.typography.scale.base),
+            "a phone never receives a squeezed sidebar"
+        );
+        assert!(
+            ContainersApp::compact_layout_for(768.0, large.tokens.typography.scale.base),
+            "200% text gets a readable single-pane layout even on tablet"
+        );
+    }
+
+    #[test]
+    fn compact_selection_is_a_full_page_drill_in() {
+        let mut app = ContainersApp::new(false);
+        app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        app.view.selected = app
+            .engine
+            .containers
+            .first()
+            .map(|container| container.id.clone());
+        let theme = ui::theme::Theme::dark();
+
+        assert!(app.uses_compact_layout(&theme));
+        assert!(app.uses_single_pane_detail(&theme));
+        assert_eq!(app.header_height(&theme), 120.0);
+        assert_eq!(app.row_height(&theme), ROW_HEIGHT);
+
+        let large = ui::theme::Theme::dark().with_text_scale(2.0);
+        app.rect = Rect::new(0.0, 0.0, 768.0, 900.0);
+        assert!(app.uses_single_pane_detail(&large));
+        assert_eq!(app.row_height(&large), 84.0);
     }
 
     /// Opening the app-scoped palette seeds it from the app's *real*
