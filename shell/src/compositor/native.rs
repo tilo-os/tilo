@@ -2598,6 +2598,7 @@ struct PortalBackend {
 fn start_portal_backend(
     frame_builder: &mut FrameBuilder,
     tree_handle: crate::shell::state::WorkspaceTreeHandle,
+    notifications: crate::notifications::NotificationBridge,
 ) -> Option<PortalBackend> {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -2632,6 +2633,7 @@ fn start_portal_backend(
         // The real spooler: unlike the picker it needs no chrome/seat (a process
         // invocation), and reports no destinations on a machine with no CUPS.
         print_spooler: crate::portal::PrintSpoolerHandle::cups(),
+        notifications,
     };
 
     let serve_result = runtime.block_on(async {
@@ -2947,7 +2949,13 @@ pub fn run() -> ! {
 
     // The xdg-desktop-portal backend, served from *this* process on the tree
     // it owns — see `start_portal_backend` for why not the separate daemon.
-    let _portal = start_portal_backend(&mut frame_builder, tree_handle.clone());
+    let notif_bridge = crate::notifications::NotificationBridge::new();
+    frame_builder.with_chrome(|st| st.set_notification_bridge(notif_bridge.clone()));
+    let _portal = start_portal_backend(
+        &mut frame_builder,
+        tree_handle.clone(),
+        notif_bridge.clone(),
+    );
 
     // Peer sync, constructed here (not only in the hosted entry point) because
     // this is the compositor that boots as the qOS session.
@@ -3252,11 +3260,9 @@ pub fn run() -> ! {
     // `Send + Sync` mailbox between the async zbus service (its own tokio
     // runtime) and this loop's sync chrome pump. Failure to reach the session
     // bus downgrades to a warning; shell-internal notifications keep working regardless.
-    let notif_bridge = crate::notifications::NotificationBridge::new();
     let priority_contacts = crate::priority_contacts::PriorityContactRegistry::open_default();
     let notification_sound = media::notification_sound::NotificationSoundPlayer::new();
     frame_builder.with_chrome(|st| {
-        st.set_notification_bridge(notif_bridge.clone());
         st.set_notification_runtime(notification_sound.clone(), priority_contacts.clone());
     });
     // Held for the lifetime of `run` so the runtime's worker threads keep driving zbus dispatch in the background.

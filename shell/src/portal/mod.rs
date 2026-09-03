@@ -17,12 +17,14 @@
 //! - `org.freedesktop.impl.portal.Access` — `AccessDialog`, also used by
 //!   `Camera.AccessCamera` (`app_id="camera"`), since `xdg-desktop-portal`
 //!   has no separate `impl.portal.Camera` interface.
+//! - `org.freedesktop.impl.portal.Notification` — sandboxed notification
+//!   delivery into the compositor-owned notification chrome.
 //!
-//! Every method shares one shape — see [`flow::resolve`]: look up the
-//! caller's workspace + app id, fast-path `Allow` on an `Always`-scoped
+//! Consent-bearing methods share one shape — see [`flow::resolve`]: look up
+//! the caller's workspace + app id, fast-path `Allow` on an `Always`-scoped
 //! grant, otherwise enqueue a `PendingGrant` and await the user's prompt
-//! choice, translated into the portal response code (0/1/2) and the
-//! interface-specific results dict.
+//! choice. Notification delivery is intentionally prompt-free and feeds the
+//! compositor's revocable notification queue directly.
 //!
 //! Tests run a `PromptQueueHandle` in [`PromptResolver::AutoAllow`] mode
 //! so round trips never block on a real dialog; `tests/portal_test.rs`
@@ -33,6 +35,7 @@ pub mod camera;
 pub mod doc_store;
 pub mod file_chooser;
 pub mod file_picker_spawner;
+pub mod notification;
 pub mod picker_queue;
 pub mod print;
 pub mod remote_desktop;
@@ -48,6 +51,7 @@ pub use file_picker_spawner::{
     FilePickerOptions, FilePickerRequest, FilePickerSpawner, FilePickerSpawnerHandle,
     MockFilePickerSpawner, NullFilePickerSpawner, PickerFilter,
 };
+pub use notification::NotificationBackend;
 pub use picker_queue::{FilePickerQueue, PickerScope};
 pub use print::{
     LpSpooler, NullPrintSpooler, PrintBackend, PrintJobRequest, PrintSpooler, PrintSpoolerHandle,
@@ -433,6 +437,10 @@ pub struct PortalContext {
     /// The Print backend hands each consented job here; production runs
     /// `lp`, tests inject a [`RecordingSpooler`] — the only component in the print path that touches CUPS, living on *this* side of the sandbox.
     pub print_spooler: PrintSpoolerHandle,
+    /// Shared mailbox into the compositor-owned notification chrome. Portal
+    /// notifications and the freedesktop notification service deliberately
+    /// use the same id allocator and queue.
+    pub notifications: crate::notifications::NotificationBridge,
 }
 
 impl PortalContext {
@@ -459,6 +467,7 @@ impl PortalContext {
             // The real spooler, not a null one — it's a process invocation, nothing
             // a headless context is missing; no CUPS means it honestly reports no destinations.
             print_spooler: PrintSpoolerHandle::cups(),
+            notifications: crate::notifications::NotificationBridge::new(),
         }
     }
 }
@@ -565,7 +574,7 @@ pub const BUS_NAME: &str = "org.freedesktop.impl.portal.desktop.qos";
 /// Object path the portal's frontend dispatches to; xdg-desktop-portal hard-codes `/org/freedesktop/portal/desktop`.
 pub const OBJECT_PATH: &str = "/org/freedesktop/portal/desktop";
 
-/// Spawn the portal server on `connection`, registering all three
+/// Spawn the portal server on `connection`, registering every supported
 /// interfaces under [`OBJECT_PATH`] and requesting [`BUS_NAME`].
 ///
 /// Returns the connection back to the caller (kept alive by the caller);
@@ -575,7 +584,7 @@ pub const OBJECT_PATH: &str = "/org/freedesktop/portal/desktop";
 ///
 /// # Errors
 ///
-/// Returns `Err` when registering any of the five interface objects on
+/// Returns `Err` when registering any interface object on
 /// [`OBJECT_PATH`] fails. Failing to *own* [`BUS_NAME`] is not an error
 /// here — it is recorded on the returned [`ServerHandle::owns_name`],
 /// since a p2p test connection has no broker to request a name from.
@@ -585,6 +594,7 @@ pub async fn serve(
 ) -> Result<ServerHandle, zbus::Error> {
     use camera::AccessBackend;
     use file_chooser::FileChooserBackend;
+    use notification::NotificationBackend;
     use print::PrintBackend;
     use remote_desktop::RemoteDesktopBackend;
     use screencast::ScreenCastBackend;
@@ -594,12 +604,14 @@ pub async fn serve(
     let ac = AccessBackend::new(ctx.clone());
     let rd = RemoteDesktopBackend::new(ctx.clone());
     let pr = PrintBackend::new(ctx.clone());
+    let no = NotificationBackend::new(ctx.clone());
 
     connection.object_server().at(OBJECT_PATH, fc).await?;
     connection.object_server().at(OBJECT_PATH, sc).await?;
     connection.object_server().at(OBJECT_PATH, ac).await?;
     connection.object_server().at(OBJECT_PATH, rd).await?;
     connection.object_server().at(OBJECT_PATH, pr).await?;
+    connection.object_server().at(OBJECT_PATH, no).await?;
 
     // `request_name` only makes sense on a real bus — p2p test connections
     // have no broker, so the result is *recorded* (`ServerHandle::owns_name`) rather than swallowed.

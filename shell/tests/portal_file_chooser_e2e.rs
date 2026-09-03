@@ -216,6 +216,7 @@ fn context(
         remote_input_injector: RemoteInputInjectorHandle::null(),
         print_spooler: shell::portal::PrintSpoolerHandle::null(),
         documents: portal::documents_for_session(),
+        notifications: shell::notifications::NotificationBridge::new(),
     }
 }
 
