@@ -224,9 +224,17 @@ if grep -Fq -- '--alongside' "$backend" \
    && [ "$(grep -c '^[[:space:]]*validate_alongside$' "$backend" || true)" -eq 3 ] \
    && grep -Fq 'signature_types="$(wipefs --noheadings --no-act --output TYPE "$part")"' "$encryptor" \
    && grep -Fq 'root and EFI partitions are not on the same disk' "$encryptor" \
+   && grep -Fq 'MIN_ALONGSIDE_ESP_BYTES=2147483648' "$backend" \
+   && grep -Fq 'MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824' "$backend" \
+   && grep -Fq 'MIN_ALONGSIDE_ESP_BYTES=2147483648' "$encryptor" \
+   && grep -Fq 'MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824' "$encryptor" \
+   && grep -Fq 'fsck.fat -n "$EFI_PARTITION"' "$backend" \
+   && grep -Fq 'fsck.fat -n "$esp"' "$encryptor" \
+   && grep -Fq 'mount -o ro,nosuid,nodev,noexec "$EFI_PARTITION" "$efi_probe"' "$backend" \
+   && grep -Fq 'mount -o ro,nosuid,nodev,noexec "$esp" "$esp_probe"' "$encryptor" \
    && grep -Fq 'existing OS partitions are preserved' "$backend" \
    && ! grep -Fq 'mkfs.vfat -n EFI-SYSTEM "$EFI_PARTITION"' "$backend"; then
-  ok "alongside install fails closed on signed roots and never formats the shared ESP"
+  ok "alongside install fails closed on signed roots or undersized ESPs and never formats the shared ESP"
 else
   bad "alongside install can overwrite an occupied root or shared ESP"
 fi
