@@ -38,6 +38,7 @@ Examples:
     # Continue an interrupted sweep with the exact same options.
     scripts/app-launch-sweep.py --out target/sweep --shots --resume
 """
+
 from __future__ import annotations
 
 import argparse
@@ -79,8 +80,15 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # Lines worth quoting back when an app fails. Deliberately broad: the
 # point of a failing row is to carry the app's own words.
 ERROR_HINTS = (
-    "bwrap:", "error", "panic", "refuse", "failed", "cannot",
-    "no such", "warning:", "denied",
+    "bwrap:",
+    "error",
+    "panic",
+    "refuse",
+    "failed",
+    "cannot",
+    "no such",
+    "warning:",
+    "denied",
 )
 
 # A full sweep is deliberately slow: each package gets its own compositor so
@@ -154,8 +162,13 @@ def valid_completed_result(value: object) -> bool:
         return False
     adopted = value["adopted"]
     return (
-        (adopted is None or
-         (isinstance(adopted, list) and all(isinstance(tile, str) for tile in adopted)))
+        (
+            adopted is None
+            or (
+                isinstance(adopted, list)
+                and all(isinstance(tile, str) for tile in adopted)
+            )
+        )
         and isinstance(value["errors"], list)
         and all(isinstance(error, str) for error in value["errors"])
         and isinstance(value.get("compositor_started"), (bool, type(None)))
@@ -194,9 +207,13 @@ def load_checkpoint(path: pathlib.Path, expected_config: dict) -> dict:
     if not isinstance(completed, dict):
         raise SweepStateError(f"checkpoint {path} has no valid completed-results map")
     package_ids = set(expected_config["packages"])
-    invalid = [key for key, value in completed.items()
-               if not isinstance(key, str) or key not in package_ids
-               or not valid_completed_result(value)]
+    invalid = [
+        key
+        for key, value in completed.items()
+        if not isinstance(key, str)
+        or key not in package_ids
+        or not valid_completed_result(value)
+    ]
     if invalid:
         raise SweepStateError(
             f"checkpoint {path} contains invalid completed package records"
@@ -206,15 +223,19 @@ def load_checkpoint(path: pathlib.Path, expected_config: dict) -> dict:
 
 def save_checkpoint(path: pathlib.Path, config: dict, completed: dict) -> None:
     """Persist every finished package before the sweep proceeds to the next."""
-    atomic_write_json(path, {
-        "version": PROGRESS_VERSION,
-        "configuration": config,
-        "completed": completed,
-    })
+    atomic_write_json(
+        path,
+        {
+            "version": PROGRESS_VERSION,
+            "configuration": config,
+            "completed": completed,
+        },
+    )
 
 
-def prepare_checkpoint(out: pathlib.Path, config: dict,
-                       resume: bool) -> tuple[pathlib.Path, dict]:
+def prepare_checkpoint(
+    out: pathlib.Path, config: dict, resume: bool
+) -> tuple[pathlib.Path, dict]:
     """Start fresh by default, or return only a validated resume checkpoint."""
     path = out / PROGRESS_FILENAME
     if resume:
@@ -302,8 +323,15 @@ class Compositor:
     """A headless compositor with its test-control socket, as a context
     manager. Guarantees teardown even when a probe raises."""
 
-    def __init__(self, shell_bin, launcher_bin, logpath, env_extra, startup_timeout,
-                 empty_workspace=False):
+    def __init__(
+        self,
+        shell_bin,
+        launcher_bin,
+        logpath,
+        env_extra,
+        startup_timeout,
+        empty_workspace=False,
+    ):
         self.sock = f"/tmp/qos-app-sweep-{os.getpid()}.sock"
         # The compositor loads and writes ~/.config/qos/state.json, so an
         # un-isolated sweep inherits whatever workspace the last real session
@@ -340,33 +368,47 @@ class Compositor:
             # one wrong and the compositor logs a read failure and boots
             # the demo tree instead, which is what a capture would then
             # show.
-            (qos_dir / "state.json").write_text(json.dumps({
-                "workspaces": [{
-                    "id": 1,
-                    "room": "00000000-0000-4000-8000-000000000001",
-                    "name": "Apps",
-                    "strips": [{"id": 2, "name": "Main", "window_groups": []}],
-                    "collaborators": [],
-                    "owner": None,
-                    "capabilities": [],
-                    "shared_surfaces": {},
-                }],
-                "active": 1,
-                "active_strip": {"1": 2},
-                "active_group": {},
-                "collaborators": [],
-                "room_authority": {},
-            }))
-        env = {**os.environ, "QOS_TEST_CONTROL": self.sock,
-               "QOS_LAUNCHER_BIN": str(self.launcher_bin), "RUST_LOG": "info",
-               "XDG_CONFIG_HOME": self.config_home}
+            (qos_dir / "state.json").write_text(
+                json.dumps(
+                    {
+                        "workspaces": [
+                            {
+                                "id": 1,
+                                "room": "00000000-0000-4000-8000-000000000001",
+                                "name": "Apps",
+                                "strips": [
+                                    {"id": 2, "name": "Main", "window_groups": []}
+                                ],
+                                "collaborators": [],
+                                "owner": None,
+                                "capabilities": [],
+                                "shared_surfaces": {},
+                            }
+                        ],
+                        "active": 1,
+                        "active_strip": {"1": 2},
+                        "active_group": {},
+                        "collaborators": [],
+                        "room_authority": {},
+                    }
+                )
+            )
+        env = {
+            **os.environ,
+            "QOS_TEST_CONTROL": self.sock,
+            "QOS_LAUNCHER_BIN": str(self.launcher_bin),
+            "RUST_LOG": "info",
+            "XDG_CONFIG_HOME": self.config_home,
+        }
         for k in SCRUB:
             env.pop(k, None)
         env.update(self.env_extra)
         self.log = self.logpath.open("wb")
         self.proc = subprocess.Popen(
             [str(self.shell_bin), "--backend", "headless"],
-            env=env, stdout=self.log, stderr=subprocess.STDOUT,
+            env=env,
+            stdout=self.log,
+            stderr=subprocess.STDOUT,
             preexec_fn=os.setsid,
         )
         deadline = time.time() + self.startup_timeout
@@ -421,14 +463,30 @@ class Compositor:
         a chord specified to scope to the focused app. Launching an app
         that isn't running was never Ctrl+K's job.
         """
-        call(self.sock, {"op": "modifiers", "ctrl": False, "shift": False,
-                         "alt": False, "logo": True})
+        call(
+            self.sock,
+            {
+                "op": "modifiers",
+                "ctrl": False,
+                "shift": False,
+                "alt": False,
+                "logo": True,
+            },
+        )
         call(self.sock, {"op": "key", "key": "k"})
-        call(self.sock, {"op": "modifiers", "ctrl": False, "shift": False,
-                         "alt": False, "logo": False})
+        call(
+            self.sock,
+            {
+                "op": "modifiers",
+                "ctrl": False,
+                "shift": False,
+                "alt": False,
+                "logo": False,
+            },
+        )
         time.sleep(0.4)
         call(self.sock, {"op": "type", "text": short_name})
-        time.sleep(0.8)   # let the providers score and the list settle
+        time.sleep(0.8)  # let the providers score and the list settle
         call(self.sock, {"op": "key", "key": "Enter"})
 
     def wait_for_adoption(self, settle: float):
@@ -460,8 +518,9 @@ class Compositor:
             body = body.get("frames", body)
         return body if isinstance(body, list) else None
 
-    def snapshot_when_painted(self, out_png: pathlib.Path, hold: float,
-                              min_hold: float) -> None:
+    def snapshot_when_painted(
+        self, out_png: pathlib.Path, hold: float, min_hold: float
+    ) -> None:
         """Dismiss the palette, then snapshot repeatedly until the tile's
         content stops changing — i.e. the app's own first frame has
         landed and settled, rather than the placeholder.
@@ -494,7 +553,7 @@ def app_log_lines(logpath: pathlib.Path, package_id: str) -> list[str]:
     """The app's own output, as the compositor relayed it."""
     text = ANSI.sub("", logpath.read_text(errors="replace"))
     tag = f"[app {package_id}] "
-    return [l.split(tag, 1)[-1] for l in text.splitlines() if tag in l]
+    return [line.split(tag, 1)[-1] for line in text.splitlines() if tag in line]
 
 
 def was_launched(logpath: pathlib.Path, package_id: str) -> bool:
@@ -512,12 +571,23 @@ def run_one(args, package_id: str, out: pathlib.Path, env_extra: dict) -> dict:
     logpath = out / f"{package_id}.log"
     short = package_id.rsplit(".", 1)[-1]
     adopted, shot, frames = None, None, None
-    with Compositor(args.shell, args.launcher, logpath, env_extra,
-                    args.startup_timeout, args.empty_workspace) as comp:
+    with Compositor(
+        args.shell,
+        args.launcher,
+        logpath,
+        env_extra,
+        args.startup_timeout,
+        args.empty_workspace,
+    ) as comp:
         if comp.failure:
-            return {"adopted": None, "errors": [comp.failure],
-                    "compositor_started": False, "launched": False,
-                    "png": None, "frames": None}
+            return {
+                "adopted": None,
+                "errors": [comp.failure],
+                "compositor_started": False,
+                "launched": False,
+                "png": None,
+                "frames": None,
+            }
         comp.open_palette_and_launch(short)
         adopted = comp.wait_for_adoption(args.settle)
         if adopted and args.shots:
@@ -535,11 +605,13 @@ def run_one(args, package_id: str, out: pathlib.Path, env_extra: dict) -> dict:
 
     launched = was_launched(logpath, package_id)
     lines = app_log_lines(logpath, package_id)
-    errors = [l for l in lines if any(h in l.lower() for h in ERROR_HINTS)]
+    errors = [line for line in lines if any(h in line.lower() for h in ERROR_HINTS)]
     if not launched:
-        errors = ["the palette never activated a row for this package — "
-                  "no launch was forked (harness or search-provider issue, "
-                  "not an app failure)"] + errors
+        errors = [
+            "the palette never activated a row for this package — "
+            "no launch was forked (harness or search-provider issue, "
+            "not an app failure)"
+        ] + errors
     return {
         "adopted": adopted,
         "errors": errors or lines[-3:],
@@ -553,8 +625,10 @@ def run_one(args, package_id: str, out: pathlib.Path, env_extra: dict) -> dict:
 def print_result(package_id: str, result: dict, resumed: bool = False) -> None:
     """Print a result in the same compact form for fresh and resumed work."""
     if not result["gui"]:
-        print(f"NO-GUI   {package_id:<32} no graphical entrypoint — not launched",
-              flush=True)
+        print(
+            f"NO-GUI   {package_id:<32} no graphical entrypoint — not launched",
+            flush=True,
+        )
         return
     if result["adopted"]:
         detail = ", ".join(result["adopted"])
@@ -568,38 +642,81 @@ def print_result(package_id: str, result: dict, resumed: bool = False) -> None:
 
 def main() -> int:
     here = pathlib.Path(__file__).resolve().parent.parent
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--worktree", type=pathlib.Path, default=here,
-                   help="repo root holding target/debug (default: this script's repo)")
-    p.add_argument("--out", type=pathlib.Path, required=True,
-                   help="directory for per-app logs, PNGs and results.json")
-    p.add_argument("--only", default=None,
-                   help="comma-separated substrings; only matching packages run")
-    p.add_argument("--resume", action="store_true",
-                   help="resume a compatible interrupted sweep in --out; without "
-                        "this option a new sweep replaces any old checkpoint")
-    p.add_argument("--pin", action="store_true",
-                   help="export the manual ICD variables (baseline comparison)")
-    p.add_argument("--empty-workspace", action="store_true",
-                   help="boot each compositor with an empty workspace so the "
-                        "launched app is the only window in the capture")
-    p.add_argument("--shots", action="store_true",
-                   help="hold each adopted app for its first frame and write a PNG")
-    p.add_argument("--settle", type=float, default=60.0,
-                   help="seconds to wait for a toplevel (default: 60)")
-    p.add_argument("--hold", type=float, default=60.0,
-                   help="seconds to wait for the first frame with --shots")
-    p.add_argument("--min-hold", type=float, default=45.0,
-                   help="seconds a --shots capture must wait before an "
-                        "unchanging picture is accepted as the app's own "
-                        "(the first-frame placeholder is static, so it looks "
-                        "stable immediately)")
-    p.add_argument("--startup-timeout", type=float, default=45.0,
-                   help="seconds to wait for the control socket (default: 45)")
-    p.add_argument("--data-dir", type=pathlib.Path,
-                   default=pathlib.Path.home() / ".local/share/qos-apps",
-                   help="installed-package root")
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--worktree",
+        type=pathlib.Path,
+        default=here,
+        help="repo root holding target/debug (default: this script's repo)",
+    )
+    p.add_argument(
+        "--out",
+        type=pathlib.Path,
+        required=True,
+        help="directory for per-app logs, PNGs and results.json",
+    )
+    p.add_argument(
+        "--only",
+        default=None,
+        help="comma-separated substrings; only matching packages run",
+    )
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="resume a compatible interrupted sweep in --out; without "
+        "this option a new sweep replaces any old checkpoint",
+    )
+    p.add_argument(
+        "--pin",
+        action="store_true",
+        help="export the manual ICD variables (baseline comparison)",
+    )
+    p.add_argument(
+        "--empty-workspace",
+        action="store_true",
+        help="boot each compositor with an empty workspace so the "
+        "launched app is the only window in the capture",
+    )
+    p.add_argument(
+        "--shots",
+        action="store_true",
+        help="hold each adopted app for its first frame and write a PNG",
+    )
+    p.add_argument(
+        "--settle",
+        type=float,
+        default=60.0,
+        help="seconds to wait for a toplevel (default: 60)",
+    )
+    p.add_argument(
+        "--hold",
+        type=float,
+        default=60.0,
+        help="seconds to wait for the first frame with --shots",
+    )
+    p.add_argument(
+        "--min-hold",
+        type=float,
+        default=45.0,
+        help="seconds a --shots capture must wait before an "
+        "unchanging picture is accepted as the app's own "
+        "(the first-frame placeholder is static, so it looks "
+        "stable immediately)",
+    )
+    p.add_argument(
+        "--startup-timeout",
+        type=float,
+        default=45.0,
+        help="seconds to wait for the control socket (default: 45)",
+    )
+    p.add_argument(
+        "--data-dir",
+        type=pathlib.Path,
+        default=pathlib.Path.home() / ".local/share/qos-apps",
+        help="installed-package root",
+    )
     args = p.parse_args()
 
     args.shell = args.worktree / "target/debug/shell"
@@ -625,8 +742,11 @@ def main() -> int:
     except SweepStateError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 2
-    print(f"packages: {len(packages)}   manual-ICD-pin: {args.pin}   "
-          f"settle: {args.settle:.0f}s   resume: {args.resume}\n", flush=True)
+    print(
+        f"packages: {len(packages)}   manual-ICD-pin: {args.pin}   "
+        f"settle: {args.settle:.0f}s   resume: {args.resume}\n",
+        flush=True,
+    )
 
     for package_id in packages:
         if package_id in results:
@@ -635,11 +755,15 @@ def main() -> int:
         gui = has_gui_entrypoint(args.data_dir, package_id)
         if not gui:
             results[package_id] = {
-                "adopted": None, "gui": False, "compositor_started": None,
+                "adopted": None,
+                "gui": False,
+                "compositor_started": None,
                 "launched": False,
-                "errors": ["package declares no GUI entrypoint "
-                           "(type != gui/both); the Applications provider "
-                           "never offers it, so nothing is ever launched"],
+                "errors": [
+                    "package declares no GUI entrypoint "
+                    "(type != gui/both); the Applications provider "
+                    "never offers it, so nothing is ever launched"
+                ],
                 "png": None,
             }
         else:
@@ -652,15 +776,20 @@ def main() -> int:
     gui_pkgs = [k for k, v in results.items() if v["gui"]]
     adopted = [k for k, v in results.items() if v["adopted"]]
     no_gui = [k for k, v in results.items() if not v["gui"]]
-    stillborn = [k for k, v in results.items()
-                 if v["gui"] and v["compositor_started"] is False]
+    stillborn = [
+        k for k, v in results.items() if v["gui"] and v["compositor_started"] is False
+    ]
 
     print()
-    print(f"adopted a toplevel: {len(adopted)}/{len(results)} installed "
-          f"({len(adopted)}/{len(gui_pkgs)} of the GUI packages)")
+    print(
+        f"adopted a toplevel: {len(adopted)}/{len(results)} installed "
+        f"({len(adopted)}/{len(gui_pkgs)} of the GUI packages)"
+    )
     if no_gui:
-        print(f"no GUI entrypoint, never launched: {len(no_gui)} "
-              f"({', '.join(sorted(no_gui))})")
+        print(
+            f"no GUI entrypoint, never launched: {len(no_gui)} "
+            f"({', '.join(sorted(no_gui))})"
+        )
     if stillborn:
         print(f"compositor never started for: {len(stillborn)} package(s)")
     failed = [k for k in gui_pkgs if k not in adopted]
