@@ -24,7 +24,7 @@ pub use collab_types::role::Role as CapRole;
 
 const DEFAULT_FS_AUTHORITY_CACHE_DIR: &str = "/var/cache/quick-fs";
 const DEFAULT_FS_AUTHORITY_PUBLISHER: &str = "/usr/bin/fs";
-const FS_AUTHORITY_PUBLISH_ATTEMPTS: u8 = 3;
+const MAX_FS_AUTHORITY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Clone, Debug)]
 struct FsAuthorityPublication {
@@ -64,8 +64,8 @@ fn fs_authority_cache_dir() -> PathBuf {
 
 /// Coalesce exports and submit them outside the compositor's mutation path.
 /// The filesystem authority socket may be unavailable while its service is
-/// starting; bounded retries cover that normal boot ordering and a later
-/// capability mutation always replaces the queued projection.
+/// starting; capped-backoff retries cover that normal boot ordering and a
+/// later capability mutation always replaces the queued projection.
 fn schedule_fs_authority_publication(acl: PathBuf) {
     // Unit tests exercise this only with an explicit harmless publisher;
     // never let an isolated tree submit a fixture ACL to a real service.
@@ -104,13 +104,14 @@ fn run_fs_authority_publication_queue() {
                 return;
             }
         };
-        let Some(publication) = publication else {
+        let Some(mut publication) = publication else {
             if let Ok(mut queue) = fs_authority_publication_queue().lock() {
                 queue.running = false;
             }
             return;
         };
-        for attempt in 1..=FS_AUTHORITY_PUBLISH_ATTEMPTS {
+        let mut retry_delay = std::time::Duration::from_millis(100);
+        loop {
             let result = std::process::Command::new(&publication.publisher)
                 .arg("publish-authority")
                 .arg("--cache-dir")
@@ -122,21 +123,28 @@ fn run_fs_authority_publication_queue() {
                 Ok(status) if status.success() => break,
                 Ok(status) => tracing::warn!(
                     ?status,
-                    attempt,
                     acl = %publication.acl.display(),
                     "filesystem authority publication failed; will retry"
                 ),
                 Err(error) => tracing::warn!(
                     %error,
-                    attempt,
                     publisher = %publication.publisher.display(),
                     "filesystem authority publisher could not start; will retry"
                 ),
             }
-            if attempt < FS_AUTHORITY_PUBLISH_ATTEMPTS {
-                std::thread::sleep(std::time::Duration::from_millis(
-                    100_u64.saturating_mul(1_u64 << u32::from(attempt - 1)),
-                ));
+            // A new mutation supersedes the failed projection immediately;
+            // otherwise retain this exact latest ACL until the daemon is
+            // ready. The delay is bounded, while the background worker is
+            // deliberately persistent rather than silently losing a grant.
+            std::thread::sleep(retry_delay);
+            retry_delay = retry_delay
+                .saturating_mul(2)
+                .min(MAX_FS_AUTHORITY_RETRY_DELAY);
+            if let Ok(mut queue) = fs_authority_publication_queue().lock()
+                && let Some(newer) = queue.pending.take()
+            {
+                publication = newer;
+                retry_delay = std::time::Duration::from_millis(100);
             }
         }
     }
@@ -223,6 +231,74 @@ mod identity_fs_tests {
             match old_cache {
                 Some(value) => std::env::set_var("QOS_FS_AUTHORITY_CACHE_DIR", value),
                 None => std::env::remove_var("QOS_FS_AUTHORITY_CACHE_DIR"),
+            }
+            match old_log {
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_TEST_LOG"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn capability_export_retries_until_a_late_authority_service_is_ready() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::Duration;
+
+        let temp = tempfile::tempdir().expect("temp");
+        let publisher = temp.path().join("late-publisher.sh");
+        let count = temp.path().join("attempts");
+        let log = temp.path().join("authority-arguments");
+        std::fs::write(
+            &publisher,
+            "#!/bin/sh\ncount=0\n[ -f \"$QOS_FS_AUTHORITY_TEST_COUNT\" ] && count=$(cat \"$QOS_FS_AUTHORITY_TEST_COUNT\")\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$QOS_FS_AUTHORITY_TEST_COUNT\"\n[ \"$count\" -le 4 ] && exit 1\nprintf '%s\\n' \"$@\" > \"$QOS_FS_AUTHORITY_TEST_LOG\"\n",
+        )
+        .expect("publisher script");
+        let mut permissions = std::fs::metadata(&publisher)
+            .expect("metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
+        let acl = temp.path().join("fs-capabilities.json");
+        let old_publisher = std::env::var_os("QOS_FS_AUTHORITY_PUBLISHER");
+        let old_count = std::env::var_os("QOS_FS_AUTHORITY_TEST_COUNT");
+        let old_log = std::env::var_os("QOS_FS_AUTHORITY_TEST_LOG");
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            std::env::set_var("QOS_FS_AUTHORITY_PUBLISHER", &publisher);
+            std::env::set_var("QOS_FS_AUTHORITY_TEST_COUNT", &count);
+            std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", &log);
+        }
+        let mut tree = WorkspaceTree::default();
+        tree.fs_acl_path = Some(acl);
+        tree.export_fs_capabilities();
+        for _ in 0..300 {
+            if log.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            log.exists(),
+            "the queued ACL survives more than three failures"
+        );
+        assert!(
+            std::fs::read_to_string(&count)
+                .expect("attempt count")
+                .parse::<u8>()
+                .expect("numeric attempt count")
+                > 3
+        );
+
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            match old_publisher {
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_PUBLISHER", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_PUBLISHER"),
+            }
+            match old_count {
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_TEST_COUNT", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_TEST_COUNT"),
             }
             match old_log {
                 Some(value) => std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", value),
