@@ -10,8 +10,8 @@
 //! a11y), this panel owns the whole thing once:
 //!
 //! * every text field is a real shared [`TextInput`] — caret, selection,
-//!   clipboard, IME and a11y come for free, and the password field keeps its
-//!   value out of the accessibility tree (HIG §3: never hand-roll text editing);
+//!   clipboard, IME and a11y come for free. Secrets stay off the host and are
+//!   collected only on the target machine (HIG §3: never hand-roll editing);
 //! * every edit dispatches the matching [`ImagerAction`] through the app's
 //!   [`ui::ActionHost`], so a change is one undo boundary, replicates to
 //!   collaborators, and is byte-identical to the action the Ctrl+K palette
@@ -32,10 +32,10 @@ use winit::keyboard::{Key, NamedKey};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{TextInput, Toggle, ToggleFace, Widget};
+use ui::widget::{TextInput, Widget};
 
-use crate::actions::{IMAGER_ACTION_TYPE, ImagerAction, toggled_install_mode};
-use crate::model::{InstallMode, InstallProfile};
+use crate::actions::{IMAGER_ACTION_TYPE, ImagerAction};
+use crate::model::InstallProfile;
 
 /// One editable text field of the profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,7 +43,7 @@ pub enum CzField {
     Hostname,
     FullName,
     Username,
-    Password,
+    Locale,
     Timezone,
     Keyboard,
 }
@@ -53,7 +53,7 @@ impl CzField {
         CzField::Hostname,
         CzField::FullName,
         CzField::Username,
-        CzField::Password,
+        CzField::Locale,
         CzField::Timezone,
         CzField::Keyboard,
     ];
@@ -66,13 +66,10 @@ struct CzGeom {
     hostname: Rect,
     full_name: Rect,
     username: Rect,
-    password: Rect,
+    locale: Rect,
     timezone: Rect,
     region_label_y: f64,
     keyboard: Rect,
-    autologin: Rect,
-    encrypt: Rect,
-    persist: Rect,
     export: Rect,
 }
 
@@ -82,7 +79,7 @@ impl CzGeom {
             CzField::Hostname => self.hostname,
             CzField::FullName => self.full_name,
             CzField::Username => self.username,
-            CzField::Password => self.password,
+            CzField::Locale => self.locale,
             CzField::Timezone => self.timezone,
             CzField::Keyboard => self.keyboard,
         }
@@ -98,14 +95,13 @@ pub struct CzResponse {
     pub export_requested: bool,
 }
 
-/// The shared guided-customization panel. Embeds one [`TextInput`] per field
-/// (the password one masked + a11y-protected) and renders the toggles + export
-/// affordance around them.
+/// The shared guided-customization panel. Embeds one [`TextInput`] per
+/// non-secret field and renders the media-profile preview around them.
 pub struct CustomizePanel {
     hostname: TextInput,
     full_name: TextInput,
     username: TextInput,
-    password: TextInput,
+    locale: TextInput,
     timezone: TextInput,
     keyboard: TextInput,
     focused: Option<CzField>,
@@ -120,21 +116,18 @@ impl Default for CustomizePanel {
 
 impl CustomizePanel {
     pub fn new() -> Self {
-        let field = |secret: bool| {
+        let field = || {
             let mut t = TextInput::local();
-            if secret {
-                t = t.with_secret(true);
-            }
             t.set_plain_chrome(true); // the panel draws the field box itself
             t
         };
         Self {
-            hostname: field(false),
-            full_name: field(false),
-            username: field(false),
-            password: field(true),
-            timezone: field(false),
-            keyboard: field(false),
+            hostname: field(),
+            full_name: field(),
+            username: field(),
+            locale: field(),
+            timezone: field(),
+            keyboard: field(),
             focused: None,
             last_mouse: Point::ZERO,
         }
@@ -145,7 +138,7 @@ impl CustomizePanel {
             CzField::Hostname => &mut self.hostname,
             CzField::FullName => &mut self.full_name,
             CzField::Username => &mut self.username,
-            CzField::Password => &mut self.password,
+            CzField::Locale => &mut self.locale,
             CzField::Timezone => &mut self.timezone,
             CzField::Keyboard => &mut self.keyboard,
         }
@@ -156,7 +149,7 @@ impl CustomizePanel {
             CzField::Hostname => &profile.hostname,
             CzField::FullName => &profile.user.full_name,
             CzField::Username => &profile.user.username,
-            CzField::Password => &profile.user.password,
+            CzField::Locale => &profile.locale,
             CzField::Timezone => &profile.timezone,
             CzField::Keyboard => &profile.keyboard,
         }
@@ -169,7 +162,7 @@ impl CustomizePanel {
             CzField::Hostname => ImagerAction::SetHostname { value },
             CzField::FullName => ImagerAction::SetFullName { value },
             CzField::Username => ImagerAction::SetUsername { value },
-            CzField::Password => ImagerAction::SetPassword { value },
+            CzField::Locale => ImagerAction::SetLocale { value },
             CzField::Timezone => ImagerAction::SetTimezone { value },
             CzField::Keyboard => ImagerAction::SetKeyboard { value },
         }
@@ -218,38 +211,23 @@ impl CustomizePanel {
         let full_name = Rect::new(x0, r2, x0 + fw, r2 + fh);
         let username = Rect::new(x0 + fw + 16.0, r2, x1, r2 + fh);
         let r3 = r2 + row_pitch;
-        let password = Rect::new(x0, r3, x0 + fw, r3 + fh);
-        let timezone = Rect::new(x0 + fw + 16.0, r3, x1, r3 + fh);
+        let timezone = Rect::new(x0, r3, x0 + fw, r3 + fh);
+        let locale = Rect::new(x0 + fw + 16.0, r3, x1, r3 + fh);
         let region_label_y = r3 + fh + 26.0;
         let kb_y = region_label_y + 40.0;
-        let keyboard = Rect::new(x0, kb_y, x0 + fw, kb_y + fh);
-        let tog_y = kb_y + fh + 22.0;
-        let th = 46.0;
-        let autologin = Rect::new(x0, tog_y, x0 + fw, tog_y + th);
-        let encrypt = Rect::new(x0 + fw + 16.0, tog_y, x1, tog_y + th);
-        let p_y = tog_y + th + 12.0;
-        let persist = Rect::new(x0, p_y, x0 + fw, p_y + th);
-        let export = Rect::new(x1 - 250.0, p_y + 8.0, x1, p_y + 8.0 + 32.0);
+        let keyboard = Rect::new(x0, kb_y, x1, kb_y + fh);
+        let export = Rect::new(x1 - 250.0, kb_y + fh + 30.0, x1, kb_y + fh + 62.0);
         CzGeom {
             identity_label_y,
             hostname,
             full_name,
             username,
-            password,
+            locale,
             timezone,
             region_label_y,
             keyboard,
-            autologin,
-            encrypt,
-            persist,
             export,
         }
-    }
-
-    /// The device is removable → the persistent-storage option applies. (Only
-    /// meaningful for a stick; a disk install is always persistent.)
-    fn persist_visible(target_removable: bool) -> bool {
-        target_removable
     }
 
     // ---- drawing ----------------------------------------------------------
@@ -363,80 +341,6 @@ impl CustomizePanel {
         Widget::draw(input, scene, t, tr, theme, presence);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn draw_toggle(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        r: Rect,
-        label: &str,
-        sub: &str,
-        on: bool,
-    ) {
-        let c = &theme.tokens.colors;
-        let hov = r.contains(self.last_mouse);
-        Self::fill_rr(
-            scene,
-            t,
-            r,
-            12.0,
-            if hov { c.neutral[3] } else { c.neutral[2] },
-        );
-        Self::stroke_rr(
-            scene,
-            t,
-            r,
-            12.0,
-            if on {
-                alpha(c.semantic.success, 150)
-            } else {
-                c.border_standard
-            },
-            1.0,
-        );
-        let sw = Rect::new(
-            r.x0 + 14.0,
-            r.y0 + (r.height() - 22.0) / 2.0,
-            r.x0 + 14.0 + 40.0,
-            r.y0 + (r.height() - 22.0) / 2.0 + 22.0,
-        );
-        Toggle::paint(
-            scene,
-            t,
-            theme,
-            &ToggleFace::new(sw, on)
-                .hovered(hov)
-                .on_color(c.semantic.success),
-        );
-        let tx = sw.x1 + 12.0;
-        Self::txt(
-            tr,
-            scene,
-            label,
-            13.5,
-            c.text_primary,
-            tx,
-            r.y0 + 12.0,
-            Some((r.x1 - tx - 12.0) as f32),
-            TextWeight::Semibold,
-        );
-        if !sub.is_empty() {
-            Self::txt(
-                tr,
-                scene,
-                sub,
-                11.5,
-                c.text_dim,
-                tx,
-                r.y0 + 30.0,
-                Some((r.x1 - tx - 12.0) as f32),
-                TextWeight::Regular,
-            );
-        }
-    }
-
     /// Render the whole panel into `content` for the given profile snapshot.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
@@ -466,8 +370,7 @@ impl CustomizePanel {
         self.draw_export_button(scene, tr, theme, t, &g);
     }
 
-    /// The IDENTITY section: heading + the hostname/full-name/username/
-    /// password/timezone fields.
+    /// The IDENTITY section: hostname, name, username and time zone.
     #[allow(clippy::too_many_arguments)]
     fn draw_identity_fields(
         &mut self,
@@ -516,9 +419,9 @@ impl CustomizePanel {
             theme,
             t,
             presence,
-            CzField::Password,
-            g.password,
-            "Password",
+            CzField::Timezone,
+            g.timezone,
+            "Time zone",
         );
         self.draw_field(
             scene,
@@ -526,14 +429,14 @@ impl CustomizePanel {
             theme,
             t,
             presence,
-            CzField::Timezone,
-            g.timezone,
-            "Time zone",
+            CzField::Locale,
+            g.locale,
+            "Language & locale",
         );
     }
 
-    /// The REGION & OPTIONS section: heading + the keyboard field and the
-    /// autologin/encrypt/persist toggles.
+    /// The REGION section contains the last host-side preference. Security,
+    /// storage target and destructive choices are completed on the device.
     #[allow(clippy::too_many_arguments)]
     fn draw_region_and_options(
         &mut self,
@@ -544,8 +447,8 @@ impl CustomizePanel {
         presence: &PresenceCtx,
         label_x: f64,
         g: &CzGeom,
-        profile: &InstallProfile,
-        target_removable: bool,
+        _profile: &InstallProfile,
+        _target_removable: bool,
     ) {
         Self::section_label(
             tr,
@@ -565,42 +468,9 @@ impl CustomizePanel {
             g.keyboard,
             "Keyboard",
         );
-        self.draw_toggle(
-            scene,
-            tr,
-            theme,
-            t,
-            g.autologin,
-            "Auto-login",
-            "Sign in without a password prompt",
-            profile.user.autologin,
-        );
-        self.draw_toggle(
-            scene,
-            tr,
-            theme,
-            t,
-            g.encrypt,
-            "Encrypt storage",
-            "Protect user data with LUKS",
-            profile.encrypt,
-        );
-        if Self::persist_visible(target_removable) {
-            let persist = profile.mode == InstallMode::Persistent;
-            self.draw_toggle(
-                scene,
-                tr,
-                theme,
-                t,
-                g.persist,
-                "Persistent storage",
-                "Keep changes across reboots on the stick",
-                persist,
-            );
-        }
     }
 
-    /// The "Export unattended config" secondary affordance.
+    /// Preview the exact profile which will be embedded into the medium.
     fn draw_export_button(
         &self,
         scene: &mut Scene,
@@ -619,16 +489,12 @@ impl CustomizePanel {
             if hov { c.neutral[3] } else { c.neutral[2] },
         );
         Self::stroke_rr(scene, t, g.export, 9.0, c.accent[6], 1.0);
-        let (ew, _) = tr.measure_weighted(
-            "⤓ Export unattended config",
-            12.0,
-            None,
-            TextWeight::Semibold,
-        );
+        let (ew, _) =
+            tr.measure_weighted("Preview embedded setup", 12.0, None, TextWeight::Semibold);
         Self::txt(
             tr,
             scene,
-            "⤓ Export unattended config",
+            "Preview embedded setup",
             12.0,
             c.accent[7],
             f64::midpoint(g.export.x0, g.export.x1) - f64::from(ew) / 2.0,
@@ -741,9 +607,9 @@ impl CustomizePanel {
         modifiers: Modifiers,
         doc: &mut AutoCommit,
         path: &automerge::ObjId,
-        host: &mut ui::ActionHost,
-        profile: &InstallProfile,
-        target_removable: bool,
+        _host: &mut ui::ActionHost,
+        _profile: &InstallProfile,
+        _target_removable: bool,
         g: &CzGeom,
         node_id: taffy::NodeId,
         taffy: &taffy::TaffyTree<()>,
@@ -767,46 +633,6 @@ impl CustomizePanel {
                     export_requested: false,
                 };
             }
-        }
-        if g.autologin.contains(p) {
-            Self::dispatch(
-                doc,
-                host,
-                &ImagerAction::SetAutologin {
-                    on: !profile.user.autologin,
-                },
-            );
-            return CzResponse {
-                handled: true,
-                export_requested: false,
-            };
-        }
-        if g.encrypt.contains(p) {
-            Self::dispatch(
-                doc,
-                host,
-                &ImagerAction::SetEncrypt {
-                    on: !profile.encrypt,
-                },
-            );
-            return CzResponse {
-                handled: true,
-                export_requested: false,
-            };
-        }
-        if Self::persist_visible(target_removable) && g.persist.contains(p) {
-            let next = toggled_install_mode(profile.mode);
-            Self::dispatch(
-                doc,
-                host,
-                &ImagerAction::SetInstallMode {
-                    mode: next.key().to_string(),
-                },
-            );
-            return CzResponse {
-                handled: true,
-                export_requested: false,
-            };
         }
         if g.export.contains(p) {
             return CzResponse {
@@ -920,12 +746,6 @@ impl CustomizePanel {
         );
     }
 
-    /// The password field itself, for the never-leak-the-secret a11y test.
-    #[cfg(test)]
-    pub fn password_input(&self) -> &TextInput {
-        &self.password
-    }
-
     /// Focus a field programmatically (test/host helper).
     #[cfg(test)]
     pub fn focus_for_test(&mut self, f: CzField) {
@@ -938,16 +758,4 @@ impl CustomizePanel {
     pub fn field_value(&mut self, f: CzField) -> String {
         self.input(f).value().to_string()
     }
-
-    /// The encrypt-toggle rect for `content`, so a test can click the real
-    /// on-screen affordance (the affordance == `ActionSpec` covenant).
-    #[cfg(test)]
-    pub fn encrypt_rect(content: Rect) -> Rect {
-        Self::geom(content).encrypt
-    }
-}
-
-fn alpha(c: Color, a: u8) -> Color {
-    use ui::ColorCompat;
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
 }
