@@ -3787,6 +3787,26 @@ mod tests {
         (app, doc)
     }
 
+    #[test]
+    fn continuation_round_trip_reopens_a_known_track_paused_at_its_position() {
+        let (mut sender, source) = app_with_doc();
+        sender.pb.current = Some("tk_g1".into());
+        sender.pb.playing = true;
+        sender.playhead_ms = 12_345.0;
+        let metadata = sender
+            .continuation_metadata(&source, &automerge::ROOT)
+            .expect("a selected library track has a portable continuation");
+
+        let (mut receiver, mut target) = app_with_doc();
+        assert!(receiver.restore_continuation_metadata(&metadata, &mut target, &automerge::ROOT,));
+        assert_eq!(receiver.pb.current.as_deref(), Some("tk_g1"));
+        assert_eq!(receiver.pb.position_ms, 12_345);
+        assert!(
+            !receiver.pb.playing,
+            "continuation restore must never autoplay"
+        );
+    }
+
     // ---- synthetic winit events (drive `handle_event` like the real loop) --
     use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
     use winit::keyboard::NamedKey;

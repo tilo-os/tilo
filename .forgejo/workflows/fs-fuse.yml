@@ -9,6 +9,8 @@ on:
       - "Cargo.lock"
       - "fs/**"
       - "apps/file-explorer/**"
+      - "apps/settings/src/panes/device_mesh.rs"
+      - "crates/hosting/qos-relay/**"
       - "crates/collab/**"
       - "crates/identity/qos-user-identity/**"
       - "crates/packaging/launcher/**"
@@ -22,6 +24,10 @@ on:
       - "os/usr/lib/systemd/user/qos-fs-recipient.service"
       - "os/usr/share/wayland-sessions/shell*.desktop"
       - "os/tests/qos-session-lifecycle.sh"
+      - "os/usr/libexec/qos-relay-firstboot"
+      - "os/usr/lib/systemd/system/qos-relay.service"
+      - "os/usr/lib/systemd/system/qos-fs-replica.service"
+      - "os/containers/qos-relay/**"
       - ".forgejo/workflows/build-image.yml"
       - ".forgejo/workflows/fs-fuse.yml"
   pull_request:
@@ -32,6 +38,8 @@ on:
       - "Cargo.lock"
       - "fs/**"
       - "apps/file-explorer/**"
+      - "apps/settings/src/panes/device_mesh.rs"
+      - "crates/hosting/qos-relay/**"
       - "crates/collab/**"
       - "crates/identity/qos-user-identity/**"
       - "crates/packaging/launcher/**"
@@ -45,6 +53,10 @@ on:
       - "os/usr/lib/systemd/user/qos-fs-recipient.service"
       - "os/usr/share/wayland-sessions/shell*.desktop"
       - "os/tests/qos-session-lifecycle.sh"
+      - "os/usr/libexec/qos-relay-firstboot"
+      - "os/usr/lib/systemd/system/qos-relay.service"
+      - "os/usr/lib/systemd/system/qos-fs-replica.service"
+      - "os/containers/qos-relay/**"
       - ".forgejo/workflows/build-image.yml"
       - ".forgejo/workflows/fs-fuse.yml"
   workflow_dispatch:
@@ -59,6 +71,7 @@ env:
   CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_TERM_COLOR: never
   RUSTFLAGS: "-D warnings"
+  QOS_FS_FUSE_REQUIRED: "1"
 
 jobs:
   real-fuse:
@@ -90,6 +103,24 @@ jobs:
 
       - name: Enforce graphical-session and verified-identity lifecycle
         run: bash os/tests/qos-session-lifecycle.sh
+
+      # Uses two real `qos-enroll` processes over the LAN UDP path, then dials
+      # the transferred home-peer registration after the approving process has
+      # exited. Keep this on the privileged/FUSE runner: it is the closest CI
+      # analogue of the image's host networking and ownership boundary.
+      - name: Enforce ordinary-device enrollment and offline-owner continuity
+        run: >-
+          bash scripts/ci-run.sh "ordinary device enrollment acceptance" --
+          cargo test --locked -p qos-relay --test it
+          personal_device_process::ordinary_device_enrollment_survives_approver_offline_with_home_peer_route
+          -- --nocapture --test-threads=1
+
+      - name: Enforce polkit helper ownership and enrollment routing
+        run: >-
+          bash scripts/ci-run.sh "privileged personal enrollment helper acceptance" --
+          cargo test --locked -p qos-relay --test it
+          personal_device_process::privileged_helper_preserves_user_owned_personal_device_projection
+          -- --ignored --nocapture --test-threads=1
 
       - name: Run the complete kernel-path filesystem contract
         run: >-

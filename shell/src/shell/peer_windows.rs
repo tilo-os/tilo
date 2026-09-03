@@ -47,7 +47,13 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         if started.iter().any(|a| a.eq_ignore_ascii_case(&item.app_id)) {
             continue;
         }
-        if tree.workspaces.get(item.workspace).is_none() {
+        let Some(workspace) = tree.workspaces.get(item.workspace) else {
+            continue;
+        };
+        // A same-identity continuation can discover the room before its
+        // signed membership document arrives. Keep it pending so the next
+        // reconciliation pass opens it as soon as authority is available.
+        if workspace.owner.is_none() {
             continue;
         }
         let note = match open_for(tree, &item) {
@@ -113,6 +119,31 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), String> {
     };
     // Before the launch, or a note written after races the window's toplevel.
     launcher::set_pending_placement(&item.app_id, Placement::IntoTab(item.tab));
+    if let Ok(registry) = crate::shell::personal_continuity_registry::global_registry().lock()
+        && let Ok(launch) =
+            crate::shell::personal_continuity::LaunchIntent::app(item.app_id.clone())
+        && let Some(record_instance) = registry.record_instance_for_tab(
+            ws.room,
+            crate::shell::personal_continuity::AppInstanceId(item.tab),
+            &launch,
+        )
+    {
+        if let Some(continuation) = registry.continuation_for_tab(
+            ws.room,
+            crate::shell::personal_continuity::AppInstanceId(item.tab),
+            &launch,
+        ) {
+            launcher::stage_continuation_resume(
+                ws.room,
+                item.tab,
+                continuation.resume.schema_version(),
+                continuation.resume.bytes().to_vec(),
+                record_instance.0,
+            );
+        } else {
+            launcher::stage_continuation_record(ws.room, item.tab, record_instance.0);
+        }
+    }
     match launcher::launch_in_workspace(&item.app_id, ws) {
         Ok(_) => Ok(()),
         Err(err) => {
@@ -455,11 +486,15 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_lands_on_the_tab_as_the_reason() {
+    fn an_ownerless_window_stays_pending_until_room_authority_arrives() {
         let mut ws = room_owned_by("quinten");
         ws.owner = None;
         let (mut tree, tab) = tree_with_peer_window(ws);
-        assert!(examine(&mut tree), "an unexamined window must be decided");
+        assert!(
+            !examine(&mut tree),
+            "missing authority is transient and must not become a permanent refusal"
+        );
+        assert!(any_pending(&tree), "the next authority sync must retry it");
         let note = tree.workspaces[0].strips[0].window_groups[0]
             .tabs
             .iter()
@@ -469,10 +504,9 @@ mod tests {
                 other => panic!("expected a peer window, got {other:?}"),
             })
             .expect("the tab is still there");
-        assert!(!note.is_empty(), "a refused window must state its reason");
         assert!(
-            !note.to_ascii_lowercase().contains("coming soon"),
-            "an app that is not here is not coming soon; got {note:?}"
+            note.is_empty(),
+            "a temporary authority race must not leave a stale error card; got {note:?}"
         );
     }
 }

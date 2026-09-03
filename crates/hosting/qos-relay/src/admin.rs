@@ -30,6 +30,40 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Retry durable removals queued while a home peer was offline.
+    HomePeerRetryRemovals {
+        #[arg(long)]
+        identity_root: PathBuf,
+    },
+    /// Read authenticated health from an enrolled home peer.
+    HomePeerStatus {
+        #[arg(long)]
+        identity_root: PathBuf,
+        #[arg(long)]
+        device: String,
+        #[arg(long)]
+        service: String,
+    },
+    /// Rename an enrolled home peer after mutual authentication.
+    HomePeerRename {
+        #[arg(long)]
+        identity_root: PathBuf,
+        #[arg(long)]
+        device: String,
+        #[arg(long)]
+        service: String,
+        #[arg(long)]
+        label: String,
+    },
+    /// Root-revoke and permanently stop an enrolled home peer.
+    HomePeerRemove {
+        #[arg(long)]
+        identity_root: PathBuf,
+        #[arg(long)]
+        device: String,
+        #[arg(long)]
+        service: String,
+    },
     /// Bind a workspace to this relay.
     BindWorkspace {
         /// Numeric workspace id.
@@ -114,6 +148,23 @@ fn workspace_store(
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::HomePeerRetryRemovals { identity_root } => retry_pending_removals(&identity_root),
+        Cmd::HomePeerStatus {
+            identity_root,
+            device,
+            service,
+        } => cmd_home_peer(identity_root, &device, &service, None),
+        Cmd::HomePeerRename {
+            identity_root,
+            device,
+            service,
+            label,
+        } => cmd_home_peer(identity_root, &device, &service, Some(label)),
+        Cmd::HomePeerRemove {
+            identity_root,
+            device,
+            service,
+        } => cmd_home_peer_remove(identity_root, &device, &service),
         Cmd::BindWorkspace { workspace_id, pin } => {
             cmd_bind_workspace(&cli.config, workspace_id, pin)
         }
@@ -135,6 +186,358 @@ fn main() -> anyhow::Result<()> {
             reason,
         } => cmd_revoke_device(&cli.config, &device_pubkey_hex, &reason),
     }
+}
+
+fn remote_home_peer(
+    identity_root: &std::path::Path,
+    device: &str,
+    service: &str,
+    request: qos_relay::transport::HomePeerManagementRequest,
+) -> anyhow::Result<qos_relay::transport::HomePeerManagementResponse> {
+    let paths = qos_user_identity::IdentityPaths::under(identity_root);
+    let user = qos_user_identity::persist::read_public_key(&paths.user_pubkey)?;
+    let signing_key = qos_user_identity::persist::read_signing_key(&paths.device_privkey)?;
+    let cert = qos_user_identity::persist::read_device_cert(&paths.device_cert_for_user(&user))
+        .or_else(|_| qos_user_identity::persist::read_device_cert(&paths.device_cert))?;
+    let expected_device = device_key(device)?;
+    let service = device_key(service)?;
+    let relay_addr = registered_home_peer_addr(identity_root, device, service)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async move {
+        let endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0).await?;
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            qos_relay::client::RelayClient::manage_home_peer(
+                &endpoint,
+                relay_addr,
+                user,
+                expected_device,
+                cert,
+                signing_key,
+                qos_user_identity::RevocationList::new(),
+                request,
+            ),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("home peer did not answer within 10 seconds"))??;
+        endpoint.close().await;
+        Ok(response)
+    })
+}
+
+fn cmd_home_peer(
+    identity_root: PathBuf,
+    device: &str,
+    service: &str,
+    rename: Option<String>,
+) -> anyhow::Result<()> {
+    let requested_label = rename.clone();
+    let request = rename.map_or(
+        qos_relay::transport::HomePeerManagementRequest::Status,
+        |label| qos_relay::transport::HomePeerManagementRequest::Rename { label },
+    );
+    let response = remote_home_peer(&identity_root, device, service, request)?;
+    if let Some(label) = requested_label {
+        update_home_peer_registry(&identity_root, device, Some(label))?;
+    }
+    refresh_home_peer_endpoint(
+        &identity_root,
+        device,
+        device_key(service)?,
+        &response.relay_endpoint,
+    )?;
+    println!("{}", serde_json::to_string(&response)?);
+    Ok(())
+}
+
+fn registered_home_peer_addr(
+    identity_root: &std::path::Path,
+    device: &str,
+    service: [u8; 32],
+) -> anyhow::Result<iroh_base::EndpointAddr> {
+    let service_id = iroh_base::PublicKey::from_bytes(&service)?;
+    let path = identity_root.join("home-peers.json");
+    let registrations: Vec<qos_relay::HomePeerRegistration> =
+        serde_json::from_slice(&std::fs::read(path)?)?;
+    let registration = registrations
+        .into_iter()
+        .find(|entry| {
+            entry.device_node_id == device && entry.relay_service_node_id == hex::encode(service)
+        })
+        .ok_or_else(|| anyhow::anyhow!("home peer is not registered"))?;
+    Ok(registration
+        .relay_endpoint
+        .filter(|endpoint| endpoint.id == service_id && !endpoint.is_empty())
+        .unwrap_or_else(|| iroh_base::EndpointAddr::new(service_id)))
+}
+
+fn refresh_home_peer_endpoint(
+    identity_root: &std::path::Path,
+    device: &str,
+    service: [u8; 32],
+    endpoint: &iroh_base::EndpointAddr,
+) -> anyhow::Result<()> {
+    if endpoint.id.as_bytes() != &service || endpoint.is_empty() {
+        anyhow::bail!("home peer returned an invalid relay endpoint advertisement");
+    }
+    let path = identity_root.join("home-peers.json");
+    let mut registrations: Vec<qos_relay::HomePeerRegistration> =
+        serde_json::from_slice(&std::fs::read(&path)?)?;
+    let registration = registrations
+        .iter_mut()
+        .find(|entry| {
+            entry.device_node_id == device && entry.relay_service_node_id == hex::encode(service)
+        })
+        .ok_or_else(|| anyhow::anyhow!("home peer is not registered"))?;
+    registration.relay_endpoint = Some(endpoint.clone());
+    registration.schema_version = qos_relay::HomePeerRegistration::CURRENT_SCHEMA;
+    atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&registrations)?, 0o644)?;
+    Ok(())
+}
+
+fn cmd_home_peer_remove(identity_root: PathBuf, device: &str, service: &str) -> anyhow::Result<()> {
+    let paths = qos_user_identity::IdentityPaths::under(&identity_root);
+    let target = device_key(device)?;
+    let mut pending = load_pending_decommissions(&identity_root)?;
+    let intent = if let Some(existing) = pending
+        .iter()
+        .find(|intent| intent.device == device)
+        .cloned()
+    {
+        existing
+    } else {
+        let root = qos_user_identity::persist::read_signing_key(&paths.user_privkey)?;
+        let mut revocation = qos_user_identity::RevocationEntry {
+            user_public_key: root.verifying_key().to_bytes(),
+            revoked_device_public_key: target,
+            revoked_at_ns: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| {
+                    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+                }),
+            reason: qos_user_identity::RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        qos_user_identity::sign_revocation_entry(&mut revocation, &root)?;
+        let intent = PendingDecommission {
+            device: device.to_string(),
+            service: service.to_string(),
+            revocation,
+        };
+        pending.push(intent.clone());
+        save_pending_decommissions(&identity_root, &pending)?;
+        intent
+    };
+
+    // Local denial is durable first. The management dial deliberately uses
+    // an empty local server revocation view so this exact pinned certificate
+    // remains reachable only long enough to deliver its own decommission.
+    persist_canonical_revocation(&paths, &intent.revocation)?;
+    let mut fleet_revocations = qos_relay::store::load_revocations(&identity_root)?;
+    fleet_revocations.retain(|entry| entry.revoked_device_public_key != target);
+    fleet_revocations.push(intent.revocation.clone());
+    qos_relay::store::save_revocations(&identity_root, &fleet_revocations)?;
+    persist_fleet_revocation(&intent.revocation)?;
+    if identity_root.join("home-peers.json").exists() {
+        update_home_peer_registry(&identity_root, device, None)?;
+    }
+
+    let remote = remote_home_peer(
+        &identity_root,
+        &intent.device,
+        &intent.service,
+        qos_relay::transport::HomePeerManagementRequest::Decommission {
+            revocation: intent.revocation.clone(),
+        },
+    );
+    if remote
+        .as_ref()
+        .is_ok_and(|response| response.decommissioned)
+    {
+        pending.retain(|queued| queued.device != intent.device);
+        save_pending_decommissions(&identity_root, &pending)?;
+    }
+    let response = remote.unwrap_or(qos_relay::transport::HomePeerManagementResponse {
+        device_public_key: target,
+        relay_endpoint: iroh_base::EndpointAddr::new(iroh_base::PublicKey::from_bytes(
+            &device_key(&intent.service)?,
+        )?),
+        label: "Removed".into(),
+        files_ready: false,
+        services: Default::default(),
+        decommissioned: false,
+    });
+    println!("{}", serde_json::to_string(&response)?);
+    Ok(())
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct PendingDecommission {
+    device: String,
+    service: String,
+    revocation: qos_user_identity::RevocationEntry,
+}
+
+fn pending_decommissions_path(identity_root: &std::path::Path) -> PathBuf {
+    identity_root.join("pending-home-peer-decommissions.json")
+}
+
+fn load_pending_decommissions(
+    identity_root: &std::path::Path,
+) -> anyhow::Result<Vec<PendingDecommission>> {
+    match std::fs::read(pending_decommissions_path(identity_root)) {
+        Ok(bytes) if bytes.len() <= 1024 * 1024 => Ok(serde_json::from_slice(&bytes)?),
+        Ok(_) => anyhow::bail!("pending home-peer removal list is too large"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn save_pending_decommissions(
+    identity_root: &std::path::Path,
+    pending: &[PendingDecommission],
+) -> anyhow::Result<()> {
+    atomic_file::write_with_mode(
+        &pending_decommissions_path(identity_root),
+        &serde_json::to_vec_pretty(pending)?,
+        0o600,
+    )?;
+    Ok(())
+}
+
+fn retry_pending_removals(identity_root: &std::path::Path) -> anyhow::Result<()> {
+    let mut pending = load_pending_decommissions(identity_root)?;
+    for intent in pending.clone() {
+        let paths = qos_user_identity::IdentityPaths::under(identity_root);
+        let target = device_key(&intent.device)?;
+        persist_canonical_revocation(&paths, &intent.revocation)?;
+        let mut relay_revocations = qos_relay::store::load_revocations(identity_root)?;
+        relay_revocations.retain(|entry| entry.revoked_device_public_key != target);
+        relay_revocations.push(intent.revocation.clone());
+        qos_relay::store::save_revocations(identity_root, &relay_revocations)?;
+        persist_fleet_revocation(&intent.revocation)?;
+        if identity_root.join("home-peers.json").exists() {
+            update_home_peer_registry(identity_root, &intent.device, None)?;
+        }
+        if remote_home_peer(
+            identity_root,
+            &intent.device,
+            &intent.service,
+            qos_relay::transport::HomePeerManagementRequest::Decommission {
+                revocation: intent.revocation,
+            },
+        )
+        .is_ok_and(|response| response.decommissioned)
+        {
+            pending.retain(|queued| queued.device != intent.device);
+            save_pending_decommissions(identity_root, &pending)?;
+        }
+    }
+    println!("{}", pending.len());
+    Ok(())
+}
+
+fn persist_canonical_revocation(
+    paths: &qos_user_identity::IdentityPaths,
+    revocation: &qos_user_identity::RevocationEntry,
+) -> anyhow::Result<()> {
+    let path = paths
+        .user_pubkey
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("identity public-key path has no parent"))?
+        .join("revocations.bin");
+    let mut entries: Vec<qos_user_identity::RevocationEntry> = match std::fs::read(&path) {
+        Ok(bytes) if bytes.len() <= 4 * 1024 * 1024 => postcard::from_bytes(&bytes)?,
+        Ok(_) => anyhow::bail!("canonical revocation list is too large"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
+    if entries.len() >= 4096 {
+        anyhow::bail!("canonical revocation list is full");
+    }
+    for entry in &entries {
+        qos_user_identity::verify_revocation_entry(entry)?;
+        if entry.user_public_key != revocation.user_public_key {
+            anyhow::bail!("canonical revocation list crosses identity roots");
+        }
+    }
+    entries.retain(|entry| entry.revoked_device_public_key != revocation.revoked_device_public_key);
+    entries.push(revocation.clone());
+    entries.sort_by_key(|entry| entry.revoked_device_public_key);
+    atomic_file::write_with_mode(&path, &postcard::to_allocvec(&entries)?, 0o600)?;
+    Ok(())
+}
+
+fn persist_fleet_revocation(revocation: &qos_user_identity::RevocationEntry) -> anyhow::Result<()> {
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .ok_or_else(|| anyhow::anyhow!("user configuration directory is unavailable"))?;
+    let path = config
+        .join("qos/identities/fleets")
+        .join(format!("{}.json", hex::encode(revocation.user_public_key)));
+    if !path.exists() {
+        return Ok(());
+    }
+    let bytes = std::fs::read(&path)?;
+    if bytes.len() > 4 * 1024 * 1024 {
+        anyhow::bail!("device fleet is too large");
+    }
+    let mut fleet: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let revocations = fleet
+        .get_mut("revocations")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| anyhow::anyhow!("device fleet has no revocation list"))?;
+    revocations.retain(|entry| {
+        entry
+            .get("revoked_device_public_key")
+            .and_then(serde_json::Value::as_array)
+            .map(|bytes| {
+                bytes
+                    .iter()
+                    .filter_map(serde_json::Value::as_u64)
+                    .collect::<Vec<_>>()
+                    != revocation
+                        .revoked_device_public_key
+                        .iter()
+                        .map(|byte| u64::from(*byte))
+                        .collect::<Vec<_>>()
+            })
+            .unwrap_or(true)
+    });
+    revocations.push(serde_json::to_value(revocation)?);
+    atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&fleet)?, 0o600)?;
+    Ok(())
+}
+
+fn update_home_peer_registry(
+    identity_root: &std::path::Path,
+    device: &str,
+    new_label: Option<String>,
+) -> anyhow::Result<()> {
+    let path = identity_root.join("home-peers.json");
+    let bytes = std::fs::read(&path)?;
+    if bytes.len() > 1024 * 1024 {
+        anyhow::bail!("home-peer registry is too large");
+    }
+    let mut registrations: Vec<qos_relay::HomePeerRegistration> = serde_json::from_slice(&bytes)?;
+    if let Some(label) = new_label {
+        let label = label.trim();
+        if !qos_relay::valid_home_peer_label(label) {
+            anyhow::bail!("home-peer name must be 1 to 80 bytes");
+        }
+        let registration = registrations
+            .iter_mut()
+            .find(|entry| entry.device_node_id == device)
+            .ok_or_else(|| anyhow::anyhow!("home peer is not registered"))?;
+        registration.label = label.to_string();
+    } else {
+        registrations.retain(|entry| entry.device_node_id != device);
+    }
+    atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&registrations)?, 0o644)?;
+    Ok(())
 }
 
 fn cmd_bind_workspace(
@@ -308,4 +711,50 @@ fn cmd_revoke_device(
     println!("revoked device {} ({reason:?})", hex::encode(pk));
     println!("a running qos-relay disconnects the device within one second");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn canonical_revocation_aggregate_is_verified_deduplicated_and_private() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = qos_user_identity::IdentityPaths::under(temp.path());
+        std::fs::create_dir_all(paths.user_pubkey.parent().unwrap()).unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
+        let mut entry = qos_user_identity::RevocationEntry {
+            user_public_key: root.verifying_key().to_bytes(),
+            revoked_device_public_key: [72; 32],
+            revoked_at_ns: 1,
+            reason: qos_user_identity::RevocationReason::Retired,
+            signature: [0; 64],
+        };
+        qos_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+        persist_canonical_revocation(&paths, &entry).unwrap();
+        entry.revoked_at_ns = 2;
+        qos_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+        persist_canonical_revocation(&paths, &entry).unwrap();
+
+        let path = paths.user_pubkey.parent().unwrap().join("revocations.bin");
+        let stored: Vec<qos_user_identity::RevocationEntry> =
+            postcard::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored, vec![entry.clone()]);
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        let pending = PendingDecommission {
+            device: hex::encode(entry.revoked_device_public_key),
+            service: hex::encode([73; 32]),
+            revocation: entry.clone(),
+        };
+        save_pending_decommissions(temp.path(), std::slice::from_ref(&pending)).unwrap();
+        let after_restart = load_pending_decommissions(temp.path()).unwrap();
+        assert_eq!(after_restart.len(), 1);
+        assert_eq!(after_restart[0].device, pending.device);
+        assert_eq!(after_restart[0].revocation, entry);
+    }
 }

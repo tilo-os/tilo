@@ -74,6 +74,7 @@ pub mod client;
 pub mod coedit;
 pub mod config;
 pub mod daemon;
+pub mod home_peer;
 pub mod mesh;
 pub mod metrics;
 pub mod peer;
@@ -88,12 +89,14 @@ pub use client::{ClientError, RelayClient};
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};
 pub use config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use daemon::{Relay, RelayError, RelayHandle};
+pub use home_peer::{HomePeerRegistration, valid_home_peer_label};
 pub use mesh::{
     DeviceMeshProfile, DeviceRole, Placement, PlacementRequest, RemoteControlRoute,
     ReplicationIntent, ReplicationResource, ServerAdvertisement, ServiceCapabilities, Workload,
     place, route_remote_control,
 };
 pub use policy::TrustPolicy;
+pub use transport::ContentPeerRegistration;
 pub use transport::{ALPN, Envelope};
 
 /// Semantic version emitted by `qos-relay --version`. Tied to the
@@ -114,4 +117,15 @@ pub fn room_workspace_id(room: &str) -> Result<u64, uuid::Error> {
     first8.copy_from_slice(&hash[..8]);
     let id = u64::from_le_bytes(first8);
     Ok(if id == 0 { 1 } else { id })
+}
+
+/// Stable private relay shard for same-identity continuation checkpoints.
+/// This is not a user-visible workspace and is derived only from the root
+/// identity so every enrolled device/home peer agrees after restart.
+pub fn personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {
+    let hash = blake3::derive_key("qos-personal-continuity-v1\0", user_public_key);
+    let mut first8 = [0u8; 8];
+    first8.copy_from_slice(&hash[..8]);
+    let id = u64::from_le_bytes(first8);
+    if id == 0 { 1 } else { id }
 }

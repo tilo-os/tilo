@@ -6,6 +6,88 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
+/// Toolkit-owned continuation schema used when an app has no narrower
+/// domain-specific projection. The CRDT document travels on its stable record
+/// route; this payload restores the complementary local presentation state.
+pub const GENERIC_VIEW_CONTINUATION_SCHEMA: u16 = u16::MAX;
+
+/// Host-owned generic continuation. Deliberately excludes widget `ephemeral`
+/// strings and `RecordId::for_file` values: both may contain local paths or
+/// app secrets. File navigation is restored by the shell's typed
+/// `FileRecordId` launch intent; this fallback carries presentation only.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PortableContinuationView {
+    scroll: Vec<f64>,
+    focus_ordinal: Option<usize>,
+    viewport: crate::view::ViewRect,
+    view_mode: Option<String>,
+}
+
+impl PortableContinuationView {
+    fn capture(view: crate::view::View) -> Self {
+        let scroll = view
+            .scroll
+            .into_iter()
+            .filter(|value| value.is_finite())
+            .take(32)
+            .collect();
+        let view_mode = view.view_mode.filter(|mode| {
+            !mode.is_empty()
+                && mode.len() <= 64
+                && mode
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        });
+        Self {
+            scroll,
+            focus_ordinal: view.focus.map(|focus| focus.ordinal),
+            viewport: view.viewport,
+            view_mode,
+        }
+    }
+
+    fn into_view(self) -> crate::view::View {
+        crate::view::View {
+            scroll: self.scroll,
+            focus: self.focus_ordinal.map(|ordinal| crate::view::FocusView {
+                ordinal,
+                ephemeral: String::new(),
+            }),
+            // Stable file records are routed by the shell and never encoded
+            // as the toolkit's path-bearing `RecordId::for_file`.
+            open_resource: None,
+            viewport: self.viewport,
+            view_mode: self.view_mode,
+        }
+    }
+}
+
+/// Validate the toolkit-owned generic wire shape at the shell boundary.
+/// App-provided opaque bytes must not be accepted merely because they use the
+/// generic schema number.
+pub fn validate_generic_continuation_metadata(bytes: &[u8]) -> bool {
+    let Ok(view) = postcard::from_bytes::<PortableContinuationView>(bytes) else {
+        return false;
+    };
+    view.scroll.len() <= 32
+        && view.scroll.iter().all(|value| value.is_finite())
+        && [
+            view.viewport.x,
+            view.viewport.y,
+            view.viewport.width,
+            view.viewport.height,
+        ]
+        .into_iter()
+        .all(f64::is_finite)
+        && view.view_mode.as_ref().is_none_or(|mode| {
+            !mode.is_empty()
+                && mode.len() <= 64
+                && mode
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+}
+
 /// Synthetic input for `EventLoopProxy`: each variant becomes the real
 /// `WindowEvent`(s) and routes through the same handler, so injected and
 /// real-hardware events take the identical code path.
@@ -80,15 +162,56 @@ const fn animation_pump_needed(needs_frame: bool, reduce_motion: bool) -> bool {
     needs_frame && !reduce_motion
 }
 
+fn continuation_publication(
+    app_id: String,
+    metadata: Option<&crate::collaboration::ContinuationMetadata>,
+    had_previous: bool,
+) -> Option<CollabRequest> {
+    match metadata {
+        Some(metadata) => Some(CollabRequest::ReportContinuation {
+            app_id,
+            schema_version: metadata.schema_version,
+            metadata: metadata.bytes.clone(),
+        }),
+        None if had_previous => Some(CollabRequest::ClearContinuation { app_id }),
+        None => None,
+    }
+}
+
 #[cfg(test)]
 mod animation_pump_tests {
-    use super::animation_pump_needed;
+    use super::{animation_pump_needed, continuation_publication};
+    use crate::collaboration::{CollabRequest, ContinuationMetadata};
 
     #[test]
     fn reduced_motion_does_not_keep_the_idle_loop_awake() {
         assert!(animation_pump_needed(true, false));
         assert!(!animation_pump_needed(true, true));
         assert!(!animation_pump_needed(false, false));
+    }
+
+    #[test]
+    fn continuation_disappearance_clears_the_durable_projection() {
+        let request = continuation_publication("ebook".into(), None, true);
+        assert!(matches!(
+            request,
+            Some(CollabRequest::ClearContinuation { app_id }) if app_id == "ebook"
+        ));
+
+        assert!(continuation_publication("ebook".into(), None, false).is_none());
+
+        let metadata = ContinuationMetadata {
+            schema_version: 3,
+            bytes: vec![1, 2, 3],
+        };
+        assert!(matches!(
+            continuation_publication("ebook".into(), Some(&metadata), false),
+            Some(CollabRequest::ReportContinuation {
+                app_id,
+                schema_version: 3,
+                metadata,
+            }) if app_id == "ebook" && metadata == vec![1, 2, 3]
+        ));
     }
 }
 
@@ -381,6 +504,12 @@ pub struct App {
     action_registry: qos_actions::ActionRegistry,
     action_transport: Box<dyn qos_actions::ActionTransport>,
     last_published_actions: Option<Vec<qos_actions::ActionDescriptor>>,
+    /// Last app-owned continuation projection sent to the local shell.
+    last_published_continuation: Option<crate::collaboration::ContinuationMetadata>,
+    pending_continuation_restore: Option<crate::collaboration::ContinuationMetadata>,
+    /// Generic view restoration waits until the first layout has built the
+    /// focus order. App-specific projections still apply before first sync.
+    pending_continuation_view: Option<crate::view::View>,
     /// Background/streaming operations admitted by the retained widget tree.
     /// They remain here until the widget reports exactly one terminal update.
     directed_invocations: std::collections::HashMap<qos_actions::InvocationId, DirectedInvocation>,
@@ -527,6 +656,9 @@ impl App {
             action_registry: qos_actions::ActionRegistry::new(),
             action_transport: Box::new(qos_actions::LocalTransport::new()),
             last_published_actions: None,
+            last_published_continuation: None,
+            pending_continuation_restore: crate::collaboration::continuation_restore_env(),
+            pending_continuation_view: None,
             directed_invocations: std::collections::HashMap::new(),
             local_invocations: std::collections::HashSet::new(),
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
@@ -557,6 +689,14 @@ impl App {
             app.set_presence_broadcast_scope(Some(scope));
         }
         app.presence_ctx.set_surface_id(crate::local_surface_id());
+        // Apply launcher-provided continuation before the first widget sync or
+        // redraw.  Waiting for an input event left a restored app blank on a
+        // quiet freshly-created window.
+        app.apply_pending_continuation_restore();
+        // The first report is level-triggered.  Sending it here makes a
+        // launched app visible to continuity capture even if it receives no
+        // input events before the next peer asks for a checkpoint.
+        app.publish_continuation_metadata();
         app
     }
 
@@ -1144,6 +1284,59 @@ impl App {
             actions,
         });
         self.last_published_actions = Some(descriptors);
+    }
+
+    /// Publish only a changed, app-declared resume projection. This remains
+    /// deliberately separate from document collaboration: a continuation
+    /// report is private to the local session and cannot make a remote app
+    /// focus itself or start playing media.
+    fn publish_continuation_metadata(&mut self) {
+        self.apply_pending_continuation_restore();
+        if !self.collab_manager.is_connected() || self.pending_continuation_view.is_some() {
+            return;
+        }
+        let declared = self
+            .root_widget
+            .continuation_metadata(&self.state.doc, &self.state.root);
+        let metadata = declared.or_else(|| {
+            let view = <Self as crate::view::FreezeThaw>::capture_view(self);
+            let bytes = postcard::to_stdvec(&PortableContinuationView::capture(view)).ok()?;
+            (!bytes.is_empty() && bytes.len() <= 32 * 1024).then_some(
+                crate::collaboration::ContinuationMetadata {
+                    schema_version: GENERIC_VIEW_CONTINUATION_SCHEMA,
+                    bytes,
+                },
+            )
+        });
+        if metadata == self.last_published_continuation {
+            return;
+        }
+        if let Some(request) = continuation_publication(
+            crate::collaboration::local_app_id(),
+            metadata.as_ref(),
+            self.last_published_continuation.is_some(),
+        ) {
+            self.collab_manager.send(request);
+        }
+        self.last_published_continuation = metadata;
+    }
+
+    fn apply_pending_continuation_restore(&mut self) {
+        if let Some(metadata) = self.pending_continuation_restore.take() {
+            if metadata.schema_version == GENERIC_VIEW_CONTINUATION_SCHEMA {
+                if let Ok(view) = postcard::from_bytes::<PortableContinuationView>(&metadata.bytes)
+                {
+                    self.pending_continuation_view = Some(view.into_view());
+                }
+                return;
+            }
+            let root = self.state.root.clone();
+            let _ = self.root_widget.restore_continuation_metadata(
+                &metadata,
+                &mut self.state.doc,
+                &root,
+            );
+        }
     }
 
     fn invoke_published_action(
@@ -3405,6 +3598,9 @@ impl App {
             &mut self.node_map,
         ));
         self.update_focusable_order();
+        if let Some(view) = self.pending_continuation_view.take() {
+            <Self as crate::view::FreezeThaw>::restore_view(self, &view);
+        }
         if self.autofocus_first
             && self.focused_node.is_none()
             && let Some(&first) = self.focusable_order.first()
@@ -5519,6 +5715,7 @@ impl AppHandler {
         app.broadcast_location_presence();
         app.broadcast_view_presence();
         app.publish_action_surface();
+        app.publish_continuation_metadata();
 
         if let Some(id) = focus_target {
             app.set_focused_node(Some(id));
@@ -8285,6 +8482,54 @@ mod view_presence_tests {
         let mut app = App::new(State::new(), Box::new(root));
         app.init_layout();
         app
+    }
+
+    #[test]
+    fn generic_continuation_restores_view_for_apps_without_custom_metadata() {
+        let mut sender = app_with_root(ViewRoot {
+            scroll: vec![48.0, 12.0],
+            mode: Some("grid".into()),
+            resource: Some("record:stable-photo".into()),
+            rect: KurboRect::ZERO,
+        });
+        sender.last_frame_size = Some(winit::dpi::PhysicalSize::new(900, 600));
+        let view = <App as FreezeThaw>::capture_view(&sender);
+        let metadata = crate::collaboration::ContinuationMetadata {
+            schema_version: GENERIC_VIEW_CONTINUATION_SCHEMA,
+            bytes: postcard::to_stdvec(&PortableContinuationView::capture(view)).unwrap(),
+        };
+
+        // Model launcher delivery before first layout, which is the real
+        // continuation order. The view waits until focus/layout nodes exist.
+        let mut receiver = App::new(State::new(), Box::new(ViewRoot::new()));
+        receiver.pending_continuation_restore = Some(metadata);
+        receiver.apply_pending_continuation_restore();
+        assert!(receiver.pending_continuation_view.is_some());
+        receiver.init_layout();
+
+        let restored = <App as FreezeThaw>::capture_view(&receiver);
+        assert_eq!(restored.scroll, vec![48.0, 12.0]);
+        assert_eq!(restored.view_mode.as_deref(), Some("grid"));
+        assert!(receiver.pending_continuation_view.is_none());
+    }
+
+    #[test]
+    fn generic_continuation_never_serializes_path_or_widget_ephemeral_state() {
+        let portable = PortableContinuationView::capture(crate::view::View {
+            scroll: vec![1.0],
+            focus: Some(crate::view::FocusView {
+                ordinal: 2,
+                ephemeral: "/home/alice/private-token".into(),
+            }),
+            open_resource: Some("file:/home/alice/private.txt".into()),
+            viewport: crate::view::ViewRect::default(),
+            view_mode: Some("grid".into()),
+        });
+        let bytes = postcard::to_stdvec(&portable).unwrap();
+        assert!(!bytes.windows(5).any(|window| window == b"/home"));
+        let restored = portable.into_view();
+        assert_eq!(restored.open_resource, None);
+        assert_eq!(restored.focus.unwrap().ephemeral, "");
     }
 
     /// Asserted on both the frame that leaves the sender (via the broadcast

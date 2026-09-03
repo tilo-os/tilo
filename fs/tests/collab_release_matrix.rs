@@ -34,6 +34,27 @@ struct MountProcess {
     mount: PathBuf,
 }
 
+struct ReplicaProcess {
+    child: Child,
+    logs: Arc<Mutex<Vec<String>>>,
+}
+
+impl ReplicaProcess {
+    fn kill_and_wait(&mut self) {
+        self.child.kill().unwrap();
+        self.child.wait().unwrap();
+    }
+}
+
+impl Drop for ReplicaProcess {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
 impl MountProcess {
     fn wait_line(&mut self, expected: &str) -> String {
         let deadline = Instant::now().checked_add(PROCESS_TIMEOUT).unwrap();
@@ -170,9 +191,12 @@ fn spawn_fs(
 ) -> MountProcess {
     std::fs::create_dir_all(cache).unwrap();
     std::fs::set_permissions(cache, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let authority_sockets = cache.join("authority-sockets");
+    std::fs::create_dir_all(&authority_sockets).unwrap();
     let mut command = Command::new(binary);
     command
         .env(fs::identity::IDENTITY_ROOT_ENV, identity)
+        .env("QOS_AUTHORITY_SOCKET_DIR", authority_sockets)
         .env("QOS_FS_FUSE_OWNER_ONLY", "1")
         .env(fs::transport_gate::TRANSPORT_GATE_SOCKET_ENV, gate)
         .args(mode)
@@ -200,6 +224,82 @@ fn spawn_fs(
     }
 }
 
+fn export_home_peer_bundle(
+    binary: &Path,
+    identity: &Path,
+    workspace_cache: &Path,
+    acl: &Path,
+    bundle: &Path,
+    replica_cache: &Path,
+    status: &Path,
+) {
+    let status = Command::new(binary)
+        .env(fs::identity::IDENTITY_ROOT_ENV, identity)
+        .args([
+            "export-home-peer",
+            "--cache-dir",
+            workspace_cache.to_str().unwrap(),
+            "--acl",
+            acl.to_str().unwrap(),
+            "--output",
+            bundle.to_str().unwrap(),
+            "--replica-cache-dir",
+            replica_cache.to_str().unwrap(),
+            "--status-file",
+            status.to_str().unwrap(),
+            "--relay-workspace-id",
+            "42",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "home-peer bundle export failed: {status}");
+}
+
+fn publish_authority(binary: &Path, identity: &Path, workspace_cache: &Path, acl: &Path) {
+    let status = Command::new(binary)
+        .env(fs::identity::IDENTITY_ROOT_ENV, identity)
+        .env(
+            "QOS_AUTHORITY_SOCKET_DIR",
+            workspace_cache.join("authority-sockets"),
+        )
+        .args([
+            "publish-authority",
+            "--cache-dir",
+            workspace_cache.to_str().unwrap(),
+            "--acl",
+            acl.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "authority publication failed: {status}");
+}
+
+fn spawn_replica(binary: &Path, identity: &Path, config: &Path) -> ReplicaProcess {
+    let mut child = Command::new(binary)
+        .env(fs::identity::IDENTITY_ROOT_ENV, identity)
+        .args(["replica", "--config", config.to_str().unwrap()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (_lines, logs) = capture(&mut child);
+    ReplicaProcess { child, logs }
+}
+
+fn ready_replica_endpoint(status: &Path, process: &mut ReplicaProcess) -> iroh_base::EndpointAddr {
+    wait_for(PROCESS_TIMEOUT, || {
+        if let Some(exit) = process.child.try_wait().unwrap() {
+            panic!(
+                "replica exited {exit}; logs:\n{}",
+                process.logs.lock().unwrap().join("\n")
+            );
+        }
+        let status = fs::full_replica::load_status(status).ok().flatten()?;
+        (status.full_content_replication && !status.filesystem_endpoints.is_empty())
+            .then(|| status.filesystem_endpoints[0].clone())
+    })
+}
+
 fn gate(socket: &Path, command: &str) -> String {
     eprintln!("barrier: gate {} {command}", socket.display());
     wait_for(PROCESS_TIMEOUT, || UnixStream::connect(socket).ok());
@@ -219,6 +319,25 @@ fn wait_for<T>(timeout: Duration, mut inspect: impl FnMut() -> Option<T>) -> T {
         assert!(Instant::now() < deadline, "state barrier timed out");
         std::thread::park_timeout(Duration::from_millis(10));
     }
+}
+
+fn real_fuse_available(scenario: &str) -> bool {
+    let available = std::fs::metadata("/dev/fuse")
+        .is_ok_and(|fuse| std::os::unix::fs::FileTypeExt::is_char_device(&fuse.file_type()))
+        && Command::new("fusermount3")
+            .arg("--version")
+            .status()
+            .is_ok_and(|status| status.success());
+    if available {
+        return true;
+    }
+    assert_ne!(
+        std::env::var("QOS_FS_FUSE_REQUIRED").as_deref(),
+        Ok("1"),
+        "mandatory real-FUSE scenario {scenario} has no usable /dev/fuse"
+    );
+    eprintln!("skipping {scenario}: real FUSE is covered by the dedicated mandatory CI job");
+    false
 }
 
 fn wait_for_process<T>(process: &mut MountProcess, mut inspect: impl FnMut() -> Option<T>) -> T {
@@ -528,17 +647,9 @@ fn forced_partition_offline_edits_restart_and_converge_as_a_conflict() {
 #[allow(clippy::too_many_lines)]
 #[test]
 fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
-    let fuse = std::fs::metadata("/dev/fuse").expect("mandatory matrix requires /dev/fuse");
-    assert!(std::os::unix::fs::FileTypeExt::is_char_device(
-        &fuse.file_type()
-    ));
-    assert!(
-        Command::new("fusermount3")
-            .arg("--version")
-            .status()
-            .unwrap()
-            .success()
-    );
+    if !real_fuse_available("partition/restart convergence") {
+        return;
+    }
 
     let temp = tempfile::tempdir().unwrap();
     let host_identity = temp.path().join("host-identity");
@@ -796,6 +907,259 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
     reader_process.stop();
     peer.stop();
     host.stop();
+}
+
+/// Real owner/NAS/collaborator process boundary. The NAS starts from the
+/// exported production bundle, receives an update and deletion, then remains
+/// the only reachable source across both owner loss and its own restart.
+#[test]
+fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() {
+    if !real_fuse_available("owner/NAS/collaborator lifecycle") {
+        return;
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let owner_identity = temp.path().join("owner");
+    let nas_identity = temp.path().join("nas");
+    let reader_identity = temp.path().join("reader");
+    let offline_reader_identity = temp.path().join("offline-reader");
+    let (owner, _) = install_identity(&owner_identity, [0xa1; 32], [0xa2; 32], true);
+    let (_, _) = install_identity(&nas_identity, [0xa1; 32], [0xa3; 32], false);
+    let (reader, _) = install_identity(&reader_identity, [0xa4; 32], [0xa5; 32], false);
+    let (offline_reader, _) =
+        install_identity(&offline_reader_identity, [0xa6; 32], [0xa7; 32], false);
+    let acl = temp.path().join("acl.json");
+    let caps = vec![
+        collab_types::CapOverride::new(
+            collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
+            collab_types::Scope::FsPath("/".into()),
+            collab_types::Effect::Grant,
+            collab_types::Verb::Read,
+        ),
+        collab_types::CapOverride::new(
+            collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
+            collab_types::Scope::FsPath("/".into()),
+            collab_types::Effect::Grant,
+            collab_types::Verb::Write,
+        ),
+        collab_types::CapOverride::new(
+            collab_types::Subject::User(collab_types::Ed25519PublicKey(reader)),
+            collab_types::Scope::FsPath("/".into()),
+            collab_types::Effect::Grant,
+            collab_types::Verb::Read,
+        ),
+        collab_types::CapOverride::new(
+            collab_types::Subject::User(collab_types::Ed25519PublicKey(offline_reader)),
+            collab_types::Scope::FsPath("/".into()),
+            collab_types::Effect::Grant,
+            collab_types::Verb::Read,
+        ),
+    ];
+    std::fs::write(&acl, serde_json::to_vec(&caps).unwrap()).unwrap();
+    let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+    let owner_mount = temp.path().join("owner-mount");
+    std::fs::create_dir(&owner_mount).unwrap();
+    let owner_cache = temp.path().join("owner-cache");
+    let owner_gate = owner_cache.join("gate.sock");
+    let seed = temp.path().join("seed");
+    std::fs::create_dir(&seed).unwrap();
+    std::fs::write(seed.join("survivor.txt"), b"before-nas").unwrap();
+    std::fs::write(seed.join("deleted.txt"), b"delete-me").unwrap();
+    let mut owner_process = spawn_fs(
+        binary,
+        &owner_identity,
+        &owner_mount,
+        &owner_cache,
+        &owner_gate,
+        &acl,
+        &["serve", "--seed", seed.to_str().unwrap()],
+        false,
+    );
+    owner_process.wait_line("Hosting workspace");
+    let owner_ticket = owner_process.wait_ticket();
+    owner_process.wait_line("Mounting QuickFS");
+    let deleted_manifest_bytes: [u8; 32] = get_xattr(
+        &owner_mount.join("deleted.txt"),
+        fs::syncstate::CONTENT_HASH_XATTR,
+    )
+    .unwrap()
+    .try_into()
+    .unwrap();
+    let deleted_manifest = Hash::from(deleted_manifest_bytes);
+
+    let bundle = temp.path().join("home-peer.toml");
+    let replica_cache = temp.path().join("nas-cache");
+    let status = temp.path().join("nas-status.json");
+    export_home_peer_bundle(
+        binary,
+        &owner_identity,
+        &owner_cache,
+        &acl,
+        &bundle,
+        &replica_cache,
+        &status,
+    );
+    let mut nas = spawn_replica(binary, &nas_identity, &bundle);
+    let nas_endpoint = ready_replica_endpoint(&status, &mut nas);
+
+    // Update/delete after the NAS is ready. Its next coalesced generation
+    // must be complete before the owner is removed.
+    std::fs::write(owner_mount.join("survivor.txt"), b"updated-through-nas").unwrap();
+    std::fs::remove_file(owner_mount.join("deleted.txt")).unwrap();
+
+    let original = fs::Ticket::decode(&owner_ticket).unwrap();
+    let nas_ticket = fs::Ticket {
+        node: nas_endpoint,
+        workspace: original.workspace,
+    }
+    .encode()
+    .unwrap();
+    let reader_mount = temp.path().join("reader-mount");
+    std::fs::create_dir(&reader_mount).unwrap();
+    let reader_cache = temp.path().join("reader-cache");
+    let reader_gate = reader_cache.join("gate.sock");
+    let mut reader_process = spawn_fs(
+        binary,
+        &reader_identity,
+        &reader_mount,
+        &reader_cache,
+        &reader_gate,
+        &acl,
+        &["mount", "--ticket", &nas_ticket],
+        false,
+    );
+    reader_process.wait_line("Joined workspace");
+    reader_process.wait_line("Mounting QuickFS");
+    wait_for_process(&mut reader_process, || {
+        (std::fs::read(reader_mount.join("survivor.txt"))
+            .ok()?
+            .as_slice()
+            == b"updated-through-nas")
+            .then_some(())
+    });
+    assert!(!reader_mount.join("deleted.txt").exists());
+    reader_process.stop();
+
+    let revoked_acl = temp.path().join("revoked-acl.json");
+    let revoked_caps = vec![
+        collab_types::CapOverride::new(
+            collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
+            collab_types::Scope::FsPath("/".into()),
+            collab_types::Effect::Grant,
+            collab_types::Verb::Read,
+        ),
+        collab_types::CapOverride::new(
+            collab_types::Subject::User(collab_types::Ed25519PublicKey(owner)),
+            collab_types::Scope::FsPath("/".into()),
+            collab_types::Effect::Grant,
+            collab_types::Verb::Write,
+        ),
+        collab_types::CapOverride::new(
+            collab_types::Subject::User(collab_types::Ed25519PublicKey(offline_reader)),
+            collab_types::Scope::FsPath("/".into()),
+            collab_types::Effect::Grant,
+            collab_types::Verb::Read,
+        ),
+    ];
+    std::fs::write(&revoked_acl, serde_json::to_vec(&revoked_caps).unwrap()).unwrap();
+    publish_authority(binary, &owner_identity, &owner_cache, &revoked_acl);
+    let replica_authority = replica_cache
+        .join(original.workspace_id().to_string())
+        .join("workspace-authority.bin");
+    wait_for(PROCESS_TIMEOUT, || {
+        let authority = fs::workspace_authority::WorkspaceAuthority::open(
+            &replica_authority,
+            original.workspace_id(),
+            owner,
+            owner,
+            Vec::new(),
+        )
+        .ok()?;
+        (!authority
+            .handle()
+            .permits(&reader, "/survivor.txt", fs::Access::Read))
+        .then_some(())
+    });
+    let revoked_mount = temp.path().join("revoked-reader-mount");
+    std::fs::create_dir(&revoked_mount).unwrap();
+    let revoked_cache = temp.path().join("revoked-reader-cache");
+    let revoked_gate = revoked_cache.join("gate.sock");
+    let mut revoked = spawn_fs(
+        binary,
+        &reader_identity,
+        &revoked_mount,
+        &revoked_cache,
+        &revoked_gate,
+        &acl,
+        &["mount", "--ticket", &nas_ticket],
+        false,
+    );
+    let revoked_status = wait_for(PROCESS_TIMEOUT, || revoked.child.try_wait().unwrap());
+    assert!(
+        !revoked_status.success(),
+        "a newer signed authority revision revokes the previously granted collaborator"
+    );
+    owner_process.stop();
+
+    // Crash/restart the NAS while the owner remains offline. The second fresh
+    // collaborator reads the same retained namespace and bytes from its
+    // durable cache, proving startup does not require the owner endpoint.
+    nas.kill_and_wait();
+    let mut nas = spawn_replica(binary, &nas_identity, &bundle);
+    let nas_endpoint = ready_replica_endpoint(&status, &mut nas);
+    let restart_ticket = fs::Ticket {
+        node: nas_endpoint,
+        workspace: original.workspace,
+    }
+    .encode()
+    .unwrap();
+    let restart_mount = temp.path().join("restart-reader-mount");
+    std::fs::create_dir(&restart_mount).unwrap();
+    let restart_cache = temp.path().join("restart-reader-cache");
+    let restart_gate = restart_cache.join("gate.sock");
+    let mut restarted = spawn_fs(
+        binary,
+        &offline_reader_identity,
+        &restart_mount,
+        &restart_cache,
+        &restart_gate,
+        &acl,
+        &["mount", "--ticket", &restart_ticket],
+        false,
+    );
+    restarted.wait_line("Joined workspace");
+    restarted.wait_line("Mounting QuickFS");
+    wait_for_process(&mut restarted, || {
+        (std::fs::read(restart_mount.join("survivor.txt"))
+            .ok()?
+            .as_slice()
+            == b"updated-through-nas")
+            .then_some(())
+    });
+    restarted.stop();
+
+    nas.kill_and_wait();
+    // Inspect the stopped daemon's real durable store: removal from the
+    // namespace is insufficient if obsolete manifests/chunks still consume a
+    // home peer's bounded disk indefinitely.
+    let replica_workspace_cache = replica_cache.join(original.workspace_id().to_string());
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let store = fs::ContentStore::open(replica_workspace_cache)
+            .await
+            .unwrap();
+        let deleted_chunk = Hash::new(b"delete-me");
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if !store.has(deleted_manifest).await && !store.has(deleted_chunk).await {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("replica GC reclaims deleted manifest and chunk");
+        store.store().shutdown().await.unwrap();
+    });
 }
 
 // The skew matrix spells out receipt and grant behavior at every clock edge.

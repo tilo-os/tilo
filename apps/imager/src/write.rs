@@ -660,6 +660,51 @@ mod tests {
         assert_eq!(&bytes[PROFILE_BLOCK_SIZE..], block.as_slice());
     }
 
+    /// Exercise the real Rust encoder/tail writer against the exact live-media
+    /// extractor instead of maintaining two merely similar format fixtures.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn written_profile_is_consumed_by_the_live_extractor() {
+        let mut profile = InstallProfile {
+            hostname: "studio".into(),
+            keyboard: "de".into(),
+            timezone: "Europe/Berlin".into(),
+            ..InstallProfile::default()
+        };
+        profile.user.username = "quinten".into();
+        profile.user.full_name = "Quinten Example".into();
+        profile.user.password = "must-not-cross".into();
+
+        let work = tempfile::tempdir().unwrap();
+        let media = work.path().join("media.img");
+        let out = work.path().join("extracted");
+        std::fs::File::create(&media)
+            .unwrap()
+            .set_len(PROFILE_BLOCK_SIZE as u64 * 2)
+            .unwrap();
+        write_profile_block(&media, PROFILE_BLOCK_SIZE as u64 * 2, &profile).unwrap();
+
+        let extractor = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../os/usr/libexec/qos-installer-profile-extract");
+        let status = std::process::Command::new(extractor)
+            .env("QOS_INSTALLER_PROFILE_DEVICE", &media)
+            .env("QOS_INSTALLER_PROFILE_ALLOW_FILE", "1")
+            .env("QOS_INSTALLER_PROFILE_OUT_DIR", &out)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(out.join("profile.json")).unwrap()).unwrap();
+        assert_eq!(value["hostname"], "studio");
+        assert_eq!(value["username"], "quinten");
+        assert_eq!(value["keyboard"], "de");
+        assert!(value.get("password").is_none());
+        assert!(
+            !String::from_utf8_lossy(&std::fs::read(media).unwrap()).contains("must-not-cross")
+        );
+    }
+
     #[test]
     fn spawn_refuses_instead_of_simulating_with_gate_off() {
         let _g = ENV_LOCK.lock().unwrap();

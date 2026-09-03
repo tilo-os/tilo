@@ -41,6 +41,8 @@ mod federation_two_relays;
 mod federation_workspace_shard;
 #[path = "multi_host.rs"]
 mod multi_host;
+#[path = "personal_device_process.rs"]
+mod personal_device_process;
 #[path = "relay_daemon.rs"]
 mod relay_daemon;
 #[path = "store_and_forward.rs"]

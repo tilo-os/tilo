@@ -89,6 +89,8 @@ impl std::fmt::Debug for PendingPrompt {
 pub struct OverlayFlags {
     /// Discoverable desktop interaction guide (Super+/ or F1).
     pub shortcut_help: bool,
+    /// The full first-use desktop tour, reopened from global search.
+    pub desktop_tour: bool,
     pub overview: bool,
     pub quick_settings: bool,
     pub ws_settings: bool,

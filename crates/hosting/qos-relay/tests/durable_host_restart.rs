@@ -212,9 +212,11 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
 
     // ---- The host itself goes down and comes back up on the same
     //      state directory. ----
+    // Close the endpoint explicitly so the restart barrier observes the
+    // daemon's real shutdown, rather than relying on a scheduler-dependent
+    // sleep before rebinding the persisted iroh identity.
+    host1.endpoint.close().await;
     drop(host1);
-    // Give the OS a moment to release the previous iroh socket bind.
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // The queued delta is still on disk after the host process died.
     assert_eq!(

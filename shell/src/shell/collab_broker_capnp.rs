@@ -2481,6 +2481,129 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => Promise::err(capnp::Error::failed(error.to_string())),
         }
     }
+
+    fn report_continuation(
+        self: Rc<Self>,
+        params: channel_handle::ReportContinuationParams,
+        _results: channel_handle::ReportContinuationResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let app_id = match request.get_app_id().and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value.to_owned(),
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        let route = self.route();
+        if route.app_id.is_empty() || app_id != route.app_id {
+            return Promise::err(capnp::Error::failed(
+                "reportContinuation appId must match the certified connection route".into(),
+            ));
+        }
+        let Some(instance_id) = route
+            .record_id
+            .strip_prefix("continuation:")
+            .and_then(|id| id.parse::<u64>().ok())
+            .map(crate::shell::personal_continuity::AppInstanceId)
+        else {
+            return Promise::err(capnp::Error::failed(
+                "reportContinuation requires a durable shell tab id".into(),
+            ));
+        };
+        let Some(room) = crate::shell::state::RoomId::parse(&route.cluster_id) else {
+            return Promise::err(capnp::Error::failed(
+                "reportContinuation route has no durable workspace room".into(),
+            ));
+        };
+        let metadata = match request.get_metadata() {
+            Ok(bytes) => bytes.to_vec(),
+            Err(error) => return Promise::err(error),
+        };
+        match crate::shell::personal_continuity_registry::global_registry()
+            .lock()
+            .map_err(|_| "continuation registry unavailable".to_string())
+            .and_then(|mut reports| {
+                reports
+                    .report(
+                        room,
+                        app_id,
+                        instance_id,
+                        request.get_schema_version(),
+                        metadata,
+                    )
+                    .map_err(|error| error.to_string())
+            }) {
+            Ok(_) => Promise::ok(()),
+            Err(error) => Promise::err(capnp::Error::failed(error)),
+        }
+    }
+
+    fn clear_continuation(
+        self: Rc<Self>,
+        params: channel_handle::ClearContinuationParams,
+        _results: channel_handle::ClearContinuationResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let app_id = match request.get_app_id().and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value.to_owned(),
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        let route = self.route();
+        if route.app_id.is_empty() || app_id != route.app_id {
+            return Promise::err(capnp::Error::failed(
+                "clearContinuation appId must match the certified connection route".into(),
+            ));
+        }
+        let Some(instance_id) = route
+            .record_id
+            .strip_prefix("continuation:")
+            .and_then(|id| id.parse::<u64>().ok())
+            .map(crate::shell::personal_continuity::AppInstanceId)
+        else {
+            return Promise::err(capnp::Error::failed(
+                "clearContinuation requires a durable shell tab id".into(),
+            ));
+        };
+        let Some(room) = crate::shell::state::RoomId::parse(&route.cluster_id) else {
+            return Promise::err(capnp::Error::failed(
+                "clearContinuation route has no durable workspace room".into(),
+            ));
+        };
+        match crate::shell::personal_continuity_registry::global_registry()
+            .lock()
+            .map_err(|_| "continuation registry unavailable".to_string())
+        {
+            Ok(mut reports) => {
+                reports.clear(room, &app_id, instance_id);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(capnp::Error::failed(error)),
+        }
+    }
 }
 
 /// Apply a signed op arriving via capnp `send`: same validation /
@@ -3732,6 +3855,64 @@ mod tests {
                 .is_err(),
             "a signed envelope cannot be replayed through another record route"
         );
+    }
+
+    #[test]
+    fn record_scoped_document_fanout_reaches_only_its_targeted_subscriber() {
+        let fanout = Arc::new(FanoutState::new());
+        let state = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        fanout.attach_capnp(Arc::clone(&state));
+
+        let target = CrdtRoute::record("dev.qos.notes", "room-1", "note-a");
+        let other_record = CrdtRoute::record("dev.qos.notes", "room-1", "note-b");
+        let other_app = CrdtRoute::record("dev.qos.files", "room-1", "note-a");
+        let other_room = CrdtRoute::record("dev.qos.notes", "room-2", "note-a");
+        let mut target_rx = state.subscribe_ops(&target.channel_key(), 2);
+        let mut other_record_rx = state.subscribe_ops(&other_record.channel_key(), 3);
+        let mut other_app_rx = state.subscribe_ops(&other_app.channel_key(), 4);
+        let mut other_room_rx = state.subscribe_ops(&other_room.channel_key(), 5);
+
+        let (_signing, author) = collab_types::generate_keypair();
+        let envelope = SignedOp::new_unsigned(
+            DocumentMutation::Incremental(vec![7, 9])
+                .encode()
+                .expect("typed incremental mutation"),
+            document_artifact_id(&target.app_id, &target.cluster_id, &target.record_id),
+            author,
+            document_attestation_id(&target.app_id, &target.cluster_id, &target.record_id),
+            collab_types::OpClass::Splice,
+            SystemTime::now(),
+            1,
+        );
+        state.fanout_to_route(
+            &CollabEvent::Document {
+                envelope: Box::new(envelope),
+                from_user_id: "peer@42".into(),
+            },
+            1,
+            &target,
+        );
+
+        assert!(
+            target_rx.try_recv().is_ok(),
+            "the addressed record receives the op"
+        );
+        for (label, received) in [
+            ("another record", other_record_rx.try_recv()),
+            ("another app", other_app_rx.try_recv()),
+            ("another room", other_room_rx.try_recv()),
+        ] {
+            assert!(
+                matches!(received, Err(tokio::sync::mpsc::error::TryRecvError::Empty)),
+                "{label} must not receive a record-directed document",
+            );
+        }
     }
 
     #[test]

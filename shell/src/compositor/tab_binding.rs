@@ -41,15 +41,31 @@ pub enum Placement {
 /// When the active workspace has no strips, a default strip is synthesized so the tab always
 /// lands visible — otherwise the foreign surface leaks buffer + shm-pool memory until the client tears the toplevel down on its own.
 pub fn adopt_toplevel(tree: &mut WorkspaceTree, surface_id: u64, app_id: Option<String>) -> TabId {
-    let placement = app_id
+    let pending = app_id
         .as_deref()
-        .and_then(|id| crate::shell::launcher::placement_for_toplevel(id, surface_id))
+        .and_then(|id| crate::shell::launcher::placement_and_instance_for_toplevel(id, surface_id));
+    let placement = pending
+        .map(|(placement, _)| placement)
         .unwrap_or_else(|| crate::shell::placement::placement_for_new_window(tree, None));
     // If this window is what a document open asked for, record that here — the launch and the window it produced meet at this point.
     if let Some(id) = app_id.as_deref() {
         crate::shell::doc_open::claim_surface_for_document(id, surface_id);
     }
-    adopt_toplevel_at(tree, surface_id, app_id, placement)
+    let tab = adopt_toplevel_at(tree, surface_id, app_id, placement);
+    if matches!(placement, Placement::IntoTab(_)) {
+        tree.claim_continuation_tab(tab);
+    }
+    if let Some((_, instance)) = pending
+        && let Some(instance) = instance
+        && let Ok(mut reports) =
+            crate::shell::personal_continuity_registry::global_registry().lock()
+    {
+        reports.bind_tab(
+            crate::shell::personal_continuity::AppInstanceId(tab),
+            crate::shell::personal_continuity::AppInstanceId(instance),
+        );
+    }
+    tab
 }
 
 /// [`adopt_toplevel`] with the placement supplied explicitly, so the placement rule is assertable without staging a launch.
@@ -290,7 +306,18 @@ pub fn close_tab_for_destroyed_surface(
                             if *s == destroyed_surface_id
                     )
                 }) {
+                    let tab_id = group.tabs[pos].id;
+                    if let Some(room) = tree.continuation_owned_tabs.remove(&tab_id) {
+                        tree.continuation_closed_tabs.insert(tab_id, room);
+                    }
                     let removed = group.tabs.remove(pos);
+                    if let Ok(mut registry) =
+                        crate::shell::personal_continuity_registry::global_registry().lock()
+                    {
+                        registry.forget_local_tab(
+                            crate::shell::personal_continuity::AppInstanceId(removed.id),
+                        );
+                    }
                     // If the removed tab was active, fall back to the new last tab; a stale id is tolerated by the chrome's resolver, which picks the first existing tab.
                     if group.active_tab == removed.id {
                         group.active_tab = group.tabs.last().map_or(0, |t| t.id);
@@ -313,7 +340,17 @@ pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
                 let Some(pos) = group.tabs.iter().position(|t| t.id == tab_id) else {
                     continue;
                 };
-                group.tabs.remove(pos);
+                if let Some(room) = tree.continuation_owned_tabs.remove(&tab_id) {
+                    tree.continuation_closed_tabs.insert(tab_id, room);
+                }
+                let removed = group.tabs.remove(pos);
+                if let Ok(mut registry) =
+                    crate::shell::personal_continuity_registry::global_registry().lock()
+                {
+                    registry.forget_local_tab(crate::shell::personal_continuity::AppInstanceId(
+                        removed.id,
+                    ));
+                }
                 if group.active_tab == tab_id {
                     group.active_tab = group.tabs.last().map_or(0, |t| t.id);
                 }
@@ -829,6 +866,65 @@ mod tests {
             !still_there,
             "the foreign tab with surface_id=42 must be gone"
         );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn continuation_takeover_is_captured_locally_and_its_close_is_tombstoned() {
+        use crate::shell::personal_continuity::{
+            AppInstanceId, AppInstanceState, ContinuityStamp, DeviceContinuationSnapshot, DeviceId,
+            LaunchIntent, TabPlacement, WorkspaceContinuation,
+        };
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = crate::shell::state::RoomId::new();
+        tree.adopt_continuation_room(room, "Laptop");
+        let source = DeviceId::new("laptop").unwrap();
+        tree.materialize_continuation_workspace(
+            "Laptop",
+            &WorkspaceContinuation {
+                room,
+                apps: vec![AppInstanceState::new(
+                    AppInstanceId(0x7171),
+                    TabPlacement {
+                        strip: 0,
+                        group: 0,
+                        tab: 0,
+                    },
+                    LaunchIntent::app("dev.qos.browser").unwrap(),
+                    None,
+                    ContinuityStamp {
+                        counter: 10,
+                        device: source,
+                    },
+                )],
+            },
+        );
+        crate::shell::launcher::set_pending_placement(
+            "dev.qos.browser",
+            Placement::IntoTab(0x7171),
+        );
+        assert_eq!(
+            adopt_toplevel(&mut tree, 8080, Some("dev.qos.browser".into())),
+            0x7171
+        );
+        assert!(!tree.continuation_tabs.contains(&0x7171));
+
+        let desktop = DeviceId::new("desktop").unwrap();
+        let claimed = DeviceContinuationSnapshot::capture(&tree, desktop.clone(), 11).snapshot;
+        assert!(claimed.workspaces.iter().any(|workspace| {
+            workspace.room == room && workspace.apps.iter().any(|app| app.id.0 == 0x7171)
+        }));
+        assert!(close_tab_for_destroyed_surface(&mut tree, 8080));
+        let mut closed = DeviceContinuationSnapshot::capture(&tree, desktop, 12).snapshot;
+        closed.record_closures_from(&claimed).unwrap();
+        assert!(
+            closed
+                .tombstones
+                .iter()
+                .any(|tombstone| tombstone.room == room && tombstone.id.0 == 0x7171)
+        );
+        crate::shell::launcher::clear_pending_placements();
     }
 
     /// `remove_tab` takes the tab out of whichever group holds it and repairs the group's selection when it was the tab in front.
