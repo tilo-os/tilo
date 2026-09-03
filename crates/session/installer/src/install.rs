@@ -80,13 +80,24 @@ pub const POWER_BIN: &str = "/usr/libexec/qos-power";
 /// User-selected install options threaded through to the backend.
 #[derive(Clone, PartialEq, Eq)]
 pub struct InstallOptions {
+    /// Discovery-time identity bound to the privileged target. Size and
+    /// kernel device number are mandatory; WWN/serial are enforced when the
+    /// hardware exposes them.
+    pub disk_size_bytes: u64,
+    pub disk_major_minor: String,
+    pub disk_wwn: String,
+    pub disk_serial: String,
     /// Empty for a whole-disk erase. Otherwise the pre-created, empty Linux
     /// partition that becomes the qOS root while every sibling partition is
     /// preserved.
     pub alongside_root: String,
+    pub alongside_root_partuuid: String,
+    pub alongside_root_size_bytes: u64,
     /// Existing EFI System Partition reused by an alongside install. It is
     /// mounted but never formatted.
     pub alongside_efi: String,
+    pub alongside_efi_partuuid: String,
+    pub alongside_efi_size_bytes: u64,
     /// Root filesystem: `btrfs` (default), `ext4`, or `xfs`.
     pub filesystem: String,
     /// Hostname seeded into the installed system.
@@ -118,8 +129,16 @@ pub struct InstallOptions {
 impl Default for InstallOptions {
     fn default() -> Self {
         Self {
+            disk_size_bytes: 0,
+            disk_major_minor: String::new(),
+            disk_wwn: String::new(),
+            disk_serial: String::new(),
             alongside_root: String::new(),
+            alongside_root_partuuid: String::new(),
+            alongside_root_size_bytes: 0,
             alongside_efi: String::new(),
+            alongside_efi_partuuid: String::new(),
+            alongside_efi_size_bytes: 0,
             filesystem: "btrfs".to_string(),
             hostname: "qos".to_string(),
             full_name: String::new(),
@@ -161,6 +180,19 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
         .arg(&opts.filesystem)
         .arg("--hostname")
         .arg(&opts.hostname);
+    if opts.disk_size_bytes > 0 {
+        cmd.arg("--expect-disk-size-bytes")
+            .arg(opts.disk_size_bytes.to_string());
+    }
+    if !opts.disk_major_minor.is_empty() {
+        cmd.arg("--expect-disk-devnum").arg(&opts.disk_major_minor);
+    }
+    if !opts.disk_wwn.is_empty() {
+        cmd.arg("--expect-disk-wwn").arg(&opts.disk_wwn);
+    }
+    if !opts.disk_serial.is_empty() {
+        cmd.arg("--expect-disk-serial").arg(&opts.disk_serial);
+    }
     if !opts.full_name.trim().is_empty() {
         cmd.arg("--full-name").arg(opts.full_name.trim());
     }
@@ -178,7 +210,19 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
             .arg("--root-partition")
             .arg(&opts.alongside_root)
             .arg("--efi-partition")
-            .arg(&opts.alongside_efi);
+            .arg(&opts.alongside_efi)
+            .arg("--expect-root-partuuid")
+            .arg(&opts.alongside_root_partuuid)
+            .arg("--expect-root-size-bytes")
+            .arg(opts.alongside_root_size_bytes.to_string())
+            .arg("--expect-efi-partuuid")
+            .arg(&opts.alongside_efi_partuuid)
+            .arg("--expect-efi-size-bytes")
+            .arg(opts.alongside_efi_size_bytes.to_string())
+            // Repeat the exact reviewed root at the privileged boundary. The
+            // backend rejects alongside callers that omit or alter it.
+            .arg("--confirm-root")
+            .arg(&opts.alongside_root);
     }
     if !opts.timezone.trim().is_empty() {
         cmd.arg("--timezone").arg(opts.timezone.trim());
@@ -420,8 +464,16 @@ mod tests {
     #[test]
     fn install_command_names_both_alongside_partitions() {
         let opts = InstallOptions {
+            disk_size_bytes: 1_000_000_000_000,
+            disk_major_minor: "259:0".into(),
+            disk_wwn: "eui.0011223344556677".into(),
+            disk_serial: "QOS-NVME".into(),
             alongside_root: "/dev/nvme0n1p4".into(),
+            alongside_root_partuuid: "00000000-0000-0000-0000-000000000004".into(),
+            alongside_root_size_bytes: 68_719_476_736,
             alongside_efi: "/dev/nvme0n1p1".into(),
+            alongside_efi_partuuid: "00000000-0000-0000-0000-000000000001".into(),
+            alongside_efi_size_bytes: 2_147_483_648,
             ..InstallOptions::default()
         };
         let cmd = install_command("/dev/nvme0n1", "qq", &opts);
@@ -435,7 +487,53 @@ mod tests {
                 .any(|pair| pair == ["--efi-partition", "/dev/nvme0n1p1"])
         );
         assert!(args.contains(&"--alongside"));
+        for expected in [
+            ["--expect-disk-size-bytes", "1000000000000"],
+            ["--expect-disk-devnum", "259:0"],
+            ["--expect-disk-wwn", "eui.0011223344556677"],
+            ["--expect-disk-serial", "QOS-NVME"],
+            [
+                "--expect-root-partuuid",
+                "00000000-0000-0000-0000-000000000004",
+            ],
+            ["--expect-root-size-bytes", "68719476736"],
+            [
+                "--expect-efi-partuuid",
+                "00000000-0000-0000-0000-000000000001",
+            ],
+            ["--expect-efi-size-bytes", "2147483648"],
+        ] {
+            assert!(
+                args.windows(2).any(|pair| pair == expected),
+                "missing identity binding {expected:?} in {args:?}"
+            );
+        }
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--confirm-root", "/dev/nvme0n1p4"])
+        );
         assert!(!args.contains(&"--confirm-erase"));
+    }
+
+    #[test]
+    fn whole_disk_command_binds_all_available_discovery_identity() {
+        let opts = InstallOptions {
+            disk_size_bytes: 64 * 1024 * 1024 * 1024,
+            disk_major_minor: "252:0".into(),
+            disk_wwn: "0x5000c500aabbccdd".into(),
+            disk_serial: "VM-DISK-01".into(),
+            ..InstallOptions::default()
+        };
+        let cmd = install_command("/dev/vda", "qq", &opts);
+        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        for expected in [
+            ["--expect-disk-size-bytes", "68719476736"],
+            ["--expect-disk-devnum", "252:0"],
+            ["--expect-disk-wwn", "0x5000c500aabbccdd"],
+            ["--expect-disk-serial", "VM-DISK-01"],
+        ] {
+            assert!(args.windows(2).any(|pair| pair == expected));
+        }
     }
 
     #[test]

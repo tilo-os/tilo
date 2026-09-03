@@ -39,6 +39,9 @@ pub const MIN_ALONGSIDE_ESP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub struct DiskPartition {
     pub name: String,
     pub size_bytes: u64,
+    /// GPT partition UUID used to bind the reviewed partition across device
+    /// renumbering. Empty means discovery could not establish its identity.
+    pub part_uuid: String,
     pub filesystem: String,
     pub label: String,
     pub mountpoint: String,
@@ -51,6 +54,7 @@ impl DiskPartition {
     /// checks immediately before formatting it.
     pub fn is_alongside_candidate(&self) -> bool {
         self.size_bytes >= MIN_ALONGSIDE_BYTES
+            && !self.part_uuid.is_empty()
             && self.filesystem.is_empty()
             && self.mountpoint.is_empty()
             && self.part_type.eq_ignore_ascii_case(LINUX_FILESYSTEM_GUID)
@@ -62,7 +66,10 @@ impl DiskPartition {
     }
 
     pub fn is_alongside_efi_candidate(&self) -> bool {
-        self.is_efi() && self.size_bytes >= MIN_ALONGSIDE_ESP_BYTES && self.mountpoint.is_empty()
+        self.is_efi()
+            && self.size_bytes >= MIN_ALONGSIDE_ESP_BYTES
+            && !self.part_uuid.is_empty()
+            && self.mountpoint.is_empty()
     }
 }
 
@@ -76,6 +83,11 @@ pub struct Disk {
     /// Device model, e.g. `Samsung SSD 860 EVO`. May be empty.
     pub model: String,
     pub size_bytes: u64,
+    /// Kernel device number observed during discovery. This is always bound,
+    /// while WWN/serial add durable hardware identity when the device exports it.
+    pub major_minor: String,
+    pub wwn: String,
+    pub serial: String,
     pub removable: bool,
     pub read_only: bool,
     pub is_system: bool,
@@ -93,17 +105,35 @@ impl Disk {
     }
 
     pub fn alongside_root(&self) -> Option<&DiskPartition> {
-        self.partitions.iter().find(|p| p.is_alongside_candidate())
+        exactly_one(
+            self.partitions
+                .iter()
+                .filter(|p| p.is_alongside_candidate()),
+        )
     }
 
     pub fn efi_partition(&self) -> Option<&DiskPartition> {
-        self.partitions
-            .iter()
-            .find(|p| p.is_alongside_efi_candidate())
+        exactly_one(
+            self.partitions
+                .iter()
+                .filter(|p| p.is_alongside_efi_candidate()),
+        )
     }
 
     pub fn can_install_alongside(&self) -> bool {
-        !self.read_only && self.alongside_root().is_some() && self.efi_partition().is_some()
+        self.identity_ready()
+            && !self.read_only
+            && self.alongside_root().is_some()
+            && self.efi_partition().is_some()
+    }
+
+    /// Minimum identity needed for any destructive handoff. Device number
+    /// closes same-session path reuse, while at least one hardware identifier
+    /// keeps the binding durable across kernel renumbering.
+    pub fn identity_ready(&self) -> bool {
+        self.size_bytes > 0
+            && !self.major_minor.is_empty()
+            && (!self.wwn.is_empty() || !self.serial.is_empty())
     }
 
     pub fn contents_summary(&self) -> String {
@@ -127,6 +157,16 @@ impl Disk {
     }
 }
 
+/// Return the candidate only when discovery is unambiguous. Formatting the
+/// "first" blank partition is not safe: signature-free storage can still
+/// contain unrecognised data, and enumeration order is not user consent.
+fn exactly_one<'a>(
+    mut candidates: impl Iterator<Item = &'a DiskPartition>,
+) -> Option<&'a DiskPartition> {
+    let candidate = candidates.next()?;
+    candidates.next().is_none().then_some(candidate)
+}
+
 /// The `lsblk` argument vector. Kept as a constant so the call site and
 /// any docs/tests reference exactly one source of truth.
 pub const LSBLK_ARGS: [&str; 5] = [
@@ -134,7 +174,7 @@ pub const LSBLK_ARGS: [&str; 5] = [
     "-b",
     "-p",
     "--output",
-    "NAME,SIZE,MODEL,TYPE,FSTYPE,LABEL,MOUNTPOINT,PARTTYPE,RM,RO",
+    "NAME,SIZE,MODEL,TYPE,FSTYPE,LABEL,MOUNTPOINT,PARTTYPE,PARTUUID,RM,RO,WWN,SERIAL,MAJ:MIN",
 ];
 
 /// Parse the output of `lsblk -dnpo NAME,SIZE,MODEL,TYPE` into the set of
@@ -170,6 +210,9 @@ pub fn parse_lsblk(output: &str) -> Vec<Disk> {
             size: (*size).to_string(),
             model: model_tokens.join(" "),
             size_bytes: 0,
+            major_minor: String::new(),
+            wwn: String::new(),
+            serial: String::new(),
             removable: false,
             read_only: false,
             is_system: false,
@@ -205,6 +248,9 @@ fn parse_lsblk_json(json: &Value) -> Vec<Disk> {
                 size: format_bytes(size_bytes),
                 model: field(d, "model"),
                 size_bytes,
+                major_minor: field(d, "maj:min"),
+                wwn: field(d, "wwn"),
+                serial: field(d, "serial"),
                 removable: boolean(d, "rm"),
                 read_only: boolean(d, "ro"),
                 is_system,
@@ -229,6 +275,7 @@ fn parse_partition(value: &Value) -> Option<DiskPartition> {
     Some(DiskPartition {
         name: field(value, "name"),
         size_bytes: number(value, "size"),
+        part_uuid: field(value, "partuuid"),
         filesystem: field(value, "fstype"),
         label: field(value, "label"),
         mountpoint: field(value, "mountpoint"),
@@ -356,6 +403,9 @@ mod tests {
             size: "238.5G".into(),
             model: "Samsung SSD".into(),
             size_bytes: 0,
+            major_minor: String::new(),
+            wwn: String::new(),
+            serial: String::new(),
             removable: false,
             read_only: false,
             is_system: false,
@@ -367,6 +417,9 @@ mod tests {
             size: "64G".into(),
             model: String::new(),
             size_bytes: 0,
+            major_minor: String::new(),
+            wwn: String::new(),
+            serial: String::new(),
             removable: false,
             read_only: false,
             is_system: false,
@@ -378,12 +431,20 @@ mod tests {
     #[test]
     fn json_discovery_finds_safe_alongside_root_and_efi() {
         let fixture = format!(
-            r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"children":[{{"name":"/dev/nvme0n1p1","size":536870912,"type":"part","fstype":"vfat","label":"Windows EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}"}},{{"name":"/dev/nvme0n1p2","size":500000000000,"type":"part","fstype":"ntfs","label":"Windows","mountpoint":null,"parttype":"basic"}},{{"name":"/dev/nvme0n1p3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}"}},{{"name":"/dev/nvme0n1p4","size":2147483648,"type":"part","fstype":"vfat","label":"qOS EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}"}}]}}]}}"#
+            r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"wwn":"eui.0011223344556677","serial":"QOS-NVME","maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":536870912,"type":"part","fstype":"vfat","label":"Windows EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/nvme0n1p2","size":500000000000,"type":"part","fstype":"ntfs","label":"Windows","mountpoint":null,"parttype":"basic","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/nvme0n1p3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/nvme0n1p4","size":2147483648,"type":"part","fstype":"vfat","label":"qOS EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}}]}}]}}"#
         );
         let disks = parse_lsblk(&fixture);
         assert_eq!(disks.len(), 1);
+        assert!(disks[0].identity_ready());
+        assert_eq!(disks[0].major_minor, "259:0");
+        assert_eq!(disks[0].wwn, "eui.0011223344556677");
+        assert_eq!(disks[0].serial, "QOS-NVME");
         assert!(disks[0].can_install_alongside());
         assert_eq!(disks[0].alongside_root().unwrap().name, "/dev/nvme0n1p3");
+        assert_eq!(
+            disks[0].alongside_root().unwrap().part_uuid,
+            "00000000-0000-0000-0000-000000000003"
+        );
         assert_eq!(disks[0].efi_partition().unwrap().name, "/dev/nvme0n1p4");
     }
 
@@ -392,6 +453,7 @@ mod tests {
         let mut p = DiskPartition {
             name: "/dev/sda1".into(),
             size_bytes: MIN_ALONGSIDE_ESP_BYTES - 1,
+            part_uuid: "00000000-0000-0000-0000-000000000001".into(),
             filesystem: "vfat".into(),
             label: "EFI".into(),
             mountpoint: String::new(),
@@ -409,7 +471,7 @@ mod tests {
     #[test]
     fn linux_disk_keeps_existing_filesystems_out_of_the_qos_candidates() {
         let fixture = format!(
-            r#"{{"blockdevices":[{{"name":"/dev/sda","size":500000000000,"model":"Linux disk","type":"disk","rm":false,"ro":false,"children":[{{"name":"/dev/sda1","size":2147483648,"type":"part","fstype":"vfat","label":"qOS EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}"}},{{"name":"/dev/sda2","size":200000000000,"type":"part","fstype":"ext4","label":"Existing Linux","mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}"}},{{"name":"/dev/sda3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}"}}]}}]}}"#
+            r#"{{"blockdevices":[{{"name":"/dev/sda","size":500000000000,"model":"Linux disk","type":"disk","rm":false,"ro":false,"serial":"QOS-SATA","maj:min":"8:0","children":[{{"name":"/dev/sda1","size":2147483648,"type":"part","fstype":"vfat","label":"qOS EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/sda2","size":200000000000,"type":"part","fstype":"ext4","label":"Existing Linux","mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/sda3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}}]}}]}}"#
         );
         let disks = parse_lsblk(&fixture);
         assert!(disks[0].can_install_alongside());
@@ -423,11 +485,49 @@ mod tests {
         let p = DiskPartition {
             name: "/dev/sda3".into(),
             size_bytes: MIN_ALONGSIDE_BYTES,
+            part_uuid: "00000000-0000-0000-0000-000000000003".into(),
             filesystem: "ext4".into(),
             label: String::new(),
             mountpoint: String::new(),
             part_type: LINUX_FILESYSTEM_GUID.into(),
         };
         assert!(!p.is_alongside_candidate());
+    }
+
+    #[test]
+    fn alongside_refuses_ambiguous_root_or_efi_candidates() {
+        let fixture = format!(
+            r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":2147483648,"type":"part","fstype":"vfat","label":"qOS EFI A","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/nvme0n1p2","size":2147483648,"type":"part","fstype":"vfat","label":"qOS EFI B","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/nvme0n1p3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/nvme0n1p4","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}}]}}]}}"#
+        );
+        let disks = parse_lsblk(&fixture);
+        assert_eq!(disks.len(), 1);
+        assert!(disks[0].alongside_root().is_none());
+        assert!(disks[0].efi_partition().is_none());
+        assert!(!disks[0].can_install_alongside());
+    }
+
+    #[test]
+    fn destructive_targets_require_live_identity_fields() {
+        let fixture = r#"{"blockdevices":[{"name":"/dev/vda","size":68719476736,"model":"VM","type":"disk","rm":false,"ro":false}]}"#;
+        let disks = parse_lsblk(fixture);
+        assert_eq!(disks.len(), 1);
+        assert!(!disks[0].identity_ready());
+        assert!(!disks[0].can_install_alongside());
+    }
+
+    #[test]
+    fn alongside_partitions_require_gpt_partuuid() {
+        let mut root = DiskPartition {
+            name: "/dev/vda3".into(),
+            size_bytes: MIN_ALONGSIDE_BYTES,
+            part_uuid: String::new(),
+            filesystem: String::new(),
+            label: String::new(),
+            mountpoint: String::new(),
+            part_type: LINUX_FILESYSTEM_GUID.into(),
+        };
+        assert!(!root.is_alongside_candidate());
+        root.part_uuid = "00000000-0000-0000-0000-000000000003".into();
+        assert!(root.is_alongside_candidate());
     }
 }
