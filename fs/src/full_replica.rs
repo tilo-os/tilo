@@ -40,8 +40,42 @@ pub struct HomePeerBundle {
     /// Shell/relay workspace shards backed by this filesystem workspace.
     /// A desktop may attach one filesystem tree to several collaboration
     /// rooms, so this explicit mapping is authoritative for relay binding.
-    #[serde(default)]
+    #[serde(default, with = "relay_workspace_ids_serde")]
     pub relay_workspace_ids: Vec<u64>,
+}
+
+mod relay_workspace_ids_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Encoded {
+        Decimal(String),
+        Legacy(u64),
+    }
+
+    pub fn serialize<S>(ids: &[u64], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        ids.iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u64>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<Encoded>::deserialize(deserializer)?
+            .into_iter()
+            .map(|encoded| match encoded {
+                Encoded::Decimal(value) => value.parse().map_err(serde::de::Error::custom),
+                Encoded::Legacy(value) => Ok(value),
+            })
+            .collect()
+    }
 }
 
 /// The one configuration file installed on a home peer.
@@ -357,6 +391,34 @@ mod tests {
             workspaces: vec![workspace.clone(), workspace],
         };
         assert!(validate_home_peer_set(&many).is_err());
+    }
+
+    #[test]
+    fn relay_workspace_ids_round_trip_high_bits_and_accept_legacy_integers() {
+        let high = (i64::MAX as u64) + 42;
+        let bundle = HomePeerSet {
+            status_file: std::path::PathBuf::from("/tmp/status"),
+            workspaces: vec![HomePeerBundle {
+                ticket: "opaque".into(),
+                cache_dir: std::path::PathBuf::from("/tmp/cache"),
+                capability_json: "[]".into(),
+                authority: None,
+                principals: Vec::new(),
+                relay_workspace_ids: vec![high],
+            }],
+        };
+        let text = toml::to_string(&bundle).unwrap();
+        assert!(text.contains(&format!("relay_workspace_ids = [\"{high}\"]")));
+        assert_eq!(
+            toml::from_str::<HomePeerSet>(&text).unwrap().workspaces[0].relay_workspace_ids,
+            vec![high]
+        );
+
+        let legacy = text.replace(&format!("\"{high}\""), "42");
+        assert_eq!(
+            toml::from_str::<HomePeerSet>(&legacy).unwrap().workspaces[0].relay_workspace_ids,
+            vec![42]
+        );
     }
 
     // The discovery address carried by a ready proof must be the endpoint
