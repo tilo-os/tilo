@@ -1,23 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-# Offscreen rendering never probes or writes disks. Keep diagnostics and
-# package smoke tests unprivileged instead of presenting an unnecessary polkit
-# prompt merely to prove that the packaged UI starts.
-for arg in "$@"; do
-  case "$arg" in
-    --shots|--shots=*|--shots-dir|--shots-dir=*) exec "$here/qos-imager-bin" "$@" ;;
-  esac
-done
-if [ "$(id -u)" -eq 0 ]; then
-  export QOS_IMAGER_ALLOW_WRITE=1
-  exec "$here/qos-imager-bin" "$@"
+# Customization, downloads and device review never need elevated rights. The
+# binary asks polkit to authenticate only its short-lived writer helper after
+# the user has typed the exact target name.
+if [ -n "${APPIMAGE:-}" ]; then
+  export QOS_IMAGER_APPIMAGE="$APPIMAGE"
 fi
-command -v pkexec >/dev/null 2>&1 || {
-  printf 'qOS Imager needs polkit (pkexec) for raw removable-drive access.\n' >&2
-  exit 1
-}
-exec pkexec env \
-  DISPLAY="${DISPLAY:-}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
-  XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" XAUTHORITY="${XAUTHORITY:-}" \
-  QOS_IMAGER_ALLOW_WRITE=1 "$here/qos-imager-bin" "$@"
+exec "$here/qos-imager-bin" "$@"
