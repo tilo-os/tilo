@@ -349,7 +349,10 @@ impl ActorState {
     }
 
     fn disconnect_host(&mut self, id: EndpointId) {
-        self.hosts.remove(&id);
+        let enrolled_home_peer = self
+            .hosts
+            .remove(&id)
+            .is_some_and(|(_, expectation)| expectation.is_some());
         self.connecting_hosts.retain(|(_, host)| *host != id);
         let sessions: Vec<_> = self
             .host_sessions
@@ -372,6 +375,15 @@ impl ActorState {
             if let Some(task) = self.content_discovery_tasks.remove(&key) {
                 task.abort();
             }
+        }
+        if enrolled_home_peer {
+            // Discovery registrations are tied to the relay service identity,
+            // not merely the direct Files endpoint.  Tear down that durable
+            // route too: otherwise a removed home peer can return after an
+            // fs-daemon restart from its persisted hydration catalog.
+            tokio::spawn(async move {
+                let _ = unregister_content_peers_for_relay(id).await;
+            });
         }
     }
 
@@ -930,7 +942,7 @@ fn schedule_host_topic(
             return;
         }
     }
-    let Some(_expectation) = expectation else {
+    let Some(expectation) = expectation else {
         // Invited/provider hosts can carry collaboration state, but only an
         // enrolled home peer may nominate a Files hydration endpoint.
         let tx = internal_tx.clone();
@@ -971,9 +983,11 @@ fn schedule_host_topic(
     tokio::spawn(async move {
         let result = tokio::time::timeout(
             Duration::from_secs(10),
-            RelayClient::connect_to_pinned_host(
+            RelayClient::connect_to_enrolled_home_peer(
                 endpoint,
                 addr.clone(),
+                expectation.user_public_key,
+                expectation.device_public_key,
                 device_cert,
                 identity.device_signing_key.clone(),
                 revocations,
@@ -1067,6 +1081,53 @@ async fn register_content_peer(registration: qos_relay::ContentPeerRegistration)
     }
 }
 
+/// Ask the running filesystem daemon to forget all endpoint/ticket pairs
+/// authenticated by a removed enrolled relay. The daemon owns both its live
+/// Hydrator and the durable catalog, so the shell cannot leave one stale.
+async fn unregister_content_peers_for_relay(relay: EndpointId) -> bool {
+    if cfg!(test) && std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER").is_none() {
+        return true;
+    }
+    let publisher = std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER")
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || std::path::PathBuf::from("/usr/bin/fs"),
+            std::path::PathBuf::from,
+        );
+    let cache_dir = std::env::var_os("QOS_FS_CONTENT_PEER_CACHE_DIR")
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || std::path::PathBuf::from("/var/cache/quick-fs"),
+            std::path::PathBuf::from,
+        );
+    match tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::process::Command::new(&publisher)
+            .arg("unregister-content-peer")
+            .arg("--cache-dir")
+            .arg(cache_dir)
+            .arg("--relay-service-id")
+            .arg(hex::encode(relay.as_bytes()))
+            .status(),
+    )
+    .await
+    {
+        Ok(Ok(status)) if status.success() => true,
+        Ok(Ok(status)) => {
+            tracing::warn!(?status, relay = %relay, "filesystem content-peer removal failed");
+            false
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(%error, relay = %relay, "could not start filesystem content-peer removal");
+            false
+        }
+        Err(_) => {
+            tracing::warn!(relay = %relay, "filesystem content-peer removal timed out");
+            false
+        }
+    }
+}
+
 fn spawn_host_pump(
     ws: WorkspaceId,
     host: EndpointId,
@@ -1131,7 +1192,10 @@ mod tests {
     use qos_relay::{
         Relay, RelayConfig, ReplicationIntent, WorkspaceBinding, daemon::RelayIdentity,
     };
-    use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+    use qos_user_identity::{
+        DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
+        sign_revocation_entry,
+    };
     use tokio::time::timeout;
 
     fn document(mutation: &collab_types::DocumentMutation) -> NeighbourMsg {
@@ -1459,6 +1523,129 @@ mod tests {
             .await
             .unwrap();
         (relay, state)
+    }
+
+    /// Exercise the exact scheduled enrolled-home-peer route, rather than a
+    /// direct RelayClient unit call. In particular, this protects against an
+    /// innocuous-looking refactor that drops `HomePeerExpectation` before the
+    /// relay dial.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn scheduled_enrolled_host_rejects_wrong_root_device_and_revocation() {
+        use rand_core::OsRng;
+        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let other_root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let (client_key, client_cert) = enrol(&root, DeviceCapabilities::primary(), "client");
+        let (host_key, host_cert) = enrol(&root, DeviceCapabilities::host(), "home");
+        let (_, wrong_device_cert) = enrol(&root, DeviceCapabilities::host(), "other-home");
+        let state = tempfile::tempdir().unwrap();
+        let relay = Relay::start(
+            RelayConfig {
+                state_root: state.path().to_path_buf(),
+                workspaces: vec![WorkspaceBinding {
+                    id: 42,
+                    pin: true,
+                    replication: ReplicationIntent::FullWorkspace,
+                    admitted_users: Vec::new(),
+                }],
+                ..RelayConfig::default()
+            },
+            RelayIdentity {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_signing_key: host_key,
+                device_cert: host_cert.clone(),
+                revocations: RevocationList::new(),
+            },
+        )
+        .await
+        .unwrap();
+        relay
+            .set_workspace_membership(
+                42,
+                true,
+                vec![client_key.verifying_key().to_bytes()],
+                state.path().to_path_buf(),
+            )
+            .await
+            .unwrap();
+
+        let attempt = |expectation: HomePeerExpectation,
+                       revocations: Vec<qos_user_identity::RevocationEntry>| {
+            let relay_addr = relay.node_addr();
+            let client_key = client_key.clone();
+            let client_cert = client_cert.clone();
+            async move {
+                let (endpoint, _) = identified_endpoint(&client_key).await;
+                let identity = HostIdentity {
+                    device_cert: client_cert,
+                    device_signing_key: client_key,
+                    workspace_device_certs: HashMap::new(),
+                    workspace_revocations: HashMap::from([(42, revocations)]),
+                    identity_paths: None,
+                };
+                let (tx, mut rx) = mpsc::channel(2);
+                let mut connecting = HashSet::new();
+                let mut discoveries = HashMap::new();
+                schedule_host_topic(
+                    &endpoint,
+                    &identity,
+                    42,
+                    relay_addr,
+                    Some(expectation),
+                    &tx,
+                    &HashMap::new(),
+                    &mut connecting,
+                    &mut discoveries,
+                );
+                let rejected = matches!(
+                    timeout(Duration::from_secs(5), rx.recv()).await,
+                    Ok(Some(InternalEvent::HostConnected { result, .. })) if result.is_err()
+                );
+                for (_, task) in discoveries {
+                    task.abort();
+                }
+                endpoint.close().await;
+                rejected
+            }
+        };
+        let host_device = host_cert.device_public_key;
+        assert!(
+            attempt(
+                HomePeerExpectation {
+                    user_public_key: other_root.verifying_key().to_bytes(),
+                    device_public_key: host_device,
+                },
+                Vec::new(),
+            )
+            .await
+        );
+        assert!(
+            attempt(
+                HomePeerExpectation {
+                    user_public_key: root.verifying_key().to_bytes(),
+                    device_public_key: wrong_device_cert.device_public_key,
+                },
+                Vec::new(),
+            )
+            .await
+        );
+        let mut revocation = RevocationEntry {
+            user_public_key: root.verifying_key().to_bytes(),
+            revoked_device_public_key: host_device,
+            revoked_at_ns: 1,
+            reason: RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut revocation, &root).unwrap();
+        assert!(
+            attempt(
+                HomePeerExpectation {
+                    user_public_key: root.verifying_key().to_bytes(),
+                    device_public_key: host_device,
+                },
+                vec![revocation],
+            )
+            .await
+        );
     }
 
     /// Spawn two actors, join workspace 42 on each, connect both to `relay`,
