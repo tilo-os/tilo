@@ -1064,6 +1064,15 @@ impl ShellDriver {
         let _ = self.fb.paint();
     }
 
+    pub fn show_room_activity_replay_for_shots(&mut self) {
+        self.fb
+            .host_mut()
+            .room_activity_mut()
+            .set_view(shell::shell::room_activity::ActivityView::Replay);
+        self.fb.host_mut().force_room_activity_settled();
+        let _ = self.fb.paint();
+    }
+
     /// Select Ada in the contributor controls using the history surface's
     /// public filter API. Returns false if the seeded remote replica failed
     /// to produce an authored change, rather than emitting a misleading PNG.

@@ -1383,7 +1383,7 @@ pub use scrollable::{ScrollAxis, Scrollable};
 mod tile_host;
 pub use tile_host::{AppKind, TileContent, TileHost};
 mod app_widget;
-pub use app_widget::{AppCommand, AppWidget, IconDescriptor};
+pub use app_widget::{AppCommand, AppHostIntent, AppWidget, IconDescriptor};
 pub mod command_palette;
 pub mod input_hint;
 pub mod shortcut_recorder;
