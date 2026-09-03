@@ -65,6 +65,8 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && mkdir -p /out \
     && cp target/release/qos-relay \
           target/release/qos-relay-admin \
+          target/release/qos-enroll \
+          target/release/qos-home-peer-control \
           target/release/fs \
           /out/
 
@@ -88,8 +90,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # Copy binaries + systemd unit + tmpfiles snippet.
 COPY --from=builder /out/qos-relay /usr/bin/qos-relay
 COPY --from=builder /out/qos-relay-admin /usr/bin/qos-relay-admin
+COPY --from=builder /out/qos-enroll /usr/bin/qos-enroll
+COPY --from=builder /out/qos-home-peer-control /usr/libexec/qos-home-peer-control
 COPY --from=builder /out/fs /usr/bin/fs
-RUN chmod 0755 /usr/bin/qos-relay /usr/bin/qos-relay-admin /usr/bin/fs
+RUN chmod 0755 /usr/bin/qos-relay /usr/bin/qos-relay-admin /usr/bin/qos-enroll /usr/bin/fs /usr/libexec/qos-home-peer-control
 
 COPY os/usr/lib/systemd/system/qos-relay.service /usr/lib/systemd/system/qos-relay.service
 COPY os/usr/lib/systemd/system/qos-fs-replica.service /usr/lib/systemd/system/qos-fs-replica.service

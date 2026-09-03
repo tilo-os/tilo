@@ -4,20 +4,23 @@
 //! and reads the daemon's once-per-second metrics snapshot for live status.
 
 use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use qos_relay::{DeviceRole, RelayConfig, ReplicationIntent};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
-use ui::widget::{Dropdown, Toggle, Widget};
+use ui::widget::{Button, Dropdown, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::widgets::{
-    caption, card, cards, choice_row_described, rows, setting_row_described, value_row,
+    caption, card, card_with_action, cards, choice_row_described, rows, setting_row_described,
+    value_row,
 };
 
 const DEFAULT_CONFIG: &str = "/etc/qos/relay.toml";
@@ -27,6 +30,8 @@ const INBOUND_RELAY_KEY: &str = "device_mesh.inbound_relay";
 const REMOTE_RELAY_KEY: &str = "device_mesh.remote_control_relay";
 const APP_SERVING_KEY: &str = "device_mesh.app_serving";
 const COMPUTE_KEY: &str = "device_mesh.compute";
+const APPROVE_ENROLLMENT_KEY: &str = "device_mesh.approve_enrollment";
+const CONTROL_HELPER: &str = "/usr/libexec/qos-home-peer-control";
 
 const ROLE_OPTIONS: &[&str] = &[
     "Use normally",
@@ -40,6 +45,7 @@ const REPLICATION_OPTIONS: &[&str] = &[
 ];
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const STATUS_FRESHNESS: Duration = Duration::from_secs(5);
+const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 fn role_label(role: DeviceRole) -> &'static str {
     match role {
@@ -166,9 +172,107 @@ pub struct DeviceMeshPane {
     commit_context_pending: bool,
     structure_dirty: bool,
     runtime_status: RelayRuntimeStatus,
+    discovered_workspaces: Vec<DiscoveredWorkspace>,
+    registered_home_peers: usize,
+    apply_child: Option<Child>,
+    apply_queued: bool,
+    pairing_child: Option<Child>,
     next_status_refresh: Instant,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DiscoveredWorkspace {
+    id: u64,
+    name: String,
+}
+
+fn workspace_key(id: u64) -> String {
+    format!("device_mesh.workspace.{id}")
+}
+
+fn discover_workspaces(config: &RelayConfig) -> Vec<DiscoveredWorkspace> {
+    let path = dirs::config_dir()
+        .map(|dir| dir.join("qos/state.json"))
+        .unwrap_or_else(|| PathBuf::from("state.json"));
+    let mut result = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|state| {
+            state
+                .get("workspaces")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+        })
+        .map(|workspaces| {
+            workspaces
+                .into_iter()
+                .filter_map(|workspace| {
+                    let id = workspace
+                        .get("room")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|room| qos_relay::room_workspace_id(room).ok())
+                        .or_else(|| workspace.get("id").and_then(serde_json::Value::as_u64))?;
+                    let name = workspace
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("Workspace")
+                        .to_owned();
+                    Some(DiscoveredWorkspace { id, name })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for binding in &config.workspaces {
+        if !result.iter().any(|workspace| workspace.id == binding.id) {
+            result.push(DiscoveredWorkspace {
+                id: binding.id,
+                name: format!("Workspace {}", binding.id),
+            });
+        }
+    }
+    result.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
+    result
+}
+
+fn registered_home_peer_count() -> usize {
+    std::fs::read(identity_root().join("home-peers.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Vec<serde_json::Value>>(&bytes).ok())
+        .map_or(0, |peers| peers.len())
+}
+
+fn identity_root() -> PathBuf {
+    std::env::var_os("QOS_IDENTITY_ROOT").map_or_else(
+        || {
+            if PathBuf::from("/var/lib/qos/device").is_dir() {
+                PathBuf::from("/var/lib/qos")
+            } else {
+                dirs::data_dir()
+                    .unwrap_or_else(|| PathBuf::from(".local/share"))
+                    .join("qos")
+            }
+        },
+        PathBuf::from,
+    )
+}
+
+fn poll_child(child: &mut Child) -> std::io::Result<Option<ExitStatus>> {
+    child.try_wait()
+}
+
+fn child_error(child: &mut Child, fallback: &str) -> String {
+    let mut detail = String::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        let _ = stderr.read_to_string(&mut detail);
+    }
+    let detail = detail.trim();
+    if detail.is_empty() {
+        fallback.to_owned()
+    } else {
+        detail.to_owned()
+    }
 }
 
 impl DeviceMeshPane {
@@ -198,6 +302,7 @@ impl DeviceMeshPane {
             ),
         };
         let runtime_status = RelayRuntimeStatus::read(&config, SystemTime::now());
+        let discovered_workspaces = discover_workspaces(&config);
         Self {
             config_path,
             config,
@@ -206,6 +311,11 @@ impl DeviceMeshPane {
             commit_context_pending: false,
             structure_dirty: false,
             runtime_status,
+            discovered_workspaces,
+            registered_home_peers: registered_home_peer_count(),
+            apply_child: None,
+            apply_queued: false,
+            pairing_child: None,
             next_status_refresh: Instant::now() + STATUS_REFRESH_INTERVAL,
             composed: None,
             rect: Rect::ZERO,
@@ -272,6 +382,10 @@ impl DeviceMeshPane {
         }
         if self.load_status.starts_with("Configuration could not")
             || self.load_status.starts_with("Not saved")
+            || self.load_status.starts_with("Saving")
+            || self.load_status == "Saved"
+            || self.load_status.starts_with("Waiting")
+            || self.load_status.starts_with("Could not start pairing")
         {
             continuation_rows.push(caption(&self.load_status));
         }
@@ -308,9 +422,55 @@ impl DeviceMeshPane {
             }
         }));
 
+        let workspace_rows = if self.discovered_workspaces.is_empty() {
+            rows(vec![caption(
+                "Your workspaces appear here as soon as they are opened.",
+            )])
+        } else {
+            rows(
+                self.discovered_workspaces
+                    .iter()
+                    .map(|workspace| {
+                        let key = workspace_key(workspace.id);
+                        setting_row_described(
+                            &workspace.name,
+                            "Keep this workspace available from this device",
+                            Box::new(Toggle::new(&key, &key).with_id(&key)),
+                        )
+                    })
+                    .collect(),
+            )
+        };
+        let pairing = self.pairing_child.is_some();
+        let approve = Box::new(
+            Button::new(
+                "device_mesh.approve_enrollment",
+                if pairing {
+                    "Pairing…"
+                } else {
+                    "Pair home server"
+                },
+                Some(APPROVE_ENROLLMENT_KEY),
+            )
+            .with_enabled(!pairing),
+        );
+        let mut home_server_rows = vec![caption(
+            "Choose Pair home server while your new qOS server is starting. It receives its identity and full-sync setup automatically.",
+        )];
+        if self.registered_home_peers > 0 {
+            home_server_rows.push(value_row(
+                "Paired home servers",
+                &self.registered_home_peers.to_string(),
+            ));
+        }
+        if pairing || self.load_status.starts_with("Home server") {
+            home_server_rows.push(caption(&self.load_status));
+        }
         let mut sections = vec![
             card("Continue across devices", rows(continuation_rows)),
             card("Keep everything available", rows(availability_rows)),
+            card("Synced workspaces", workspace_rows),
+            card_with_action("Home server or NAS", approve, rows(home_server_rows)),
         ];
         if shows_advanced_services(self.config.device_role) {
             sections.push(card(
@@ -386,10 +546,153 @@ impl DeviceMeshPane {
     }
 
     fn persist(&mut self) {
+        if self.config_path == PathBuf::from(DEFAULT_CONFIG) {
+            if self.apply_child.is_some() {
+                self.apply_queued = true;
+                self.load_status = "Saving latest changes…".into();
+            } else {
+                self.start_apply();
+            }
+            return;
+        }
         self.load_status = match self.config.save(&self.config_path) {
             Ok(()) => "Saved".to_string(),
             Err(error) => format!("Not saved: {error}"),
         };
+    }
+
+    fn spawn_apply(&self) -> Result<Child, String> {
+        let request = serde_json::json!({
+            "role": match self.config.device_role {
+                DeviceRole::Interactive => "interactive",
+                DeviceRole::Hybrid => "hybrid",
+                DeviceRole::AlwaysOnServer => "always-on",
+            },
+            "workspace_ids": self.config.workspaces.iter().map(|workspace| workspace.id).collect::<Vec<_>>(),
+            "inbound_relay": self.config.services.inbound_relay,
+            "remote_control_relay": self.config.services.remote_control_relay,
+            "app_serving": self.config.services.app_serving,
+            "compute": self.config.services.compute,
+        });
+        let mut child = Command::new("pkexec")
+            .args([CONTROL_HELPER, "apply"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("could not start system setup: {error}"))?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| "system setup input was unavailable".to_string())?
+            .write_all(request.to_string().as_bytes())
+            .map_err(|error| format!("could not send system setup: {error}"))?;
+        Ok(child)
+    }
+
+    fn start_apply(&mut self) {
+        match self.spawn_apply() {
+            Ok(child) => {
+                self.apply_child = Some(child);
+                self.load_status = "Saving changes…".into();
+            }
+            Err(error) => self.load_status = format!("Not saved: {error}"),
+        }
+    }
+
+    fn approve_enrollment(&mut self) {
+        if self.pairing_child.is_some() {
+            return;
+        }
+        let mut command = Command::new("pkexec");
+        command
+            .args([CONTROL_HELPER, "approve-enrollment", "--identity-root"])
+            .arg(identity_root());
+        let ids = if self.config.workspaces.is_empty() {
+            self.discovered_workspaces
+                .iter()
+                .map(|workspace| workspace.id)
+                .collect::<Vec<_>>()
+        } else {
+            self.config
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.id)
+                .collect()
+        };
+        for id in ids {
+            command.args(["--workspace-id", &id.to_string()]);
+        }
+        self.load_status = match command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => {
+                self.pairing_child = Some(child);
+                "Home server pairing in progress…".into()
+            }
+            Err(error) => format!("Could not start pairing: {error}"),
+        };
+        self.structure_dirty = true;
+    }
+
+    fn poll_background_tasks(&mut self) {
+        let apply_result = self.apply_child.as_mut().map(poll_child);
+        match apply_result {
+            Some(Ok(Some(status))) => {
+                let mut child = self.apply_child.take().expect("apply child exists");
+                if status.success() {
+                    if self.apply_queued {
+                        self.apply_queued = false;
+                        self.start_apply();
+                    } else {
+                        self.load_status = "Saved".into();
+                    }
+                } else {
+                    self.apply_queued = false;
+                    self.load_status = format!(
+                        "Not saved: {}",
+                        child_error(&mut child, "administrator approval was not granted")
+                    );
+                }
+                self.structure_dirty = true;
+            }
+            Some(Err(error)) => {
+                self.apply_child = None;
+                self.apply_queued = false;
+                self.load_status = format!("Not saved: {error}");
+                self.structure_dirty = true;
+            }
+            Some(Ok(None)) | None => {}
+        }
+
+        let pairing_result = self.pairing_child.as_mut().map(poll_child);
+        match pairing_result {
+            Some(Ok(Some(status))) => {
+                let mut child = self.pairing_child.take().expect("pairing child exists");
+                if status.success() {
+                    self.registered_home_peers = registered_home_peer_count();
+                    self.refresh_runtime_status();
+                    self.load_status = "Home server paired".into();
+                } else {
+                    self.load_status = format!(
+                        "Home server was not paired: {}. Choose Pair home server to retry.",
+                        child_error(&mut child, "the pairing window closed")
+                    );
+                }
+                self.structure_dirty = true;
+            }
+            Some(Err(error)) => {
+                self.pairing_child = None;
+                self.load_status = format!(
+                    "Home server pairing stopped: {error}. Choose Pair home server to retry."
+                );
+                self.structure_dirty = true;
+            }
+            Some(Ok(None)) | None => {}
+        }
     }
 }
 
@@ -405,6 +708,7 @@ pub fn build() -> Box<dyn Widget> {
 
 impl Widget for DeviceMeshPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.poll_background_tasks();
         if self.needs_seed {
             let _ = state.put(root, ROLE_KEY, role_label(self.config.device_role));
             let _ = state.put(
@@ -420,6 +724,15 @@ impl Widget for DeviceMeshPane {
             ] {
                 let _ = state.put(root, key, value);
             }
+            for workspace in &self.discovered_workspaces {
+                let selected = self
+                    .config
+                    .workspaces
+                    .iter()
+                    .any(|binding| binding.id == workspace.id);
+                let _ = state.put(root, workspace_key(workspace.id), selected);
+            }
+            let _ = state.put(root, APPROVE_ENROLLMENT_KEY, false);
             self.needs_seed = false;
         }
 
@@ -490,6 +803,37 @@ impl Widget for DeviceMeshPane {
             &mut self.config.services.app_serving,
         );
         changed |= Self::apply_bool(state, root, COMPUTE_KEY, &mut self.config.services.compute);
+        for workspace in self.discovered_workspaces.clone() {
+            let selected =
+                Self::read_bool(state, root, &workspace_key(workspace.id)).unwrap_or(false);
+            if selected
+                && !self
+                    .config
+                    .workspaces
+                    .iter()
+                    .any(|binding| binding.id == workspace.id)
+            {
+                self.config.workspaces.push(qos_relay::WorkspaceBinding {
+                    id: workspace.id,
+                    pin: self.config.device_role.can_serve(),
+                    replication: if self.config.device_role == DeviceRole::AlwaysOnServer {
+                        ReplicationIntent::FullWorkspace
+                    } else {
+                        ReplicationIntent::OnDemand
+                    },
+                    admitted_users: Vec::new(),
+                });
+                changed = true;
+            } else if !selected && self.config.remove_workspace(workspace.id) {
+                changed = true;
+            }
+        }
+        if Self::read_bool(state, root, APPROVE_ENROLLMENT_KEY) == Some(true) {
+            let _ = state.put(root, APPROVE_ENROLLMENT_KEY, false);
+            if self.pairing_child.is_none() {
+                self.approve_enrollment();
+            }
+        }
         if changed {
             self.persist();
             self.structure_dirty = true;
@@ -629,7 +973,11 @@ impl Widget for DeviceMeshPane {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        shows_advanced_services(self.config.device_role).then_some(self.next_status_refresh)
+        if self.apply_child.is_some() || self.pairing_child.is_some() {
+            Some(Instant::now() + PROCESS_POLL_INTERVAL)
+        } else {
+            shows_advanced_services(self.config.device_role).then_some(self.next_status_refresh)
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -645,6 +993,7 @@ impl Widget for DeviceMeshPane {
 mod tests {
     use super::*;
     use qos_relay::WorkspaceBinding;
+    use std::time::Instant;
 
     #[test]
     fn edits_write_the_real_relay_config_shape() {
@@ -655,6 +1004,7 @@ mod tests {
             id: 7,
             pin: true,
             replication: ReplicationIntent::OnDemand,
+            admitted_users: Vec::new(),
         });
         config.save(&path).unwrap();
 
@@ -766,6 +1116,7 @@ mod tests {
             id: 7,
             pin: false,
             replication: ReplicationIntent::OnDemand,
+            admitted_users: Vec::new(),
         });
         config.save(&path).unwrap();
 
@@ -786,6 +1137,77 @@ mod tests {
             saved.workspaces[0].replication,
             ReplicationIntent::FullWorkspace
         );
+    }
+
+    #[test]
+    fn discovered_workspace_toggle_updates_the_real_binding_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay.toml");
+        let mut pane = DeviceMeshPane::with_path(&path);
+        pane.discovered_workspaces = vec![DiscoveredWorkspace {
+            id: 44,
+            name: "Studio".into(),
+        }];
+        let mut doc = AutoCommit::new();
+        pane.sync(&mut doc, &automerge::ROOT);
+        doc.put(&automerge::ROOT, workspace_key(44), true).unwrap();
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            pane.config
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.id == 44)
+        );
+        assert!(
+            RelayConfig::load(&path)
+                .unwrap()
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.id == 44)
+        );
+    }
+
+    #[test]
+    fn active_config_apply_is_polled_without_blocking_and_coalesces_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
+        pane.config_path = PathBuf::from(DEFAULT_CONFIG);
+        pane.apply_child = Some(Command::new("sleep").arg("2").spawn().unwrap());
+
+        let started = Instant::now();
+        pane.persist();
+        pane.poll_background_tasks();
+
+        assert!(started.elapsed() < Duration::from_millis(250));
+        assert!(pane.apply_child.is_some());
+        assert!(pane.apply_queued);
+        let mut child = pane.apply_child.take().unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn pairing_process_transitions_to_success_and_allows_another_pairing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
+        pane.pairing_child = Some(Command::new("true").spawn().unwrap());
+        pane.pairing_child.as_mut().unwrap().wait().unwrap();
+        pane.poll_background_tasks();
+        assert!(pane.pairing_child.is_none());
+        assert_eq!(pane.load_status, "Home server paired");
+    }
+
+    #[test]
+    fn duplicate_pair_action_is_ignored_while_pairing_is_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
+        pane.pairing_child = Some(Command::new("sleep").arg("2").spawn().unwrap());
+        let child_id = pane.pairing_child.as_ref().unwrap().id();
+        pane.approve_enrollment();
+        assert_eq!(pane.pairing_child.as_ref().unwrap().id(), child_id);
+        let mut child = pane.pairing_child.take().unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]

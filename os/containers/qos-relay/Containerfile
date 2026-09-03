@@ -75,6 +75,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && mkdir -p /out \
     && cp target/release/qos-relay \
           target/release/qos-relay-admin \
+          target/release/qos-enroll \
           target/release/fs \
           /out/
 
@@ -91,6 +92,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
 
 COPY --from=builder /out/qos-relay /usr/bin/qos-relay
 COPY --from=builder /out/qos-relay-admin /usr/bin/qos-relay-admin
+COPY --from=builder /out/qos-enroll /usr/bin/qos-enroll
 COPY --from=builder /out/fs /usr/bin/fs
 COPY os/containers/qos-relay/qos-home-peer /usr/bin/qos-home-peer
 RUN chmod 0755 /usr/bin/qos-home-peer
