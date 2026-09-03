@@ -21,7 +21,7 @@ use taffy::{
 };
 use vello::Scene;
 use vello::kurbo::RoundedRect;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -493,6 +493,16 @@ fn capture_mirror_initial_size(
     vello::kurbo::Size::new(width, height)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShortcutGuideFocus {
+    Binding(settings_store::hardware::ShortcutAction),
+    Reset(
+        settings_store::hardware::ShortcutAction,
+        settings_store::hardware::ShortcutAction,
+    ),
+    Done,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independently-toggled, documented piece of overlay/transition \
@@ -502,6 +512,26 @@ fn capture_mirror_initial_size(
 )]
 pub struct ShellOverlayHost {
     rect: Rect,
+    /// Last-used modality plus devices the host has actually discovered.
+    /// The shortcut overlay reads this; connection alone never selects a
+    /// controller-facing view.
+    interaction: ui::InteractionEnvironment,
+    /// Direct-touch arena for shell-owned three-finger navigation and pinch
+    /// overview. One-finger streams continue to the ordinary widget tree.
+    touch_gestures: ui::gesture::TouchGestureArena,
+    /// Geometry painted by the keyboard guide, reused by pointer dispatch so
+    /// the visible keycaps themselves are the edit targets.
+    shortcut_binding_rects: Vec<(settings_store::hardware::ShortcutAction, Rect)>,
+    shortcut_reset_rects: Vec<(
+        settings_store::hardware::ShortcutAction,
+        settings_store::hardware::ShortcutAction,
+        Rect,
+    )>,
+    /// The action waiting for its next pressed chord. Escape clears this
+    /// without touching the persisted binding.
+    shortcut_rebind: Option<settings_store::hardware::ShortcutAction>,
+    shortcut_rebind_message: Option<String>,
+    shortcut_guide_focus: Option<ShortcutGuideFocus>,
     content: Box<dyn Widget>,
     /// Trusted first-login chrome. While present it is the entire root
     /// surface: desktop content, launch affordances, and every other overlay
@@ -1296,6 +1326,13 @@ impl ShellOverlayHost {
         let (search_registry, room_records) = Self::build_search_registry();
         Self {
             rect: Rect::ZERO,
+            interaction: ui::InteractionEnvironment::default(),
+            touch_gestures: ui::gesture::TouchGestureArena::new(),
+            shortcut_binding_rects: Vec::new(),
+            shortcut_reset_rects: Vec::new(),
+            shortcut_rebind: None,
+            shortcut_rebind_message: None,
+            shortcut_guide_focus: None,
             content,
             onboarding: None,
             onboarding_released: false,
@@ -3872,6 +3909,147 @@ impl ShellOverlayHost {
         self.focus_window_on_strip(strip, group, tab)
     }
 
+    /// Cycle tabs inside the focused window group. Unlike strip focus, this
+    /// wraps because the tab bar is a small local ring.
+    pub fn cycle_focused_tab(&mut self, steps: i32) -> bool {
+        if steps == 0 {
+            return false;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let target = (|| -> Option<(StripId, GroupId, u64)> {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            let strip = tree.active_strip.get(&tree.active).copied()?;
+            let group_id = tree.active_group_for(strip)?;
+            let group = tree
+                .active_workspace()?
+                .strips
+                .iter()
+                .find(|candidate| candidate.id == strip)?
+                .window_groups
+                .iter()
+                .find(|candidate| candidate.id == group_id)?;
+            let current = group
+                .tabs
+                .iter()
+                .position(|tab| tab.id == group.active_tab)
+                .unwrap_or(0);
+            let len = isize::try_from(group.tabs.len()).ok()?;
+            if len == 0 {
+                return None;
+            }
+            let next =
+                (isize::try_from(current).ok()? + isize::try_from(steps).ok()?).rem_euclid(len);
+            Some((
+                strip,
+                group_id,
+                group.tabs.get(usize::try_from(next).ok()?)?.id,
+            ))
+        })();
+        let Some(target) = target else {
+            return false;
+        };
+        self.focus_window_on_strip(target.0, target.1, target.2)
+    }
+
+    /// Resize the focused group in stable five-percent increments.
+    pub fn resize_focused_group(&mut self, delta_permille: i16) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let (group_id, width) = {
+            let st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            let strip_id = tree.active_strip.get(&tree.active).copied();
+            let Some(group_id) = strip_id.and_then(|id| tree.active_group_for(id)) else {
+                return false;
+            };
+            let Some(group) = tree
+                .active_workspace_mut()
+                .and_then(|workspace| {
+                    workspace
+                        .strips
+                        .iter_mut()
+                        .find(|strip| Some(strip.id) == strip_id)
+                })
+                .and_then(|strip| {
+                    strip
+                        .window_groups
+                        .iter_mut()
+                        .find(|group| group.id == group_id)
+                })
+            else {
+                return false;
+            };
+            let next = i32::from(group.width.permille())
+                .saturating_add(i32::from(delta_permille))
+                .clamp(
+                    i32::from(ui::widget::WIDTH_MIN_PERMILLE),
+                    i32::from(ui::widget::WIDTH_MAX_PERMILLE),
+                ) as u16;
+            if next == group.width.permille() {
+                return false;
+            }
+            group.width = crate::shell::state::WindowWidth::Fraction(next);
+            tree.doc_set_width(group_id, next);
+            (group_id, next)
+        };
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            if let Some(group) = row.groups.iter_mut().find(|group| group.id == group_id) {
+                group.set_width(ui::widget::WindowWidth::Fraction(width));
+                break;
+            }
+        }
+        chrome.borrow_mut().bump();
+        true
+    }
+
+    /// Move the focused group one slot while preserving its contents and
+    /// active tab. This is the keyboard twin of dragging its tab-bar ground.
+    pub fn reorder_focused_group(&mut self, direction: i32) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let changed = {
+            let st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            let Some(strip_id) = tree.active_strip.get(&tree.active).copied() else {
+                return false;
+            };
+            let Some(group_id) = tree.active_group_for(strip_id) else {
+                return false;
+            };
+            let Some(strip) = tree
+                .active_workspace()
+                .and_then(|workspace| workspace.strips.iter().find(|strip| strip.id == strip_id))
+            else {
+                return false;
+            };
+            let Some(current) = strip
+                .window_groups
+                .iter()
+                .position(|group| group.id == group_id)
+            else {
+                return false;
+            };
+            let last = strip.window_groups.len().saturating_sub(1);
+            let destination = if direction < 0 {
+                current.saturating_sub(1)
+            } else {
+                current.saturating_add(1).min(last)
+            };
+            tree.reorder_group_within_strip(strip_id, group_id, destination)
+        };
+        if changed {
+            chrome.borrow_mut().bump();
+        }
+        changed
+    }
+
     /// Focuses one window by identity, then pans the strip to it (unlike a
     /// click on the window itself) since the rail addresses windows that may
     /// be off screen.
@@ -6152,6 +6330,116 @@ impl ShellOverlayHost {
     /// host DE running qOS as a client swallows Super first).
     /// `Super+H` toggles workspace history; `Ctrl+Tab`/`Super+Tab` toggle the overview; Esc closes the top
     /// overlay. Only called for a `Pressed` `KeyboardInput`.
+    fn capture_shortcut_chord(
+        &mut self,
+        action: settings_store::hardware::ShortcutAction,
+        logical_key: &Key,
+        modifiers: winit::event::Modifiers,
+    ) {
+        let Some(chord) = shortcut_chord_from_event(logical_key, modifiers) else {
+            return;
+        };
+        if matches!(logical_key, Key::Character(_)) && chord.modifiers.is_empty() {
+            self.shortcut_rebind_message =
+                Some("Add Super, Ctrl, Alt or Shift to printable keys.".into());
+            return;
+        }
+        let mut config = settings_store::hardware::ShortcutConfig::load();
+        if let Err(other) = config.set(action, chord) {
+            self.shortcut_rebind_message = Some(format!(
+                "Already used to {}. Press another shortcut.",
+                shortcut_action_label(other)
+            ));
+            return;
+        }
+        match config.save() {
+            Ok(()) => {
+                self.shortcut_rebind = None;
+                self.shortcut_rebind_message = None;
+            }
+            Err(_) => {
+                self.shortcut_rebind_message =
+                    Some("Could not save that shortcut. Press another shortcut.".into());
+            }
+        }
+    }
+
+    fn reset_shortcut_pair(
+        &mut self,
+        first: settings_store::hardware::ShortcutAction,
+        second: settings_store::hardware::ShortcutAction,
+    ) {
+        let defaults = settings_store::hardware::ShortcutConfig::default();
+        let mut candidate = settings_store::hardware::ShortcutConfig::load();
+        candidate.bindings.remove(&first);
+        candidate.bindings.remove(&second);
+        let restore = [first, second].into_iter().try_for_each(|action| {
+            defaults
+                .bindings
+                .get(&action)
+                .cloned()
+                .ok_or(action)
+                .and_then(|chord| candidate.set(action, chord))
+        });
+        if let Err(other) = restore {
+            self.shortcut_rebind_message = Some(format!(
+                "A default is already used to {}. Change that shortcut first.",
+                shortcut_action_label(other)
+            ));
+            return;
+        }
+        match candidate.save() {
+            Ok(()) => {
+                self.shortcut_rebind = None;
+                self.shortcut_rebind_message = None;
+            }
+            Err(_) => {
+                self.shortcut_rebind_message = Some("Could not restore the defaults.".into());
+            }
+        }
+    }
+
+    fn shortcut_guide_controls(&self) -> Vec<ShortcutGuideFocus> {
+        use settings_store::hardware::ShortcutAction as A;
+        let config = settings_store::hardware::ShortcutConfig::load();
+        let defaults = settings_store::hardware::ShortcutConfig::default();
+        let rows = [
+            (A::FocusPreviousWindow, A::FocusNextWindow),
+            (A::PreviousTab, A::NextTab),
+            (A::PreviousStrip, A::NextStrip),
+            (A::PreviousWorkspace, A::NextWorkspace),
+            (A::MoveGroupLeft, A::MoveGroupRight),
+            (A::ResizeNarrower, A::ResizeWider),
+        ];
+        let mut controls = Vec::with_capacity(19);
+        for (first, second) in rows {
+            controls.push(ShortcutGuideFocus::Binding(first));
+            controls.push(ShortcutGuideFocus::Binding(second));
+            if [first, second]
+                .into_iter()
+                .any(|action| config.bindings.get(&action) != defaults.bindings.get(&action))
+            {
+                controls.push(ShortcutGuideFocus::Reset(first, second));
+            }
+        }
+        controls.push(ShortcutGuideFocus::Done);
+        controls
+    }
+
+    fn move_shortcut_guide_focus(&mut self, backwards: bool) {
+        let controls = self.shortcut_guide_controls();
+        let current = self
+            .shortcut_guide_focus
+            .and_then(|focus| controls.iter().position(|candidate| *candidate == focus));
+        let next = match (current, backwards) {
+            (Some(0), true) | (None, true) => controls.len().saturating_sub(1),
+            (Some(index), true) => index.saturating_sub(1),
+            (Some(index), false) => (index + 1) % controls.len(),
+            (None, false) => 0,
+        };
+        self.shortcut_guide_focus = controls.get(next).copied();
+    }
+
     fn handle_shell_keyboard_event(
         &mut self,
         logical_key: &Key,
@@ -6165,6 +6453,21 @@ impl ShellOverlayHost {
         let alt_down = mstate.alt_key();
         let is_mod = super_down || mstate.control_key();
         let shift_down = mstate.shift_key();
+        if self.overlay_flags().shortcut_help
+            && let Some(action) = self.shortcut_rebind
+        {
+            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
+                self.shortcut_rebind = None;
+                self.shortcut_rebind_message = None;
+            } else {
+                self.capture_shortcut_chord(action, logical_key, modifiers);
+            }
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().bump();
+            }
+            *handled = true;
+            return true;
+        }
         // Ahead of every chord below: a password can contain any
         // character, and a `k` in one must not open search instead.
         if self.handle_wifi_password_key(logical_key, modifiers) {
@@ -6172,6 +6475,169 @@ impl ShellOverlayHost {
             return true;
         }
         if self.handle_quick_settings_keyboard(logical_key, shift_down, handled) {
+            return true;
+        }
+        let shortcut_config = settings_store::hardware::ShortcutConfig::load();
+        let shortcut_pressed = |action| {
+            shortcut_config
+                .bindings
+                .get(&action)
+                .is_some_and(|chord| shortcut_chord_matches(logical_key, modifiers, chord))
+        };
+        let help_chord = matches!(logical_key, Key::Named(NamedKey::F1))
+            || shortcut_pressed(settings_store::hardware::ShortcutAction::ShortcutHelp);
+        if help_chord {
+            if let Some(chrome) = self.chrome.clone() {
+                let mut st = chrome.borrow_mut();
+                st.overlays.shortcut_help = !st.overlays.shortcut_help;
+                st.bump();
+            }
+            self.shortcut_rebind = None;
+            self.shortcut_rebind_message = None;
+            self.shortcut_guide_focus =
+                self.overlay_flags()
+                    .shortcut_help
+                    .then_some(ShortcutGuideFocus::Binding(
+                        settings_store::hardware::ShortcutAction::FocusPreviousWindow,
+                    ));
+            *handled = true;
+            return true;
+        }
+        // The guide is modal: unfamiliar keys must not act on a window
+        // hidden behind it. Escape and F1 are its explicit exits.
+        if self.overlay_flags().shortcut_help {
+            match logical_key {
+                Key::Named(NamedKey::Tab) => {
+                    self.move_shortcut_guide_focus(shift_down);
+                }
+                Key::Named(NamedKey::Enter | NamedKey::Space) => match self.shortcut_guide_focus {
+                    Some(ShortcutGuideFocus::Binding(action)) => {
+                        self.shortcut_rebind = Some(action);
+                        self.shortcut_rebind_message = None;
+                    }
+                    Some(ShortcutGuideFocus::Reset(first, second)) => {
+                        self.reset_shortcut_pair(first, second);
+                        self.shortcut_guide_focus = Some(ShortcutGuideFocus::Binding(first));
+                    }
+                    Some(ShortcutGuideFocus::Done) => {
+                        if let Some(chrome) = self.chrome.clone() {
+                            let mut st = chrome.borrow_mut();
+                            st.overlays.shortcut_help = false;
+                            st.bump();
+                        }
+                        self.shortcut_guide_focus = None;
+                    }
+                    None => self.move_shortcut_guide_focus(false),
+                },
+                Key::Named(NamedKey::Escape) => {
+                    if let Some(chrome) = self.chrome.clone() {
+                        let mut st = chrome.borrow_mut();
+                        st.overlays.shortcut_help = false;
+                        st.bump();
+                        self.shortcut_rebind = None;
+                        self.shortcut_rebind_message = None;
+                        self.shortcut_guide_focus = None;
+                    }
+                }
+                _ => {}
+            }
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().bump();
+            }
+            *handled = true;
+            return true;
+        }
+        use settings_store::hardware::ShortcutAction;
+        if shortcut_pressed(ShortcutAction::Search) {
+            self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+            self.refresh_search_results(state, path);
+            *handled = true;
+            return true;
+        }
+        if shortcut_pressed(ShortcutAction::WorkspaceOverview) {
+            if let Some(chrome) = self.chrome.clone() {
+                let mut st = chrome.borrow_mut();
+                st.overlays.overview = !st.overlays.overview;
+                st.bump();
+            }
+            *handled = true;
+            return true;
+        }
+        if shortcut_pressed(ShortcutAction::QuickSettings) {
+            if let Some(chrome) = self.chrome.clone() {
+                let mut st = chrome.borrow_mut();
+                st.overlays.quick_settings = !st.overlays.quick_settings;
+                st.bump();
+            }
+            *handled = true;
+            return true;
+        }
+        let navigation = [
+            ShortcutAction::PreviousTab,
+            ShortcutAction::NextTab,
+            ShortcutAction::ResizeNarrower,
+            ShortcutAction::ResizeWider,
+            ShortcutAction::MoveGroupLeft,
+            ShortcutAction::MoveGroupRight,
+            ShortcutAction::FocusPreviousWindow,
+            ShortcutAction::FocusNextWindow,
+            ShortcutAction::PreviousStrip,
+            ShortcutAction::NextStrip,
+            ShortcutAction::PreviousWorkspace,
+            ShortcutAction::NextWorkspace,
+        ];
+        if let Some(action) = navigation
+            .into_iter()
+            .find(|action| shortcut_pressed(*action))
+        {
+            match action {
+                ShortcutAction::PreviousTab => {
+                    let _ = self.cycle_focused_tab(-1);
+                }
+                ShortcutAction::NextTab => {
+                    let _ = self.cycle_focused_tab(1);
+                }
+                ShortcutAction::ResizeNarrower => {
+                    let _ = self.resize_focused_group(-50);
+                }
+                ShortcutAction::ResizeWider => {
+                    let _ = self.resize_focused_group(50);
+                }
+                ShortcutAction::MoveGroupLeft => {
+                    let _ = self.reorder_focused_group(-1);
+                }
+                ShortcutAction::MoveGroupRight => {
+                    let _ = self.reorder_focused_group(1);
+                }
+                ShortcutAction::FocusPreviousWindow => {
+                    let _ = self.step_focus_along_strip(-1);
+                }
+                ShortcutAction::FocusNextWindow => {
+                    let _ = self.step_focus_along_strip(1);
+                }
+                ShortcutAction::PreviousStrip | ShortcutAction::NextStrip => {
+                    let direction = if action == ShortcutAction::PreviousStrip {
+                        -1
+                    } else {
+                        1
+                    };
+                    if let Some(chrome) = self.chrome.clone() {
+                        let _ = chrome.borrow_mut().switch_strip(direction);
+                    }
+                }
+                ShortcutAction::PreviousWorkspace | ShortcutAction::NextWorkspace => {
+                    let direction = if action == ShortcutAction::PreviousWorkspace {
+                        -1
+                    } else {
+                        1
+                    };
+                    if let Some(chrome) = self.chrome.clone() {
+                        let _ = chrome.borrow_mut().switch_workspace(direction);
+                    }
+                }
+                _ => {}
+            }
+            *handled = true;
             return true;
         }
         // Captured ahead of the modifier-only branch so Character('K')
@@ -6888,6 +7354,55 @@ impl ShellOverlayHost {
         let Some(p) = self.last_cursor else {
             return false;
         };
+        let help_open = self.overlay_flags().shortcut_help;
+        if help_open || self.shortcut_help_button_rect().contains(p) {
+            if help_open
+                && let Some(action) = self
+                    .shortcut_binding_rects
+                    .iter()
+                    .find_map(|(action, rect)| rect.contains(p).then_some(*action))
+            {
+                self.shortcut_rebind = Some(action);
+                self.shortcut_rebind_message = None;
+                self.shortcut_guide_focus = Some(ShortcutGuideFocus::Binding(action));
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                *handled = true;
+                return true;
+            }
+            if help_open
+                && let Some((first, second)) = self
+                    .shortcut_reset_rects
+                    .iter()
+                    .find_map(|(first, second, rect)| rect.contains(p).then_some((*first, *second)))
+            {
+                self.reset_shortcut_pair(first, second);
+                self.shortcut_guide_focus = Some(ShortcutGuideFocus::Binding(first));
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                *handled = true;
+                return true;
+            }
+            if let Some(chrome) = self.chrome.clone() {
+                let mut st = chrome.borrow_mut();
+                // Any click outside the card dismisses it; inside, only the
+                // explicit Done control closes. Both are safely absorbed.
+                if !help_open
+                    || !self.shortcut_help_panel_rect().contains(p)
+                    || self.shortcut_help_done_rect().contains(p)
+                {
+                    st.overlays.shortcut_help = !help_open;
+                    st.bump();
+                    self.shortcut_rebind = None;
+                    self.shortcut_rebind_message = None;
+                    self.shortcut_guide_focus = None;
+                }
+            }
+            *handled = true;
+            return true;
+        }
         if self.handle_workspace_navigation_click(p) {
             *handled = true;
             return true;
@@ -7911,7 +8426,116 @@ const OVERVIEW_PANEL_START_SCALE: f64 = 0.97;
 /// clipped row reads as "there is more" rather than unfinished.
 const OVERVIEW_SCROLL_FADE_PX: f64 = 40.0;
 
+fn shortcut_chord_matches(
+    logical_key: &Key,
+    modifiers: winit::event::Modifiers,
+    chord: &settings_store::hardware::KeyChord,
+) -> bool {
+    let key_matches =
+        shortcut_key_name(logical_key).is_some_and(|key| chord.key.eq_ignore_ascii_case(&key));
+    let state = modifiers.state();
+    key_matches
+        && chord.modifiers.contains("Super") == state.super_key()
+        && chord.modifiers.contains("Ctrl") == state.control_key()
+        && chord.modifiers.contains("Alt") == state.alt_key()
+        && chord.modifiers.contains("Shift") == state.shift_key()
+}
+
+fn shortcut_key_name(logical_key: &Key) -> Option<String> {
+    let name = match logical_key {
+        Key::Character(key) if key.as_str() == " " => "space".to_string(),
+        Key::Character(key) if key.chars().count() == 1 => key.to_ascii_lowercase(),
+        Key::Named(named) => match named {
+            NamedKey::ArrowLeft => "left",
+            NamedKey::ArrowRight => "right",
+            NamedKey::ArrowUp => "up",
+            NamedKey::ArrowDown => "down",
+            NamedKey::Tab => "tab",
+            NamedKey::Enter => "enter",
+            NamedKey::Space => "space",
+            NamedKey::Home => "home",
+            NamedKey::End => "end",
+            NamedKey::PageUp => "pageup",
+            NamedKey::PageDown => "pagedown",
+            NamedKey::Backspace => "backspace",
+            NamedKey::Delete => "delete",
+            NamedKey::Insert => "insert",
+            NamedKey::F1 => "f1",
+            NamedKey::F2 => "f2",
+            NamedKey::F3 => "f3",
+            NamedKey::F4 => "f4",
+            NamedKey::F5 => "f5",
+            NamedKey::F6 => "f6",
+            NamedKey::F7 => "f7",
+            NamedKey::F8 => "f8",
+            NamedKey::F9 => "f9",
+            NamedKey::F10 => "f10",
+            NamedKey::F11 => "f11",
+            NamedKey::F12 => "f12",
+            _ => return None,
+        }
+        .to_string(),
+        _ => return None,
+    };
+    Some(name)
+}
+
+fn shortcut_chord_from_event(
+    logical_key: &Key,
+    modifiers: winit::event::Modifiers,
+) -> Option<settings_store::hardware::KeyChord> {
+    let key = shortcut_key_name(logical_key)?;
+    let state = modifiers.state();
+    let mut names = std::collections::BTreeSet::new();
+    if state.super_key() {
+        names.insert("Super".to_string());
+    }
+    if state.control_key() {
+        names.insert("Ctrl".to_string());
+    }
+    if state.alt_key() {
+        names.insert("Alt".to_string());
+    }
+    if state.shift_key() {
+        names.insert("Shift".to_string());
+    }
+    Some(settings_store::hardware::KeyChord {
+        modifiers: names,
+        key,
+    })
+}
+
+fn shortcut_action_label(action: settings_store::hardware::ShortcutAction) -> &'static str {
+    use settings_store::hardware::ShortcutAction;
+    match action {
+        ShortcutAction::Search => "open search",
+        ShortcutAction::WorkspaceOverview => "open the workspace overview",
+        ShortcutAction::Lock => "lock the screen",
+        ShortcutAction::QuickSettings => "open Quick Settings",
+        ShortcutAction::ShortcutHelp => "open this guide",
+        ShortcutAction::FocusPreviousWindow => "focus the previous window",
+        ShortcutAction::FocusNextWindow => "focus the next window",
+        ShortcutAction::PreviousTab => "select the previous tab",
+        ShortcutAction::NextTab => "select the next tab",
+        ShortcutAction::PreviousStrip => "select the previous strip",
+        ShortcutAction::NextStrip => "select the next strip",
+        ShortcutAction::PreviousWorkspace => "select the previous workspace",
+        ShortcutAction::NextWorkspace => "select the next workspace",
+        ShortcutAction::MoveGroupLeft => "move the group left",
+        ShortcutAction::MoveGroupRight => "move the group right",
+        ShortcutAction::ResizeNarrower => "make the window narrower",
+        ShortcutAction::ResizeWider => "make the window wider",
+    }
+}
+
 impl Widget for ShellOverlayHost {
+    fn set_interaction_environment(&mut self, environment: ui::InteractionEnvironment) {
+        self.interaction = environment;
+        for child in self.children_mut() {
+            child.set_interaction_environment(environment);
+        }
+    }
+
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
         if let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.sync(s, p);
@@ -8421,6 +9045,79 @@ impl Widget for ShellOverlayHost {
         // the original inline code hit a bare `return`.
         self.track_cursor_position(event, scale_factor);
 
+        if let WindowEvent::Touch(touch) = event {
+            let shell_owned_before = self.touch_gestures.shell_owns_current();
+            let phase = match touch.phase {
+                winit::event::TouchPhase::Started => ui::gesture::GesturePhase::Begin,
+                winit::event::TouchPhase::Moved => ui::gesture::GesturePhase::Update,
+                winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
+                    ui::gesture::GesturePhase::End
+                }
+            };
+            let point = Point::new(
+                touch.location.x / scale_factor,
+                touch.location.y / scale_factor,
+            );
+            let events = self.touch_gestures.on_touch(touch.id, point, phase);
+            let shell_owned = shell_owned_before || self.touch_gestures.shell_owns_current();
+            let mut claimed = false;
+            for gesture in events {
+                use ui::gesture::{TouchGestureEvent, TouchSwipeDirection};
+                match gesture {
+                    TouchGestureEvent::Swipe {
+                        fingers: 3..,
+                        direction: TouchSwipeDirection::Left,
+                    } => claimed |= self.step_focus_along_strip(1),
+                    TouchGestureEvent::Swipe {
+                        fingers: 3..,
+                        direction: TouchSwipeDirection::Right,
+                    } => claimed |= self.step_focus_along_strip(-1),
+                    TouchGestureEvent::Swipe {
+                        fingers: 3..,
+                        direction,
+                    } => {
+                        let step = if direction == TouchSwipeDirection::Up {
+                            -1
+                        } else {
+                            1
+                        };
+                        if let Some(chrome) = self.chrome.as_ref() {
+                            claimed |= chrome.borrow_mut().switch_workspace(step);
+                        }
+                    }
+                    TouchGestureEvent::Pinch {
+                        fingers: 3..,
+                        scale,
+                        ..
+                    } if scale <= 0.8 => {
+                        if let Some(chrome) = self.chrome.as_ref() {
+                            let mut state = chrome.borrow_mut();
+                            state.overlays.overview = true;
+                            state.bump();
+                            claimed = true;
+                        }
+                    }
+                    TouchGestureEvent::Pinch {
+                        fingers: 3..,
+                        scale,
+                        ..
+                    } if scale >= 1.25 => {
+                        if let Some(chrome) = self.chrome.as_ref() {
+                            let mut state = chrome.borrow_mut();
+                            state.overlays.overview = false;
+                            state.bump();
+                            claimed = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if claimed || shell_owned {
+                *handled = true;
+                return;
+            }
+        }
+
         if let (Some(markup), Some(markup_node)) =
             (self.screenshot_markup.as_mut(), self.screenshot_markup_node)
         {
@@ -8629,7 +9326,7 @@ impl Widget for ShellOverlayHost {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, Role};
+        use ui::a11y::{AccessNode, AccessState, Role};
 
         let mut root = AccessNode::new(Role::Group).with_name("qOS workspace");
         if self.overlay_flags().room_activity {
@@ -8647,6 +9344,33 @@ impl Widget for ShellOverlayHost {
                 root.children
                     .push(self.qs_root.accessibility_snapshot(&state.quick_settings));
             }
+        }
+        if self.overlay_flags().shortcut_help {
+            use settings_store::hardware::ShortcutAction;
+            let shortcuts = settings_store::hardware::ShortcutConfig::load();
+            let chord = |action| {
+                shortcuts
+                    .bindings
+                    .get(&action)
+                    .map(settings_store::hardware::KeyChord::display)
+                    .unwrap_or_else(|| "unassigned".to_string())
+            };
+            root.children.push(
+                AccessNode::new(Role::Dialog)
+                    .with_name("Desktop keyboard and mouse guide")
+                    .with_description(format!(
+                        "Focus windows with {} or {}; tabs with {} or {}; strips with {} or {}; resize with {} or {}. Click a displayed shortcut to change it; Escape cancels a pending change. A changed row gets a curved-arrow button that restores its defaults. With a mouse, click windows and tabs, drag tabs or empty tab-bar space to reorder, and drag window gaps to resize. Escape closes this guide.",
+                        chord(ShortcutAction::FocusPreviousWindow),
+                        chord(ShortcutAction::FocusNextWindow),
+                        chord(ShortcutAction::PreviousTab),
+                        chord(ShortcutAction::NextTab),
+                        chord(ShortcutAction::PreviousStrip),
+                        chord(ShortcutAction::NextStrip),
+                        chord(ShortcutAction::ResizeNarrower),
+                        chord(ShortcutAction::ResizeWider),
+                    ))
+                    .with_state(AccessState::new().modal(true)),
+            );
         }
         Some(root)
     }
@@ -9739,6 +10463,498 @@ impl ShellOverlayHost {
         }
     }
 
+    fn shortcut_help_button_rect(&self) -> Rect {
+        Rect::new(
+            self.rect.x1 - 52.0,
+            self.rect.y1 - 52.0,
+            self.rect.x1 - 16.0,
+            self.rect.y1 - 16.0,
+        )
+    }
+
+    fn shortcut_help_panel_rect(&self) -> Rect {
+        let width = (self.rect.width() - 40.0).clamp(0.0, 760.0);
+        let max_height = if width < 620.0 { 620.0 } else { 500.0 };
+        let height = (self.rect.height() - 40.0).clamp(0.0, max_height);
+        Rect::new(
+            self.rect.center().x - width / 2.0,
+            self.rect.center().y - height / 2.0,
+            self.rect.center().x + width / 2.0,
+            self.rect.center().y + height / 2.0,
+        )
+    }
+
+    fn shortcut_help_done_rect(&self) -> Rect {
+        let panel = self.shortcut_help_panel_rect();
+        Rect::new(
+            panel.x1 - 88.0,
+            panel.y0 + 16.0,
+            panel.x1 - 20.0,
+            panel.y0 + 50.0,
+        )
+    }
+
+    fn draw_shortcut_help_button(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.overlay_flags().shortcut_help {
+            return;
+        }
+        let rect = self.shortcut_help_button_rect();
+        let colors = &theme.tokens.colors;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.neutral[1],
+            None,
+            &RoundedRect::from_rect(rect, rect.height() / 2.0),
+        );
+        let size = theme.tokens.typography.scale.sm;
+        let (w, h) = text_renderer.measure("?", size, None);
+        text_renderer.draw_text_weighted(
+            scene,
+            "?",
+            size,
+            colors.text_primary,
+            transform.pre_translate(
+                (
+                    rect.center().x - f64::from(w) / 2.0,
+                    rect.center().y - f64::from(h) / 2.0,
+                )
+                    .into(),
+            ),
+            None,
+            TextWeight::Semibold,
+        );
+    }
+
+    fn draw_shortcut_help(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        draw_modal_scrim_at(scene, transform, self.rect, 1.0, theme);
+        let panel = self.shortcut_help_panel_rect();
+        let colors = &theme.tokens.colors;
+        ui::surface::soft_shadow(scene, transform, panel, colors.neutral[0], 40.0, 12.0, 0.55);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.neutral[0],
+            None,
+            &RoundedRect::from_rect(panel, 18.0),
+        );
+        let title_size = theme.tokens.typography.scale.xl;
+        text_renderer.draw_text_weighted(
+            scene,
+            "Move around your desktop",
+            title_size,
+            colors.text_primary,
+            transform.pre_translate((panel.x0 + 28.0, panel.y0 + 22.0).into()),
+            Some(f64_to_f32_lossy(panel.width() - 140.0)),
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text(
+            scene,
+            "Windows stay in horizontal strips. Focus moves the viewport; nothing needs to overlap.",
+            theme.tokens.typography.scale.sm,
+            colors.text_dim,
+            transform.pre_translate((panel.x0 + 28.0, panel.y0 + 58.0).into()),
+            Some(f64_to_f32_lossy(panel.width() - 56.0)),
+        );
+
+        let done = self.shortcut_help_done_rect();
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+            None,
+            &RoundedRect::from_rect(done, 10.0),
+        );
+        if self.shortcut_guide_focus == Some(ShortcutGuideFocus::Done) {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                colors.text_primary,
+                None,
+                &RoundedRect::from_rect(done.inflate(3.0, 3.0), 12.0),
+            );
+        }
+        let label_size = theme.tokens.typography.scale.xs;
+        let (done_w, done_h) = text_renderer.measure("Done", label_size, None);
+        text_renderer.draw_text_weighted(
+            scene,
+            "Done",
+            label_size,
+            colors.text_primary,
+            transform.pre_translate(
+                (
+                    done.center().x - f64::from(done_w) / 2.0,
+                    done.center().y - f64::from(done_h) / 2.0,
+                )
+                    .into(),
+            ),
+            None,
+            TextWeight::Semibold,
+        );
+
+        use ui::input::{
+            ControllerBinding, ControllerButton, InputBinding, KeyLegend, KeyboardBinding,
+            KeyboardModifier, TouchGesture,
+        };
+        use ui::widget::{InputDeviceGlyph, InputHint};
+        let platform = ui::PlatformConventions::default();
+        let family = self
+            .interaction
+            .controller
+            .unwrap_or(ui::ControllerFamily::Generic);
+        let body = Rect::new(
+            panel.x0 + 28.0,
+            panel.y0 + 112.0,
+            panel.x1 - 28.0,
+            panel.y1 - 28.0,
+        );
+        self.shortcut_binding_rects.clear();
+        self.shortcut_reset_rects.clear();
+
+        if matches!(
+            self.interaction.preferred_hint_modality(),
+            ui::InputModality::Keyboard | ui::InputModality::Pointer
+        ) {
+            let feedback = if let Some(action) = self.shortcut_rebind {
+                Some(self.shortcut_rebind_message.clone().map_or_else(
+                    || {
+                        format!(
+                            "Press a new shortcut to {} · Esc cancels",
+                            shortcut_action_label(action)
+                        )
+                    },
+                    |message| format!("{message} · Esc cancels"),
+                ))
+            } else {
+                self.shortcut_rebind_message.clone()
+            };
+            if let Some(feedback) = feedback {
+                text_renderer.draw_text(
+                    scene,
+                    &feedback,
+                    theme.tokens.typography.scale.sm,
+                    colors.text_primary,
+                    transform.pre_translate((body.x0, panel.y0 + 92.0).into()),
+                    Some(f64_to_f32_lossy(body.width())),
+                );
+            }
+        }
+
+        match self.interaction.preferred_hint_modality() {
+            ui::InputModality::Controller => {
+                InputDeviceGlyph::paint_controller(
+                    scene,
+                    transform,
+                    Rect::new(body.x0, body.y0, body.x0 + 82.0, body.y0 + 52.0),
+                    family,
+                    theme,
+                );
+                text_renderer.draw_text(
+                    scene,
+                    "Hold Guide for desktop controls. Release it and every button goes back to your game.",
+                    theme.tokens.typography.scale.sm,
+                    colors.text_dim,
+                    transform.pre_translate((body.x0 + 104.0, body.y0 + 14.0).into()),
+                    Some(f64_to_f32_lossy(body.width() - 104.0)),
+                );
+                let rows = [
+                    (
+                        "Windows",
+                        ControllerButton::DpadLeft,
+                        ControllerButton::DpadRight,
+                    ),
+                    (
+                        "Workspaces",
+                        ControllerButton::DpadUp,
+                        ControllerButton::DpadDown,
+                    ),
+                    (
+                        "Tabs",
+                        ControllerButton::LeftBumper,
+                        ControllerButton::RightBumper,
+                    ),
+                    (
+                        "Strips",
+                        ControllerButton::LeftTrigger,
+                        ControllerButton::RightTrigger,
+                    ),
+                    ("Overview", ControllerButton::South, ControllerButton::South),
+                    (
+                        "This guide",
+                        ControllerButton::Start,
+                        ControllerButton::Start,
+                    ),
+                ];
+                let narrow = body.width() < 560.0;
+                for (index, (label, first, second)) in rows.iter().enumerate() {
+                    let column = if narrow { 0 } else { index % 2 };
+                    let row = if narrow { index } else { index / 2 };
+                    let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
+                    let y = body.y0
+                        + if narrow { 62.0 } else { 92.0 }
+                        + usize_to_f64_lossy(row) * if narrow { 54.0 } else { 82.0 };
+                    text_renderer.draw_text(
+                        scene,
+                        label,
+                        theme.tokens.typography.scale.sm,
+                        colors.text_primary,
+                        transform.pre_translate((x, y).into()),
+                        None,
+                    );
+                    let guide = ControllerBinding::new([ControllerButton::Guide, *first]);
+                    let other = ControllerBinding::new([ControllerButton::Guide, *second]);
+                    InputHint::paint_controller_choice_at(
+                        scene,
+                        transform,
+                        Point::new(x, y + 25.0),
+                        &guide,
+                        &other,
+                        platform,
+                        self.interaction.keyboard_family,
+                        family,
+                        text_renderer,
+                        theme,
+                    );
+                }
+            }
+            ui::InputModality::Touch => {
+                text_renderer.draw_text(
+                    scene,
+                    "Gestures follow the desktop's horizontal windows and vertical workspaces.",
+                    theme.tokens.typography.scale.sm,
+                    colors.text_dim,
+                    transform.pre_translate((body.x0, body.y0).into()),
+                    None,
+                );
+                let gestures = [
+                    ("Focus next window", TouchGesture::SwipeLeft { fingers: 3 }),
+                    (
+                        "Focus previous window",
+                        TouchGesture::SwipeRight { fingers: 3 },
+                    ),
+                    ("Previous workspace", TouchGesture::SwipeUp { fingers: 3 }),
+                    ("Next workspace", TouchGesture::SwipeDown { fingers: 3 }),
+                    ("Open overview", TouchGesture::PinchIn),
+                    ("Close overview", TouchGesture::PinchOut),
+                ];
+                let narrow = body.width() < 560.0;
+                for (index, (label, gesture)) in gestures.iter().enumerate() {
+                    let column = if narrow { 0 } else { index % 2 };
+                    let row = if narrow { index } else { index / 2 };
+                    let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
+                    let y = body.y0
+                        + if narrow { 36.0 } else { 52.0 }
+                        + usize_to_f64_lossy(row) * if narrow { 54.0 } else { 82.0 };
+                    text_renderer.draw_text(
+                        scene,
+                        label,
+                        theme.tokens.typography.scale.sm,
+                        colors.text_primary,
+                        transform.pre_translate((x, y).into()),
+                        None,
+                    );
+                    InputHint::paint_at(
+                        scene,
+                        transform,
+                        Point::new(x, y + 25.0),
+                        &InputBinding::Touch(*gesture),
+                        platform,
+                        self.interaction.keyboard_family,
+                        family,
+                        text_renderer,
+                        theme,
+                    );
+                }
+            }
+            ui::InputModality::Keyboard | ui::InputModality::Pointer => {
+                use settings_store::hardware::ShortcutAction;
+                let shortcuts = settings_store::hardware::ShortcutConfig::load();
+                let defaults = settings_store::hardware::ShortcutConfig::default();
+                let binding = |action| {
+                    let chord = shortcuts.bindings.get(&action);
+                    let modifiers = chord
+                        .into_iter()
+                        .flat_map(|chord| chord.modifiers.iter())
+                        .filter_map(|modifier| match modifier.as_str() {
+                            "Super" => Some(KeyboardModifier::System),
+                            "Ctrl" => Some(KeyboardModifier::Control),
+                            "Alt" => Some(KeyboardModifier::Alt),
+                            "Shift" => Some(KeyboardModifier::Shift),
+                            _ => None,
+                        });
+                    let key = chord.map_or_else(
+                        || KeyLegend::Character("—".into()),
+                        |chord| KeyLegend::from_name(&chord.key),
+                    );
+                    KeyboardBinding::new(modifiers, key)
+                };
+                let rows = [
+                    (
+                        "Windows",
+                        ShortcutAction::FocusPreviousWindow,
+                        ShortcutAction::FocusNextWindow,
+                    ),
+                    ("Tabs", ShortcutAction::PreviousTab, ShortcutAction::NextTab),
+                    (
+                        "Strips",
+                        ShortcutAction::PreviousStrip,
+                        ShortcutAction::NextStrip,
+                    ),
+                    (
+                        "Workspaces",
+                        ShortcutAction::PreviousWorkspace,
+                        ShortcutAction::NextWorkspace,
+                    ),
+                    (
+                        "Move group",
+                        ShortcutAction::MoveGroupLeft,
+                        ShortcutAction::MoveGroupRight,
+                    ),
+                    (
+                        "Resize",
+                        ShortcutAction::ResizeNarrower,
+                        ShortcutAction::ResizeWider,
+                    ),
+                ];
+                let narrow = body.width() < 560.0;
+                for (index, (label, previous, next)) in rows.iter().enumerate() {
+                    let column = if narrow { 0 } else { index % 2 };
+                    let row = if narrow { index } else { index / 2 };
+                    let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
+                    let y = body.y0 + usize_to_f64_lossy(row) * if narrow { 55.0 } else { 88.0 };
+                    text_renderer.draw_text(
+                        scene,
+                        label,
+                        theme.tokens.typography.scale.sm,
+                        colors.text_primary,
+                        transform.pre_translate((x, y).into()),
+                        None,
+                    );
+                    let actions = [*previous, *next];
+                    let hit_rects = InputHint::paint_keyboard_choice_at(
+                        scene,
+                        transform,
+                        Point::new(x, y + 26.0),
+                        &binding(*previous),
+                        &binding(*next),
+                        platform,
+                        self.interaction.keyboard_family,
+                        text_renderer,
+                        theme,
+                    );
+                    for (action, rect) in actions.into_iter().zip(hit_rects) {
+                        let hit =
+                            Rect::new(rect.x0 - 5.0, rect.y0 - 5.0, rect.x1 + 5.0, rect.y1 + 5.0);
+                        let active = self.shortcut_rebind == Some(action);
+                        let focused =
+                            self.shortcut_guide_focus == Some(ShortcutGuideFocus::Binding(action));
+                        let hovered = self.last_cursor.is_some_and(|point| hit.contains(point));
+                        if active || focused || hovered {
+                            scene.stroke(
+                                &Stroke::new(if active || focused { 2.0 } else { 1.0 }),
+                                transform,
+                                colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+                                None,
+                                &RoundedRect::from_rect(hit, 8.0),
+                            );
+                        }
+                        self.shortcut_binding_rects.push((action, hit));
+                    }
+
+                    let reset = Rect::new(
+                        hit_rects[1].x1 + 12.0,
+                        y + 26.0,
+                        hit_rects[1].x1 + 34.0,
+                        y + 48.0,
+                    );
+                    let changed = actions.into_iter().any(|action| {
+                        shortcuts.bindings.get(&action) != defaults.bindings.get(&action)
+                    });
+                    if changed {
+                        let hovered = self.last_cursor.is_some_and(|point| reset.contains(point));
+                        let focused = self.shortcut_guide_focus
+                            == Some(ShortcutGuideFocus::Reset(*previous, *next));
+                        scene.fill(
+                            Fill::NonZero,
+                            transform,
+                            if hovered || focused {
+                                colors.neutral[3]
+                            } else {
+                                colors.neutral[2]
+                            },
+                            None,
+                            &RoundedRect::from_rect(reset, 6.0),
+                        );
+                        if focused {
+                            scene.stroke(
+                                &Stroke::new(2.0),
+                                transform,
+                                colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+                                None,
+                                &RoundedRect::from_rect(reset.inflate(2.0, 2.0), 8.0),
+                            );
+                        }
+                        let reset_size = theme.tokens.typography.scale.base;
+                        let (reset_w, reset_h) = text_renderer.measure("↶", reset_size, None);
+                        text_renderer.draw_text(
+                            scene,
+                            "↶",
+                            reset_size,
+                            colors.text_primary,
+                            transform.pre_translate(
+                                (
+                                    reset.center().x - f64::from(reset_w) / 2.0,
+                                    reset.center().y - f64::from(reset_h) / 2.0,
+                                )
+                                    .into(),
+                            ),
+                            None,
+                        );
+                        self.shortcut_reset_rects.push((*previous, *next, reset));
+                    }
+                }
+                let pointer_y = body.y0 + if narrow { 342.0 } else { 286.0 };
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.neutral[3],
+                    None,
+                    &Rect::new(body.x0, pointer_y, body.x1, pointer_y + 1.0),
+                );
+                text_renderer.draw_text(
+                    scene,
+                    "Mouse · click a window · drag a tab or group · drag an edge to resize · scroll horizontally to move the view",
+                    theme.tokens.typography.scale.xs,
+                    colors.text_dim,
+                    transform.pre_translate((body.x0, pointer_y + 20.0).into()),
+                    Some(f64_to_f32_lossy(body.width())),
+                );
+                if settings_store::hardware::DesktopControlsConfig::load().vim_mode {
+                    text_renderer.draw_text(
+                        scene,
+                        "Vim mode · h j k l",
+                        theme.tokens.typography.scale.xs,
+                        colors.text_dim,
+                        transform.pre_translate((body.x0, pointer_y + 50.0).into()),
+                        None,
+                    );
+                }
+            }
+        }
+    }
+
     /// The overlays that sit above dropdowns and sheets: the command
     /// palette, the peer-sync card, the file-picker overlay and the OSD.
     /// Last of four passes split out of `draw`.
@@ -9750,6 +10966,7 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.draw_shortcut_help_button(scene, transform, text_renderer, theme);
         self.palette_was_visible = self.palette_visible;
         self.palette_transition.set_open(
             self.palette_visible,
@@ -9816,6 +11033,10 @@ impl ShellOverlayHost {
         // Owns the keyboard while up, so it must sit above the palette
         // that opened it.
         self.draw_peer_sync(scene, transform, text_renderer, theme);
+
+        if self.overlay_flags().shortcut_help {
+            self.draw_shortcut_help(scene, transform, text_renderer, theme);
+        }
 
         // Above every other overlay, including the sidebar wheel — it's
         // genuinely modal (an app in another process is blocked on the
@@ -12550,6 +13771,101 @@ mod palette_dispatch_tests {
         let chrome = ChromeState::new(tree);
         let host = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         (host, chrome)
+    }
+
+    #[test]
+    fn configurable_shortcut_matcher_handles_named_keys_and_exact_modifiers() {
+        let chord = settings_store::hardware::KeyChord::parse("Super+Shift+Left").unwrap();
+        let matching = winit::event::Modifiers::from(
+            winit::keyboard::ModifiersState::SUPER | winit::keyboard::ModifiersState::SHIFT,
+        );
+        assert!(shortcut_chord_matches(
+            &Key::Named(NamedKey::ArrowLeft),
+            matching,
+            &chord
+        ));
+        assert!(!shortcut_chord_matches(
+            &Key::Named(NamedKey::ArrowLeft),
+            winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER),
+            &chord
+        ));
+    }
+
+    #[test]
+    fn shortcut_capture_builds_the_pressed_named_chord() {
+        let modifiers = winit::event::Modifiers::from(
+            winit::keyboard::ModifiersState::SUPER | winit::keyboard::ModifiersState::SHIFT,
+        );
+        let chord = shortcut_chord_from_event(&Key::Named(NamedKey::ArrowDown), modifiers)
+            .expect("a supported named key becomes a shortcut chord");
+        assert_eq!(chord.display(), "Super+Shift+Down");
+    }
+
+    #[test]
+    fn clicking_a_painted_shortcut_starts_capture_and_escape_only_cancels_capture() {
+        let (mut host, chrome) = host_with_chrome();
+        chrome.borrow_mut().overlays.shortcut_help = true;
+        let action = settings_store::hardware::ShortcutAction::FocusPreviousWindow;
+        host.shortcut_binding_rects
+            .push((action, Rect::new(20.0, 20.0, 80.0, 50.0)));
+        host.last_cursor = Some(Point::new(40.0, 35.0));
+        let click = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+        };
+        let mut handled = false;
+        assert!(host.handle_shell_mouse_click_event(&click, &mut handled));
+        assert!(handled);
+        assert_eq!(host.shortcut_rebind, Some(action));
+
+        let mut key_handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Escape),
+            winit::event::Modifiers::default(),
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut key_handled,
+        ));
+        assert!(key_handled);
+        assert_eq!(host.shortcut_rebind, None);
+        assert!(
+            chrome.borrow().overlays.shortcut_help,
+            "Escape cancels capture before it closes the guide"
+        );
+    }
+
+    #[test]
+    fn shortcut_guide_controls_are_keyboard_reachable() {
+        let (mut host, chrome) = host_with_chrome();
+        chrome.borrow_mut().overlays.shortcut_help = true;
+        let mut handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Tab),
+            winit::event::Modifiers::default(),
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert_eq!(
+            host.shortcut_guide_focus,
+            Some(ShortcutGuideFocus::Binding(
+                settings_store::hardware::ShortcutAction::FocusPreviousWindow
+            ))
+        );
+
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Enter),
+            winit::event::Modifiers::default(),
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert_eq!(
+            host.shortcut_rebind,
+            Some(settings_store::hardware::ShortcutAction::FocusPreviousWindow)
+        );
     }
 
     #[test]
