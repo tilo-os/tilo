@@ -1960,6 +1960,11 @@ impl QuickFS {
                 }
                 registry.put(record).map_err(|_| EIO)?;
             }
+            if policy == AvailabilityPolicy::Automatic {
+                registry
+                    .clear_automatic_transfer_subtree(record_id)
+                    .map_err(|_| EIO)?;
+            }
         }
         if let Some(worker) = &self.pinned_hydration {
             worker
