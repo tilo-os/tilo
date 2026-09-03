@@ -22,7 +22,8 @@ use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck};
 use crate::daemon::{read_frame, write_frame};
 use crate::transport::{
     ALPN, ContentEndpointAdvertisement, ContentEndpointRequest, ContentPeerRegistration,
-    DISCOVERY_ALPN, Envelope, FrameReader, MAX_FRAME_BYTES,
+    DISCOVERY_ALPN, Envelope, FrameReader, HomePeerManagementRequest, HomePeerManagementResponse,
+    MANAGEMENT_ALPN, MAX_FRAME_BYTES,
 };
 
 /// A live authenticated session with a relay. Handles are cheap;
@@ -98,6 +99,69 @@ pub enum ClientError {
 }
 
 impl RelayClient {
+    /// Execute an owner-authorized lifecycle operation against a pinned home
+    /// peer. The mutual handshake proves both enrolled device certificates.
+    pub async fn manage_home_peer(
+        endpoint: &Endpoint,
+        relay_addr: EndpointAddr,
+        expected_server_user: [u8; 32],
+        expected_server_device: [u8; 32],
+        own_cert: DeviceCert,
+        own_sk: ed25519_dalek::SigningKey,
+        revocations: RevocationList,
+        request: HomePeerManagementRequest,
+    ) -> Result<HomePeerManagementResponse, ClientError> {
+        let conn = endpoint
+            .connect(relay_addr, MANAGEMENT_ALPN)
+            .await
+            .map_err(|error| ClientError::Iroh(error.to_string()))?;
+        let (mut send, mut recv) = conn
+            .open_bi()
+            .await
+            .map_err(|error| ClientError::Iroh(error.to_string()))?;
+        let mut nonce = [0; 32];
+        {
+            use rand::RngCore;
+            rand::thread_rng().fill_bytes(&mut nonce);
+        }
+        write_frame(
+            &mut send,
+            &postcard::to_allocvec(&Hello {
+                cert: own_cert,
+                client_nonce: nonce,
+            })
+            .map_err(|error| ClientError::Codec(error.to_string()))?,
+        )
+        .await?;
+        let ack: HelloAck = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
+            .map_err(|error| ClientError::Codec(error.to_string()))?;
+        auth::verify_hello_ack(
+            &ack,
+            &expected_server_user,
+            &revocations,
+            crate::peer::now_ns(),
+            &nonce,
+        )?;
+        if ack.cert.device_public_key != expected_server_device {
+            return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
+        }
+        let ack2 = auth::build_hello_ack2(&own_sk, &ack.server_nonce);
+        write_frame(
+            &mut send,
+            &postcard::to_allocvec(&ack2).map_err(|error| ClientError::Codec(error.to_string()))?,
+        )
+        .await?;
+        write_frame(
+            &mut send,
+            &postcard::to_allocvec(&request)
+                .map_err(|error| ClientError::Codec(error.to_string()))?,
+        )
+        .await?;
+        let response = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
+            .map_err(|error| ClientError::Codec(error.to_string()))?;
+        conn.close(0u32.into(), b"");
+        Ok(response)
+    }
     /// Resolve the authenticated direct filesystem endpoint advertised by a
     /// relay. The returned address is never the relay socket itself.
     pub async fn discover_content_endpoint(
