@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::network::actor::{Actor, HostIdentity, NetCmd, NetEvent};
@@ -141,6 +142,46 @@ fn pending_invites_path(keypair_path: &Path) -> PathBuf {
     keypair_path.with_file_name("pending-invitations.json")
 }
 
+fn personal_continuity_path(keypair_path: &Path) -> PathBuf {
+    keypair_path.with_file_name("personal-continuity.postcard")
+}
+
+#[derive(Serialize, Deserialize)]
+struct PersistedPersonalContinuity {
+    counter: u64,
+    continuity: crate::shell::personal_continuity::PersonalContinuity,
+}
+
+fn load_personal_continuity(path: &Path) -> PersistedPersonalContinuity {
+    let Ok(bytes) = std::fs::read(path) else {
+        return PersistedPersonalContinuity {
+            counter: 0,
+            continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
+        };
+    };
+    postcard::from_bytes(&bytes).unwrap_or_else(|error| {
+        tracing::warn!(%error, path = %path.display(), "ignoring invalid personal continuity store");
+        PersistedPersonalContinuity {
+            counter: 0,
+            continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
+        }
+    })
+}
+
+fn persist_personal_continuity(path: &Path, value: &PersistedPersonalContinuity) {
+    let Ok(bytes) = postcard::to_allocvec(value) else {
+        return;
+    };
+    let temporary = path.with_extension("postcard.tmp");
+    if std::fs::write(&temporary, bytes)
+        .and_then(|()| std::fs::rename(&temporary, path))
+        .is_err()
+    {
+        let _ = std::fs::remove_file(&temporary);
+        tracing::warn!(path = %path.display(), "personal continuity persistence failed");
+    }
+}
+
 fn load_pending_invitations(path: &Path) -> Vec<PendingInvitation> {
     let Ok(bytes) = std::fs::read(path) else {
         return Vec::new();
@@ -230,6 +271,7 @@ pub struct ShellNetwork {
     personal_continuity_device: Option<crate::shell::personal_continuity::DeviceId>,
     personal_continuity_counter: Mutex<u64>,
     personal_continuity_fingerprint: Mutex<Option<[u8; 32]>>,
+    personal_continuity_path: Option<PathBuf>,
     /// Verified transport-device chains received on workspace topics.
     peer_identities: PeerIdentityStore,
     /// Production is fail-closed until a peer presents `IdentityHello`.
@@ -463,6 +505,8 @@ impl ShellNetwork {
         let (event_tx, event_rx) = mpsc::channel(64);
 
         let pending_invitations_path = pending_invites_path(keypair_path);
+        let personal_continuity_path = personal_continuity_path(keypair_path);
+        let persisted_continuity = load_personal_continuity(&personal_continuity_path);
         let now = now_unix_seconds();
         let pending_identity_admissions: std::collections::HashMap<_, _> =
             load_pending_invitations(&pending_invitations_path)
@@ -486,13 +530,12 @@ impl ShellNetwork {
             listen_addrs,
             host_addrs: Mutex::new(host_addrs),
             last_sync_kick: Mutex::new(None),
-            personal_continuity: Mutex::new(
-                crate::shell::personal_continuity::PersonalContinuity::default(),
-            ),
+            personal_continuity: Mutex::new(persisted_continuity.continuity),
             personal_continuity_user,
             personal_continuity_device,
-            personal_continuity_counter: Mutex::new(0),
+            personal_continuity_counter: Mutex::new(persisted_continuity.counter),
             personal_continuity_fingerprint: Mutex::new(None),
+            personal_continuity_path: Some(personal_continuity_path),
             peer_identities: PeerIdentityStore::new(),
             require_peer_identity: true,
             pending_identity_admissions: Mutex::new(pending_identity_admissions),
@@ -1444,7 +1487,30 @@ impl ShellNetwork {
             return None;
         }
         *previous = Some(fingerprint);
+        drop(continuity);
+        drop(counter);
+        drop(previous);
+        self.persist_personal_continuity();
         Some(bytes)
+    }
+
+    fn persist_personal_continuity(&self) {
+        let Some(path) = self.personal_continuity_path.as_deref() else {
+            return;
+        };
+        let (Ok(counter), Ok(continuity)) = (
+            self.personal_continuity_counter.lock(),
+            self.personal_continuity.lock(),
+        ) else {
+            return;
+        };
+        persist_personal_continuity(
+            path,
+            &PersistedPersonalContinuity {
+                counter: *counter,
+                continuity: continuity.clone(),
+            },
+        );
     }
 
     fn publish_personal_continuity_request(&self) {
@@ -1825,30 +1891,8 @@ impl ShellNetwork {
             tracing::warn!("dropping invalid continuity checkpoint");
             return true;
         };
-        let rooms: Vec<_> = incoming
-            .snapshots()
-            .values()
-            .flat_map(|snapshot| {
-                let source_device = snapshot.device.as_str().to_string();
-                snapshot
-                    .workspaces
-                    .iter()
-                    .map(move |workspace| (workspace.room, source_device.clone()))
-            })
-            .collect();
-        let materializations: Vec<_> = incoming
-            .snapshots()
-            .values()
-            .flat_map(|snapshot| {
-                let source_device = snapshot.device.as_str().to_string();
-                snapshot
-                    .workspaces
-                    .iter()
-                    .cloned()
-                    .map(move |workspace| (source_device.clone(), workspace))
-            })
-            .collect();
         let mut changed = false;
+        let mut merged = None;
         if let Ok(mut continuity) = self.personal_continuity.lock() {
             for snapshot in incoming.snapshots().values() {
                 match continuity.upsert(snapshot.clone()) {
@@ -1858,8 +1902,52 @@ impl ShellNetwork {
                     }
                 }
             }
+            merged = Some(continuity.clone());
         }
         if changed {
+            self.persist_personal_continuity();
+            let Some(merged) = merged else {
+                return true;
+            };
+            // Reconcile from the accepted merged set, not from the wire
+            // payload. A checkpoint can contain stale entries alongside one
+            // newer entry; arrival order must never choose an app state.
+            let mut winners = std::collections::BTreeMap::new();
+            let mut rooms = Vec::new();
+            for snapshot in merged.snapshots().values() {
+                for workspace in &snapshot.workspaces {
+                    rooms.push((workspace.room, snapshot.device.as_str().to_string()));
+                    for app in &workspace.apps {
+                        let key = (workspace.room, app.id);
+                        let replace = winners.get(&key).is_none_or(
+                            |current: &crate::shell::personal_continuity::AppInstanceState| {
+                                (app.stamp.counter, app.stamp.device.as_str())
+                                    > (current.stamp.counter, current.stamp.device.as_str())
+                            },
+                        );
+                        if replace {
+                            winners.insert(key, app.clone());
+                        }
+                    }
+                }
+            }
+            let materializations: Vec<_> = winners
+                .into_iter()
+                .map(|((room, _), app)| {
+                    let source = app.stamp.device.as_str().to_string();
+                    (
+                        source,
+                        crate::shell::personal_continuity::WorkspaceContinuation {
+                            room,
+                            apps: vec![app],
+                        },
+                    )
+                })
+                .collect();
+            let desired_tabs = materializations
+                .iter()
+                .flat_map(|(_, workspace)| workspace.apps.iter().map(|app| app.id.0))
+                .collect::<std::collections::BTreeSet<_>>();
             let tree_handle = self.replica.lock().ok().map(|replica| replica.tree.clone());
             let adopted = tree_handle.is_some_and(|tree| {
                 let mut tree = tree.write();
@@ -1878,7 +1966,7 @@ impl ShellNetwork {
                         .fold(false, |changed, (source, workspace)| {
                             tree.materialize_continuation_workspace(&source, &workspace) || changed
                         });
-                adopted_rooms || materialized
+                tree.reconcile_continuation_tabs(&desired_tabs) || adopted_rooms || materialized
             });
             if adopted {
                 // Joining the room topics is demand-driven by these requests;
@@ -2490,6 +2578,7 @@ pub(crate) fn shell_network_for_test(
         personal_continuity_device: None,
         personal_continuity_counter: Mutex::new(0),
         personal_continuity_fingerprint: Mutex::new(None),
+        personal_continuity_path: None,
         peer_identities: PeerIdentityStore::new(),
         require_peer_identity: false,
         pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
