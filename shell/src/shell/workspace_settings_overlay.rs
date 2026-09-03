@@ -17,8 +17,9 @@ use ui::theme::Theme;
 use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::state::{UserId, WorkspaceTree};
 use crate::shell::workspace_settings::{
-    DefaultAppsCtx, agents_pane_rows, default_app_rows, draw_agents_pane, draw_default_apps_pane,
-    draw_members_pane, draw_permissions_pane, members_pane_rows, permissions_pane_layout,
+    DefaultAppsCtx, agents_add_rect, agents_pane_rows, default_app_rows, draw_agents_pane,
+    draw_default_apps_pane, draw_members_pane, draw_permissions_pane, members_pane_rows,
+    permissions_pane_layout,
 };
 
 /// Duration shared by the workspace-settings lens and the global-search
@@ -46,6 +47,10 @@ pub enum EventOutcome {
     ComposerSubmit,
     MemberRole(UserId),
     RemoveMember(UserId),
+    /// Starts a named, explicit agent setup in the command palette.
+    AddAgent,
+    /// Opens Privacy & Security with this agent preselected as the subject.
+    ReviewAgent(String),
     RemoveAgent(String),
     Revoke(String),
     SelectTab(WsTab),
@@ -72,7 +77,8 @@ pub struct WorkspaceSettingsOverlay {
     revoke_rects: Vec<(String, Rect)>,
     grant_composer_rects: Option<GrantComposerRects>,
     member_control_rects: Vec<(UserId, Rect, Rect)>,
-    agent_control_rects: Vec<(String, Rect)>,
+    agent_add_rect: Rect,
+    agent_control_rects: Vec<(String, Rect, Rect)>,
 }
 
 impl Default for WorkspaceSettingsOverlay {
@@ -85,6 +91,7 @@ impl Default for WorkspaceSettingsOverlay {
             revoke_rects: Vec::new(),
             grant_composer_rects: None,
             member_control_rects: Vec::new(),
+            agent_add_rect: Rect::ZERO,
             agent_control_rects: Vec::new(),
         }
     }
@@ -220,6 +227,7 @@ impl WorkspaceSettingsOverlay {
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
         self.member_control_rects.clear();
+        self.agent_add_rect = Rect::ZERO;
         self.agent_control_rects.clear();
     }
 
@@ -364,7 +372,16 @@ impl WorkspaceSettingsOverlay {
                 return EventOutcome::RemoveMember(user.clone());
             }
         }
-        for (agent, remove) in &self.agent_control_rects {
+        if matches!(active_tab, WsTab::Agents)
+            && self.agent_add_rect.area() > 0.0
+            && self.agent_add_rect.contains(point)
+        {
+            return EventOutcome::AddAgent;
+        }
+        for (agent, review, remove) in &self.agent_control_rects {
+            if review.area() > 0.0 && review.contains(point) {
+                return EventOutcome::ReviewAgent(agent.clone());
+            }
             if remove.area() > 0.0 && remove.contains(point) {
                 return EventOutcome::RemoveAgent(agent.clone());
             }
@@ -848,6 +865,7 @@ impl WorkspaceSettingsOverlay {
                 self.revoke_rects.clear();
                 self.grant_composer_rects = None;
                 self.member_control_rects.clear();
+                self.agent_add_rect = Rect::ZERO;
                 self.agent_control_rects.clear();
                 self.default_app_rects.clear();
                 false
@@ -874,6 +892,7 @@ impl WorkspaceSettingsOverlay {
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
         self.member_control_rects.clear();
+        self.agent_add_rect = Rect::ZERO;
         self.agent_control_rects.clear();
         let body_rect = Self::body_rect(rect);
         let is_owner = is_active_workspace_owner(state);
@@ -918,11 +937,15 @@ impl WorkspaceSettingsOverlay {
         self.agent_control_rects.clear();
         self.default_app_rects.clear();
         let body_rect = Self::body_rect(rect);
+        self.agent_add_rect = agents_add_rect(body_rect);
         let is_owner = is_active_workspace_owner(state);
         if let Some(ws) = tree.active_workspace() {
             for row in agents_pane_rows(ws, body_rect) {
-                self.agent_control_rects
-                    .push((row.agent.clone(), row.remove_rect));
+                self.agent_control_rects.push((
+                    row.agent.clone(),
+                    row.review_rect,
+                    row.remove_rect,
+                ));
             }
             draw_agents_pane(
                 scene,
@@ -960,6 +983,7 @@ impl WorkspaceSettingsOverlay {
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
         self.member_control_rects.clear();
+        self.agent_add_rect = Rect::ZERO;
         if let Some(ws) = tree.active_workspace() {
             let layout = permissions_pane_layout(ws, body_rect);
             for row in &layout.rows {
@@ -1005,6 +1029,7 @@ impl WorkspaceSettingsOverlay {
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
         self.member_control_rects.clear();
+        self.agent_add_rect = Rect::ZERO;
         self.default_app_rects.clear();
         let body_rect = Self::body_rect(rect);
         let candidates = crate::shell::launcher::default_app_candidates();
@@ -1455,10 +1480,32 @@ mod tests {
         let mut overlay = WorkspaceSettingsOverlay::default();
         overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
         let revoke = Rect::new(900.0, 300.0, 980.0, 334.0);
-        overlay.agent_control_rects.push(("scribe".into(), revoke));
+        overlay
+            .agent_control_rects
+            .push(("scribe".into(), Rect::ZERO, revoke));
         assert_eq!(
             overlay.hit_test(revoke.center(), WsTab::Agents),
             EventOutcome::RemoveAgent("scribe".into()),
+        );
+    }
+
+    #[test]
+    fn agent_setup_and_review_keep_the_agent_identity_typed() {
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        let add = Rect::new(680.0, 220.0, 800.0, 254.0);
+        let review = Rect::new(810.0, 300.0, 920.0, 334.0);
+        overlay.agent_add_rect = add;
+        overlay
+            .agent_control_rects
+            .push(("scribe".into(), review, Rect::ZERO));
+        assert_eq!(
+            overlay.hit_test(add.center(), WsTab::Agents),
+            EventOutcome::AddAgent,
+        );
+        assert_eq!(
+            overlay.hit_test(review.center(), WsTab::Agents),
+            EventOutcome::ReviewAgent("scribe".into()),
         );
     }
 }
