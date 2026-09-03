@@ -65,6 +65,59 @@ pub mod collab_capnp {
 
 use capnp_rpc::rpc_twoparty_capnp;
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum WorkspaceControlRoute {
+    Direct,
+    Relayed { via: [u8; 32] },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum WorkspaceControlCloseReason {
+    Denied(String),
+    Revoked,
+    TargetDisconnected,
+    RelayDisconnected,
+    LocalDisconnect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum WorkspaceControlEvent {
+    WaitingForConsent {
+        route: WorkspaceControlRoute,
+    },
+    StreamStarted {
+        surface: u64,
+        width: u32,
+        height: u32,
+    },
+    Frame {
+        surface: u64,
+        encoded_h264: Vec<u8>,
+        timestamp: u64,
+    },
+    Closed(WorkspaceControlCloseReason),
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum WorkspaceControlInput {
+    PointerMotion {
+        x: f64,
+        y: f64,
+    },
+    PointerButton {
+        button: u32,
+        pressed: bool,
+    },
+    Key {
+        keycode: u32,
+        pressed: bool,
+        modifiers: u32,
+    },
+    KeyboardFocus {
+        focused: bool,
+    },
+}
+
 pub use collab_capnp::action_catalogue_stream::Client as ActionCatalogueStreamClient;
 pub use collab_capnp::action_stream::Client as ActionStreamClient;
 pub use collab_capnp::blob_stream::Client as BlobStreamClient;
@@ -211,6 +264,17 @@ pub struct ChannelHandle {
 }
 
 impl ChannelHandle {
+    pub async fn open_workspace_control(
+        &self,
+        target_device: [u8; 32],
+    ) -> Result<WorkspaceControlHandle, NotAvailable> {
+        let mut request = self.inner.open_workspace_control_request();
+        request.get().set_target_device(&target_device);
+        let reply = request.send().promise.await?;
+        Ok(WorkspaceControlHandle {
+            inner: Rc::new(reply.get()?.get_handle()?),
+        })
+    }
     /// Report a bounded, inert continuation projection to the local shell.
     /// The broker binds `app_id` to this certified channel rather than trusting
     /// the caller's claim, and never relays this report to collaboration peers.
@@ -752,6 +816,40 @@ impl ChannelHandle {
             latest_seq: batch.get_latest_seq(),
             done: batch.get_done(),
         })
+    }
+}
+
+#[derive(Clone)]
+pub struct WorkspaceControlHandle {
+    inner: Rc<collab_capnp::workspace_control_handle::Client>,
+}
+
+impl WorkspaceControlHandle {
+    pub async fn read(&self) -> Result<WorkspaceControlEvent, NotAvailable> {
+        let reply = self.inner.read_request().send().promise.await?;
+        let bytes = reply.get()?.get_event()?;
+        postcard::from_bytes(bytes).map_err(|error| {
+            NotAvailable::Capnp(capnp::Error::failed(format!(
+                "invalid workspace-control event: {error}"
+            )))
+        })
+    }
+
+    pub async fn send_input(&self, event: &WorkspaceControlInput) -> Result<(), NotAvailable> {
+        let bytes = postcard::to_allocvec(event).map_err(|error| {
+            NotAvailable::Capnp(capnp::Error::failed(format!(
+                "workspace-control input encode failed: {error}"
+            )))
+        })?;
+        let mut request = self.inner.send_input_request();
+        request.get().set_event(&bytes);
+        request.send().promise.await?;
+        Ok(())
+    }
+
+    pub async fn close(&self) -> Result<(), NotAvailable> {
+        self.inner.close_request().send().promise.await?;
+        Ok(())
     }
 }
 
