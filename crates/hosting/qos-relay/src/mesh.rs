@@ -178,11 +178,23 @@ impl ServiceCapabilities {
         }
     }
 
+    /// Planes started by the composite home-peer process.
+    pub const fn home_peer() -> Self {
+        Self {
+            workspace_replication: true,
+            full_content_replication: true,
+            inbound_relay: true,
+            remote_control_relay: false,
+            app_serving: false,
+            compute: false,
+        }
+    }
+
     /// Services expected from a personal always-on server.
     ///
-    /// This is a policy template for a future composite host which also
-    /// starts the filesystem/blob host and app workers. The standalone
-    /// `qos-relay` binary deliberately uses [`Self::relay_only`] instead.
+    /// This is a broader policy template for hosts that also run app,
+    /// compute, and remote-control workers. The home-peer deployment uses
+    /// [`Self::home_peer`].
     pub const fn personal_server() -> Self {
         Self {
             workspace_replication: true,
