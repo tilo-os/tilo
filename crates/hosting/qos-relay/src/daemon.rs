@@ -28,6 +28,32 @@ use crate::store::load_or_create_iroh_secret;
 use crate::transport::{ALPN, Envelope, MAX_FRAME_BYTES};
 use crate::workspace::{Membership, SharedWorkspace, WorkspaceRuntime};
 
+#[derive(serde::Deserialize)]
+struct FullReplicaStatusProof {
+    state: String,
+    full_content_replication: bool,
+    updated_at_ms: u64,
+}
+
+fn full_replica_ready(path: &std::path::Path) -> bool {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<FullReplicaStatusProof>(&bytes).ok())
+        .is_some_and(|proof| {
+            proof.state == "ready"
+                && proof.full_content_replication
+                && unix_now_ms().saturating_sub(proof.updated_at_ms) <= 5_000
+        })
+}
+
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
 /// Failure modes for `Relay::start`.
 #[derive(Debug, thiserror::Error)]
 pub enum RelayError {
@@ -73,6 +99,8 @@ pub struct Relay {
     /// to the shell/fs orchestrators because service claims were intersected
     /// with the verified certificate at startup.
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
+    /// Atomic filesystem completeness proof shared with the headless replica.
+    full_replica_status: PathBuf,
 }
 
 /// A tokio `JoinHandle` that aborts on drop — used so that dropping
@@ -112,7 +140,8 @@ pub struct RelayHandle {
     /// Metrics view — read-only.
     pub metrics: Arc<Metrics>,
     /// Effective device-mesh policy for routing and replication consumers.
-    pub mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
+    mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
+    full_replica_status: PathBuf,
 }
 
 /// Bundle of identity material the relay needs to run. Loaded by
@@ -156,13 +185,12 @@ impl Relay {
             ));
         }
         // A certificate authorises a service, but it cannot make a service
-        // exist. This binary only starts the CRDT/store-and-forward relay;
-        // keep its advertised capabilities aligned with that runtime even if
-        // a hand-edited config requests future filesystem/app/compute planes.
+        // exist. The composite process starts relay + filesystem planes; app,
+        // compute, and remote-control claims remain unavailable here.
         cfg.services = cfg
             .services
             .authorized_by(&identity.device_cert.capabilities)
-            .limited_to(&crate::mesh::ServiceCapabilities::relay_only());
+            .limited_to(&crate::mesh::ServiceCapabilities::home_peer());
         let mesh_profile = Arc::new(crate::mesh::DeviceMeshProfile {
             device: identity.device_cert.device_public_key,
             role: cfg.device_role,
@@ -216,6 +244,7 @@ impl Relay {
             own_user_public_key: identity.user_public_key,
             peer_relay_tasks,
             mesh_profile,
+            full_replica_status: cfg.full_replica_status.clone(),
         })
     }
 
@@ -289,6 +318,7 @@ impl Relay {
             node_addr: self.endpoint.addr(),
             metrics: self.metrics.clone(),
             mesh_profile: self.mesh_profile.clone(),
+            full_replica_status: self.full_replica_status.clone(),
         }
     }
 
@@ -339,6 +369,24 @@ impl Relay {
     /// Own user identity — for tests.
     pub fn own_user_public_key(&self) -> [u8; 32] {
         self.own_user_public_key
+    }
+}
+
+impl RelayHandle {
+    /// Services safe to advertise at this instant.  The filesystem proof is
+    /// read for every advertisement, so an edit immediately withdraws the
+    /// full-content claim until its new blobs are resident.
+    pub fn advertised_services(&self) -> crate::mesh::ServiceCapabilities {
+        let mut services = self.mesh_profile.services.clone();
+        services.full_content_replication &= full_replica_ready(&self.full_replica_status);
+        services
+    }
+
+    /// Current profile safe to publish to placement/discovery consumers.
+    pub fn mesh_profile(&self) -> crate::mesh::DeviceMeshProfile {
+        let mut profile = (*self.mesh_profile).clone();
+        profile.services = self.advertised_services();
+        profile
     }
 }
 
@@ -1069,7 +1117,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn standalone_relay_clamps_unimplemented_service_advertisements() {
+    async fn composite_relay_clamps_only_unhosted_service_advertisements() {
         let state = tempfile::tempdir().unwrap();
         let relay = Relay::start(
             RelayConfig {
@@ -1082,10 +1130,13 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(
-            relay.handle().mesh_profile.services,
-            crate::mesh::ServiceCapabilities::relay_only()
-        );
+        let services = relay.handle().mesh_profile().services;
+        assert!(services.workspace_replication);
+        assert!(services.inbound_relay);
+        assert!(!services.full_content_replication);
+        assert!(!services.app_serving);
+        assert!(!services.compute);
+        assert!(!services.remote_control_relay);
         relay.shutdown().await;
     }
 }

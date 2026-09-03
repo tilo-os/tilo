@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Static contract for the operator-facing standalone relay deployment.
+# Static contract for the operator-facing composite home-peer deployment.
 #
 # Keep this cheap: image construction is covered by qos-relay.yaml, while this
-# asserts the Compose artifact cannot silently start claiming a filesystem NAS
-# when it only ships the CRDT/store-and-forward daemon.
+# asserts the Compose artifact includes the complete filesystem replica.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 compose="$root/compose.yaml"
 config="$root/relay.toml.example"
 readme="$root/README.md"
+containerfile="$root/Containerfile"
+compose="$root/compose.yaml"
+entrypoint="$root/qos-home-peer"
 
 fail() { echo "qos-relay container contract: FAIL: $*" >&2; exit 1; }
 need() { grep -Fq -- "$2" "$1" || fail "$(basename "$1") lacks: $2"; }
@@ -39,9 +41,16 @@ assert cfg["iroh_listen"] == "0.0.0.0:4433"
 assert cfg["trust_policy"] == {"kind": "allow_matching_user"}
 PY
 
-# Product boundary: this image promises CRDT durability, not file residency.
-need "$readme" "It is deliberately **not** a full NAS mirror."
-need "$readme" "does not retain file bytes"
+# Product boundary: this image promises verified full file residency.
+need "$readme" "filesystem peer"
+need "$readme" "workspaces[]"
 need "$readme" "does not enroll devices or mint certificates"
+need "$containerfile" "target/release/fs"
+need "$containerfile" 'ENTRYPOINT ["/usr/bin/qos-home-peer"]'
+need "$compose" "./home-peer.toml:/etc/qos/home-peer.toml"
+need "$compose" "qos-full-replica"
+need "$entrypoint" "/usr/bin/fs replica"
+need "$entrypoint" "/usr/bin/qos-relay"
+need "$entrypoint" "wait -n"
 
 echo "qos-relay container contract: PASS"

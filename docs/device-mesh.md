@@ -10,10 +10,11 @@ The shell also has a private, user-root-derived continuation lane for the
 device-specific part of “continue on another device.” Its bounded checkpoint
 contains safe app launch intents, logical file references and per-device focus;
 it excludes local paths, credentials, compositor surface ids and file bytes.
-An authenticated same-identity peer may merge the checkpoint and discover a
-dormant workspace, but receipt never launches apps or steals focus. The
-always-on relay retains the latest aggregate checkpoint so sleeping devices can
-catch up later without exposing personal session state to collaborators.
+An authenticated same-identity peer merges the checkpoint, discovers missing
+workspaces, and opens matching local app instances in their synchronized tabs
+without stealing the active workspace or focus. The always-on relay retains
+the latest aggregate checkpoint so sleeping devices can catch up later without
+exposing personal session state to collaborators.
 
 ## One replication substrate
 
@@ -29,11 +30,10 @@ existing data planes:
 An app may register an `AppRecords` resource family, but may not create its own
 account, pairing, sync status or conflict protocol. Selecting ebook or media
 replication automatically includes the file tree and blobs on which it depends.
-An always-on *composite* server that starts every referenced data plane may
-default to `FullWorkspace`; an interactive device defaults to on-demand
-hydration. The standalone `qos-relay` deployment is intentionally relay-only:
-it defaults to `WorkspaceOnly` and cannot advertise content residency until an
-authenticated filesystem/blob host is running.
+An always-on composite server defaults to `FullWorkspace`; an interactive
+device defaults to on-demand hydration. The home-peer deployment starts the
+authenticated filesystem worker for every `workspaces[]` entry and advertises
+content residency only while its aggregate freshness proof is complete.
 
 ## Device roles and authority
 

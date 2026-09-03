@@ -1,8 +1,8 @@
-# qOS relay-only home-server configuration.
+# qOS composite home-peer relay configuration.
 #
 # This process durably hosts workspace CRDT state and queues updates for
-# offline collaborators. It intentionally does not retain file bytes, run
-# apps/compute, or provide a remote-control tunnel.
+# offline collaborators. The companion `fs replica` worker retains the
+# workspace content configured in `/etc/qos/home-peer.toml`.
 identity_root = "/var/lib/qos"
 state_root = "/var/lib/qos-relay"
 
@@ -14,9 +14,8 @@ iroh_listen = "0.0.0.0:4433"
 # See README.md before changing this for a cross-user workspace.
 trust_policy = { kind = "allow_matching_user" }
 
-# The process ignores unavailable service claims even if they are added here.
-# Do not set full_content_replication, app_serving, compute, or
-# remote_control_relay to true: this image does not start those host planes.
+# `full_content_replication` is enabled dynamically only while the aggregate
+# home-peer status proves every configured workspace is complete.
 
 # `allow_matching_user` hosts bind an owner workspace when it first subscribes.
 # Add an explicit entry only when you need a fixed, pre-pinned workspace:

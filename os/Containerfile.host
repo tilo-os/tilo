@@ -3,7 +3,7 @@
 # qOS host-mode bootc image — headless always-on host / relay.
 # ----------------------------------------------------------------------------
 # Ships a minimal bootc image that boots straight into
-# `qos-relay.service`. No compositor, no greetd, no session. Users
+# `qos-relay.service` and `qos-fs-replica.service`. No compositor, no greetd, no session. Users
 # reach it via their own workspaces once the enrollment token in
 # /etc/qos/enrollment-token.txt is consumed on first boot.
 #
@@ -53,9 +53,8 @@ ENV CARGO_HOME=/build/.cargo-home \
     LC_ALL=C.UTF-8 \
     TZ=UTC
 
-# Host image currently ships qos-relay plus the fs binary for future composite
-# host work. It does not install or enable an fs host service, so this image is
-# CRDT/store-and-forward only and must not be described as full file residency.
+# Host image ships qos-relay plus the authenticated filesystem replica as one
+# composite always-on home peer.
 # Drop the browser member (Servo) before resolving.
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
@@ -74,7 +73,7 @@ FROM ${BASE_REF}
 
 # Minimal runtime — no display stack, no PipeWire, no greetd. Just
 # what a headless network appliance needs: time sync, firewall,
-# fuse reserved for the future filesystem host plane, ca-certs for iroh relays.
+# fuse for filesystem serving, ca-certs for iroh relays.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         chrony \
         firewalld \
@@ -93,6 +92,7 @@ COPY --from=builder /out/fs /usr/bin/fs
 RUN chmod 0755 /usr/bin/qos-relay /usr/bin/qos-relay-admin /usr/bin/fs
 
 COPY os/usr/lib/systemd/system/qos-relay.service /usr/lib/systemd/system/qos-relay.service
+COPY os/usr/lib/systemd/system/qos-fs-replica.service /usr/lib/systemd/system/qos-fs-replica.service
 COPY os/usr/lib/systemd/system/qos-relay-firstboot.service /usr/lib/systemd/system/qos-relay-firstboot.service
 COPY os/usr/libexec/qos-relay-firstboot /usr/libexec/qos-relay-firstboot
 COPY os/usr/lib/tmpfiles.d/qos-host.conf /usr/lib/tmpfiles.d/qos-host.conf
@@ -124,6 +124,7 @@ RUN mkdir -p /etc/qos \
 # Enable services.
 RUN systemctl enable qos-relay-firstboot.service \
     && systemctl enable qos-relay.service \
+    && systemctl enable qos-fs-replica.service \
     && systemctl enable chronyd.service \
     && systemctl enable firewalld.service \
     && systemctl set-default multi-user.target
