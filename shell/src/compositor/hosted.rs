@@ -72,6 +72,9 @@ pub fn run_with_full_options(opts: HostedOptions) {
     tree.fs_acl_path = Some(persist::fs_capability_export_path());
 
     adopt_tree_ownership(&mut tree);
+    // Replay a persisted ACL after restart even when no capability changes in
+    // this session; the asynchronous publisher retries until FS is ready.
+    tree.export_fs_capabilities();
 
     // One `WorkspaceTreeHandle` shared across compositor / portal / peer-sync — chrome, the portal's `GrantStoreHandle`, and the peer-sync replica each hold a clone, so every mutation lands on the same tree.
     let tree_handle: crate::shell::state::WorkspaceTreeHandle = tree.shared();
