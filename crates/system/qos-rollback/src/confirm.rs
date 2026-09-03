@@ -325,7 +325,10 @@ mod tests {
         assert_eq!(load_state(&p).unwrap(), None);
         save_state(&p, &s).unwrap();
         assert_eq!(load_state(&p).unwrap(), Some(s));
-        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }
 
