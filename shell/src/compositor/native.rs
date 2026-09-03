@@ -2468,6 +2468,10 @@ fn load_session_tree(
             adopted.len()
         );
     }
+    // Replay the persisted aggregate on every boot. A previous session may
+    // have stopped while the authority socket was unavailable; the
+    // background publisher coalesces this with any immediate mutation.
+    tree.export_fs_capabilities();
     (tree.shared(), peer_sync_possible, state_notice)
 }
 
