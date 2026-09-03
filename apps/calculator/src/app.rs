@@ -278,6 +278,16 @@ impl CalculatorApp {
         }
     }
 
+    /// Shared angle-unit transition for the top-bar controls. Pointer and
+    /// semantic activation both use this rather than creating a second state
+    /// path for assistive technology.
+    fn set_degrees(&mut self, degrees: bool) {
+        if self.model.deg != degrees {
+            self.model.deg = degrees;
+            self.model_dirty = true;
+        }
+    }
+
     fn draw_topbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, self.topbar, c.surfaces.raised);
@@ -383,13 +393,11 @@ impl CalculatorApp {
             }
         }
         if self.rad_rect.contains(p) {
-            self.model.deg = false;
-            self.model_dirty = true;
+            self.set_degrees(false);
             return;
         }
         if self.deg_rect.contains(p) {
-            self.model.deg = true;
-            self.model_dirty = true;
+            self.set_degrees(true);
             return;
         }
 
@@ -1131,6 +1139,89 @@ impl Widget for CalculatorApp {
         "CalculatorApp"
     }
 
+    /// The calculator canvas has no native control subtree. Export the
+    /// top-bar's persistent state and its primary evaluate affordance; graph
+    /// fields and keypad input retain their existing keyboard/text semantics.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let modes = Mode::all()
+            .iter()
+            .enumerate()
+            .map(|(index, mode)| {
+                AccessNode::new(Role::Tab)
+                    .with_name(mode.label())
+                    .with_action_target(format!("calculator.mode:{index}"))
+                    .with_bounds(self.seg_rects[index])
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(self.model.mode == *mode),
+                    )
+            })
+            .collect();
+        let top_bar = AccessNode::new(Role::Toolbar)
+            .with_name("Calculator controls")
+            .with_children(vec![
+                AccessNode::new(Role::TabBar)
+                    .with_name("Mode")
+                    .with_children(modes),
+                AccessNode::new(Role::ToggleButton)
+                    .with_name("Radians")
+                    .with_action_target("calculator.angle:radians")
+                    .with_bounds(self.rad_rect)
+                    .with_state(AccessState::new().focusable(true).checked(!self.model.deg)),
+                AccessNode::new(Role::ToggleButton)
+                    .with_name("Degrees")
+                    .with_action_target("calculator.angle:degrees")
+                    .with_bounds(self.deg_rect)
+                    .with_state(AccessState::new().focusable(true).checked(self.model.deg)),
+            ]);
+        let mut children = vec![top_bar];
+        if self.model.mode == Mode::Calc {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Evaluate expression")
+                    .with_action_target("calculator.evaluate")
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name("Calculator")
+                .with_value(if self.model.expr.is_empty() {
+                    "Empty expression".to_string()
+                } else {
+                    self.model.expr.clone()
+                })
+                .with_description("Calculator and graphing workspace")
+                .with_children(children),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        use ui::a11y::Action;
+        if !matches!(action, Action::Activate | Action::ToggleCheck) {
+            return false;
+        }
+        match target {
+            "calculator.mode:0" => self.set_mode(Mode::Calc),
+            "calculator.mode:1" => self.set_mode(Mode::Graph2d),
+            "calculator.mode:2" => self.set_mode(Mode::Graph3d),
+            "calculator.angle:radians" => self.set_degrees(false),
+            "calculator.angle:degrees" => self.set_degrees(true),
+            "calculator.evaluate" if self.model.mode == Mode::Calc => self.commit_equals(state),
+            _ => return false,
+        }
+        true
+    }
+
     /// Keep the host pumping frames while any frame-driven animation is in
     /// flight: the history drawer's eased reveal, or a smooth graph zoom easing
     /// toward its target. Without this the animation would paint one frame and
@@ -1222,6 +1313,37 @@ mod tests {
         app.set_mode(Mode::Graph2d);
         assert_eq!(app.model.mode, Mode::Graph2d);
         assert!(app.model_dirty);
+    }
+
+    #[test]
+    fn accessibility_exposes_and_activates_topbar_controls() {
+        use ui::a11y::Action;
+        use ui::widget::Widget as _;
+
+        let mut app = CalculatorApp::new();
+        let tree = app.accessibility().expect("calculator semantics");
+        assert_eq!(tree.name.as_deref(), Some("Calculator"));
+        let mode_bar = &tree.children[0].children[0];
+        assert!(mode_bar.children.iter().any(|node| {
+            node.action_target.as_deref() == Some("calculator.mode:1")
+                && node.name.as_deref() == Some("Graph 2D")
+        }));
+
+        let mut doc = AutoCommit::new();
+        assert!(app.perform_semantic_action(
+            "calculator.mode:1",
+            &Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.model.mode, Mode::Graph2d);
+        assert!(app.perform_semantic_action(
+            "calculator.angle:degrees",
+            &Action::ToggleCheck,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(app.model.deg);
     }
 
     #[test]
