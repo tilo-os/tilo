@@ -1,0 +1,122 @@
+name: Legacy Linux application caret E2E
+
+# This is a merge gate when compositor/input compatibility changes, plus a
+# daily drift check against the real toolkit/application packages baked into
+# qos-builder. Running it for unrelated documentation or application changes
+# would spend runner time without increasing confidence.
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "shell/src/compositor/**"
+      - "shell/src/collab/**"
+      - "shell/src/network/**"
+      - "shell/src/shell/network.rs"
+      - "shell/src/shell/overlay_host.rs"
+      - "shell/src/shell/peer_view.rs"
+      - "shell/src/shell/state/shared_surfaces.rs"
+      - "ui/src/input.rs"
+      - "ui/src/interaction.rs"
+      - "ui/src/widget/group_row.rs"
+      - "scripts/legacy-app-caret-e2e.py"
+      - "os/Containerfile.builder"
+      - ".forgejo/workflows/legacy-app-e2e.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "shell/src/compositor/**"
+      - "shell/src/collab/**"
+      - "shell/src/network/**"
+      - "shell/src/shell/network.rs"
+      - "shell/src/shell/overlay_host.rs"
+      - "shell/src/shell/peer_view.rs"
+      - "shell/src/shell/state/shared_surfaces.rs"
+      - "ui/src/input.rs"
+      - "ui/src/interaction.rs"
+      - "ui/src/widget/group_row.rs"
+      - "scripts/legacy-app-caret-e2e.py"
+      - "os/Containerfile.builder"
+      - ".forgejo/workflows/legacy-app-e2e.yml"
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: legacy-app-e2e-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  caret:
+    runs-on: runner
+    timeout-minutes: 45
+    container:
+      image: code.podesta.ai/qos/qos-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    env:
+      CARGO_HOME: /cargo-home
+      CARGO_BUILD_JOBS: "4"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+      WGPU_BACKEND: vulkan
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      WGPU_ADAPTER_NAME: llvmpipe
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Restore Cargo downloads
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: |
+            /cargo-home/registry/index
+            /cargo-home/registry/cache
+            /cargo-home/git/db
+          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-deps-
+
+      - name: Prepare compiler cache and verify real app subjects
+        run: |
+          bash tools/ci-sccache.sh prepare
+          # The builder-image update and this workflow can race on the first
+          # merge that introduces a new subject. Normally these packages are
+          # already baked in; this fallback makes that transition self-hosting.
+          if ! command -v adwaita-1-demo >/dev/null ||
+             ! command -v libreoffice >/dev/null ||
+             ! find /usr/lib64/qt6/examples /usr/lib/qt6/examples \
+                 -type f -path '*/widgets/lineedits/*/lineedits' -perm /111 \
+                 -print -quit 2>/dev/null | grep -q .; then
+            dnf install -y libadwaita-demo qt6-qtbase-examples libreoffice-writer
+          fi
+          command -v adwaita-1-demo
+          command -v libreoffice
+          find /usr/lib64/qt6/examples /usr/lib/qt6/examples \
+            -type f -path '*/widgets/lineedits/*/lineedits' -perm /111 \
+            -print -quit 2>/dev/null | grep .
+
+      - name: Build the compositor under test
+        run: >-
+          bash tools/ci-measure.sh "legacy app compositor build" --
+          bash scripts/ci-run.sh "cargo build (legacy app E2E)" --
+          cargo build --locked -p shell --bin shell
+
+      - name: Exercise caret retention in real Linux applications
+        run: >-
+          bash tools/ci-measure.sh "legacy app caret E2E" --
+          python3 scripts/legacy-app-caret-e2e.py
+          --shell target/debug/shell
+          --artifacts target/legacy-app-e2e
+
+      - name: Upload screenshots and process logs
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: legacy-app-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/legacy-app-e2e
+          if-no-files-found: error
