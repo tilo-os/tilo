@@ -1,0 +1,33 @@
+[Unit]
+Description=qOS per-user verified local model manager
+Documentation=file:///usr/share/doc/qos/system-extensions.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/qos-model-manager serve --socket %t/qos/services/models.sock
+Restart=on-failure
+RestartSec=2
+UMask=0077
+
+# Settings receives only the connected models@1 descriptor. This service owns
+# network transfers, the content-addressed user store, and Podman supervision.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/qos %h/.local/share/containers %t/qos
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=default.target
