@@ -193,8 +193,15 @@ fn registered_home_peer_addrs(
         let Some(device_public_key) = decode_lower_hex_32(&registration.device_node_id) else {
             continue;
         };
+        let addr = registration
+            .relay_endpoint
+            .filter(|endpoint| endpoint.id == relay_id && !endpoint.is_empty())
+            // Legacy registrations contain only a service id. Keep the
+            // address-lookup fallback for them, but prefer the persisted
+            // direct/relay hint when one was transferred during enrollment.
+            .unwrap_or_else(|| iroh::EndpointAddr::new(relay_id));
         addrs.push(RegisteredHomePeer {
-            addr: iroh::EndpointAddr::new(relay_id),
+            addr,
             expectation: crate::network::actor::HomePeerExpectation {
                 user_public_key: local_user,
                 device_public_key,
@@ -4245,6 +4252,65 @@ mod tests {
         assert_eq!(first_boot.len(), 1);
         assert_eq!(first_boot[0].addr.id, service);
 
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("QOS_HOME_PEERS_PATH", value),
+                None => std::env::remove_var("QOS_HOME_PEERS_PATH"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn home_peer_registry_prefers_persisted_endpoint_hints_and_keeps_legacy_fallback() {
+        let temp = tempfile::tempdir().expect("temp");
+        let registry = temp.path().join("home-peers.json");
+        let own_user = [0x71; 32];
+        let hinted_service = iroh::SecretKey::from_bytes(&[0x72; 32]).public();
+        let legacy_service = iroh::SecretKey::from_bytes(&[0x73; 32]).public();
+        let device = iroh::SecretKey::from_bytes(&[0x74; 32]).public();
+        let hint = iroh::EndpointAddr::new(hinted_service)
+            .with_ip_addr("127.0.0.1:47891".parse().expect("loopback address"));
+        let registrations = vec![
+            qos_relay::HomePeerRegistration {
+                schema_version: qos_relay::HomePeerRegistration::CURRENT_SCHEMA,
+                device_node_id: hex::encode(device.as_bytes()),
+                relay_service_node_id: hex::encode(hinted_service.as_bytes()),
+                relay_endpoint: Some(hint.clone()),
+                label: "Hinted home peer".into(),
+                user_public_key: hex::encode(own_user),
+                device_cert: None,
+                relay_workspace_ids: vec![42],
+            },
+            qos_relay::HomePeerRegistration {
+                schema_version: 1,
+                device_node_id: hex::encode(device.as_bytes()),
+                relay_service_node_id: hex::encode(legacy_service.as_bytes()),
+                relay_endpoint: None,
+                label: "Legacy home peer".into(),
+                user_public_key: hex::encode(own_user),
+                device_cert: None,
+                relay_workspace_ids: vec![42],
+            },
+        ];
+        std::fs::write(
+            &registry,
+            serde_json::to_vec(&registrations).expect("registry"),
+        )
+        .expect("write registry");
+        let previous = std::env::var_os("QOS_HOME_PEERS_PATH");
+        // SAFETY: guarded by the process_env serial group.
+        unsafe { std::env::set_var("QOS_HOME_PEERS_PATH", &registry) };
+        let hosts =
+            registered_home_peer_addrs(Some(own_user), &std::collections::BTreeSet::from([42]))
+                .expect("registry parses");
+        assert!(hosts.iter().any(|host| host.addr == hint));
+        assert!(
+            hosts
+                .iter()
+                .any(|host| host.addr.id == legacy_service && host.addr.is_empty())
+        );
         // SAFETY: guarded by the process_env serial group.
         unsafe {
             match previous {

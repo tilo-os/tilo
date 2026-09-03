@@ -76,6 +76,9 @@ pub enum HomePeerManagementRequest {
 pub struct HomePeerManagementResponse {
     /// Certified host device key.
     pub device_public_key: [u8; 32],
+    /// Current network-addressable relay service endpoint. The client has
+    /// authenticated the certified host before accepting this advertisement.
+    pub relay_endpoint: iroh_base::EndpointAddr,
     /// Current operator-facing label.
     pub label: String,
     /// Whether the full filesystem replica currently proves readiness.

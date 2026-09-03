@@ -362,7 +362,8 @@ fn bounded_home_peer_registry(
             let entries: Vec<HomePeerRegistration> = serde_json::from_slice(&bytes)?;
             if entries.len() > 128
                 || entries.iter().any(|entry| {
-                    entry.schema_version != HomePeerRegistration::CURRENT_SCHEMA
+                    entry.schema_version > HomePeerRegistration::CURRENT_SCHEMA
+                        || !valid_relay_endpoint_hint(entry)
                         || entry.device_cert.as_ref().is_none_or(|cert| {
                             verify_device_cert(cert).is_err()
                                 || hex::encode(cert.device_public_key) != entry.device_node_id
@@ -383,6 +384,15 @@ fn bounded_home_peer_registry(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(b"[]".to_vec()),
         Err(error) => Err(error.into()),
     }
+}
+
+fn valid_relay_endpoint_hint(entry: &HomePeerRegistration) -> bool {
+    entry.relay_endpoint.as_ref().is_none_or(|endpoint| {
+        !endpoint.is_empty()
+            && hex::decode(&entry.relay_service_node_id)
+                .ok()
+                .is_some_and(|service| service.as_slice() == endpoint.id.as_bytes())
+    })
 }
 
 fn public_identity_record(user: [u8; 32], display_name: &str) -> anyhow::Result<Vec<u8>> {
@@ -468,6 +478,7 @@ fn legacy_install_personal_projection(
                 || hex::decode(&entry.relay_service_node_id)
                     .ok()
                     .is_none_or(|bytes| bytes.len() != 32)
+                || !valid_relay_endpoint_hint(entry)
                 || entry.device_cert.as_ref().is_none_or(|cert| {
                     verify_device_cert(cert).is_err()
                         || cert.user_public_key != user
@@ -591,6 +602,7 @@ fn checked_personal_projection(
                 || hex::decode(&entry.relay_service_node_id)
                     .ok()
                     .is_none_or(|key| key.len() != 32)
+                || !valid_relay_endpoint_hint(entry)
                 || entry.device_cert.as_ref().is_none_or(|cert| {
                     verify_device_cert(cert).is_err()
                         || cert.user_public_key != user
@@ -640,7 +652,7 @@ fn checked_personal_projection(
     };
     if existing.len() > 128
         || existing.iter().any(|entry| {
-            entry.schema_version != HomePeerRegistration::CURRENT_SCHEMA
+            entry.schema_version > HomePeerRegistration::CURRENT_SCHEMA
                 || entry.relay_workspace_ids.len() > 4096
                 || !qos_relay::valid_home_peer_label(&entry.label)
                 || hex::decode(&entry.device_node_id)
@@ -652,6 +664,7 @@ fn checked_personal_projection(
                 || hex::decode(&entry.user_public_key)
                     .ok()
                     .is_none_or(|key| key.len() != 32)
+                || !valid_relay_endpoint_hint(entry)
                 || entry.device_cert.as_ref().is_none_or(|cert| {
                     verify_device_cert(cert).is_err()
                         || hex::encode(cert.device_public_key) != entry.device_node_id
@@ -929,6 +942,7 @@ fn register_home_peer(
                 || hex::decode(&entry.relay_service_node_id).is_err()
                 || entry.user_public_key.len() != 64
                 || hex::decode(&entry.user_public_key).is_err()
+                || !valid_relay_endpoint_hint(entry)
                 || entry.device_cert.as_ref().is_some_and(|cert| {
                     verify_device_cert(cert).is_err()
                         || hex::encode(cert.device_public_key) != entry.device_node_id
@@ -946,6 +960,7 @@ fn register_home_peer(
         schema_version: HomePeerRegistration::CURRENT_SCHEMA,
         device_node_id,
         relay_service_node_id: hex::encode(relay_service_node_id),
+        relay_endpoint: None,
         label: cert.device_label.clone(),
         user_public_key: hex::encode(cert.user_public_key),
         device_cert: Some(cert.clone()),
@@ -2396,6 +2411,7 @@ mod tests {
             schema_version: HomePeerRegistration::CURRENT_SCHEMA,
             device_node_id: hex::encode(other_cert.device_public_key),
             relay_service_node_id: hex::encode([65; 32]),
+            relay_endpoint: None,
             label: other_cert.device_label.clone(),
             user_public_key: hex::encode(other_cert.user_public_key),
             device_cert: Some(other_cert),
