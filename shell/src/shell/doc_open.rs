@@ -14,6 +14,7 @@
 //! ([`ui::record::RecordId::for_file`]) against the window each launch
 //! produced, and a record whose window has since closed is not "open".
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -428,6 +429,56 @@ pub fn continuation_file_reference_for_surface(
         thumbnail_hash,
     )
     .ok()
+}
+
+/// Resolve a same-identity file continuation through the mounted Files record
+/// catalog. The incoming reference names a collaborative `FileRecordId`, not
+/// a source pathname. Opening one byte is deliberate: on a projected FUSE
+/// record it begins normal on-demand hydration, while local files are cheap.
+pub fn open_continuity_file_reference(
+    reference: &crate::shell::personal_continuity::LaunchIntent,
+) -> Option<PathBuf> {
+    let path = resolve_continuity_file_reference_in_roots(
+        reference,
+        &file_explorer::model::workspace_roots(),
+    )?;
+    let mut file = std::fs::File::open(&path).ok()?;
+    let mut first_byte = [0_u8; 1];
+    let _ = file.read(&mut first_byte).ok()?;
+    Some(path)
+}
+
+fn resolve_continuity_file_reference_in_roots(
+    reference: &crate::shell::personal_continuity::LaunchIntent,
+    roots: &[PathBuf],
+) -> Option<PathBuf> {
+    let crate::shell::personal_continuity::LaunchIntent::FileReference {
+        record_id,
+        content_hash,
+        thumbnail_hash,
+    } = reference
+    else {
+        return None;
+    };
+    let encoded = record_id.strip_prefix("file-record-")?;
+    let bytes = hex::decode(encoded).ok()?;
+    let record_id: [u8; 16] = bytes.try_into().ok()?;
+    let entry = file_explorer::model::read_workspace_record_index(roots)
+        .records
+        .into_iter()
+        .find(|entry| entry.record_id.as_bytes() == &record_id)?;
+    if content_hash.is_some_and(|expected| {
+        file_explorer::model::read_content_hash(&entry.path) != Some(expected)
+    }) {
+        return None;
+    }
+    if thumbnail_hash.is_some_and(|expected| {
+        file_explorer::model::read_thumb_xattr(&entry.path)
+            .is_some_and(|thumbnail| *blake3::hash(&thumbnail).as_bytes() != expected)
+    }) {
+        return None;
+    }
+    Some(entry.path)
 }
 
 /// Matches by wayland app-id; the oldest unclaimed note wins (launch
@@ -1181,5 +1232,51 @@ mod tests {
         );
 
         clear_launch_env();
+    }
+
+    #[test]
+    fn remote_file_reference_resolves_a_projected_record_without_source_path() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("hydrated-on-read.md");
+        std::fs::write(&path, b"hydrated content").unwrap();
+        let record = [0x71; 16];
+        let content = [0x42; 32];
+        let thumbnail = b"projected thumbnail";
+        xattr::set(&path, "user.qos.record-id", record).unwrap();
+        xattr::set(&path, "user.qos.content-hash", content).unwrap();
+        xattr::set(&path, "user.qos.thumb", thumbnail).unwrap();
+        let uuid = uuid::Uuid::from_bytes(record);
+        let index = serde_json::json!({
+            "schema_version": 1,
+            "truncated": false,
+            "records": [{
+                "record_id": uuid,
+                "path": "/hydrated-on-read.md",
+                "is_dir": false,
+            }],
+        });
+        xattr::set(
+            root.path(),
+            "user.qos.record-index",
+            serde_json::to_vec(&index).unwrap(),
+        )
+        .unwrap();
+        let reference = crate::shell::personal_continuity::LaunchIntent::file_reference(
+            format!("file-record-{}", hex::encode(record)),
+            Some(content),
+            Some(*blake3::hash(thumbnail).as_bytes()),
+        )
+        .unwrap();
+
+        let resolved =
+            resolve_continuity_file_reference_in_roots(&reference, &[root.path().to_path_buf()])
+                .expect("the mounted Files record catalog resolves the remote reference");
+        assert_eq!(resolved, path);
+        assert_eq!(std::fs::read(resolved).unwrap(), b"hydrated content");
+        assert!(
+            !serde_json::to_string(&reference)
+                .unwrap()
+                .contains(root.path().to_str().unwrap())
+        );
     }
 }

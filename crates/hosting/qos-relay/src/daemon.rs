@@ -24,7 +24,6 @@ use crate::config::{PeerRelayConfig, RelayConfig};
 use crate::metrics::Metrics;
 use crate::peer::{PeerContext, WorkspaceAutobind, WorkspaceRegistry, now_ns, run_peer};
 use crate::policy::TrustPolicy;
-use crate::store::load_or_create_iroh_secret;
 use crate::transport::{ALPN, Envelope, MAX_FRAME_BYTES};
 use crate::workspace::{Membership, SharedWorkspace, WorkspaceRuntime};
 
@@ -33,15 +32,18 @@ struct FullReplicaStatusProof {
     state: String,
     full_content_replication: bool,
     updated_at_ms: u64,
+    #[serde(default)]
+    filesystem_endpoints: Vec<EndpointAddr>,
 }
 
-fn full_replica_ready(path: &std::path::Path) -> bool {
+fn full_replica_proof(path: &std::path::Path) -> Option<FullReplicaStatusProof> {
     std::fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<FullReplicaStatusProof>(&bytes).ok())
-        .is_some_and(|proof| {
+        .filter(|proof| {
             proof.state == "ready"
                 && proof.full_content_replication
+                && !proof.filesystem_endpoints.is_empty()
                 && unix_now_ms().saturating_sub(proof.updated_at_ms) <= 5_000
         })
 }
@@ -178,6 +180,7 @@ impl Relay {
     /// configured workspace can't be loaded, and [`RelayError::Iroh`] if
     /// the listen address is invalid or the endpoint fails to bind.
     pub async fn start(mut cfg: RelayConfig, identity: RelayIdentity) -> Result<Self, RelayError> {
+        import_home_peer_bindings(&mut cfg)?;
         validate_relay_identity(&identity)?;
         if !cfg.device_role.can_serve() {
             return Err(RelayError::Identity(
@@ -200,9 +203,10 @@ impl Relay {
                 .iter()
                 .map(|binding| (binding.id, binding.replication.clone()))
                 .collect(),
+            filesystem_endpoints: Vec::new(),
         });
         std::fs::create_dir_all(&cfg.state_root)?;
-        let endpoint = bind_endpoint(&cfg).await?;
+        let endpoint = bind_endpoint(&cfg, &identity.device_signing_key).await?;
         let workspaces = build_workspace_registry(&cfg)?;
         let metrics = Arc::new(Metrics::default());
         let revocations = Arc::new(std::sync::RwLock::new(identity.revocations.clone()));
@@ -372,29 +376,93 @@ impl Relay {
     }
 }
 
+/// Import full-workspace residency from the same bundle the filesystem worker
+/// consumes. The operator cannot accidentally advertise a relay-only binding
+/// for a workspace whose NAS worker is configured to retain complete content.
+fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
+    if !cfg.home_peer_bundle.exists() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&cfg.home_peer_bundle)?;
+    let bundle: fs::full_replica::HomePeerSet = toml::from_str(&text)
+        .map_err(|error| RelayError::Identity(format!("invalid home-peer bundle: {error}")))?;
+    if bundle.status_file != cfg.full_replica_status {
+        return Err(RelayError::Identity(
+            "home-peer status path differs from relay status path".into(),
+        ));
+    }
+    for workspace in bundle.workspaces {
+        let ticket = fs::Ticket::decode(&workspace.ticket)
+            .map_err(|error| RelayError::Identity(format!("invalid home-peer ticket: {error}")))?;
+        let relay_workspace_ids = if workspace.relay_workspace_ids.is_empty() {
+            // Bundles exported before room bindings existed have one stable
+            // fallback shard. New enrollment always writes explicit ids.
+            vec![
+                crate::room_workspace_id(&ticket.workspace_id().to_string()).map_err(|error| {
+                    RelayError::Identity(format!("invalid workspace id: {error}"))
+                })?,
+            ]
+        } else {
+            workspace.relay_workspace_ids
+        };
+        for id in relay_workspace_ids {
+            if !cfg.workspaces.iter().any(|binding| binding.id == id) {
+                cfg.workspaces.push(crate::config::WorkspaceBinding {
+                    id,
+                    pin: true,
+                    replication: crate::mesh::ReplicationIntent::FullWorkspace,
+                });
+            }
+        }
+    }
+    cfg.services.full_content_replication = true;
+    Ok(())
+}
+
 impl RelayHandle {
     /// Services safe to advertise at this instant.  The filesystem proof is
     /// read for every advertisement, so an edit immediately withdraws the
     /// full-content claim until its new blobs are resident.
     pub fn advertised_services(&self) -> crate::mesh::ServiceCapabilities {
         let mut services = self.mesh_profile.services.clone();
-        services.full_content_replication &= full_replica_ready(&self.full_replica_status);
+        services.full_content_replication &= !self.filesystem_endpoints().is_empty();
         services
+    }
+
+    /// Filesystem endpoints that proved complete residency in the current
+    /// heartbeat. Consumers use these for blob and namespace protocols while
+    /// retaining `node_addr` for relay traffic.
+    pub fn filesystem_endpoints(&self) -> Vec<EndpointAddr> {
+        full_replica_proof(&self.full_replica_status)
+            .map(|proof| {
+                proof
+                    .filesystem_endpoints
+                    .into_iter()
+                    .filter(|endpoint| endpoint.id.as_bytes() == &self.mesh_profile.device)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Current profile safe to publish to placement/discovery consumers.
     pub fn mesh_profile(&self) -> crate::mesh::DeviceMeshProfile {
         let mut profile = (*self.mesh_profile).clone();
         profile.services = self.advertised_services();
+        profile.filesystem_endpoints = self.filesystem_endpoints();
         profile
     }
 }
 
-/// Bind the iroh endpoint on the persistent secret at
-/// `<state_root>/iroh-secret.bin`.
-async fn bind_endpoint(cfg: &RelayConfig) -> Result<Endpoint, RelayError> {
-    let secret_bytes = load_or_create_iroh_secret(&cfg.state_root)?;
-    let secret = iroh::SecretKey::from_bytes(&secret_bytes);
+/// Bind the relay plane with the enrolled device key shared by its filesystem
+/// worker.
+async fn bind_endpoint(
+    cfg: &RelayConfig,
+    device_key: &ed25519_dalek::SigningKey,
+) -> Result<Endpoint, RelayError> {
+    // The relay and filesystem worker are planes of one certified device. A
+    // distinct random relay key would make endpoint discovery look like a
+    // different, unauthorised host even though both processes are local.
+    let secret = iroh::SecretKey::from_bytes(&device_key.to_bytes());
     Endpoint::builder(presets::N0)
         .secret_key(secret)
         .bind_addr(cfg.iroh_listen)
@@ -1137,6 +1205,78 @@ mod tests {
         assert!(!services.app_serving);
         assert!(!services.compute);
         assert!(!services.remote_control_relay);
+        relay.shutdown().await;
+    }
+
+    #[test]
+    fn bundle_imports_the_shared_workspace_shard_as_full_replication() {
+        let temp = tempfile::tempdir().unwrap();
+        let status = temp.path().join("status.json");
+        let bundle_path = temp.path().join("home-peer.toml");
+        let ticket = fs::Ticket {
+            node: EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
+            workspace: [9; 32],
+        };
+        let bundle = fs::full_replica::HomePeerSet {
+            status_file: status.clone(),
+            workspaces: vec![fs::full_replica::HomePeerBundle {
+                ticket: ticket.encode().unwrap(),
+                cache_dir: temp.path().join("cache"),
+                capability_json: "[]".into(),
+                principals: Vec::new(),
+                relay_workspace_ids: vec![42],
+            }],
+        };
+        std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
+        let mut config = RelayConfig {
+            home_peer_bundle: bundle_path,
+            full_replica_status: status,
+            ..RelayConfig::default()
+        };
+
+        import_home_peer_bindings(&mut config).unwrap();
+        assert!(config.services.full_content_replication);
+        assert!(config.workspaces.iter().any(|binding| {
+            binding.id == 42
+                && binding.pin
+                && binding.replication == crate::mesh::ReplicationIntent::FullWorkspace
+        }));
+    }
+
+    #[tokio::test]
+    async fn ready_profile_serializes_the_direct_filesystem_endpoint() {
+        let temp = tempfile::tempdir().unwrap();
+        let status_path = temp.path().join("full-replica.json");
+        let relay_identity = identity(DeviceCapabilities::host());
+        let filesystem_endpoint = EndpointAddr::new(
+            iroh::SecretKey::from_bytes(&relay_identity.device_signing_key.to_bytes()).public(),
+        )
+        .with_ip_addr("127.0.0.1:43210".parse().unwrap());
+        let mut status = fs::full_replica::FullReplicaStatus::syncing();
+        status.state = "ready".into();
+        status.full_content_replication = true;
+        status
+            .filesystem_endpoints
+            .push(filesystem_endpoint.clone());
+        fs::full_replica::save_status(&status_path, &status).unwrap();
+        let relay = Relay::start(
+            RelayConfig {
+                state_root: temp.path().join("relay-state"),
+                full_replica_status: status_path,
+                device_role: crate::mesh::DeviceRole::AlwaysOnServer,
+                services: crate::mesh::ServiceCapabilities::home_peer(),
+                ..RelayConfig::default()
+            },
+            relay_identity,
+        )
+        .await
+        .unwrap();
+
+        let profile = relay.handle().mesh_profile();
+        let wire = serde_json::to_vec(&profile).unwrap();
+        let published: crate::mesh::DeviceMeshProfile = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(published.content_endpoint(), Some(filesystem_endpoint));
+        assert!(published.services.full_content_replication);
         relay.shutdown().await;
     }
 }
