@@ -38,6 +38,8 @@ for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
 done
 if ! grep -Fq 'key: desktop-external-inputs-${{ hashFiles('\''os/external-assets/github-assets.tsv'\'') }}' \
     "$package_workflow" \
+  || ! grep -Fq 'github-assets-all-v1-${{ hashFiles('\''os/external-assets/github-assets.tsv'\'') }}' \
+    "$package_workflow" \
   || ! grep -Fq 'os/dev/cache-github-assets.sh "sccache-v0.17.0-${target}.tar.gz"' \
     "$package_workflow" \
   || ! grep -Fq 'cached_archive="$repo_root/os/external-assets/cache/${name}.tar.gz"' \

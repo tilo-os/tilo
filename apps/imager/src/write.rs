@@ -58,6 +58,12 @@ pub enum JobStart {
     Incomplete,
     /// Refused — the image is larger than the target drive.
     TooSmall,
+    /// Refused because desktop imaging is restricted to external media. The
+    /// booted qOS installer owns internal-disk and dual-boot installation.
+    UnsafeTarget,
+    /// Refused before any I/O because an installable image's embedded profile
+    /// would be rejected by the live installer.
+    InvalidProfile(String),
 }
 
 /// Which engine actually performs the write.
@@ -124,6 +130,9 @@ pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
     if req.source.size == 0 || req.target.name.is_empty() {
         return JobStart::Incomplete;
     }
+    if !req.target.is_media_target() {
+        return JobStart::UnsafeTarget;
+    }
     let required = if req.source.installable {
         req.source.size.saturating_add(PROFILE_BLOCK_SIZE as u64)
     } else {
@@ -131,6 +140,11 @@ pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
     };
     if !req.target.fits(required) {
         return JobStart::TooSmall;
+    }
+    if req.source.installable
+        && let Err(message) = req.profile.validate_media_profile()
+    {
+        return JobStart::InvalidProfile(message);
     }
     if !req.confirmation_matches(typed_confirmation) {
         return JobStart::ConfirmationMismatch;
@@ -148,6 +162,9 @@ pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
 /// Returns an error if the profile cannot be serialized or does not fit in the
 /// reserved block.
 pub fn encode_profile_block(profile: &InstallProfile) -> io::Result<Vec<u8>> {
+    profile
+        .validate_media_profile()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let payload = profile
         .to_media_profile_json()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -386,15 +403,11 @@ pub fn run_job_paths(
         });
     });
     match verify {
-        Ok(None) => {
-            on_progress(Progress {
-                phase: JobPhase::Success,
-                write_frac: 1.0,
-                verify_frac: 1.0,
-                rate_bps: 0,
-            });
-            JobResult::Verified
-        }
+        // This is not yet the user-visible terminal success: installable media
+        // still needs its profile block written and read back, and the device
+        // still needs platform finalisation. `run_system_job` publishes the
+        // single terminal event only after all of those operations finish.
+        Ok(None) => JobResult::Verified,
         Ok(Some(off)) => JobResult::VerifyMismatch(off),
         Err(e) => JobResult::VerifyFailed(e.to_string()),
     }
@@ -422,14 +435,22 @@ fn run_system_job(req: &WriteRequest, tx: &Sender<Progress>) -> JobResult {
         result = JobResult::VerifyFailed(format!(
             "could not embed and verify installation profile: {error}"
         ));
-        let _ = tx.send(Progress {
-            phase: JobPhase::Failed,
-            write_frac: 1.0,
-            verify_frac: 1.0,
-            rate_bps: 0,
-        });
     }
     finish_target(&req.target);
+    let _ = tx.send(Progress {
+        phase: if result.is_success() {
+            JobPhase::Success
+        } else {
+            JobPhase::Failed
+        },
+        write_frac: 1.0,
+        verify_frac: if matches!(result, JobResult::WriteFailed(_)) {
+            0.0
+        } else {
+            1.0
+        },
+        rate_bps: 0,
+    });
     result
 }
 
@@ -627,6 +648,27 @@ mod tests {
     }
 
     #[test]
+    fn begin_refuses_internal_and_system_targets() {
+        let mut r = req();
+        r.target.removable = false;
+        r.target.tran = Some("sata".into());
+        assert_eq!(begin_job(&r, "sdb"), JobStart::UnsafeTarget);
+        r.target.removable = true;
+        r.target.is_system = true;
+        assert_eq!(begin_job(&r, "sdb"), JobStart::UnsafeTarget);
+    }
+
+    #[test]
+    fn begin_refuses_invalid_profile_before_worker_start() {
+        let mut r = req();
+        r.profile.keyboard = "not-a-layout".into();
+        assert!(matches!(
+            begin_job(&r, "sdb"),
+            JobStart::InvalidProfile(message) if message.contains("Keyboard")
+        ));
+    }
+
+    #[test]
     fn q_os_media_reserves_room_for_the_profile() {
         let mut r = req();
         r.source.installable = true;
@@ -658,6 +700,17 @@ mod tests {
         write_profile_block(target.path(), PROFILE_BLOCK_SIZE as u64 * 2, &profile).unwrap();
         let bytes = std::fs::read(target.path()).unwrap();
         assert_eq!(&bytes[PROFILE_BLOCK_SIZE..], block.as_slice());
+    }
+
+    #[test]
+    fn invalid_media_profile_is_rejected_before_a_block_is_encoded() {
+        let profile = InstallProfile {
+            hostname: "bad host".into(),
+            ..InstallProfile::default()
+        };
+        let error = encode_profile_block(&profile).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("Hostname"));
     }
 
     /// Exercise the real Rust encoder/tail writer against the exact live-media
@@ -794,12 +847,11 @@ mod tests {
         });
         assert_eq!(result, JobResult::Verified);
         assert!(result.is_success());
-        // It really wrote the bytes and drove both phases to completion.
+        // It really wrote the bytes and drove both non-terminal phases to
+        // completion. Only `run_system_job` may announce terminal success,
+        // after the optional profile write and device finalisation.
         assert_eq!(std::fs::read(dst.path()).unwrap(), data);
-        assert_eq!(
-            phases,
-            vec![JobPhase::Writing, JobPhase::Verifying, JobPhase::Success]
-        );
+        assert_eq!(phases, vec![JobPhase::Writing, JobPhase::Verifying]);
         assert!((last.write_frac - 1.0).abs() < 1e-9);
         assert!((last.verify_frac - 1.0).abs() < 1e-9);
     }
