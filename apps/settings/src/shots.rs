@@ -31,6 +31,7 @@ use vello::peniko::Color;
 
 use crate::SettingsApp;
 use crate::categories::Category;
+use crate::settings_app::NAV_BREAKPOINT;
 
 /// Default (wide) offscreen viewport. Matches the sibling apps' aspect.
 pub const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 760);
@@ -302,6 +303,28 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     render_to_path(Box::new(scenario.app()), scenario.viewport(), out)
 }
 
+/// Render the ordinary Settings root at an explicitly requested acceptance
+/// viewport. Unlike named documentation scenarios, responsive-matrix captures
+/// must preserve the caller's exact dimensions and let the real shell
+/// breakpoint select docked versus drill-in navigation.
+pub fn render_responsive_to_path(
+    viewport: (u32, u32),
+    out: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let app = responsive_app(viewport);
+    render_to_path(Box::new(app), viewport, out)
+}
+
+fn responsive_app(viewport: (u32, u32)) -> SettingsApp {
+    if f64::from(viewport.0) < NAV_BREAKPOINT {
+        SettingsApp::with_selected(Category::RegionFormats)
+            .with_width_hint(viewport.0 as f32)
+            .with_narrow_content_shot()
+    } else {
+        SettingsApp::with_selected(Category::ExternalAccounts).with_width_hint(viewport.0 as f32)
+    }
+}
+
 /// Build the `Scene` for `widget` at `viewport` size. Mirrors the
 /// `sync → build_layout → compute_layout → apply_layout → draw` cycle
 /// `ui::App` runs for a single redraw, but stops at the CPU-side `Scene` so a
@@ -425,5 +448,16 @@ mod tests {
     #[test]
     fn wide_app_selects_external_accounts() {
         assert_eq!(Scenario::Wide.app().selected(), Category::ExternalAccounts);
+    }
+
+    #[test]
+    fn responsive_capture_uses_exact_width_to_select_navigation_mode() {
+        let phone = responsive_app((390, 844));
+        assert!(phone.is_narrow());
+        assert_eq!(phone.selected(), Category::RegionFormats);
+
+        let desktop = responsive_app((1920, 1080));
+        assert!(!desktop.is_narrow());
+        assert_eq!(desktop.selected(), Category::ExternalAccounts);
     }
 }
