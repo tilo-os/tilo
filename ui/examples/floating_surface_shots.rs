@@ -37,6 +37,10 @@ impl Preview {
 impl Widget for Preview {
     fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
 
+    #[allow(
+        clippy::expect_used,
+        reason = "a fresh visual-harness layout tree cannot reject its first leaf"
+    )]
     fn build_layout(
         &mut self,
         t: &mut TaffyTree<()>,
@@ -66,6 +70,10 @@ impl Widget for Preview {
         );
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the visual-harness painter keeps its deterministic paint order explicit"
+    )]
     fn draw(
         &mut self,
         s: &mut Scene,

@@ -32,11 +32,11 @@
 //! ## What genuinely lives in the shared document as authored config
 //!
 //! That leaves exactly one thing: the **guided-customization install profile**
-//! (see [`InstallProfile`](crate::model::InstallProfile)) — the install mode,
-//! whether the disk is encrypted, whether the first user autologs in, and the
-//! identity / region fields (hostname, full name, username, password, timezone,
-//! keyboard). These are user-authored, they survive restarts, and they replicate
-//! to collaborators, so editing one is a document-mutating operation: an
+//! (see [`InstallProfile`](crate::model::InstallProfile)) — the non-secret
+//! identity / region fields that the live installer actually consumes
+//! (hostname, full name, username, locale, timezone, keyboard). These are
+//! user-authored, they survive restarts, and they replicate to collaborators,
+//! so editing one is a document-mutating operation: an
 //! [`Action`]. Each carries the **absolute** target value in its payload, so
 //! [`Action::apply`] is a pure function of `(payload, document)` — it reads the
 //! current profile out of the document, sets one field, and writes it back, with
@@ -45,11 +45,11 @@
 //! form rather than erroring, so a bad replay can't wedge a peer.
 //!
 //! The resource tree mirrors that: an *installable* qOS image (the only source a
-//! profile applies to) is the presented resource, and the profile toggles +
-//! fields are the [`ActionSpec`]s Ctrl+K offers for it. A plain ISO — written
-//! as-is, no customization — publishes nothing. The password is dispatched as an
-//! action by its on-screen field but deliberately kept **out** of the palette:
-//! echoing a secret through a Ctrl+K prompt would leak it.
+//! profile applies to) is the presented resource, and those applied fields are
+//! the [`ActionSpec`]s Ctrl+K offers for it. A plain ISO — written as-is, no
+//! customization — publishes nothing. Credentials, destructive disk choices,
+//! autologin and persistence mode are deliberately absent: they are not in the
+//! media contract and must not appear to be preconfigured.
 
 use automerge::AutoCommit;
 
@@ -90,6 +90,12 @@ pub fn encode_operation(operation: &ImagerOperation) -> EncodedAction {
     })
 }
 
+/// Decode an app-owned operation payload.
+///
+/// # Errors
+///
+/// Returns the JSON decoding error when `type_id` identifies an imager
+/// operation but `payload` is malformed.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<ImagerOperation>, String> {
     if type_id != IMAGER_OPERATION_TYPE {
         return Ok(None);
@@ -97,6 +103,48 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<ImagerOp
     serde_json::from_slice(payload)
         .map(Some)
         .map_err(|error| error.to_string())
+}
+
+pub(crate) fn operation_spec(
+    id: &'static str,
+    title: &'static str,
+    kind: OperationKind,
+    operation: ImagerOperation,
+) -> ActionSpec {
+    ActionSpec::operation(id, title, kind, IMAGER_OPERATION_TYPE, &operation).unwrap_or_else(|_| {
+        ActionSpec::typed_operation(
+            id,
+            title,
+            "",
+            kind,
+            IMAGER_OPERATION_TYPE,
+            Vec::new(),
+            move |_| encode_operation(&operation),
+        )
+    })
+}
+
+fn apply_write_availability(
+    write: ActionSpec,
+    plan_complete: bool,
+    job_active: bool,
+    write_allowed: bool,
+) -> ActionSpec {
+    if !write_allowed {
+        write.unavailable(
+            "write_backend_disabled",
+            "Raw-device writing is disabled; enable the privileged Imager backend first",
+        )
+    } else if job_active {
+        write.unavailable("write_in_progress", "An image write is already in progress")
+    } else if !plan_complete {
+        write.unavailable(
+            "incomplete_plan",
+            "Select an image source and target drive before writing",
+        )
+    } else {
+        write
+    }
 }
 
 /// Build the live operational surface for the selected write plan.
@@ -129,42 +177,23 @@ pub fn operation_resource(
     .with_contract(ActionContract {
         permission: PermissionRequirement::Admin,
         risk: RiskLevel::Destructive,
-        confirmation: ConfirmationPolicy::Phrase {
-            phrase: device.clone(),
-        },
+        confirmation: ConfirmationPolicy::Phrase { phrase: device },
         retry: RetryPolicy::AtMostOnce,
-        // The handler starts the app-owned worker and returns. Progress is
-        // queried through the separate status operation, not a protocol job.
+        // The handler starts the worker; status is a separate operation.
         execution: ExecutionMode::Immediate,
         result: ResultSpec::None,
         tags: vec!["storage".into(), "raw-device".into()],
         ..ActionContract::default()
     });
 
-    let write = if !write_allowed {
-        write.unavailable(
-            "write_backend_disabled",
-            "Raw-device writing is disabled; enable the privileged Imager backend first",
-        )
-    } else if job_active {
-        write.unavailable("write_in_progress", "An image write is already in progress")
-    } else if !plan_complete {
-        write.unavailable(
-            "incomplete_plan",
-            "Select an image source and target drive before writing",
-        )
-    } else {
-        write
-    };
+    let write = apply_write_availability(write, plan_complete, job_active, write_allowed);
 
-    let verify = ActionSpec::operation(
+    let verify = operation_spec(
         "verify",
         "Verify written image",
         OperationKind::Effect,
-        IMAGER_OPERATION_TYPE,
-        &ImagerOperation::Verify,
+        ImagerOperation::Verify,
     )
-    .expect("ImagerOperation is always serializable")
     .with_contract(ActionContract {
         permission: PermissionRequirement::Admin,
         retry: RetryPolicy::Idempotent,
@@ -176,14 +205,12 @@ pub fn operation_resource(
         "Read-back verification runs automatically after every successful write",
     );
 
-    let cancel = ActionSpec::operation(
+    let cancel = operation_spec(
         "cancel",
         "Cancel image write",
         OperationKind::Effect,
-        IMAGER_OPERATION_TYPE,
-        &ImagerOperation::Cancel,
+        ImagerOperation::Cancel,
     )
-    .expect("ImagerOperation is always serializable")
     .with_contract(ActionContract {
         permission: PermissionRequirement::Admin,
         retry: RetryPolicy::Idempotent,
@@ -199,14 +226,12 @@ pub fn operation_resource(
         cancel.unavailable("no_active_write", "No image write is currently running")
     };
 
-    let status = ActionSpec::operation(
+    let status = operation_spec(
         "status",
         "Show image-write status",
         OperationKind::View,
-        IMAGER_OPERATION_TYPE,
-        &ImagerOperation::Status,
+        ImagerOperation::Status,
     )
-    .expect("ImagerOperation is always serializable")
     .with_contract(ActionContract {
         permission: PermissionRequirement::Read,
         retry: RetryPolicy::Idempotent,
@@ -250,6 +275,8 @@ pub enum ImagerAction {
     /// Set the first user's password (a secret — dispatched by the on-screen
     /// field, never surfaced through the Ctrl+K palette).
     SetPassword { value: String },
+    /// Set the installed system locale.
+    SetLocale { value: String },
     /// Set the system timezone.
     SetTimezone { value: String },
     /// Set the keyboard layout.
@@ -272,6 +299,7 @@ impl Action for ImagerAction {
             ImagerAction::SetFullName { value } => p.user.full_name.clone_from(value),
             ImagerAction::SetUsername { value } => p.user.username.clone_from(value),
             ImagerAction::SetPassword { value } => p.user.password.clone_from(value),
+            ImagerAction::SetLocale { value } => p.locale.clone_from(value),
             ImagerAction::SetTimezone { value } => p.timezone.clone_from(value),
             ImagerAction::SetKeyboard { value } => p.keyboard.clone_from(value),
         }
@@ -324,21 +352,6 @@ pub fn toggled_install_mode(current: InstallMode) -> InstallMode {
 // Resource tree
 // ===========================================================================
 
-/// [`ActionSpec::immediate`] for an [`ImagerAction`], falling back to the same
-/// infallible envelope [`encode`] uses instead of panicking — see its
-/// `# Panics` note. `ImagerAction`'s fields are plain strings/bools, so this
-/// fallback path is never actually exercised.
-fn immediate_spec(id: &str, label: &str, action: &ImagerAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, IMAGER_ACTION_TYPE, action)
-        // `ActionSpec`'s fields are private now that it carries typed
-        // parameters; build the fallback through the constructor that
-        // takes an already-encoded action.
-        .unwrap_or_else(|_| {
-            ActionSpec::immediate_encoded(id, label.to_string(), action.locus(), encode(action))
-        })
-        .with_contract(profile_contract())
-}
-
 fn profile_contract() -> ActionContract {
     ActionContract {
         retry: RetryPolicy::Idempotent,
@@ -354,6 +367,21 @@ fn profile_contract() -> ActionContract {
 /// only on the shape of [`ImagerAction`]. The password is intentionally
 /// absent: a secret must never be echoed through a palette prompt.
 fn with_identity_fields(mut res: Resource) -> Resource {
+    res = res.with_action(
+        ActionSpec::prompted(
+            "locale",
+            "Set locale",
+            "Locale",
+            "en_US.UTF-8",
+            ExecutionLocus::ClientLocal,
+            |text| {
+                encode(&ImagerAction::SetLocale {
+                    value: text.to_string(),
+                })
+            },
+        )
+        .with_contract(profile_contract()),
+    );
     res = res.with_action(
         ActionSpec::prompted(
             "hostname",
@@ -432,66 +460,24 @@ fn with_identity_fields(mut res: Resource) -> Resource {
     res
 }
 
-/// The install-profile toggles + fields, exported as Ctrl+K actions on the open
-/// customizable image. The three toggles are immediate actions that set their
-/// field to the *opposite* of its current document value, so choosing one in the
-/// palette flips it exactly as the on-screen control does; the identity / region
-/// fields are prompted actions that set the typed value. Level-triggered:
-/// recomputed from `profile` each frame, so the labels and target values always
-/// track the live state.
-pub fn provide_resources(source_label: &str, profile: &InstallProfile) -> Vec<Resource> {
+/// The applied, non-secret install-profile fields exported as Ctrl+K actions on
+/// an open customizable image. This list intentionally mirrors
+/// `InstallProfile::to_media_profile_json`: never advertise a host-side choice
+/// that the live installer cannot consume.
+pub fn provide_resources(source_label: &str, _profile: &InstallProfile) -> Vec<Resource> {
     let label = if source_label.trim().is_empty() {
         "qOS install options".to_string()
     } else {
         format!("Customize {source_label}")
     };
-    let mut res = Resource::new(
+    let res = Resource::new(
         format!("imager.customization:{source_label}"),
         "imager.customization",
         label,
     );
 
-    // Install mode — flip live ⇄ persistent (matches the Customize toggle).
-    let next_mode = toggled_install_mode(profile.mode);
-    res = res.with_action(immediate_spec(
-        "install-mode",
-        match next_mode {
-            InstallMode::Persistent => "Switch to a persistent USB install",
-            _ => "Switch to a live / installer stick",
-        },
-        &ImagerAction::SetInstallMode {
-            mode: next_mode.key().to_string(),
-        },
-    ));
-
-    // Disk encryption.
-    res = res.with_action(immediate_spec(
-        "encrypt",
-        if profile.encrypt {
-            "Disable disk encryption"
-        } else {
-            "Enable disk encryption"
-        },
-        &ImagerAction::SetEncrypt {
-            on: !profile.encrypt,
-        },
-    ));
-
-    // First-user autologin.
-    res = res.with_action(immediate_spec(
-        "autologin",
-        if profile.user.autologin {
-            "Turn off autologin"
-        } else {
-            "Turn on autologin"
-        },
-        &ImagerAction::SetAutologin {
-            on: !profile.user.autologin,
-        },
-    ));
-
     // Identity / region fields — prompted (the palette collects the new value).
-    res = with_identity_fields(res);
+    let res = with_identity_fields(res);
 
     vec![res]
 }
@@ -528,13 +514,6 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
     }
 
     /// A populated demo document (sample drives + an installable qOS image +
@@ -588,6 +567,12 @@ mod tests {
         );
         dispatch(
             &mut doc,
+            &ImagerAction::SetLocale {
+                value: "nl_NL.UTF-8".into(),
+            },
+        );
+        dispatch(
+            &mut doc,
             &ImagerAction::SetTimezone {
                 value: "Europe/Amsterdam".into(),
             },
@@ -602,6 +587,7 @@ mod tests {
         assert_eq!(p.user.full_name, "Ada Lovelace");
         assert_eq!(p.user.username, "ada");
         assert_eq!(p.user.password, "s3cret");
+        assert_eq!(p.locale, "nl_NL.UTF-8");
         assert_eq!(p.timezone, "Europe/Amsterdam");
         assert_eq!(p.keyboard, "nl");
     }
@@ -667,9 +653,7 @@ mod tests {
         assert_eq!(
             ids,
             vec![
-                "install-mode",
-                "encrypt",
-                "autologin",
+                "locale",
                 "hostname",
                 "full-name",
                 "username",
@@ -687,11 +671,13 @@ mod tests {
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("encryption")),
-            "{labels:?}"
-        );
         assert!(labels.iter().any(|l| l.contains("hostname")), "{labels:?}");
+        assert!(
+            labels.iter().all(|label| !label.contains("encryption")
+                && !label.contains("autologin")
+                && !label.contains("persistent")),
+            "untransported choices must not be advertised: {labels:?}"
+        );
     }
 
     #[test]
@@ -793,41 +779,6 @@ mod tests {
         );
     }
 
-    /// The palette's exported immediate actions track the live document: with a
-    /// non-default profile seeded, each toggle targets the opposite of the
-    /// current value.
-    #[test]
-    fn palette_actions_target_the_opposite_of_current_state() {
-        let profile = InstallProfile {
-            mode: InstallMode::Persistent,
-            encrypt: true,
-            ..InstallProfile::default()
-        };
-        let resources = provide_resources("qOS 1.0", &profile);
-
-        let mode = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "install-mode")
-            .unwrap();
-        // Currently persistent → the exported action flips back to live.
-        assert_eq!(
-            immediate_encode(mode),
-            encode(&ImagerAction::SetInstallMode {
-                mode: "live".into()
-            }),
-        );
-        let enc = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "encrypt")
-            .unwrap();
-        assert_eq!(
-            immediate_encode(enc),
-            encode(&ImagerAction::SetEncrypt { on: false }),
-        );
-    }
-
     /// A prompted field action builds the byte-identical [`EncodedAction`] the
     /// on-screen field dispatches for the same typed value.
     #[test]
@@ -912,25 +863,18 @@ mod tests {
         assert_eq!(ImagerDoc::profile(&b).hostname, "lab01");
     }
 
-    /// Single source of truth: the palette's "encrypt" spec encodes
-    /// byte-identically to the action the on-screen Customize toggle dispatches,
-    /// for the same starting state.
+    /// Choices outside the secret-free media contract remain decodable for old
+    /// documents but are not offered as if the live installer would apply them.
     #[test]
-    fn palette_and_toggle_encode_identically() {
-        // Default profile (encrypt off) → the exported toggle targets `on: true`.
+    fn palette_does_not_advertise_untransported_choices() {
         let resources = provide_resources("qOS 1.0", &InstallProfile::default());
-        let spec = resources[0]
+        let ids = resources[0]
             .actions
             .iter()
-            .find(|a| a.id == "encrypt")
-            .unwrap();
-
-        let from_spec = immediate_encode(spec);
-        let from_toggle = encode(&ImagerAction::SetEncrypt { on: true });
-        assert_eq!(from_spec.type_id, from_toggle.type_id);
-        assert_eq!(
-            from_spec.payload, from_toggle.payload,
-            "encrypt is one source of truth"
-        );
+            .map(|action| action.id.as_str())
+            .collect::<Vec<_>>();
+        assert!(!ids.contains(&"install-mode"));
+        assert!(!ids.contains(&"encrypt"));
+        assert!(!ids.contains(&"autologin"));
     }
 }

@@ -151,13 +151,13 @@ pub enum WebViewCommand {
     /// Find the most useful visible HTML video in the current page. The
     /// result is delivered asynchronously as [`WebViewEvent::MediaElement`]
     /// or [`WebViewEvent::MediaElementUnavailable`]. Browser chrome uses the
-    /// returned viewport geometry to create a live, element-sized PiP rather
+    /// returned viewport geometry to create a live, element-sized `PiP` rather
     /// than mirroring the whole page.
     RequestMediaElement {
         request_id: u64,
     },
     /// Re-resolve a previously selected media element by its stable page-local
-    /// identity. Active PiP uses this without silently switching videos.
+    /// identity. Active `PiP` uses this without silently switching videos.
     RequestMediaElementById {
         request_id: u64,
         element_id: String,

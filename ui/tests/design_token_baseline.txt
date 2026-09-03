@@ -51,8 +51,8 @@ src/widget/chip.rs theme_blind_white 2
 src/widget/color_picker.rs literal_color 2
 src/widget/color_picker.rs white_or_black 2
 src/widget/command_palette.rs literal_color 3
-src/widget/command_palette.rs theme_blind_white 4
-src/widget/command_palette.rs white_or_black 1
+src/widget/command_palette.rs theme_blind_white 2
+src/widget/command_palette.rs white_or_black 0
 src/widget/conflict_banner.rs theme_blind_white 3
 src/widget/conflict_picker.rs literal_color 1
 src/widget/conflict_picker.rs theme_blind_white 3

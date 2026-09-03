@@ -19,6 +19,7 @@ use qos_user_identity::{DeviceCapabilities, RevocationList};
 use crate::common::{TestUser, client_endpoint};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
 async fn pinned_provider_host_serves_only_enrolled_cross_user_devices() {
     let provider = TestUser::fresh("qOS hosting");
     let alice = TestUser::fresh("Alice");

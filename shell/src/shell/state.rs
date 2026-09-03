@@ -5084,6 +5084,8 @@ impl WorkspaceTree {
     /// equivalent to the root authority. The recipient must already be an
     /// Admin, so callers have a reviewable promotion step before this
     /// irreversible governance operation.
+    ///
+    /// Returns `false` if the workspace's ownership state is incomplete.
     pub fn transfer_workspace_ownership(
         &mut self,
         workspace_id: WorkspaceId,
@@ -5103,12 +5105,14 @@ impl WorkspaceTree {
             return false;
         }
         let owner_capability_id = format!("owner-{}", workspace_id.raw());
-        let owner_capability = ws
+        let Some(owner_capability) = ws
             .capabilities
             .iter()
             .find(|cap| cap.id == owner_capability_id)
             .cloned()
-            .expect("owner transfer always installs its root capability");
+        else {
+            return false;
+        };
         self.doc_set_owner(workspace_id, new_owner);
         self.doc_insert_capability(workspace_id, &owner_capability);
         self.flush_to_disk();

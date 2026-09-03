@@ -28,6 +28,12 @@ pub const LINUX_FILESYSTEM_GUID: &str = "0fc63daf-8483-4772-8e79-3d69d8477de4";
 pub const EFI_SYSTEM_GUID: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
 /// Minimum prepared root accepted by the guided alongside flow (32 GiB).
 pub const MIN_ALONGSIDE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
+/// Minimum ESP accepted for an alongside install (2 GiB).
+///
+/// qOS keeps several signed UKIs for rollback, staged updates, and repair.
+/// A typical 100--512 MiB Windows/Linux ESP cannot safely hold that lifecycle,
+/// even if the first install happens to fit.
+pub const MIN_ALONGSIDE_ESP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiskPartition {
@@ -53,6 +59,10 @@ impl DiskPartition {
     pub fn is_efi(&self) -> bool {
         self.part_type.eq_ignore_ascii_case(EFI_SYSTEM_GUID)
             && self.filesystem.eq_ignore_ascii_case("vfat")
+    }
+
+    pub fn is_alongside_efi_candidate(&self) -> bool {
+        self.is_efi() && self.size_bytes >= MIN_ALONGSIDE_ESP_BYTES && self.mountpoint.is_empty()
     }
 }
 
@@ -87,7 +97,9 @@ impl Disk {
     }
 
     pub fn efi_partition(&self) -> Option<&DiskPartition> {
-        self.partitions.iter().find(|p| p.is_efi())
+        self.partitions
+            .iter()
+            .find(|p| p.is_alongside_efi_candidate())
     }
 
     pub fn can_install_alongside(&self) -> bool {
@@ -117,11 +129,12 @@ impl Disk {
 
 /// The `lsblk` argument vector. Kept as a constant so the call site and
 /// any docs/tests reference exactly one source of truth.
-pub const LSBLK_ARGS: [&str; 4] = [
+pub const LSBLK_ARGS: [&str; 5] = [
     "-J",
     "-b",
     "-p",
-    "-o=NAME,SIZE,MODEL,TYPE,FSTYPE,LABEL,MOUNTPOINT,PARTTYPE,RM,RO",
+    "--output",
+    "NAME,SIZE,MODEL,TYPE,FSTYPE,LABEL,MOUNTPOINT,PARTTYPE,RM,RO",
 ];
 
 /// Parse the output of `lsblk -dnpo NAME,SIZE,MODEL,TYPE` into the set of
@@ -176,7 +189,7 @@ fn parse_lsblk_json(json: &Value) -> Vec<Disk> {
         .filter_map(|d| {
             let name = field(d, "name");
             let size_bytes = number(d, "size");
-            if name.is_empty() || size_bytes == 0 {
+            if !is_installable_device_name(&name) || size_bytes == 0 {
                 return None;
             }
             let partitions: Vec<DiskPartition> = d
@@ -199,6 +212,14 @@ fn parse_lsblk_json(json: &Value) -> Vec<Disk> {
             })
         })
         .collect()
+}
+
+fn is_installable_device_name(name: &str) -> bool {
+    !name.is_empty()
+        && !matches!(
+            name.strip_prefix("/dev/").unwrap_or(name),
+            n if n.starts_with("zram") || n.starts_with("ram") || n.starts_with("loop")
+        )
 }
 
 fn parse_partition(value: &Value) -> Option<DiskPartition> {
@@ -260,6 +281,22 @@ pub fn read_disks() -> Vec<Disk> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lsblk_arguments_use_the_portable_output_form() {
+        assert_eq!(LSBLK_ARGS[3], "--output");
+        assert!(!LSBLK_ARGS[4].starts_with('='));
+    }
+
+    #[test]
+    fn memory_and_loop_backed_pseudo_disks_are_never_targets() {
+        for name in ["/dev/zram0", "/dev/ram0", "/dev/loop0"] {
+            assert!(!is_installable_device_name(name), "accepted {name}");
+        }
+        for name in ["/dev/sda", "/dev/nvme0n1", "/dev/vdb", "/dev/mmcblk0"] {
+            assert!(is_installable_device_name(name), "rejected {name}");
+        }
+    }
 
     #[test]
     fn parses_multiword_model() {
@@ -341,13 +378,44 @@ mod tests {
     #[test]
     fn json_discovery_finds_safe_alongside_root_and_efi() {
         let fixture = format!(
-            r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"children":[{{"name":"/dev/nvme0n1p1","size":536870912,"type":"part","fstype":"vfat","label":"EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}"}},{{"name":"/dev/nvme0n1p2","size":500000000000,"type":"part","fstype":"ntfs","label":"Windows","mountpoint":null,"parttype":"basic"}},{{"name":"/dev/nvme0n1p3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}"}}]}}]}}"#
+            r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"children":[{{"name":"/dev/nvme0n1p1","size":536870912,"type":"part","fstype":"vfat","label":"Windows EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}"}},{{"name":"/dev/nvme0n1p2","size":500000000000,"type":"part","fstype":"ntfs","label":"Windows","mountpoint":null,"parttype":"basic"}},{{"name":"/dev/nvme0n1p3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}"}},{{"name":"/dev/nvme0n1p4","size":2147483648,"type":"part","fstype":"vfat","label":"qOS EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}"}}]}}]}}"#
         );
         let disks = parse_lsblk(&fixture);
         assert_eq!(disks.len(), 1);
         assert!(disks[0].can_install_alongside());
         assert_eq!(disks[0].alongside_root().unwrap().name, "/dev/nvme0n1p3");
-        assert_eq!(disks[0].efi_partition().unwrap().name, "/dev/nvme0n1p1");
+        assert_eq!(disks[0].efi_partition().unwrap().name, "/dev/nvme0n1p4");
+    }
+
+    #[test]
+    fn alongside_rejects_small_or_mounted_efi_partitions() {
+        let mut p = DiskPartition {
+            name: "/dev/sda1".into(),
+            size_bytes: MIN_ALONGSIDE_ESP_BYTES - 1,
+            filesystem: "vfat".into(),
+            label: "EFI".into(),
+            mountpoint: String::new(),
+            part_type: EFI_SYSTEM_GUID.into(),
+        };
+        assert!(p.is_efi());
+        assert!(!p.is_alongside_efi_candidate());
+
+        p.size_bytes = MIN_ALONGSIDE_ESP_BYTES;
+        assert!(p.is_alongside_efi_candidate());
+        p.mountpoint = "/boot/efi".into();
+        assert!(!p.is_alongside_efi_candidate());
+    }
+
+    #[test]
+    fn linux_disk_keeps_existing_filesystems_out_of_the_qos_candidates() {
+        let fixture = format!(
+            r#"{{"blockdevices":[{{"name":"/dev/sda","size":500000000000,"model":"Linux disk","type":"disk","rm":false,"ro":false,"children":[{{"name":"/dev/sda1","size":2147483648,"type":"part","fstype":"vfat","label":"qOS EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}"}},{{"name":"/dev/sda2","size":200000000000,"type":"part","fstype":"ext4","label":"Existing Linux","mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}"}},{{"name":"/dev/sda3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}"}}]}}]}}"#
+        );
+        let disks = parse_lsblk(&fixture);
+        assert!(disks[0].can_install_alongside());
+        assert_eq!(disks[0].alongside_root().unwrap().name, "/dev/sda3");
+        assert_eq!(disks[0].efi_partition().unwrap().name, "/dev/sda1");
+        assert_eq!(disks[0].partitions[1].filesystem, "ext4");
     }
 
     #[test]

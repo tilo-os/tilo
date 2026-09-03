@@ -35,50 +35,52 @@ const APPROVE_PERSONAL_DEVICE_KEY: &str = "device_mesh.approve_personal_device";
 const CONTROL_HELPER: &str = "/usr/libexec/qos-home-peer-control";
 const RELAY_ADMIN: &str = "/usr/bin/qos-relay-admin";
 
-const ROLE_OPTIONS: &[&str] = &[
-    "Use normally",
-    "Sync while awake",
-    "Keep everything available",
-];
-const REPLICATION_OPTIONS: &[&str] = &[
-    "Continue without files",
-    "Download files when opened",
-    "Keep all files synced",
-];
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const STATUS_FRESHNESS: Duration = Duration::from_secs(5);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const ROLE_PERSONAL: &str = "Personal device";
+const ROLE_ACTIVE: &str = "Available while active";
+const ROLE_SERVER: &str = "Always-on server";
+const ROLE_OPTIONS: &[&str] = &[ROLE_PERSONAL, ROLE_ACTIVE, ROLE_SERVER];
+const REPLICATION_ON_DEMAND: &str = "On demand";
+const REPLICATION_WORKSPACE: &str = "Workspace state";
+const REPLICATION_FULL: &str = "Full workspace copy";
+const REPLICATION_OPTIONS: &[&str] = &[
+    REPLICATION_ON_DEMAND,
+    REPLICATION_WORKSPACE,
+    REPLICATION_FULL,
+];
 
 fn role_label(role: DeviceRole) -> &'static str {
     match role {
-        DeviceRole::Interactive => ROLE_OPTIONS[0],
-        DeviceRole::Hybrid => ROLE_OPTIONS[1],
-        DeviceRole::AlwaysOnServer => ROLE_OPTIONS[2],
+        DeviceRole::Interactive => ROLE_PERSONAL,
+        DeviceRole::Hybrid => ROLE_ACTIVE,
+        DeviceRole::AlwaysOnServer => ROLE_SERVER,
     }
 }
 
 fn role_from_label(label: &str) -> Option<DeviceRole> {
     match label {
-        "Use normally" => Some(DeviceRole::Interactive),
-        "Sync while awake" => Some(DeviceRole::Hybrid),
-        "Keep everything available" => Some(DeviceRole::AlwaysOnServer),
+        ROLE_PERSONAL => Some(DeviceRole::Interactive),
+        ROLE_ACTIVE => Some(DeviceRole::Hybrid),
+        ROLE_SERVER => Some(DeviceRole::AlwaysOnServer),
         _ => None,
     }
 }
 
 fn replication_label(intent: &ReplicationIntent) -> &'static str {
     match intent {
-        ReplicationIntent::WorkspaceOnly => REPLICATION_OPTIONS[0],
-        ReplicationIntent::FullWorkspace => REPLICATION_OPTIONS[2],
-        ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => REPLICATION_OPTIONS[1],
+        ReplicationIntent::WorkspaceOnly => REPLICATION_WORKSPACE,
+        ReplicationIntent::FullWorkspace => REPLICATION_FULL,
+        ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => REPLICATION_ON_DEMAND,
     }
 }
 
 fn replication_from_label(label: &str) -> Option<ReplicationIntent> {
     match label {
-        "Continue without files" => Some(ReplicationIntent::WorkspaceOnly),
-        "Download files when opened" => Some(ReplicationIntent::OnDemand),
-        "Keep all files synced" => Some(ReplicationIntent::FullWorkspace),
+        REPLICATION_ON_DEMAND => Some(ReplicationIntent::OnDemand),
+        REPLICATION_WORKSPACE => Some(ReplicationIntent::WorkspaceOnly),
+        REPLICATION_FULL => Some(ReplicationIntent::FullWorkspace),
         _ => None,
     }
 }
@@ -426,6 +428,10 @@ impl DeviceMeshPane {
         self.next_status_refresh = Instant::now() + STATUS_REFRESH_INTERVAL;
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the pane composition keeps the four device-mesh policy cards and their explanatory security text in one auditable hierarchy"
+    )]
     fn build_composition(&self) -> Box<dyn Widget> {
         let role = Dropdown::new(
             ROLE_OPTIONS
@@ -485,7 +491,7 @@ impl DeviceMeshPane {
         ));
         availability_rows.push(caption(match self.config.device_role {
             DeviceRole::Interactive => {
-                "Choose Keep everything available to make this device your always-on sync home."
+                "Choose Always-on server to make this device your always-on sync home."
             }
             DeviceRole::Hybrid => {
                 "Workspace updates stay available to your other devices while this device is awake."
@@ -593,7 +599,7 @@ impl DeviceMeshPane {
                 approve_personal,
                 rows(personal_rows),
             ),
-            card("Keep everything available", rows(availability_rows)),
+            card("Device availability", rows(availability_rows)),
             card("Synced workspaces", workspace_rows),
             card_with_action("Home server or NAS", approve, rows(home_server_rows)),
         ];
@@ -1461,9 +1467,8 @@ mod tests {
         let mut pane = DeviceMeshPane::with_path(&path);
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
-        doc.put(&automerge::ROOT, ROLE_KEY, "Sync while awake")
-            .unwrap();
-        doc.put(&automerge::ROOT, REPLICATION_KEY, "Keep all files synced")
+        doc.put(&automerge::ROOT, ROLE_KEY, ROLE_ACTIVE).unwrap();
+        doc.put(&automerge::ROOT, REPLICATION_KEY, REPLICATION_FULL)
             .unwrap();
         doc.put(&automerge::ROOT, REMOTE_RELAY_KEY, false).unwrap();
         pane.sync(&mut doc, &automerge::ROOT);
@@ -1488,8 +1493,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
         assert!(!path.exists());
-        doc.put(&automerge::ROOT, ROLE_KEY, "Sync while awake")
-            .unwrap();
+        doc.put(&automerge::ROOT, ROLE_KEY, ROLE_ACTIVE).unwrap();
         pane.sync(&mut doc, &automerge::ROOT);
         assert!(path.exists());
     }
@@ -1497,24 +1501,24 @@ mod tests {
     #[test]
     fn file_policy_labels_map_to_the_existing_replication_intents() {
         assert_eq!(
-            replication_from_label("Continue without files"),
+            replication_from_label(REPLICATION_WORKSPACE),
             Some(ReplicationIntent::WorkspaceOnly)
         );
         assert_eq!(
-            replication_from_label("Download files when opened"),
+            replication_from_label(REPLICATION_ON_DEMAND),
             Some(ReplicationIntent::OnDemand)
         );
         assert_eq!(
-            replication_from_label("Keep all files synced"),
+            replication_from_label(REPLICATION_FULL),
             Some(ReplicationIntent::FullWorkspace)
         );
         assert_eq!(
             replication_label(&ReplicationIntent::OnDemand),
-            "Download files when opened"
+            REPLICATION_ON_DEMAND
         );
         assert_eq!(
             replication_label(&ReplicationIntent::FullWorkspace),
-            "Keep all files synced"
+            REPLICATION_FULL
         );
         assert!(
             replication_description(&ReplicationIntent::OnDemand).contains("preview thumbnails")
@@ -1545,8 +1549,7 @@ mod tests {
         pane.sync(&mut doc, &automerge::ROOT);
         assert!(!pane.take_structure_dirty());
 
-        doc.put(&automerge::ROOT, ROLE_KEY, "Sync while awake")
-            .unwrap();
+        doc.put(&automerge::ROOT, ROLE_KEY, ROLE_ACTIVE).unwrap();
         pane.sync(&mut doc, &automerge::ROOT);
 
         assert!(pane.take_structure_dirty());
@@ -1573,8 +1576,7 @@ mod tests {
         let mut pane = DeviceMeshPane::with_path(&path);
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
-        doc.put(&automerge::ROOT, ROLE_KEY, "Keep everything available")
-            .unwrap();
+        doc.put(&automerge::ROOT, ROLE_KEY, ROLE_SERVER).unwrap();
         pane.sync(&mut doc, &automerge::ROOT);
 
         let saved = RelayConfig::load(&path).unwrap();

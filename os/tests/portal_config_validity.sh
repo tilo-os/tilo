@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Validate the xdg-desktop-portal config files (Sandbox Phase 4.3
-# follow-up). Two checks:
+# follow-up). The checks cover:
 #
 #   1. The .portal file declares the right backend bus name and lists
 #      every interface our `quick_desktop::portal::serve()` registers.
-#   2. The D-Bus session-bus .service file points at the same bus name
-#      and to the `shell --portal-server-only` ExecStart shape
-#      our `shell-portal.service` user unit expects.
+#   2. No obsolete D-Bus activation or standalone portal unit remains;
+#      the live compositor is the sole backend owner.
 #
 # Falls back to a grep-based contract when `xdg-desktop-portal-validator`
 # isn't on PATH (the upstream tool is itself optional and ships with
@@ -42,11 +41,28 @@ EXPECTED_BUS_NAME="org.freedesktop.impl.portal.desktop.qos"
 # (e.g. we add an interface to the Rust side without updating the
 # .portal config) shows up as a CI failure.
 EXPECTED_INTERFACES=(
-    "org.freedesktop.impl.portal.FileChooser"
-    "org.freedesktop.impl.portal.ScreenCast"
-    "org.freedesktop.impl.portal.RemoteDesktop"
     "org.freedesktop.impl.portal.Access"
+    "org.freedesktop.impl.portal.Account"
+    "org.freedesktop.impl.portal.AppChooser"
+    "org.freedesktop.impl.portal.Background"
+    "org.freedesktop.impl.portal.Clipboard"
+    "org.freedesktop.impl.portal.DynamicLauncher"
+    "org.freedesktop.impl.portal.Email"
+    "org.freedesktop.impl.portal.FileChooser"
+    "org.freedesktop.impl.portal.GlobalShortcuts"
+    "org.freedesktop.impl.portal.Inhibit"
+    "org.freedesktop.impl.portal.InputCapture"
+    "org.freedesktop.impl.portal.Lockdown"
+    "org.freedesktop.impl.portal.Notification"
+    "org.freedesktop.impl.portal.PermissionStore"
     "org.freedesktop.impl.portal.Print"
+    "org.freedesktop.impl.portal.RemoteDesktop"
+    "org.freedesktop.impl.portal.ScreenCast"
+    "org.freedesktop.impl.portal.Screenshot"
+    "org.freedesktop.impl.portal.Secret"
+    "org.freedesktop.impl.portal.Settings"
+    "org.freedesktop.impl.portal.Usb"
+    "org.freedesktop.impl.portal.Wallpaper"
 )
 
 fail=0
@@ -95,6 +111,12 @@ if assert_file_exists "$PORTAL_FILE"; then
             fail=1
         fi
     done
+    interface_value="$(sed -n 's/^Interfaces=//p' "$PORTAL_FILE")"
+    IFS=';' read -r -a declared_interfaces <<< "$interface_value"
+    if (( ${#declared_interfaces[@]} != ${#EXPECTED_INTERFACES[@]} )); then
+        echo "FAIL: $PORTAL_FILE: interface count does not match the Rust backend" >&2
+        fail=1
+    fi
 fi
 
 # --- no second claimant for the bus name -----------------------------

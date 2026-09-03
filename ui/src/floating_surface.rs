@@ -109,7 +109,7 @@ pub struct FloatingSurfaceProtocolRequest {
     pub preferred_size: [f64; 2],
     pub aspect_ratio: Option<f64>,
     /// Desktop-space transfer rectangle for an app-owned native surface.
-    /// Optional so ordinary media PiP and version-1 peers remain compatible.
+    /// Optional so ordinary media `PiP` and version-1 peers remain compatible.
     #[serde(default)]
     pub initial_rect: Option<[f64; 4]>,
     /// Full transparent native-window bounds, including app-drawn shadows.
@@ -127,7 +127,7 @@ pub enum FloatingSurfaceClientMessage {
     /// Ask the trusted session shell to show its ordinary user-confirmed
     /// chooser. This shares the same authenticated channel as floating
     /// surfaces so a separately hosted app and an embedded app have identical
-    /// PiP UX.
+    /// `PiP` UX.
     OpenCaptureStudio {
         mode: CaptureStudioProtocolMode,
     },
@@ -248,6 +248,12 @@ impl FloatingSurfaceServiceClient {
         })
     }
 
+    /// Queue and flush one client message.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the message cannot be encoded, exceeds the
+    /// protocol limit, or cannot be written to the service stream.
     pub fn send(&mut self, message: &FloatingSurfaceClientMessage) -> Result<(), String> {
         let mut frame = serde_json::to_vec(message)
             .map_err(|error| format!("encode floating-surface message: {error}"))?;
@@ -262,6 +268,11 @@ impl FloatingSurfaceServiceClient {
 
     /// Flush queued writes and collect every complete host message currently
     /// available. `WouldBlock` is ordinary idle state, never a disconnect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when queued writes or incoming reads fail, the peer
+    /// disconnects, a frame exceeds the protocol limit, or JSON is invalid.
     pub fn pump(&mut self) -> Result<Vec<FloatingSurfaceHostMessage>, String> {
         self.flush_outgoing()
             .map_err(|error| format!("send floating-surface message: {error}"))?;
@@ -270,7 +281,10 @@ impl FloatingSurfaceServiceClient {
             match self.stream.read(&mut chunk) {
                 Ok(0) => return Err("floating-surface service disconnected".into()),
                 Ok(count) => {
-                    self.incoming.extend_from_slice(&chunk[..count]);
+                    let bytes = chunk
+                        .get(..count)
+                        .ok_or_else(|| "floating-surface read exceeded its buffer".to_string())?;
+                    self.incoming.extend_from_slice(bytes);
                     if self.incoming.len() > MAX_PROTOCOL_FRAME_BYTES {
                         return Err("floating-surface host message exceeds 1 MiB".into());
                     }
@@ -501,6 +515,12 @@ impl TryFrom<FloatingSurfaceProtocolSource> for FloatingSource {
     }
 }
 
+/// Convert protocol coordinates into a validated rectangle.
+///
+/// # Errors
+///
+/// Returns an error when any coordinate is non-finite or the rectangle has
+/// non-positive width or height.
 pub fn protocol_rect(coords: [f64; 4]) -> Result<Rect, String> {
     let [x0, y0, x1, y1] = coords;
     if coords.iter().any(|value| !value.is_finite()) || x1 <= x0 || y1 <= y0 {
@@ -1046,6 +1066,12 @@ fn snap_to_edges(rect: Rect, bounds: Rect, gap: f64) -> Rect {
 mod tests {
     use super::*;
 
+    fn instant_ago(duration: std::time::Duration) -> std::time::Instant {
+        std::time::Instant::now()
+            .checked_sub(duration)
+            .unwrap_or_else(std::time::Instant::now)
+    }
+
     #[test]
     fn attached_surface_follows_the_app() {
         let p = FloatingPlacement::attached(Size::new(320.0, 180.0));
@@ -1121,7 +1147,7 @@ mod tests {
         let desktop_transform = p.presentation_transform(Affine::IDENTITY, rect, false);
 
         p.handoff_motion.as_mut().unwrap().started =
-            std::time::Instant::now() - HANDOFF_SETTLE - std::time::Duration::from_secs(1);
+            instant_ago(HANDOFF_SETTLE.saturating_add(std::time::Duration::from_secs(1)));
         assert_eq!(
             p.presentation_transform(Affine::IDENTITY, rect, false),
             desktop_transform,
@@ -1147,14 +1173,12 @@ mod tests {
         let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
         let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
         p.begin_drag(Point::new(600.0, 150.0), app, desk);
-        p.drag.as_mut().unwrap().last_sample =
-            std::time::Instant::now() - std::time::Duration::from_millis(16);
+        p.drag.as_mut().unwrap().last_sample = instant_ago(std::time::Duration::from_millis(16));
         assert_eq!(
             p.update_drag(Point::new(600.0, 230.0), app, desk),
             Handoff::None
         );
-        p.drag.as_mut().unwrap().last_sample =
-            std::time::Instant::now() - std::time::Duration::from_millis(16);
+        p.drag.as_mut().unwrap().last_sample = instant_ago(std::time::Duration::from_millis(16));
         assert_eq!(
             p.update_drag(Point::new(950.0, 220.0), app, desk),
             Handoff::Detached
@@ -1202,8 +1226,7 @@ mod tests {
         let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
         let origin = Point::new(600.0, 120.0);
         p.begin_drag(origin, app, desktop);
-        p.drag.as_mut().unwrap().last_sample =
-            std::time::Instant::now() - std::time::Duration::from_millis(16);
+        p.drag.as_mut().unwrap().last_sample = instant_ago(std::time::Duration::from_millis(16));
         assert_eq!(
             p.update_drag(Point::new(900.0, 150.0), app, desktop),
             Handoff::Detached
@@ -1212,8 +1235,7 @@ mod tests {
         let prepared = p.rect(app, desktop) + app_to_desktop;
         p.prepare_desktop_rect_with_offset(prepared, app_to_desktop);
         p.confirm_desktop_adoption();
-        p.drag.as_mut().unwrap().last_sample =
-            std::time::Instant::now() - std::time::Duration::from_millis(16);
+        p.drag.as_mut().unwrap().last_sample = instant_ago(std::time::Duration::from_millis(16));
         let returned_desktop_pointer = Point::new(620.0, 310.0);
         assert_eq!(
             p.update_drag(returned_desktop_pointer, app, desktop),
@@ -1267,9 +1289,13 @@ mod tests {
         assert!(p.is_handoff_animating());
         assert!((p.rect(app, desk).x0 - released.x0).abs() < 1.0);
 
-        p.settle_motion.as_mut().unwrap().started.set(Some(
-            std::time::Instant::now() - SNAP_SETTLE - std::time::Duration::from_millis(1),
-        ));
+        p.settle_motion
+            .as_mut()
+            .unwrap()
+            .started
+            .set(Some(instant_ago(
+                SNAP_SETTLE.saturating_add(std::time::Duration::from_millis(1)),
+            )));
         assert_eq!(p.rect(app, desk), target);
     }
 
@@ -1302,9 +1328,13 @@ mod tests {
             (p.rect(app, desk).x0 - detached.x0).abs() < 1.0,
             "the decline frame stays where the pointer left it"
         );
-        p.settle_motion.as_mut().unwrap().started.set(Some(
-            std::time::Instant::now() - SNAP_SETTLE - std::time::Duration::from_millis(1),
-        ));
+        p.settle_motion
+            .as_mut()
+            .unwrap()
+            .started
+            .set(Some(instant_ago(
+                SNAP_SETTLE.saturating_add(std::time::Duration::from_millis(1)),
+            )));
         assert_eq!(p.rect(app, desk), p.attached_home_rect(app));
     }
 

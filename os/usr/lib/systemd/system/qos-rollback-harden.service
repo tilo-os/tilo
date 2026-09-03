@@ -3,6 +3,16 @@ Description=Set the TPM dictionary-attack reset authorisation and tighten its pa
 Documentation=man:qos-rollback(8)
 After=local-fs.target
 ConditionPathExists=/usr/bin/qos-rollback
+# TPM character devices are alternatives. Mark both as trigger conditions so
+# systemd skips this oneshot cleanly unless at least one exists; the helper
+# keeps the same check as defense in depth for device-removal races.
+ConditionPathExists=|/dev/tpmrm0
+ConditionPathExists=|/dev/tpm0
+# Never mutate the device TPM from a disposable installer environment. The
+# authorisation is useful only when it is durably recorded on the installed,
+# encrypted root; doing this from the live medium strands the secret there and
+# makes the installed system unable to administer its own lockout policy.
+ConditionKernelCommandLine=!qos.install
 # Once the authorisation has been recorded there is nothing left to do.
 ConditionPathExists=!/var/lib/qos/rollback/lockout-auth
 
