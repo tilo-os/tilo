@@ -199,7 +199,7 @@ jobs:
           QOS_FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: dist/ci/publish-forgejo-packages.sh release "${GITHUB_REF_NAME#v}"
       - name: Publish checksummed, install-tested artifacts
-        uses: code.forgejo.org/actions/forgejo-release@v2
+        uses: https://code.forgejo.org/actions/forgejo-release@v2
         with:
           direction: upload
           url: ${{ github.server_url }}
