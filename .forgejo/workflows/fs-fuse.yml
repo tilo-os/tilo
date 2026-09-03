@@ -104,6 +104,24 @@ jobs:
       - name: Enforce graphical-session and verified-identity lifecycle
         run: bash os/tests/qos-session-lifecycle.sh
 
+      # Uses two real `qos-enroll` processes over the LAN UDP path, then dials
+      # the transferred home-peer registration after the approving process has
+      # exited. Keep this on the privileged/FUSE runner: it is the closest CI
+      # analogue of the image's host networking and ownership boundary.
+      - name: Enforce ordinary-device enrollment and offline-owner continuity
+        run: >-
+          bash scripts/ci-run.sh "ordinary device enrollment acceptance" --
+          cargo test --locked -p qos-relay --test it
+          personal_device_process::ordinary_device_enrollment_survives_approver_offline_with_home_peer_route
+          -- --nocapture --test-threads=1
+
+      - name: Enforce polkit helper ownership and enrollment routing
+        run: >-
+          bash scripts/ci-run.sh "privileged personal enrollment helper acceptance" --
+          cargo test --locked -p qos-relay --test it
+          personal_device_process::privileged_helper_preserves_user_owned_personal_device_projection
+          -- --ignored --nocapture --test-threads=1
+
       - name: Run the complete kernel-path filesystem contract
         run: >-
           bash scripts/ci-run.sh "real FUSE integration" --
