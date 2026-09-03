@@ -39,7 +39,7 @@ use crate::model::{
     AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, Presence, Screen,
     Workspace,
 };
-use crate::session::{SessionStatus, live_sessions_enabled};
+use crate::session::{SessionStatus, can_attempt_live};
 use crate::ssh::{SshConfig, SshSession};
 use crate::theme_ext::ColorExt;
 use crate::vnc::{VncConfig, VncInput, VncSession};
@@ -280,10 +280,9 @@ pub struct RemoteApp {
     focus: Option<Field>,
     /// The shared [`TextInput`] behind each editable field.
     inputs: FieldInputs,
-    /// The live transport for the open session (SSH terminal or VNC
-    /// framebuffer). `None` until a session is opened with live sessions
-    /// enabled; the default build leaves it `None` and shows the honest
-    /// "not connected" surface.
+    /// The live transport for the open session. Production qOS control always
+    /// creates one; gated SSH/VNC leave it `None` and show the honest "not
+    /// connected" surface until explicitly enabled.
     live: Option<LiveSession>,
     /// Cached GPU image of the most recent VNC frame, rebuilt only when a
     /// new framebuffer generation arrives.
@@ -606,12 +605,10 @@ impl RemoteApp {
         }
     }
 
-    /// Open the session surface for a connection. When `REMOTE_LIVE_SESSIONS`
-    /// is unset (the default) this does **not** touch the network or
-    /// fabricate a terminal/desktop: the surface shows the honest "not
-    /// connected" card. When it is set, this opens a **real** transport —
-    /// `russh` for SSH, an RFB client for VNC — and the surface tracks the
-    /// real connection state (connecting → connected, or the honest error).
+    /// Open the session surface for a connection. qOS always uses its real
+    /// shell-broker transport; SSH/VNC require `REMOTE_LIVE_SESSIONS`. Every
+    /// live path tracks real state (connecting → connected, or an honest
+    /// error), never a fabricated terminal or desktop.
     fn open_session(&mut self, id: ConnectionId) {
         let Some(c) = self.workspace.get(id).cloned() else {
             return;
@@ -628,7 +625,7 @@ impl RemoteApp {
         self.fb_canvas = None;
         self.vnc_buttons = 0;
         self.live = None;
-        if live_sessions_enabled() {
+        if can_attempt_live(c.kind) {
             let live = self.start_live(&c);
             self.live = Some(live);
             // Record the attempt in "last used"; presence is only marked
@@ -1421,11 +1418,11 @@ impl Widget for RemoteApp {
         }
         match operation {
             crate::actions::RemoteOperation::Connect { connection_id } => {
-                if !live_sessions_enabled() {
-                    return Err("live remote sessions are disabled".into());
-                }
-                if self.workspace.get(connection_id).is_none() {
+                let Some(connection) = self.workspace.get(connection_id) else {
                     return Err("saved connection no longer exists".into());
+                };
+                if !can_attempt_live(connection.kind) {
+                    return Err("this live remote transport is disabled".into());
                 }
                 self.open_session(connection_id);
                 match self.live.as_ref().map(LiveSession::status) {
@@ -3685,11 +3682,9 @@ impl RemoteApp {
             return;
         };
 
-        // No live transport object: the honest "not connected" card. The
-        // env gate is enforced at `open_session` (it only creates a live
-        // session when REMOTE_LIVE_SESSIONS is set), so a `None` here means
-        // either the default gated build or a not-yet-opened session — never
-        // a fabricated terminal or desktop.
+        // No live transport object: the honest "not connected" card. Only
+        // app-owned SSH/VNC transports use the developer gate; production qOS
+        // control always creates a real broker session or an honest error.
         let Some(status) = self.live.as_ref().map(LiveSession::status) else {
             self.draw_status_session(
                 scene,
@@ -3715,7 +3710,7 @@ impl RemoteApp {
                 let (title, detail) = if c.kind == ConnectionKind::Qos {
                     (
                         "Waiting for consent…",
-                        "Selecting a direct route or encrypted relay, then waiting for the target to share a workspace surface…",
+                        "Opening an authenticated route to the exact target, then waiting for it to share a workspace surface…",
                     )
                 } else {
                     (
@@ -4878,6 +4873,29 @@ mod tests {
             app.live.is_none(),
             "gated build opens no framebuffer transport"
         );
+    }
+
+    #[test]
+    fn connect_qos_starts_the_production_broker_transport_without_dev_gate() {
+        let mut app = RemoteApp::new_demo();
+        let target = iroh::SecretKey::generate().public();
+        let id = app
+            .workspace
+            .connections()
+            .iter()
+            .find(|connection| connection.kind == ConnectionKind::Qos)
+            .expect("demo qOS connection")
+            .id;
+        app.workspace.get_mut(id).expect("qOS connection").host = target.to_string();
+
+        app.apply(Action::Connect(id), &mut doc());
+
+        assert!(matches!(app.live, Some(LiveSession::Qos(_))));
+        assert!(matches!(
+            app.collab_outbox.as_slice(),
+            [ui::collaboration::CollabRequest::OpenWorkspaceControl { target_device, .. }]
+                if target_device == target.as_bytes()
+        ));
     }
 
     #[test]

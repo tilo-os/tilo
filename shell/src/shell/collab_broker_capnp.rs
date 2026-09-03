@@ -2754,6 +2754,17 @@ fn workspace_control_event(
     }
 }
 
+fn closed_workspace_control_event(
+    session: &crate::network::WorkspaceControlSession,
+) -> Option<runtime_collab::WorkspaceControlEvent> {
+    let crate::network::WorkspaceControlStatus::Closed(reason) = session.status() else {
+        return None;
+    };
+    Some(workspace_control_event(
+        crate::network::WorkspaceControlUpdate::Closed(reason.clone()),
+    ))
+}
+
 fn revalidate_workspace_control(
     state: &CapnpBrokerState,
     route: &CrdtRoute,
@@ -2787,6 +2798,16 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
                 return Ok(());
             }
             loop {
+                let closed = {
+                    let session = this.session.lock().await;
+                    closed_workspace_control_event(&session)
+                };
+                if let Some(event) = closed {
+                    let bytes = postcard::to_allocvec(&event)
+                        .map_err(|error| capnp::Error::failed(error.to_string()))?;
+                    results.get().set_event(&bytes);
+                    return Ok(());
+                }
                 if let Err(error) =
                     revalidate_workspace_control(&this.state, &this.route, &this.verified_identity)
                 {
@@ -3878,6 +3899,25 @@ mod tests {
         assert!(!workspace_control_role_allowed(Role::Commenter));
         assert!(!workspace_control_role_allowed(Role::Viewer));
         assert!(!workspace_control_role_allowed(Role::Denied));
+    }
+
+    #[test]
+    fn closed_workspace_control_session_is_terminal_for_rpc_readers() {
+        let target = iroh::SecretKey::generate().public();
+        let mut session = crate::network::WorkspaceControlSession::new(
+            7,
+            11,
+            target,
+            crate::network::WorkspaceControlRoute::Direct { target },
+        );
+        assert!(closed_workspace_control_event(&session).is_none());
+        session.disconnect();
+        assert_eq!(
+            closed_workspace_control_event(&session),
+            Some(runtime_collab::WorkspaceControlEvent::Closed(
+                runtime_collab::WorkspaceControlCloseReason::LocalDisconnect,
+            ))
+        );
     }
 
     fn verified_device(root: &SigningKey) -> VerifiedJoinIdentity {
