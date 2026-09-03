@@ -147,6 +147,11 @@ const NARROW_WIDTH: f64 = 340.0;
 /// **last** change — restoring to a boundary is the point of grouping).
 pub type RevertCallback = Box<dyn FnMut(&HistoryEntryId)>;
 
+/// Fired when a change row is activated with Enter, Space, or assistive
+/// technology. The timeline owns selection; the host can use this to open a
+/// detail view, move a scrubber, or otherwise inspect the selected moment.
+pub type EntryActivateCallback = Box<dyn FnMut(&HistoryEntryId)>;
+
 /// Fired on `[Clear filters]`, after the widget resets its own chip/query —
 /// the host should drop any filter it owns itself (e.g. a date range).
 pub type ClearFiltersCallback = Box<dyn FnMut()>;
@@ -181,12 +186,23 @@ enum VisualRow {
     Entry(usize, usize),
 }
 
+/// Durable identity for keyboard/AT focus. Row indices are deliberately not
+/// retained: expanding a band or receiving an earlier change changes them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FocusedRow {
+    Group(String),
+    Entry(HistoryEntryId),
+}
+
 /// A group, flattened and pre-measured for painting.
 #[derive(Clone, Debug)]
 struct RowGroup {
     key: String,
     title: String,
     subtitle: String,
+    /// Compact cross-app/workspace provenance, shown on a collapsed band so
+    /// its hidden members do not erase where the work happened.
+    scope_label: Option<String>,
     name: Option<String>,
     record_id: Option<String>,
     open: bool,
@@ -248,6 +264,8 @@ pub struct ActivityTimeline {
     /// Selected run of changes, as inclusive indices into `entries`.
     selection: Option<(usize, usize)>,
     selection_anchor: Option<usize>,
+    focused_row: Option<FocusedRow>,
+    has_focus: bool,
     naming: Option<NamingState>,
     active_chip: ChipKind,
     /// Free-text author typeahead. Lower-cased before matching.
@@ -258,6 +276,7 @@ pub struct ActivityTimeline {
     hover_row: Option<usize>,
     last_cursor: Point,
     on_revert: Option<RevertCallback>,
+    on_activate_entry: Option<EntryActivateCallback>,
     on_undo_band: Option<UndoBandCallback>,
     on_name_group: Option<NameGroupCallback>,
     /// "Now" for the relative-timestamp paint. Tests + headless callers pin
@@ -268,6 +287,9 @@ pub struct ActivityTimeline {
     /// matches what was actually painted.
     chip_rects: Vec<(ChipKind, Rect)>,
     author_pill_rect: Rect,
+    /// `RoomActivity` may supply its own Everyone/person selector; suppressing
+    /// this duplicate leaves the op-class strip intact.
+    show_author_pill: bool,
     /// `Rect::ZERO` whenever the filtered-to-nothing empty state is not on
     /// screen, so a stale click cannot trip `[Clear filters]`.
     clear_chip_rect: Rect,
@@ -305,6 +327,8 @@ impl ActivityTimeline {
             collapsed: HashSet::new(),
             selection: None,
             selection_anchor: None,
+            focused_row: None,
+            has_focus: false,
             naming: None,
             active_chip: ChipKind::All,
             author_query: String::new(),
@@ -313,12 +337,14 @@ impl ActivityTimeline {
             hover_row: None,
             last_cursor: Point::ZERO,
             on_revert: None,
+            on_activate_entry: None,
             on_undo_band: None,
             on_name_group: None,
             now_override: None,
             newest_first: true,
             chip_rects: Vec::new(),
             author_pill_rect: Rect::ZERO,
+            show_author_pill: true,
             clear_chip_rect: Rect::ZERO,
             name_selection_rect: Rect::ZERO,
             clear_selection_rect: Rect::ZERO,
@@ -432,6 +458,14 @@ impl ActivityTimeline {
         self
     }
 
+    /// Observe explicit activation of an individual activity entry. Selection
+    /// is updated before this callback runs.
+    #[must_use]
+    pub fn on_activate_entry<F: FnMut(&HistoryEntryId) + 'static>(mut self, f: F) -> Self {
+        self.on_activate_entry = Some(Box::new(f));
+        self
+    }
+
     /// Also puts the `[Undo]` chip on band headers.
     #[must_use]
     pub fn on_undo_band<F: FnMut(&BandUndoRequest) + 'static>(mut self, f: F) -> Self {
@@ -538,6 +572,21 @@ impl ActivityTimeline {
 
     pub fn author_pill_rect(&self) -> Rect {
         self.author_pill_rect
+    }
+
+    /// Show or hide the built-in `author:any` pill. The default is `true` for
+    /// standalone use; hosts with an equivalent people control can turn it
+    /// off without losing the operation-class filters.
+    pub fn set_show_author_pill(&mut self, show: bool) {
+        if self.show_author_pill != show {
+            self.show_author_pill = show;
+            self.author_pill_rect = Rect::ZERO;
+            self.dirty = true;
+        }
+    }
+
+    pub fn shows_author_pill(&self) -> bool {
+        self.show_author_pill
     }
 
     // ---------- groups: expansion, naming, selection ----------
@@ -650,6 +699,75 @@ impl ActivityTimeline {
             self.selection_anchor = norm.map(|(a, _)| a);
             self.rebuild_rows();
         }
+    }
+
+    /// The currently focused visible row. This is distinct from selection:
+    /// band headers can receive focus but cannot be selected as changes.
+    pub fn focused_row(&self) -> Option<usize> {
+        self.focused_row_index()
+    }
+
+    /// The focused change, if focus is on an individual entry rather than a
+    /// collapsible band header.
+    pub fn focused_entry(&self) -> Option<&HistoryEntry> {
+        self.focused_row().and_then(|row| self.row_entry(row))
+    }
+
+    /// Geometry for an accessibility child, including off-viewport rows so a
+    /// ScrollIntoView/Focus request can move the roving focus before paint.
+    pub fn accessibility_row_rect(&self, row: usize) -> Option<Rect> {
+        self.row_rect_unclipped(row)
+    }
+
+    /// Put keyboard/assistive-technology focus on a visible row and scroll it
+    /// into view. Returns `false` for an out-of-range row.
+    pub fn focus_row(&mut self, row: usize) -> bool {
+        let Some(identity) = self.row_identity(row) else {
+            return false;
+        };
+        if self.focused_row.as_ref() != Some(&identity) {
+            self.focused_row = Some(identity);
+            self.dirty = true;
+        }
+        self.scroll_row_into_view(row);
+        true
+    }
+
+    /// Clear the current row focus without changing an existing range
+    /// selection.
+    pub fn clear_row_focus(&mut self) {
+        if self.focused_row.take().is_some() {
+            self.dirty = true;
+        }
+    }
+
+    /// Activate a visible row. Activating a band toggles it; activating a
+    /// change selects that one change and notifies the host callback.
+    pub fn activate_row(&mut self, row: usize) -> bool {
+        let Some(visual) = self.rows.get(row).copied() else {
+            return false;
+        };
+        let _ = self.focus_row(row);
+        match visual {
+            VisualRow::Group(_) => self.toggle_group_at_row(row),
+            VisualRow::Entry(entry, _) => {
+                self.selection = Some((entry, entry));
+                self.selection_anchor = Some(entry);
+                let id = self.entries.get(entry).map(|item| item.id);
+                self.rebuild_rows();
+                if let Some(id) = id
+                    && let Some(callback) = self.on_activate_entry.as_mut()
+                {
+                    callback(&id);
+                }
+                true
+            }
+        }
+    }
+
+    /// Activate the currently focused row.
+    pub fn activate_focused_row(&mut self) -> bool {
+        self.focused_row().is_some_and(|row| self.activate_row(row))
     }
 
     pub fn begin_naming_group_at_row(&mut self, i: usize) -> bool {
@@ -820,6 +938,64 @@ impl ActivityTimeline {
         }
     }
 
+    fn row_identity(&self, i: usize) -> Option<FocusedRow> {
+        match self.rows.get(i)? {
+            VisualRow::Group(group) => self
+                .row_groups
+                .get(*group)
+                .map(|item| FocusedRow::Group(item.key.clone())),
+            VisualRow::Entry(entry, _) => self
+                .entries
+                .get(*entry)
+                .map(|item| FocusedRow::Entry(item.id)),
+        }
+    }
+
+    fn focused_row_index(&self) -> Option<usize> {
+        let focused = self.focused_row.as_ref()?;
+        self.rows.iter().enumerate().find_map(|(index, _)| {
+            (self.row_identity(index).as_ref() == Some(focused)).then_some(index)
+        })
+    }
+
+    fn row_rect_unclipped(&self, i: usize) -> Option<Rect> {
+        if i >= self.rows.len() {
+            return None;
+        }
+        let top = *self.row_tops.get(i)?;
+        let y0 = self.rows_top() - self.scroll_y + top;
+        Some(Rect::new(
+            self.rect.x0 + PADDING,
+            y0,
+            self.rect.x1 - PADDING,
+            y0 + self.row_height(i),
+        ))
+    }
+
+    fn scroll_row_into_view(&mut self, i: usize) {
+        let Some(&top) = self.row_tops.get(i) else {
+            return;
+        };
+        let bottom = top + self.row_height(i);
+        let viewport = self.viewport_height();
+        if viewport <= 0.0 {
+            return;
+        }
+        let scroll = if top < self.scroll_y {
+            top
+        } else if bottom > self.scroll_y + viewport {
+            bottom - viewport
+        } else {
+            self.scroll_y
+        }
+        .clamp(0.0, self.max_scroll());
+        if (scroll - self.scroll_y).abs() > f64::EPSILON {
+            self.scroll_y = scroll;
+            self.hover_row = self.row_at(self.last_cursor);
+            self.dirty = true;
+        }
+    }
+
     /// Binary search over the cumulative tops rather than a scan, so a room
     /// with thousands of groups costs the same per frame as one with twenty.
     fn visible_row_range(&self) -> std::ops::Range<usize> {
@@ -899,21 +1075,13 @@ impl ActivityTimeline {
 
     /// `None` when the line is outside the visible window.
     pub fn row_rect(&self, i: usize) -> Option<Rect> {
-        if i >= self.rows.len() {
-            return None;
-        }
-        let top = *self.row_tops.get(i)?;
-        let y0 = self.rows_top() - self.scroll_y + top;
-        let y1 = y0 + self.row_height(i);
+        let rect = self.row_rect_unclipped(i)?;
+        let y0 = rect.y0;
+        let y1 = rect.y1;
         if y1 < self.rows_top() || y0 > self.rows_bottom() {
             return None;
         }
-        Some(Rect::new(
-            self.rect.x0 + PADDING,
-            y0,
-            self.rect.x1 - PADDING,
-            y1,
-        ))
+        Some(rect)
     }
 
     /// `None` when the line is off-screen, is a group header, or its op class
@@ -1000,6 +1168,90 @@ impl ActivityTimeline {
             return false;
         }
         true
+    }
+
+    /// Human provenance kept deliberately compact for a one-line history
+    /// row. Legacy entries have no synthetic origin label; action-backed
+    /// entries retain the app/resource path that a reader can actually use.
+    fn entry_breadcrumb(entry: &HistoryEntry) -> Option<String> {
+        let context = entry.context.as_ref()?;
+        let mut parts = Vec::new();
+        if let Some(app) = context
+            .app
+            .as_ref()
+            .filter(|app| !app.label.trim().is_empty())
+        {
+            parts.push(app.label.trim().to_string());
+        }
+        if let Some(resource) = context
+            .resource
+            .as_ref()
+            .filter(|resource| !resource.label.trim().is_empty())
+        {
+            parts.push(resource.label.trim().to_string());
+        }
+        (!parts.is_empty()).then(|| parts.join(" / "))
+    }
+
+    /// A collapsed band hides its constituent rows, so retain enough
+    /// provenance to reveal a cross-app or cross-workspace handoff. A work
+    /// group explicitly typed as `workspace` is treated as the workspace
+    /// label; other groups remain visible only through their app labels.
+    fn group_scope_label(&self, start: usize, end: usize) -> Option<String> {
+        let compact = |labels: Vec<String>| -> Option<String> {
+            if labels.is_empty() {
+                return None;
+            }
+            let remaining = labels.len().saturating_sub(2);
+            let mut shown = labels.into_iter().take(2).collect::<Vec<_>>().join(" + ");
+            if remaining > 0 {
+                use std::fmt::Write as _;
+                let _ = write!(shown, " +{remaining}");
+            }
+            Some(shown)
+        };
+        let mut workspaces = Vec::new();
+        let mut apps = Vec::new();
+        for entry in self.entries.get(start..end)? {
+            let Some(context) = entry.context.as_ref() else {
+                continue;
+            };
+            if let Some(group) = context.group.as_ref().filter(|group| {
+                group.kind.eq_ignore_ascii_case("workspace") && !group.label.trim().is_empty()
+            }) {
+                let label = group.label.trim().to_string();
+                if !workspaces.contains(&label) {
+                    workspaces.push(label);
+                }
+            }
+            if let Some(app) = context
+                .app
+                .as_ref()
+                .filter(|app| !app.label.trim().is_empty())
+            {
+                let label = app.label.trim().to_string();
+                if !apps.contains(&label) {
+                    apps.push(label);
+                }
+            }
+            for facet in context.facets.iter().filter(|facet| {
+                matches!(facet.key.as_str(), "workspace" | "workspace_name")
+                    && !facet.value.trim().is_empty()
+            }) {
+                let label = facet.value.trim().to_string();
+                if !workspaces.contains(&label) {
+                    workspaces.push(label);
+                }
+            }
+        }
+        let workspace = compact(workspaces);
+        let app = compact(apps);
+        match (workspace, app) {
+            (Some(workspace), Some(app)) => Some(format!("{workspace} / {app}")),
+            (Some(workspace), None) => Some(workspace),
+            (None, Some(app)) => Some(app),
+            (None, None) => None,
+        }
     }
 
     fn regroup(&mut self) {
@@ -1129,6 +1381,11 @@ impl ActivityTimeline {
         if self.hover_row.is_some_and(|h| h >= self.rows.len()) {
             self.hover_row = None;
         }
+        // Collapsing a band can hide the entry that had focus. Do not leave a
+        // virtual focus target pointing at an unaddressable row.
+        if self.focused_row.is_some() && self.focused_row_index().is_none() {
+            self.focused_row = None;
+        }
         // A name being typed into a band that no longer exists has nowhere
         // to land.
         if let Some(n) = &self.naming
@@ -1203,6 +1460,7 @@ impl ActivityTimeline {
             key: g.key.clone(),
             title: g.title(&self.entries),
             subtitle,
+            scope_label: self.group_scope_label(g.start, g.end),
             name: g.name.clone(),
             record_id: g.record_id.clone(),
             open: g.open,
@@ -1361,6 +1619,7 @@ impl ActivityTimeline {
         entry: &HistoryEntry,
         is_hovered: bool,
         is_selected: bool,
+        is_focused: bool,
         now: SystemTime,
     ) {
         let row = Rect::new(
@@ -1378,6 +1637,7 @@ impl ActivityTimeline {
             depth,
             is_selected,
             is_hovered,
+            is_focused,
         );
 
         let cy = f64::midpoint(row.y0, row.y1);
@@ -1475,6 +1735,7 @@ impl ActivityTimeline {
         depth: usize,
         is_selected: bool,
         is_hovered: bool,
+        is_focused: bool,
     ) {
         // The rail: a hairline per nesting level, so rows read as belonging
         // to the bands above them rather than just starting further right.
@@ -1517,6 +1778,17 @@ impl ActivityTimeline {
                 vello::peniko::Fill::NonZero,
                 transform,
                 theme.tokens.colors.neutral[3],
+                None,
+                &shape,
+            );
+        }
+        if is_focused {
+            let shape =
+                RoundedRect::from_rect(row.inset(-1.0), f64::from(theme.tokens.radii.sm) + 1.0);
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.tokens.colors.border_focus,
                 None,
                 &shape,
             );
@@ -1633,7 +1905,11 @@ impl ActivityTimeline {
                     true,
                 )
             } else {
-                (entry.summary.clone(), false)
+                let summary = Self::entry_breadcrumb(entry).map_or_else(
+                    || entry.summary.clone(),
+                    |breadcrumb| format!("{breadcrumb} · {}", entry.summary),
+                );
+                (summary, false)
             };
         let summary = summary_owned.as_str();
         let drawn_summary = fit_text(
@@ -1740,6 +2016,7 @@ impl ActivityTimeline {
         full_row: Rect,
         gi: usize,
         is_hovered: bool,
+        is_focused: bool,
         naming: Option<&NameField>,
         now: SystemTime,
     ) {
@@ -1752,7 +2029,9 @@ impl ActivityTimeline {
             full_row.x1,
             full_row.y1 - 2.0,
         );
-        Self::draw_group_row_chrome(scene, transform, theme, full_row, row, rg, is_hovered);
+        Self::draw_group_row_chrome(
+            scene, transform, theme, full_row, row, rg, is_hovered, is_focused,
+        );
 
         let title_size = theme.tokens.typography.scale.sm;
         let title_x = row.x0 + 26.0;
@@ -1799,6 +2078,7 @@ impl ActivityTimeline {
         row: Rect,
         rg: &RowGroup,
         is_hovered: bool,
+        is_focused: bool,
     ) {
         let colors = &theme.tokens.colors;
         for level in 1..=rg.depth {
@@ -1824,6 +2104,15 @@ impl ActivityTimeline {
             None,
             &shape,
         );
+        if is_focused {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                colors.border_focus,
+                None,
+                &RoundedRect::from_rect(row.inset(-1.0), f64::from(theme.tokens.radii.sm) + 1.0),
+            );
+        }
         // A named band gets an accent spine: the visual difference between
         // "someone decided this is a thing" and an automatic chunk.
         if rg.name.is_some() {
@@ -1950,7 +2239,15 @@ impl ActivityTimeline {
         let dots = rg.authors.len().min(3);
         let dots_w = if dots > 0 { px(dots) * 10.0 + 6.0 } else { 0.0 };
         let sub_budget = (row.x1 - title_x - f64::from(rel_w) - dots_w - 24.0).max(0.0);
-        let sub = fit_text(tr, &rg.subtitle, meta_size, sub_budget);
+        let subtitle = if rg.expanded {
+            rg.subtitle.clone()
+        } else {
+            rg.scope_label.as_ref().map_or_else(
+                || rg.subtitle.clone(),
+                |scope| format!("{scope} · {}", rg.subtitle),
+            )
+        };
+        let sub = fit_text(tr, &subtitle, meta_size, sub_budget);
         tr.draw_text(
             scene,
             &sub,
@@ -2040,17 +2337,24 @@ impl ActivityTimeline {
         // with what was just painted.
         self.chip_rects.clear();
 
-        // The author pill is anchored right; reserve its width first so the
-        // chips lay out into what is actually left rather than sliding under it.
+        // The author pill is anchored right when this standalone widget owns
+        // people filtering. RoomActivity can supply that control itself.
         let author_label = if self.author_query.is_empty() {
             "author:any".to_string()
         } else {
             format!("author:{}", self.author_query)
         };
-        let author_full_w =
+        let author_full_w = if self.show_author_pill {
             (f64::from(text_renderer.measure(&author_label, chip_text_size, None).0) + 16.0)
-                .min(strip.width() * 0.45);
-        let chips_budget = (strip.width() - author_full_w - 8.0).max(0.0);
+                .min(strip.width() * 0.45)
+        } else {
+            0.0
+        };
+        let chips_budget = if self.show_author_pill {
+            (strip.width() - author_full_w - 8.0).max(0.0)
+        } else {
+            strip.width()
+        };
 
         let measure_run = |tr: &mut TextRenderer, short: bool| -> f64 {
             let mut total = 0.0;
@@ -2076,16 +2380,20 @@ impl ActivityTimeline {
             use_short,
             (active_fill, idle_fill, active_text, idle_text),
         );
-        self.draw_author_pill(
-            scene,
-            transform,
-            text_renderer,
-            chip_text_size,
-            strip,
-            &author_label,
-            author_full_w,
-            (active_fill, idle_fill, active_text, idle_text),
-        );
+        if self.show_author_pill {
+            self.draw_author_pill(
+                scene,
+                transform,
+                text_renderer,
+                chip_text_size,
+                strip,
+                &author_label,
+                author_full_w,
+                (active_fill, idle_fill, active_text, idle_text),
+            );
+        } else {
+            self.author_pill_rect = Rect::ZERO;
+        }
     }
 
     /// The `[All] [Edits] [Comments] ...` chip row; populates
@@ -2405,7 +2713,14 @@ impl Widget for ActivityTimeline {
                 && !modifiers.state().super_key()
                 && !modifiers.state().alt_key() =>
             {
-                self.handle_author_typeahead_key(logical_key, handled);
+                self.handle_timeline_navigation_key(
+                    logical_key,
+                    modifiers.state().shift_key(),
+                    handled,
+                );
+                if !*handled {
+                    self.handle_author_typeahead_key(logical_key, handled);
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.handle_cursor_moved(position, scale_factor, handled);
@@ -2428,10 +2743,28 @@ impl Widget for ActivityTimeline {
         "ActivityTimeline"
     }
 
+    fn is_focusable(&self) -> bool {
+        !self.rows.is_empty()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        if self.has_focus != focused {
+            self.has_focus = focused;
+            if focused && self.focused_row.is_none() && !self.rows.is_empty() {
+                let _ = self.focus_row(0);
+            }
+            self.dirty = true;
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.has_focus
+    }
+
     /// The description carries both counts, because "7 items" over a list
     /// of three collapsed bands would not describe what is on screen.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+        use crate::a11y::{AccessNode, AccessState, Role};
         let groups = self
             .rows
             .iter()
@@ -2442,11 +2775,151 @@ impl Widget for ActivityTimeline {
         } else {
             format!("{} entries in {} groups", self.visible.len(), groups)
         };
+        let row_count = self.rows.len();
+        let children = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                let bounds = self.row_rect_unclipped(index)?;
+                match row {
+                    VisualRow::Group(group) => {
+                        let item = self.row_groups.get(*group)?;
+                        let description = if item.expanded {
+                            item.subtitle.clone()
+                        } else {
+                            item.scope_label.as_ref().map_or_else(
+                                || item.subtitle.clone(),
+                                |scope| format!("{scope} · {}", item.subtitle),
+                            )
+                        };
+                        Some(
+                            AccessNode::new(Role::TreeItem)
+                                .with_action_target(format!("timeline-group:{}", item.key))
+                                .with_name(item.title.clone())
+                                .with_description(description)
+                                .with_position(index.saturating_add(1), row_count)
+                                .with_level(item.depth.saturating_add(1))
+                                .with_bounds(bounds)
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    focused: self.focused_row.as_ref()
+                                        == Some(&FocusedRow::Group(item.key.clone())),
+                                    expanded: Some(item.expanded),
+                                    ..Default::default()
+                                }),
+                        )
+                    }
+                    VisualRow::Entry(entry, depth) => {
+                        let item = self.entries.get(*entry)?;
+                        let id = crate::widget::history_group::hex16(&item.id);
+                        let name = Self::entry_breadcrumb(item).map_or_else(
+                            || format!("{}: {}", item.author.name, item.summary),
+                            |breadcrumb| {
+                                format!("{breadcrumb}: {}: {}", item.author.name, item.summary)
+                            },
+                        );
+                        Some(
+                            AccessNode::new(Role::ListItem)
+                                .with_action_target(format!("timeline-entry:{id}"))
+                                .with_name(name)
+                                .with_description(format!(
+                                    "{} · {}",
+                                    op_class_glyph(item.op_class),
+                                    format_relative_time(item.timestamp, self.now())
+                                ))
+                                .with_position(index.saturating_add(1), row_count)
+                                .with_level(depth.saturating_add(1))
+                                .with_bounds(bounds)
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    focused: self.focused_row.as_ref()
+                                        == Some(&FocusedRow::Entry(item.id)),
+                                    selected: self.selection.is_some_and(|(start, end)| {
+                                        *entry >= start && *entry <= end
+                                    }),
+                                    ..Default::default()
+                                }),
+                        )
+                    }
+                }
+            })
+            .collect();
         Some(
             AccessNode::new(Role::List)
-                .with_name("Activity timeline")
-                .with_description(description),
+                .with_name("History entries")
+                .with_description(description)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.has_focus,
+                    ..Default::default()
+                })
+                .with_children(children),
         )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+        let row = if let Some(key) = target.strip_prefix("timeline-group:") {
+            self.rows
+                .iter()
+                .enumerate()
+                .find_map(|(index, row)| match row {
+                    VisualRow::Group(group)
+                        if self
+                            .row_groups
+                            .get(*group)
+                            .is_some_and(|item| item.key == key) =>
+                    {
+                        Some(index)
+                    }
+                    _ => None,
+                })
+        } else if let Some(hex_id) = target.strip_prefix("timeline-entry:") {
+            self.rows
+                .iter()
+                .enumerate()
+                .find_map(|(index, row)| match row {
+                    VisualRow::Entry(entry, _)
+                        if self.entries.get(*entry).is_some_and(|item| {
+                            crate::widget::history_group::hex16(&item.id) == hex_id
+                        }) =>
+                    {
+                        Some(index)
+                    }
+                    _ => None,
+                })
+        } else {
+            None
+        };
+        let Some(row) = row else {
+            return false;
+        };
+        match action {
+            Action::Focus => self.focus_row(row),
+            Action::Activate => self.activate_row(row),
+            Action::ScrollIntoView => {
+                self.scroll_row_into_view(row);
+                true
+            }
+            Action::Expand
+                if self
+                    .group_at_row(row)
+                    .is_some_and(|(_, expanded)| !expanded) =>
+            {
+                self.toggle_group_at_row(row)
+            }
+            Action::Collapse if self.group_at_row(row).is_some_and(|(_, expanded)| expanded) => {
+                self.toggle_group_at_row(row)
+            }
+            _ => false,
+        }
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -2579,6 +3052,7 @@ impl ActivityTimeline {
             _ => None,
         };
         let selection = self.selection;
+        let focused_row = self.focused_row();
         // Clip to the row band: without it the line straddling the bottom
         // edge paints over the selection bar and past the pane edge.
         let clip = Rect::new(
@@ -2616,6 +3090,7 @@ impl ActivityTimeline {
                         row,
                         g,
                         is_hovered,
+                        focused_row == Some(i),
                         naming,
                         now,
                     );
@@ -2635,6 +3110,7 @@ impl ActivityTimeline {
                         entry,
                         is_hovered,
                         selected,
+                        focused_row == Some(i),
                         now,
                     );
                 }
@@ -2683,6 +3159,90 @@ impl ActivityTimeline {
             }
             NameFieldOutcome::Ignored => {}
         }
+    }
+
+    /// Roving focus for the custom-painted list. This runs before author
+    /// typeahead, so Space and directional keys are always list controls.
+    fn handle_timeline_navigation_key(
+        &mut self,
+        logical_key: &Key,
+        shift: bool,
+        handled: &mut bool,
+    ) {
+        let len = self.rows.len();
+        if len == 0 {
+            return;
+        }
+        let last = len.saturating_sub(1);
+        let current = self.focused_row().unwrap_or(0);
+        let destination = match logical_key {
+            Key::Named(NamedKey::ArrowDown) => Some(current.saturating_add(1).min(last)),
+            Key::Named(NamedKey::ArrowUp) => Some(current.saturating_sub(1)),
+            Key::Named(NamedKey::Home) => Some(0),
+            Key::Named(NamedKey::End) => Some(last),
+            Key::Named(NamedKey::ArrowRight) => {
+                if self
+                    .group_at_row(current)
+                    .is_some_and(|(_, expanded)| !expanded)
+                {
+                    let _ = self.toggle_group_at_row(current);
+                } else {
+                    let next = current.saturating_add(1);
+                    if self.group_at_row(current).is_some() && next < self.rows.len() {
+                        let _ = self.focus_row(next);
+                    }
+                }
+                *handled = true;
+                return;
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                if self
+                    .group_at_row(current)
+                    .is_some_and(|(_, expanded)| expanded)
+                {
+                    let _ = self.toggle_group_at_row(current);
+                } else {
+                    let depth = self.row_depth(current);
+                    if let Some(parent) = (0..current).rev().find(|candidate| {
+                        self.group_at_row(*candidate).is_some()
+                            && self.row_depth(*candidate) < depth
+                    }) {
+                        let _ = self.focus_row(parent);
+                    }
+                }
+                *handled = true;
+                return;
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                let _ = self.activate_focused_row();
+                *handled = true;
+                return;
+            }
+            Key::Named(NamedKey::Escape) => {
+                if self.selection.take().is_some() {
+                    self.selection_anchor = None;
+                    self.rebuild_rows();
+                }
+                *handled = true;
+                return;
+            }
+            _ => None,
+        };
+        let Some(destination) = destination else {
+            return;
+        };
+        let _ = self.focus_row(destination);
+        if let Some(entry) = self.row_entry_index(destination) {
+            if shift {
+                let anchor = self.selection_anchor.unwrap_or(entry);
+                self.selection = Some((anchor.min(entry), anchor.max(entry)));
+            } else {
+                self.selection = Some((entry, entry));
+                self.selection_anchor = Some(entry);
+            }
+            self.rebuild_rows();
+        }
+        *handled = true;
     }
 
     fn handle_author_typeahead_key(&mut self, logical_key: &Key, handled: &mut bool) {
@@ -2965,8 +3525,113 @@ mod tests {
         let t = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries);
         let node = Widget::accessibility(&t).expect("timeline is not presentational");
         assert_eq!(node.role, Role::List);
-        assert_eq!(node.name.as_deref(), Some("Activity timeline"));
+        assert_eq!(node.name.as_deref(), Some("History entries"));
         assert_eq!(node.description.as_deref(), Some("2 entries"));
+    }
+
+    #[test]
+    fn individual_entries_have_stable_accessible_targets_and_activate() {
+        use crate::a11y::{Action, Role};
+        let activated = Rc::new(RefCell::new(Vec::new()));
+        let received = activated.clone();
+        let entries = vec![entry(OpClass::Splice, "Alice", 10, 1)];
+        let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries)
+            .on_activate_entry(move |id| received.borrow_mut().push(*id));
+        let semantics = Widget::accessibility(&timeline).expect("timeline semantics");
+        let row = semantics
+            .children
+            .iter()
+            .find(|node| node.role == Role::ListItem)
+            .expect("individual entry semantic row");
+        assert!(row.bounds.is_some(), "custom-painted row has AT bounds");
+        assert!(row.state.focusable);
+        let target = row.action_target.clone().expect("stable entry target");
+        assert!(Widget::perform_semantic_action(
+            &mut timeline,
+            &target,
+            &Action::Focus,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            timeline.focused_entry().map(|entry| entry.id),
+            Some(HistoryEntryId([
+                1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ]))
+        );
+        assert!(Widget::perform_semantic_action(
+            &mut timeline,
+            &target,
+            &Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(timeline.selection(), Some((0, 0)));
+        assert_eq!(
+            activated.borrow().as_slice(),
+            &[HistoryEntryId([
+                1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ])]
+        );
+    }
+
+    #[test]
+    fn keyboard_navigation_moves_focus_and_selects_individual_rows() {
+        let entries = vec![
+            entry(OpClass::Splice, "Alice", 10, 1),
+            entry(OpClass::Splice, "Alice", 11, 2),
+        ];
+        let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries);
+        timeline.set_all_expanded(true);
+        assert!(timeline.focus_row(0));
+        dispatch(&mut timeline, &key_press(Key::Named(NamedKey::ArrowDown)));
+        let focused = timeline.focused_row().expect("moved focus");
+        assert!(focused > 0);
+        if let Some(entry) = timeline.row_entry_index(focused) {
+            assert_eq!(timeline.selection(), Some((entry, entry)));
+        }
+    }
+
+    #[test]
+    fn provenance_breadcrumbs_and_collapsed_mixed_scope_survive_hidden_rows() {
+        use qos_actions::ActionContext;
+        let mut files = entry(OpClass::Splice, "Alice", 10, 1);
+        files.context = Some(
+            ActionContext::for_resource("Rename", "files:brief", "files.entry", "brief.md")
+                .with_app("org.qos.Files", "Files")
+                .with_group("workspace:a", "Alpha", "workspace"),
+        );
+        let mut notes = entry(OpClass::Splice, "Alice", 11, 2);
+        notes.context = Some(
+            ActionContext::for_resource("Edit", "notes:plan", "notes.document", "plan")
+                .with_app("org.qos.Notes", "Notes")
+                .with_group("workspace:a", "Beta", "workspace"),
+        );
+        let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), vec![files, notes]);
+        assert_eq!(
+            ActivityTimeline::entry_breadcrumb(&timeline.entries()[0]).as_deref(),
+            Some("Files / brief.md")
+        );
+        timeline.set_all_expanded(false);
+        let group = (0..timeline.row_count())
+            .find(|row| timeline.group_at_row(*row).is_some())
+            .expect("collapsed group");
+        let semantics = Widget::accessibility(&timeline).expect("timeline semantics");
+        let description = semantics.children[group]
+            .description
+            .as_deref()
+            .unwrap_or_default();
+        assert!(description.contains("Alpha") && description.contains("Files"));
+        assert!(description.contains("Beta") && description.contains("Notes"));
+    }
+
+    #[test]
+    fn host_can_suppress_duplicate_author_pill_without_hiding_op_filters() {
+        let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), vec![]);
+        assert!(timeline.shows_author_pill());
+        timeline.set_show_author_pill(false);
+        assert!(!timeline.shows_author_pill());
+        assert_eq!(timeline.author_pill_rect(), Rect::ZERO);
     }
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {

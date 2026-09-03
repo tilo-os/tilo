@@ -53,8 +53,8 @@ pub use groups::{
     name_range, read_named_ranges, split_named_range,
 };
 pub use narrative::{
-    ActivityNarrator, GroundedNarrative, NarrativeRequest, deterministic_narrative,
-    validate_narrative,
+    ActivityNarrator, GroundedNarrative, NarrativeRequest, NarrativeSource,
+    deterministic_narrative, validate_narrative,
 };
 pub use revert::{
     ChangeRun, KeptSlot, RevertError, RevertOutcome, Slot, latest_run_by, plan_revert, revert_run,

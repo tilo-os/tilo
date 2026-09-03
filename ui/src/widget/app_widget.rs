@@ -7,6 +7,22 @@
 
 use crate::widget::{AppKind, Widget};
 
+/// A typed, device-local request from app content to shell chrome. Keeping
+/// this on the common app contract lets both in-process tiles and future IPC
+/// adapters use one destination without an app reaching into compositor
+/// state or pretending a status toast completed the navigation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppHostIntent {
+    ShowWorkspaceActivity {
+        resource_id: String,
+        version_id: Option<[u8; 16]>,
+        /// A factual app-native event that may not yet be part of the shell's
+        /// CRDT record index. This makes the handoff exact instead of opening
+        /// an empty resource lens while the durable indexes converge.
+        entry: Option<crate::widget::HistoryEntry>,
+    },
+}
+
 /// A lightweight icon descriptor usable before the full asset pipeline lands.
 /// `Glyph` is a Nerd Font / unicode codepoint (existing approach in both
 /// the iced file-explorer and quick-terminal). `Named` is a symbolic name for
@@ -54,5 +70,10 @@ pub trait AppWidget: Widget {
     /// Command-palette contributions. Default is none.
     fn commands(&self) -> Vec<AppCommand> {
         vec![]
+    }
+
+    /// Drain a one-shot request for shell-owned chrome.
+    fn take_host_intent(&mut self) -> Option<AppHostIntent> {
+        None
     }
 }
