@@ -69,6 +69,10 @@ pub struct PeerInviteToken {
     /// inviter staying online. Absent from legacy v1 tokens.
     #[serde(default)]
     pub host_addrs: Vec<iroh::EndpointAddr>,
+    /// Enrollment-bound identity for a home host. Signed with the invite so a
+    /// recipient never treats an arbitrary same-root relay as its Files peer.
+    #[serde(default)]
+    pub home_host_pins: Vec<HomeHostPin>,
     /// Root-signed binding from the inviter's person identity to the Iroh
     /// endpoint/device key. Absent only on legacy invitations.
     #[serde(default)]
@@ -96,6 +100,15 @@ pub struct PeerInviteToken {
     pub expiry_unix_seconds: u64,
     pub signature: Vec<u8>,
 }
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+pub struct HomeHostPin {
+    pub addr: iroh::EndpointAddr,
+    pub user_public_key: [u8; 32],
+    pub device_public_key: [u8; 32],
+}
+
+const MAX_HOME_HOST_PINS: usize = 16;
 
 #[derive(Serialize)]
 struct InvitePayload<'a> {
@@ -137,6 +150,26 @@ struct CurrentInvitePayload<'a> {
     owner_peer_id: &'a str,
     owner_addr: &'a iroh::EndpointAddr,
     host_addrs: &'a [iroh::EndpointAddr],
+    owner_device_cert: Option<&'a DeviceCert>,
+    role: InviteRole,
+    invite_nonce: [u8; 16],
+    recipient_user_public_key: Option<&'a [u8; 32]>,
+    invitee_name: Option<&'a str>,
+    expiry_unix_seconds: u64,
+}
+
+/// Current invite format with enrollment-bound home-host pins.  This remains
+/// a distinct payload rather than extending `CurrentInvitePayload`: old
+/// nonce-bearing invitations were signed without the new field and must keep
+/// validating, while any invitation that carries pins must cover them.
+#[derive(Serialize)]
+struct CurrentInvitePayloadWithHomeHostPins<'a> {
+    workspace_id: u64,
+    room_id: &'a str,
+    owner_peer_id: &'a str,
+    owner_addr: &'a iroh::EndpointAddr,
+    host_addrs: &'a [iroh::EndpointAddr],
+    home_host_pins: &'a [HomeHostPin],
     owner_device_cert: Option<&'a DeviceCert>,
     role: InviteRole,
     invite_nonce: [u8; 16],
@@ -235,6 +268,22 @@ fn legacy_libp2p_invite_error(json: &[u8]) -> Option<String> {
 }
 
 fn signing_payload(token: &PeerInviteToken) -> Result<Vec<u8>, postcard::Error> {
+    if !token.home_host_pins.is_empty() {
+        return postcard::to_allocvec(&CurrentInvitePayloadWithHomeHostPins {
+            workspace_id: token.workspace_id,
+            room_id: &token.room_id,
+            owner_peer_id: &token.owner_peer_id,
+            owner_addr: &token.owner_addr,
+            host_addrs: &token.host_addrs,
+            home_host_pins: &token.home_host_pins,
+            owner_device_cert: token.owner_device_cert.as_ref(),
+            role: token.role,
+            invite_nonce: token.invite_nonce,
+            recipient_user_public_key: token.recipient_user_public_key.as_ref(),
+            invitee_name: token.invitee_name.as_deref(),
+            expiry_unix_seconds: token.expiry_unix_seconds,
+        });
+    }
     if token.invite_nonce != [0; 16] {
         return postcard::to_allocvec(&CurrentInvitePayload {
             workspace_id: token.workspace_id,
@@ -380,6 +429,7 @@ pub fn make_invite_token_with_identity_and_role(
         workspace,
         owner_addr,
         host_addrs,
+        &[],
         owner_device_cert,
         role,
         None,
@@ -396,6 +446,7 @@ pub fn make_invite_token_with_recipient(
     workspace: &Workspace,
     owner_addr: &iroh::EndpointAddr,
     host_addrs: &[iroh::EndpointAddr],
+    home_host_pins: &[HomeHostPin],
     owner_device_cert: Option<DeviceCert>,
     role: InviteRole,
     recipient_user_public_key: Option<[u8; 32]>,
@@ -439,6 +490,7 @@ pub fn make_invite_token_with_recipient(
         owner_peer_id: key.public().to_string(),
         owner_addr: owner_addr.clone(),
         host_addrs: host_addrs.to_vec(),
+        home_host_pins: home_host_pins.to_vec(),
         owner_device_cert,
         role,
         invite_nonce: *uuid::Uuid::new_v4().as_bytes(),
@@ -488,6 +540,35 @@ pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String>
     if token.invitee_name.is_some() && token.recipient_user_public_key.is_none() {
         return Err("invite carries a name without binding a recipient identity".into());
     }
+    if token.home_host_pins.len() > MAX_HOME_HOST_PINS {
+        return Err("invite carries too many home-host pins".into());
+    }
+    let pinned_owner = if token.home_host_pins.is_empty() {
+        None
+    } else {
+        Some(
+            token
+                .owner_device_cert
+                .as_ref()
+                .ok_or("invite carries home-host pins without an owner certificate")?,
+        )
+    };
+    let mut pinned_endpoints = std::collections::HashSet::new();
+    for pin in &token.home_host_pins {
+        ed25519_dalek::VerifyingKey::from_bytes(&pin.user_public_key)
+            .map_err(|_| "invite carries an invalid home-host user key")?;
+        if pin.device_public_key.iter().all(|byte| *byte == 0) {
+            return Err("invite carries an empty home-host device key".into());
+        }
+        ed25519_dalek::VerifyingKey::from_bytes(&pin.device_public_key)
+            .map_err(|_| "invite carries an invalid home-host device key")?;
+        if pinned_owner.is_some_and(|owner| owner.user_public_key != pin.user_public_key) {
+            return Err("invite home-host pin belongs to a different user".into());
+        }
+        if !pinned_endpoints.insert(*pin.addr.id.as_bytes()) {
+            return Err("invite carries duplicate home-host pins".into());
+        }
+    }
     match RoomId::parse(&token.room_id) {
         Some(room) if !room.is_nil() => {}
         Some(_) => return Err("invite names the unminted room".into()),
@@ -521,6 +602,7 @@ pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String>
         if token.invite_nonce != [0; 16]
             && token.recipient_user_public_key.is_none()
             && token.invitee_name.is_none()
+            && token.home_host_pins.is_empty()
         {
             let nonce_only = postcard::to_allocvec(&InvitePayloadWithNonce {
                 workspace_id: token.workspace_id,
@@ -544,6 +626,7 @@ pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String>
         if token.invite_nonce != [0; 16]
             || token.recipient_user_public_key.is_some()
             || token.invitee_name.is_some()
+            || !token.home_host_pins.is_empty()
         {
             return Err("signature verification failed".into());
         }
@@ -677,6 +760,57 @@ mod tests {
     }
 
     #[test]
+    fn home_host_pin_is_signed_and_tamper_evident() {
+        use qos_user_identity::{DeviceCapabilities, sign_device_cert};
+
+        let owner = iroh::SecretKey::from_bytes(&[0x21; 32]);
+        let relay = iroh::SecretKey::from_bytes(&[0x22; 32]);
+        let other_relay = iroh::SecretKey::from_bytes(&[0x23; 32]);
+        let user = ed25519_dalek::SigningKey::from_bytes(&[0x24; 32]);
+        let host_device = iroh::SecretKey::from_bytes(&[0x25; 32]);
+        let mut owner_cert = DeviceCert {
+            user_public_key: user.verifying_key().to_bytes(),
+            device_public_key: *owner.public().as_bytes(),
+            device_label: "Owner laptop".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut owner_cert, &user).expect("owner certificate");
+        let pin = HomeHostPin {
+            addr: endpoint(&relay, 4321),
+            user_public_key: user.verifying_key().to_bytes(),
+            device_public_key: *host_device.public().as_bytes(),
+        };
+        let encoded = make_invite_token_with_recipient(
+            &owner,
+            &workspace(25),
+            &endpoint(&owner, 2525),
+            std::slice::from_ref(&pin.addr),
+            std::slice::from_ref(&pin),
+            Some(owner_cert),
+            InviteRole::Editor,
+            None,
+            None,
+            3600,
+        )
+        .expect("pinned invite");
+        let decoded = validate_invite_token(&encoded).expect("valid pinned invite");
+        assert_eq!(decoded.home_host_pins, vec![pin]);
+
+        let bytes = B64.decode(encoded).expect("base64");
+        let mut forged: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
+        forged.home_host_pins[0].addr = endpoint(&other_relay, 4343);
+        let forged = B64.encode(serde_json::to_vec(&forged).expect("json"));
+        assert!(
+            validate_invite_token(&forged)
+                .expect_err("a changed host pin must invalidate the signature")
+                .contains("signature")
+        );
+    }
+
+    #[test]
     fn selected_role_is_signed_and_tamper_evident() {
         let owner = iroh::SecretKey::from_bytes(&[31; 32]);
         let encoded = make_invite_token_with_identity_and_role(
@@ -795,6 +929,7 @@ mod tests {
             owner_peer_id: key.public().to_string(),
             owner_addr: addr,
             host_addrs: Vec::new(),
+            home_host_pins: Vec::new(),
             owner_device_cert: None,
             role: InviteRole::Editor,
             invite_nonce: [0; 16],
@@ -825,6 +960,7 @@ mod tests {
             &owner,
             &workspace,
             &endpoint(&owner, 1818),
+            &[],
             &[],
             None,
             InviteRole::Commenter,
