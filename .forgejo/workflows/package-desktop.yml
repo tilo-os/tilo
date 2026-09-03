@@ -98,6 +98,20 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+      - name: Restore checksum-pinned GitHub build inputs
+        uses: actions/cache@9255dc7a25310cf7d1e7440c8b18379614703ff9 # v4
+        with:
+          path: os/external-assets/cache
+          key: desktop-external-inputs-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+      - name: Materialize the architecture-specific compiler cache client
+        shell: bash
+        run: |
+          case '${{ matrix.arch }}' in
+            amd64) target=x86_64-unknown-linux-musl ;;
+            arm64) target=aarch64-unknown-linux-musl ;;
+            *) printf 'unsupported package architecture: %s\n' '${{ matrix.arch }}' >&2; exit 1 ;;
+          esac
+          os/dev/cache-github-assets.sh "sccache-v0.17.0-${target}.tar.gz"
       - name: Build and install-test all five target userspaces
         env:
           # Runner-level cache credentials must never enter pull-request code.

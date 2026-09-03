@@ -6,6 +6,9 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 workflows="$repo/.forgejo/workflows"
 fail=0
+manifest="$repo/os/external-assets/github-assets.tsv"
+package_workflow="$workflows/package-desktop.yml"
+containerfile="$repo/os/Containerfile"
 
 while IFS=: read -r file line match; do
   ref="${match#uses:}"
@@ -22,5 +25,35 @@ done < <(grep -R -n -o -E 'uses:[[:space:]]*[^[:space:]#]+' "$workflows")
 
 if [ "$fail" = 0 ]; then
   printf 'ok    every remote workflow action is pinned to a full commit SHA\n'
+fi
+
+for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+  name="sccache-v0.17.0-$target.tar.gz"
+  if ! awk -F '\t' -v n="$name" \
+    '$1 !~ /^#/ && $2 == n && $3 ~ /^https:\/\/github\.com\// { found=1 }
+     END { exit !found }' "$manifest"; then
+    printf 'missing checksum-pinned GitHub cache entry: %s\n' "$name" >&2
+    fail=1
+  fi
+done
+if ! grep -Fq 'key: desktop-external-inputs-${{ hashFiles('\''os/external-assets/github-assets.tsv'\'') }}' \
+    "$package_workflow" \
+  || ! grep -Fq 'os/dev/cache-github-assets.sh "sccache-v0.17.0-${target}.tar.gz"' \
+    "$package_workflow" \
+  || ! grep -Fq 'cached_archive="$repo_root/os/external-assets/cache/${name}.tar.gz"' \
+    "$repo/dist/ci/install-sccache.sh"; then
+  printf 'desktop package CI bypasses the verified GitHub input cache\n' >&2
+  fail=1
+else
+  printf 'ok    desktop package CI restores checksum-pinned GitHub inputs\n'
+fi
+
+if grep -Fq 'ENV GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org' "$containerfile" \
+  && grep -Fq -- '--mount=type=cache,target=/go/pkg/mod' "$containerfile" \
+  && grep -Fq -- '--mount=type=cache,target=/root/.cache/go-build' "$containerfile"; then
+  printf 'ok    Go helper builds use verified persistent proxy caches without GitHub fallback\n'
+else
+  printf 'Go helper builds can bypass the verified module proxy or redownload unchanged modules\n' >&2
+  fail=1
 fi
 exit "$fail"

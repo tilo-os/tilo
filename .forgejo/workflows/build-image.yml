@@ -102,6 +102,30 @@ jobs:
       - name: Load RPMS_REF (frozen package snapshot)
         run: grep '^RPMS_REF=' os/rpms-snapshot.env >> "$GITHUB_ENV"
 
+      - name: Verify frozen package snapshot matches every consumer
+        run: ./os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"
+
+      - name: Require the promoted native WPE buildroot
+        env:
+          WITH_BROWSER: ${{ github.event.inputs.with_browser || '1' }}
+        run: |
+          set -euo pipefail
+          . os/wpe-buildroot-snapshot.env
+          case "$(uname -m)" in
+            x86_64) ref="$WPE_BUILDROOT_X86_64_REF" ;;
+            aarch64) ref="$WPE_BUILDROOT_AARCH64_REF" ;;
+            *) printf 'unsupported WPE buildroot architecture: %s\n' "$(uname -m)" >&2; exit 1 ;;
+          esac
+          if [ "$WITH_BROWSER" = 1 ]; then
+            [[ "$ref" =~ ^code\.podesta\.ai/qos/qos-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] || {
+              printf 'no digest-pinned WPE buildroot for %s; run snapshot-wpe-buildroot\n' "$(uname -m)" >&2
+              exit 1
+            }
+            cosign verify --key keys/cosign.pub "$ref" >/dev/null
+          fi
+          [ -n "$ref" ] || ref="$BASE_REF"
+          echo "WPE_BUILDROOT_REF=$ref" >> "$GITHUB_ENV"
+
       # Pin the qos-kernel image the build swaps into kernel-core.  Same
       # digest-pinning + strip-comments-strategy as RPMS_REF.
       - name: Load KERNEL_RPMS_REF (qos-kernel image)
@@ -195,6 +219,7 @@ jobs:
             BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
+            WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
             QOS_WITH_BROWSER=${{ github.event.inputs.with_browser || '1' }}
             QOS_GENERATION=${{ env.QOS_GENERATION }}
             SCCACHE_BUCKET=sccache
@@ -242,6 +267,7 @@ jobs:
             BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
+            WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
             QOS_WITH_BROWSER=${{ github.event.inputs.with_browser || '1' }}
             QOS_GENERATION=${{ env.QOS_GENERATION }}
             SCCACHE_BUCKET=sccache

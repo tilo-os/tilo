@@ -67,6 +67,7 @@ for path in /usr/bin/fs /usr/bin/file-explorer /usr/bin/qos-launcher \
 done
 require_file /etc/fuse.conf
 require_file /usr/lib/systemd/system/fs.service
+require_file /usr/lib/systemd/system/fs-identity.path
 require_file /usr/lib/systemd/user/qos-fs-recipient.service
 require_file /usr/lib/systemd/user/qos-identity.service
 require_file /usr/lib/systemd/user/qos-graphical-session.target
@@ -78,6 +79,7 @@ require_file /usr/share/qos/fs-capabilities.json
 
 # The system host and per-user recipient must be enabled, not merely copied.
 require_link /etc/systemd/system/multi-user.target.wants/fs.service
+require_link /etc/systemd/system/multi-user.target.wants/fs-identity.path
 require_link /etc/systemd/user/graphical-session.target.wants/qos-fs-recipient.service
 require_link /etc/systemd/user/graphical-session-pre.target.wants/qos-identity.service
 require_mask /etc/systemd/system/systemd-growfs-root.service
@@ -87,7 +89,10 @@ require_mask /etc/systemd/system/systemd-growfs-root.service
 require_text /usr/lib/systemd/system/fs.service "/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/quick-fs"
 require_text /usr/lib/systemd/system/fs.service "--acl /var/lib/qos/fs-capabilities.json --principal person:local"
 require_line /usr/lib/systemd/system/fs.service "ConditionPathExists=/dev/fuse"
+require_line /usr/lib/systemd/system/fs.service "ConditionPathExists=/var/lib/qos/device/cert.bin"
 require_line /usr/lib/systemd/system/fs.service "ExecStop=/usr/bin/fusermount3 -u -z /var/workspace"
+require_line /usr/lib/systemd/system/fs-identity.path "PathChanged=/var/lib/qos/device/cert.bin"
+require_line /usr/lib/systemd/system/fs-identity.path "Unit=fs.service"
 require_text /usr/lib/systemd/user/qos-fs-recipient.service "/usr/bin/fs recipient-service --socket %t/qos/services/qos-fs.sock"
 require_text /usr/lib/systemd/user/qos-fs-recipient.service "--mounts-root %h/Shared --cache-root %h/.cache/qos/received-files"
 require_line /usr/lib/systemd/user/qos-fs-recipient.service "Requires=qos-identity.service"
@@ -156,6 +161,7 @@ if [ "$mode" = runtime ]; then
   [ "$root" = / ] || die "runtime mode requires OS_ROOT=/"
   [ -c /dev/fuse ] || die "/dev/fuse is absent or not a character device"
   systemctl is-enabled --quiet fs.service || die "fs.service is not enabled"
+  systemctl is-enabled --quiet fs-identity.path || die "fs-identity.path is not enabled"
   systemctl is-active --quiet fs.service || die "fs.service is not active"
   mountpoint -q /var/workspace || die "/var/workspace is not mounted"
   fs_type="$(findmnt -n -o FSTYPE --target /var/workspace)"

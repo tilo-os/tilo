@@ -1,4 +1,4 @@
-# sha256<TAB>filename<TAB>immutable upstream URL
+# sha256<TAB>filename<TAB>versioned upstream URL
 138ce4b8843608a257d4bee88191ca78a989778bcefd8abb3c1d1aaac3ac6fb8	umu-launcher-1.4.0.tar	https://github.com/Open-Wine-Components/umu-launcher/releases/download/1.4.0/umu-launcher-1.4.0-zipapp.tar
 62e99e029a18fa313e6fa63d42390918101730a940e3491c54d9d58cab887c69	umu-proton-10.0-4.tar.gz	https://github.com/Open-Wine-Components/umu-proton/releases/download/UMU-Proton-10.0-4/UMU-Proton-10.0-4.tar.gz
 87271019d53a13299b495287ef45def9078a0d654e5f53f99f67b82fffa034a8	umu-database-8297d420.csv	https://raw.githubusercontent.com/Open-Wine-Components/umu-database/8297d420143bf722387b572fa1b81b5fa22746ac/umu-database.csv
@@ -6,6 +6,10 @@
 e6c213bb221f4598e7e5e35804e8066b5b49a15ca2fb685729c9cf4ad82a20b7	doubletake-ae06722.tar.gz	https://github.com/omarroth/doubletake/archive/ae067228d76df011375164814b729932ed55ca2f.tar.gz
 bfa0e96a25928cb7c9d906643e8947182ad124b35bcad3f0c765f4fc011c47ab	fluxcast-a74f39f.tar.gz	https://github.com/IlyaP358/fluxcast/archive/a74f39fe3f2012e20315cd37e13e9803871e587f.tar.gz
 67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006	sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz	https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
+821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77	sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz	https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz
+c880fa8d607b2aa6eadde7d6d6302b1396ebc38368fe2332fa20e193c7ee1420	libwpe-1.16.3.tar.xz	https://wpewebkit.org/releases/libwpe-1.16.3.tar.xz
+544ae14012f8e7e426b8cb522eb0aaaac831ad7c35601d1cf31d37670e0ebb3b	wpebackend-fdo-1.16.1.tar.xz	https://wpewebkit.org/releases/wpebackend-fdo-1.16.1.tar.xz
+b2bafef2751625b7fdf530f230ff0f542ff0eeba3590c3a989d931b2a55c858e	wpewebkit-2.52.6.tar.xz	https://wpewebkit.org/releases/wpewebkit-2.52.6.tar.xz
 e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118	doubletake-ae06722-LICENSE	https://raw.githubusercontent.com/omarroth/doubletake/ae067228d76df011375164814b729932ed55ca2f/LICENSE
 3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986	fluxcast-a74f39f-LICENSE	https://raw.githubusercontent.com/IlyaP358/fluxcast/a74f39fe3f2012e20315cd37e13e9803871e587f/LICENSE
 # Fedora publishes virtio-win unsigned; pin the reviewed release by content.
