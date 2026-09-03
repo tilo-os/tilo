@@ -26,16 +26,19 @@ chmod 0700 "$askpass"
 GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone \
   "$GITHUB_SERVER_URL/qos/website.git" "$work/site"
 manifest="$work/site/src/data/imager-release.json"
+contract="$work/site/src/data/install-contract.json"
 test -f "$manifest"
-current_tag="$(jq -er '.tag' "$manifest")"
+test -f "$contract"
+current_tag="$(jq -r '.tag // ""' "$manifest")"
 current_version="${current_tag#imager-v}"
 if [[ "$current_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
    && [ "$(printf '%s\n%s\n' "$current_version" "$version" | sort -V | tail -1)" != "$version" ]; then
   printf 'refusing to replace newer landing-page release %s with %s\n' "$current_version" "$version" >&2
   exit 1
 fi
-jq --arg tag "$GITHUB_REF_NAME" '.tag = $tag' "$manifest" >"$manifest.next"
+jq --arg tag "$GITHUB_REF_NAME" '.published = true | .tag = $tag' "$manifest" >"$manifest.next"
 mv "$manifest.next" "$manifest"
+cp docs/install-contract.json "$contract"
 
 npm --prefix "$work/site" ci
 npm --prefix "$work/site" run test:release
@@ -43,7 +46,7 @@ npm --prefix "$work/site" run build
 
 git -C "$work/site" config user.name "qOS release automation"
 git -C "$work/site" config user.email "release-bot@qos.dev"
-git -C "$work/site" add src/data/imager-release.json
+git -C "$work/site" add src/data/imager-release.json src/data/install-contract.json
 if git -C "$work/site" diff --cached --quiet; then
   printf 'landing page already targets %s\n' "$GITHUB_REF_NAME"
   exit 0
