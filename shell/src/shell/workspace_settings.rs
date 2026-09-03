@@ -1,5 +1,5 @@
 //! `WorkspaceSettings` — the contextual lens opened from the `TopBar`'s
-//! workspace-name button, with General / Members / Privacy & Security /
+//! workspace-name button, with General / People / Agents / Privacy & Security /
 //! Apps & Files tabs.
 //!
 //! Members and Permissions are both views of [`Workspace::capabilities`]
@@ -73,6 +73,9 @@ pub enum WsTab {
     /// Who is in the workspace, their role, and how many capabilities
     /// they hold. Rendered from [`Workspace::roster`].
     Members,
+    /// Non-human collaborators admitted to the workspace, kept visibly
+    /// separate from people and rendered from [`Workspace::agent_members`].
+    Agents,
     /// Every capability the workspace has granted, and the affordance
     /// to grant another. Rendered from [`Workspace::capabilities`].
     Permissions,
@@ -85,6 +88,7 @@ impl WsTab {
         match self {
             WsTab::General => "General",
             WsTab::Members => "People",
+            WsTab::Agents => "Agents",
             WsTab::Permissions => "Privacy & Security",
             WsTab::Apps => "Apps & Files",
         }
@@ -96,6 +100,7 @@ impl WsTab {
         match self {
             WsTab::General => "General",
             WsTab::Members => "People",
+            WsTab::Agents => "Agents",
             WsTab::Permissions => "Privacy",
             WsTab::Apps => "Apps",
         }
@@ -104,10 +109,11 @@ impl WsTab {
     /// Iteration order for the sidebar nav and tab strip. Every tab is
     /// always reachable — a host must reach Permissions before any
     /// grant exists.
-    pub fn all() -> [WsTab; 4] {
+    pub fn all() -> [WsTab; 5] {
         [
             WsTab::General,
             WsTab::Members,
+            WsTab::Agents,
             WsTab::Permissions,
             WsTab::Apps,
         ]
@@ -197,7 +203,7 @@ impl WorkspaceSettings {
     }
 
     /// Per-row hit-test rects, one per [`WsTab`] in [`WsTab::all`] order.
-    pub fn nav_rows(&self, modal_rect: Rect) -> [(WsTab, Rect); 4] {
+    pub fn nav_rows(&self, modal_rect: Rect) -> [(WsTab, Rect); 5] {
         let sidebar = self.sidebar_rect(modal_rect);
         let inset_x0 = sidebar.x0 + 16.0;
         let inset_x1 = sidebar.x1 - 16.0;
@@ -364,8 +370,9 @@ fn tab_focus_id(tab: WsTab) -> u64 {
     match tab {
         WsTab::General => BASE,
         WsTab::Members => BASE + 1,
-        WsTab::Permissions => BASE + 2,
-        WsTab::Apps => BASE + 3,
+        WsTab::Agents => BASE + 2,
+        WsTab::Permissions => BASE + 3,
+        WsTab::Apps => BASE + 4,
     }
 }
 
@@ -986,8 +993,9 @@ pub fn granted_by_label(cap: &CapOverride) -> Option<String> {
 pub enum SubjectKind {
     App,
     Member,
+    Agent,
     Role,
-    /// Agent, bearer token or room — surfaced so no live capability is
+    /// Bearer token or room — surfaced so no live capability is
     /// invisible in the panel, even though the composer can't mint one.
     Other,
 }
@@ -997,6 +1005,7 @@ impl SubjectKind {
         match self {
             SubjectKind::App => "Apps",
             SubjectKind::Member => "People",
+            SubjectKind::Agent => "Agents",
             SubjectKind::Role => "Roles",
             SubjectKind::Other => "Other",
         }
@@ -1015,6 +1024,7 @@ impl GrantSubject {
         match self.kind {
             SubjectKind::App => Some(Subject::app(self.id.clone())),
             SubjectKind::Member => Some(Subject::person(self.id.clone())),
+            SubjectKind::Agent => Some(Subject::agent(self.id.clone())),
             // A role-wide grant is a policy decision, not a per-workspace click.
             SubjectKind::Role | SubjectKind::Other => None,
         }
@@ -1022,7 +1032,7 @@ impl GrantSubject {
 
     pub fn display(&self) -> String {
         match self.kind {
-            SubjectKind::Member => short_id(&self.id),
+            SubjectKind::Member | SubjectKind::Agent => short_id(&self.id),
             _ => self.id.clone(),
         }
     }
@@ -1157,7 +1167,7 @@ impl GrantDraft {
 }
 
 /// The subjects the composer can target, in picker order: the
-/// workspace's people first, then every app running in the workspace or
+/// workspace's people first, then admitted agents, then every app running in the workspace or
 /// already holding a capability — without running apps, a host could
 /// only grant to an app already granted something.
 pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
@@ -1169,6 +1179,15 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
             id: user,
         })
         .collect();
+
+    out.extend(
+        ws.agent_members()
+            .into_iter()
+            .map(|(agent, _)| GrantSubject {
+                kind: SubjectKind::Agent,
+                id: agent,
+            }),
+    );
 
     let mut apps: Vec<String> = Vec::new();
     for strip in &ws.strips {
@@ -1388,6 +1407,30 @@ pub fn remove_member(ws: &mut Workspace, actor: &UserId, member: &UserId) -> Cap
     edit
 }
 
+fn subject_is_agent(subject: &Subject, agent: &str) -> bool {
+    matches!(subject, Subject::Principal(Principal::Agent(id)) if id == agent)
+}
+
+/// Revoke every room and resource capability held by `agent`.
+pub fn remove_agent(ws: &mut Workspace, actor: &UserId, agent: &str) -> CapEdit {
+    if !ws.may_administer(actor) {
+        return CapEdit::default();
+    }
+    let ids: Vec<String> = ws
+        .capabilities
+        .iter()
+        .filter(|cap| subject_is_agent(&cap.subject, agent))
+        .map(|cap| cap.id.clone())
+        .collect();
+    let mut edit = CapEdit::default();
+    for id in ids {
+        if ws.revoke_capability(&id) {
+            edit.revoked.push(id);
+        }
+    }
+    edit
+}
+
 // Members pane
 
 /// One row in the Members pane, plus the geometry the renderer painted
@@ -1403,6 +1446,70 @@ pub struct MemberRow {
     pub row_rect: Rect,
     pub role_rect: Rect,
     pub remove_rect: Rect,
+}
+
+/// One explicitly non-human row in the Agents pane. Keeping this a
+/// separate type makes it hard for a future renderer to accidentally
+/// present agents as human roster entries.
+#[derive(Clone, Debug)]
+pub struct AgentRow {
+    pub agent: String,
+    pub role: CapRole,
+    pub grant_count: usize,
+    pub row_rect: Rect,
+    pub role_rect: Rect,
+    pub remove_rect: Rect,
+}
+
+/// Stable, policy-backed rows for the Agents pane.
+pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
+    let mut agents = ws.agent_members();
+    agents.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut rows = Vec::new();
+    let mut cursor_y =
+        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + SECTION_HEADER_HEIGHT;
+    for (agent, role) in agents {
+        let row_rect = Rect::new(
+            pane_rect.x0 + PANE_PAD_X,
+            cursor_y,
+            pane_rect.x1 - PANE_PAD_X,
+            cursor_y + ROW_HEIGHT,
+        );
+        if row_rect.y1 > pane_rect.y1 - PANE_PAD_TOP {
+            break;
+        }
+        let remove_rect = Rect::new(
+            row_rect.x1 - 12.0 - REVOKE_WIDTH,
+            row_rect.center().y - REVOKE_HEIGHT / 2.0,
+            row_rect.x1 - 12.0,
+            row_rect.center().y + REVOKE_HEIGHT / 2.0,
+        );
+        let role_rect = Rect::new(
+            remove_rect.x0 - 12.0 - 96.0,
+            row_rect.center().y - REVOKE_HEIGHT / 2.0,
+            remove_rect.x0 - 12.0,
+            row_rect.center().y + REVOKE_HEIGHT / 2.0,
+        );
+        let grant_count = ws
+            .capabilities
+            .iter()
+            .filter(|cap| {
+                cap.effect == Effect::Grant
+                    && !cap.is_room_membership()
+                    && subject_is_agent(&cap.subject, &agent)
+            })
+            .count();
+        rows.push(AgentRow {
+            agent,
+            role,
+            grant_count,
+            row_rect,
+            role_rect,
+            remove_rect,
+        });
+        cursor_y += ROW_HEIGHT + ROW_GAP;
+    }
+    rows
 }
 
 /// The roster in a stable display order: owner first, then everyone
@@ -1633,10 +1740,13 @@ fn draw_member_row(
     );
 
     let can_manage_row = is_owner && !row.is_workspace_owner && &row.user != local_user;
-    draw_member_role_chip(
+    draw_role_chip(
         scene,
         transform,
-        row,
+        row.role_rect,
+        row.role,
+        role_label(row.role),
+        row.is_workspace_owner,
         can_manage_row,
         detail_size,
         text_renderer,
@@ -1654,12 +1764,19 @@ fn draw_member_row(
     );
 }
 
-/// The role chip half of [`draw_member_row`] — its fill, label and the
-/// chevron affording that owners can cycle it.
-fn draw_member_role_chip(
+/// A policy-backed role chip — its fill, label and the chevron affording
+/// that owners can cycle it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shared paint primitive needs geometry, policy state, and the standard render context"
+)]
+fn draw_role_chip(
     scene: &mut Scene,
     transform: Affine,
-    row: &MemberRow,
+    rect: Rect,
+    role: CapRole,
+    label: &str,
+    structural_owner: bool,
     interactive: bool,
     detail_size: f32,
     text_renderer: &mut TextRenderer,
@@ -1668,14 +1785,14 @@ fn draw_member_role_chip(
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
     let role_interactive = interactive;
-    let chip_tint = if row.role == CapRole::Denied {
+    let chip_tint = if role == CapRole::Denied {
         colors.semantic.danger
-    } else if row.is_workspace_owner {
+    } else if structural_owner {
         colors.semantic.success
     } else {
         colors.accent[5]
     };
-    let chip_alpha = if role_interactive || row.is_workspace_owner {
+    let chip_alpha = if role_interactive || structural_owner {
         1.0
     } else {
         DISABLED_ALPHA
@@ -1685,16 +1802,16 @@ fn draw_member_role_chip(
         transform,
         chip_tint.with_alpha_factor(0.20 * chip_alpha),
         None,
-        &RoundedRect::from_rect(row.role_rect, f64::from(tokens.radii.md)),
+        &RoundedRect::from_rect(rect, f64::from(tokens.radii.md)),
     );
     scene.stroke(
         &Stroke::new(1.0),
         transform,
         chip_tint.with_alpha_factor(if role_interactive { 0.60 } else { 0.35 }),
         None,
-        &RoundedRect::from_rect(row.role_rect, f64::from(tokens.radii.md)),
+        &RoundedRect::from_rect(rect, f64::from(tokens.radii.md)),
     );
-    let role_text = role_label(row.role);
+    let role_text = label;
     let (rw, rh) = text_renderer.measure(role_text, detail_size, None);
     // text_primary, not the chip's own hue: same-hue label on fill is unreadable.
     text_renderer.draw_text(
@@ -1704,28 +1821,189 @@ fn draw_member_role_chip(
         colors.text_primary.with_alpha_factor(chip_alpha),
         at(
             transform,
-            row.role_rect.x0 + 10.0,
-            row.role_rect.center().y - f64::from(rh) / 2.0,
+            rect.x0 + 10.0,
+            rect.center().y - f64::from(rh) / 2.0,
         ),
         None,
     );
     if role_interactive {
         let glyph = 12.0_f64;
-        let gx =
-            (row.role_rect.x0 + 10.0 + f64::from(rw) + 6.0).min(row.role_rect.x1 - 6.0 - glyph);
+        let gx = (rect.x0 + 10.0 + f64::from(rw) + 6.0).min(rect.x1 - 6.0 - glyph);
         draw_icon(
             scene,
             transform,
             Rect::new(
                 gx,
-                row.role_rect.center().y - glyph / 2.0,
+                rect.center().y - glyph / 2.0,
                 gx + glyph,
-                row.role_rect.center().y + glyph / 2.0,
+                rect.center().y + glyph / 2.0,
             ),
             Icon::ChevronRight,
             chip_tint,
             LUCIDE_DEFAULT_STROKE_PX,
         );
+    }
+}
+
+/// Paint the non-human collaborator roster. The square identity mark and
+/// persistent AGENT badge are intentionally redundant: shape, text and
+/// placement all communicate that these rows are not people.
+pub fn draw_agents_pane(
+    scene: &mut Scene,
+    transform: Affine,
+    pane_rect: Rect,
+    ws: &Workspace,
+    is_owner: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
+        return;
+    }
+    let rows = agents_pane_rows(ws, pane_rect);
+    let count = ws.agent_members().len();
+    draw_pane_intro(
+        scene,
+        transform,
+        pane_rect,
+        Icon::Sparkles,
+        &format!("{count} agent collaborators"),
+        "Admission and scoped grants are separate; every agent action remains attributed.",
+        if is_owner { "You manage" } else { "View only" },
+        text_renderer,
+        theme,
+    );
+    if rows.is_empty() {
+        let empty = Rect::new(
+            pane_rect.x0,
+            pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
+            pane_rect.x1,
+            pane_rect.y1,
+        );
+        draw_empty_state(
+            scene,
+            transform,
+            empty,
+            Icon::Sparkles,
+            (
+                "No agents have access",
+                "Admitted agents appear here separately from people.",
+            ),
+            text_renderer,
+            theme,
+        );
+        return;
+    }
+    draw_section_header(
+        scene,
+        transform,
+        Point::new(
+            pane_rect.x0 + PANE_PAD_X,
+            pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
+        ),
+        "AGENTS",
+        Some(count),
+        text_renderer,
+        theme,
+    );
+    for row in &rows {
+        draw_agent_row(scene, transform, row, is_owner, text_renderer, theme);
+    }
+    if !is_owner {
+        draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
+    }
+}
+
+fn draw_agent_row(
+    scene: &mut Scene,
+    transform: Affine,
+    row: &AgentRow,
+    is_owner: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let tokens = &theme.tokens;
+    let colors = &tokens.colors;
+    draw_row_card(scene, transform, row.row_rect, theme);
+    let avatar_size = 28.0;
+    let avatar = Rect::new(
+        row.row_rect.x0 + 12.0,
+        row.row_rect.center().y - avatar_size / 2.0,
+        row.row_rect.x0 + 12.0 + avatar_size,
+        row.row_rect.center().y + avatar_size / 2.0,
+    );
+    let name = short_id(&row.agent);
+    draw_avatar(scene, transform, avatar, &name, true, text_renderer, theme);
+    let badge = draw_pill(
+        scene,
+        transform,
+        Point::new(row.role_rect.x0 - 12.0, row.row_rect.center().y),
+        "AGENT",
+        Tint {
+            color: colors.accent[5],
+            alpha: 1.0,
+        },
+        text_renderer,
+        theme,
+    );
+    let text_x = avatar.x1 + 12.0;
+    let text_max = badge.x0 - 8.0 - text_x;
+    let title_size = tokens.typography.scale.sm;
+    let title = elide(&name, title_size, text_max, text_renderer);
+    text_renderer.draw_text(
+        scene,
+        &title,
+        title_size,
+        colors.text_primary,
+        at(transform, text_x, row.row_rect.y0 + 12.0),
+        None,
+    );
+    let admission = agent_admission_label(row.role);
+    let detail = match row.grant_count {
+        0 => format!("{admission} · no scoped permissions"),
+        1 => format!("{admission} · 1 scoped permission"),
+        n => format!("{admission} · {n} scoped permissions"),
+    };
+    let detail_size = tokens.typography.scale.xs;
+    let detail = elide(&detail, detail_size, text_max, text_renderer);
+    text_renderer.draw_text(
+        scene,
+        &detail,
+        detail_size,
+        colors.text_dim,
+        at(transform, text_x, row.row_rect.y0 + 32.0),
+        None,
+    );
+    draw_pill(
+        scene,
+        transform,
+        Point::new(row.role_rect.x1, row.role_rect.center().y),
+        "Admitted",
+        Tint {
+            color: colors.semantic.success,
+            alpha: 1.0,
+        },
+        text_renderer,
+        theme,
+    );
+    draw_danger_button(
+        scene,
+        transform,
+        row.remove_rect,
+        "Revoke",
+        is_owner,
+        text_renderer,
+        theme,
+    );
+}
+
+fn agent_admission_label(role: CapRole) -> &'static str {
+    match role {
+        CapRole::Owner => "Admin admission",
+        CapRole::Editor => "Write admission",
+        CapRole::Commenter => "Comment admission",
+        CapRole::Viewer => "Read admission",
+        CapRole::Denied => "Blocked",
     }
 }
 
@@ -2133,8 +2411,8 @@ fn classify_subject(subject: &Subject) -> GrantSubject {
             id: format!("everyone with {}", role_label(*role)),
         },
         Subject::Principal(Principal::Agent(id)) => GrantSubject {
-            kind: SubjectKind::Other,
-            id: format!("agent {}", short_id(id)),
+            kind: SubjectKind::Agent,
+            id: id.clone(),
         },
         Subject::Principal(Principal::Token(id)) => GrantSubject {
             kind: SubjectKind::Other,
@@ -2157,7 +2435,10 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, &CapOverride)> {
         .capabilities
         .iter()
         .filter(|cap| {
-            cap.effect == Effect::Grant && !(cap.is_room_membership() && cap.subject_is_person())
+            let membership_has_own_roster = cap.is_room_membership()
+                && (cap.subject_is_person()
+                    || matches!(cap.subject, Subject::Principal(Principal::Agent(_))));
+            cap.effect == Effect::Grant && !membership_has_own_roster
         })
         .map(|cap| (classify_subject(&cap.subject), cap))
         .collect();
@@ -2703,7 +2984,7 @@ fn draw_permission_row(
         transform,
         avatar,
         &title,
-        row.subject.kind == SubjectKind::App,
+        matches!(row.subject.kind, SubjectKind::App | SubjectKind::Agent),
         text_renderer,
         theme,
     );
@@ -2785,6 +3066,8 @@ mod tab_tests {
         let mut ws = ws_settings_default();
         ws.select_tab(WsTab::Members);
         assert_eq!(ws.active_tab, WsTab::Members);
+        ws.select_tab(WsTab::Agents);
+        assert_eq!(ws.active_tab, WsTab::Agents);
         ws.select_tab(WsTab::Permissions);
         assert_eq!(ws.active_tab, WsTab::Permissions);
         ws.select_tab(WsTab::General);
@@ -2803,6 +3086,7 @@ mod tab_tests {
             [
                 WsTab::General,
                 WsTab::Members,
+                WsTab::Agents,
                 WsTab::Permissions,
                 WsTab::Apps
             ]
@@ -2813,7 +3097,7 @@ mod tab_tests {
     fn compact_labels_keep_every_destination_distinct() {
         assert_eq!(
             WsTab::all().map(|tab| tab.compact_label()),
-            ["General", "People", "Privacy", "Apps"]
+            ["General", "People", "Agents", "Privacy", "Apps"]
         );
     }
 
@@ -2857,11 +3141,12 @@ mod tab_tests {
         let ws = ws_settings_default();
         let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
         let rows = ws.nav_rows(modal);
-        assert_eq!(rows.len(), 4);
+        assert_eq!(rows.len(), 5);
         assert_eq!(rows[0].0, WsTab::General);
         assert_eq!(rows[1].0, WsTab::Members);
-        assert_eq!(rows[2].0, WsTab::Permissions);
-        assert_eq!(rows[3].0, WsTab::Apps);
+        assert_eq!(rows[2].0, WsTab::Agents);
+        assert_eq!(rows[3].0, WsTab::Permissions);
+        assert_eq!(rows[4].0, WsTab::Apps);
         for (_, r) in &rows {
             assert!((r.height() - NAV_ROW_HEIGHT).abs() < f64::EPSILON);
             assert!(r.x1 > r.x0);
@@ -3183,6 +3468,123 @@ mod members_pane_tests {
             &theme,
         );
         assert!(scene.encoding().draw_tags.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod agents_pane_tests {
+    use super::*;
+    use crate::shell::state::{ResourceRef, Verb, WorkspaceId};
+
+    const OWNER: &str = "owner-user";
+    const AGENT: &str = "scribe-agent";
+
+    fn ws_with_agent() -> Workspace {
+        let mut ws = Workspace::new(WorkspaceId::from(17), "agents-test");
+        ws.set_owner(OWNER);
+        ws.grant_as(
+            &OWNER.to_string(),
+            CapOverride::membership(Subject::agent(AGENT), ws.room.to_string(), Verb::Read),
+        )
+        .expect("owner admits agent");
+        ws.grant_as(
+            &OWNER.to_string(),
+            CapOverride::grant(
+                Subject::agent(AGENT),
+                Scope::App("dev.qos.notes".into()),
+                Verb::Write,
+            ),
+        )
+        .expect("owner grants scoped access");
+        ws
+    }
+
+    #[test]
+    fn agent_rows_are_separate_and_count_only_scoped_permissions() {
+        let ws = ws_with_agent();
+        assert_eq!(
+            members_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0)).len(),
+            1
+        );
+        let rows = agents_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].agent, AGENT);
+        assert_eq!(rows[0].role, CapRole::Viewer);
+        assert_eq!(
+            rows[0].grant_count, 1,
+            "membership is not an extra permission"
+        );
+    }
+
+    #[test]
+    fn admission_does_not_become_ambient_human_role_authority() {
+        let ws = ws_with_agent();
+        assert!(ws.allows(
+            &ws.actor_for_agent(AGENT),
+            &ResourceRef::App("dev.qos.notes".into()),
+            Verb::Write,
+        ));
+        assert!(
+            !ws.allows(
+                &ws.actor_for_agent(AGENT),
+                &ResourceRef::App("dev.qos.sheets".into()),
+                Verb::Write,
+            ),
+            "an Editor admission pass must not become ambient human-role authority",
+        );
+    }
+
+    #[test]
+    fn revoking_an_agent_removes_membership_and_scoped_grants() {
+        let mut ws = ws_with_agent();
+        let edit = remove_agent(&mut ws, &OWNER.to_string(), AGENT);
+        assert_eq!(edit.revoked.len(), 2);
+        assert!(ws.agent_members().is_empty());
+        assert!(!ws.allows(
+            &ws.actor_for_agent(AGENT),
+            &ResourceRef::App("dev.qos.notes".into()),
+            Verb::Write,
+        ));
+    }
+
+    #[test]
+    fn non_owner_cannot_remove_an_agent() {
+        let mut ws = ws_with_agent();
+        let before = ws.capabilities.clone();
+        assert!(remove_agent(&mut ws, &"viewer".into(), AGENT).is_empty());
+        assert_eq!(ws.capabilities, before);
+    }
+
+    #[test]
+    fn admitted_agent_is_a_first_class_permission_subject() {
+        let ws = ws_with_agent();
+        let subjects = grant_subjects(&ws);
+        let index = subjects
+            .iter()
+            .position(|subject| subject.kind == SubjectKind::Agent && subject.id == AGENT)
+            .expect("agent is offered in the permission composer");
+        let draft = GrantDraft {
+            subject_index: index,
+            ..GrantDraft::default()
+        };
+        let cap = draft_capability(&ws, &draft).expect("agent grant can be composed");
+        assert!(subject_is_agent(&cap.subject, AGENT));
+    }
+
+    #[test]
+    fn agent_membership_is_not_duplicated_in_permissions() {
+        let ws = ws_with_agent();
+        let layout = permissions_pane_layout(&ws, Rect::new(0.0, 0.0, 660.0, 620.0));
+        assert!(layout.rows.iter().all(|row| !row.cap_id.is_empty()));
+        assert_eq!(
+            layout
+                .rows
+                .iter()
+                .filter(|row| row.subject.kind == SubjectKind::Agent)
+                .count(),
+            1,
+            "only the explicit app grant belongs in Privacy & Security",
+        );
     }
 }
 
