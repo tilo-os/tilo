@@ -88,9 +88,11 @@ class Case:
 CASES = (
     Case(
         "libadwaita",
-        ("adwaita-1-demo",),
-        "org.gnome.Adwaita1.Demo",
-        (0.05, 0.06),
+        ("gnome-text-editor",),
+        "gnome-text-editor",
+        # Blank document body in the real GNOME/libadwaita editor.
+        (0.50, 0.50),
+        ("--standalone",),
     ),
     Case(
         "qt6",
@@ -150,6 +152,10 @@ def frame_for(control: Control, app_id: str) -> dict | None:
     frames = envelope.get("foreign_frames", {}).get("frames", [])
     for frame in frames:
         if frame.get("app_id") == app_id and frame.get("frame_seq", 0) > 0:
+            # Do not type into a client hidden by the shell's opening card.
+            # CSD buffers can include shadows beyond the tab rect, in which
+            # case the shell deliberately waits for its bounded presentation
+            # fallback before accepting this as visually ready.
             if not frame.get("presented"):
                 continue
             rect = frame.get("rect")
@@ -168,6 +174,14 @@ def wait_for_frame_after(control: Control, app_id: str, sequence: int) -> dict:
             else None
         ),
     )
+
+
+def type_with_frame_barriers(control: Control, app_id: str, frame: dict, text: str) -> dict:
+    """Type through slow toolkit queues without treating an intermediate repaint as completion."""
+    for character in text:
+        control.send({"op": "type", "text": character})
+        frame = wait_for_frame_after(control, app_id, frame["frame_seq"])
+    return frame
 
 
 def snapshot(control: Control, destination: Path) -> None:
@@ -277,7 +291,7 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
             )
 
             frame = wait_until(
-                f"{case.name} to present a real frame",
+                f"{case.name} to render a real frame",
                 lambda: frame_for(control, case.app_id),
             )
             rect = frame["rect"]
@@ -290,18 +304,19 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
             # Clear any toolkit-provided sample value, then type on both sides
             # of a genuine pointer-leave transition.
             control.send({"op": "click_at", "x": click_x, "y": click_y})
+            frame = wait_for_frame_after(control, case.app_id, frame["frame_seq"])
             control.chord("a")
             control.send({"op": "key", "key": "Backspace"})
-            control.send({"op": "type", "text": prefix})
-            frame = wait_for_frame_after(control, case.app_id, frame["frame_seq"])
+            time.sleep(0.1)
+            frame = frame_for(control, case.app_id) or frame
+            frame = type_with_frame_barriers(control, case.app_id, frame, prefix)
             control.send({"op": "pointer_move", "x": 10, "y": SCREEN[1] - 10})
             # Let the pointer-leave commit settle before taking the sequence
             # barrier for the suffix. Otherwise that redraw could satisfy the
             # wait while the application's last key is still queued.
             time.sleep(0.1)
             frame = frame_for(control, case.app_id) or frame
-            control.send({"op": "type", "text": suffix})
-            frame = wait_for_frame_after(control, case.app_id, frame["frame_seq"])
+            frame = type_with_frame_barriers(control, case.app_id, frame, suffix)
             control.chord("a")
             control.chord("c")
 
@@ -330,7 +345,12 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
         except Exception:
             if control_path.exists():
                 try:
-                    snapshot(Control(control_path), case_artifacts / "failed.png")
+                    failed_control = Control(control_path)
+                    diagnostics = failed_control.send({"op": "foreign_frames"})
+                    (case_artifacts / "foreign-frames.json").write_text(
+                        json.dumps(diagnostics, indent=2) + "\n"
+                    )
+                    snapshot(failed_control, case_artifacts / "failed.png")
                 except Exception:
                     pass
             raise
