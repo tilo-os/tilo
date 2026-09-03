@@ -303,6 +303,29 @@ pub trait Widget {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId);
+
+    /// Return a compact, path-free projection of state that may be resumed on
+    /// another device owned by the same person. The host reports it to the
+    /// local shell only; returning it never changes focus or starts playback.
+    fn continuation_metadata(
+        &self,
+        _state: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<crate::collaboration::ContinuationMetadata> {
+        None
+    }
+
+    /// Apply a continuation projection after this process was launched into a
+    /// synchronized tab. Implementations must not change focus or start media;
+    /// malformed/unknown metadata is ignored.
+    fn restore_continuation_metadata(
+        &mut self,
+        _metadata: &crate::collaboration::ContinuationMetadata,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        false
+    }
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
         false
     }

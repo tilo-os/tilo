@@ -211,6 +211,12 @@ interface ChannelHandle {
   # ordinary action once it is written; asking for the panel is not.
   composeRemark @16 (reference :Text, x :Float32, y :Float32,
                      w :Float32, h :Float32) -> ();
+
+  # A small, path-free continuation projection for this application's current
+  # CRDT state. This is session-local input to the shell's same-identity
+  # continuation lane; it is neither relayed to collaborators nor an
+  # instruction to restore/focus/play anything.
+  reportContinuation @25 (appId :Text, schemaVersion :UInt16, metadata :Data) -> ();
 }
 
 interface ActionCatalogueStream {

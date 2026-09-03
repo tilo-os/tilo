@@ -47,7 +47,13 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         if started.iter().any(|a| a.eq_ignore_ascii_case(&item.app_id)) {
             continue;
         }
-        if tree.workspaces.get(item.workspace).is_none() {
+        let Some(workspace) = tree.workspaces.get(item.workspace) else {
+            continue;
+        };
+        // A same-identity continuation can discover the room before its
+        // signed membership document arrives. Keep it pending so the next
+        // reconciliation pass opens it as soon as authority is available.
+        if workspace.owner.is_none() {
             continue;
         }
         let note = match open_for(tree, &item) {
@@ -113,6 +119,22 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), String> {
     };
     // Before the launch, or a note written after races the window's toplevel.
     launcher::set_pending_placement(&item.app_id, Placement::IntoTab(item.tab));
+    if let Ok(registry) = crate::shell::personal_continuity_registry::global_registry().lock()
+        && let Ok(launch) =
+            crate::shell::personal_continuity::LaunchIntent::app(item.app_id.clone())
+        && let Some(resume) = registry.resume_for_tab(
+            ws.room,
+            crate::shell::personal_continuity::AppInstanceId(item.tab),
+            &launch,
+        )
+    {
+        launcher::stage_continuation_resume(
+            ws.room,
+            item.tab,
+            resume.schema_version(),
+            resume.bytes().to_vec(),
+        );
+    }
     match launcher::launch_in_workspace(&item.app_id, ws) {
         Ok(_) => Ok(()),
         Err(err) => {

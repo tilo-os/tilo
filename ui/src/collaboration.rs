@@ -31,6 +31,31 @@ use tokio::task::LocalSet;
 /// something upstream is wedged.
 const SHOVEL_INIT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Inert, app-owned resume projection sent only to the local shell.
+///
+/// The bytes are deliberately opaque to the toolkit so each app can version
+/// its CRDT-derived schema. The shell validates size and path redaction before
+/// retaining them for same-identity continuation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContinuationMetadata {
+    pub schema_version: u16,
+    pub bytes: Vec<u8>,
+}
+
+/// Decode the launcher-only resume payload. Invalid input is ignored so an
+/// app outside qOS or an older sender opens normally.
+pub fn continuation_restore_env() -> Option<ContinuationMetadata> {
+    let bytes = hex::decode(std::env::var("QOS_CONTINUITY_RESUME_HEX").ok()?).ok()?;
+    let schema_version = std::env::var("QOS_CONTINUITY_RESUME_SCHEMA")
+        .ok()?
+        .parse()
+        .ok()?;
+    (!bytes.is_empty() && bytes.len() <= 32 * 1024).then_some(ContinuationMetadata {
+        schema_version,
+        bytes,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub enum CollabRequest {
     Hello {
@@ -89,6 +114,14 @@ pub enum CollabRequest {
     PublishActions {
         app_id: String,
         actions: Vec<ExportedAction>,
+    },
+    /// App-owned CRDT state projected for same-identity continuation. The
+    /// local broker authenticates the route and stores this only for shell
+    /// capture; it is never a room action or a restore command.
+    ReportContinuation {
+        app_id: String,
+        schema_version: u16,
+        metadata: Vec<u8>,
     },
     /// Report the terminal result of a directed invocation.
     CompleteInvocation {
@@ -719,8 +752,21 @@ impl CollaborationManager {
     /// per `(app, room)`); use [`Self::for_record`] for apps that have
     /// adopted records.
     pub fn new() -> Self {
-        Self::new_scoped(None)
+        Self::new_scoped(
+            continuation_instance_env().map(|instance| format!("continuation:{instance}")),
+        )
     }
+}
+
+/// Launcher-issued instance identity for an app window. It deliberately rides
+/// in the existing record component of the authenticated CRDT route so the
+/// broker can retain multiple Browser windows in one workspace without
+/// conflating their continuation metadata.
+fn continuation_instance_env() -> Option<String> {
+    let value = std::env::var("QOS_CONTINUITY_INSTANCE").ok()?;
+    let value = value.trim();
+    (!value.is_empty() && value.len() <= 256 && !value.contains(['/', '\\']))
+        .then(|| value.to_owned())
 }
 
 impl Default for CollaborationManager {
@@ -1895,6 +1941,19 @@ async fn dispatch_sdk_request(
                 .collect::<Vec<_>>();
             if let Err(error) = route.channel.publish_actions(&app_id, &actions).await {
                 tracing::warn!(%error, "collab: publishing resource/action surface failed");
+            }
+        }
+        CollabRequest::ReportContinuation {
+            app_id,
+            schema_version,
+            metadata,
+        } => {
+            if let Err(error) = route
+                .channel
+                .report_continuation(&app_id, schema_version, &metadata)
+                .await
+            {
+                tracing::warn!(%error, "collab: reporting continuation metadata failed");
             }
         }
         CollabRequest::CompleteInvocation { id, code, message } => {

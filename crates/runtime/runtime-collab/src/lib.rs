@@ -211,6 +211,24 @@ pub struct ChannelHandle {
 }
 
 impl ChannelHandle {
+    /// Report a bounded, inert continuation projection to the local shell.
+    /// The broker binds `app_id` to this certified channel rather than trusting
+    /// the caller's claim, and never relays this report to collaboration peers.
+    pub async fn report_continuation(
+        &self,
+        app_id: &str,
+        schema_version: u16,
+        metadata: &[u8],
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.report_continuation_request();
+        let mut builder = req.get();
+        builder.set_app_id(app_id);
+        builder.set_schema_version(schema_version);
+        builder.set_metadata(metadata);
+        req.send().promise.await?;
+        Ok(())
+    }
+
     /// Submit a single signed op into the channel. The op blob is
     /// a postcard-encoded `collab-types::SignedOp`.
     ///
