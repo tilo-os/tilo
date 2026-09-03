@@ -145,6 +145,17 @@ impl AccountList {
         self.accounts.is_empty()
     }
 
+    /// The current painted bounds for an account row. The root uses this when
+    /// exporting its virtual accessibility list, so assistive technology and
+    /// pointer hit-testing describe the same scrolled geometry.
+    pub fn account_bounds(&self, id: AccountId) -> Option<Rect> {
+        self.accounts
+            .iter()
+            .position(|account| account.id == id)
+            .map(|index| self.row_rect(index))
+            .filter(|rect| rect.intersect(self.rect).area() > 0.0)
+    }
+
     fn content_height(&self) -> f64 {
         self.accounts.len() as f64 * (ROW_HEIGHT + ROW_GAP)
     }
