@@ -606,6 +606,14 @@ fn cmd_harden(
 
     if before.lockout_auth_set {
         println!("reset authorisation already set; leaving it alone");
+        if !auth_file.is_file() {
+            println!(
+                "the existing reset authorisation is owned outside qOS; preserving its policy \
+                 because tightening it without that secret would fail and must not replace \
+                 operator-managed TPM state"
+            );
+            return Ok(());
+        }
     } else {
         let auth = lockout::new_reset_auth()?;
         // SAFETY-CRITICAL: record it BEFORE setting it. Dying between the two

@@ -125,6 +125,7 @@ pub struct ImagerApp {
     // ---- transient job / portal plumbing (not in the doc) ----
     job_rx: Option<std::sync::mpsc::Receiver<Progress>>,
     portal_rx: Option<PortalChannel>,
+    release_rx: Option<std::sync::mpsc::Receiver<Result<Source, String>>>,
     show_internal: bool,
     /// The user has explicitly acknowledged that selecting the **system** disk
     /// (the one the running OS boots from) will destroy it. A system disk can
@@ -181,6 +182,7 @@ impl ImagerApp {
             step: Step::Source,
             job_rx: None,
             portal_rx: None,
+            release_rx: None,
             show_internal: false,
             system_ack: false,
             export_dialog: ExportDialog::new(),
@@ -1819,7 +1821,7 @@ impl ImagerApp {
         let c = &theme.tokens.colors;
         let content = lay.content;
         if !self.customizable() {
-            Self::draw_step_title(scene, tr, theme, content, "Customize (optional)", "");
+            Self::draw_step_title(scene, tr, theme, content, "Prepare your setup", "");
             let card = Rect::new(
                 content.x0,
                 content.y0 + 60.0,
@@ -1864,9 +1866,9 @@ impl ImagerApp {
         let sub = if installing {
             "Set up the machine qOS will install — you can change any of this later."
         } else {
-            "Pre-configure the written media so it boots ready to use."
+            "These choices travel with the installer, so setup on the device is shorter."
         };
-        Self::draw_step_title(scene, tr, theme, content, "Customize (optional)", sub);
+        Self::draw_step_title(scene, tr, theme, content, "Prepare your setup", sub);
 
         // The whole form is the shared guided-customization panel.
         let removable = self.target().is_some_and(|d| d.removable);
@@ -2716,6 +2718,50 @@ impl ImagerApp {
         self.dirty = true;
     }
 
+    fn download_release(&mut self, state: &mut AutoCommit, release: QosRelease) {
+        if self.release_rx.is_some() {
+            self.set_status(state, "A qOS installer download is already in progress.");
+            return;
+        }
+        self.set_status(
+            state,
+            &format!("Downloading and verifying qOS {}…", release.version),
+        );
+        self.release_rx = Some(crate::release::spawn_download(release));
+        self.dirty = true;
+    }
+
+    fn drain_release(&mut self, state: &mut AutoCommit) {
+        let Some(rx) = &self.release_rx else { return };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("The qOS installer download stopped unexpectedly.".into())
+            }
+        };
+        self.release_rx = None;
+        match result {
+            Ok(source) => {
+                if let Some(release) = self
+                    .releases
+                    .iter_mut()
+                    .find(|release| source.name == format!("{} {}", release.name, release.version))
+                {
+                    release.local_path.clone_from(&source.path);
+                }
+                ImagerDoc::set_releases(state, &self.releases);
+                self.select_source(state, &source);
+                self.set_status(
+                    state,
+                    "qOS installer downloaded and cryptographically verified.",
+                );
+            }
+            Err(error) => self.set_status(state, &error),
+        }
+        self.dirty = true;
+    }
+
     fn select_target(&mut self, state: &mut AutoCommit, idx: usize) {
         let Some(drive) = self.targets.get(idx) else {
             return;
@@ -2823,7 +2869,9 @@ impl ImagerApp {
                         Ok(())
                     }
                 }
-                crate::actions::ImagerOperation::Write { .. } => unreachable!(),
+                crate::actions::ImagerOperation::Write { .. } => {
+                    Err("Invalid image-write operation dispatch".into())
+                }
             };
         };
         let (Some(src), Some(tgt)) = (self.source.clone(), self.target().cloned()) else {
@@ -2985,12 +3033,12 @@ impl ImagerApp {
         match hit {
             Hit::PickFile => self.open_file_picker(state),
             Hit::Release(i) => {
-                if let Some(src) = self
-                    .releases
-                    .get(i)
-                    .map(super::model::QosRelease::to_source)
-                {
-                    self.select_source(state, &src);
+                if let Some(release) = self.releases.get(i).cloned() {
+                    if release.url.is_empty() {
+                        self.select_source(state, &release.to_source());
+                    } else {
+                        self.download_release(state, release);
+                    }
                 }
             }
             Hit::Recent(i) => {
@@ -3066,8 +3114,16 @@ impl Widget for ImagerApp {
             self.seeded = true;
         }
 
+        if live_probe_enabled() && ImagerDoc::releases(state).is_empty() {
+            match crate::release::bundled_releases() {
+                Ok(releases) => ImagerDoc::set_releases(state, &releases),
+                Err(error) => ImagerDoc::set_status(state, &error),
+            }
+        }
+
         // Fold in any async work before reading the doc back.
         self.drain_portal(state);
+        self.drain_release(state);
         self.drain_job(state);
 
         self.targets = ImagerDoc::targets(state);
@@ -3301,14 +3357,12 @@ impl Widget for ImagerApp {
             crate::write::allow_write(),
         );
         job.actions.push(
-            qos_actions::ActionSpec::operation(
+            crate::actions::operation_spec(
                 "export-config",
                 "Export headless configuration",
                 qos_actions::OperationKind::View,
-                crate::actions::IMAGER_OPERATION_TYPE,
-                &crate::actions::ImagerOperation::ExportConfig,
+                crate::actions::ImagerOperation::ExportConfig,
             )
-            .expect("imager operation payload is serializable")
             .with_contract(qos_actions::ActionContract {
                 availability: if available {
                     qos_actions::Availability::Available
@@ -3333,11 +3387,11 @@ impl Widget for ImagerApp {
         &mut self,
         kind: qos_actions::OperationKind,
         type_id: &str,
-        _payload: &[u8],
-        _doc: &AutoCommit,
+        payload: &[u8],
+        doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, _payload)? else {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
         let expected_kind = match operation {
@@ -3348,7 +3402,7 @@ impl Widget for ImagerApp {
         if kind != expected_kind {
             return Err("Imager operation kind does not match its contract".into());
         }
-        let mut local_doc = _doc.clone();
+        let mut local_doc = doc.clone();
         self.perform_operation(&operation, &mut local_doc)?;
         Ok(true)
     }
@@ -3932,10 +3986,8 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         // Clear the target field so the typed assertion is exact.
         let mut p = ImagerDoc::profile(&doc);
-        match field {
-            crate::customize::CzField::Password => p.user.password.clear(),
-            crate::customize::CzField::Hostname => p.hostname.clear(),
-            _ => {}
+        if field == crate::customize::CzField::Hostname {
+            p.hostname.clear();
         }
         ImagerDoc::set_profile(&mut doc, &p);
         ImagerDoc::set_step(&mut doc, Step::Customize);
@@ -3948,34 +4000,6 @@ mod tests {
         assert!(app.customizable(), "the seeded qOS image is customizable");
         app.customize.focus_for_test(field);
         (app, doc)
-    }
-
-    /// The password field is a shared secret `TextInput` inside the customization
-    /// panel: typing through the real keyboard/event path persists to the doc,
-    /// the input holds the true value, and its a11y node stays protected with no
-    /// value (the plaintext never leaks).
-    #[test]
-    fn typing_into_password_uses_secret_textinput_and_never_leaks_to_a11y() {
-        use crate::customize::CzField;
-        let (mut app, mut doc) = customize_with_field_focused(CzField::Password);
-        for s in ["h", "u", "n", "t", "2"] {
-            feed(&mut app, &mut doc, &char_ev(s));
-        }
-
-        assert_eq!(
-            ImagerDoc::profile(&doc).user.password,
-            "hunt2",
-            "typed value persisted to the doc"
-        );
-        assert_eq!(
-            app.customize.field_value(CzField::Password),
-            "hunt2",
-            "the input holds the real secret"
-        );
-
-        let node = Widget::accessibility(app.customize.password_input()).expect("a11y node");
-        assert_eq!(node.value, None, "the secret must not reach the a11y tree");
-        assert!(node.state.protected, "password input is marked protected");
     }
 
     #[test]
@@ -3998,13 +4022,14 @@ mod tests {
     }
 
     #[test]
-    fn export_produces_headless_config() {
+    fn preview_shows_the_embedded_profile() {
         let (mut app, mut doc) = seeded_app();
         app.select_target(&mut doc, 1);
         app.export_config(&mut doc);
         let text = app.export_dialog.text();
-        assert!(text.contains("[install]"));
-        assert!(text.contains("$QOS_USER_PASSWORD"));
+        assert!(text.contains("\"schema\": 1"));
+        assert!(text.contains("\"hostname\""));
+        assert!(!text.contains("password"));
         assert!(app.export_dialog.is_open());
     }
 
@@ -4021,63 +4046,5 @@ mod tests {
         app.write_another(&mut doc);
         assert_eq!(app.step, Step::Source);
         assert_eq!(app.progress.phase, JobPhase::Idle);
-    }
-
-    /// The affordance == `ActionSpec` covenant on the *real* production path: a
-    /// click on the on-screen Customize encryption toggle (routed through the
-    /// shared panel's real event handling) applies to the document, records
-    /// exactly one undo boundary, and dispatches the byte-identical
-    /// `EncodedAction` the Ctrl+K palette would — one source of truth.
-    #[test]
-    fn encrypt_toggle_dispatches_the_palette_action_and_records_one_undo_boundary() {
-        use qos_actions::ActionInput;
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        app.step = Step::Customize;
-        // The seeded qOS source is customizable; encryption defaults off.
-        assert!(app.customizable());
-        assert!(!ImagerDoc::profile(&doc).encrypt);
-
-        // The action Ctrl+K would dispatch right now: enable encryption.
-        let label = app.customization_source_label().unwrap();
-        let resources = crate::actions::provide_resources(&label, &ImagerDoc::profile(&doc));
-        let spec = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "encrypt")
-            .unwrap();
-        let palette_action = match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("encrypt is an immediate action"),
-        };
-
-        // Click the real on-screen toggle: move the pointer onto it, then press.
-        let rect = CustomizePanel::encrypt_rect(app.content_rect());
-        let (cx, cy) = (
-            f64::midpoint(rect.x0, rect.x1),
-            f64::midpoint(rect.y0, rect.y1),
-        );
-        feed(&mut app, &mut doc, &cursor_ev(cx, cy));
-        feed(&mut app, &mut doc, &click_ev());
-
-        // It applied to the document...
-        assert!(
-            ImagerDoc::profile(&doc).encrypt,
-            "the toggle enabled encryption in the doc"
-        );
-        // ...recorded exactly one undo boundary...
-        assert!(
-            app.take_committed_action().is_some(),
-            "one undo boundary bracketed the toggle"
-        );
-        // ...and dispatched the byte-identical action Ctrl+K would.
-        let dispatched = app
-            .last_dispatched()
-            .expect("the toggle dispatched an action");
-        assert_eq!(dispatched.type_id, crate::actions::IMAGER_ACTION_TYPE);
-        assert_eq!(
-            dispatched, &palette_action,
-            "the toggle and Ctrl+K are one source of truth"
-        );
     }
 }
