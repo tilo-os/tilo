@@ -5,6 +5,11 @@ and the live installer. A release is not complete unless the walkthrough works
 on Linux, Windows, and macOS with a real removable drive, and then in a UEFI VM
 for both erase-disk and alongside installation.
 
+For the shorter user guide, start with [`getting-started.md`](getting-started.md).
+The machine-readable platform and requirement source of truth is
+[`install-contract.json`](install-contract.json); release tooling copies that
+contract to the website only after the matching artifacts pass promotion.
+
 ## Before downloading
 
 Back up the computer. For a Windows dual boot, save the BitLocker recovery key,
