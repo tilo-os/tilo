@@ -59,6 +59,11 @@ pub struct PersistedContentPeer {
     pub endpoint: iroh_base::EndpointAddr,
     #[serde(default)]
     pub ticket: Option<String>,
+    /// Enrolled relay service which authenticated this endpoint. Legacy
+    /// entries have no provenance and are never removed by a home-peer
+    /// lifecycle event.
+    #[serde(default)]
+    pub relay_service_id: Option<[u8; 32]>,
 }
 
 impl PersistedContentPeer {
@@ -101,6 +106,7 @@ pub fn load_persisted_content_peers(cache_dir: &Path) -> anyhow::Result<Vec<Pers
             .map(|endpoint| PersistedContentPeer {
                 endpoint,
                 ticket: None,
+                relay_service_id: None,
             })
             .collect(),
     };
@@ -136,6 +142,9 @@ fn persist_content_peer(cache_dir: &Path, peer: PersistedContentPeer) -> anyhow:
         if refreshed.ticket.is_none() {
             refreshed.ticket = previous.ticket;
         }
+        if refreshed.relay_service_id.is_none() {
+            refreshed.relay_service_id = previous.relay_service_id;
+        }
         peers.push(refreshed);
     } else {
         if peers.len() == MAX_PERSISTED_CONTENT_PEERS {
@@ -145,6 +154,26 @@ fn persist_content_peer(cache_dir: &Path, peer: PersistedContentPeer) -> anyhow:
     }
     atomic_file::write(&content_peers_path(cache_dir), &serde_json::to_vec(&peers)?)?;
     Ok(())
+}
+
+/// Remove every endpoint nominated through a specific enrolled relay. The
+/// durable catalog and the live [`Hydrator`] are updated as one control-plane
+/// operation, so a daemon restart cannot resurrect a removed home peer.
+fn remove_persisted_content_peers(
+    cache_dir: &Path,
+    relay_service_id: [u8; 32],
+) -> anyhow::Result<Vec<iroh_base::PublicKey>> {
+    let mut peers = load_persisted_content_peers(cache_dir)?;
+    let mut removed = Vec::new();
+    peers.retain(|peer| {
+        let matches = peer.relay_service_id == Some(relay_service_id);
+        if matches {
+            removed.push(peer.endpoint.id);
+        }
+        !matches
+    });
+    atomic_file::write(&content_peers_path(cache_dir), &serde_json::to_vec(&peers)?)?;
+    Ok(removed)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -345,6 +374,19 @@ pub struct ContentPeerRequest {
     /// Omitted only by old clients, which preserve blob-only behaviour.
     #[serde(default)]
     pub ticket: Option<String>,
+    /// Relay service that authenticated the endpoint discovery. Required for
+    /// newly discovered home-peer endpoints; omitted by legacy callers.
+    #[serde(default)]
+    pub relay_service_id: Option<[u8; 32]>,
+}
+
+/// Authenticated local Files-control requests. The Unix socket is owned by
+/// the daemon and group-restricted to the enrolled identity; callers cannot
+/// edit the cache directly.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ContentPeerControlRequest {
+    Register(ContentPeerRequest),
+    RemoveRelay { relay_service_id: [u8; 32] },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -388,8 +430,8 @@ pub async fn serve_local_content_peer(
             let rebind = rebind.clone();
             tokio::spawn(async move {
                 let (accepted, rebind_required) =
-                    match read_frame::<_, ContentPeerRequest>(&mut stream).await {
-                        Ok(request) => {
+                    match read_frame::<_, ContentPeerControlRequest>(&mut stream).await {
+                        Ok(ContentPeerControlRequest::Register(request)) => {
                             let rebind_required = request
                                 .ticket
                                 .as_deref()
@@ -405,6 +447,7 @@ pub async fn serve_local_content_peer(
                                     PersistedContentPeer {
                                         endpoint: request.endpoint.clone(),
                                         ticket: request.ticket.clone(),
+                                        relay_service_id: request.relay_service_id,
                                     },
                                 )
                             });
@@ -413,6 +456,20 @@ pub async fn serve_local_content_peer(
                                 (true, rebind_required)
                             } else {
                                 (false, false)
+                            }
+                        }
+                        Ok(ContentPeerControlRequest::RemoveRelay { relay_service_id }) => {
+                            let removed = cache_dir.as_deref().map_or(Ok(Vec::new()), |cache| {
+                                remove_persisted_content_peers(cache, relay_service_id)
+                            });
+                            match removed {
+                                Ok(removed) => {
+                                    for endpoint in removed {
+                                        hydrator.remove_peer(endpoint);
+                                    }
+                                    (true, false)
+                                }
+                                Err(_) => (false, false),
                             }
                         }
                         Err(_) => (false, false),
@@ -447,11 +504,41 @@ pub async fn register_local_content_peer(
     ticket: Option<String>,
 ) -> anyhow::Result<ContentPeerResponse> {
     let mut stream = tokio::net::UnixStream::connect(socket).await?;
-    write_frame(&mut stream, &ContentPeerRequest { endpoint, ticket }).await?;
+    write_frame(
+        &mut stream,
+        &ContentPeerControlRequest::Register(ContentPeerRequest {
+            endpoint,
+            ticket,
+            relay_service_id: None,
+        }),
+    )
+    .await?;
     let response = read_frame::<_, ContentPeerResponse>(&mut stream).await?;
     anyhow::ensure!(
         response.accepted,
         "filesystem daemon rejected content endpoint"
+    );
+    Ok(response)
+}
+
+/// Remove every direct content endpoint discovered through `relay_service_id`.
+/// This is intentionally separate from registration so removal cannot be
+/// confused with an endpoint refresh.
+#[cfg(unix)]
+pub async fn remove_local_content_peers(
+    socket: &std::path::Path,
+    relay_service_id: [u8; 32],
+) -> anyhow::Result<ContentPeerResponse> {
+    let mut stream = tokio::net::UnixStream::connect(socket).await?;
+    write_frame(
+        &mut stream,
+        &ContentPeerControlRequest::RemoveRelay { relay_service_id },
+    )
+    .await?;
+    let response = read_frame::<_, ContentPeerResponse>(&mut stream).await?;
+    anyhow::ensure!(
+        response.accepted,
+        "filesystem daemon rejected content peer removal"
     );
     Ok(response)
 }
@@ -565,6 +652,7 @@ mod tests {
                         iroh::SecretKey::from_bytes(&[byte; 32]).public(),
                     ),
                     ticket: None,
+                    relay_service_id: None,
                 },
             )
             .unwrap();
@@ -576,6 +664,7 @@ mod tests {
                 endpoint: iroh_base::EndpointAddr::new(refreshed_id)
                     .with_ip_addr("127.0.0.1:4788".parse().unwrap()),
                 ticket: None,
+                relay_service_id: None,
             },
         )
         .unwrap();
@@ -585,6 +674,7 @@ mod tests {
             PersistedContentPeer {
                 endpoint: iroh_base::EndpointAddr::new(replacement_id),
                 ticket: None,
+                relay_service_id: None,
             },
         )
         .unwrap();
@@ -758,11 +848,83 @@ mod tests {
             vec![PersistedContentPeer {
                 endpoint: discovered,
                 ticket: Some(ticket),
+                relay_service_id: None,
             }]
         );
         assert!(rebind_rx.try_recv().is_err());
         task.abort();
         endpoint.close().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn authenticated_removal_drops_live_and_durable_relay_content_routes() {
+        let temp = tempfile::tempdir().unwrap();
+        let endpoint = iroh::endpoint::Endpoint::bind(iroh::endpoint::presets::N0)
+            .await
+            .unwrap();
+        let hydrator = Arc::new(crate::Hydrator::new(
+            endpoint.clone(),
+            Arc::new(crate::ContentStore::memory()),
+        ));
+        let socket = temp.path().join("content.sock");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let workspace = Ticket::workspace_id_for_topic([0x71; 32]);
+        let task = serve_local_content_peer(
+            socket.clone(),
+            hydrator.clone(),
+            Some(cache.clone()),
+            workspace,
+            None,
+        )
+        .await
+        .unwrap();
+        let discovered =
+            iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x42; 32]).public());
+        let relay_service_id = [0x99; 32];
+        let ticket = Ticket {
+            node: discovered.clone(),
+            workspace: [0x71; 32],
+        }
+        .encode()
+        .unwrap();
+        let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+        write_frame(
+            &mut stream,
+            &ContentPeerControlRequest::Register(ContentPeerRequest {
+                endpoint: discovered.clone(),
+                ticket: Some(ticket),
+                relay_service_id: Some(relay_service_id),
+            }),
+        )
+        .await
+        .unwrap();
+        let _: ContentPeerResponse = read_frame(&mut stream).await.unwrap();
+        assert!(hydrator.known_peers().contains(&discovered));
+
+        remove_local_content_peers(&socket, relay_service_id)
+            .await
+            .unwrap();
+        assert!(!hydrator.known_peers().contains(&discovered));
+        assert!(load_persisted_content_peers(&cache).unwrap().is_empty());
+
+        // A daemon restart reloads only the durable catalog. Its fresh
+        // Hydrator therefore cannot restore the endpoint after removal.
+        let restarted_endpoint = iroh::endpoint::Endpoint::bind(iroh::endpoint::presets::N0)
+            .await
+            .unwrap();
+        let restarted = crate::Hydrator::new(
+            restarted_endpoint.clone(),
+            Arc::new(crate::ContentStore::memory()),
+        );
+        for peer in load_persisted_content_peers(&cache).unwrap() {
+            restarted.add_peer(peer.endpoint);
+        }
+        assert!(!restarted.known_peers().contains(&discovered));
+        task.abort();
+        endpoint.close().await;
+        restarted_endpoint.close().await;
     }
 
     #[cfg(unix)]
