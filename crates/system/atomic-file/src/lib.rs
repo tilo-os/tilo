@@ -61,12 +61,29 @@ pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 ///
 /// Returns an error if the parent directory can't be created, or any error [`write`] documents.
 pub fn write_creating_parent(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    create_parent(path)?;
+    write_inner(path, bytes, None)
+}
+
+/// [`write_with_mode`], creating the parent directory first when it is
+/// missing. The final file gets its restrictive mode before its atomic rename.
+///
+/// # Errors
+///
+/// Returns an error if the parent directory cannot be created, or any error
+/// [`write_with_mode`] documents.
+pub fn write_creating_parent_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+    create_parent(path)?;
+    write_inner(path, bytes, Some(mode))
+}
+
+fn create_parent(path: &Path) -> io::Result<()> {
     if let Some(dir) = path.parent()
         && !dir.as_os_str().is_empty()
     {
         fs::create_dir_all(dir)?;
     }
-    write_inner(path, bytes, None)
+    Ok(())
 }
 
 /// [`write`], with unix permission bits applied to the temp file **before** it is renamed
@@ -213,6 +230,20 @@ mod tests {
         let p = d.path().join("deep").join("er").join("a.json");
         write_creating_parent(&p, b"x").unwrap();
         assert_eq!(fs::read(&p).unwrap(), b"x");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_creating_parent_with_mode_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("deep").join("vault");
+        write_creating_parent_with_mode(&p, b"secret", 0o600).unwrap();
+        assert_eq!(
+            fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[cfg(unix)]
