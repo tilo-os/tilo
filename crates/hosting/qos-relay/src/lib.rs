@@ -79,6 +79,7 @@ pub mod mesh;
 pub mod metrics;
 pub mod peer;
 pub mod policy;
+pub mod process_lease;
 pub mod store;
 pub mod transport;
 pub mod workspace;
@@ -96,6 +97,7 @@ pub use mesh::{
     place, route_remote_control,
 };
 pub use policy::TrustPolicy;
+pub use process_lease::ProcessLease;
 pub use transport::ContentPeerRegistration;
 pub use transport::{ALPN, Envelope};
 
