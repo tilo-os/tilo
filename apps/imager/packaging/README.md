@@ -26,7 +26,10 @@ defeat the sandbox and fail for normal per-user installs. The signed AppImage is
 the preferred self-contained Linux download.
 
 Native release packages are fail-closed with `QOS_REQUIRE_NATIVE_PACKAGES=1`.
-Linux release builders need `linuxdeploy`, `appimagetool`, and GnuPG. Windows
+Linux release builders need GnuPG; CI materializes checksum-pinned
+`linuxdeploy`, `appimagetool`, and type-2 runtime binaries from its per-arch
+cache. A manual release build must provide those tools plus
+`QOS_APPIMAGE_RUNTIME`; implicit “latest” runtime downloads fail closed. Windows
 builders need Inno Setup 6 and the WinGet client for manifest validation.
 macOS uses the platform `hdiutil`.
 
