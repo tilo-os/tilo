@@ -556,6 +556,14 @@ impl App {
             app.set_presence_broadcast_scope(Some(scope));
         }
         app.presence_ctx.set_surface_id(crate::local_surface_id());
+        // Apply launcher-provided continuation before the first widget sync or
+        // redraw.  Waiting for an input event left a restored app blank on a
+        // quiet freshly-created window.
+        app.apply_pending_continuation_restore();
+        // The first report is level-triggered.  Sending it here makes a
+        // launched app visible to continuity capture even if it receives no
+        // input events before the next peer asks for a checkpoint.
+        app.publish_continuation_metadata();
         app
     }
 
@@ -1146,14 +1154,7 @@ impl App {
     /// report is private to the local session and cannot make a remote app
     /// focus itself or start playing media.
     fn publish_continuation_metadata(&mut self) {
-        if let Some(metadata) = self.pending_continuation_restore.take() {
-            let root = self.state.root.clone();
-            let _ = self.root_widget.restore_continuation_metadata(
-                &metadata,
-                &mut self.state.doc,
-                &root,
-            );
-        }
+        self.apply_pending_continuation_restore();
         if !self.collab_manager.is_connected() {
             return;
         }
@@ -1171,6 +1172,17 @@ impl App {
             });
         }
         self.last_published_continuation = metadata;
+    }
+
+    fn apply_pending_continuation_restore(&mut self) {
+        if let Some(metadata) = self.pending_continuation_restore.take() {
+            let root = self.state.root.clone();
+            let _ = self.root_widget.restore_continuation_metadata(
+                &metadata,
+                &mut self.state.doc,
+                &root,
+            );
+        }
     }
 
     fn invoke_published_action(
