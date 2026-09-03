@@ -209,6 +209,31 @@ fn fleet_path(identity_dir: &std::path::Path, user: [u8; 32]) -> PathBuf {
         .join(format!("{}.json", hex::encode(user)))
 }
 
+/// Keep enrollment output owned by the already-validated identity directory
+/// when the polkit broker launches this process as root.
+fn restore_owner_from_directory(
+    path: &std::path::Path,
+    directory: &std::path::Path,
+) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        use std::os::unix::fs::MetadataExt as _;
+
+        let owner = std::fs::metadata(directory)?;
+        let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+        // SAFETY: `path` is NUL-terminated and originates from a validated
+        // identity/status path. The uid/gid come from its trusted directory.
+        if unsafe { libc::chown(path.as_ptr(), owner.uid(), owner.gid()) } != 0 {
+            return Err(anyhow::Error::from(std::io::Error::last_os_error())
+                .context("restore enrollment output ownership"));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (path, directory);
+    Ok(())
+}
+
 fn project_personal_device(
     identity_dir: &std::path::Path,
     cert: &DeviceCert,
@@ -441,6 +466,7 @@ fn install_personal_projection(
         record_path.clone(),
         registry_path,
         fleet_path(identity_dir, user),
+        identity_root.join("home-peers.json"),
     ] {
         use std::os::unix::ffi::OsStrExt as _;
         let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
@@ -1089,6 +1115,23 @@ fn join_with_token(
                                     &paths.device_cert,
                                     &response.payload.cert,
                                 )?;
+                                for directory in [
+                                    paths.user_pubkey.parent(),
+                                    paths.device_privkey.parent(),
+                                    per_user.parent(),
+                                ] {
+                                    if let Some(directory) = directory {
+                                        restore_owner_from_directory(directory, &identity_root)?;
+                                    }
+                                }
+                                for output in [
+                                    &paths.user_pubkey,
+                                    &paths.device_privkey,
+                                    &per_user,
+                                    &paths.device_cert,
+                                ] {
+                                    restore_owner_from_directory(output, &identity_root)?;
+                                }
                                 consume_nonce(
                                     &identity_root,
                                     &token.nonce,
@@ -1166,6 +1209,9 @@ fn pair(
             }))?,
             0o644,
         )?;
+        if let Some(parent) = path.parent() {
+            restore_owner_from_directory(path, parent)?;
+        }
     }
     println!("Nearby pairing code: {code}");
     let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
@@ -1195,7 +1241,7 @@ fn pair(
                     continue;
                 }
                 println!("Nearby qOS device approved code {code}");
-                return join_with_token(
+                join_with_token(
                     token_text.trim(),
                     identity_root,
                     label,
@@ -1203,7 +1249,21 @@ fn pair(
                     kind,
                     home_peer_output,
                     identity_dir,
-                );
+                )?;
+                if let Some(path) = &status_file {
+                    atomic_file::write_with_mode(
+                        path,
+                        &serde_json::to_vec(&serde_json::json!({
+                            "state": "complete",
+                            "verification_code": code,
+                        }))?,
+                        0o644,
+                    )?;
+                    if let Some(parent) = path.parent() {
+                        restore_owner_from_directory(path, parent)?;
+                    }
+                }
+                return Ok(());
             }
             Err(error)
                 if matches!(
