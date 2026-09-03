@@ -136,6 +136,9 @@ pub struct ImagerApp {
     /// Stages the read-only export modal after the demo document has synced.
     /// Used only by the deterministic `export` screenshot scenario.
     export_after_sync: bool,
+    /// Makes the destructive action look armed in an offscreen documentation
+    /// frame without enabling (or bypassing) the real write backend.
+    shot_confirmation_ready: bool,
     // ---- render caches ----
     seeded: bool,
     rect: Rect,
@@ -187,6 +190,7 @@ impl ImagerApp {
             system_ack: false,
             export_dialog: ExportDialog::new(),
             export_after_sync: false,
+            shot_confirmation_ready: false,
             seeded: false,
             rect: Rect::ZERO,
             dirty: true,
@@ -306,6 +310,7 @@ impl ImagerApp {
     #[doc(hidden)]
     pub fn seed_confirmation_for_shot(&mut self, value: &str) {
         self.confirm_input.set_text(value);
+        self.shot_confirmation_ready = true;
     }
 
     fn confirm_matches(&self) -> bool {
@@ -883,7 +888,7 @@ impl ImagerApp {
                 // /dev/nvme0n1" for a disk install — the verb reads plainly.
                 (
                     format!("Erase & {}  {dev}", self.action.verb().to_ascii_lowercase()),
-                    self.can_advance(Step::Confirm),
+                    self.can_advance(Step::Confirm) || self.shot_confirmation_ready,
                     true,
                 )
             }
@@ -2205,11 +2210,12 @@ impl ImagerApp {
                 TextWeight::Bold,
             );
         }
-        // Gate note.
-        let note = if crate::write::allow_write() {
-            "Live write enabled (QOS_IMAGER_ALLOW_WRITE=1)."
+        // Keep implementation switches out of the product language. Shot mode
+        // poses this as ready for documentation, but never enables the backend.
+        let note = if crate::write::allow_write() || self.shot_confirmation_ready {
+            "Ready to write. Check the selected device before continuing."
         } else {
-            "Writing unavailable — enable the privileged backend with QOS_IMAGER_ALLOW_WRITE=1."
+            "Writing is disabled in this preview."
         };
         Self::txt(
             scene,
