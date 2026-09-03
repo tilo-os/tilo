@@ -69,6 +69,17 @@ impl Driver {
                   representable in f32 (well under its 2^24 exact-integer range)"
     )]
     fn frame(&mut self) {
+        self.frame_sized(VW, VH);
+    }
+
+    /// Same production widget cycle at an explicit viewport. Responsive tests
+    /// use this instead of a mock geometry so the renderer, hit testing, and
+    /// Taffy layout all see the phone/tablet dimensions.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "test viewports are small exact integers"
+    )]
+    fn frame_sized(&mut self, width: u32, height: u32) {
         self.app.sync(&mut self.doc, &self.root);
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -79,8 +90,8 @@ impl Driver {
             .new_with_children(
                 Style {
                     size: Size {
-                        width: Dimension::length(VW as f32),
-                        height: Dimension::length(VH as f32),
+                        width: Dimension::length(width as f32),
+                        height: Dimension::length(height as f32),
                     },
                     ..Default::default()
                 },
@@ -95,8 +106,8 @@ impl Driver {
                 .compute_layout_with_measure(
                     root,
                     taffy::Size {
-                        width: AvailableSpace::Definite(VW as f32),
-                        height: AvailableSpace::Definite(VH as f32),
+                        width: AvailableSpace::Definite(width as f32),
+                        height: AvailableSpace::Definite(height as f32),
                     },
                     |known, available, node_id, _, _| {
                         if let Some(&ptr) = measure_map.get(&node_id) {
@@ -164,7 +175,11 @@ impl Driver {
 
     /// Render the cached scene to RGBA for pixel inspection.
     fn rgba(&self) -> Vec<u8> {
-        let mut r = OffscreenRenderer::new(VW, VH);
+        self.rgba_sized(VW, VH)
+    }
+
+    fn rgba_sized(&self, width: u32, height: u32) -> Vec<u8> {
+        let mut r = OffscreenRenderer::new(width, height);
         r.render_rgba(&self.last_scene)
     }
 }
@@ -242,6 +257,40 @@ fn containers_list_renders_non_blank() {
     // surface) — sample a pixel inside the rail.
     let (_, _, _, a) = OffscreenRenderer::sample(&rgba, VW, 30, 120);
     assert!(a > 8, "navigation rail should be painted");
+}
+
+#[test]
+fn compact_container_detail_is_a_readable_drill_in_and_escape_returns_to_list() {
+    const PHONE_W: u32 = 390;
+    const PHONE_H: u32 = 844;
+
+    let mut d = Driver::offline();
+    d.theme = Theme::dark().with_text_scale(2.0);
+    d.frame_sized(PHONE_W, PHONE_H);
+
+    let selected = ViewDoc::selected(&mut d.doc);
+    assert!(selected.is_some(), "the demo opens a representative detail");
+    // This pixel assertion exercises the full production draw path at the
+    // formerly broken phone + 200%-text combination. The compact rail and
+    // full-width detail both contribute substantial, visible output.
+    let rgba = d.rgba_sized(PHONE_W, PHONE_H);
+    assert!(
+        painted_pixels(&rgba) > (PHONE_W * PHONE_H / 9) as usize,
+        "compact detail must paint a real full-page surface"
+    );
+
+    // Escape is the keyboard equivalent of the visible Back button. It must
+    // return to the full-width list rather than leave focus in a hidden pane.
+    d.key(winit::keyboard::NamedKey::Escape);
+    assert!(
+        ViewDoc::selected(&mut d.doc).is_none(),
+        "Escape returns from compact detail to the container list"
+    );
+    d.frame_sized(PHONE_W, PHONE_H);
+    assert!(
+        painted_pixels(&d.rgba_sized(PHONE_W, PHONE_H)) > (PHONE_W * PHONE_H / 10) as usize,
+        "the returned compact list remains visibly populated"
+    );
 }
 
 #[test]
