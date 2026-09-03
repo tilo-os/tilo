@@ -57,6 +57,9 @@ pub struct RuntimeRelease {
     pub kind: RuntimeKind,
     pub version: String,
     pub artifact: PinnedArtifact,
+    /// Immutable OCI image digest prepared by the signed runtime extension.
+    /// A runtime is never treated as an executable downloaded blob.
+    pub oci_image: String,
 }
 
 /// An immutable, verified downloadable object.
@@ -118,6 +121,11 @@ impl LocalModelCatalog {
                 return Err(ProvisionError::InvalidCatalog("runtime ids must be unique"));
             }
             runtime.artifact.validate()?;
+            if !runtime.oci_image.contains("@sha256:") {
+                return Err(ProvisionError::InvalidCatalog(
+                    "runtime OCI image must be digest pinned",
+                ));
+            }
         }
         let mut model_ids = BTreeSet::new();
         for model in &self.models {
@@ -439,6 +447,7 @@ mod tests {
                 kind: RuntimeKind::Cpu,
                 version: "0.9.0".into(),
                 artifact: artifact("runtime"),
+                oci_image: "registry.example.invalid/qos/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             }],
             models: vec![LocalModelRelease {
                 id: "tiny-q4".into(),

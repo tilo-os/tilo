@@ -40,6 +40,7 @@ pub trait HttpsTransport {
         &mut self,
         url: &str,
         start: u64,
+        maximum_bytes: u64,
         destination: &mut File,
     ) -> Result<u64, ServiceError>;
 }
@@ -61,7 +62,10 @@ pub struct ProcessHandle {
 /// The service never joins these into a shell command.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VllmCommand {
-    pub program: PathBuf,
+    /// Digest-pinned OCI image from the signed runtime catalog. It is consumed
+    /// by podman; a downloaded artifact blob is never executed directly.
+    pub runtime_image: String,
+    pub runtime_kind: agent_provider_config::local::RuntimeKind,
     pub args: Vec<String>,
     pub model_path: PathBuf,
     pub endpoint: LocalEndpoint,
@@ -170,7 +174,13 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             .append(true)
             .read(true)
             .open(&partial)?;
-        let received = self.transport.resume(&artifact.url, start, &mut file)?;
+        let maximum = artifact
+            .size_bytes
+            .checked_sub(start)
+            .ok_or(ServiceError::PartialTooLarge)?;
+        let received = self
+            .transport
+            .resume(&artifact.url, start, maximum, &mut file)?;
         file.sync_all()?;
         let total = start
             .checked_add(received)
@@ -213,6 +223,52 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         Ok(LocalModelStatus::Installed)
     }
 
+    /// Install the accepted, verified runtime before placing the model, so an
+    /// `Installed` model never fails Start merely because its runtime bytes
+    /// were omitted from the operation.
+    pub fn install_with_runtime(
+        &mut self,
+        runtime: &SignedRuntime,
+        model: &LocalModelRelease,
+    ) -> Result<LocalModelStatus, ServiceError> {
+        runtime.validate()?;
+        self.fetch_verified(&runtime.release.artifact)?;
+        self.install_model(model)
+    }
+
+    /// Durable status written before a background worker begins transfer.
+    pub fn queue_install(&mut self, model: &LocalModelRelease) -> Result<(), ServiceError> {
+        self.state.models.insert(
+            model.id.clone(),
+            ManagedModel {
+                model_sha256: model.artifact.sha256.clone(),
+                status: LocalModelStatus::Downloading {
+                    received_bytes: 0,
+                    total_bytes: model.artifact.size_bytes,
+                },
+                process: None,
+            },
+        );
+        self.persist()
+    }
+
+    pub fn record_failure(
+        &mut self,
+        model_id: &str,
+        message: impl Into<String>,
+    ) -> Result<(), ServiceError> {
+        let managed = self
+            .state
+            .models
+            .get_mut(model_id)
+            .ok_or_else(|| ServiceError::ModelNotInstalled(model_id.into()))?;
+        managed.status = LocalModelStatus::Failed {
+            message: message.into(),
+        };
+        managed.process = None;
+        self.persist()
+    }
+
     /// Start vLLM under a supervisor. Runtime/model paths are content addressed
     /// and the runtime must have an accepted signed extension record.
     pub fn start(
@@ -233,7 +289,6 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         if !runtime_path.exists() {
             return Err(ServiceError::RuntimeNotInstalled);
         }
-        let program = runtime_path;
         let endpoint = LocalEndpoint {
             url: format!("http://127.0.0.1:{port}/v1"),
             model_id: model.id.clone(),
@@ -242,7 +297,8 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             .validate()
             .map_err(|_| ServiceError::InvalidEndpoint)?;
         let command = VllmCommand {
-            program,
+            runtime_image: runtime.release.oci_image.clone(),
+            runtime_kind: runtime.release.kind,
             args: vec![
                 "serve".into(),
                 model_path.display().to_string(),
@@ -444,6 +500,7 @@ mod tests {
             &mut self,
             _: &str,
             start: u64,
+            _: u64,
             destination: &mut File,
         ) -> Result<u64, ServiceError> {
             self.starts.push(start);
@@ -541,7 +598,8 @@ mod tests {
     #[test]
     fn command_is_argv_and_never_uses_a_mutable_tag() {
         let command = VllmCommand {
-            program: PathBuf::from("/store/sha256/pin/bin/vllm"),
+            runtime_image: "registry.example.invalid/qos/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            runtime_kind: RuntimeKind::Cpu,
             args: vec![
                 "serve".into(),
                 "/store/sha256/model".into(),
@@ -555,7 +613,7 @@ mod tests {
             },
             runtime_extension_id: "runtime".into(),
         };
-        assert!(!command.args.iter().any(|arg| arg.contains(":")));
+        assert!(command.runtime_image.contains("@sha256:"));
         assert_eq!(command.endpoint.url, "http://127.0.0.1:8000/v1");
     }
 }
