@@ -1237,6 +1237,15 @@ fn run_certify(args: CertifyArgs) -> Result<()> {
                     app.display(),
                     run.name
                 );
+                validate_responsive_pngs(&root.join(app_name).join(run.name)).with_context(
+                    || {
+                        format!(
+                            "{} produced unusable responsive images in mode {}",
+                            app.display(),
+                            run.name
+                        )
+                    },
+                )?;
                 for (viewport_name, (width, height)) in RESPONSIVE_AUDIT_VIEWPORTS {
                     let audit_path = root
                         .join(app_name)
@@ -1293,6 +1302,65 @@ const RESPONSIVE_AUDIT_VIEWPORTS: [(&str, (u32, u32)); 4] = [
     ("laptop", (1366, 768)),
     ("desktop", (1920, 1080)),
 ];
+
+/// Reject a renderer that merely creates PNG files without painting the app.
+///
+/// A screenshot may legitimately have a large flat background, so this is a
+/// deliberately loose sanity gate rather than a visual-diff replacement. A
+/// frame fails only when one exact colour occupies more than 98% of its pixels;
+/// that catches empty/first-frame captures while allowing sparse terminals and
+/// honest empty states. Dimensions are checked too, so a stale image cannot
+/// satisfy a different viewport case.
+fn validate_responsive_pngs(mode_root: &Path) -> Result<()> {
+    for (viewport_name, expected) in RESPONSIVE_AUDIT_VIEWPORTS {
+        let suffix = format!("-{viewport_name}.png");
+        let paths = std::fs::read_dir(mode_root)
+            .with_context(|| format!("reading responsive images in {}", mode_root.display()))?
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(&suffix))
+            })
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            paths.len() == 1,
+            "expected one {viewport_name} PNG in {}, found {}",
+            mode_root.display(),
+            paths.len()
+        );
+        validate_responsive_png(&paths[0], expected)?;
+    }
+    Ok(())
+}
+
+fn validate_responsive_png(path: &Path, expected: (u32, u32)) -> Result<()> {
+    use image::GenericImageView as _;
+
+    let image = image::open(path).with_context(|| format!("decoding {}", path.display()))?;
+    anyhow::ensure!(
+        image.dimensions() == expected,
+        "{} has dimensions {:?}, expected {:?}",
+        path.display(),
+        image.dimensions(),
+        expected
+    );
+    let pixels = image.to_rgba8();
+    let total = u64::from(expected.0) * u64::from(expected.1);
+    let mut colours = std::collections::HashMap::<[u8; 4], u64>::new();
+    for pixel in pixels.pixels() {
+        *colours.entry(pixel.0).or_default() += 1;
+    }
+    let dominant = colours.values().copied().max().unwrap_or(total);
+    anyhow::ensure!(
+        dominant.saturating_mul(100) <= total.saturating_mul(98),
+        "{} is effectively blank ({:.2}% one colour)",
+        path.display(),
+        dominant as f64 * 100.0 / total as f64
+    );
+    Ok(())
+}
 
 fn responsive_acceptance_runs(app_root: &Path) -> Vec<ResponsiveAcceptanceRun> {
     let run = |name: &'static str,
@@ -1783,6 +1851,27 @@ mod tests {
             Some(&("desktop", (1920, 1080)))
         );
         assert_eq!(runs[3].shot_theme, Some("high-contrast"));
+    }
+
+    #[test]
+    fn responsive_png_gate_rejects_blank_or_wrong_sized_frames() {
+        let dir = tempfile::tempdir().expect("temporary screenshots");
+        let blank_path = dir.path().join("blank-phone.png");
+        image::RgbaImage::from_pixel(100, 80, image::Rgba([12, 13, 15, 255]))
+            .save(&blank_path)
+            .expect("write blank PNG");
+        assert!(validate_responsive_png(&blank_path, (100, 80)).is_err());
+
+        let mut painted = image::RgbaImage::from_pixel(100, 80, image::Rgba([12, 13, 15, 255]));
+        for x in 0..10 {
+            for y in 0..80 {
+                painted.put_pixel(x, y, image::Rgba([240, 240, 240, 255]));
+            }
+        }
+        let painted_path = dir.path().join("painted-phone.png");
+        painted.save(&painted_path).expect("write painted PNG");
+        validate_responsive_png(&painted_path, (100, 80)).expect("painted frame is useful");
+        assert!(validate_responsive_png(&painted_path, (80, 100)).is_err());
     }
 
     #[test]
