@@ -1070,13 +1070,27 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     );
     reader_process.wait_line("Joined workspace");
     reader_process.wait_line("Mounting QuickFS");
-    wait_for_process(&mut reader_process, || {
-        (std::fs::read(reader_mount.join("survivor.txt"))
+    let reader_file = reader_mount.join("survivor.txt");
+    let reader_manifest: [u8; 32] = wait_for_process(&mut reader_process, || {
+        get_xattr(&reader_file, fs::syncstate::CONTENT_HASH_XATTR)
             .ok()?
-            .as_slice()
-            == b"updated-through-nas")
-            .then_some(())
+            .try_into()
+            .ok()
     });
+    assert_eq!(Hash::from(reader_manifest), updated_manifest);
+    assert_eq!(std::fs::metadata(&reader_file).unwrap().len(), 19);
+    let reader_bytes = std::fs::read(&reader_file).unwrap_or_else(|error| {
+        panic!(
+            "collaborator could not hydrate NAS content: {error}; NAS logs:\n{}",
+            nas.logs.lock().unwrap().join("\n")
+        )
+    });
+    assert_eq!(
+        reader_bytes,
+        b"updated-through-nas",
+        "collaborator observed wrong NAS bytes; NAS logs:\n{}",
+        nas.logs.lock().unwrap().join("\n")
+    );
     assert!(!reader_mount.join("deleted.txt").exists());
     reader_process.stop();
 
