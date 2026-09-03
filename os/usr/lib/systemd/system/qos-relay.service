@@ -8,6 +8,7 @@ Requires=qos-relay-firstboot.service
 # cert + secret written at first-boot enrollment. Those live under
 # /var, so start after local filesystems are up.
 After=var-lib-qos.mount
+ConditionPathExists=!/var/lib/qos-relay/decommissioned
 
 [Service]
 Type=notify

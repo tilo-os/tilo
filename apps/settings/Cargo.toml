@@ -71,6 +71,7 @@ zeroize.workspace = true
 # per-user config root; uuid mints stable account ids.
 serde.workspace = true
 serde_json.workspace = true
+atomic-file = { path = "../../crates/system/atomic-file" }
 dirs.workspace = true
 quick-xml.workspace = true
 uuid.workspace = true

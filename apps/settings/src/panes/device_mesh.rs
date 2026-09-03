@@ -13,7 +13,7 @@ use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use qos_relay::{DeviceRole, RelayConfig, ReplicationIntent};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
-use ui::widget::{Button, Dropdown, Toggle, Widget};
+use ui::widget::{Button, Dropdown, TextInput, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
@@ -32,6 +32,7 @@ const APP_SERVING_KEY: &str = "device_mesh.app_serving";
 const COMPUTE_KEY: &str = "device_mesh.compute";
 const APPROVE_ENROLLMENT_KEY: &str = "device_mesh.approve_enrollment";
 const CONTROL_HELPER: &str = "/usr/libexec/qos-home-peer-control";
+const RELAY_ADMIN: &str = "/usr/bin/qos-relay-admin";
 
 const ROLE_OPTIONS: &[&str] = &[
     "Use normally",
@@ -174,6 +175,13 @@ pub struct DeviceMeshPane {
     runtime_status: RelayRuntimeStatus,
     discovered_workspaces: Vec<DiscoveredWorkspace>,
     registered_home_peers: usize,
+    home_peers: Vec<qos_relay::HomePeerRegistration>,
+    home_peer_health: HashMap<String, String>,
+    home_peer_last_seen: HashMap<String, u64>,
+    management_child: Option<Child>,
+    management_device: Option<String>,
+    next_peer_health: usize,
+    remove_armed: std::collections::HashSet<String>,
     apply_child: Option<Child>,
     apply_queued: bool,
     pairing_child: Option<Child>,
@@ -247,10 +255,53 @@ fn discover_workspaces(config: &RelayConfig) -> Vec<DiscoveredWorkspace> {
 }
 
 fn registered_home_peer_count() -> usize {
+    registered_home_peers().len()
+}
+
+fn registered_home_peers() -> Vec<qos_relay::HomePeerRegistration> {
     std::fs::read(identity_root().join("home-peers.json"))
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<Vec<serde_json::Value>>(&bytes).ok())
-        .map_or(0, |peers| peers.len())
+        .filter(|bytes| bytes.len() <= 1024 * 1024)
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn peer_key(action: &str, device: &str) -> String {
+    format!("device_mesh.home_peer.{action}.{device}")
+}
+
+fn home_peer_health_path() -> PathBuf {
+    identity_root().join("home-peer-health.json")
+}
+
+fn load_home_peer_last_seen() -> HashMap<String, u64> {
+    std::fs::read(home_peer_health_path())
+        .ok()
+        .filter(|bytes| bytes.len() <= 1024 * 1024)
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn save_home_peer_last_seen(last_seen: &HashMap<String, u64>) {
+    if let Ok(bytes) = serde_json::to_vec_pretty(last_seen) {
+        let _ = atomic_file::write_with_mode(&home_peer_health_path(), &bytes, 0o600);
+    }
+}
+
+fn last_seen_label(last_seen_ms: u64) -> String {
+    let now_ms = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        });
+    let minutes = now_ms.saturating_sub(last_seen_ms) / 60_000;
+    if minutes == 0 {
+        "Offline · Last seen just now".into()
+    } else if minutes < 60 {
+        format!("Offline · Last seen {minutes} min ago")
+    } else {
+        format!("Offline · Last seen {} h ago", minutes / 60)
+    }
 }
 
 fn identity_root() -> PathBuf {
@@ -313,6 +364,7 @@ impl DeviceMeshPane {
         };
         let runtime_status = RelayRuntimeStatus::read(&config, SystemTime::now());
         let discovered_workspaces = discover_workspaces(&config);
+        let home_peers = registered_home_peers();
         Self {
             config_path,
             config,
@@ -322,7 +374,14 @@ impl DeviceMeshPane {
             structure_dirty: false,
             runtime_status,
             discovered_workspaces,
-            registered_home_peers: registered_home_peer_count(),
+            registered_home_peers: home_peers.len(),
+            home_peers,
+            home_peer_health: HashMap::new(),
+            home_peer_last_seen: load_home_peer_last_seen(),
+            management_child: None,
+            management_device: None,
+            next_peer_health: 0,
+            remove_armed: std::collections::HashSet::new(),
             apply_child: None,
             apply_queued: false,
             pairing_child: None,
@@ -490,6 +549,47 @@ impl DeviceMeshPane {
             card("Synced workspaces", workspace_rows),
             card_with_action("Home server or NAS", approve, rows(home_server_rows)),
         ];
+        for peer in &self.home_peers {
+            let device = &peer.device_node_id;
+            let rename_key = peer_key("name", device);
+            let rename_action = peer_key("rename", device);
+            let remove_action = peer_key("remove", device);
+            let name = TextInput::new(Vec::new())
+                .with_id(&rename_key)
+                .with_on_change_path(&rename_key)
+                .with_placeholder(&peer.label)
+                .with_font_size(13.0);
+            let rename = Box::new(Button::new(&rename_action, "Rename", Some(&rename_action)));
+            let armed = self.remove_armed.contains(device);
+            let remove = Box::new(Button::new(
+                &remove_action,
+                if armed { "Confirm remove" } else { "Remove" },
+                Some(&remove_action),
+            ));
+            let health = self
+                .home_peer_health
+                .get(device)
+                .cloned()
+                .or_else(|| {
+                    self.home_peer_last_seen
+                        .get(device)
+                        .map(|last_seen| last_seen_label(*last_seen))
+                })
+                .unwrap_or_else(|| "Checking…".into());
+            sections.push(card_with_action(
+                &peer.label,
+                remove,
+                rows(vec![
+                    setting_row_described("Name", "Name this home server", Box::new(name)),
+                    setting_row_described(
+                        "Apply name",
+                        "Updates the authenticated home server",
+                        rename,
+                    ),
+                    value_row("Availability", &health),
+                ]),
+            ));
+        }
         if shows_advanced_services(self.config.device_role) {
             sections.push(card(
                 "Advanced",
@@ -686,6 +786,80 @@ impl DeviceMeshPane {
         self.structure_dirty = true;
     }
 
+    fn start_home_peer_command(
+        &mut self,
+        peer: &qos_relay::HomePeerRegistration,
+        action: &str,
+        label: Option<&str>,
+    ) {
+        if self.management_child.is_some() {
+            return;
+        }
+        let mut command = Command::new(RELAY_ADMIN);
+        command
+            .arg(action)
+            .arg("--identity-root")
+            .arg(identity_root())
+            .args(["--device", &peer.device_node_id])
+            .args(["--service", &peer.relay_service_node_id]);
+        if let Some(label) = label {
+            command.args(["--label", label]);
+        }
+        match command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => {
+                self.management_child = Some(child);
+                self.management_device = Some(peer.device_node_id.clone());
+                self.home_peer_health
+                    .insert(peer.device_node_id.clone(), "Connecting…".into());
+            }
+            Err(error) => {
+                self.home_peer_health
+                    .insert(peer.device_node_id.clone(), format!("Offline · {error}"));
+            }
+        }
+        self.structure_dirty = true;
+    }
+
+    fn refresh_one_home_peer(&mut self) {
+        if self.management_child.is_some() {
+            return;
+        }
+        let pending = identity_root().join("pending-home-peer-decommissions.json");
+        if std::fs::read(&pending)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Vec<serde_json::Value>>(&bytes).ok())
+            .is_some_and(|pending| !pending.is_empty())
+        {
+            if let Ok(child) = Command::new(RELAY_ADMIN)
+                .arg("home-peer-retry-removals")
+                .arg("--identity-root")
+                .arg(identity_root())
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                self.management_child = Some(child);
+                self.management_device = Some("__pending__".into());
+            }
+            return;
+        }
+        if self.home_peers.is_empty() {
+            return;
+        }
+        let index = self.next_peer_health % self.home_peers.len();
+        self.next_peer_health = self.next_peer_health.wrapping_add(1);
+        let peer = self.home_peers.get(index).cloned();
+        if let Some(peer) = peer {
+            self.start_home_peer_command(&peer, "home-peer-status", None);
+        }
+    }
+
     fn poll_background_tasks(&mut self) {
         let apply_result = self.apply_child.as_mut().map(poll_child);
         match apply_result {
@@ -761,6 +935,69 @@ impl DeviceMeshPane {
             }
             Some(Ok(None)) | None => {}
         }
+
+        let management_result = self.management_child.as_mut().map(poll_child);
+        match management_result {
+            Some(Ok(Some(status))) => {
+                let mut child = self
+                    .management_child
+                    .take()
+                    .expect("management child exists");
+                let device = self.management_device.take().unwrap_or_default();
+                if status.success() {
+                    let mut output = String::new();
+                    if let Some(mut stdout) = child.stdout.take() {
+                        let _ = stdout.read_to_string(&mut output);
+                    }
+                    if let Ok(response) = serde_json::from_str::<serde_json::Value>(output.trim()) {
+                        let ready = response
+                            .get("files_ready")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
+                        let removed = response
+                            .get("decommissioned")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
+                        self.home_peer_health.insert(
+                            device.clone(),
+                            if removed {
+                                "Removed".into()
+                            } else if ready {
+                                "Online · Files ready".into()
+                            } else {
+                                "Online · Syncing files".into()
+                            },
+                        );
+                        let now_ms = SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .map_or(0, |duration| {
+                                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+                            });
+                        self.home_peer_last_seen.insert(device, now_ms);
+                        save_home_peer_last_seen(&self.home_peer_last_seen);
+                        self.home_peers = registered_home_peers();
+                        self.registered_home_peers = self.home_peers.len();
+                    }
+                } else {
+                    let detail = child_error(&mut child, "not reachable");
+                    let label = self.home_peer_last_seen.get(&device).map_or_else(
+                        || format!("Offline · {detail}"),
+                        |last_seen| last_seen_label(*last_seen),
+                    );
+                    self.home_peer_health.insert(device, label);
+                }
+                self.structure_dirty = true;
+            }
+            Some(Err(error)) => {
+                self.management_child = None;
+                if let Some(device) = self.management_device.take() {
+                    self.home_peer_health
+                        .insert(device, format!("Offline · {error}"));
+                }
+                self.structure_dirty = true;
+            }
+            Some(Ok(None)) | None => {}
+        }
     }
 }
 
@@ -799,6 +1036,15 @@ impl Widget for DeviceMeshPane {
                     .iter()
                     .any(|binding| binding.id == workspace.id);
                 let _ = state.put(root, workspace_key(workspace.id), selected);
+            }
+            for peer in &self.home_peers {
+                let _ = state.put(
+                    root,
+                    peer_key("name", &peer.device_node_id),
+                    peer.label.clone(),
+                );
+                let _ = state.put(root, peer_key("rename", &peer.device_node_id), false);
+                let _ = state.put(root, peer_key("remove", &peer.device_node_id), false);
             }
             let _ = state.put(root, APPROVE_ENROLLMENT_KEY, false);
             self.needs_seed = false;
@@ -917,12 +1163,39 @@ impl Widget for DeviceMeshPane {
                 self.approve_enrollment();
             }
         }
+        for peer in self.home_peers.clone() {
+            let rename_key = peer_key("rename", &peer.device_node_id);
+            if Self::read_bool(state, root, &rename_key) == Some(true) {
+                let _ = state.put(root, &rename_key, false);
+                if let Some(label) =
+                    Self::read_str(state, root, &peer_key("name", &peer.device_node_id))
+                    && qos_relay::valid_home_peer_label(&label)
+                {
+                    self.start_home_peer_command(&peer, "home-peer-rename", Some(label.trim()));
+                }
+            }
+            let remove_key = peer_key("remove", &peer.device_node_id);
+            if Self::read_bool(state, root, &remove_key) == Some(true) {
+                let _ = state.put(root, &remove_key, false);
+                if self.remove_armed.remove(&peer.device_node_id) {
+                    self.start_home_peer_command(&peer, "home-peer-remove", None);
+                } else {
+                    self.remove_armed.insert(peer.device_node_id.clone());
+                    self.load_status = format!(
+                        "Choose Confirm remove to revoke and stop {} permanently",
+                        peer.label
+                    );
+                    self.structure_dirty = true;
+                }
+            }
+        }
         if changed {
             self.persist();
             self.structure_dirty = true;
         }
         if Instant::now() >= self.next_status_refresh {
             self.refresh_runtime_status();
+            self.refresh_one_home_peer();
         }
         if let Some(composed) = &mut self.composed {
             composed.sync(state, root);
@@ -1056,7 +1329,10 @@ impl Widget for DeviceMeshPane {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        if self.apply_child.is_some() || self.pairing_child.is_some() {
+        if self.apply_child.is_some()
+            || self.pairing_child.is_some()
+            || self.management_child.is_some()
+        {
             Some(Instant::now() + PROCESS_POLL_INTERVAL)
         } else {
             shows_advanced_services(self.config.device_role).then_some(self.next_status_refresh)

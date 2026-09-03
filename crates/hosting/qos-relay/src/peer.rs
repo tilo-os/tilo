@@ -46,6 +46,11 @@ pub enum PeerError {
 
 /// Handle to the set of workspaces the daemon owns.
 pub type WorkspaceRegistry = Arc<AsyncMutex<HashMap<u64, SharedWorkspace>>>;
+const MAX_AUTOBOUND_WORKSPACES: usize = 4096;
+
+const fn autobind_has_capacity(current: usize) -> bool {
+    current < MAX_AUTOBOUND_WORKSPACES
+}
 
 /// Optional on-demand workspace creation used by a same-owner home host.
 /// Shared/provider hosts leave this disabled and pre-bind their tenant
@@ -711,6 +716,11 @@ pub(crate) async fn get_or_autobind_workspace(
     let Some(autobind) = autobind else {
         return Ok(None);
     };
+    if !autobind_has_capacity(map.len()) {
+        return Err(StoreError::Io(std::io::Error::other(
+            "home peer workspace limit reached",
+        )));
+    }
 
     // Holding the registry lock across the synchronous open makes first
     // subscribe atomic: two devices racing to introduce a room cannot create
@@ -726,4 +736,16 @@ pub(crate) async fn get_or_autobind_workspace(
     map.insert(workspace_id, workspace.clone());
     tracing::info!(workspace_id, "auto-bound same-owner workspace");
     Ok(Some(workspace))
+}
+
+#[cfg(test)]
+mod autobind_tests {
+    use super::*;
+
+    #[test]
+    fn automatic_workspace_creation_has_a_hard_capacity_bound() {
+        assert!(autobind_has_capacity(MAX_AUTOBOUND_WORKSPACES - 1));
+        assert!(!autobind_has_capacity(MAX_AUTOBOUND_WORKSPACES));
+        assert!(!autobind_has_capacity(usize::MAX));
+    }
 }
