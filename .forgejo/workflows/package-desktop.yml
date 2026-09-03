@@ -40,7 +40,7 @@ jobs:
   validate:
     runs-on: runner
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Validate packaging inputs before allocating native builders
         id: preflight
         shell: bash
@@ -95,9 +95,23 @@ jobs:
               debian-13|docker.io/library/debian@sha256:6788062a1b42ac281f053ac876170b79a3eaed5d61383b8ed7eaca6c6965f3b1|1+deb13
               fedora-44|registry.fedoraproject.org/fedora@sha256:f98ed268d20699492eb8b9688b36dac864227accf4570b22cd03888dffd3c91b|
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+      - name: Restore checksum-pinned GitHub build inputs
+        uses: actions/cache@9255dc7a25310cf7d1e7440c8b18379614703ff9 # v4
+        with:
+          path: os/external-assets/cache
+          key: desktop-external-inputs-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+      - name: Materialize the architecture-specific compiler cache client
+        shell: bash
+        run: |
+          case '${{ matrix.arch }}' in
+            amd64) target=x86_64-unknown-linux-musl ;;
+            arm64) target=aarch64-unknown-linux-musl ;;
+            *) printf 'unsupported package architecture: %s\n' '${{ matrix.arch }}' >&2; exit 1 ;;
+          esac
+          os/dev/cache-github-assets.sh "sccache-v0.17.0-${target}.tar.gz"
       - name: Build and install-test all five target userspaces
         env:
           # Runner-level cache credentials must never enter pull-request code.
@@ -118,31 +132,31 @@ jobs:
           exit "$status"
       # Forgejo's native artifact service implements the v3 protocol. Upstream
       # v4 targets GitHub's Artifact API v2 and fails on this Forgejo instance.
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: always()
         with:
           name: arch-${{ matrix.arch }}
           path: dist/ci-output/arch-${{ matrix.arch }}/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: always()
         with:
           name: nix-${{ matrix.arch }}
           path: dist/ci-output/nix-${{ matrix.arch }}/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: always()
         with:
           name: ubuntu-24.04-${{ matrix.arch }}
           path: dist/ci-output/ubuntu-24.04-${{ matrix.arch }}/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: always()
         with:
           name: debian-13-${{ matrix.arch }}
           path: dist/ci-output/debian-13-${{ matrix.arch }}/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: always()
         with:
           name: fedora-44-${{ matrix.arch }}
@@ -154,7 +168,7 @@ jobs:
     needs: validate
     runs-on: runner
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
@@ -174,10 +188,10 @@ jobs:
     needs: [package, release-guard]
     runs-on: runner
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: release
       - name: Flatten per-target artifact directories
@@ -199,7 +213,7 @@ jobs:
           QOS_FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: dist/ci/publish-forgejo-packages.sh release "${GITHUB_REF_NAME#v}"
       - name: Publish checksummed, install-tested artifacts
-        uses: https://code.forgejo.org/actions/forgejo-release@v2
+        uses: actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd # v2.13.4
         with:
           direction: upload
           url: ${{ github.server_url }}

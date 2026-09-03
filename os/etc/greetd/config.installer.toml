@@ -3,7 +3,7 @@
 # Identical in spirit to etc/greetd/config.toml, but the default session runs
 # /usr/libexec/qos-session-select instead of the greeter directly. That script
 # inspects the kernel cmdline and execs either the qOS graphical installer
-# (qos-installer, when qos.installer is present — which it is on this medium)
+# (qos-installer, when qos.install is present — which it is on this medium)
 # or the normal greeter — both wrapped in `cage`, since greetd has no display
 # of its own.
 #

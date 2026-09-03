@@ -4,7 +4,7 @@
 # to launch THIS instead of the greeter directly, so a single image can serve
 # both roles depending on the kernel cmdline:
 #
-#   * qos.installer present  -> run the qOS graphical installer (qos-installer)
+#   * qos.install present  -> run the qOS graphical installer (qos-installer)
 #   * otherwise              -> run the normal graphical login greeter
 #
 # Both run inside `cage` (a single-window kiosk wlroots compositor) because
@@ -13,7 +13,7 @@
 # (see etc/greetd/config.toml for the full rationale).
 set -euo pipefail
 
-if grep -q 'qos.installer' /proc/cmdline 2>/dev/null; then
+if grep -qw 'qos.install' /proc/cmdline 2>/dev/null; then
   exec env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/qos-installer
 else
   exec env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/qos-greeter
