@@ -62,6 +62,8 @@ jobs:
         with:
           path: os/external-assets/cache
           key: github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+          restore-keys: |
+            github-assets-all-v1-
       - name: Materialize immutable build inputs
         run: ./os/dev/cache-github-assets.sh
       - name: Save checksum-verified build inputs immediately
@@ -145,6 +147,7 @@ jobs:
           key: imager-linux-tools-${{ matrix.arch }}-${{ hashFiles('os/external-assets/github-assets.tsv') }}
           restore-keys: |
             github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+            github-assets-all-v1-
       - name: Materialize pinned AppImage tools
         run: |
           set -euo pipefail
