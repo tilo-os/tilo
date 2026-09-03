@@ -1,6 +1,6 @@
 use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 mod shared_surfaces;
 pub use shared_surfaces::SharedSurfaces;
@@ -1696,6 +1696,18 @@ pub struct WorkspaceTree {
     /// counter, not a timestamp, so the line survives a restart.
     #[serde(default)]
     pub room_share_floor: HashMap<RoomId, u64>,
+    /// Tabs created from same-identity continuation rather than from this
+    /// machine's ordinary layout.  Persisting this marker lets a later
+    /// checkpoint remove a remote close without ever deleting a local tab
+    /// that happened to use the same app id.
+    #[serde(default)]
+    pub continuation_tabs: BTreeSet<TabId>,
+    /// Safe record-only file cards received through personal continuity.
+    /// The value has hashes/references only; it intentionally never contains
+    /// a local pathname or thumbnail bytes.
+    #[serde(default)]
+    pub continuation_file_references:
+        HashMap<TabId, crate::shell::personal_continuity::LaunchIntent>,
     /// This tree's own peer salt, overriding the process-wide one — the
     /// static is wrong when one process holds **two** trees (e.g. two
     /// simulated peers). [`Self::local_salt`] prefers this field;
@@ -1732,6 +1744,8 @@ impl Default for WorkspaceTree {
             room_records_held: HashMap::new(),
             room_records_inbound: Vec::new(),
             room_share_floor: HashMap::new(),
+            continuation_tabs: BTreeSet::new(),
+            continuation_file_references: HashMap::new(),
             peer_salt_override: None,
             persist_path: None,
             fs_acl_path: None,
@@ -5390,6 +5404,8 @@ impl WorkspaceTree {
         source_device: &str,
         continuation: &crate::shell::personal_continuity::WorkspaceContinuation,
     ) -> bool {
+        let mut file_references = Vec::new();
+        let mut inserted_continuation_tabs = Vec::new();
         let Some(workspace) = self
             .workspaces
             .iter_mut()
@@ -5401,18 +5417,52 @@ impl WorkspaceTree {
         let mut apps = continuation.apps.clone();
         apps.sort_by_key(|app| (app.placement.strip, app.placement.group, app.placement.tab));
         for app in apps {
-            let crate::shell::personal_continuity::LaunchIntent::App { app_id } = &app.launch
-            else {
-                continue;
+            let (title, tile) = match &app.launch {
+                crate::shell::personal_continuity::LaunchIntent::App { app_id } => {
+                    if let Some(resume) = app.resume.clone()
+                        && let Ok(mut registry) =
+                            crate::shell::personal_continuity_registry::global_registry().lock()
+                    {
+                        registry.store_remote_resume(
+                            continuation.room,
+                            app.id,
+                            app_id.clone(),
+                            resume,
+                            app.record_instance.unwrap_or(app.id),
+                        );
+                    } else if let Ok(mut registry) =
+                        crate::shell::personal_continuity_registry::global_registry().lock()
+                    {
+                        registry.store_remote_record(
+                            continuation.room,
+                            app.id,
+                            app_id.clone(),
+                            app.record_instance.unwrap_or(app.id),
+                        );
+                    }
+                    (
+                        app_id.clone(),
+                        TileContent::PeerWindow {
+                            app_id: app_id.clone(),
+                            label: format!("Available from {source_device}"),
+                            note: String::new(),
+                        },
+                    )
+                }
+                crate::shell::personal_continuity::LaunchIntent::FileReference {
+                    record_id,
+                    ..
+                } => {
+                    file_references.push((app.id.0, app.launch.clone()));
+                    (
+                        "File reference".to_string(),
+                        TileContent::Stub {
+                            kind: AppKind::FileExplorer,
+                            label: format!("File available from {source_device}: {record_id}"),
+                        },
+                    )
+                }
             };
-            // Refresh cold-start state even after this tab has materialized;
-            // the next local launch should use the newest remote progress.
-            if let Some(resume) = app.resume.clone()
-                && let Ok(mut registry) =
-                    crate::shell::personal_continuity_registry::global_registry().lock()
-            {
-                registry.store_remote_resume(continuation.room, app.id, app_id.clone(), resume);
-            }
             if workspace.strips.iter().any(|strip| {
                 strip
                     .window_groups
@@ -5440,13 +5490,10 @@ impl WorkspaceTree {
             let group = &mut strip.window_groups[app.placement.group as usize];
             let tab = Tab {
                 id: app.id.0,
-                title: app_id.clone(),
-                tile: TileContent::PeerWindow {
-                    app_id: app_id.clone(),
-                    label: format!("Available from {source_device}"),
-                    note: String::new(),
-                },
+                title,
+                tile,
             };
+            inserted_continuation_tabs.push(app.id.0);
             let index = (app.placement.tab as usize).min(group.tabs.len());
             group.tabs.insert(index, tab);
             if group.active_tab == 0 {
@@ -5456,11 +5503,46 @@ impl WorkspaceTree {
             }
             changed = true;
         }
+        drop(workspace);
+        self.continuation_tabs.extend(inserted_continuation_tabs);
+        for (tab, reference) in file_references {
+            self.continuation_file_references.insert(tab, reference);
+        }
         if changed {
             self.seed_doc_from_cache();
             self.flush_to_disk();
         }
         changed
+    }
+
+    /// Remove continuation-owned tabs absent from the current deterministic
+    /// winner set. Local user-created tabs are deliberately unmarked and are
+    /// never touched by this reconciliation.
+    pub fn reconcile_continuation_tabs(&mut self, desired: &BTreeSet<TabId>) -> bool {
+        let stale: BTreeSet<_> = self
+            .continuation_tabs
+            .difference(desired)
+            .copied()
+            .collect();
+        if stale.is_empty() {
+            return false;
+        }
+        for workspace in &mut self.workspaces {
+            for strip in &mut workspace.strips {
+                for group in &mut strip.window_groups {
+                    group.tabs.retain(|tab| !stale.contains(&tab.id));
+                    if stale.contains(&group.active_tab) {
+                        group.active_tab = group.tabs.first().map_or(0, |tab| tab.id);
+                    }
+                }
+            }
+        }
+        self.continuation_tabs.retain(|tab| !stale.contains(tab));
+        self.continuation_file_references
+            .retain(|tab, _| !stale.contains(tab));
+        self.seed_doc_from_cache();
+        self.flush_to_disk();
+        true
     }
 
     pub fn set_active(&mut self, id: WorkspaceId) {
@@ -9221,5 +9303,34 @@ mod peer_window_merge_tests {
         assert_eq!(adopted.name, "From Laptop");
         assert!(adopted.strips.is_empty());
         assert_eq!(tree.room_authority(room), RoomAuthority::Unpinned);
+    }
+
+    #[test]
+    fn continuation_reconcile_removes_a_closed_remote_tab_but_not_local_tabs() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = RoomId::new();
+        tree.adopt_continuation_room(room, "Laptop");
+        let device = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
+        let app = crate::shell::personal_continuity::AppInstanceState::new(
+            crate::shell::personal_continuity::AppInstanceId(0x99),
+            crate::shell::personal_continuity::TabPlacement {
+                strip: 0,
+                group: 0,
+                tab: 0,
+            },
+            crate::shell::personal_continuity::LaunchIntent::app("dev.qos.browser").unwrap(),
+            None,
+            crate::shell::personal_continuity::ContinuityStamp { counter: 1, device },
+        );
+        assert!(tree.materialize_continuation_workspace(
+            "Laptop",
+            &crate::shell::personal_continuity::WorkspaceContinuation {
+                room,
+                apps: vec![app],
+            },
+        ));
+        assert!(tree.continuation_tabs.contains(&0x99));
+        assert!(tree.reconcile_continuation_tabs(&BTreeSet::new()));
+        assert!(!tree.continuation_tabs.contains(&0x99));
     }
 }
