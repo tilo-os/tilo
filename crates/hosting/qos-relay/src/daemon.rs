@@ -437,7 +437,9 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
             workspace.relay_workspace_ids
         };
         let mut authority_users = Vec::new();
+        let mut governor = None;
         if let Some(authority) = workspace.authority {
+            governor = Some(authority.governor);
             authority_users.push(hex::encode(authority.governor));
             for capability in authority.capabilities {
                 if capability.effect == collab_types::Effect::Grant
@@ -451,18 +453,20 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
         authority_users.dedup();
         collaborators.extend(authority_users.iter().cloned());
         for id in relay_workspace_ids {
+            let room_users = governor
+                .filter(|governor| id == crate::personal_continuity_workspace_id(governor))
+                .map(|governor| vec![hex::encode(governor)])
+                .unwrap_or_else(|| authority_users.clone());
             if !cfg.workspaces.iter().any(|binding| binding.id == id) {
                 cfg.workspaces.push(crate::config::WorkspaceBinding {
                     id,
                     pin: true,
                     replication: crate::mesh::ReplicationIntent::FullWorkspace,
-                    admitted_users: authority_users.clone(),
+                    admitted_users: room_users.clone(),
                 });
             } else if let Some(binding) = cfg.workspaces.iter_mut().find(|binding| binding.id == id)
             {
-                binding
-                    .admitted_users
-                    .extend(authority_users.iter().cloned());
+                binding.admitted_users.extend(room_users);
                 binding.admitted_users.sort_unstable();
                 binding.admitted_users.dedup();
             }
@@ -670,10 +674,13 @@ fn spawn_home_peer_authority_refresh(
                     }
                 }
                 for room in workspace.relay_workspace_ids {
-                    room_users
-                        .entry(room)
-                        .or_default()
-                        .extend(workspace_users.iter().copied());
+                    let admitted =
+                        if room == crate::personal_continuity_workspace_id(&authority.governor) {
+                            std::collections::HashSet::from([authority.governor])
+                        } else {
+                            workspace_users.clone()
+                        };
+                    room_users.entry(room).or_default().extend(admitted);
                 }
             }
             if valid {
@@ -1527,6 +1534,68 @@ mod tests {
                 && binding.pin
                 && binding.replication == crate::mesh::ReplicationIntent::FullWorkspace
         }));
+    }
+
+    #[test]
+    fn collaborator_authority_never_admits_personal_continuity_room() {
+        use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+
+        let temp = tempfile::tempdir().unwrap();
+        let status = temp.path().join("status.json");
+        let bundle_path = temp.path().join("home-peer.toml");
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[0x31; 32]);
+        let collaborator = [0x32; 32];
+        let ticket = fs::Ticket {
+            node: EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
+            workspace: [9; 32],
+        };
+        let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+            ticket.workspace_id(),
+            1,
+            vec![CapOverride::new(
+                Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                Scope::FsPath("/".into()),
+                Effect::Grant,
+                Verb::Read,
+            )],
+            false,
+            &governor,
+        )
+        .unwrap();
+        let continuity = crate::personal_continuity_workspace_id(&authority.governor);
+        let bundle = fs::full_replica::HomePeerSet {
+            status_file: status.clone(),
+            workspaces: vec![fs::full_replica::HomePeerBundle {
+                ticket: ticket.encode().unwrap(),
+                cache_dir: temp.path().join("cache"),
+                capability_json: "[]".into(),
+                authority: Some(authority.clone()),
+                principals: Vec::new(),
+                relay_workspace_ids: vec![42, continuity],
+            }],
+        };
+        std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
+        let mut config = RelayConfig {
+            home_peer_bundle: bundle_path,
+            full_replica_status: status,
+            ..RelayConfig::default()
+        };
+        import_home_peer_bindings(&mut config).unwrap();
+        let normal = config
+            .workspaces
+            .iter()
+            .find(|binding| binding.id == 42)
+            .unwrap();
+        assert!(normal.admitted_users.contains(&hex::encode(collaborator)));
+        let private = config
+            .workspaces
+            .iter()
+            .find(|binding| binding.id == continuity)
+            .unwrap();
+        assert_eq!(
+            private.admitted_users,
+            vec![hex::encode(authority.governor)]
+        );
     }
 
     #[tokio::test]
