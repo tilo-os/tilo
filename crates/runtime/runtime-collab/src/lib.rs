@@ -229,6 +229,16 @@ impl ChannelHandle {
         Ok(())
     }
 
+    /// Clear this application's previously reported continuation projection.
+    /// The broker binds the request to the certified channel route exactly as
+    /// it does for [`Self::report_continuation`].
+    pub async fn clear_continuation(&self, app_id: &str) -> Result<(), NotAvailable> {
+        let mut req = self.inner.clear_continuation_request();
+        req.get().set_app_id(app_id);
+        req.send().promise.await?;
+        Ok(())
+    }
+
     /// Submit a single signed op into the channel. The op blob is
     /// a postcard-encoded `collab-types::SignedOp`.
     ///

@@ -2490,6 +2490,62 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => Promise::err(capnp::Error::failed(error)),
         }
     }
+
+    fn clear_continuation(
+        self: Rc<Self>,
+        params: channel_handle::ClearContinuationParams,
+        _results: channel_handle::ClearContinuationResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let app_id = match request.get_app_id().and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value.to_owned(),
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        let route = self.route();
+        if route.app_id.is_empty() || app_id != route.app_id {
+            return Promise::err(capnp::Error::failed(
+                "clearContinuation appId must match the certified connection route".into(),
+            ));
+        }
+        let Some(instance_id) = route
+            .record_id
+            .strip_prefix("continuation:")
+            .and_then(|id| id.parse::<u64>().ok())
+            .map(crate::shell::personal_continuity::AppInstanceId)
+        else {
+            return Promise::err(capnp::Error::failed(
+                "clearContinuation requires a durable shell tab id".into(),
+            ));
+        };
+        let Some(room) = crate::shell::state::RoomId::parse(&route.cluster_id) else {
+            return Promise::err(capnp::Error::failed(
+                "clearContinuation route has no durable workspace room".into(),
+            ));
+        };
+        match crate::shell::personal_continuity_registry::global_registry()
+            .lock()
+            .map_err(|_| "continuation registry unavailable".to_string())
+        {
+            Ok(mut reports) => {
+                reports.clear(room, &app_id, instance_id);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(capnp::Error::failed(error)),
+        }
+    }
 }
 
 /// Apply a signed op arriving via capnp `send`: same validation /

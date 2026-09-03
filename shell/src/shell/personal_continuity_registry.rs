@@ -409,6 +409,33 @@ mod tests {
     }
 
     #[test]
+    fn clear_removes_only_the_certified_instance_projection() {
+        let room = RoomId::new();
+        let mut reports = ContinuationRegistry::default();
+        for (instance, url) in [
+            (AppInstanceId(11), br#"{"url":"https://a.test"}"#.as_slice()),
+            (AppInstanceId(22), br#"{"url":"https://b.test"}"#.as_slice()),
+        ] {
+            reports
+                .report(room, "dev.qos.browser", instance, 1, url.to_vec())
+                .unwrap();
+        }
+
+        assert!(reports.clear(room, "dev.qos.browser", AppInstanceId(11)));
+        assert!(
+            reports
+                .resume_for(room, "dev.qos.browser", AppInstanceId(11))
+                .is_none()
+        );
+        assert!(
+            reports
+                .resume_for(room, "dev.qos.browser", AppInstanceId(22))
+                .is_some()
+        );
+        assert!(!reports.clear(room, "dev.qos.browser", AppInstanceId(11)));
+    }
+
+    #[test]
     fn remote_refresh_does_not_replace_a_live_tab_record() {
         let room = RoomId::new();
         let launch = LaunchIntent::app("dev.qos.browser").unwrap();
