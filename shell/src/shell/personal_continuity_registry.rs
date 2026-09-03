@@ -22,6 +22,15 @@ pub struct AppContinuationReport {
     pub resume: ResumeMetadata,
 }
 
+/// A resume projection together with the CRDT record that owns it.  The
+/// record is a launcher-issued numeric instance id, not an app supplied
+/// pathname or handle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedContinuation {
+    pub resume: ResumeMetadata,
+    pub record_instance: AppInstanceId,
+}
+
 /// Level-triggered reports keyed by `(room, app id, stable instance id)`.
 /// A connection can replace only its own application route; the Cap'n Proto
 /// broker verifies that property before calling [`Self::report`].
@@ -29,6 +38,11 @@ pub struct AppContinuationReport {
 pub struct ContinuationRegistry {
     reports: BTreeMap<(RoomId, String, AppInstanceId), AppContinuationReport>,
     tab_instances: BTreeMap<AppInstanceId, AppInstanceId>,
+    /// Cold-start offers from another device.  Keeping these separate from
+    /// `tab_instances` is essential: an incoming update must not replace the
+    /// record identity of a local process already bound into that tab.
+    remote_resumes: BTreeMap<(RoomId, String, AppInstanceId), ResolvedContinuation>,
+    remote_records: BTreeMap<(RoomId, String, AppInstanceId), AppInstanceId>,
 }
 
 impl ContinuationRegistry {
@@ -100,15 +114,44 @@ impl ContinuationRegistry {
         tab: AppInstanceId,
         app_id: String,
         resume: ResumeMetadata,
+        record_instance: AppInstanceId,
     ) {
-        let report = AppContinuationReport {
-            room,
-            app_id: app_id.clone(),
-            instance_id: tab,
-            resume,
+        self.remote_resumes.insert(
+            (room, app_id.clone(), tab),
+            ResolvedContinuation {
+                resume,
+                record_instance,
+            },
+        );
+        self.remote_records
+            .insert((room, app_id, tab), record_instance);
+    }
+
+    pub fn store_remote_record(
+        &mut self,
+        room: RoomId,
+        tab: AppInstanceId,
+        app_id: String,
+        record_instance: AppInstanceId,
+    ) {
+        self.remote_records
+            .insert((room, app_id, tab), record_instance);
+    }
+
+    pub fn record_instance_for_tab(
+        &self,
+        room: RoomId,
+        tab: AppInstanceId,
+        launch: &LaunchIntent,
+    ) -> Option<AppInstanceId> {
+        let LaunchIntent::App { app_id } = launch else {
+            return None;
         };
-        self.reports.insert((room, app_id, tab), report);
-        self.bind_tab(tab, tab);
+        self.tab_instances.get(&tab).copied().or_else(|| {
+            self.remote_records
+                .get(&(room, app_id.clone(), tab))
+                .copied()
+        })
     }
 
     /// Resolve a capture by its exact durable tab id, never merely app id.
@@ -118,8 +161,30 @@ impl ContinuationRegistry {
         tab: AppInstanceId,
         launch: &LaunchIntent,
     ) -> Option<ResumeMetadata> {
-        let instance = *self.tab_instances.get(&tab)?;
-        self.resume_for_launch(room, instance, launch)
+        self.continuation_for_tab(room, tab, launch)
+            .map(|continuation| continuation.resume)
+    }
+
+    pub fn continuation_for_tab(
+        &self,
+        room: RoomId,
+        tab: AppInstanceId,
+        launch: &LaunchIntent,
+    ) -> Option<ResolvedContinuation> {
+        let LaunchIntent::App { app_id } = launch else {
+            return None;
+        };
+        if let Some(instance) = self.tab_instances.get(&tab).copied()
+            && let Some(resume) = self.resume_for_launch(room, instance, launch)
+        {
+            return Some(ResolvedContinuation {
+                resume,
+                record_instance: instance,
+            });
+        }
+        self.remote_resumes
+            .get(&(room, app_id.clone(), tab))
+            .cloned()
     }
 
     pub fn len(&self) -> usize {
@@ -216,5 +281,39 @@ mod tests {
             reports.resume_for_tab(room, AppInstanceId(101), &launch),
             reports.resume_for_tab(room, AppInstanceId(202), &launch),
         );
+    }
+
+    #[test]
+    fn remote_refresh_does_not_replace_a_live_tab_record() {
+        let room = RoomId::new();
+        let launch = LaunchIntent::app("dev.qos.browser").unwrap();
+        let mut reports = ContinuationRegistry::default();
+        reports.bind_tab(AppInstanceId(10), AppInstanceId(101));
+        reports
+            .report(
+                room,
+                "dev.qos.browser",
+                AppInstanceId(101),
+                1,
+                br#"{"url":"https://local.test"}"#.to_vec(),
+            )
+            .unwrap();
+        reports.store_remote_resume(
+            room,
+            AppInstanceId(10),
+            "dev.qos.browser".into(),
+            ResumeMetadata::new(
+                1,
+                ResumeSensitivity::Syncable,
+                br#"{"url":"https://remote.test"}"#.to_vec(),
+            )
+            .unwrap(),
+            AppInstanceId(202),
+        );
+        let resolved = reports
+            .continuation_for_tab(room, AppInstanceId(10), &launch)
+            .unwrap();
+        assert_eq!(resolved.record_instance, AppInstanceId(101));
+        assert_eq!(resolved.resume.bytes(), br#"{"url":"https://local.test"}"#);
     }
 }

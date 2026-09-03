@@ -262,7 +262,7 @@ fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Op
 
     // Before the launch: the window can arrive and claim the note as
     // soon as the launch thread starts.
-    note_opening(&record, &app.package_id);
+    note_opening(&record, path, &app.package_id);
 
     let launched = {
         let st = chrome.borrow();
@@ -336,6 +336,9 @@ pub fn report_open_failure(chrome: &Chrome, path: &Path, detail: &str, surface: 
 #[derive(Debug, Clone)]
 struct OpenDocument {
     record: RecordId,
+    /// Kept only in the local process so continuation can read the FUSE
+    /// record projection. It is never serialized into a checkpoint.
+    path: PathBuf,
     /// Correlates the launch with the window it produces.
     package_id: String,
     /// The wayland surface that arrived, once one has. `None` while starting.
@@ -376,11 +379,12 @@ enum Existing {
 
 /// Keyed by record, so re-noting the same document replaces rather
 /// than duplicates.
-fn note_opening(record: &RecordId, package_id: &str) {
+fn note_opening(record: &RecordId, path: &Path, package_id: &str) {
     let mut open = lock_open_documents();
     open.retain(|d| &d.record != record);
     open.push(OpenDocument {
         record: record.clone(),
+        path: path.to_path_buf(),
         package_id: package_id.to_string(),
         surface: None,
     });
@@ -392,6 +396,38 @@ fn forget_document(record: &RecordId) {
 
 pub fn clear_open_documents() {
     lock_open_documents().clear();
+}
+
+/// Return a privacy-safe continuation reference for a document surface.  The
+/// ordinary `RecordId::for_file` embeds an absolute local path and must never
+/// leave this device; continuity therefore carries only a stable hash-derived
+/// reference (and the same hash as its content/reference fingerprint).
+pub fn continuation_file_reference_for_surface(
+    surface_id: u64,
+) -> Option<crate::shell::personal_continuity::LaunchIntent> {
+    let open = lock_open_documents();
+    let path = &open
+        .iter()
+        .find(|document| document.surface == Some(surface_id))?
+        .path;
+    let record_bytes = xattr::get(path, "user.qos.record-id").ok()??;
+    let record_id: [u8; 16] = record_bytes.try_into().ok()?;
+    let content_hash = xattr::get(path, "user.qos.content-hash")
+        .ok()??
+        .try_into()
+        .ok();
+    // FUSE exposes preview bytes, never a path. Persist only their hash so
+    // the receiver can request/cache its own projected thumbnail.
+    let thumbnail_hash = xattr::get(path, "user.qos.thumb")
+        .ok()
+        .flatten()
+        .map(|bytes| *blake3::hash(&bytes).as_bytes());
+    crate::shell::personal_continuity::LaunchIntent::file_reference(
+        format!("file-record-{}", hex::encode(record_id)),
+        content_hash,
+        thumbnail_hash,
+    )
+    .ok()
 }
 
 /// Matches by wayland app-id; the oldest unclaimed note wins (launch
