@@ -48,6 +48,10 @@ pub struct ContentPeerRegistration {
     pub endpoint: EndpointAddr,
     /// Encoded Files ticket binding a fresh daemon to the shared namespace.
     pub ticket: String,
+    /// Relay service that authenticated this registration.  This binds a
+    /// persisted Files endpoint to the enrolled home peer which nominated it,
+    /// so removing that peer can revoke its hydration route too.
+    pub relay_service_id: [u8; 32],
 }
 
 /// Bounded owner operation for an enrolled home peer.
