@@ -7,6 +7,7 @@ set -uo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 backend="$repo_root/os/usr/libexec/qos-install"
 encryptor="$repo_root/os/usr/libexec/qos-disk-encrypt"
+guided_partitioner="$repo_root/os/usr/libexec/qos-guided-partition"
 containerfile="$repo_root/os/Containerfile.installer"
 production_containerfile="$repo_root/os/Containerfile"
 builder="$repo_root/os/dev/build-custom-installer.sh"
@@ -336,6 +337,18 @@ if grep -Fq 'prepare-partition "$ROOT_PARTITION" --efi "$EFI_PARTITION"' "$backe
   ok "encrypted and unencrypted alongside paths preserve the partition table"
 else
   bad "alongside mode is not wired through both encryption paths"
+fi
+
+if [ -x "$guided_partitioner" ] \
+   && grep -Fq -- '--guided-alongside)' "$backend" \
+   && grep -Fq 'flock -x 9' "$guided_partitioner" \
+   && grep -Fq 'partition map changed after review' "$guided_partitioner" \
+   && grep -Fq 'sfdisk --append --no-reread --lock=no --wipe never --wipe-partitions never' "$guided_partitioner" \
+   && grep -Fq 'mkfs.vfat -n QOS-EFI "$EFI_PARTITION"' "$guided_partitioner" \
+   && ! grep -Eq 'sfdisk .*--delete|parted .* (move|resize)|resize2fs|ntfsresize' "$guided_partitioner"; then
+  ok "guided alongside locks and revalidates the reviewed GPT map before appending only qOS partitions"
+else
+  bad "guided alongside can mutate storage outside its reviewed free extent"
 fi
 
 if bash "$repo_root/os/tests/live_installer_service_invariants.sh"; then
