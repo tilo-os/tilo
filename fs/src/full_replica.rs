@@ -17,6 +17,19 @@ use serde::{Deserialize, Serialize};
 use crate::content::Manifest;
 use crate::{Hydrator, Namespace};
 
+/// A full replica is deliberately bounded even for an authorised writer. The
+/// namespace cap alone does not constrain an adversarial manifest's vector or
+/// claimed chunk lengths.
+const MAX_REPLICA_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_REPLICA_CHUNKS_PER_RECORD: usize = 100_000;
+const MAX_REPLICA_CHUNK_BYTES: u32 = 64 * 1024;
+const MAX_REPLICA_THUMBNAIL_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_REPLICA_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024 * 1024;
+/// A generation lease intentionally covers only a small physical deletion
+/// batch. This keeps foreground namespace/FUSE mutations responsive even when
+/// a long-offline replica has accumulated a large obsolete cache.
+const MAX_GC_BATCH_BLOBS: usize = 16;
+
 /// Transferable configuration for one always-on home peer.
 ///
 /// `ticket` and `capability_json` identify a whole workspace and its existing capability
@@ -230,24 +243,53 @@ pub async fn hydrate_full_workspace(
     };
     status.records = u64::try_from(roots.len()).unwrap_or(u64::MAX);
 
+    let mut hydrated_bytes = 0u64;
     for roots in roots {
         if let Some(manifest_hash) = roots.manifest {
             status.manifests = status.manifests.saturating_add(1);
-            let manifest_bytes = match hydrator.read_blob(manifest_hash, 0, u64::MAX).await {
+            let manifest_bytes = match hydrator
+                .read_blob(
+                    manifest_hash,
+                    0,
+                    MAX_REPLICA_MANIFEST_BYTES.saturating_add(1),
+                )
+                .await
+            {
                 Ok(bytes) => bytes,
                 Err(error) => return status.failed(error),
             };
+            if u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX) > MAX_REPLICA_MANIFEST_BYTES
+            {
+                return status.failed(anyhow::anyhow!("manifest exceeds replica byte budget"));
+            }
             let manifest = match Manifest::decode(&manifest_bytes) {
                 Ok(manifest) => manifest,
                 Err(error) => return status.failed(error.into()),
             };
+            if manifest.chunks.len() > MAX_REPLICA_CHUNKS_PER_RECORD {
+                return status.failed(anyhow::anyhow!("manifest exceeds replica chunk budget"));
+            }
             for chunk in manifest.chunks {
+                if chunk.len == 0 || chunk.len > MAX_REPLICA_CHUNK_BYTES {
+                    return status.failed(anyhow::anyhow!("manifest has an invalid chunk length"));
+                }
+                hydrated_bytes = match hydrated_bytes.checked_add(u64::from(chunk.len)) {
+                    Some(total) if total <= MAX_REPLICA_TOTAL_BYTES => total,
+                    _ => {
+                        return status
+                            .failed(anyhow::anyhow!("workspace exceeds replica byte budget"));
+                    }
+                };
                 let chunk_hash = Hash::from(chunk.hash);
-                if let Err(error) = hydrator
+                let chunk_bytes = match hydrator
                     .read_blob(chunk_hash, 0, u64::from(chunk.len))
                     .await
                 {
-                    return status.failed(error);
+                    Ok(bytes) => bytes,
+                    Err(error) => return status.failed(error),
+                };
+                if chunk_bytes.len() != chunk.len as usize {
+                    return status.failed(anyhow::anyhow!("durable chunk length mismatch"));
                 }
                 // `read_blob` returning bytes is not enough proof if a future
                 // store backend changes cache behavior; check the durable
@@ -263,8 +305,19 @@ pub async fn hydrate_full_workspace(
             }
         }
         if let Some(thumbnail_hash) = roots.thumbnail {
-            if let Err(error) = hydrator.read_blob(thumbnail_hash, 0, u64::MAX).await {
-                return status.failed(error);
+            let thumbnail = match hydrator
+                .read_blob(
+                    thumbnail_hash,
+                    0,
+                    MAX_REPLICA_THUMBNAIL_BYTES.saturating_add(1),
+                )
+                .await
+            {
+                Ok(bytes) => bytes,
+                Err(error) => return status.failed(error),
+            };
+            if u64::try_from(thumbnail.len()).unwrap_or(u64::MAX) > MAX_REPLICA_THUMBNAIL_BYTES {
+                return status.failed(anyhow::anyhow!("thumbnail exceeds replica byte budget"));
             }
             if !hydrator.store.has(thumbnail_hash).await {
                 return status.failed(anyhow::anyhow!(
@@ -289,30 +342,115 @@ pub async fn hydrate_full_workspace(
 pub async fn prune_obsolete_workspace_content(
     namespace: &Arc<Mutex<Namespace>>,
     hydrator: &Hydrator,
+    history: Option<&crate::FileHistoryStore>,
 ) -> Result<u64> {
-    let roots = namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .live_record_blob_roots(crate::namespace::MAX_LIVE_RECORD_BLOB_SCAN)?;
+    let (roots, generation) = {
+        let mut namespace = namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let roots =
+            namespace.live_record_blob_roots(crate::namespace::MAX_LIVE_RECORD_BLOB_SCAN)?;
+        (roots, *blake3::hash(&namespace.save()).as_bytes())
+    };
     let mut live = HashSet::new();
     for roots in roots {
         if let Some(manifest_hash) = roots.manifest {
-            live.insert(manifest_hash);
-            let bytes = hydrator.read_blob(manifest_hash, 0, u64::MAX).await?;
-            for chunk in Manifest::decode(&bytes)?.chunks {
-                live.insert(Hash::from(chunk.hash));
-            }
+            retain_manifest_tree(&mut live, hydrator, manifest_hash).await?;
         }
         if let Some(thumbnail_hash) = roots.thumbnail {
             live.insert(thumbnail_hash);
+        }
+    }
+    if let Some(history) = history {
+        for manifest_hash in history.retained_content_hashes() {
+            retain_manifest_tree(&mut live, hydrator, Hash::from(manifest_hash.0)).await?;
         }
     }
     let present = hydrator.store.store().blobs().list().hashes().await?;
     let obsolete = present
         .into_iter()
         .filter(|hash| !live.contains(hash))
-        .collect::<HashSet<_>>();
-    hydrator.store.evict_blobs(&obsolete).await
+        .collect::<Vec<_>>();
+    if obsolete.is_empty() {
+        return Ok(0);
+    }
+
+    let mut removed = 0_u64;
+    for hashes in obsolete.chunks(MAX_GC_BATCH_BLOBS) {
+        // Namespace roots and each physical deletion batch form one generation
+        // lease. A changed generation terminates this sweep; the next pass
+        // recomputes roots before releasing anything else. `evict_blobs` is
+        // async, so drive the bounded batch on a helper thread while retaining
+        // the lease instead of awaiting with a std::Mutex guard.
+        let batch_removed = {
+            let mut namespace = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let current = *blake3::hash(&namespace.save()).as_bytes();
+            if current != generation {
+                None
+            } else {
+                let selected = hashes.iter().copied().collect::<HashSet<_>>();
+                let store = Arc::clone(&hydrator.store);
+                Some(std::thread::scope(|scope| {
+                    scope
+                        .spawn(|| {
+                            // A dedicated runtime keeps the generation lease
+                            // usable from both the service's multithreaded
+                            // runtime and current-thread test/embedded hosts.
+                            // GC touches only the local content store; it must
+                            // not depend on the namespace sync executor.
+                            tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build()
+                                .map_err(anyhow::Error::from)?
+                                .block_on(store.evict_blobs(&selected))
+                        })
+                        .join()
+                        .map_err(|_| anyhow::anyhow!("replica GC worker panicked"))?
+                })?)
+            }
+        };
+        let Some(batch_removed) = batch_removed else {
+            break;
+        };
+        removed = removed.saturating_add(batch_removed);
+        // A large stale cache must not monopolize the mount's namespace lock.
+        tokio::task::yield_now().await;
+    }
+    Ok(removed)
+}
+
+async fn retain_manifest_tree(
+    live: &mut HashSet<Hash>,
+    hydrator: &Hydrator,
+    manifest_hash: Hash,
+) -> Result<()> {
+    live.insert(manifest_hash);
+    let bytes = hydrator
+        .read_blob(
+            manifest_hash,
+            0,
+            MAX_REPLICA_MANIFEST_BYTES.saturating_add(1),
+        )
+        .await?;
+    anyhow::ensure!(
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= MAX_REPLICA_MANIFEST_BYTES,
+        "retained manifest exceeds replica byte budget"
+    );
+    let manifest = Manifest::decode(&bytes)?;
+    anyhow::ensure!(
+        manifest.chunks.len() <= MAX_REPLICA_CHUNKS_PER_RECORD,
+        "retained manifest exceeds replica chunk budget"
+    );
+    for chunk in manifest.chunks {
+        anyhow::ensure!(
+            chunk.len > 0 && chunk.len <= MAX_REPLICA_CHUNK_BYTES,
+            "retained manifest has an invalid chunk length"
+        );
+        live.insert(Hash::from(chunk.hash));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -350,6 +488,36 @@ mod tests {
         assert_eq!(ready.state, "ready");
         assert!(ready.full_content_replication);
         assert_eq!((ready.manifests, ready.chunks, ready.thumbnails), (1, 1, 1));
+        endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn readiness_rejects_an_oversized_manifest_claim_before_advertising() {
+        let store = Arc::new(ContentStore::memory());
+        let oversized = store
+            .ingest(
+                Manifest {
+                    chunks: vec![ChunkRef {
+                        hash: [7; 32],
+                        len: MAX_REPLICA_CHUNK_BYTES.saturating_add(1),
+                    }],
+                }
+                .encode()
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut namespace = Namespace::new("replica-budget").unwrap();
+        namespace
+            .create_file(ROOT_INO, "oversized", Some(&oversized), 1, 0)
+            .unwrap();
+        let namespace = Arc::new(Mutex::new(namespace));
+        let (endpoint, _) = crate::sync::bind_ephemeral_endpoint().await.unwrap();
+        let hydrator = Hydrator::new(endpoint.clone(), store);
+
+        let status = hydrate_full_workspace(&namespace, &hydrator).await;
+        assert_eq!(status.state, "failed");
+        assert!(!status.full_content_replication);
         endpoint.close().await;
     }
 
@@ -595,7 +763,7 @@ mod tests {
         assert!(namespace.lock().unwrap().remove(file));
         tokio::time::timeout(
             Duration::from_secs(5),
-            prune_obsolete_workspace_content(&namespace, &nas_hydrator),
+            prune_obsolete_workspace_content(&namespace, &nas_hydrator, None),
         )
         .await
         .expect("obsolete blob prune must be bounded")
@@ -616,5 +784,39 @@ mod tests {
         nas_router.shutdown().await.unwrap();
         nas_endpoint.close().await;
         reader_endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn batched_gc_yields_for_namespace_mutations() {
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        for index in 0..MAX_GC_BATCH_BLOBS {
+            store.ingest(format!("obsolete-{index}")).await.unwrap();
+        }
+        let hydrator = Hydrator::new(endpoint.clone(), Arc::clone(&store));
+        let namespace = Arc::new(Mutex::new(Namespace::new("gc-yield").unwrap()));
+        let gc = prune_obsolete_workspace_content(&namespace, &hydrator, None);
+        let mutation = async {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            namespace
+                .lock()
+                .unwrap()
+                .create_file(ROOT_INO, "arrived-during-gc", None, 0, 1)
+                .unwrap();
+        };
+        let (gc, ()) = tokio::time::timeout(Duration::from_secs(6), async {
+            tokio::join!(gc, mutation)
+        })
+            .await
+            .expect("large stale cache must not monopolize namespace mutations");
+        gc.unwrap();
+        assert!(
+            namespace
+                .lock()
+                .unwrap()
+                .entry_at("arrived-during-gc")
+                .is_some()
+        );
+        endpoint.close().await;
     }
 }
