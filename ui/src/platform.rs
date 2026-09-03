@@ -105,7 +105,17 @@ impl Shortcut {
     }
 
     pub fn label(&self, conventions: PlatformConventions) -> String {
-        let mut parts = Vec::with_capacity(3);
+        let parts = self.keycap_labels(conventions);
+        if conventions.platform() == Platform::MacOs {
+            parts.concat()
+        } else {
+            parts.join("+")
+        }
+    }
+
+    /// Labels to paint as individual physical-looking caps.
+    pub fn keycap_labels(&self, conventions: PlatformConventions) -> Vec<String> {
+        let mut parts = Vec::with_capacity(4);
         if self.command {
             parts.push(match conventions.platform() {
                 Platform::MacOs => "⌘".to_owned(),
@@ -125,11 +135,7 @@ impl Shortcut {
             });
         }
         parts.push(self.key.clone());
-        if conventions.platform() == Platform::MacOs {
-            parts.concat()
-        } else {
-            parts.join("+")
-        }
+        parts
     }
 }
 
