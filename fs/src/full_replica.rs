@@ -126,6 +126,10 @@ pub struct FullReplicaStatus {
     pub manifests: u64,
     pub chunks: u64,
     pub thumbnails: u64,
+    /// BLAKE3 digest of the exact durable namespace generation whose live
+    /// content roots were verified by this readiness pass.
+    #[serde(default)]
+    pub namespace_generation: Option<String>,
     /// Authenticated filesystem endpoints that serve the complete content
     /// proof. They are published only with a ready proof, so discovery never
     /// substitutes a relay-only endpoint for the blob/sync protocols.
@@ -146,6 +150,7 @@ impl FullReplicaStatus {
             manifests: 0,
             chunks: 0,
             thumbnails: 0,
+            namespace_generation: None,
             filesystem_endpoints: Vec::new(),
             updated_at_ms: 0,
             error: None,
@@ -182,6 +187,9 @@ pub fn aggregate_status(states: &[FullReplicaStatus]) -> FullReplicaStatus {
     .into();
     aggregate.error = states.iter().find_map(|status| status.error.clone());
     if aggregate.full_content_replication {
+        if states.len() == 1 {
+            aggregate.namespace_generation = states[0].namespace_generation.clone();
+        }
         for status in states {
             for endpoint in &status.filesystem_endpoints {
                 if !aggregate.filesystem_endpoints.contains(endpoint) {
@@ -527,14 +535,23 @@ mod tests {
         ready.state = "ready".into();
         ready.full_content_replication = true;
         ready.records = u64::MAX;
+        ready.namespace_generation = Some("generation-a".into());
         let aggregate = aggregate_status(&[ready.clone(), ready.clone()]);
         assert!(aggregate.full_content_replication);
         assert_eq!(aggregate.state, "ready");
         assert_eq!(aggregate.records, u64::MAX);
+        assert_eq!(aggregate.namespace_generation, None);
+
+        let aggregate = aggregate_status(&[ready.clone()]);
+        assert_eq!(
+            aggregate.namespace_generation.as_deref(),
+            Some("generation-a")
+        );
 
         let aggregate = aggregate_status(&[ready, FullReplicaStatus::syncing()]);
         assert!(!aggregate.full_content_replication);
         assert_eq!(aggregate.state, "syncing");
+        assert_eq!(aggregate.namespace_generation, None);
     }
 
     #[test]
