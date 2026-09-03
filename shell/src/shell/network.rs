@@ -257,34 +257,82 @@ struct PersistedPersonalContinuity {
     continuity: crate::shell::personal_continuity::PersonalContinuity,
 }
 
-fn load_personal_continuity(path: &Path) -> PersistedPersonalContinuity {
-    let Ok(bytes) = std::fs::read(path) else {
-        return PersistedPersonalContinuity {
-            counter: 0,
-            continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
-        };
-    };
-    postcard::from_bytes(&bytes).unwrap_or_else(|error| {
-        tracing::warn!(%error, path = %path.display(), "ignoring invalid personal continuity store");
-        PersistedPersonalContinuity {
-            counter: 0,
-            continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
-        }
+#[derive(Deserialize)]
+struct PersistedPersonalContinuityV1 {
+    counter: u64,
+    continuity: crate::shell::personal_continuity::PersonalContinuityWireV1,
+}
+
+fn decode_persisted_personal_continuity(bytes: &[u8]) -> Option<PersistedPersonalContinuity> {
+    if let Ok(mut current) = postcard::from_bytes::<PersistedPersonalContinuity>(bytes) {
+        current.counter = current.continuity.recover_counter(current.counter);
+        return Some(current);
+    }
+    let legacy = postcard::from_bytes::<PersistedPersonalContinuityV1>(bytes).ok()?;
+    let continuity = legacy.continuity.upgrade().ok()?;
+    Some(PersistedPersonalContinuity {
+        counter: continuity.recover_counter(legacy.counter),
+        continuity,
     })
 }
 
-fn persist_personal_continuity(path: &Path, value: &PersistedPersonalContinuity) {
-    let Ok(bytes) = postcard::to_allocvec(value) else {
-        return;
-    };
-    let temporary = path.with_extension("postcard.tmp");
-    if std::fs::write(&temporary, bytes)
-        .and_then(|()| std::fs::rename(&temporary, path))
-        .is_err()
+fn personal_continuity_backup_path(path: &Path) -> PathBuf {
+    path.with_extension("postcard.backup")
+}
+
+fn load_personal_continuity(path: &Path) -> PersistedPersonalContinuity {
+    for (index, candidate) in [path.to_path_buf(), personal_continuity_backup_path(path)]
+        .into_iter()
+        .enumerate()
     {
-        let _ = std::fs::remove_file(&temporary);
-        tracing::warn!(path = %path.display(), "personal continuity persistence failed");
+        if let Ok(bytes) = std::fs::read(&candidate)
+            && let Some(mut value) = decode_persisted_personal_continuity(&bytes)
+        {
+            if index != 0 {
+                // The primary may have been published before it was damaged,
+                // while this backup is one revision behind. Reserve another
+                // Lamport value so the next capture cannot reuse a counter a
+                // peer already associates with different bytes.
+                value.counter = value.counter.saturating_add(1);
+            }
+            return value;
+        }
     }
+    PersistedPersonalContinuity {
+        counter: 0,
+        continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
+    }
+}
+
+fn persist_personal_continuity(path: &Path, value: &PersistedPersonalContinuity) -> bool {
+    let Ok(bytes) = postcard::to_allocvec(value) else {
+        return false;
+    };
+    if let Some(parent) = path.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!(%error, path = %path.display(), "personal continuity directory unavailable");
+        return false;
+    }
+    // Establish the recovery point before replacing the primary. Refusing to
+    // advance when this fails keeps the backup exactly one committed primary
+    // behind (or equal on first write), which makes the reserved-counter
+    // recovery rule above sound even across repeated failures.
+    let prior = std::fs::read(path)
+        .ok()
+        .filter(|prior| decode_persisted_personal_continuity(prior).is_some())
+        .unwrap_or_else(|| bytes.clone());
+    if let Err(error) =
+        atomic_file::write_with_mode(&personal_continuity_backup_path(path), &prior, 0o600)
+    {
+        tracing::warn!(%error, path = %path.display(), "personal continuity backup failed");
+        return false;
+    }
+    if atomic_file::write_with_mode(path, &bytes, 0o600).is_err() {
+        tracing::warn!(path = %path.display(), "personal continuity persistence failed");
+        return false;
+    }
+    true
 }
 
 fn load_pending_invitations(path: &Path) -> Vec<PendingInvitation> {
@@ -1665,6 +1713,7 @@ impl ShellNetwork {
     fn local_continuity_snapshot_bytes(&self) -> Option<Vec<u8>> {
         let device = self.personal_continuity_device.clone()?;
         let tree_handle = self.replica.lock().ok()?.tree.clone();
+        let pending_closed_tabs = tree_handle.read().continuation_closed_tabs.clone();
 
         // Hash a counter-neutral capture so a quiet tree stays quiet. The
         // device counter advances only for a real topology/app change.
@@ -1696,17 +1745,32 @@ impl ShellNetwork {
                 );
                 return None;
             }
+            drop(continuity);
+            // Retry a prior failed durable write even while the captured tree
+            // is quiet.
+            let _ = self.persist_personal_continuity();
             return Some(bytes);
         }
         let mut counter = self.personal_continuity_counter.lock().ok()?;
+        let prior = {
+            let continuity = self.personal_continuity.lock().ok()?;
+            *counter = continuity.recover_counter(*counter);
+            continuity.snapshot_for(&device).cloned()
+        };
         *counter = counter.saturating_add(1);
-        let report =
+        let mut report =
             crate::shell::personal_continuity::DeviceContinuationSnapshot::capture_with_registry(
                 &tree_handle.read(),
                 device.clone(),
                 *counter,
                 &reports,
             );
+        if let Some(prior) = prior.as_ref()
+            && let Err(error) = report.snapshot.record_closures_from(prior)
+        {
+            tracing::warn!(%error, "personal continuity could not record local closures");
+            return None;
+        }
         if report.redacted_foreign_tabs > 0 {
             tracing::debug!(
                 redacted = report.redacted_foreign_tabs,
@@ -1727,19 +1791,27 @@ impl ShellNetwork {
         drop(continuity);
         drop(counter);
         drop(previous);
-        self.persist_personal_continuity();
+        let durable = self.persist_personal_continuity();
+        if durable && !pending_closed_tabs.is_empty() {
+            let mut tree = tree_handle.write();
+            for (tab, room) in pending_closed_tabs {
+                if tree.continuation_closed_tabs.get(&tab) == Some(&room) {
+                    tree.continuation_closed_tabs.remove(&tab);
+                }
+            }
+        }
         Some(bytes)
     }
 
-    fn persist_personal_continuity(&self) {
+    fn persist_personal_continuity(&self) -> bool {
         let Some(path) = self.personal_continuity_path.as_deref() else {
-            return;
+            return false;
         };
         let (Ok(counter), Ok(continuity)) = (
             self.personal_continuity_counter.lock(),
             self.personal_continuity.lock(),
         ) else {
-            return;
+            return false;
         };
         persist_personal_continuity(
             path,
@@ -1747,7 +1819,7 @@ impl ShellNetwork {
                 counter: *counter,
                 continuity: continuity.clone(),
             },
-        );
+        )
     }
 
     fn publish_personal_continuity_request(&self) {
@@ -2123,12 +2195,14 @@ impl ShellNetwork {
             );
             return true;
         }
-        let Ok(incoming) = postcard::from_bytes::<
-            crate::shell::personal_continuity::PersonalContinuity,
-        >(snapshot_bytes) else {
+        let Ok(incoming) = crate::shell::personal_continuity::decode_checkpoint(snapshot_bytes)
+        else {
             tracing::warn!("dropping invalid continuity checkpoint");
             return true;
         };
+        if let Ok(mut counter) = self.personal_continuity_counter.lock() {
+            *counter = (*counter).max(incoming.observed_counter());
+        }
         let mut changed = false;
         let mut merged = None;
         if let Ok(mut continuity) = self.personal_continuity.lock() {
@@ -2143,42 +2217,41 @@ impl ShellNetwork {
             merged = Some(continuity.clone());
         }
         if changed {
-            self.persist_personal_continuity();
+            let _ = self.persist_personal_continuity();
             let Some(merged) = merged else {
                 return true;
             };
             // Reconcile from the accepted merged set, not from the wire
             // payload. A checkpoint can contain stale entries alongside one
             // newer entry; arrival order must never choose an app state.
-            let mut winners = std::collections::BTreeMap::new();
-            let mut rooms = Vec::new();
+            let mut candidate_apps = std::collections::BTreeSet::new();
+            let mut rooms = std::collections::BTreeMap::new();
             for snapshot in merged.snapshots().values() {
                 for workspace in &snapshot.workspaces {
-                    rooms.push((workspace.room, snapshot.device.as_str().to_string()));
+                    rooms
+                        .entry(workspace.room)
+                        .or_insert_with(|| snapshot.device.as_str().to_string());
                     for app in &workspace.apps {
-                        let key = (workspace.room, app.id);
-                        let replace = winners.get(&key).is_none_or(
-                            |current: &crate::shell::personal_continuity::AppInstanceState| {
-                                (app.stamp.counter, app.stamp.device.as_str())
-                                    > (current.stamp.counter, current.stamp.device.as_str())
-                            },
-                        );
-                        if replace {
-                            winners.insert(key, app.clone());
-                        }
+                        candidate_apps.insert((workspace.room, app.id));
                     }
                 }
             }
-            let materializations: Vec<_> = winners
+            let mut winners_by_room = std::collections::BTreeMap::<_, Vec<_>>::new();
+            for (room, app_id) in candidate_apps {
+                if let Some(app) = merged.newest_app_state_in_room(room, app_id) {
+                    winners_by_room.entry(room).or_default().push(app.clone());
+                }
+            }
+            let materializations: Vec<_> = winners_by_room
                 .into_iter()
-                .map(|((room, _), app)| {
-                    let source = app.stamp.device.as_str().to_string();
+                .map(|(room, apps)| {
+                    let source = apps
+                        .first()
+                        .map(|app| app.stamp.device.as_str().to_string())
+                        .unwrap_or_default();
                     (
                         source,
-                        crate::shell::personal_continuity::WorkspaceContinuation {
-                            room,
-                            apps: vec![app],
-                        },
+                        crate::shell::personal_continuity::WorkspaceContinuation { room, apps },
                     )
                 })
                 .collect();
@@ -2189,6 +2262,10 @@ impl ShellNetwork {
             let tree_handle = self.replica.lock().ok().map(|replica| replica.tree.clone());
             let adopted = tree_handle.is_some_and(|tree| {
                 let mut tree = tree.write();
+                let desired_rooms = rooms
+                    .keys()
+                    .copied()
+                    .collect::<std::collections::BTreeSet<_>>();
                 let adopted_rooms =
                     rooms
                         .into_iter()
@@ -2204,7 +2281,9 @@ impl ShellNetwork {
                         .fold(false, |changed, (source, workspace)| {
                             tree.materialize_continuation_workspace(&source, &workspace) || changed
                         });
-                tree.reconcile_continuation_tabs(&desired_tabs) || adopted_rooms || materialized
+                let reconciled_tabs = tree.reconcile_continuation_tabs(&desired_tabs);
+                let reconciled_rooms = tree.reconcile_continuation_rooms(&desired_rooms);
+                reconciled_tabs || reconciled_rooms || adopted_rooms || materialized
             });
             if adopted {
                 // Joining the room topics is demand-driven by these requests;
@@ -2893,7 +2972,7 @@ mod tests {
         .unwrap();
         let mut continuity = crate::shell::personal_continuity::PersonalContinuity::default();
         continuity.upsert(snapshot.clone()).unwrap();
-        persist_personal_continuity(
+        let _ = persist_personal_continuity(
             &path,
             &PersistedPersonalContinuity {
                 counter: 41,
@@ -2903,6 +2982,101 @@ mod tests {
         let restored = load_personal_continuity(&path);
         assert_eq!(restored.counter, 41);
         assert_eq!(restored.continuity.snapshot_for(&device), Some(&snapshot));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
+        std::fs::write(&path, b"torn").unwrap();
+        let recovered = load_personal_continuity(&path);
+        assert_eq!(
+            recovered.counter, 42,
+            "backup recovery reserves a counter peers may already have seen"
+        );
+        assert_eq!(recovered.continuity.snapshot_for(&device), Some(&snapshot));
+    }
+
+    #[test]
+    fn legacy_continuity_store_migrates_without_resetting_counter() {
+        use crate::shell::personal_continuity::{
+            ContinuityStamp, DeviceFocus, DeviceId, WorkspaceContinuation,
+        };
+        #[derive(Serialize)]
+        struct LegacySnapshot {
+            schema_version: u16,
+            device: DeviceId,
+            stamp: ContinuityStamp,
+            focus: Option<DeviceFocus>,
+            workspaces: Vec<WorkspaceContinuation>,
+        }
+        #[derive(Serialize)]
+        struct LegacyCollection {
+            snapshots: Vec<LegacySnapshot>,
+        }
+        #[derive(Serialize)]
+        struct LegacyStore {
+            counter: u64,
+            continuity: LegacyCollection,
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal-continuity.postcard");
+        let device = DeviceId::new("legacy-device").unwrap();
+        let bytes = postcard::to_allocvec(&LegacyStore {
+            counter: 7,
+            continuity: LegacyCollection {
+                snapshots: vec![LegacySnapshot {
+                    schema_version: 1,
+                    device: device.clone(),
+                    stamp: ContinuityStamp {
+                        counter: 91,
+                        device: device.clone(),
+                    },
+                    focus: None,
+                    workspaces: Vec::new(),
+                }],
+            },
+        })
+        .unwrap();
+        std::fs::write(&path, bytes).unwrap();
+
+        let restored = load_personal_continuity(&path);
+        assert_eq!(restored.counter, 91);
+        assert_eq!(
+            restored
+                .continuity
+                .snapshot_for(&device)
+                .unwrap()
+                .schema_version,
+            crate::shell::personal_continuity::CONTINUITY_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn backup_failure_never_advances_continuity_primary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal-continuity.postcard");
+        let initial = PersistedPersonalContinuity {
+            counter: 10,
+            continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
+        };
+        let _ = persist_personal_continuity(&path, &initial);
+        let backup = personal_continuity_backup_path(&path);
+        std::fs::remove_file(&backup).unwrap();
+        std::fs::create_dir(&backup).unwrap();
+
+        let _ = persist_personal_continuity(
+            &path,
+            &PersistedPersonalContinuity {
+                counter: 11,
+                continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
+            },
+        );
+        let restored = load_personal_continuity(&path);
+        assert_eq!(restored.counter, 10);
     }
 
     #[test]

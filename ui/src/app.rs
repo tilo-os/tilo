@@ -9,7 +9,84 @@ use winit::{
 /// Toolkit-owned continuation schema used when an app has no narrower
 /// domain-specific projection. The CRDT document travels on its stable record
 /// route; this payload restores the complementary local presentation state.
-const GENERIC_VIEW_CONTINUATION_SCHEMA: u16 = u16::MAX;
+pub const GENERIC_VIEW_CONTINUATION_SCHEMA: u16 = u16::MAX;
+
+/// Host-owned generic continuation. Deliberately excludes widget `ephemeral`
+/// strings and `RecordId::for_file` values: both may contain local paths or
+/// app secrets. File navigation is restored by the shell's typed
+/// `FileRecordId` launch intent; this fallback carries presentation only.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PortableContinuationView {
+    scroll: Vec<f64>,
+    focus_ordinal: Option<usize>,
+    viewport: crate::view::ViewRect,
+    view_mode: Option<String>,
+}
+
+impl PortableContinuationView {
+    fn capture(view: crate::view::View) -> Self {
+        let scroll = view
+            .scroll
+            .into_iter()
+            .filter(|value| value.is_finite())
+            .take(32)
+            .collect();
+        let view_mode = view.view_mode.filter(|mode| {
+            !mode.is_empty()
+                && mode.len() <= 64
+                && mode
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        });
+        Self {
+            scroll,
+            focus_ordinal: view.focus.map(|focus| focus.ordinal),
+            viewport: view.viewport,
+            view_mode,
+        }
+    }
+
+    fn into_view(self) -> crate::view::View {
+        crate::view::View {
+            scroll: self.scroll,
+            focus: self.focus_ordinal.map(|ordinal| crate::view::FocusView {
+                ordinal,
+                ephemeral: String::new(),
+            }),
+            // Stable file records are routed by the shell and never encoded
+            // as the toolkit's path-bearing `RecordId::for_file`.
+            open_resource: None,
+            viewport: self.viewport,
+            view_mode: self.view_mode,
+        }
+    }
+}
+
+/// Validate the toolkit-owned generic wire shape at the shell boundary.
+/// App-provided opaque bytes must not be accepted merely because they use the
+/// generic schema number.
+pub fn validate_generic_continuation_metadata(bytes: &[u8]) -> bool {
+    let Ok(view) = postcard::from_bytes::<PortableContinuationView>(bytes) else {
+        return false;
+    };
+    view.scroll.len() <= 32
+        && view.scroll.iter().all(|value| value.is_finite())
+        && [
+            view.viewport.x,
+            view.viewport.y,
+            view.viewport.width,
+            view.viewport.height,
+        ]
+        .into_iter()
+        .all(f64::is_finite)
+        && view.view_mode.as_ref().is_none_or(|mode| {
+            !mode.is_empty()
+                && mode.len() <= 64
+                && mode
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+}
 
 /// Synthetic input for `EventLoopProxy`: each variant becomes the real
 /// `WindowEvent`(s) and routes through the same handler, so injected and
@@ -1172,7 +1249,7 @@ impl App {
             .continuation_metadata(&self.state.doc, &self.state.root);
         let metadata = declared.or_else(|| {
             let view = <Self as crate::view::FreezeThaw>::capture_view(self);
-            let bytes = postcard::to_stdvec(&view).ok()?;
+            let bytes = postcard::to_stdvec(&PortableContinuationView::capture(view)).ok()?;
             (!bytes.is_empty() && bytes.len() <= 32 * 1024).then_some(
                 crate::collaboration::ContinuationMetadata {
                     schema_version: GENERIC_VIEW_CONTINUATION_SCHEMA,
@@ -1196,8 +1273,9 @@ impl App {
     fn apply_pending_continuation_restore(&mut self) {
         if let Some(metadata) = self.pending_continuation_restore.take() {
             if metadata.schema_version == GENERIC_VIEW_CONTINUATION_SCHEMA {
-                if let Ok(view) = postcard::from_bytes::<crate::view::View>(&metadata.bytes) {
-                    self.pending_continuation_view = Some(view);
+                if let Ok(view) = postcard::from_bytes::<PortableContinuationView>(&metadata.bytes)
+                {
+                    self.pending_continuation_view = Some(view.into_view());
                 }
                 return;
             }
@@ -8303,7 +8381,7 @@ mod view_presence_tests {
         let view = <App as FreezeThaw>::capture_view(&sender);
         let metadata = crate::collaboration::ContinuationMetadata {
             schema_version: GENERIC_VIEW_CONTINUATION_SCHEMA,
-            bytes: postcard::to_stdvec(&view).unwrap(),
+            bytes: postcard::to_stdvec(&PortableContinuationView::capture(view)).unwrap(),
         };
 
         // Model launcher delivery before first layout, which is the real
@@ -8318,6 +8396,25 @@ mod view_presence_tests {
         assert_eq!(restored.scroll, vec![48.0, 12.0]);
         assert_eq!(restored.view_mode.as_deref(), Some("grid"));
         assert!(receiver.pending_continuation_view.is_none());
+    }
+
+    #[test]
+    fn generic_continuation_never_serializes_path_or_widget_ephemeral_state() {
+        let portable = PortableContinuationView::capture(crate::view::View {
+            scroll: vec![1.0],
+            focus: Some(crate::view::FocusView {
+                ordinal: 2,
+                ephemeral: "/home/alice/private-token".into(),
+            }),
+            open_resource: Some("file:/home/alice/private.txt".into()),
+            viewport: crate::view::ViewRect::default(),
+            view_mode: Some("grid".into()),
+        });
+        let bytes = postcard::to_stdvec(&portable).unwrap();
+        assert!(!bytes.windows(5).any(|window| window == b"/home"));
+        let restored = portable.into_view();
+        assert_eq!(restored.open_resource, None);
+        assert_eq!(restored.focus.unwrap().ephemeral, "");
     }
 
     /// Asserted on both the frame that leaves the sender (via the broadcast

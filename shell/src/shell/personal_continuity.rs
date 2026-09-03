@@ -20,12 +20,19 @@ use thiserror::Error;
 use crate::shell::state::{RoomId, TileContent, WorkspaceTree};
 
 /// Wire schema for [`DeviceContinuationSnapshot`].
-pub const CONTINUITY_SCHEMA_VERSION: u16 = 1;
+pub const CONTINUITY_SCHEMA_VERSION: u16 = 2;
 /// Resume data is intentionally small: it is metadata, never an app backup.
 pub const MAX_RESUME_BYTES: usize = 32 * 1024;
 const MAX_DEVICE_ID_BYTES: usize = 128;
 const MAX_APP_ID_BYTES: usize = 256;
 const MAX_RECORD_ID_BYTES: usize = 256;
+const MAX_WORKSPACES_PER_DEVICE: usize = 256;
+const MAX_APPS_PER_DEVICE: usize = 4096;
+const MAX_TOMBSTONES_PER_DEVICE: usize = 32 * 1024;
+const MAX_DEVICES: usize = 256;
+/// Leave framing/headroom below the transport's 4 MiB ceiling.
+const MAX_TOTAL_RESUME_BYTES: usize = 3 * 1024 * 1024;
+const MAX_ENCODED_CHECKPOINT_BYTES: usize = 3_900_000;
 
 /// A stable, human-identity-certified device identifier.
 ///
@@ -81,6 +88,17 @@ pub struct ContinuityStamp {
 impl ContinuityStamp {
     fn ordering_key(&self) -> (u64, &str) {
         (self.counter, self.device.as_str())
+    }
+
+    /// Advance a local Lamport clock after observing this stamp. Device ids
+    /// only break a true concurrent tie; they must never compensate for a
+    /// freshly-started device having a smaller private counter.
+    pub fn advance_clock(&self, local_counter: &mut u64) {
+        *local_counter = (*local_counter).max(self.counter).saturating_add(1);
+    }
+
+    pub fn is_newer_than(&self, other: &Self) -> bool {
+        self.ordering_key() > other.ordering_key()
     }
 }
 
@@ -327,6 +345,16 @@ impl AppInstanceState {
         self.launch.validate()?;
         if let Some(resume) = &self.resume {
             resume.validate()?;
+            let LaunchIntent::App { app_id } = &self.launch else {
+                return Err(ContinuityError::InvalidResumePayload);
+            };
+            if !crate::shell::personal_continuity_registry::validate_app_metadata(
+                app_id,
+                resume.schema_version(),
+                resume.bytes(),
+            ) {
+                return Err(ContinuityError::InvalidResumePayload);
+            }
         }
         if &self.stamp.device != device {
             return Err(ContinuityError::CrossDeviceAppStamp);
@@ -340,6 +368,16 @@ impl AppInstanceState {
 pub struct WorkspaceContinuation {
     pub room: RoomId,
     pub apps: Vec<AppInstanceState>,
+}
+
+/// Explicit removal of one logical app instance. Snapshot absence only says a
+/// device does not currently offer an app; it cannot defeat an older offer
+/// authored by another device after ownership moved.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppTombstone {
+    pub room: RoomId,
+    pub id: AppInstanceId,
+    pub stamp: ContinuityStamp,
 }
 
 /// A focus pointer belonging to exactly one device. It is intentionally
@@ -358,6 +396,7 @@ pub struct DeviceContinuationSnapshot {
     pub stamp: ContinuityStamp,
     pub focus: Option<DeviceFocus>,
     pub workspaces: Vec<WorkspaceContinuation>,
+    pub tombstones: Vec<AppTombstone>,
 }
 
 impl DeviceContinuationSnapshot {
@@ -376,6 +415,7 @@ impl DeviceContinuationSnapshot {
             device,
             focus,
             workspaces,
+            tombstones: Vec::new(),
         };
         value.validate()?;
         Ok(value)
@@ -388,6 +428,11 @@ impl DeviceContinuationSnapshot {
         if self.stamp.device != self.device {
             return Err(ContinuityError::SnapshotStampDeviceMismatch);
         }
+        if self.workspaces.len() > MAX_WORKSPACES_PER_DEVICE
+            || self.tombstones.len() > MAX_TOMBSTONES_PER_DEVICE
+        {
+            return Err(ContinuityError::SnapshotTooLarge);
+        }
         let mut rooms = BTreeSet::new();
         let mut apps = BTreeSet::new();
         for workspace in &self.workspaces {
@@ -399,6 +444,19 @@ impl DeviceContinuationSnapshot {
                 if !apps.insert(app.id) {
                     return Err(ContinuityError::DuplicateAppInstance);
                 }
+            }
+        }
+        if apps.len() > MAX_APPS_PER_DEVICE {
+            return Err(ContinuityError::SnapshotTooLarge);
+        }
+        let mut tombstones = BTreeSet::new();
+        for tombstone in &self.tombstones {
+            if tombstone.room.is_nil()
+                || tombstone.stamp.device != self.device
+                || !tombstones.insert((tombstone.room, tombstone.id))
+                || apps.contains(&tombstone.id)
+            {
+                return Err(ContinuityError::InvalidOrDuplicateTombstone);
             }
         }
         if let Some(focus) = &self.focus {
@@ -417,6 +475,57 @@ impl DeviceContinuationSnapshot {
             }
         }
         Ok(())
+    }
+
+    /// Preserve prior removals and add tombstones for apps this device owned
+    /// in its preceding snapshot but has now closed. Callers must advance the
+    /// Lamport counter past every received checkpoint before constructing
+    /// `self`, so the removal causally defeats the offer it observed.
+    pub fn record_closures_from(&mut self, previous: &Self) -> Result<(), ContinuityError> {
+        if previous.device != self.device {
+            return Err(ContinuityError::SnapshotStampDeviceMismatch);
+        }
+        let live: BTreeSet<_> = self
+            .workspaces
+            .iter()
+            .flat_map(|workspace| {
+                workspace
+                    .apps
+                    .iter()
+                    .map(move |app| (workspace.room, app.id))
+            })
+            .collect();
+        let mut tombstones: BTreeMap<_, _> = previous
+            .tombstones
+            .iter()
+            .cloned()
+            .map(|item| ((item.room, item.id), item))
+            .collect();
+        tombstones.extend(
+            self.tombstones
+                .iter()
+                .cloned()
+                .map(|item| ((item.room, item.id), item)),
+        );
+        for workspace in &previous.workspaces {
+            for app in &workspace.apps {
+                let key = (workspace.room, app.id);
+                if !live.contains(&key) {
+                    tombstones.insert(
+                        key,
+                        AppTombstone {
+                            room: workspace.room,
+                            id: app.id,
+                            stamp: self.stamp.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        // A later local reopen supersedes this device's old tombstone.
+        tombstones.retain(|key, _| !live.contains(key));
+        self.tombstones = tombstones.into_values().collect();
+        self.validate()
     }
 
     /// Capture only safe logical state from the shell's persisted tree.
@@ -524,11 +633,20 @@ impl DeviceContinuationSnapshot {
         // Capture only constructs values that have already passed its field
         // validators. An impossible internal mismatch becomes an empty safe
         // snapshot rather than publishing a partially unsafe state.
-        let snapshot = Self::new(device, counter, focus, workspaces).unwrap_or_else(|error| {
+        let mut snapshot = Self::new(device, counter, focus, workspaces).unwrap_or_else(|error| {
             tracing::warn!(%error, "personal continuity capture rejected local state");
-            Self::new(stamp.device, counter, None, Vec::new())
+            Self::new(stamp.device.clone(), counter, None, Vec::new())
                 .expect("an empty continuation snapshot is valid")
         });
+        snapshot.tombstones = tree
+            .continuation_closed_tabs
+            .iter()
+            .map(|(id, room)| AppTombstone {
+                room: *room,
+                id: AppInstanceId(*id),
+                stamp: stamp.clone(),
+            })
+            .collect();
         CaptureReport {
             snapshot,
             redacted_foreign_tabs,
@@ -563,6 +681,38 @@ struct DeviceContinuationSnapshotWire {
     stamp: ContinuityStamp,
     focus: Option<DeviceFocus>,
     workspaces: Vec<WorkspaceContinuation>,
+    #[serde(default)]
+    tombstones: Vec<AppTombstone>,
+}
+
+/// Exact pre-tombstone wire shape, retained only for one-way checkpoint
+/// migration. Postcard structs have no self-described trailing fields, so a
+/// serde default alone cannot reliably decode an older sequence.
+#[derive(Deserialize)]
+pub(crate) struct DeviceContinuationSnapshotV1 {
+    schema_version: u16,
+    device: DeviceId,
+    stamp: ContinuityStamp,
+    focus: Option<DeviceFocus>,
+    workspaces: Vec<WorkspaceContinuation>,
+}
+
+impl DeviceContinuationSnapshotV1 {
+    fn upgrade(self) -> Result<DeviceContinuationSnapshot, ContinuityError> {
+        if self.schema_version != 1 {
+            return Err(ContinuityError::UnsupportedSchema(self.schema_version));
+        }
+        let value = DeviceContinuationSnapshot {
+            schema_version: CONTINUITY_SCHEMA_VERSION,
+            device: self.device,
+            stamp: self.stamp,
+            focus: self.focus,
+            workspaces: self.workspaces,
+            tombstones: Vec::new(),
+        };
+        value.validate()?;
+        Ok(value)
+    }
 }
 
 impl Serialize for DeviceContinuationSnapshot {
@@ -574,6 +724,7 @@ impl Serialize for DeviceContinuationSnapshot {
             stamp: self.stamp.clone(),
             focus: self.focus.clone(),
             workspaces: self.workspaces.clone(),
+            tombstones: self.tombstones.clone(),
         }
         .serialize(serializer)
     }
@@ -582,12 +733,17 @@ impl Serialize for DeviceContinuationSnapshot {
 impl<'de> Deserialize<'de> for DeviceContinuationSnapshot {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let wire = DeviceContinuationSnapshotWire::deserialize(deserializer)?;
+        let schema_version = match wire.schema_version {
+            1 if wire.tombstones.is_empty() => CONTINUITY_SCHEMA_VERSION,
+            version => version,
+        };
         let value = Self {
-            schema_version: wire.schema_version,
+            schema_version,
             device: wire.device,
             stamp: wire.stamp,
             focus: wire.focus,
             workspaces: wire.workspaces,
+            tombstones: wire.tombstones,
         };
         value.validate().map_err(D::Error::custom)?;
         Ok(value)
@@ -617,22 +773,43 @@ impl PersonalContinuity {
         incoming: DeviceContinuationSnapshot,
     ) -> Result<bool, ContinuityError> {
         incoming.validate()?;
+        if !self.snapshots.contains_key(&incoming.device) && self.snapshots.len() >= MAX_DEVICES {
+            return Err(ContinuityError::SnapshotTooLarge);
+        }
+        let replaced_bytes = self
+            .snapshots
+            .get(&incoming.device)
+            .map_or(0, snapshot_resume_bytes);
+        let projected_bytes = self
+            .snapshots
+            .values()
+            .map(snapshot_resume_bytes)
+            .sum::<usize>()
+            .saturating_sub(replaced_bytes)
+            .saturating_add(snapshot_resume_bytes(&incoming));
+        if projected_bytes > MAX_TOTAL_RESUME_BYTES {
+            return Err(ContinuityError::SnapshotTooLarge);
+        }
         match self.snapshots.get(&incoming.device) {
-            None => {
-                self.snapshots.insert(incoming.device.clone(), incoming);
-                Ok(true)
-            }
-            Some(current) if incoming.stamp.counter > current.stamp.counter => {
-                self.snapshots.insert(incoming.device.clone(), incoming);
-                Ok(true)
-            }
             Some(current)
                 if incoming.stamp.counter == current.stamp.counter && incoming != *current =>
             {
-                Err(ContinuityError::SameCounterConflict)
+                return Err(ContinuityError::SameCounterConflict);
             }
-            Some(_) => Ok(false),
+            Some(current) if incoming.stamp.counter <= current.stamp.counter => return Ok(false),
+            _ => {}
         }
+        let mut projected = self.snapshots.clone();
+        projected.insert(incoming.device.clone(), incoming.clone());
+        let encoded = postcard::to_allocvec(&PersonalContinuityWire {
+            snapshots: projected.values().cloned().collect(),
+        })
+        .map_err(|_| ContinuityError::InvalidCheckpoint)?;
+        if encoded.len() > MAX_ENCODED_CHECKPOINT_BYTES {
+            return Err(ContinuityError::SnapshotTooLarge);
+        }
+        self.snapshots.insert(incoming.device.clone(), incoming);
+        Ok(true)
     }
 
     pub fn snapshot_for(&self, device: &DeviceId) -> Option<&DeviceContinuationSnapshot> {
@@ -665,15 +842,69 @@ impl PersonalContinuity {
     /// app instance across devices. Equal counters break by authenticated
     /// device id, never message arrival order.
     pub fn newest_app_state(&self, app_id: AppInstanceId) -> Option<&AppInstanceState> {
-        self.snapshots
+        let room = self
+            .snapshots
+            .values()
+            .flat_map(|snapshot| &snapshot.workspaces)
+            .find(|workspace| workspace.apps.iter().any(|app| app.id == app_id))?
+            .room;
+        self.newest_app_state_in_room(room, app_id)
+    }
+
+    pub fn newest_app_state_in_room(
+        &self,
+        room: RoomId,
+        app_id: AppInstanceId,
+    ) -> Option<&AppInstanceState> {
+        let state = self
+            .snapshots
             .values()
             .flat_map(|snapshot| snapshot.workspaces.iter())
+            .filter(|workspace| workspace.room == room)
             .flat_map(|workspace| workspace.apps.iter())
             .filter(|app| app.id == app_id)
-            .max_by_key(|app| app.stamp.ordering_key())
+            .max_by_key(|app| app.stamp.ordering_key())?;
+        let removed = self
+            .snapshots
+            .values()
+            .flat_map(|snapshot| &snapshot.tombstones)
+            .filter(|tombstone| tombstone.room == room && tombstone.id == app_id)
+            .max_by_key(|tombstone| tombstone.stamp.ordering_key());
+        removed
+            .is_none_or(|tombstone| state.stamp.is_newer_than(&tombstone.stamp))
+            .then_some(state)
+    }
+
+    /// Highest Lamport value observed anywhere in the merged checkpoint.
+    pub fn observed_counter(&self) -> u64 {
+        self.snapshots
+            .values()
+            .flat_map(|snapshot| {
+                std::iter::once(snapshot.stamp.counter)
+                    .chain(snapshot.tombstones.iter().map(|item| item.stamp.counter))
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Recover a durable local clock from both the scalar checkpoint and the
+    /// signed snapshots it contains. A torn/partially migrated scalar must
+    /// never move a device backwards and make peers reject its next update.
+    pub fn recover_counter(&self, persisted_counter: u64) -> u64 {
+        persisted_counter.max(self.observed_counter())
     }
 
     fn validate(&self) -> Result<(), ContinuityError> {
+        if self.snapshots.len() > MAX_DEVICES
+            || self
+                .snapshots
+                .values()
+                .map(snapshot_resume_bytes)
+                .sum::<usize>()
+                > MAX_TOTAL_RESUME_BYTES
+        {
+            return Err(ContinuityError::SnapshotTooLarge);
+        }
         for (device, snapshot) in &self.snapshots {
             snapshot.validate()?;
             if device != &snapshot.device {
@@ -690,6 +921,31 @@ struct PersonalContinuityWire {
     // duplicated device id. `upsert` either accepts one precise newest value
     // or rejects a same-counter conflict.
     snapshots: Vec<DeviceContinuationSnapshot>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct PersonalContinuityWireV1 {
+    snapshots: Vec<DeviceContinuationSnapshotV1>,
+}
+
+impl PersonalContinuityWireV1 {
+    pub(crate) fn upgrade(self) -> Result<PersonalContinuity, ContinuityError> {
+        let mut value = PersonalContinuity::default();
+        for snapshot in self.snapshots {
+            value.upsert(snapshot.upgrade()?)?;
+        }
+        Ok(value)
+    }
+}
+
+/// Decode the current checkpoint or migrate the exact v1 Postcard shape.
+pub fn decode_checkpoint(bytes: &[u8]) -> Result<PersonalContinuity, ContinuityError> {
+    if let Ok(current) = postcard::from_bytes::<PersonalContinuity>(bytes) {
+        return Ok(current);
+    }
+    postcard::from_bytes::<PersonalContinuityWireV1>(bytes)
+        .map_err(|_| ContinuityError::InvalidCheckpoint)?
+        .upgrade()
 }
 
 impl Serialize for PersonalContinuity {
@@ -735,6 +991,8 @@ pub enum ContinuityError {
     ResumeTooLarge,
     #[error("resume state contains a raw local path marker")]
     LocalPathInResumeState,
+    #[error("resume state does not match a host-owned portable schema")]
+    InvalidResumePayload,
     #[error("unsupported continuation schema version {0}")]
     UnsupportedSchema(u16),
     #[error("snapshot stamp belongs to another device")]
@@ -747,10 +1005,26 @@ pub enum ContinuityError {
     InvalidOrDuplicateRoom,
     #[error("app instance appears more than once")]
     DuplicateAppInstance,
+    #[error("app tombstone is invalid, duplicated, or conflicts with live state")]
+    InvalidOrDuplicateTombstone,
     #[error("focus does not name a captured app in its workspace")]
     InvalidFocus,
     #[error("two different states claim the same device counter")]
     SameCounterConflict,
+    #[error("continuation snapshot exceeds bounded retention limits")]
+    SnapshotTooLarge,
+    #[error("continuation checkpoint is malformed")]
+    InvalidCheckpoint,
+}
+
+fn snapshot_resume_bytes(snapshot: &DeviceContinuationSnapshot) -> usize {
+    snapshot
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.apps)
+        .filter_map(|app| app.resume.as_ref())
+        .map(|resume| resume.bytes().len())
+        .sum()
 }
 
 fn focus_from_tree(
@@ -841,8 +1115,15 @@ mod tests {
                 group: 0,
                 tab: 0,
             },
-            LaunchIntent::app("org.example.Reader").unwrap(),
-            Some(ResumeMetadata::new(1, ResumeSensitivity::Syncable, b"page=4".to_vec()).unwrap()),
+            LaunchIntent::app("dev.qos.browser").unwrap(),
+            Some(
+                ResumeMetadata::new(
+                    1,
+                    ResumeSensitivity::Syncable,
+                    br#"{"url":"https://qos.test/page/4"}"#.to_vec(),
+                )
+                .unwrap(),
+            ),
             ContinuityStamp {
                 counter,
                 device: device.clone(),
@@ -1114,5 +1395,235 @@ mod tests {
 
         let recaptured = DeviceContinuationSnapshot::capture(&tree, device("desktop-01"), 2);
         assert!(recaptured.snapshot.workspaces[0].apps.is_empty());
+    }
+
+    #[test]
+    fn takeover_advances_observed_clock_and_tombstone_defeats_old_source_offer() {
+        let room = room(ROOM_A);
+        let laptop = device("laptop");
+        let desktop = device("desktop");
+        let source = DeviceContinuationSnapshot::new(
+            laptop.clone(),
+            100,
+            None,
+            vec![WorkspaceContinuation {
+                room,
+                apps: vec![safe_app(77, &laptop, 100)],
+            }],
+        )
+        .unwrap();
+
+        let mut desktop_clock = 2;
+        source.stamp.advance_clock(&mut desktop_clock);
+        assert_eq!(desktop_clock, 101);
+        let claimed = DeviceContinuationSnapshot::new(
+            desktop.clone(),
+            desktop_clock,
+            None,
+            vec![WorkspaceContinuation {
+                room,
+                apps: vec![safe_app(77, &desktop, desktop_clock)],
+            }],
+        )
+        .unwrap();
+        let mut closed = DeviceContinuationSnapshot::new(
+            desktop,
+            102,
+            None,
+            vec![WorkspaceContinuation {
+                room,
+                apps: Vec::new(),
+            }],
+        )
+        .unwrap();
+        closed.record_closures_from(&claimed).unwrap();
+
+        let mut merged = PersonalContinuity::default();
+        merged.upsert(source).unwrap();
+        merged.upsert(closed).unwrap();
+        assert!(merged.newest_app_state(AppInstanceId(77)).is_none());
+        assert_eq!(merged.observed_counter(), 102);
+        assert_eq!(merged.recover_counter(1), 102);
+    }
+
+    #[test]
+    fn rejects_oversized_cumulative_resume_state_before_mutating_collection() {
+        let device = device("oversized-device");
+        let mut apps = Vec::new();
+        for id in 0..100 {
+            let mut app = safe_app(id, &device, 1);
+            let url = format!("https://qos.test/?q={}", "x".repeat(MAX_RESUME_BYTES - 64));
+            app.resume = Some(
+                ResumeMetadata::new(
+                    1,
+                    ResumeSensitivity::Syncable,
+                    serde_json::to_vec(&serde_json::json!({ "url": url })).unwrap(),
+                )
+                .unwrap(),
+            );
+            apps.push(app);
+        }
+        let snapshot = DeviceContinuationSnapshot::new(
+            device,
+            1,
+            None,
+            vec![WorkspaceContinuation {
+                room: room(ROOM_A),
+                apps,
+            }],
+        )
+        .unwrap();
+        let mut continuity = PersonalContinuity::default();
+        assert_eq!(
+            continuity.upsert(snapshot),
+            Err(ContinuityError::SnapshotTooLarge)
+        );
+        assert!(continuity.is_empty());
+    }
+
+    #[test]
+    fn near_limit_live_snapshot_can_be_replaced_by_closure_tombstones() {
+        let device = device("near-limit-device");
+        let mut apps = Vec::new();
+        for id in 0..90 {
+            let mut app = safe_app(id, &device, 1);
+            let url = format!("https://qos.test/?q={}", "x".repeat(MAX_RESUME_BYTES - 64));
+            app.resume = Some(
+                ResumeMetadata::new(
+                    1,
+                    ResumeSensitivity::Syncable,
+                    serde_json::to_vec(&serde_json::json!({ "url": url })).unwrap(),
+                )
+                .unwrap(),
+            );
+            apps.push(app);
+        }
+        let live = DeviceContinuationSnapshot::new(
+            device.clone(),
+            1,
+            None,
+            vec![WorkspaceContinuation {
+                room: room(ROOM_A),
+                apps,
+            }],
+        )
+        .unwrap();
+        let mut continuity = PersonalContinuity::default();
+        continuity.upsert(live.clone()).unwrap();
+
+        let mut closed = DeviceContinuationSnapshot::new(
+            device,
+            2,
+            None,
+            vec![WorkspaceContinuation {
+                room: room(ROOM_A),
+                apps: Vec::new(),
+            }],
+        )
+        .unwrap();
+        closed.record_closures_from(&live).unwrap();
+        continuity.upsert(closed).unwrap();
+        assert!(continuity.newest_app_state(AppInstanceId(0)).is_none());
+        assert!(postcard::to_allocvec(&continuity).unwrap().len() < MAX_ENCODED_CHECKPOINT_BYTES);
+    }
+
+    #[test]
+    fn unrelated_local_change_does_not_restamp_a_tombstone_past_remote_reopen() {
+        let room = room(ROOM_A);
+        let desktop = device("desktop");
+        let laptop = device("laptop");
+        let claimed = DeviceContinuationSnapshot::new(
+            desktop.clone(),
+            10,
+            None,
+            vec![WorkspaceContinuation {
+                room,
+                apps: vec![safe_app(77, &desktop, 10)],
+            }],
+        )
+        .unwrap();
+        let mut closed = DeviceContinuationSnapshot::new(
+            desktop.clone(),
+            11,
+            None,
+            vec![WorkspaceContinuation {
+                room,
+                apps: Vec::new(),
+            }],
+        )
+        .unwrap();
+        closed.record_closures_from(&claimed).unwrap();
+        let reopened = DeviceContinuationSnapshot::new(
+            laptop.clone(),
+            12,
+            None,
+            vec![WorkspaceContinuation {
+                room,
+                apps: vec![safe_app(77, &laptop, 12)],
+            }],
+        )
+        .unwrap();
+        let mut unrelated = DeviceContinuationSnapshot::new(
+            desktop,
+            13,
+            None,
+            vec![WorkspaceContinuation {
+                room,
+                apps: vec![safe_app(88, &device("desktop"), 13)],
+            }],
+        )
+        .unwrap();
+        unrelated.record_closures_from(&closed).unwrap();
+        assert_eq!(unrelated.tombstones[0].stamp.counter, 11);
+
+        let mut continuity = PersonalContinuity::default();
+        continuity.upsert(reopened).unwrap();
+        continuity.upsert(unrelated).unwrap();
+        assert_eq!(
+            continuity
+                .newest_app_state_in_room(room, AppInstanceId(77))
+                .map(|app| app.stamp.counter),
+            Some(12)
+        );
+    }
+
+    #[test]
+    fn migrates_v1_snapshot_without_losing_its_counter_or_apps() {
+        #[derive(Serialize)]
+        struct V1Snapshot {
+            schema_version: u16,
+            device: DeviceId,
+            stamp: ContinuityStamp,
+            focus: Option<DeviceFocus>,
+            workspaces: Vec<WorkspaceContinuation>,
+        }
+        let device = device("legacy-laptop");
+        let legacy = V1Snapshot {
+            schema_version: 1,
+            device: device.clone(),
+            stamp: ContinuityStamp {
+                counter: 987,
+                device: device.clone(),
+            },
+            focus: None,
+            workspaces: vec![WorkspaceContinuation {
+                room: room(ROOM_A),
+                apps: vec![safe_app(42, &device, 987)],
+            }],
+        };
+        #[derive(Serialize)]
+        struct V1Collection {
+            snapshots: Vec<V1Snapshot>,
+        }
+        let bytes = postcard::to_allocvec(&V1Collection {
+            snapshots: vec![legacy],
+        })
+        .unwrap();
+        let collection = decode_checkpoint(&bytes).unwrap();
+        let upgraded = collection.snapshot_for(&device).unwrap();
+        assert_eq!(upgraded.schema_version, CONTINUITY_SCHEMA_VERSION);
+        assert_eq!(upgraded.stamp.counter, 987);
+        assert_eq!(upgraded.workspaces[0].apps[0].id, AppInstanceId(42));
+        assert!(upgraded.tombstones.is_empty());
     }
 }
