@@ -45,6 +45,7 @@ members = [
     "crates/system/tts",
     "crates/system/accounts",
     "crates/agent/provider-config",
+    "crates/agent/local-model-service",
     "crates/system/app-state",
     "crates/system/desktop-policy",
     "crates/doc/qdoc",
