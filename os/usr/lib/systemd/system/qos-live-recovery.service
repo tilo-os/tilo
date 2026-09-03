@@ -1,0 +1,21 @@
+[Unit]
+Description=qOS installer recovery tools on tty2
+Documentation=file:///usr/share/doc/qos/recovery.md
+ConditionKernelCommandLine=qos.install
+After=systemd-user-sessions.service
+Conflicts=getty@tty2.service
+
+[Service]
+Type=idle
+ExecStart=/usr/libexec/qos-live-recovery
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=journal+console
+TTYPath=/dev/tty2
+TTYReset=yes
+TTYVHangup=yes
+Restart=always
+RestartSec=1s
+
+[Install]
+WantedBy=multi-user.target

@@ -53,7 +53,7 @@ RUN printf 'kargs = ["qos.install"]\n' \
     && /usr/libexec/qos-uki-cmdline append qos.install \
     && /usr/libexec/qos-uki-cmdline show | grep -qw qos.mode=normal \
     && /usr/libexec/qos-uki-cmdline show | grep -qw qos.install \
-    && systemctl enable qos-firstboot-user.service qos-installer-setup.service \
+    && systemctl enable qos-firstboot-user.service qos-installer-setup.service qos-live-recovery.service \
     && if [ "$QOS_INSTALLER_DEV_SSH" = 1 ]; then \
          systemctl unmask sshd.service && systemctl enable sshd.service; \
        else \
