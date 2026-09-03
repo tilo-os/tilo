@@ -1,6 +1,6 @@
-//! PipeWire audio capture for shell recordings.
+//! `PipeWire` audio capture for shell recordings.
 //!
-//! The session already treats PipeWire's reference tools as its stable graph
+//! The session already treats `PipeWire`'s reference tools as its stable graph
 //! boundary (`wpctl` for routing, `pw-dump` for privacy attribution). Recording
 //! follows that same boundary: resolve the current default sink or source, then
 //! ask `pw-record` for raw 48 kHz stereo S16LE. The compositor
@@ -142,7 +142,10 @@ impl AudioCapture {
             self.pending.clear();
             return Ok(Vec::new());
         }
-        let aligned = self.pending.len() / SAMPLE_FRAME_BYTES * SAMPLE_FRAME_BYTES;
+        let aligned = self
+            .pending
+            .len()
+            .saturating_sub(self.pending.len() % SAMPLE_FRAME_BYTES);
         if aligned == 0 {
             return Ok(Vec::new());
         }
@@ -163,14 +166,14 @@ impl Drop for AudioCapture {
 
 fn read_audio(mut stdout: impl Read, sender: &SyncSender<Vec<u8>>) {
     let mut buffer = vec![0u8; PIPE_BUFFER];
-    loop {
-        let Ok(read) = stdout.read(&mut buffer) else {
-            break;
-        };
+    while let Ok(read) = stdout.read(&mut buffer) {
         if read == 0 {
             break;
         }
-        match sender.try_send(buffer[..read].to_vec()) {
+        let Some(bytes) = buffer.get(..read) else {
+            break;
+        };
+        match sender.try_send(bytes.to_vec()) {
             Ok(()) | Err(TrySendError::Full(_)) => {}
             Err(TrySendError::Disconnected(_)) => break,
         }

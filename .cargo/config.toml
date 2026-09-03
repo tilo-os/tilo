@@ -46,9 +46,12 @@ jobs = 4
 #                        have to come from the compiler, and stable Rust does
 #                        not emit them, so claiming IBT would trap on the first
 #                        indirect call.
-# Keep every flag in this one list. A `[target.<triple>]` rustflags block does not
-# merge with `build.rustflags`, it REPLACES it — moving one flag into a target block
-# silently drops the hardening above, and nothing errors.
+# Keep each architecture's complete flag floor in its one target list. Cargo
+# does not merge target rustflags with build.rustflags; the previous global
+# x86-64 target-cpu/shadow-stack flags made every aarch64 build fail before it
+# reached the workspace.
+
+[target.'cfg(target_arch = "x86_64")']
 rustflags = [
     "-C", "target-cpu=x86-64-v3",
     "-C", "force-frame-pointers=yes",
@@ -61,6 +64,15 @@ rustflags = [
     # the Containerfile silently dropped every hardening flag above, and the
     # binaries shipped without shadow-stack marking. On a host build no path
     # starts with /build, so it does nothing.
+    "--remap-path-prefix=/build=.",
+]
+
+[target.'cfg(target_arch = "aarch64")']
+rustflags = [
+    "-C", "target-cpu=generic",
+    "-C", "force-frame-pointers=yes",
+    "-C", "relro-level=full",
+    "-C", "link-arg=-Wl,-z,noexecstack",
     "--remap-path-prefix=/build=.",
 ]
 
@@ -127,8 +139,10 @@ rustflags = [
 # replaces this list and silently un-hardens the vendored C. Copy the flags
 # across if you ever need to.
 [env]
-CFLAGS = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -Wa,--noexecstack", force = true }
-CXXFLAGS = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -Wa,--noexecstack", force = true }
+CFLAGS = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
+CXXFLAGS = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
+CFLAGS_x86_64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -Wa,--noexecstack", force = true }
+CXXFLAGS_x86_64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -Wa,--noexecstack", force = true }
 
 # sccache refuses `-C incremental=`; with it on, 13,417/16,947 requests refused.
 # Here rather than Cargo.toml: a config [profile] overrides the manifest.

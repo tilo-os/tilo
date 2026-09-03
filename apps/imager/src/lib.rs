@@ -11,9 +11,9 @@
 //!      needs a second acknowledgement before it can even be selected, and an
 //!      honest empty state asks the user to insert a drive.
 //!   3. **Customize** (qOS only) — the guided-customization step (hostname,
-//!      first user, region, encryption, autologin), shared by the write and
-//!      install flows. Plain ISOs skip it. The options double as a headless /
-//!      unattended install config.
+//!      first user and region), shared by the write and install flows. Plain
+//!      ISOs skip it. Only the secret-free settings the live installer applies
+//!      are offered; encryption and login secrets stay on the target device.
 //!   4. **Confirm** — a read-only review of every choice, an erase warning that
 //!      escalates for an internal / system disk, and the typed device-name gate.
 //!   5. **Write / Install** — a real, byte-for-byte streaming copy with live
@@ -69,6 +69,7 @@ pub mod doc;
 mod export_dialog;
 pub mod model;
 pub mod probe;
+pub mod release;
 pub mod write;
 
 pub use app::ImagerApp;

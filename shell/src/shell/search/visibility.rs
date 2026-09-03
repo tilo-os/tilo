@@ -92,7 +92,8 @@ pub fn required_capability(
 fn chrome_action_verb(id: &str) -> Option<Verb> {
     match id {
         // Showing: reveals a view, mutates nothing.
-        "overview.toggle"
+        "shortcut-help.toggle"
+        | "overview.toggle"
         | "settings.open"
         | "quick-settings.open"
         | "projection.open"
@@ -170,6 +171,7 @@ mod tests {
     #[test]
     fn opening_an_overlay_is_showing_not_acting() {
         for id in [
+            "shortcut-help.toggle",
             "overview.toggle",
             "settings.open",
             "quick-settings.open",

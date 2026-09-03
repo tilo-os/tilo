@@ -17,7 +17,8 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-rpms_dir=$repo_root/dist/rpm/build/RPMS/x86_64
+rpm_arch=$(rpm --eval '%{_arch}')
+rpms_dir=$repo_root/dist/rpm/build/RPMS/$rpm_arch
 
 files=(
     /usr/bin/qos-shell
@@ -28,8 +29,6 @@ files=(
     /usr/share/wayland-sessions/qos.desktop
     /usr/share/wayland-sessions/qos-dev.desktop
     /usr/share/xdg-desktop-portal/portals/qos.portal
-    /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service
-    /usr/lib/systemd/user/qos-portal.service
     /etc/pam.d/qos-unlock
 )
 

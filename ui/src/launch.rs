@@ -544,6 +544,7 @@ fn parse_args(
     parse_args_extended(args, allowed_flags, allowed_options, &[], &[], 0)
 }
 
+#[allow(clippy::too_many_lines)]
 fn parse_args_extended(
     args: &[String],
     allowed_flags: &[&str],

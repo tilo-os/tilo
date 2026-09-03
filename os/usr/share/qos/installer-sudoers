@@ -2,7 +2,7 @@
 #
 # This file is NOT active as shipped. It lives at /usr/share and is copied to
 # /etc/sudoers.d/qos-installer (mode 0440) at runtime by
-# qos-installer-setup.service, which only fires when `qos.installer` is on the
+# qos-installer-setup.service, which only fires when `qos.install` is on the
 # kernel cmdline — i.e. on the installer live medium. The installed system
 # never gets this rule.
 #

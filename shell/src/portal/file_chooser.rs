@@ -8,11 +8,9 @@
 //! cancelled, 2 = other error); `results` is `a{sv}`, with `uris`
 //! mandatory on success.
 //!
-//! Every method resolves the caller's [`PortalCaller`] via
-//! [`CallerMap`], delegates to [`flow::resolve`] with
-//! `CapabilityKind::FilesystemRead` (or `FilesystemReadWrite` for
-//! `SaveFile`/`SaveFiles`), and on `Allow*` calls
-//! [`FilePickerSpawner::spawn`] to surface a real dialog — the reply
+//! Every method authenticates the portal frontend and resolves its app id to
+//! a live qOS application before it calls [`FilePickerSpawner::spawn`] to
+//! surface a compositor-owned dialog. The reply
 //! (`Option<Vec<PathBuf>>`) becomes a `uris` array, with `None` treated
 //! as `response=1` (cancelled). On `Deny`, returns response=1 with an empty results dict.
 
@@ -25,6 +23,8 @@
 )]
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::PathBuf;
 
 use zbus::interface;
@@ -32,9 +32,11 @@ use zbus::names::OwnedUniqueName;
 use zbus::object_server::SignalContext;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
-use crate::shell::state::{Capability, FsMode, GRANT_SESSION};
+use crate::shell::state::FsMode;
 
-use super::{FilePickerOptions, PortalCaller, PortalContext, WorkspaceId};
+#[cfg(test)]
+use super::PortalCaller;
+use super::{FilePickerOptions, PortalContext, auth::authenticate_call, lockdown};
 
 /// D-Bus interface impl. One instance per [`super::serve`] call, held by the zbus `ObjectServer` for the connection's lifetime.
 pub struct FileChooserBackend {
@@ -44,27 +46,6 @@ pub struct FileChooserBackend {
 impl FileChooserBackend {
     pub fn new(ctx: PortalContext) -> Self {
         Self { ctx }
-    }
-
-    /// Resolve the caller to a [`PortalCaller`]. Falls back to a stub caller
-    /// when no connection peer-credentials are available (e.g. in-process
-    /// p2p test bus) — production wires the bridge accept path's PID lookup into [`CallerMap`].
-    ///
-    /// [`CallerMap::lookup`] honours `force_caller_for_tests` regardless of
-    /// `sender`, so the map is always consulted (empty-string key on the missing-sender branch) before falling back to the synth.
-    pub(super) fn resolve_caller(
-        ctx: &PortalContext,
-        sender: Option<&OwnedUniqueName>,
-        app_id: &str,
-    ) -> PortalCaller {
-        let key = sender.map(|n| n.as_str().to_string()).unwrap_or_default();
-        if let Some(c) = ctx.caller_map.lookup(&key) {
-            return c;
-        }
-        // Fallback: synthesise from the app-id alone, with a zero workspace.
-        // Tests poke a real entry into the caller map ahead of the call;
-        // production reaches the bridge accept path, which populates the map before any portal request can be issued.
-        PortalCaller::new(WorkspaceId(0), app_id)
     }
 }
 
@@ -81,7 +62,7 @@ impl FileChooserBackend {
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
         app_id: String,
-        _parent_window: String,
+        parent_window: String,
         title: String,
         options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
@@ -90,7 +71,12 @@ impl FileChooserBackend {
             options.len()
         );
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let caller = Self::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
+        let Ok(auth) =
+            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
+        else {
+            return (2, HashMap::new());
+        };
+        let caller = auth.caller;
         let opts = FilePickerOptions::new(caller.clone(), title, /*save=*/ false)
             .multiple(opt_bool(&options, "multiple").unwrap_or(false))
             .accept_label(opt_string(&options, "accept_label"))
@@ -109,7 +95,7 @@ impl FileChooserBackend {
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
         app_id: String,
-        _parent_window: String,
+        parent_window: String,
         title: String,
         options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
@@ -118,7 +104,15 @@ impl FileChooserBackend {
             options.len()
         );
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let caller = Self::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
+        let Ok(auth) =
+            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
+        else {
+            return (2, HashMap::new());
+        };
+        if lockdown::current_policy().disable_save_to_disk {
+            return (1, HashMap::new());
+        }
+        let caller = auth.caller;
         let opts = FilePickerOptions::new(caller.clone(), title, /*save=*/ true)
             .accept_label(opt_string(&options, "accept_label"))
             .current_name(opt_string(&options, "current_name"))
@@ -137,7 +131,7 @@ impl FileChooserBackend {
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
         app_id: String,
-        _parent_window: String,
+        parent_window: String,
         title: String,
         options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
@@ -146,7 +140,15 @@ impl FileChooserBackend {
             options.len()
         );
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let caller = Self::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
+        let Ok(auth) =
+            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
+        else {
+            return (2, HashMap::new());
+        };
+        if lockdown::current_policy().disable_save_to_disk {
+            return (1, HashMap::new());
+        }
+        let caller = auth.caller;
         let opts = FilePickerOptions::new(caller.clone(), title, /*save=*/ true)
             .accept_label(opt_string(&options, "accept_label"))
             .filters(filters_from_options(&options));
@@ -178,25 +180,13 @@ impl FileChooserBackend {
             return (1, HashMap::new());
         };
 
-        // Record what the user just authorised, per path — this is what
-        // survives into `Workspace::capabilities`, becomes a bind on the app's
-        // next launch, and shows in the Permissions tab so the user can revoke it.
-        for path in &paths {
-            self.ctx.grants.insert(
-                &caller,
-                &Capability::Filesystem {
-                    path: path.clone(),
-                    mode: mode.clone(),
-                    scope: GRANT_SESSION,
-                },
-            );
-        }
-
-        // Publish each path into the caller's document store, so the running
-        // app can actually reach it now: an already-confined app's mount
-        // namespace was fixed at launch, so the grant alone isn't enough.
-        let published = self.ctx.documents.publish(&caller, &paths, mode);
-        paths_to_open_response(Some(published), save)
+        // Return host file URIs to xdg-desktop-portal. The frontend exports
+        // them through xdg-document-portal before replying to the sandbox,
+        // which gives the already-running app a revocable document path.
+        // Recording these private choices in collaborative workspace grants
+        // would both leak them to peers and widen the next launch's mounts.
+        let _ = (caller, mode);
+        paths_to_open_response(Some(paths), save)
     }
 }
 
@@ -246,15 +236,13 @@ pub(super) fn paths_to_open_response(
     if paths.is_empty() {
         return (1, results);
     }
-    let uris: Vec<String> = paths
+    let Some(uris) = paths
         .iter()
-        .map(|p| {
-            // Naive `file://` formatter — good enough for ASCII paths, matching the
-            // path representation our compositor uses internally. Spec-compliant
-            // percent-encoding for binary path bytes is deferred (most desktop apps only get ASCII paths).
-            format!("file://{}", p.display())
-        })
-        .collect();
+        .map(|path| file_uri(path))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return (2, HashMap::new());
+    };
     let uris_value = Value::new(uris);
     if let Ok(owned) = OwnedValue::try_from(uris_value) {
         results.insert("uris".to_string(), owned);
@@ -265,6 +253,23 @@ pub(super) fn paths_to_open_response(
     (0, results)
 }
 
+/// Encode an absolute Linux path as an RFC 8089 file URI without forcing
+/// arbitrary filesystem bytes through lossy UTF-8 conversion.
+pub(crate) fn file_uri(path: &std::path::Path) -> Option<String> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut uri = String::from("file://");
+    for byte in path.as_os_str().as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'.' | b'_' | b'~') {
+            uri.push(char::from(*byte));
+        } else {
+            write!(uri, "%{byte:02X}").ok()?;
+        }
+    }
+    Some(uri)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,21 +278,12 @@ mod tests {
         MockScreenCastProvisioner, PromptQueueHandle, PromptResolver,
         ScreenCastStreamProvisionerHandle,
     };
-    use crate::shell::state::Workspace;
+    use crate::shell::state::{Workspace, WorkspaceId};
 
     use std::sync::Arc;
 
     fn empty_ws(id: u64) -> Workspace {
         Workspace::test_default(WorkspaceId(id), "fc")
-    }
-
-    fn null_spawners() -> (FilePickerSpawnerHandle, ScreenCastStreamProvisionerHandle) {
-        (
-            FilePickerSpawnerHandle::new(Arc::new(super::super::NullFilePickerSpawner::cancel())),
-            ScreenCastStreamProvisionerHandle::new(Arc::new(
-                MockScreenCastProvisioner::new_with_node(1, "t"),
-            )),
-        )
     }
 
     #[test]
@@ -338,48 +334,15 @@ mod tests {
     }
 
     #[test]
-    fn resolve_caller_falls_back_to_app_id_when_no_map_entry() {
-        let (store, _ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(31));
-        let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
-        let (fp, sc) = null_spawners();
-        let ctx = PortalContext {
-            grants: store,
-            prompts: queue,
-            caller_map: CallerMap::new(),
-            file_picker: fp,
-            screencast_provisioner: sc,
-            remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
-            print_spooler: crate::portal::PrintSpoolerHandle::null(),
-            documents: crate::portal::DocumentStoreHandle::host_paths(),
-        };
-        let caller = FileChooserBackend::resolve_caller(&ctx, None, "org.example");
-        assert_eq!(caller.app_id, "org.example");
-        // Zero workspace id flags "no bridge match" — production-side grant
-        // lookup returns None and falls through to the prompt path (the conservative posture).
-        assert_eq!(caller.workspace_id, WorkspaceId(0));
-    }
+    fn file_uri_percent_encodes_reserved_and_non_utf8_bytes() {
+        use std::ffi::OsStr;
 
-    #[test]
-    fn resolve_caller_uses_map_when_unique_name_present() {
-        let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(32));
-        let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
-        let map = CallerMap::new();
-        map.insert(":1.7", PortalCaller::new(ws_id, "org.real"));
-        let (fp, sc) = null_spawners();
-        let ctx = PortalContext {
-            grants: store,
-            prompts: queue,
-            caller_map: map,
-            file_picker: fp,
-            screencast_provisioner: sc,
-            remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
-            print_spooler: crate::portal::PrintSpoolerHandle::null(),
-            documents: crate::portal::DocumentStoreHandle::host_paths(),
-        };
-        let name: OwnedUniqueName = ":1.7".try_into().unwrap();
-        let caller = FileChooserBackend::resolve_caller(&ctx, Some(&name), "ignored");
-        assert_eq!(caller.app_id, "org.real");
-        assert_eq!(caller.workspace_id, ws_id);
+        let path = PathBuf::from(OsStr::from_bytes(b"/tmp/a #\xff.txt"));
+        assert_eq!(
+            file_uri(&path).as_deref(),
+            Some("file:///tmp/a%20%23%FF.txt")
+        );
+        assert!(file_uri(std::path::Path::new("relative.txt")).is_none());
     }
 
     /// Wires a `MockFilePickerSpawner` returning `/tmp/test.txt`, calls the
@@ -402,8 +365,12 @@ mod tests {
             file_picker: fp,
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            input_capture: crate::portal::InputCaptureCompositorHandle::unavailable(),
             print_spooler: crate::portal::PrintSpoolerHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
+            notifications: crate::notifications::NotificationBridge::new(),
+            desktop_services: Default::default(),
+            authenticator: None,
         };
         let backend = FileChooserBackend::new(ctx);
         let caller = PortalCaller::new(ws_id, "org.example");
@@ -426,20 +393,8 @@ mod tests {
         assert!(!seen[0].2);
     }
 
-    /// A grant on `"/"` would cover the launcher's whole
-    /// `--ro-bind-try <p> <p>` subtree, read-only mounting the entire host
-    /// filesystem at the app's next launch — so this asserts the grant
-    /// names only the picked path, on the production path
-    /// (`pick_and_grant`), against the real grant store.
     #[test]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the read guard protects `ws`, which the closure below needs through the \
-                  block's final `.collect()` — already dropped at the earliest possible point"
-    )]
-    fn the_grant_names_the_picked_path_and_never_the_filesystem_root() {
-        use crate::shell::state::Capability;
-
+    fn a_pick_is_left_to_the_document_portal_and_not_replicated_to_peers() {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(36));
         let picked = PathBuf::from("/tmp/only-this-one.txt");
         let fp = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::returning(vec![
@@ -455,8 +410,12 @@ mod tests {
             file_picker: fp,
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            input_capture: crate::portal::InputCaptureCompositorHandle::unavailable(),
             print_spooler: crate::portal::PrintSpoolerHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
+            notifications: crate::notifications::NotificationBridge::new(),
+            desktop_services: Default::default(),
+            authenticator: None,
         };
         let backend = FileChooserBackend::new(ctx);
         let caller = PortalCaller::new(ws_id, "org.example");
@@ -472,29 +431,18 @@ mod tests {
 
         // Read the capabilities back out of the workspace the store wrote to, not out of anything this test built.
         let tree = store.tree_handle();
-        let fs_paths: Vec<PathBuf> = {
+        let grant_count = {
             let guard = tree.read();
             let ws = guard
                 .workspaces
                 .iter()
                 .find(|w| w.id == ws_id)
                 .expect("workspace");
-            ws.app_capabilities(&caller.app_id)
-                .into_iter()
-                .filter_map(|c| match Capability::from_capability(c) {
-                    Some(Capability::Filesystem { path, .. }) => Some(path),
-                    _ => None,
-                })
-                .collect()
+            ws.app_capabilities(&caller.app_id).into_iter().count()
         };
-
-        assert!(
-            fs_paths.contains(&picked),
-            "the path the user picked must be granted; got {fs_paths:?}"
-        );
-        assert!(
-            !fs_paths.iter().any(|p| p == std::path::Path::new("/")),
-            "a file-open must never grant the filesystem root; got {fs_paths:?}"
+        assert_eq!(
+            grant_count, 0,
+            "private file choices must not enter the collaborative workspace document"
         );
     }
 
@@ -519,8 +467,12 @@ mod tests {
             file_picker: fp,
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            input_capture: crate::portal::InputCaptureCompositorHandle::unavailable(),
             print_spooler: crate::portal::PrintSpoolerHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
+            notifications: crate::notifications::NotificationBridge::new(),
+            desktop_services: Default::default(),
+            authenticator: None,
         };
         let backend = FileChooserBackend::new(ctx);
         let caller = PortalCaller::new(ws_id, "org.example");
@@ -573,8 +525,12 @@ mod tests {
             file_picker: fp,
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            input_capture: crate::portal::InputCaptureCompositorHandle::unavailable(),
             print_spooler: crate::portal::PrintSpoolerHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
+            notifications: crate::notifications::NotificationBridge::new(),
+            desktop_services: Default::default(),
+            authenticator: None,
         };
         let backend = FileChooserBackend::new(ctx);
         let caller = PortalCaller::new(ws_id, "org.example");
@@ -590,14 +546,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the read guard protects `ws`, which the closure below needs through the \
-                  block's final `.any()` — already dropped at the earliest possible point"
-    )]
-    fn a_save_grant_is_writable_and_an_open_grant_is_not() {
-        use crate::shell::state::Capability;
-
+    fn save_responses_are_writable_and_open_responses_are_not() {
         for (save, mode, expect_write) in [
             (false, FsMode::Read, false),
             (true, FsMode::ReadWrite, true),
@@ -618,8 +567,12 @@ mod tests {
                 file_picker: fp,
                 screencast_provisioner: sc,
                 remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+                input_capture: crate::portal::InputCaptureCompositorHandle::unavailable(),
                 print_spooler: crate::portal::PrintSpoolerHandle::null(),
                 documents: crate::portal::DocumentStoreHandle::host_paths(),
+                notifications: crate::notifications::NotificationBridge::new(),
+                desktop_services: Default::default(),
+                authenticator: None,
             };
             let backend = FileChooserBackend::new(ctx);
             let caller = PortalCaller::new(ws_id, "org.example");
@@ -627,29 +580,15 @@ mod tests {
                 .enable_all()
                 .build()
                 .unwrap();
-            let (code, _) = rt.block_on(
+            let (code, result) = rt.block_on(
                 backend.pick_and_grant(FilePickerOptions::new(caller.clone(), "t", save), mode),
             );
             assert_eq!(code, 0);
-
-            let tree = store.tree_handle();
-            let writable = {
-                let guard = tree.read();
-                let ws = guard
-                    .workspaces
-                    .iter()
-                    .find(|w| w.id == ws_id)
-                    .expect("workspace");
-                ws.app_capabilities(&caller.app_id)
-                    .into_iter()
-                    .filter_map(|c| match Capability::from_capability(c) {
-                        Some(Capability::Filesystem { path, mode, .. }) if path == picked => {
-                            Some(mode)
-                        }
-                        _ => None,
-                    })
-                    .any(|m| matches!(m, FsMode::ReadWrite))
-            };
+            let writable = result
+                .get("writable")
+                .and_then(|value| value.try_clone().ok())
+                .and_then(|value| bool::try_from(value).ok())
+                .unwrap_or(false);
             assert_eq!(
                 writable, expect_write,
                 "save={save}: an Open must not hand out write access, and a \

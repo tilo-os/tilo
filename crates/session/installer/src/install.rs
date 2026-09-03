@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! /usr/libexec/qos-install \
-//!     --disk <dev> --user <name> \
+//!     --disk <dev> --confirm-erase <dev> --user <name> \
 //!     --filesystem <btrfs|ext4|xfs> \
 //!     --hostname <name> [--timezone <tz>] \
 //!     --keymap <xkb-layout> [--keyvariant <xkb-variant>] \
@@ -91,6 +91,10 @@ pub struct InstallOptions {
     pub filesystem: String,
     /// Hostname seeded into the installed system.
     pub hostname: String,
+    /// Optional human-readable account name (GECOS), never a credential.
+    pub full_name: String,
+    /// POSIX locale seeded into `/etc/locale.conf`.
+    pub locale: String,
     /// IANA time zone (e.g. `Europe/Amsterdam`). Empty ⇒ leave the
     /// backend default (UTC); the flag is then omitted.
     pub timezone: String,
@@ -118,6 +122,8 @@ impl Default for InstallOptions {
             alongside_efi: String::new(),
             filesystem: "btrfs".to_string(),
             hostname: "qos".to_string(),
+            full_name: String::new(),
+            locale: String::new(),
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: String::new(),
@@ -155,7 +161,19 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
         .arg(&opts.filesystem)
         .arg("--hostname")
         .arg(&opts.hostname);
-    if !opts.alongside_root.is_empty() {
+    if !opts.full_name.trim().is_empty() {
+        cmd.arg("--full-name").arg(opts.full_name.trim());
+    }
+    if !opts.locale.trim().is_empty() {
+        cmd.arg("--locale").arg(opts.locale.trim());
+    }
+    if opts.alongside_root.is_empty() {
+        // The graphical UI has already required the person to type this exact
+        // device name. Repeat that decision at the privileged boundary so an
+        // older or accidentally scripted caller cannot erase with `--yes`
+        // alone.
+        cmd.arg("--confirm-erase").arg(disk);
+    } else {
         cmd.arg("--alongside")
             .arg("--root-partition")
             .arg(&opts.alongside_root)
@@ -292,10 +310,10 @@ pub fn run_install<F: FnMut(String)>(
 ) -> std::io::Result<bool> {
     // The PIN only travels on stdin; it mirrors the `--pin` flag added by
     // `install_command`.
-    let extra: Vec<&str> = if !opts.pin.is_empty() {
-        vec![opts.pin.as_str()]
-    } else {
+    let extra: Vec<&str> = if opts.pin.is_empty() {
         Vec::new()
+    } else {
+        vec![opts.pin.as_str()]
     };
     stream_command(install_command(disk, user, opts), password, &extra, on_line)
 }
@@ -322,6 +340,8 @@ mod tests {
         let opts = InstallOptions {
             filesystem: "ext4".to_string(),
             hostname: "lab-1".to_string(),
+            full_name: "Quinten Example".to_string(),
+            locale: "nl_NL.UTF-8".to_string(),
             timezone: "Europe/Amsterdam".to_string(),
             keymap: "de".to_string(),
             keyvariant: String::new(),
@@ -343,6 +363,12 @@ mod tests {
                 "ext4",
                 "--hostname",
                 "lab-1",
+                "--full-name",
+                "Quinten Example",
+                "--locale",
+                "nl_NL.UTF-8",
+                "--confirm-erase",
+                "/dev/sda",
                 "--timezone",
                 "Europe/Amsterdam",
                 "--keymap",
@@ -379,6 +405,8 @@ mod tests {
                 "btrfs",
                 "--hostname",
                 "qos",
+                "--confirm-erase",
+                "/dev/vda",
                 "--keymap",
                 "us",
                 "--keyvariant",
@@ -407,6 +435,7 @@ mod tests {
                 .any(|pair| pair == ["--efi-partition", "/dev/nvme0n1p1"])
         );
         assert!(args.contains(&"--alongside"));
+        assert!(!args.contains(&"--confirm-erase"));
     }
 
     #[test]
@@ -434,6 +463,8 @@ mod tests {
                 "btrfs",
                 "--hostname",
                 "qos",
+                "--confirm-erase",
+                "/dev/vda",
                 "--encrypt",
                 "--yes",
             ]
@@ -487,6 +518,8 @@ mod tests {
                 "btrfs",
                 "--hostname",
                 "qos",
+                "--confirm-erase",
+                "/dev/vda",
                 "--keymap",
                 "us",
                 "--encrypt",
@@ -531,6 +564,8 @@ mod tests {
                 "btrfs",
                 "--hostname",
                 "qos",
+                "--confirm-erase",
+                "/dev/vda",
                 "--keymap",
                 "us",
                 "--encrypt",
@@ -652,10 +687,10 @@ mod tests {
             ..InstallOptions::default()
         };
         // Mirror run_install's stdin-extra derivation.
-        let extra: Vec<&str> = if !opts.pin.is_empty() {
-            vec![opts.pin.as_str()]
-        } else {
+        let extra: Vec<&str> = if opts.pin.is_empty() {
             Vec::new()
+        } else {
+            vec![opts.pin.as_str()]
         };
         assert_eq!(extra, vec!["9182"], "PIN is queued as a second stdin line");
 
@@ -675,10 +710,10 @@ mod tests {
             pin: String::new().into(),
             ..InstallOptions::default()
         };
-        let extra: Vec<&str> = if !opts.pin.is_empty() {
-            vec![opts.pin.as_str()]
-        } else {
+        let extra: Vec<&str> = if opts.pin.is_empty() {
             Vec::new()
+        } else {
+            vec![opts.pin.as_str()]
         };
         assert!(extra.is_empty());
     }

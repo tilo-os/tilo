@@ -7,7 +7,9 @@
 //! child, forwarding sync/layout/events like [`ui::widget::Container`]
 //! but with no padding or chrome — just the gradient + grid beneath it.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
@@ -20,8 +22,8 @@ use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::{
-    Blob, Brush, Color, ColorStop, Extend, Fill, Gradient, ImageAlphaType, ImageBrush as Image,
-    ImageData, ImageFormat as Format,
+    Blob, Brush, Color, ColorStop, Extend, Fill, Gradient, ImageAlphaType, ImageBrush,
+    ImageBrush as Image, ImageData, ImageFormat as Format,
 };
 use winit::event::{Modifiers, WindowEvent};
 
@@ -114,6 +116,9 @@ pub struct DesktopBackdrop {
     cache_rect: Rect,
     /// A theme switch invalidates the cache the same way a resize does.
     cache_stops: Option<(Color, Color)>,
+    /// Private workspace identity used only to select a local image cache.
+    /// It never enters workspace replication or app-visible widget state.
+    workspace_id: Option<String>,
 }
 
 /// The ground is the system's largest, quietest surface — at desktop
@@ -220,7 +225,17 @@ impl DesktopBackdrop {
             cached: Scene::new(),
             cache_rect: Rect::ZERO,
             cache_stops: None,
+            workspace_id: None,
         }
+    }
+
+    /// Construct a backdrop for one local workspace. The image index is
+    /// watched by mtime, so a portal change becomes visible without a shell
+    /// tree rebuild.
+    pub fn for_workspace(workspace_id: impl Into<String>) -> Self {
+        let mut backdrop = Self::new();
+        backdrop.workspace_id = Some(workspace_id.into());
+        backdrop
     }
 
     #[must_use]
@@ -240,6 +255,18 @@ impl DesktopBackdrop {
     /// this bakes once and replays via translate.
     fn paint_backdrop(&mut self, out_scene: &mut Scene, out_transform: Affine, theme: &Theme) {
         let stops = ground_stops(theme);
+        // Kept outside the gradient/grid scene cache: a portal import updates
+        // the private wallpaper registry asynchronously and must appear
+        // without requiring an unrelated resize or theme change.
+        if let Some(workspace_id) = self.workspace_id.as_deref() {
+            let image =
+                crate::portal::desktop_services::wallpaper_preview_file_for_workspace(workspace_id)
+                    .and_then(|path| read_normalised_wallpaper(&path))
+                    .or_else(|| wallpaper_image_for_workspace(workspace_id, "background"));
+            if let Some(image) = image {
+                draw_cover_image(out_scene, out_transform, &self.rect, &image);
+            }
+        }
         // Bit-exact comparison, not "close enough": any change (even one
         // ULP, from a layout recompute) must invalidate the cached scene,
         // so a tolerant comparison would let a real resize slip through
@@ -291,6 +318,20 @@ impl DesktopBackdrop {
                 },
             ][..],
         );
+        // Keep the shell's tonal treatment above a photo, but let the
+        // imported image visibly determine the desktop. This also preserves
+        // the old appearance when no wallpaper is configured.
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            if self.workspace_id.is_some() {
+                0.42
+            } else {
+                1.0
+            },
+            transform,
+            &self.rect,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -298,6 +339,7 @@ impl DesktopBackdrop {
             None,
             &self.rect,
         );
+        scene.pop_layer();
 
         let line_color = Color::from_rgba8(128, 128, 128, 18); // 0.07 * 255 ≈ 18
         let stroke = Stroke::new(1.0);
@@ -351,6 +393,112 @@ impl DesktopBackdrop {
         );
         scene.pop_layer();
     }
+}
+
+fn draw_cover_image(scene: &mut Scene, transform: Affine, rect: &Rect, image: &ImageData) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 || image.width == 0 || image.height == 0 {
+        return;
+    }
+    let scale =
+        (rect.width() / f64::from(image.width)).max(rect.height() / f64::from(image.height));
+    let width = f64::from(image.width) * scale;
+    let height = f64::from(image.height) * scale;
+    let x = rect.x0 + (rect.width() - width) / 2.0;
+    let y = rect.y0 + (rect.height() - height) / 2.0;
+    let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
+    let brush_transform = Affine::translate((x, y)).pre_scale_non_uniform(scale, scale);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        &brush,
+        Some(brush_transform),
+        rect,
+    );
+}
+
+#[derive(Default)]
+struct WallpaperRenderCache {
+    checked: Option<Instant>,
+    stamp: Option<SystemTime>,
+    records: Vec<crate::portal::desktop_services::WallpaperRecord>,
+    images: HashMap<String, ImageData>,
+}
+
+fn wallpaper_render_cache() -> &'static Mutex<WallpaperRenderCache> {
+    static CACHE: OnceLock<Mutex<WallpaperRenderCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(WallpaperRenderCache::default()))
+}
+
+/// Return a normalised, private wallpaper image for the named local workspace.
+/// The cache only reads qOS's 0600 registry and cache directory; it never
+/// dereferences the original document URI.
+pub fn wallpaper_image_for_workspace(workspace_id: &str, target: &str) -> Option<ImageData> {
+    let path = crate::portal::desktop_services::wallpaper_state_path();
+    let cache_dir = crate::portal::desktop_services::wallpaper_cache_dir_for_renderer(&path);
+    let mut cache = wallpaper_render_cache().lock().ok()?;
+    let now = Instant::now();
+    if cache
+        .checked
+        .is_none_or(|checked| now.duration_since(checked) >= Duration::from_millis(250))
+    {
+        cache.checked = Some(now);
+        let stamp = std::fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .ok();
+        if stamp != cache.stamp {
+            cache.stamp = stamp;
+            cache.records = std::fs::read(&path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default();
+            cache.images.clear();
+        }
+    }
+    let file = cache
+        .records
+        .iter()
+        .find(|record| record.workspace_id == workspace_id && record.target == target)?
+        .cache_file
+        .clone();
+    if !safe_cache_name(&file) {
+        return None;
+    }
+    if !cache.images.contains_key(&file) {
+        let image = read_normalised_wallpaper(&cache_dir.join(&file))?;
+        cache.images.insert(file.clone(), image);
+    }
+    cache.images.get(&file).cloned()
+}
+
+fn safe_cache_name(name: &str) -> bool {
+    name.len() == 68
+        && std::path::Path::new(name)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+        && name
+            .as_bytes()
+            .get(..64)
+            .is_some_and(|hash| hash.iter().all(u8::is_ascii_hexdigit))
+}
+
+fn read_normalised_wallpaper(path: &std::path::Path) -> Option<ImageData> {
+    let file = std::fs::File::open(path).ok()?;
+    let decoder = png::Decoder::new(std::io::BufReader::new(file));
+    let mut reader = decoder.read_info().ok()?;
+    let size = reader.output_buffer_size()?;
+    let mut rgba = vec![0; size];
+    let info = reader.next_frame(&mut rgba).ok()?;
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    rgba.truncate(info.buffer_size());
+    Some(ImageData {
+        data: Blob::new(Arc::new(rgba)),
+        format: Format::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width: info.width,
+        height: info.height,
+    })
 }
 
 impl Default for DesktopBackdrop {

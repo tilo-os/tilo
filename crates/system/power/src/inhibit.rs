@@ -22,8 +22,14 @@ use std::sync::{Arc, Mutex};
 struct RegistryInner {
     /// `id -> human-readable reason`. A `BTreeMap` keeps `active_reasons`
     /// deterministic for tests and logs.
-    held: BTreeMap<u64, String>,
+    held: BTreeMap<u64, (String, u32)>,
 }
+
+pub const INHIBIT_LOGOUT: u32 = 1;
+pub const INHIBIT_USER_SWITCH: u32 = 2;
+pub const INHIBIT_SUSPEND: u32 = 4;
+pub const INHIBIT_IDLE: u32 = 8;
+pub const INHIBIT_POWER: u32 = INHIBIT_SUSPEND | INHIBIT_IDLE;
 
 /// A cloneable handle to the shared set of active suspend inhibitors.
 ///
@@ -54,6 +60,12 @@ impl InhibitRegistry {
     /// hold when dropped. Hold it for as long as suspend must be blocked
     /// (e.g. store it in the media player's "is playing" state).
     pub fn acquire(&self, reason: impl Into<String>) -> InhibitToken {
+        self.acquire_for(reason, INHIBIT_POWER)
+    }
+
+    /// Hold only the named desktop operations. This keeps, for example, a
+    /// logout-only portal inhibitor from accidentally preventing idle sleep.
+    pub fn acquire_for(&self, reason: impl Into<String>, flags: u32) -> InhibitToken {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let reason = reason.into();
         {
@@ -61,7 +73,7 @@ impl InhibitRegistry {
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            inner.held.insert(id, reason);
+            inner.held.insert(id, (reason, flags));
         }
         InhibitToken {
             id,
@@ -72,12 +84,17 @@ impl InhibitRegistry {
     /// Whether any inhibitor is currently held — the signal the idle loop
     /// consults before suspending.
     pub fn is_inhibited(&self) -> bool {
+        self.is_inhibited_for(INHIBIT_POWER)
+    }
+
+    pub fn is_inhibited_for(&self, flags: u32) -> bool {
         !self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .held
-            .is_empty()
+            .values()
+            .all(|(_, held_flags)| held_flags & flags == 0)
     }
 
     /// How many inhibitors are held.
@@ -92,12 +109,17 @@ impl InhibitRegistry {
     /// The reasons currently holding the machine awake, sorted by acquisition
     /// order — surfaced in logs and the real logind inhibitor's `why` field.
     pub fn active_reasons(&self) -> Vec<String> {
+        self.active_reasons_for(INHIBIT_POWER)
+    }
+
+    pub fn active_reasons_for(&self, flags: u32) -> Vec<String> {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .held
             .values()
-            .cloned()
+            .filter(|(_, held_flags)| held_flags & flags != 0)
+            .map(|(reason, _)| reason.clone())
             .collect()
     }
 }
@@ -181,6 +203,15 @@ mod tests {
         // The hold taken on `r` is visible through the clone `r2`.
         assert!(r2.is_inhibited());
         assert_eq!(r2.count(), 1);
+    }
+
+    #[test]
+    fn operation_scopes_do_not_cross_inhibit() {
+        let registry = InhibitRegistry::new();
+        let _logout = registry.acquire_for("unsaved work", INHIBIT_LOGOUT);
+        assert!(registry.is_inhibited_for(INHIBIT_LOGOUT));
+        assert!(!registry.is_inhibited_for(INHIBIT_POWER));
+        assert!(registry.active_reasons().is_empty());
     }
 
     #[test]
