@@ -465,6 +465,7 @@ fn portal_error(message: impl Into<String>) -> LaunchError {
 #[cfg(test)]
 mod tests {
     use std::io::{Read as _, Write as _};
+    use std::os::unix::fs::PermissionsExt as _;
 
     use tempfile::TempDir;
 

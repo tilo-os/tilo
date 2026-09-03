@@ -5,13 +5,13 @@
 #   dist/rpm/build-rpm.sh              build binaries, then the RPM
 #   dist/rpm/build-rpm.sh --no-cargo   package binaries that are already built
 #
-# Output lands in dist/rpm/build/RPMS/x86_64/.
+# Output lands in dist/rpm/build/RPMS/<native-rpm-architecture>/.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-out=$repo_root/dist/rpm/build
+out=${QOS_PACKAGE_OUT:-$repo_root/dist/rpm/build}
 name=qos-session
-version=0.1.0
+version=$(<"$repo_root/dist/VERSION")
 
 run_cargo=1
 [[ ${1:-} == --no-cargo ]] && run_cargo=0
@@ -37,92 +37,35 @@ if (( run_cargo )); then
     ( cd "$repo_root" && cargo build --release --locked -p shell --no-default-features )
 fi
 
-rel=$repo_root/target/release
+rel=${QOS_BIN_DIR:-$repo_root/target/release}
 for bin in shell qos-launcher qos-unlock-helper; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
 done
 
 # ---------------------------------------------------------------------------
-# 2. Refuse to package a developer build.
-# ---------------------------------------------------------------------------
-# A compositor built with `--features dev-session` in a debug profile carries
-# a marker that the developer session entry looks for. A shipped binary must
-# not have one: if it did, the entry that is supposed to start only builds you
-# deliberately made would happily start the installed compositor instead, and
-# the distinction the -devel subpackage rests on would be fiction.
-marker='qos-dev-session-build-marker-v1'
-if LC_ALL=C grep -q -a -F -e "$marker" "$rel/shell"; then
-    echo "refusing to package $rel/shell: it carries the dev-session build marker" >&2
-    echo "(a release build never should — rebuild without --features dev-session)" >&2
-    exit 1
-fi
-
-# ---------------------------------------------------------------------------
-# 3. Stage the payload.
+# 2. Stage the canonical payload.
 # ---------------------------------------------------------------------------
 say "staging $name-$version"
 stage=$out/stage/$name-$version
 rm -rf "$out/stage" "$out/SOURCES"
-mkdir -p "$stage"/{bin,libexec,pam,wayland-sessions,portal,dbus,systemd-user} \
-         "$out"/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
-
-# /usr/bin/qos-shell, not /usr/bin/shell: the OS image owns its whole
-# filesystem and can call it what it likes, a package layered onto someone
-# else's distribution cannot squat a name that generic.
-install -pm 0755 "$rel/shell"             "$stage/bin/qos-shell"
-install -pm 0755 "$rel/qos-launcher"      "$stage/bin/qos-launcher"
-install -pm 0755 "$rel/qos-unlock-helper" "$stage/libexec/qos-unlock-helper"
-
-install -pm 0755 "$repo_root/dist/session/qos-session"     "$stage/libexec/qos-session"
-install -pm 0755 "$repo_root/dist/session/qos-session-dev" "$stage/libexec/qos-session-dev"
-install -pm 0644 "$repo_root/dist/session/qos.desktop"     "$stage/wayland-sessions/qos.desktop"
-install -pm 0644 "$repo_root/dist/session/qos-dev.desktop" "$stage/wayland-sessions/qos-dev.desktop"
-# The same PAM stack the OS image uses, so an unlock accepts exactly the
-# factors a login on this host does. Sourced from os/ rather than copied, so
-# the two cannot drift.
-install -pm 0644 "$repo_root/os/etc/pam.d/qos-unlock"      "$stage/pam/qos-unlock"
-
-# ---------------------------------------------------------------------------
-# 3b. xdg-desktop-portal backend registration.
-# ---------------------------------------------------------------------------
-# Without this, a sandboxed app in the session has no file chooser, no screen
-# cast and no camera: xdg-desktop-portal matches a backend by UseIn= against
-# XDG_CURRENT_DESKTOP, and nothing would claim `nirios`.
-#
-# The three files come from os/, so the interface list cannot drift from the
-# image's — but two of them name the binary, and this package installs it as
-# /usr/bin/qos-shell. Rewrite that one path rather than keeping a second copy,
-# and fail loudly if the text being rewritten is not there any more.
-portal_src=$repo_root/os/usr/share/xdg-desktop-portal/portals/qos.portal
-dbus_src=$repo_root/os/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service
-unit_src=$repo_root/os/usr/lib/systemd/user/shell-portal.service
-
-for f in "$dbus_src" "$unit_src"; do
-    grep -q '/usr/bin/shell ' "$f" || {
-        echo "$f no longer names /usr/bin/shell — the rewrite below is stale" >&2
-        exit 1
-    }
-done
-
-install -pm 0644 "$portal_src" "$stage/portal/qos.portal"
-sed -e 's|/usr/bin/shell |/usr/bin/qos-shell |' \
-    -e 's|^SystemdService=shell-portal\.service$|SystemdService=qos-portal.service|' \
-    "$dbus_src" > "$stage/dbus/org.freedesktop.impl.portal.desktop.qos.service"
-sed -e 's|/usr/bin/shell |/usr/bin/qos-shell |' \
-    "$unit_src" > "$stage/systemd-user/qos-portal.service"
-chmod 0644 "$stage/dbus/org.freedesktop.impl.portal.desktop.qos.service" \
-           "$stage/systemd-user/qos-portal.service"
+mkdir -p "$out"/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
+"$repo_root/dist/stage-payload.sh" "$rel" "$stage"
 
 tar -C "$out/stage" -czf "$out/SOURCES/$name-$version.tar.gz" "$name-$version"
 cp "$repo_root/dist/rpm/$name.spec" "$out/SPECS/"
 
 # ---------------------------------------------------------------------------
-# 4. rpmbuild.
+# 3. rpmbuild.
 # ---------------------------------------------------------------------------
 # The host is image-based and has no rpm-build; the same container that builds
 # the workspace has it. `.build-container` is the one the cargo shim uses.
 say "rpmbuild"
-rpmbuild_cmd=(rpmbuild -bb --define "_topdir $out" "$out/SPECS/$name.spec")
+rpmbuild_cmd=(
+    rpmbuild -bb
+    --define "_topdir $out"
+    --define "qos_version $version"
+    "$out/SPECS/$name.spec"
+)
 if command -v rpmbuild >/dev/null 2>&1; then
     "${rpmbuild_cmd[@]}"
 else

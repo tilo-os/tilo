@@ -30,18 +30,24 @@ const REMOTE_RELAY_KEY: &str = "device_mesh.remote_control_relay";
 const APP_SERVING_KEY: &str = "device_mesh.app_serving";
 const COMPUTE_KEY: &str = "device_mesh.compute";
 
-const ROLE_OPTIONS: &[&str] = &[
-    "Personal device",
-    "Available while active",
-    "Always-on server",
+const ROLE_PERSONAL: &str = "Personal device";
+const ROLE_ACTIVE: &str = "Available while active";
+const ROLE_SERVER: &str = "Always-on server";
+const ROLE_OPTIONS: &[&str] = &[ROLE_PERSONAL, ROLE_ACTIVE, ROLE_SERVER];
+const REPLICATION_ON_DEMAND: &str = "On demand";
+const REPLICATION_WORKSPACE: &str = "Workspace state";
+const REPLICATION_FULL: &str = "Full workspace copy";
+const REPLICATION_OPTIONS: &[&str] = &[
+    REPLICATION_ON_DEMAND,
+    REPLICATION_WORKSPACE,
+    REPLICATION_FULL,
 ];
-const REPLICATION_OPTIONS: &[&str] = &["On demand", "Workspace state", "Full workspace copy"];
 
 fn role_label(role: DeviceRole) -> &'static str {
     match role {
-        DeviceRole::Interactive => ROLE_OPTIONS[0],
-        DeviceRole::Hybrid => ROLE_OPTIONS[1],
-        DeviceRole::AlwaysOnServer => ROLE_OPTIONS[2],
+        DeviceRole::Interactive => ROLE_PERSONAL,
+        DeviceRole::Hybrid => ROLE_ACTIVE,
+        DeviceRole::AlwaysOnServer => ROLE_SERVER,
     }
 }
 
@@ -56,9 +62,9 @@ fn role_from_label(label: &str) -> Option<DeviceRole> {
 
 fn replication_label(intent: &ReplicationIntent) -> &'static str {
     match intent {
-        ReplicationIntent::WorkspaceOnly => REPLICATION_OPTIONS[1],
-        ReplicationIntent::FullWorkspace => REPLICATION_OPTIONS[2],
-        ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => REPLICATION_OPTIONS[0],
+        ReplicationIntent::WorkspaceOnly => REPLICATION_WORKSPACE,
+        ReplicationIntent::FullWorkspace => REPLICATION_FULL,
+        ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => REPLICATION_ON_DEMAND,
     }
 }
 
@@ -130,6 +136,10 @@ impl DeviceMeshPane {
             })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the pane composition keeps the four device-mesh policy cards and their explanatory security text in one auditable hierarchy"
+    )]
     fn build_composition(&self) -> Box<dyn Widget> {
         let role = Dropdown::new(
             ROLE_OPTIONS

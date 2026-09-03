@@ -82,10 +82,10 @@ enum ActionKind {
         confirmation: ConfirmationPolicy,
     },
     /// Collects the canonical JSON object for a structured or
-    /// multi-parameter action, then uses the ActionSpec's strict binder.
+    /// multi-parameter action, then uses the `ActionSpec`'s strict binder.
     Typed {
         prompt: String,
-        spec: qos_actions::ActionSpec,
+        spec: Box<qos_actions::ActionSpec>,
         context: ActionContext,
         kind: OperationKind,
         confirmation: ConfirmationPolicy,
@@ -94,7 +94,7 @@ enum ActionKind {
 
 enum ArgumentBuilder {
     Text(Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>),
-    Json(qos_actions::ActionSpec),
+    Json(Box<qos_actions::ActionSpec>),
 }
 
 /// Live state while the field is collecting a prompted action's argument.
@@ -479,7 +479,7 @@ impl ActionPalette {
                             .collect::<Vec<_>>()
                             .join(", ")
                     ),
-                    spec: fa.action.clone(),
+                    spec: Box::new(fa.action.clone()),
                     context,
                     kind: fa.action.kind,
                     confirmation: fa.action.contract.confirmation.clone(),
