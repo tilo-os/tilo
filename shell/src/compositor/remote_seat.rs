@@ -7,16 +7,15 @@
 //! for that: which surface the peer's keyboard is focused on, and the
 //! `PeerId` tag carried on each event (for per-user "typing" indicators).
 //!
-//! `RemoteSeat` does not own a smithay `KeyboardHandle` — it delegates
-//! into `state.seat`, so a remote peer's focus change flips the physical
-//! seat and is visible to the local user too (v1 shares are
-//! one-driver-at-a-time). Multi-user typing interleaves at kernel-input
-//! level: whichever `InputEvent::Key` arrives at the owner first wins the
-//! serial-counter mint. See
+//! `RemoteSeat` does not own a smithay `KeyboardHandle`. All participants
+//! are multiplexed into the compositor's one app-facing seat while this
+//! structure preserves attribution and key ownership. The active tab owns
+//! keyboard/text-input focus; remote pointer enter/leave never churns the
+//! client's caret or IME session. See
 //! [`InputEvent`](crate::network::streaming::InputEvent) for the full
 //! contract.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::network::protocol::{PeerId, SurfaceId};
 
@@ -25,9 +24,18 @@ use crate::network::protocol::{PeerId, SurfaceId};
 /// [`crate::compositor::state::State::remote_seats`].
 #[derive(Debug, Default, Clone)]
 pub struct RemoteSeat {
-    /// The surface the peer last emitted `PointerEnter` on. `None` after
-    /// a matching `PointerLeave` or at construction time.
+    /// Surface currently under this participant's pointer. Hover is kept
+    /// separate from keyboard focus so leaving a tile cannot kill a caret.
+    pub pointer_surface: Option<SurfaceId>,
+    /// The surface this peer may send keyboard input to. New viewers update
+    /// it with `KeyboardFocus`; `PointerEnter` also sets it for compatibility
+    /// with older viewers. Pointer leave deliberately does not clear it.
     pub focused_surface: Option<SurfaceId>,
+    /// Keys this peer currently holds, in evdev keycode space. The target
+    /// client still sees one Wayland seat; this attribution exists solely so
+    /// one collaborator cannot release another's held key or leave a modifier
+    /// stuck after disconnecting.
+    pressed_keys: HashSet<u32>,
 }
 
 impl RemoteSeat {
@@ -36,9 +44,8 @@ impl RemoteSeat {
         Self::default()
     }
 
-    /// Record a `PointerEnter` for the peer. Returns the previously
-    /// focused surface, if any — the compositor uses that to decide
-    /// whether it needs to flip the physical seat's keyboard focus.
+    /// Record a `PointerEnter` for the peer. Returns the previously focused
+    /// surface, if any.
     pub fn enter(&mut self, surface: SurfaceId) -> Option<SurfaceId> {
         self.focused_surface.replace(surface)
     }
@@ -47,6 +54,14 @@ impl RemoteSeat {
     /// focused surface, if any.
     pub fn leave(&mut self) -> Option<SurfaceId> {
         self.focused_surface.take()
+    }
+
+    pub fn pointer_enter(&mut self, surface: SurfaceId) -> Option<SurfaceId> {
+        self.pointer_surface.replace(surface)
+    }
+
+    pub fn pointer_leave(&mut self) -> Option<SurfaceId> {
+        self.pointer_surface.take()
     }
 }
 
@@ -59,6 +74,9 @@ impl RemoteSeat {
 #[derive(Debug, Default)]
 pub struct RemoteSeats {
     seats: HashMap<PeerId, RemoteSeat>,
+    /// Number of peers currently holding each key. Only the 0→1 and 1→0
+    /// transitions are forwarded to the shared Wayland seat.
+    key_holders: HashMap<u32, usize>,
 }
 
 impl RemoteSeats {
@@ -79,6 +97,50 @@ impl RemoteSeats {
         self.seats.get(&peer)
     }
 
+    /// Fold one peer's key transition into the single seat presented to a
+    /// legacy app. Returns `true` only when the physical Wayland seat should
+    /// receive the transition.
+    pub fn key_transition(&mut self, peer: PeerId, keycode: u32, pressed: bool) -> bool {
+        let seat = self.seats.entry(peer).or_default();
+        if pressed {
+            if !seat.pressed_keys.insert(keycode) {
+                return false;
+            }
+            let holders = self.key_holders.entry(keycode).or_default();
+            *holders = holders.saturating_add(1);
+            *holders == 1
+        } else {
+            if !seat.pressed_keys.remove(&keycode) {
+                return false;
+            }
+            let Some(holders) = self.key_holders.get_mut(&keycode) else {
+                return false;
+            };
+            *holders = holders.saturating_sub(1);
+            if *holders == 0 {
+                self.key_holders.remove(&keycode);
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    /// Release everything attributed to `peer`. Returned keycodes are the
+    /// ones whose final holder disappeared and therefore need a synthetic
+    /// release on the app-facing seat.
+    pub fn release_peer_keys(&mut self, peer: PeerId) -> Vec<u32> {
+        let mut keys = self
+            .seats
+            .get(&peer)
+            .map(|seat| seat.pressed_keys.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        keys.sort_unstable();
+        keys.into_iter()
+            .filter(|key| self.key_transition(peer, *key, false))
+            .collect()
+    }
+
     /// Number of active peers. Diagnostics only.
     pub fn len(&self) -> usize {
         self.seats.len()
@@ -92,6 +154,7 @@ impl RemoteSeats {
     /// Drop the peer's seat — e.g. on `LeaveWorkspace` or when the
     /// share ends.
     pub fn drop_peer(&mut self, peer: PeerId) {
+        let _ = self.release_peer_keys(peer);
         self.seats.remove(&peer);
     }
 }
@@ -117,6 +180,15 @@ mod tests {
     }
 
     #[test]
+    fn pointer_leave_does_not_clear_keyboard_focus() {
+        let mut seat = RemoteSeat::new();
+        seat.pointer_enter(42);
+        seat.enter(42);
+        assert_eq!(seat.pointer_leave(), Some(42));
+        assert_eq!(seat.focused_surface, Some(42));
+    }
+
+    #[test]
     fn remote_seats_lazy_inserts_and_drops() {
         let mut seats = RemoteSeats::new();
         assert!(seats.is_empty());
@@ -130,5 +202,41 @@ mod tests {
         seats.drop_peer(7);
         assert_eq!(seats.len(), 1);
         assert!(seats.seat(7).is_none());
+    }
+
+    #[test]
+    fn keys_are_refcounted_across_peers() {
+        let mut seats = RemoteSeats::new();
+        assert!(seats.key_transition(7, 42, true));
+        assert!(
+            !seats.key_transition(7, 42, true),
+            "repeat is not a second press"
+        );
+        assert!(
+            !seats.key_transition(8, 42, true),
+            "app already sees the key held"
+        );
+        assert!(
+            !seats.key_transition(7, 42, false),
+            "another peer still holds it"
+        );
+        assert!(
+            seats.key_transition(8, 42, false),
+            "last holder releases app seat"
+        );
+        assert!(
+            !seats.key_transition(8, 42, false),
+            "unmatched release is ignored"
+        );
+    }
+
+    #[test]
+    fn peer_cleanup_releases_only_final_holders() {
+        let mut seats = RemoteSeats::new();
+        assert!(seats.key_transition(7, 42, true));
+        assert!(seats.key_transition(7, 30, true));
+        assert!(!seats.key_transition(8, 42, true));
+        assert_eq!(seats.release_peer_keys(7), vec![30]);
+        assert_eq!(seats.release_peer_keys(8), vec![42]);
     }
 }

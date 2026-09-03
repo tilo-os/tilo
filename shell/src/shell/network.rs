@@ -237,7 +237,23 @@ pub struct ShellNetwork {
     /// Inbound cooperative-scrollback *responses*, forwarded by the
     /// broker's drainer to the local app that asked.
     inbound_scrollback_response: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
+    /// Authenticated legacy-surface control, frame, and input messages.
+    /// Frames are coalesced per surface when the render loop falls behind,
+    /// keeping network jitter from turning into unbounded compositor memory.
+    inbound_legacy: Arc<Mutex<std::collections::VecDeque<InboundLegacyEvent>>>,
 }
+
+/// A live legacy-app message after transport identity and room capability
+/// checks have passed. `workspace_topic` is retained so a viewer's input is
+/// always sent back to the room the stream arrived on, even after a local
+/// workspace switch.
+#[derive(Debug, Clone)]
+pub struct InboundLegacyEvent {
+    pub workspace_topic: u64,
+    pub message: NeighbourMsg,
+}
+
+const LEGACY_INBOX_CAP: usize = 256;
 
 /// One received app-presence frame, fanned to local apps by the
 /// `collab_broker` drainer. Carries no record id: presence is fanned
@@ -467,6 +483,7 @@ impl ShellNetwork {
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
+            inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
         })
     }
 
@@ -567,6 +584,101 @@ impl ShellNetwork {
         }
         let ws = self.topic_for_message(&msg);
         self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok()
+    }
+
+    /// Publish live legacy-app traffic on an explicit authenticated room
+    /// route. Unlike ordinary shell messages this must not follow a later
+    /// active-workspace switch: remote input belongs to the stream's room.
+    pub fn publish_legacy_message(&self, workspace_topic: u64, msg: NeighbourMsg) -> bool {
+        if !matches!(
+            msg,
+            NeighbourMsg::SurfaceStreamStart { .. }
+                | NeighbourMsg::SurfaceFrame { .. }
+                | NeighbourMsg::SurfaceStreamEnd { .. }
+                | NeighbourMsg::RemoteInput { .. }
+        ) {
+            return false;
+        }
+        self.join_topic(workspace_topic)
+            && self
+                .cmd_tx
+                .try_send(NetCmd::Publish {
+                    ws: workspace_topic,
+                    msg,
+                })
+                .is_ok()
+    }
+
+    /// Publish owner-side stream traffic to the room currently being viewed.
+    /// The receiver retains that concrete topic and uses
+    /// [`Self::publish_legacy_message`] for all input replies.
+    pub fn publish_legacy_active(&self, msg: NeighbourMsg) -> bool {
+        let workspace_topic = self.active_ws_for_publish();
+        self.publish_legacy_message(workspace_topic, msg)
+    }
+
+    /// Drain authenticated live legacy-app traffic without holding the queue
+    /// while decoders or the compositor do work.
+    pub fn take_inbound_legacy(&self) -> Vec<InboundLegacyEvent> {
+        let Ok(mut queue) = self.inbound_legacy.lock() else {
+            return Vec::new();
+        };
+        queue.drain(..).collect()
+    }
+
+    fn queue_legacy_message(&self, workspace_topic: u64, message: NeighbourMsg) {
+        // Never reflect a host's own gossip echo into a decoder or seat.
+        if Self::claimed_publisher(&message) == Some(self.local_peer_hash) {
+            return;
+        }
+        let Ok(mut queue) = self.inbound_legacy.lock() else {
+            return;
+        };
+        if let NeighbourMsg::SurfaceFrame {
+            surface,
+            source_peer,
+            ts,
+            ..
+        } = &message
+        {
+            // Video is drop-oldest/latest-wins. Control and input retain
+            // ordering; only an older frame for this exact stream is removed.
+            if let Some((index, queued_ts)) =
+                queue
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, event)| match &event.message {
+                        NeighbourMsg::SurfaceFrame {
+                            surface: queued_surface,
+                            source_peer: queued_peer,
+                            ts: queued_ts,
+                            ..
+                        } if queued_surface == surface && queued_peer == source_peer => {
+                            Some((index, *queued_ts))
+                        }
+                        _ => None,
+                    })
+            {
+                if queued_ts >= *ts {
+                    return;
+                }
+                queue.remove(index);
+            }
+        }
+        while queue.len() >= LEGACY_INBOX_CAP {
+            let frame_index = queue
+                .iter()
+                .position(|event| matches!(event.message, NeighbourMsg::SurfaceFrame { .. }));
+            if let Some(index) = frame_index {
+                queue.remove(index);
+            } else {
+                queue.pop_front();
+            }
+        }
+        queue.push_back(InboundLegacyEvent {
+            workspace_topic,
+            message,
+        });
     }
 
     fn publish_shell_checkpoint(&self, msg: NeighbourMsg) -> bool {
@@ -1603,6 +1715,10 @@ impl ShellNetwork {
                 // per-op indirection once it's off the wire.
                 ops.into_iter().map(|op| *op).collect(),
             ),
+            message @ (NeighbourMsg::SurfaceStreamStart { .. }
+            | NeighbourMsg::SurfaceFrame { .. }
+            | NeighbourMsg::SurfaceStreamEnd { .. }
+            | NeighbourMsg::RemoteInput { .. }) => self.queue_legacy_message(ws, message),
             other => self.dispatch_to_replica(peer, &other),
         }
     }
@@ -2202,6 +2318,7 @@ pub(crate) fn shell_network_for_test(
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
+        inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
     };
     (net, cmd_rx)
 }
@@ -2209,6 +2326,88 @@ pub(crate) fn shell_network_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_inbox_coalesces_frames_but_keeps_control_order() {
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, _commands) = shell_network_for_test(tree, 99);
+        let start = NeighbourMsg::SurfaceStreamStart {
+            surface: 7,
+            source_peer: 5,
+            app_id: "org.example.Editor".into(),
+            width: 64,
+            height: 48,
+            codec: "h264".into(),
+            ts: 1,
+            sender_monotonic_ns_at_send: 1,
+            colorimetry: None,
+            hdr_static_metadata: None,
+            bit_depth: 8,
+        };
+        net.queue_legacy_message(42, start);
+        for ts in 2..=20 {
+            net.queue_legacy_message(
+                42,
+                NeighbourMsg::SurfaceFrame {
+                    surface: 7,
+                    source_peer: 5,
+                    encoded_h264: vec![u8::try_from(ts).unwrap_or_default()],
+                    ts,
+                },
+            );
+        }
+        // Separate QUIC uni streams may complete out of order, and the host
+        // fallback may deliver an older duplicate after the direct path.
+        net.queue_legacy_message(
+            42,
+            NeighbourMsg::SurfaceFrame {
+                surface: 7,
+                source_peer: 5,
+                encoded_h264: vec![19],
+                ts: 19,
+            },
+        );
+        net.queue_legacy_message(
+            42,
+            NeighbourMsg::SurfaceStreamEnd {
+                surface: 7,
+                source_peer: 5,
+                ts: 21,
+            },
+        );
+
+        let drained = net.take_inbound_legacy();
+        assert_eq!(drained.len(), 3);
+        assert_eq!(drained[0].workspace_topic, 42);
+        assert!(matches!(
+            drained[0].message,
+            NeighbourMsg::SurfaceStreamStart { .. }
+        ));
+        assert!(matches!(
+            drained[1].message,
+            NeighbourMsg::SurfaceFrame { ts: 20, .. }
+        ));
+        assert!(matches!(
+            drained[2].message,
+            NeighbourMsg::SurfaceStreamEnd { .. }
+        ));
+    }
+
+    #[test]
+    fn legacy_inbox_drops_local_gossip_echo() {
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, _commands) = shell_network_for_test(tree, 99);
+        net.queue_legacy_message(
+            42,
+            NeighbourMsg::SurfaceFrame {
+                surface: 7,
+                source_peer: 99,
+                encoded_h264: vec![1],
+                ts: 1,
+            },
+        );
+        assert!(net.take_inbound_legacy().is_empty());
+    }
 
     #[test]
     fn pending_invites_survive_restart_and_cancel_exactly_one_credential() {

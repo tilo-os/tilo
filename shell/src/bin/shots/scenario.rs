@@ -1488,6 +1488,7 @@ pub fn catalogue() -> Vec<Scenario> {
         wheel_overscroll_at_the_end(),
         wheel_summon_at_pointer(),
         overview_transition(),
+        shortcut_guide(),
         solo_and_shared_shell_states(),
         collaboration_product_proof(),
         strip_horizontal_scroll(),
@@ -1514,6 +1515,25 @@ pub fn catalogue() -> Vec<Scenario> {
         wifi_password_prompt(),
         file_chooser_dialog(),
     ]
+}
+
+/// Desktop help is itself a reachable control surface, not a documentation
+/// mock. F1 is deliberately modifier-free so this scenario is stable even
+/// when the developer running shots has customized the ordinary help chord.
+fn shortcut_guide() -> Scenario {
+    Scenario {
+        name: "shortcut_guide",
+        description: "Open the responsive desktop navigation guide with F1.",
+        actions: vec![
+            Action::Wait(4),
+            Action::Relayout,
+            Action::Snapshot("01-desktop"),
+            Action::Key(Key::Named(NamedKey::F1)),
+            Action::Wait(2),
+            Action::Relayout,
+            Action::Snapshot("02-guide"),
+        ],
+    }
 }
 
 /// The canonical collaboration journey. Each frame is a state a person can

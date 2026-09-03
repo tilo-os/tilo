@@ -230,6 +230,15 @@ const fn chrome(
 impl Action {
     const ALL: &'static [Action] = &[
         chrome(
+            "shortcut-help.toggle",
+            "Show keyboard & mouse guide",
+            "Learn how to navigate, move, resize and group windows",
+            |st, _| {
+                st.overlays.shortcut_help = !st.overlays.shortcut_help;
+                Ok(())
+            },
+        ),
+        chrome(
             "overview.toggle",
             "Toggle workspace overview",
             "Show all workspaces in the wheel view",
