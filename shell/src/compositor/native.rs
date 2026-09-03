@@ -2902,6 +2902,14 @@ fn take_deferred_peer_sync_activation(deferred: &mut bool, onboarding_active: bo
     }
 }
 
+fn should_activate_first_use(
+    identity_missing: bool,
+    progress_pending: bool,
+    test_control_session: bool,
+) -> bool {
+    !test_control_session && (identity_missing || progress_pending)
+}
+
 fn spawn_session_identity_broker(
     chrome: &crate::shell::chrome_state::Chrome,
 ) -> Option<crate::identity_broker::IdentityBrokerHandle> {
@@ -3573,10 +3581,14 @@ pub fn run() -> ! {
         std::env::var_os(TEST_CONTROL_ENV),
     )
     .is_some();
+    let progress_pending = identity_store
+        .path()
+        .parent()
+        .is_some_and(crate::onboarding_view::has_pending_progress);
+    let identity_missing =
+        crate::shell::identity_provisioning::needs_first_run_flow(&identity_store);
     let onboarding_identity_dir =
-        if crate::shell::identity_provisioning::needs_first_run_flow(&identity_store)
-            && !test_control_session
-        {
+        if should_activate_first_use(identity_missing, progress_pending, test_control_session) {
             if let Some(identity_dir) = identity_store
                 .path()
                 .parent()
@@ -5331,6 +5343,19 @@ mod tests {
         assert!(take_deferred_peer_sync_activation(&mut deferred, false));
         assert!(!deferred, "the current-session start is one-shot");
         assert!(!take_deferred_peer_sync_activation(&mut deferred, false));
+    }
+
+    #[test]
+    fn unfinished_post_identity_setup_reactivates_trusted_first_use_chrome() {
+        assert!(should_activate_first_use(false, true, false));
+        assert!(
+            !should_activate_first_use(false, false, false),
+            "an established user without a journal must not see first-use again"
+        );
+        assert!(
+            !should_activate_first_use(true, true, true),
+            "the explicit development control session remains isolated"
+        );
     }
 
     #[test]
