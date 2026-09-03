@@ -89,6 +89,11 @@ enum Hit {
 
 struct Layout {
     crumbs: Vec<(Rect, Step)>,
+    /// At compact widths the six-step rail shows numbered/checkmarked discs
+    /// without labels. The page heading still names the current station, and
+    /// this keeps every station visible instead of clipping the first/last
+    /// controls outside the window.
+    compact_crumbs: bool,
     back: Option<Rect>,
     primary: Option<Rect>,
     hits: Vec<(Rect, Hit)>,
@@ -491,9 +496,23 @@ impl ImagerApp {
 
         // ---- Step-indicator pills ----
         let steps = Step::all();
-        let crumb_w = 132.0f64;
-        let gap = 14.0f64;
-        let total = crumb_w * steps.len() as f64 + gap * (steps.len() as f64 - 1.0);
+        let full_crumb_w = 132.0f64;
+        let full_gap = 14.0f64;
+        let full_total = full_crumb_w * steps.len() as f64 + full_gap * (steps.len() as f64 - 1.0);
+        let compact_crumbs = v.width() - OUTER * 2.0 < full_total;
+        let rail_margin = if compact_crumbs { 16.0 } else { OUTER };
+        let rail_w = (v.width() - rail_margin * 2.0).max(0.0);
+        let (crumb_w, gap, total) = if compact_crumbs {
+            // Six controls remain inside the content margins down to the
+            // supported 320 px compact viewport. Prefer useful hit targets to
+            // labels which cannot fit; the screen heading supplies the name.
+            let gap = if rail_w >= 280.0 { 8.0 } else { 4.0 };
+            let gaps = gap * (steps.len() as f64 - 1.0);
+            let crumb_w = ((rail_w - gaps) / steps.len() as f64).max(24.0);
+            (crumb_w, gap, crumb_w * steps.len() as f64 + gaps)
+        } else {
+            (full_crumb_w, full_gap, full_total)
+        };
         let mut cx = v.x0 + (v.width() - total) / 2.0;
         let cy = v.y0 + CRUMB_TOP;
         let mut crumbs = Vec::new();
@@ -541,6 +560,7 @@ impl ImagerApp {
 
         Layout {
             crumbs,
+            compact_crumbs,
             back,
             primary,
             hits,
@@ -685,8 +705,16 @@ impl ImagerApp {
             if current {
                 Self::stroke_rr(scene, t, *r, 10.0, c.accent[5], 1.4);
             }
-            // Number disc / check.
-            let disc_c = Point::new(r.x0 + 22.0, f64::midpoint(r.y0, r.y1));
+            // Number disc / check. Compact layouts center the disc in its
+            // station and omit the label, keeping all six stations on-screen.
+            let disc_c = Point::new(
+                if lay.compact_crumbs {
+                    f64::midpoint(r.x0, r.x1)
+                } else {
+                    r.x0 + 22.0
+                },
+                f64::midpoint(r.y0, r.y1),
+            );
             if done {
                 Self::check_disc(scene, t, disc_c, 11.0, c.semantic.success, Color::WHITE);
             } else {
@@ -703,26 +731,28 @@ impl ImagerApp {
                     TextWeight::Bold,
                 );
             }
-            let label_c = if current || done {
-                c.text_primary
-            } else {
-                c.text_dim
-            };
-            Self::txt(
-                scene,
-                tr,
-                s.title(),
-                13.5,
-                label_c,
-                r.x0 + 40.0,
-                f64::midpoint(r.y0, r.y1) - 9.0,
-                None,
-                if current {
-                    TextWeight::Semibold
+            if !lay.compact_crumbs {
+                let label_c = if current || done {
+                    c.text_primary
                 } else {
-                    TextWeight::Medium
-                },
-            );
+                    c.text_dim
+                };
+                Self::txt(
+                    scene,
+                    tr,
+                    s.title(),
+                    13.5,
+                    label_c,
+                    r.x0 + 40.0,
+                    f64::midpoint(r.y0, r.y1) - 9.0,
+                    None,
+                    if current {
+                        TextWeight::Semibold
+                    } else {
+                        TextWeight::Medium
+                    },
+                );
+            }
             // Connector to the next pill.
             if let Some(next) = lay.crumbs.get(i + 1) {
                 let nx0 = next.0.x0;
@@ -3605,6 +3635,45 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let lay = app.compute_layout();
         assert_eq!(lay.crumbs.len(), 6);
+        assert!(!lay.compact_crumbs);
+    }
+
+    #[test]
+    fn compact_layout_keeps_every_step_station_inside_the_viewport() {
+        let (mut app, _doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
+        let lay = app.compute_layout();
+
+        assert!(lay.compact_crumbs);
+        assert_eq!(lay.crumbs.len(), Step::all().len());
+        assert!(lay.crumbs.iter().all(|(rect, _)| {
+            rect.x0 >= app.rect.x0
+                && rect.x1 <= app.rect.x1
+                && rect.width() >= 40.0
+                && rect.height() >= 34.0
+        }));
+        assert_eq!(
+            lay.crumbs.first().map(|(_, step)| *step),
+            Some(Step::Source)
+        );
+        assert_eq!(lay.crumbs.last().map(|(_, step)| *step), Some(Step::Done));
+    }
+
+    #[test]
+    fn compact_step_targets_use_the_same_on_screen_rects_as_the_rail() {
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
+        app.select_target(&mut doc, 0);
+        app.goto(&mut doc, Step::Confirm);
+        let lay = app.compute_layout();
+
+        for (rect, step) in &lay.crumbs {
+            if app.crumb_reachable(*step) {
+                assert!(lay.hits.iter().any(|(hit_rect, hit)| {
+                    hit_rect == rect && matches!(hit, Hit::StepJump(hit_step) if hit_step == step)
+                }));
+            }
+        }
     }
 
     #[test]
