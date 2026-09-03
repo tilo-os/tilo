@@ -96,8 +96,18 @@ impl PinnedArtifact {
 pub struct LocalModelRelease {
     pub id: String,
     pub label: String,
+    /// Release-authored description shown before any bytes are downloaded.
+    pub description: String,
     pub version: String,
     pub artifact: PinnedArtifact,
+    /// SPDX license identifier where one exists (`Apache-2.0`, `MIT`, ...).
+    pub license_id: String,
+    /// Immutable model-card or license document for the pinned revision.
+    pub license_url: String,
+    /// Whether setup must capture explicit license acceptance.
+    pub requires_acceptance: bool,
+    /// Expected on-disk footprint after unpacking/conversion.
+    pub installed_size_bytes: u64,
     pub allowed_runtimes: BTreeSet<RuntimeKind>,
     pub required_memory_mib: u64,
     pub required_accelerator_mib: u64,
@@ -136,6 +146,19 @@ impl LocalModelCatalog {
                 return Err(ProvisionError::InvalidCatalog("model supports no runtime"));
             }
             model.artifact.validate()?;
+            if model.description.trim().is_empty()
+                || model.license_id.trim().is_empty()
+                || !model.license_url.starts_with("https://")
+            {
+                return Err(ProvisionError::InvalidCatalog(
+                    "model release metadata must include description, license id, and HTTPS license URL",
+                ));
+            }
+            if model.installed_size_bytes < model.artifact.size_bytes {
+                return Err(ProvisionError::InvalidCatalog(
+                    "installed model size cannot be smaller than its artifact",
+                ));
+            }
         }
         Ok(())
     }
@@ -452,8 +475,13 @@ mod tests {
             models: vec![LocalModelRelease {
                 id: "tiny-q4".into(),
                 label: "Tiny Q4".into(),
+                description: "A tiny test model".into(),
                 version: "1".into(),
                 artifact: artifact("model"),
+                license_id: "Apache-2.0".into(),
+                license_url: "https://models.example.invalid/LICENSE".into(),
+                requires_acceptance: true,
+                installed_size_bytes: 100,
                 allowed_runtimes: [RuntimeKind::Cpu].into(),
                 required_memory_mib: 8192,
                 required_accelerator_mib: 0,

@@ -113,6 +113,7 @@ jobs:
           bash os/tests/wpe_reproducibility_invariants.sh
           bash os/tests/generation_series_security.sh
           bash os/tests/system_extension_invariants.sh
+          bash os/tests/local_model_catalog_invariants.sh
 
       - name: Select and balance affected packages
         id: plan
