@@ -23,6 +23,13 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
 bash "$repo/os/tests/forgejo_release_publication.sh" \
   || bad 'Forgejo release publication is not idempotent and immutable'
 
+if command -v appstreamcli >/dev/null 2>&1; then
+  appstreamcli validate --no-net \
+    "$repo/apps/imager/packaging/linux/org.qos.Imager.metainfo.xml" \
+    && ok 'Linux application metadata validates offline' \
+    || bad 'Linux application metadata is invalid'
+fi
+
 grep -Fq 'QOS_REQUIRE_SIGNING=1' "$workflow" \
   && grep -Fq 'QOS_REQUIRE_NATIVE_PACKAGES=1' "$workflow" \
   && ok 'tag releases fail closed without signed native packages' \
@@ -116,10 +123,22 @@ grep -Fq 'key: imager-medium-inputs-' "$workflow" \
   && ok 'installer media restores pinned inputs and can authenticate/verify frozen images' \
   || bad 'installer-media release lane lacks immutable inputs or private-image prerequisites'
 
-grep -Fq 'group: release-imager-promotion' "$workflow" \
+grep -Fq 'key: imager-linux-tools-${{ matrix.arch }}-' "$workflow" \
+  && grep -Fq 'linuxdeploy-1-alpha-20251107-1-${arch}.AppImage' "$workflow" \
+  && grep -Fq 'appimagetool-1.9.1-${arch}.AppImage' "$workflow" \
+  && grep -Fq 'type2-runtime-20251108-${arch}' "$workflow" \
+  && grep -Fq -- '--runtime-file "$QOS_APPIMAGE_RUNTIME"' \
+    "$repo/apps/imager/packaging/package-host.sh" \
+  && grep -Fq 'implicit runtime downloads are forbidden' \
+    "$repo/apps/imager/packaging/package-host.sh" \
+  && ok 'AppImage tooling and runtime are checksum-pinned, cached, and offline at packaging time' \
+  || bad 'AppImage packaging still depends on mutable or repeated GitHub downloads'
+
+grep -Fq "group: release-imager-\${{ startsWith(github.ref, 'refs/tags/imager-v') && 'promotion' || github.ref }}" "$workflow" \
+  && grep -Fq "cancel-in-progress: \${{ !startsWith(github.ref, 'refs/tags/imager-v') }}" "$workflow" \
   && grep -Fq 'refusing to replace newer Homebrew release' "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   && grep -Fq 'refusing to replace newer landing-page release' "$repo/apps/imager/packaging/publish-site-release.sh" \
-  && ok 'release promotion is serialized and monotonic' \
-  || bad 'an older release can overwrite a newer promoted release'
+  && ok 'tag promotion is serialized while stale branch validation is superseded' \
+  || bad 'release promotion can regress or stale validation can block the current commit'
 
 exit "$fail"
