@@ -331,6 +331,16 @@ fn stream_copy_bound(
             "source image has an invalid expected digest",
         ));
     }
+    if let Some(expected) = expected_sha256 {
+        let actual = hash_source_exact(&mut reader, expected_size)?;
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "source image no longer matches its signed release catalog",
+            ));
+        }
+        reader.seek(SeekFrom::Start(0))?;
+    }
     // `truncate(true)`: a fresh, exact byte-for-byte copy — no stale trailing
     // bytes survive from whatever previously occupied `dst`. Truncation is a
     // no-op on a real block device (not a regular file), so this is safe for
@@ -388,6 +398,38 @@ fn stream_copy_bound(
     writer.flush()?;
     writer.sync_all()?;
     Ok(written)
+}
+
+/// Hash exactly the reviewed source length and require EOF. This runs before
+/// a catalog-backed write opens its destination, so a corrupt cached image
+/// cannot cause any destructive I/O.
+fn hash_source_exact(reader: &mut impl Read, expected_size: u64) -> io::Result<String> {
+    let mut hash = Sha256::new();
+    let mut buffer = vec![0_u8; CHUNK];
+    let mut read_total = 0_u64;
+    while read_total < expected_size {
+        let want = usize::try_from((expected_size - read_total).min(CHUNK as u64))
+            .map_err(|_| io::Error::other("source hash chunk size is out of range"))?;
+        let chunk = buffer
+            .get_mut(..want)
+            .ok_or_else(|| io::Error::other("source hash chunk size exceeds buffer"))?;
+        read_exact_fill(reader, chunk).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("source image became shorter after review: {error}"),
+            )
+        })?;
+        hash.update(chunk);
+        read_total += want as u64;
+    }
+    let mut extra = [0_u8; 1];
+    if reader.read(&mut extra)? != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "source image became larger after review",
+        ));
+    }
+    Ok(format!("{:x}", hash.finalize()))
 }
 
 /// Re-read `dst` and compare it against `src`, [`CHUNK`] bytes at a time, over
@@ -1412,7 +1454,7 @@ mod tests {
     fn catalog_digest_is_checked_during_the_write() {
         let data = sample_bytes(4096);
         let src = tmp_with(&data);
-        let dst = tempfile::NamedTempFile::new().unwrap();
+        let dst = tmp_with(b"leave destination untouched");
         let wrong_digest = "0".repeat(64);
 
         let result = run_job_paths_bound(
@@ -1425,6 +1467,10 @@ mod tests {
         );
         assert!(
             matches!(result, JobResult::WriteFailed(ref message) if message.contains("signed release catalog"))
+        );
+        assert_eq!(
+            std::fs::read(dst.path()).unwrap(),
+            b"leave destination untouched"
         );
     }
 
