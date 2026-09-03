@@ -824,7 +824,7 @@ impl DeviceMeshPane {
                     }
                 };
                 command
-                    .args(["/usr/bin/qos-enroll", "approve-device", "--identity-root"])
+                    .args([CONTROL_HELPER, "approve-device", "--identity-root"])
                     .arg(identity_root())
                     .arg("--identity-dir")
                     .arg(identity_dir);

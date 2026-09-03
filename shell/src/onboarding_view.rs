@@ -1029,7 +1029,7 @@ impl Widget for OnboardingView {
                             std::env::var("HOSTNAME").unwrap_or_else(|_| "qOS device".into());
                         match Command::new("pkexec")
                             .args([
-                                "/usr/bin/qos-enroll",
+                                "/usr/libexec/qos-home-peer-control",
                                 "pair-device",
                                 "--identity-root",
                                 "/var/lib/qos",
