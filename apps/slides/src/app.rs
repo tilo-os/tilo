@@ -5105,6 +5105,46 @@ impl Widget for SlidesApp {
         "SlidesApp"
     }
 
+    /// Slides are painted onto one canvas; represent the deck and its current
+    /// slide as a navigable list so a screen reader is not left with a generic
+    /// canvas.  The selected state follows the same `cur_slide` used by
+    /// keyboard, rail, overview, and Ctrl+K navigation.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let count = self.deck.slides.len();
+        let slides = self
+            .deck
+            .slides
+            .iter()
+            .enumerate()
+            .map(|(index, slide)| {
+                let title = slide
+                    .elements
+                    .iter()
+                    .find(|element| element.kind == ElementKind::Text)
+                    .map(|element| element.text.clone())
+                    .filter(|text| !text.trim().is_empty())
+                    .unwrap_or_else(|| format!("Slide {}", index + 1));
+                AccessNode::new(Role::ListItem)
+                    .with_name(title)
+                    .with_position(index + 1, count)
+                    .with_state(AccessState::new().selected(index == self.cur_slide))
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Document)
+                .with_name(self.deck.title.clone())
+                .with_value(format!("Slide {} of {count}", self.cur_slide + 1))
+                .with_description("Presentation editor with slide canvas and notes")
+                .with_state(AccessState::new().focusable(true))
+                .with_children(vec![
+                    AccessNode::new(Role::List)
+                        .with_name("Slides")
+                        .with_children(slides),
+                ]),
+        )
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -9179,5 +9219,20 @@ mod tests {
             !app.over_delete_zone(),
             "no drag in progress → the zone is inert"
         );
+    }
+
+    #[test]
+    fn accessibility_exposes_deck_and_current_slide() {
+        use ui::widget::Widget as _;
+
+        let mut app = SlidesApp::new();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let tree = app.accessibility().expect("presentation semantics");
+        assert_eq!(tree.role, ui::a11y::Role::Document);
+        let slides = &tree.children[0];
+        assert_eq!(slides.role, ui::a11y::Role::List);
+        assert_eq!(slides.children.len(), app.deck.slides.len());
+        assert!(slides.children.iter().any(|slide| slide.state.selected));
     }
 }
