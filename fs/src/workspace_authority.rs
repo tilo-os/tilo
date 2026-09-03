@@ -502,6 +502,7 @@ pub async fn register_local_content_peer(
     socket: &std::path::Path,
     endpoint: iroh_base::EndpointAddr,
     ticket: Option<String>,
+    relay_service_id: Option<[u8; 32]>,
 ) -> anyhow::Result<ContentPeerResponse> {
     let mut stream = tokio::net::UnixStream::connect(socket).await?;
     write_frame(
@@ -509,7 +510,7 @@ pub async fn register_local_content_peer(
         &ContentPeerControlRequest::Register(ContentPeerRequest {
             endpoint,
             ticket,
-            relay_service_id: None,
+            relay_service_id,
         }),
     )
     .await?;
@@ -839,7 +840,7 @@ mod tests {
         }
         .encode()
         .unwrap();
-        register_local_content_peer(&socket, discovered.clone(), Some(ticket.clone()))
+        register_local_content_peer(&socket, discovered.clone(), Some(ticket.clone()), None)
             .await
             .unwrap();
         assert!(hydrator.known_peers().contains(&discovered));
@@ -889,18 +890,14 @@ mod tests {
         }
         .encode()
         .unwrap();
-        let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
-        write_frame(
-            &mut stream,
-            &ContentPeerControlRequest::Register(ContentPeerRequest {
-                endpoint: discovered.clone(),
-                ticket: Some(ticket),
-                relay_service_id: Some(relay_service_id),
-            }),
+        register_local_content_peer(
+            &socket,
+            discovered.clone(),
+            Some(ticket),
+            Some(relay_service_id),
         )
         .await
         .unwrap();
-        let _: ContentPeerResponse = read_frame(&mut stream).await.unwrap();
         assert!(hydrator.known_peers().contains(&discovered));
 
         remove_local_content_peers(&socket, relay_service_id)
@@ -962,7 +959,7 @@ mod tests {
         .encode()
         .unwrap();
 
-        register_local_content_peer(&socket, nas.clone(), Some(ticket.clone()))
+        register_local_content_peer(&socket, nas.clone(), Some(ticket.clone()), None)
             .await
             .unwrap();
         assert!(hydrator.known_peers().contains(&nas));
