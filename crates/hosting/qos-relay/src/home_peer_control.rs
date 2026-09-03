@@ -164,6 +164,31 @@ fn needs_local_home_peer_export(config: &RelayConfig, home_peer_exists: bool) ->
     config.device_role == DeviceRole::AlwaysOnServer && !home_peer_exists
 }
 
+fn project_home_peer_workspaces(bytes: &[u8], selected_ids: &[u64]) -> anyhow::Result<Vec<u8>> {
+    let mut home: fs::full_replica::HomePeerSet = toml::from_str(std::str::from_utf8(bytes)?)?;
+    fs::full_replica::validate_home_peer_set(&home)?;
+    let workspace = home
+        .workspaces
+        .first_mut()
+        .context("home-peer bundle has no global Files workspace")?;
+    let governor = workspace
+        .authority
+        .as_ref()
+        .context("home-peer workspace is missing signed authority")?
+        .governor;
+    let mut projected = selected_ids.to_vec();
+    projected.push(qos_relay::personal_continuity_workspace_id(&governor));
+    projected.sort_unstable();
+    projected.dedup();
+    if projected.len() > 4096 {
+        bail!("too many workspace mappings");
+    }
+    workspace.relay_workspace_ids = projected;
+    toml::to_string_pretty(&home)
+        .map(String::into_bytes)
+        .map_err(Into::into)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ServiceState {
     enabled: bool,
@@ -255,10 +280,6 @@ fn apply(request: ApplyRequest) -> anyhow::Result<()> {
     let bytes = toml::to_string_pretty(&config)?;
     let home_bytes = if Path::new(HOME_PEER_CONFIG).is_file() {
         let bytes = std::fs::read(HOME_PEER_CONFIG)?;
-        let _: fs::full_replica::HomePeerSet = toml::from_str(std::str::from_utf8(&bytes)?)?;
-        // Shell room IDs are not filesystem workspace IDs. Preserve the exact
-        // enrollment-created per-bundle mapping instead of cross-binding every
-        // filesystem workspace to every selected room.
         Some(bytes)
     } else if needs_local_home_peer_export(&config, false) {
         Some(export_local_home_peer(
@@ -268,6 +289,10 @@ fn apply(request: ApplyRequest) -> anyhow::Result<()> {
     } else {
         None
     };
+    let home_bytes = home_bytes
+        .as_deref()
+        .map(|bytes| project_home_peer_workspaces(bytes, &request.workspace_ids))
+        .transpose()?;
     let result = commit_transaction(
         Path::new(RELAY_CONFIG),
         bytes.as_bytes(),
@@ -461,5 +486,58 @@ mod tests {
         .unwrap();
         assert!(needs_local_home_peer_export(&config, false));
         assert!(!needs_local_home_peer_export(&config, true));
+    }
+
+    #[test]
+    fn workspace_add_remove_reloads_mapping_and_keeps_continuity() {
+        let dir = tempfile::tempdir().unwrap();
+        let relay = dir.path().join("relay.toml");
+        let home = dir.path().join("home.toml");
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+        let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
+            uuid::Uuid::from_bytes([3; 16]),
+            1,
+            Vec::new(),
+            false,
+            &governor,
+        )
+        .unwrap();
+        let bundle = fs::full_replica::HomePeerSet {
+            status_file: dir.path().join("status.json"),
+            workspaces: vec![fs::full_replica::HomePeerBundle {
+                ticket: "test-ticket".into(),
+                cache_dir: dir.path().join("cache"),
+                capability_json: "[]".into(),
+                authority: Some(authority),
+                principals: Vec::new(),
+                relay_workspace_ids: vec![7, 8],
+            }],
+        };
+        let original = toml::to_string_pretty(&bundle).unwrap();
+        atomic_file::write(&home, original.as_bytes()).unwrap();
+        let continuity =
+            qos_relay::personal_continuity_workspace_id(&governor.verifying_key().to_bytes());
+
+        let added = project_home_peer_workspaces(original.as_bytes(), &[8, 9]).unwrap();
+        commit_transaction(&relay, b"relay-add", &home, Some(&added), || Ok(())).unwrap();
+        let after_add: fs::full_replica::HomePeerSet =
+            toml::from_str(&std::fs::read_to_string(&home).unwrap()).unwrap();
+        assert_eq!(after_add.workspaces[0].relay_workspace_ids, {
+            let mut expected = vec![8, 9, continuity];
+            expected.sort_unstable();
+            expected.dedup();
+            expected
+        });
+
+        let removed = project_home_peer_workspaces(&added, &[9]).unwrap();
+        commit_transaction(&relay, b"relay-remove", &home, Some(&removed), || Ok(())).unwrap();
+        let after_remove: fs::full_replica::HomePeerSet =
+            toml::from_str(&std::fs::read_to_string(&home).unwrap()).unwrap();
+        assert_eq!(after_remove.workspaces[0].relay_workspace_ids, {
+            let mut expected = vec![9, continuity];
+            expected.sort_unstable();
+            expected.dedup();
+            expected
+        });
     }
 }
