@@ -57,6 +57,7 @@ done
 # docs/supply-chain.md). Override via $SOURCE_DATE_EPOCH.
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$QOS_REPO" log -1 --format=%ct 2>/dev/null || echo 0)}"
 export SOURCE_DATE_EPOCH
+"$QOS_OS_DIR/dev/cache-github-assets.sh"
 # The digest-pinned base the build starts FROM — our own mirror of the Fedora
 # bootc image, because upstream deletes the manifest a digest points at within
 # about a day (see os/base-snapshot.env). Written by the mirror-base CI job.
@@ -66,7 +67,11 @@ export SOURCE_DATE_EPOCH
 # The digest-pinned frozen RPM repo the build installs from (written by
 # os/dev/snapshot-rpms.sh / the snapshot-rpms CI job). Cross-time reproducible.
 # shellcheck disable=SC1091
+# An explicit RPMS_REF is useful for validating a just-built snapshot before it
+# is published and pinned. Do not let the tracked default silently overwrite it.
+_qos_rpms_ref_override="${RPMS_REF:-}"
 [ -f "$QOS_OS_DIR/rpms-snapshot.env" ] && . "$QOS_OS_DIR/rpms-snapshot.env"
+RPMS_REF="${_qos_rpms_ref_override:-${RPMS_REF:-}}"
 [ -n "${RPMS_REF:-}" ] || die "no RPMS_REF — run ./os/dev/snapshot-rpms.sh (or the snapshot-rpms CI job) first"
 # The digest-pinned qos-kernel image (built by .forgejo/workflows/build-kernel.yml
 # — see os/kernel/Containerfile).  os/Containerfile swaps kernel-core →
@@ -94,6 +99,8 @@ export SOURCE_DATE_EPOCH
 # Both of these check what a build would produce, so they have nothing to say
 # about an image that already exists.
 if [ "$QOS_SKIP_BUILD" != "1" ]; then
+bash "$QOS_OS_DIR/dev/verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF" \
+  || die "the frozen RPM snapshot does not match the current Containerfiles"
 bash "$QOS_OS_DIR/tests/containerfile_sources.sh" >/dev/null \
   || { bash "$QOS_OS_DIR/tests/containerfile_sources.sh"; die "a Containerfile COPY source is missing (see above)"; }
 # Pre-flight: the preinstalled app store can be built and will resolve at run
@@ -147,6 +154,36 @@ export QOS_GENERATION
 # Browser opt-out (see the header). Exported as a build-arg either way so the
 # value is explicit in the build log.
 : "${QOS_WITH_BROWSER:=1}"
+# Select the promoted buildroot for this native architecture. Before the first
+# promotion a developer may opt into the clearly named live-repository
+# bootstrap; it is never enabled implicitly and release CI never passes it.
+: "${QOS_WPE_BOOTSTRAP:=0}"
+_qos_wpe_ref_override="${WPE_BUILDROOT_REF:-}"
+# shellcheck disable=SC1091
+[ -f "$QOS_OS_DIR/wpe-buildroot-snapshot.env" ] && . "$QOS_OS_DIR/wpe-buildroot-snapshot.env"
+case "$(uname -m)" in
+  x86_64) WPE_BUILDROOT_REF="${_qos_wpe_ref_override:-${WPE_BUILDROOT_X86_64_REF:-}}" ;;
+  aarch64) WPE_BUILDROOT_REF="${_qos_wpe_ref_override:-${WPE_BUILDROOT_AARCH64_REF:-}}" ;;
+  *) die "unsupported WPE buildroot architecture: $(uname -m)" ;;
+esac
+if [ "$QOS_SKIP_BUILD" != 1 ] && [ "$QOS_WITH_BROWSER" = 1 ] && [ -z "$WPE_BUILDROOT_REF" ]; then
+  if [ "$QOS_WPE_BOOTSTRAP" = 1 ]; then
+    WPE_BUILDROOT_REF="$("$QOS_OS_DIR/dev/build-wpe-buildroot.sh")"
+  else
+    die "no promoted WPE buildroot for $(uname -m).
+Run the snapshot-wpe-buildroot workflow, or explicitly bootstrap a local-only
+build with QOS_WPE_BOOTSTRAP=1. Release CI never permits bootstrap mode."
+  fi
+fi
+# Dockerfile FROM references are resolved even for a pruned browser stage.
+[ -n "$WPE_BUILDROOT_REF" ] || WPE_BUILDROOT_REF="$BASE_REF"
+if [ "${QOS_REQUIRE_WPE_SIGNATURE:-0}" = 1 ] && [ "$QOS_WITH_BROWSER" = 1 ]; then
+  [[ "$WPE_BUILDROOT_REF" =~ ^code\.podesta\.ai/qos/qos-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] \
+    || die "release builds require a digest-pinned WPE buildroot"
+  command -v cosign >/dev/null || die "release builds require cosign to verify the WPE buildroot"
+  cosign verify --key "$QOS_REPO/keys/cosign.pub" "$WPE_BUILDROOT_REF" >/dev/null \
+    || die "WPE buildroot signature verification failed"
+fi
 # Extra podman-build flags, for the times the layer cache is the problem rather
 # than the source. A disk that fills mid-build can leave a cached layer holding a
 # corrupt RPM database, which then surfaces as dnf insisting that packages the
@@ -156,11 +193,13 @@ read -r -a _qos_build_args <<< "${QOS_BUILD_ARGS:-}"
 # $1 = the composefs digest to seal into the UKI ("" to let bootc compute it).
 build_image() {
   podman build -f "$QOS_OS_DIR/Containerfile" -t "$QOS_IMAGE" \
+    --build-context "github-assets=$QOS_REPO/os/external-assets/cache" \
     "${_qos_build_args[@]}" \
     --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
     --build-arg "BASE_REF=$BASE_REF" \
     --build-arg "RPMS_REF=$RPMS_REF" \
     --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" \
+    --build-arg "WPE_BUILDROOT_REF=$WPE_BUILDROOT_REF" \
     --build-arg "QOS_WITH_BROWSER=$QOS_WITH_BROWSER" \
     --build-arg "QOS_GENERATION=$QOS_GENERATION" \
     --build-arg "QOS_SEAL_GENERATION=$QOS_SEAL_GENERATION" \
@@ -182,7 +221,7 @@ if [ "$QOS_SKIP_BUILD" = "1" ]; then
     podman tag  code.sandbox.example/qos/qos:<tag> $QOS_IMAGE"
   msg "1/2 skipped (QOS_SKIP_BUILD=1): imaging the existing $QOS_IMAGE"
 else
-  msg "1/2 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF; browser=$QOS_WITH_BROWSER; generation=$QOS_GENERATION)"
+  msg "1/2 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$QOS_WITH_BROWSER; generation=$QOS_GENERATION)"
   build_image ""
 fi
 

@@ -1,0 +1,212 @@
+//! `org.freedesktop.impl.portal.Email` backend.
+use super::desktop_services::{EmailRequest, document_portal_path_from_uri};
+use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+use super::{PortalContext, auth::authenticate_call, lockdown};
+use crate::shell::portal_dialog::{PortalDialogQueue, ReviewDecision, ReviewRequest};
+use std::collections::HashMap;
+use zbus::interface;
+use zbus::names::OwnedUniqueName;
+use zbus::zvariant::{ObjectPath, OwnedValue};
+pub struct EmailBackend {
+    ctx: PortalContext,
+    lifecycle: PortalLifecycle,
+    dialogs: PortalDialogQueue,
+}
+impl EmailBackend {
+    pub fn new(ctx: PortalContext) -> Self {
+        Self::with_lifecycle(ctx, PortalLifecycle::new())
+    }
+
+    pub fn with_lifecycle(ctx: PortalContext, lifecycle: PortalLifecycle) -> Self {
+        Self {
+            ctx,
+            lifecycle,
+            dialogs: PortalDialogQueue::global(),
+        }
+    }
+}
+fn string(options: &HashMap<String, OwnedValue>, key: &str, max: usize) -> Option<String> {
+    options
+        .get(key)?
+        .try_clone()
+        .ok()
+        .and_then(|v| String::try_from(v).ok())
+        .filter(|v| v.len() <= max && !v.chars().any(char::is_control))
+}
+fn strings(
+    options: &HashMap<String, OwnedValue>,
+    key: &str,
+    max_count: usize,
+) -> Option<Vec<String>> {
+    let Some(value) = options.get(key) else {
+        return Some(Vec::new());
+    };
+    let values = value
+        .try_clone()
+        .ok()
+        .and_then(|v| Vec::<String>::try_from(v).ok())?;
+    (values.len() <= max_count
+        && values
+            .iter()
+            .all(|v| !v.is_empty() && v.len() <= 4096 && !v.chars().any(char::is_control)))
+    .then_some(values)
+}
+
+#[cfg(test)]
+fn attachment_uris(values: &[String]) -> bool {
+    values.iter().all(|value| {
+        value.len() <= 8192
+            && value.trim() == value
+            && !value.chars().any(char::is_control)
+            // Validate confinement now, while the original document grant is
+            // still live. The service only forwards the original URI as an
+            // encoded, opaque attachment field to the chosen mail handler.
+            && document_portal_path_from_uri(value).is_ok()
+    })
+}
+
+fn compose_detail(request: &EmailRequest) -> String {
+    let mut recipients = request.addresses.clone();
+    recipients.extend(request.cc.iter().map(|address| format!("Cc: {address}")));
+    recipients.extend(request.bcc.iter().map(|address| format!("Bcc: {address}")));
+    let mut detail = if recipients.is_empty() {
+        "No recipient prefilled".into()
+    } else {
+        recipients.join("\n")
+    };
+    if let Some(subject) = request.subject.as_deref() {
+        detail.push_str("\n\nSubject: ");
+        detail.push_str(subject);
+    }
+    if !request.attachments.is_empty() {
+        detail.push_str(&format!(
+            "\n\n{} attachment(s) will be available through the document portal.",
+            request.attachments.len()
+        ));
+    }
+    detail
+}
+#[interface(name = "org.freedesktop.impl.portal.Email")]
+impl EmailBackend {
+    async fn compose_email(
+        &self,
+        #[zbus(header)] hdr: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+        handle: ObjectPath<'_>,
+        app_id: String,
+        parent_window: String,
+        options: HashMap<String, OwnedValue>,
+    ) -> (u32, HashMap<String, OwnedValue>) {
+        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
+        let Ok(auth) =
+            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
+        else {
+            return (2, HashMap::new());
+        };
+        if lockdown::current_policy().disable_application_handlers {
+            return (1, HashMap::new());
+        }
+        let (Some(mut addresses), Some(cc), Some(bcc), Some(attachments)) = (
+            strings(&options, "addresses", 128),
+            strings(&options, "cc", 128),
+            strings(&options, "bcc", 128),
+            strings(&options, "attachments", 128),
+        ) else {
+            return (2, HashMap::new());
+        };
+        if let Some(address) = string(&options, "address", 4096) {
+            addresses.push(address);
+        }
+        let attachment_paths = attachments
+            .iter()
+            .map(|uri| document_portal_path_from_uri(uri))
+            .collect::<Result<Vec<_>, _>>();
+        if addresses.len() > 128 || attachment_paths.is_err() {
+            return (2, HashMap::new());
+        }
+        let request = EmailRequest {
+            app_id: auth.caller.app_id.clone(),
+            workspace_id: auth.caller.workspace_id,
+            addresses,
+            cc,
+            bcc,
+            subject: string(&options, "subject", 998),
+            body: string(&options, "body", 256 * 1024),
+            attachments,
+            attachment_paths: attachment_paths.unwrap_or_default(),
+            activation_token: string(&options, "activation_token", 4096),
+        };
+        let path = handle.to_string();
+        let dialogs = self.dialogs.clone();
+        let cancel_path = path.clone();
+        let entry = LifecycleEntry {
+            owner: auth.owner.to_string(),
+            app_id: auth.caller.app_id,
+            resource: LifecycleResource::Prompt,
+        };
+        if !matches!(
+            self.lifecycle
+                .register_request(connection, &path, entry, move |_| {
+                    let _ = dialogs.cancel(&cancel_path);
+                })
+                .await,
+            Ok(true)
+        ) {
+            return (2, HashMap::new());
+        }
+        let review = match self.dialogs.enqueue_review(ReviewRequest {
+            handle: path.clone(),
+            app_id: request.app_id.clone(),
+            title: "Open your mail app?".into(),
+            reason:
+                "Review the prefilled message before it is handed to your configured mail provider."
+                    .into(),
+            resource: compose_detail(&request),
+            confirm_label: "Open mail app".into(),
+        }) {
+            Ok(review) => review,
+            Err(_) => {
+                self.lifecycle
+                    .complete_request_object(connection, &path)
+                    .await;
+                return (2, HashMap::new());
+            }
+        };
+        if !matches!(review.await, Ok(ReviewDecision::Confirmed)) {
+            self.lifecycle
+                .complete_request_object(connection, &path)
+                .await;
+            return (1, HashMap::new());
+        }
+        let result = self.ctx.desktop_services.email.compose(&request);
+        self.lifecycle
+            .complete_request_object(connection, &path)
+            .await;
+        (result.response_code(), HashMap::new())
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn string_list_drops_controls() {
+        let mut v = HashMap::new();
+        v.insert(
+            "cc".into(),
+            OwnedValue::try_from(zbus::zvariant::Value::new(vec![
+                "a@example.test".to_string(),
+                "bad\n".to_string(),
+            ]))
+            .expect("string arrays serialize into a zvariant"),
+        );
+        assert_eq!(strings(&v, "cc", 8), None);
+    }
+
+    #[test]
+    fn host_paths_are_never_attachments() {
+        // The helper additionally verifies that a file URI lies under the
+        // live document portal mount; arbitrary host paths fail that check.
+        assert!(!attachment_uris(&["file:///home/me/private.pdf".into()]));
+        assert!(!attachment_uris(&["document://qos/abc".into()]));
+    }
+}

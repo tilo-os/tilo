@@ -5,14 +5,11 @@
 //! `xdg-desktop-portal` drives a per-session state machine on behalf of
 //! a sandboxed app: `CreateSession` allocates it; `SelectSources`
 //! records what to capture and is where the consent prompt fires (a
-//! valid `restore_token` pre-approves the session and skips it);
+//! valid standard `restore_data` record pre-approves the session and skips it);
 //! `Start` re-checks consent (unless restored), provisions a real
 //! `PipeWire` node per selected source, and — when the session asked to
-//! persist — returns a fresh `restore_token` so the next share can skip the prompt.
-//!
-//! `OpenPipeWireRemote` is a frontend-interface method in the reference
-//! architecture; exposed here too so a qOS-native frontend (and the test
-//! harness) can get a real, scoped remote fd directly from the compositor's provisioner.
+//! persist — returns fresh standard `restore_data` so the next share can skip
+//! the prompt.
 //!
 //! [`ScreenCastStreamProvisioner`] lets tests substitute a
 //! [`MockScreenCastProvisioner`] for the real `PipeWire` connection.
@@ -26,7 +23,10 @@
 )]
 
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use zbus::interface;
 use zbus::names::OwnedUniqueName;
@@ -36,11 +36,18 @@ use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 use crate::shell::state::{Capability, GRANT_ONCE};
 
 #[cfg(test)]
-use super::PortalCaller;
-#[cfg(test)]
 use super::PromptOutcome;
-use super::screencast_pipewire::{PipewireStreamInfo, PipewireStreamRequest};
-use super::{CapabilityKind, PortalContext, file_chooser::FileChooserBackend, flow};
+use super::auth::authenticate_call;
+use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+use super::screencast_pipewire::{
+    PipewireStreamInfo, PipewireStreamRequest, ScreenCastStreamProvisionerHandle,
+};
+use super::{CapabilityKind, PortalCaller, PortalContext, flow};
+
+const MAX_LIVE_SESSIONS: usize = 64;
+const MAX_RESTORE_TOKENS: usize = 256;
+const RESTORE_VENDOR: &str = "qos";
+const RESTORE_DATA_VERSION: u32 = 1;
 
 /// Source-type bitmask (`ScreenCast.AvailableSourceTypes`).
 pub mod source_type {
@@ -60,13 +67,16 @@ pub mod cursor_mode {
     pub const ALL: u32 = HIDDEN | EMBEDDED | METADATA;
 }
 
-/// The interface version we advertise. v4 is the first that defines `persist_mode` + `restore_token`, which we implement.
+/// The interface version we advertise. v4 defines `persist_mode` +
+/// implementation-owned `restore_data`, which we implement.
 pub const SCREENCAST_VERSION: u32 = 4;
 
 /// Per-session negotiated selection, keyed by the frontend's `session_handle` object path.
 #[derive(Clone, Debug, Default)]
 struct ScreenCastSession {
+    owner: String,
     app_id: String,
+    caller: Option<PortalCaller>,
     /// Bitmask of requested source types (`SelectSources` `types`).
     source_types: u32,
     /// Requested cursor mode.
@@ -75,36 +85,239 @@ struct ScreenCastSession {
     multiple: bool,
     /// Requested persistence: 0 none, 1 while-running, 2 until-revoked.
     persist_mode: u32,
-    /// True once a valid `restore_token` pre-approved this session, so `Start` skips the consent prompt (persisted-share fast path).
+    /// True once valid standard `restore_data` pre-approved this session, so
+    /// `Start` skips the consent prompt (persisted-share fast path).
     restored: bool,
+    /// Consent is requested exactly once, at Start (unless restored).
+    consented: bool,
+    /// Serializes concurrent Start calls across the async prompt.
+    starting: bool,
+    /// PipeWire nodes owned by this session, released on lifecycle close.
+    streams: Vec<u32>,
 }
 
-/// What a `restore_token` maps back to. Issued at `Start` when the app asked to persist; consumed at a later `SelectSources`.
-#[derive(Clone, Debug)]
+/// What the opaque payload inside a standard `restore_data` tuple maps back
+/// to. Issued at `Start` when the app asked to persist; consumed at a later
+/// `SelectSources`.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct RestoreData {
     app_id: String,
     source_types: u32,
     cursor_mode: u32,
     multiple: bool,
     persist_mode: u32,
+    issued_unix_seconds: u64,
+}
+
+/// Durable mode-2 restore records.  They deliberately live outside the
+/// replicated workspace document: an opaque restore payload is an authority secret for
+/// one local application installation, never a collaboration record.
+#[derive(Default)]
+struct RestoreStore {
+    memory: HashMap<String, RestoreData>,
+    durable: HashMap<String, RestoreData>,
+    path: Option<PathBuf>,
+}
+
+impl RestoreStore {
+    fn load() -> Self {
+        Self::load_at(restore_path())
+    }
+
+    fn load_at(path: Option<PathBuf>) -> Self {
+        let Some(path) = path else {
+            return Self::default();
+        };
+        let durable = match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice::<HashMap<String, RestoreData>>(&bytes)
+                .ok()
+                .filter(valid_restore_map)
+                .unwrap_or_else(|| {
+                    // A corrupt restore record must never become a grant. Keep
+                    // forensic evidence rather than overwriting it in place.
+                    let quarantine =
+                        path.with_extension(format!("corrupt-{}", uuid::Uuid::new_v4()));
+                    let _ = std::fs::rename(&path, quarantine);
+                    HashMap::new()
+                }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+            Err(_) => HashMap::new(),
+        };
+        Self {
+            memory: HashMap::new(),
+            durable,
+            path: Some(path),
+        }
+    }
+
+    fn get(&self, token: &str) -> Option<RestoreData> {
+        self.memory
+            .get(token)
+            .or_else(|| self.durable.get(token))
+            .cloned()
+    }
+
+    fn insert(&mut self, token: String, data: RestoreData) -> Result<(), String> {
+        let target = if data.persist_mode == 2 {
+            &mut self.durable
+        } else {
+            &mut self.memory
+        };
+        target.insert(token, data);
+        while target.len() > MAX_RESTORE_TOKENS {
+            let Some(oldest) = target
+                .iter()
+                .min_by_key(|(_, data)| data.issued_unix_seconds)
+                .map(|(token, _)| token.clone())
+            else {
+                break;
+            };
+            target.remove(&oldest);
+        }
+        self.persist_durable()
+    }
+
+    fn persist_durable(&self) -> Result<(), String> {
+        let Some(path) = &self.path else {
+            // Mode 1 is still useful in an ephemeral/CI session.  Mode 2
+            // cannot truthfully survive a restart without private state.
+            return if self.durable.is_empty() {
+                Ok(())
+            } else {
+                Err("private portal state directory is unavailable".into())
+            };
+        };
+        let bytes = serde_json::to_vec(&self.durable)
+            .map_err(|error| format!("serialise restore records: {error}"))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("create restore directory: {error}"))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                    .map_err(|error| format!("secure restore directory: {error}"))?;
+            }
+        }
+        atomic_file::write_with_mode(path, &bytes, 0o600)
+            .map_err(|error| format!("write restore records: {error}"))
+    }
+
+    /// Revoke every restore authority for an app.  Package removal and the
+    /// shell's privacy controls call this rather than trying to guess tokens.
+    fn revoke_app(&mut self, app_id: &str) -> Result<(), String> {
+        self.memory.retain(|_, record| record.app_id != app_id);
+        self.durable.retain(|_, record| record.app_id != app_id);
+        self.persist_durable()
+    }
+}
+
+fn restore_path() -> Option<PathBuf> {
+    let root = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::state_dir())?;
+    Some(root.join("qos/portal/screencast-restore.json"))
+}
+
+fn valid_restore_map(records: &HashMap<String, RestoreData>) -> bool {
+    records.len() <= MAX_RESTORE_TOKENS
+        && records.iter().all(|(token, data)| {
+            uuid::Uuid::parse_str(token).is_ok()
+                && !data.app_id.is_empty()
+                && data.app_id.len() <= 256
+                && data.source_types & !source_type::ALL == 0
+                && data.cursor_mode & !cursor_mode::ALL == 0
+                && data.persist_mode == 2
+        })
 }
 
 pub struct ScreenCastBackend {
     ctx: PortalContext,
+    lifecycle: PortalLifecycle,
     /// Live sessions keyed by `session_handle` path.
     sessions: Arc<Mutex<HashMap<String, ScreenCastSession>>>,
-    /// Issued restore tokens → the selection they restore. In-memory for
-    /// the compositor session's lifetime, satisfying `persist_mode` 1
-    /// (while-running); durable-until-revoked (mode 2) is a documented follow-up.
-    restore: Arc<Mutex<HashMap<String, RestoreData>>>,
+    /// Issued opaque restore payloads → the selection they restore. Mode 1 is session
+    /// memory; mode 2 is an app-bound private, atomically-written local file.
+    restore: Arc<Mutex<RestoreStore>>,
+}
+
+/// Lifecycle hook retained by `serve`: closing a frontend Session object
+/// promptly drops its registry entry and stops every producer node.
+#[derive(Clone)]
+pub struct ScreenCastSessionHandle {
+    sessions: Arc<Mutex<HashMap<String, ScreenCastSession>>>,
+    provisioner: ScreenCastStreamProvisionerHandle,
+}
+
+impl ScreenCastSessionHandle {
+    pub fn close(&self, session_handle: &str) -> bool {
+        let session = self
+            .sessions
+            .lock()
+            .ok()
+            .and_then(|mut sessions| sessions.remove(session_handle));
+        let Some(session) = session else {
+            return false;
+        };
+        for node in session.streams {
+            self.provisioner.release(node);
+        }
+        true
+    }
+
+    pub fn clear(&self) {
+        let nodes = self
+            .sessions
+            .lock()
+            .map(|mut sessions| {
+                sessions
+                    .drain()
+                    .flat_map(|(_, session)| session.streams)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for node in nodes {
+            self.provisioner.release(node);
+        }
+    }
 }
 
 impl ScreenCastBackend {
     pub fn new(ctx: PortalContext) -> Self {
+        Self::with_lifecycle(ctx, PortalLifecycle::new())
+    }
+
+    pub fn with_lifecycle(ctx: PortalContext, lifecycle: PortalLifecycle) -> Self {
         Self {
             ctx,
+            lifecycle,
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            restore: Arc::new(Mutex::new(HashMap::new())),
+            restore: Arc::new(Mutex::new(RestoreStore::load())),
+        }
+    }
+
+    pub fn session_handle(&self) -> ScreenCastSessionHandle {
+        ScreenCastSessionHandle {
+            sessions: self.sessions.clone(),
+            provisioner: self.ctx.screencast_provisioner.clone(),
+        }
+    }
+
+    /// Remove durable and session restore records when an app is uninstalled,
+    /// its capture permission is revoked, or qOS privacy controls disable
+    /// screen sharing.  Tokens remain app-bound even before this is called.
+    pub fn revoke_restore_tokens_for_app(&self, app_id: &str) -> Result<(), String> {
+        self.restore
+            .lock()
+            .map_err(|_| "restore-data store is unavailable".to_string())?
+            .revoke_app(app_id)
+    }
+
+    fn reset_starting(&self, key: &str) {
+        if let Ok(mut sessions) = self.sessions.lock()
+            && let Some(session) = sessions.get_mut(key)
+        {
+            session.starting = false;
         }
     }
 }
@@ -118,7 +331,11 @@ impl ScreenCastBackend {
         reason = "zbus's #[interface] macro dispatches D-Bus property getters as instance methods, even though this constant value doesn't depend on self"
     )]
     fn available_source_types(&self) -> u32 {
-        source_type::ALL
+        self.ctx
+            .screencast_provisioner
+            .is_available()
+            .then(|| self.ctx.screencast_provisioner.available_source_types())
+            .unwrap_or(0)
     }
 
     /// Cursor modes the compositor supports.
@@ -128,7 +345,11 @@ impl ScreenCastBackend {
         reason = "zbus's #[interface] macro dispatches D-Bus property getters as instance methods, even though this constant value doesn't depend on self"
     )]
     fn available_cursor_modes(&self) -> u32 {
-        cursor_mode::ALL
+        self.ctx
+            .screencast_provisioner
+            .is_available()
+            .then(|| self.ctx.screencast_provisioner.available_cursor_modes())
+            .unwrap_or(0)
     }
 
     /// Interface version. Named lowercase to match the spec's `version` property (zbus would otherwise `PascalCase` it to `Version`).
@@ -147,23 +368,55 @@ impl ScreenCastBackend {
         clippy::needless_pass_by_value,
         reason = "argument types and count are fixed by the org.freedesktop.impl.portal.ScreenCast.CreateSession D-Bus signature; zbus deserializes owned values here rather than by reference"
     )]
-    fn create_session(
+    async fn create_session(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
+        #[zbus(header)] hdr: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
         _handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         app_id: String,
         _options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
         tracing::debug!("ScreenCast.CreateSession: app={app_id}");
-        if let Ok(mut s) = self.sessions.lock() {
-            s.insert(
-                session_handle.to_string(),
+        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
+        let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None).await else {
+            return (2, HashMap::new());
+        };
+        let key = session_handle.to_string();
+        {
+            let Ok(mut sessions) = self.sessions.lock() else {
+                return (2, HashMap::new());
+            };
+            if sessions.contains_key(&key) || sessions.len() >= MAX_LIVE_SESSIONS {
+                return (2, HashMap::new());
+            }
+            sessions.insert(
+                key.clone(),
                 ScreenCastSession {
-                    app_id,
+                    owner: auth.owner.to_string(),
+                    app_id: app_id.clone(),
+                    caller: Some(auth.caller.clone()),
                     ..Default::default()
                 },
             );
+        }
+        let cleanup = self.session_handle();
+        let cleanup_path = key.clone();
+        let entry = LifecycleEntry {
+            owner: auth.owner.to_string(),
+            app_id,
+            resource: LifecycleResource::ScreenCast,
+        };
+        let registered = self
+            .lifecycle
+            .register_session(connection, &key, entry, move |_| {
+                cleanup.close(&cleanup_path);
+            })
+            .await;
+        if !matches!(registered, Ok(true)) {
+            let _ = self.session_handle().close(&key);
+            return (2, HashMap::new());
         }
         (0, HashMap::new())
     }
@@ -182,31 +435,70 @@ impl ScreenCastBackend {
     ) -> (u32, HashMap<String, OwnedValue>) {
         tracing::debug!("ScreenCast.SelectSources: app={app_id}");
         let key = session_handle.to_string();
+        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
+        let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None).await else {
+            return (2, HashMap::new());
+        };
+        let Some(existing) = self
+            .sessions
+            .lock()
+            .ok()
+            .and_then(|sessions| sessions.get(&key).cloned())
+        else {
+            return (2, HashMap::new());
+        };
+        if existing.owner != auth.owner.as_str()
+            || existing.app_id != app_id
+            || existing.caller.as_ref() != Some(&auth.caller)
+        {
+            return (2, HashMap::new());
+        }
 
         // Parse the negotiated options, clamped to what we support.
-        let mut types =
-            opt_u32(&options, "types").unwrap_or(source_type::MONITOR) & source_type::ALL;
+        let producer_available = self.ctx.screencast_provisioner.is_available();
+        let supported_types = producer_available
+            .then(|| self.ctx.screencast_provisioner.available_source_types())
+            .unwrap_or(0);
+        let supported_cursors = producer_available
+            .then(|| self.ctx.screencast_provisioner.available_cursor_modes())
+            .unwrap_or(0);
+        let requested_types = opt_u32(&options, "types").unwrap_or_else(|| {
+            // Absent options mean "choose a supported default", never
+            // silently substitute a monitor for an explicitly unsupported
+            // window/virtual request.
+            first_supported_bit(supported_types).unwrap_or(source_type::MONITOR)
+        });
+        let mut types = requested_types & supported_types;
         if types == 0 {
-            types = source_type::MONITOR;
+            return (2, HashMap::new());
         }
-        let mut curs =
-            opt_u32(&options, "cursor_mode").unwrap_or(cursor_mode::EMBEDDED) & cursor_mode::ALL;
+        let requested_cursors = opt_u32(&options, "cursor_mode").unwrap_or_else(|| {
+            first_supported_bit(supported_cursors).unwrap_or(cursor_mode::HIDDEN)
+        });
+        let mut curs = requested_cursors & supported_cursors;
         if curs == 0 {
-            curs = cursor_mode::EMBEDDED;
+            return (2, HashMap::new());
         }
         let mut multiple = opt_bool(&options, "multiple").unwrap_or(false);
         let mut persist_mode = opt_u32(&options, "persist_mode").unwrap_or(0);
 
-        // A restore token that matches this app pre-approves the session and
+        // `restore_data` is a standard `(suv)` tuple. Its payload is opaque
+        // to xdg-desktop-portal; qOS uses a random private-store key so an
+        // application cannot forge a durable grant by manufacturing fields.
+        // A matching record pre-approves the session and
         // restores its previous selection (source types, cursor mode, multiple, persist mode).
-        let restored = if let Some(token) = opt_string(&options, "restore_token") {
+        let restored = if let Some(token) = restore_key(&options) {
             let stored = self
                 .restore
                 .lock()
                 .ok()
-                .and_then(|r| r.get(&token).cloned())
+                .and_then(|r| r.get(&token))
                 .filter(|d| d.app_id == app_id);
             if let Some(d) = stored {
+                if d.source_types & !supported_types != 0 || d.cursor_mode & !supported_cursors != 0
+                {
+                    return (2, HashMap::new());
+                }
                 types = d.source_types;
                 curs = d.cursor_mode;
                 multiple = d.multiple;
@@ -219,33 +511,24 @@ impl ScreenCastBackend {
             false
         };
 
-        // Consent: an active `Always` grant, or a valid restore token, skips the prompt. Otherwise ask.
-        let allowed = if restored {
-            true
-        } else {
-            let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-            let caller = FileChooserBackend::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
-            let cap_template = Capability::Screencast { scope: GRANT_ONCE };
-            flow::resolve(&self.ctx, caller, CapabilityKind::Screencast, cap_template)
-                .await
-                .is_allowed()
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return (2, HashMap::new());
         };
-
-        if let Ok(mut s) = self.sessions.lock() {
-            let entry = s.entry(key).or_insert_with(|| ScreenCastSession {
-                app_id: app_id.clone(),
-                ..Default::default()
-            });
-            entry.app_id = app_id;
-            entry.source_types = types;
-            entry.cursor_mode = curs;
-            entry.multiple = multiple;
-            entry.persist_mode = persist_mode;
-            entry.restored = restored;
+        let Some(entry) = sessions.get_mut(&key) else {
+            return (2, HashMap::new());
+        };
+        if entry.consented || entry.starting || !entry.streams.is_empty() {
+            return (2, HashMap::new());
         }
-
-        let code = u32::from(!allowed);
-        (code, HashMap::new())
+        entry.source_types = types;
+        entry.cursor_mode = curs;
+        entry.multiple = multiple;
+        entry.persist_mode = persist_mode.min(2);
+        entry.restored = restored;
+        drop(sessions);
+        // Source selection is consent-neutral. Start owns the sole prompt so
+        // users never see two consecutive dialogs for one screen share.
+        (0, HashMap::new())
     }
 
     /// `Start` — provision a real `PipeWire` node per selected source and
@@ -258,41 +541,96 @@ impl ScreenCastBackend {
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
-        _handle: ObjectPath<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+        handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         app_id: String,
-        _parent_window: String,
+        parent_window: String,
         options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
         tracing::debug!("ScreenCast.Start: app={app_id}");
         let key = session_handle.to_string();
 
-        // Pull the selection recorded at SelectSources (defaults if the frontend somehow skipped it).
-        let session = self
-            .sessions
-            .lock()
-            .ok()
-            .and_then(|s| s.get(&key).cloned())
-            .unwrap_or_else(|| ScreenCastSession {
-                app_id: app_id.clone(),
-                source_types: source_type::MONITOR,
-                cursor_mode: cursor_mode::EMBEDDED,
-                ..Default::default()
-            });
-
-        // Re-check consent unless the session was restored from a token.
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let caller = FileChooserBackend::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
-        if !session.restored {
+        let Ok(auth) =
+            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
+        else {
+            return (2, HashMap::new());
+        };
+
+        // `Request.Close` must be able to cancel a consent sheet while this
+        // method is awaiting the shell-owned prompt resolver.
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancellation = cancelled.clone();
+        let request_entry = LifecycleEntry {
+            owner: auth.owner.to_string(),
+            app_id: auth.caller.app_id.clone(),
+            resource: LifecycleResource::Prompt,
+        };
+        let request_path = handle.to_string();
+        let registered = self
+            .lifecycle
+            .register_request(connection, &request_path, request_entry, move |_| {
+                cancellation.store(true, Ordering::Release);
+            })
+            .await;
+        if !matches!(registered, Ok(true)) {
+            return (2, HashMap::new());
+        }
+
+        // SelectSources is mandatory. Never synthesize a session from fields
+        // supplied by an otherwise authenticated Start call.
+        let Some(session) = self.sessions.lock().ok().and_then(|s| s.get(&key).cloned()) else {
+            self.lifecycle
+                .complete_request_object(connection, &request_path)
+                .await;
+            return (2, HashMap::new());
+        };
+        if session.owner != auth.owner.as_str()
+            || session.app_id != app_id
+            || session.caller.as_ref() != Some(&auth.caller)
+            || session.source_types == 0
+            || session.starting
+            || !session.streams.is_empty()
+        {
+            self.lifecycle
+                .complete_request_object(connection, &request_path)
+                .await;
+            return (2, HashMap::new());
+        }
+        let marked_starting = self.sessions.lock().ok().is_some_and(|mut sessions| {
+            sessions.get_mut(&key).is_some_and(|entry| {
+                if entry.starting || !entry.streams.is_empty() {
+                    false
+                } else {
+                    entry.starting = true;
+                    true
+                }
+            })
+        });
+        if !marked_starting {
+            self.lifecycle
+                .complete_request_object(connection, &request_path)
+                .await;
+            return (2, HashMap::new());
+        }
+
+        // The sole consent prompt for this handshake lives here. A valid
+        // restore token is the only fast path.
+        if !session.restored && !session.consented {
             let cap_template = Capability::Screencast { scope: GRANT_ONCE };
             let outcome = flow::resolve(
                 &self.ctx,
-                caller.clone(),
+                auth.caller.clone(),
                 CapabilityKind::Screencast,
                 cap_template,
             )
             .await;
-            if !outcome.is_allowed() {
+            if cancelled.load(Ordering::Acquire) || !outcome.is_allowed() {
+                self.reset_starting(&key);
+                self.lifecycle
+                    .complete_request_object(connection, &request_path)
+                    .await;
                 return (1, HashMap::new());
             }
         }
@@ -303,7 +641,7 @@ impl ScreenCastBackend {
         let mut infos: Vec<PipewireStreamInfo> = Vec::with_capacity(types.len());
         for st in types {
             let req = PipewireStreamRequest {
-                caller: caller.clone(),
+                caller: auth.caller.clone(),
                 width,
                 height,
                 framerate: 30,
@@ -313,64 +651,86 @@ impl ScreenCastBackend {
             match self.ctx.screencast_provisioner.provision(&req) {
                 Ok(info) => infos.push(info),
                 Err(e) => {
+                    for info in &infos {
+                        self.ctx.screencast_provisioner.release(info.node_id);
+                    }
+                    self.reset_starting(&key);
+                    self.lifecycle
+                        .complete_request_object(connection, &request_path)
+                        .await;
                     tracing::warn!("screencast: pipewire provision failed: {e}");
                     return (2, HashMap::new());
                 }
             }
         }
 
-        // Persist: issue a restore token if the session asked for it.
-        let restore_token = if session.persist_mode > 0 {
-            let token = uuid::Uuid::new_v4().to_string();
-            if let Ok(mut r) = self.restore.lock() {
-                r.insert(
-                    token.clone(),
-                    RestoreData {
-                        app_id: session.app_id.clone(),
-                        source_types: session.source_types,
-                        cursor_mode: session.cursor_mode,
-                        multiple: session.multiple,
-                        persist_mode: session.persist_mode,
-                    },
-                );
+        if cancelled.load(Ordering::Acquire) {
+            for info in &infos {
+                self.ctx.screencast_provisioner.release(info.node_id);
             }
-            Some(token)
-        } else {
-            None
-        };
-
-        start_response(infos, restore_token, session.persist_mode)
-    }
-
-    /// `OpenPipeWireRemote` — hand back the fd of a `PipeWire` remote the app
-    /// attaches the provisioned nodes to. See the module docs for where this sits relative to the reference frontend.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.ScreenCast.OpenPipeWireRemote D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
-    fn open_pipe_wire_remote(
-        &self,
-        session_handle: ObjectPath<'_>,
-        _app_id: String,
-        _options: HashMap<String, OwnedValue>,
-    ) -> zbus::fdo::Result<zbus::zvariant::OwnedFd> {
-        let key = session_handle.to_string();
-        let known = self
-            .sessions
-            .lock()
-            .ok()
-            .is_some_and(|s| s.contains_key(&key));
-        if !known {
-            return Err(zbus::fdo::Error::AccessDenied(
-                "OpenPipeWireRemote for an unknown ScreenCast session".into(),
-            ));
+            self.reset_starting(&key);
+            self.lifecycle
+                .complete_request_object(connection, &request_path)
+                .await;
+            return (1, HashMap::new());
         }
-        match self.ctx.screencast_provisioner.open_remote_fd() {
-            Ok(fd) => Ok(zbus::zvariant::OwnedFd::from(fd)),
-            Err(e) => Err(zbus::fdo::Error::Failed(format!(
-                "could not open PipeWire remote: {e}"
-            ))),
+
+        // Persist: issue an opaque key carried in standard `restore_data` if
+        // the session asked for it.
+        let restore_key = (session.persist_mode > 0).then(|| uuid::Uuid::new_v4().to_string());
+
+        let updated = self.sessions.lock().ok().is_some_and(|mut sessions| {
+            let Some(entry) = sessions.get_mut(&key) else {
+                return false;
+            };
+            entry.consented = true;
+            entry.starting = false;
+            entry.streams = infos.iter().map(|info| info.node_id).collect();
+            true
+        });
+        if !updated {
+            for info in &infos {
+                self.ctx.screencast_provisioner.release(info.node_id);
+            }
+            self.lifecycle
+                .complete_request_object(connection, &request_path)
+                .await;
+            return (2, HashMap::new());
         }
+
+        if let Some(token) = &restore_key {
+            let data = RestoreData {
+                app_id: session.app_id.clone(),
+                source_types: session.source_types,
+                cursor_mode: session.cursor_mode,
+                multiple: session.multiple,
+                persist_mode: session.persist_mode,
+                issued_unix_seconds: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |duration| duration.as_secs()),
+            };
+            let stored = self
+                .restore
+                .lock()
+                .map_err(|_| ())
+                .and_then(|mut restore| restore.insert(token.clone(), data).map_err(|_| ()));
+            if stored.is_err() {
+                for info in &infos {
+                    self.ctx.screencast_provisioner.release(info.node_id);
+                }
+                self.reset_starting(&key);
+                self.lifecycle
+                    .complete_request_object(connection, &request_path)
+                    .await;
+                return (2, HashMap::new());
+            }
+        }
+
+        let response = start_response(infos, restore_key, session.persist_mode);
+        self.lifecycle
+            .complete_request_object(connection, &request_path)
+            .await;
+        response
     }
 }
 
@@ -405,6 +765,13 @@ fn selected_source_types(mask: u32, multiple: bool) -> Vec<u32> {
     out
 }
 
+/// Return the least-significant supported portal bit. Portal source and cursor
+/// bitmasks deliberately use independent single-bit flags, so this chooses a
+/// deterministic default without inventing an unsupported capability.
+fn first_supported_bit(mask: u32) -> Option<u32> {
+    (mask != 0).then_some(mask & mask.wrapping_neg())
+}
+
 fn opt_u32(options: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
     let v = options.get(key)?.try_clone().ok()?;
     u32::try_from(v).ok()
@@ -415,15 +782,33 @@ fn opt_bool(options: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
     bool::try_from(v).ok()
 }
 
-fn opt_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
-    let v = options.get(key)?.try_clone().ok()?;
-    String::try_from(v).ok()
+/// Decode qOS's opaque key from standard `restore_data` `(suv)`. Unknown
+/// vendors, versions, malformed variants, and non-UUID payloads are not an
+/// error: the portal spec says a backend may simply prompt normally when it
+/// cannot restore a record.
+fn restore_key(options: &HashMap<String, OwnedValue>) -> Option<String> {
+    let raw = options.get("restore_data")?.try_clone().ok()?;
+    let (vendor, version, payload): (String, u32, OwnedValue) = raw.try_into().ok()?;
+    if vendor != RESTORE_VENDOR || version != RESTORE_DATA_VERSION {
+        return None;
+    }
+    let token = Value::from(payload).downcast::<String>().ok()?;
+    uuid::Uuid::parse_str(&token).ok().map(|_| token)
 }
 
-/// Build `Start`'s `(response, results)` from the provisioned streams and optional restore token. The `streams` field is `a(ua{sv})`.
+/// Build a standard `(suv)` `restore_data` value. The variant payload is the
+/// random key understood only by this backend's private store.
+fn restore_data(key: String) -> Option<OwnedValue> {
+    // `OwnedValue`'s D-Bus type is `v`, so the tuple is exactly `(suv)`;
+    // the opaque payload itself is a normal string inside that variant.
+    let payload = OwnedValue::from(zbus::zvariant::Str::from(key));
+    OwnedValue::try_from(Value::new((RESTORE_VENDOR, RESTORE_DATA_VERSION, payload))).ok()
+}
+
+/// Build `Start`'s `(response, results)` from the provisioned streams and optional restore data. The `streams` field is `a(ua{sv})`.
 fn start_response(
     infos: Vec<PipewireStreamInfo>,
-    restore_token: Option<String>,
+    restore_key: Option<String>,
     persist_mode: u32,
 ) -> (u32, HashMap<String, OwnedValue>) {
     let mut results: HashMap<String, OwnedValue> = HashMap::new();
@@ -434,9 +819,9 @@ fn start_response(
     if let Ok(o) = OwnedValue::try_from(Value::new(streams)) {
         results.insert("streams".to_string(), o);
     }
-    if let Some(token) = restore_token {
-        if let Ok(o) = OwnedValue::try_from(Value::new(token)) {
-            results.insert("restore_token".to_string(), o);
+    if let Some(key) = restore_key {
+        if let Some(data) = restore_data(key) {
+            results.insert("restore_data".to_string(), data);
         }
         if let Ok(o) = OwnedValue::try_from(Value::U32(persist_mode)) {
             results.insert("persist_mode".to_string(), o);
@@ -519,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn start_response_includes_restore_token_when_persisted() {
+    fn start_response_includes_standard_restore_data_when_persisted() {
         let info = PipewireStreamInfo {
             node_id: 3,
             source_type: 1,
@@ -529,9 +914,9 @@ mod tests {
         };
         let (code, results) = start_response(vec![info], Some("tok-123".into()), 2);
         assert_eq!(code, 0);
-        assert!(results.contains_key("restore_token"));
+        assert!(results.contains_key("restore_data"));
         assert!(results.contains_key("persist_mode"));
-        // No token => no restore_token/persist_mode keys.
+        // No restore data => no restore_data/persist_mode keys.
         let info2 = PipewireStreamInfo {
             node_id: 4,
             source_type: 1,
@@ -540,7 +925,27 @@ mod tests {
             position: (0, 0),
         };
         let (_c, results2) = start_response(vec![info2], None, 0);
-        assert!(!results2.contains_key("restore_token"));
+        assert!(!results2.contains_key("restore_data"));
+    }
+
+    #[test]
+    fn standard_restore_data_round_trips_only_qos_uuid_payloads() {
+        let key = uuid::Uuid::new_v4().to_string();
+        let mut options = HashMap::new();
+        options.insert("restore_data".into(), restore_data(key.clone()).unwrap());
+        let raw = options["restore_data"].try_clone().unwrap();
+        let parsed: (String, u32, OwnedValue) = raw.try_into().unwrap();
+        assert_eq!(parsed.0, RESTORE_VENDOR);
+        assert_eq!(parsed.1, RESTORE_DATA_VERSION);
+        assert_eq!(Value::from(parsed.2).downcast::<String>().unwrap(), key);
+        let key = uuid::Uuid::new_v4().to_string();
+        options.insert("restore_data".into(), restore_data(key.clone()).unwrap());
+        assert_eq!(restore_key(&options).as_deref(), Some(key.as_str()));
+        options.insert(
+            "restore_data".into(),
+            OwnedValue::from(zbus::zvariant::Str::from("not-a-tuple")),
+        );
+        assert_eq!(restore_key(&options), None);
     }
 
     #[test]
@@ -577,6 +982,72 @@ mod tests {
         assert_eq!(cursor_mode::ALL, 1 | 2 | 4);
     }
 
+    fn durable_record(app_id: &str) -> RestoreData {
+        RestoreData {
+            app_id: app_id.into(),
+            source_types: source_type::MONITOR,
+            cursor_mode: cursor_mode::EMBEDDED,
+            multiple: false,
+            persist_mode: 2,
+            issued_unix_seconds: 42,
+        }
+    }
+
+    #[test]
+    fn durable_restore_survives_a_store_restart_and_stays_app_bound() {
+        let root = std::env::temp_dir().join(format!("qos-sc-{}", uuid::Uuid::new_v4()));
+        let path = root.join("restore.json");
+        let token = uuid::Uuid::new_v4().to_string();
+        let mut store = RestoreStore::load_at(Some(path.clone()));
+        store
+            .insert(token.clone(), durable_record("org.example.share"))
+            .expect("durable write");
+        drop(store);
+        let after_restart = RestoreStore::load_at(Some(path));
+        assert_eq!(
+            after_restart.get(&token).map(|record| record.app_id),
+            Some("org.example.share".into())
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn corrupt_durable_restore_is_quarantined_and_never_restored() {
+        let root = std::env::temp_dir().join(format!("qos-sc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("root");
+        let path = root.join("restore.json");
+        std::fs::write(&path, b"not json").expect("corrupt fixture");
+        let store = RestoreStore::load_at(Some(path.clone()));
+        assert!(store.durable.is_empty());
+        assert!(!path.exists(), "corrupt data must not remain authoritative");
+        assert!(
+            std::fs::read_dir(&root)
+                .expect("root entries")
+                .any(|entry| entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("restore.corrupt-")),
+            "corrupt artifact is retained for diagnosis rather than overwritten"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn revocation_removes_durable_restore_authority() {
+        let root = std::env::temp_dir().join(format!("qos-sc-{}", uuid::Uuid::new_v4()));
+        let path = root.join("restore.json");
+        let token = uuid::Uuid::new_v4().to_string();
+        let mut store = RestoreStore::load_at(Some(path.clone()));
+        store
+            .insert(token.clone(), durable_record("org.example.share"))
+            .expect("durable write");
+        store.revoke_app("org.example.share").expect("revoke");
+        drop(store);
+        assert!(RestoreStore::load_at(Some(path)).get(&token).is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// The provisioner records the request the Start path forwards, including the selected source type + size.
     #[test]
     fn screencast_provisioner_records_source_type_and_size() {
@@ -594,9 +1065,12 @@ mod tests {
             file_picker: FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
             screencast_provisioner: sc_handle,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            input_capture: crate::portal::InputCaptureCompositorHandle::unavailable(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
             print_spooler: crate::portal::PrintSpoolerHandle::null(),
             notifications: crate::notifications::NotificationBridge::new(),
+            desktop_services: Default::default(),
+            authenticator: None,
         };
         let req = PipewireStreamRequest {
             caller: PortalCaller::new(ws_id, "org.example"),
