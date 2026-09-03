@@ -16,7 +16,7 @@ use std::process::Stdio;
 
 use serde_json::Value;
 
-use crate::model::{Source, SourceKind, TargetDrive, TargetKind, TargetPartition};
+use crate::model::{Source, SourceIdentity, SourceKind, TargetDrive, TargetKind, TargetPartition};
 
 #[cfg(not(target_os = "linux"))]
 pub fn pick_image_native() -> ui::PortalChannel {
@@ -363,6 +363,8 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
         size,
         label,
         installable: is_qos,
+        identity: SourceIdentity::from_metadata(&meta),
+        expected_sha256: None,
     })
 }
 

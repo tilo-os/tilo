@@ -770,6 +770,8 @@ mod tests {
             size: 1_000_000,
             label: "PLAIN".into(),
             installable: false,
+            identity: None,
+            expected_sha256: None,
         };
         ImagerDoc::set_source(&mut doc, Some(&iso));
         app.sync(&mut doc, &automerge::ROOT);
