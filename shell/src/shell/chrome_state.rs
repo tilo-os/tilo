@@ -87,6 +87,8 @@ impl std::fmt::Debug for PendingPrompt {
     reason = "each field is an independent, non-exclusive overlay visibility toggle (any subset can be on screen at once), and the struct is read/written across ~170 call sites in 14 files under shell/src and shell/tests — a flags-enum refactor would ripple invasively for no behavioural gain"
 )]
 pub struct OverlayFlags {
+    /// Discoverable desktop interaction guide (Super+/ or F1).
+    pub shortcut_help: bool,
     pub overview: bool,
     pub quick_settings: bool,
     pub ws_settings: bool,
