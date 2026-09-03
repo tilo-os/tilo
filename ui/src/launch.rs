@@ -323,10 +323,13 @@ impl fmt::Display for LaunchError {
             Self::ConflictingModes => {
                 write!(
                     f,
-                    "choose only one of --shots, --responsive-matrix, or --headless-drive"
+                    "choose only one of --shots, --responsive-matrix, --headless-drive, or --native-audit"
                 )
             }
-            Self::ShotsOnly(arg) => write!(f, "{arg} is only meaningful with --shots"),
+            Self::ShotsOnly(arg) => write!(
+                f,
+                "{arg} is only meaningful with a capture or native-audit mode"
+            ),
             Self::ShotsUnsupported => write!(f, "this application does not support --shots"),
             Self::HeadlessUnsupported => {
                 write!(f, "this application does not support --headless-drive")
@@ -460,7 +463,13 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     }
 
     if args.native_audit {
-        let harness = FrameHarness::new(State::new(), spec.live_root(&args)?, DEFAULT_VIEWPORT);
+        let viewport = args.viewport.unwrap_or(DEFAULT_VIEWPORT);
+        let harness = FrameHarness::new_with_theme(
+            State::new(),
+            spec.live_root(&args)?,
+            viewport,
+            shot_theme(&args),
+        );
         let audit = harness.native_app_audit();
         let report = serde_json::to_string_pretty(&audit).map_err(|error| {
             LaunchError::Operation(format!("could not serialize native audit: {error}"))
@@ -644,7 +653,7 @@ fn parse_args_extended(
     if mode_count > 1 {
         return Err(LaunchError::ConflictingModes);
     }
-    if parsed.shots.is_none() && parsed.responsive_matrix.is_none() {
+    if parsed.shots.is_none() && parsed.responsive_matrix.is_none() && !parsed.native_audit {
         if parsed.viewport.is_some() {
             return Err(LaunchError::ShotsOnly("--viewport".to_owned()));
         }
@@ -819,8 +828,24 @@ mod tests {
 
     #[test]
     fn parses_native_audit_as_an_exclusive_common_mode() {
-        let parsed = parse_args(&strings(&["app", "--native-audit"]), &[], &[]).unwrap();
+        let parsed = parse_args(
+            &strings(&[
+                "app",
+                "--native-audit",
+                "--viewport",
+                "390x844",
+                "--text-scale",
+                "2",
+                "--pseudo-locale",
+            ]),
+            &[],
+            &[],
+        )
+        .unwrap();
         assert!(parsed.native_audit);
+        assert_eq!(parsed.viewport, Some((390, 844)));
+        assert_eq!(parsed.text_scale, Some(2.0));
+        assert!(parsed.pseudo_locale);
 
         assert_eq!(
             parse_args(
