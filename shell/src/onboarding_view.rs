@@ -915,7 +915,16 @@ impl OnboardingView {
                 theme,
             ));
         if let Some(status) = &self.nearby_status {
-            nearby = nearby.push(paragraph(status, theme));
+            nearby = nearby.push(Box::new(
+                Text::new(status)
+                    // A stable semantic address lets the accessibility host
+                    // recognise verification-code and completion updates as
+                    // changes to one status region across composition rebuilds.
+                    .with_id("onboarding.nearby.status")
+                    .with_role(ui::tokens::typography::TextRole::Body)
+                    .with_color(theme.text_dim)
+                    .with_live(ui::a11y::Politeness::Polite),
+            ));
         }
         nearby = nearby.push(Box::new(nearby_action));
         let file_row = Row::new().push(Box::new(path)).push(Box::new(
@@ -2045,6 +2054,16 @@ mod tests {
         let _ = doc.put(&automerge::ROOT, key, ScalarValue::Boolean(true));
     }
 
+    fn accessibility_for_id(widget: &dyn Widget, id: &str) -> Option<ui::a11y::AccessNode> {
+        if widget.test_id() == Some(id) {
+            return widget.accessibility();
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| accessibility_for_id(child, id))
+    }
+
     fn write_fixture_identity(directory: &std::path::Path) {
         let record = IdentityRecord {
             display_name: "Test user".into(),
@@ -2456,6 +2475,69 @@ mod tests {
             node.state.protected,
             "passphrases must be exposed as protected"
         );
+    }
+
+    #[test]
+    fn nearby_pairing_updates_share_one_polite_live_region() {
+        let (mut view, _) = view();
+        view.flow.begin_connect();
+        let theme = Theme::dark();
+
+        for status in [
+            "Looking for a trusted device nearby…",
+            "Code 123456 · waiting for approval on your trusted device",
+            "Connected. Your workspaces will appear automatically.",
+        ] {
+            view.nearby_status = Some(status.into());
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
+            let node = accessibility_for_id(&view, "onboarding.nearby.status")
+                .expect("nearby status accessibility node");
+
+            assert_eq!(node.role, ui::a11y::Role::StaticText);
+            assert_eq!(node.name.as_deref(), Some(status));
+            assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
+        }
+    }
+
+    #[test]
+    fn resumed_tour_preserves_focus_reset_and_reduced_motion_navigation() {
+        let directory = TempDir::new().expect("progress directory");
+        write_fixture_identity(directory.path());
+        store_progress(directory.path(), PersistedStage::TourOrganise).expect("organise journal");
+        let mut view = OnboardingView::new(directory.path().to_path_buf());
+
+        assert_eq!(view.tour_page, Some(TourPage::Organise));
+        assert!(
+            view.take_focus_reset(),
+            "a restored page must place keyboard focus inside its rebuilt controls"
+        );
+        assert!(!view.take_focus_reset(), "the focus edge is one-shot");
+
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
+        assert!(view.reduce_motion);
+        assert!(
+            !view.needs_animation_frame(),
+            "restoring a tour must not restart entrance animation under reduced motion"
+        );
+
+        let mut document = AutoCommit::new();
+        press(&mut document, KEY_TOUR_NEXT);
+        view.sync(&mut document, &automerge::ROOT);
+        assert_eq!(view.tour_page, Some(TourPage::Collaborate));
+        assert_eq!(
+            load_progress(directory.path()).expect("updated tour journal"),
+            Some(PersistedStage::TourCollaborate)
+        );
+        assert!(
+            view.take_focus_reset(),
+            "keyboard navigation must move focus into the newly restored stage"
+        );
+        assert!(!view.needs_animation_frame());
     }
 
     #[test]

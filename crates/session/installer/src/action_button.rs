@@ -48,6 +48,10 @@ pub struct ActionButton {
     /// (e.g. a checkbox-style toggle), so it can be pinned via
     /// [`ActionButton::with_test_id`] to stay addressable across rebuilds.
     test_id: Option<String>,
+    /// `Some` turns the action into a checkbox with the supplied checked
+    /// state. The visual label may still use the installer's compact `[x]`
+    /// notation, while assistive technology receives native checkbox state.
+    checked: Option<bool>,
     primary: bool,
     disabled: bool,
     rect: Rect,
@@ -63,6 +67,7 @@ impl ActionButton {
             label: label.to_string(),
             click_path: click_path.to_string(),
             test_id: None,
+            checked: None,
             primary: false,
             disabled: false,
             rect: Rect::ZERO,
@@ -86,6 +91,13 @@ impl ActionButton {
         self
     }
 
+    /// Expose this action as a native checkbox with a derived checked state.
+    #[must_use]
+    pub fn checkbox(mut self, checked: bool) -> Self {
+        self.checked = Some(checked);
+        self
+    }
+
     /// Mark disabled: dimmed, non-interactive, and removed from the focus
     /// order so keyboard nav skips it.
     #[must_use]
@@ -99,6 +111,110 @@ impl ActionButton {
             return;
         }
         let _ = state.put(root, self.click_path.as_str(), true);
+    }
+
+    fn accessible_label(&self) -> &str {
+        self.label
+            .strip_prefix("[x] ")
+            .or_else(|| self.label.strip_prefix("[ ] "))
+            .unwrap_or(self.label.as_str())
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::items_after_test_module,
+    reason = "the tests exercise both the inherent constructor above and Widget implementation below"
+)]
+mod tests {
+    use automerge::{ROOT, ReadDoc};
+    use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+
+    use super::*;
+
+    fn press(key: NamedKey) -> WindowEvent {
+        // SAFETY: ActionButton reads only the initialized KeyEvent fields.
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = Key::Named(key);
+        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        event.location = KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        event.text = None;
+        WindowEvent::KeyboardInput {
+            // SAFETY: ActionButton does not inspect the device id.
+            device_id: unsafe { std::mem::zeroed() },
+            event,
+            is_synthetic: false,
+        }
+    }
+
+    fn assert_key_fires(key: NamedKey) {
+        let mut button = ActionButton::new("Back", "installer.back");
+        button.set_focus(true);
+        let mut doc = AutoCommit::new();
+        let mut taffy = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        let node = button.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let mut handled = false;
+        let mut focus_target = None;
+        button.handle_event(
+            &press(key),
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &ROOT,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        assert!(handled);
+        assert_eq!(
+            doc.get(&ROOT, "installer.back")
+                .unwrap()
+                .and_then(|(value, _)| value.to_bool()),
+            Some(true)
+        );
+        assert!(button.is_focused(), "activation must not move focus");
+    }
+
+    #[test]
+    fn enter_and_space_fire_the_focused_action() {
+        assert_key_fires(NamedKey::Enter);
+        assert_key_fires(NamedKey::Space);
+    }
+
+    #[test]
+    fn button_semantics_are_named_focusable_and_activatable() {
+        let mut button = ActionButton::new("Reboot now", "installer.reboot").with_test_id("reboot");
+        button.set_focus(true);
+        let node = button.accessibility().expect("button semantics");
+        assert_eq!(node.role, ui::a11y::Role::Button);
+        assert_eq!(node.name.as_deref(), Some("Reboot now"));
+        assert!(node.state.focusable);
+        assert!(node.state.focused);
+
+        let mut doc = AutoCommit::new();
+        assert!(button.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
+        assert_eq!(
+            doc.get(&ROOT, "installer.reboot")
+                .unwrap()
+                .and_then(|(value, _)| value.to_bool()),
+            Some(true)
+        );
+        assert!(button.is_focused(), "AT activation must not steal focus");
+    }
+
+    #[test]
+    fn recovery_ack_is_a_cleanly_named_native_checkbox() {
+        let button = ActionButton::new("[x] I will save my recovery key", "installer.recovery_ack")
+            .with_test_id("recovery_ack")
+            .checkbox(true);
+        let node = button.accessibility().expect("checkbox semantics");
+        assert_eq!(node.role, ui::a11y::Role::Checkbox);
+        assert_eq!(node.name.as_deref(), Some("I will save my recovery key"));
+        assert_eq!(node.state.checked, Some(true));
     }
 }
 
@@ -263,7 +379,7 @@ impl Widget for ActionButton {
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
-                        logical_key: Key::Named(NamedKey::Space),
+                        logical_key: Key::Named(NamedKey::Enter | NamedKey::Space),
                         state: ElementState::Pressed,
                         ..
                     },
@@ -296,5 +412,59 @@ impl Widget for ActionButton {
     }
     fn is_focused(&self) -> bool {
         self.is_focused
+    }
+
+    fn is_enabled(&self) -> bool {
+        !self.disabled
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        vec![ui::widget::ControlBindingMetadata {
+            control_id: self
+                .test_id()
+                .unwrap_or(self.click_path.as_str())
+                .to_string(),
+            kind: ui::widget::ControlBindingKind::CollaborativeDocument(self.click_path.clone()),
+        }]
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        root: &ObjId,
+    ) -> bool {
+        let accepted = matches!(action, ui::a11y::Action::Activate)
+            || (self.checked.is_some() && matches!(action, ui::a11y::Action::ToggleCheck));
+        if self.disabled || !accepted {
+            return false;
+        }
+        self.fire(state, root);
+        true
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let control_id = self.test_id().unwrap_or(self.click_path.as_str());
+        let clean_label = self.accessible_label();
+        let role = if self.checked.is_some() {
+            Role::Checkbox
+        } else {
+            Role::Button
+        };
+        Some(
+            AccessNode::new(role)
+                .with_semantic_key(control_id)
+                .with_name(clean_label)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused,
+                    disabled: self.disabled,
+                    checked: self.checked,
+                    ..Default::default()
+                })
+                .with_action_target(control_id),
+        )
     }
 }
