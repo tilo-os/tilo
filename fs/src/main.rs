@@ -830,6 +830,14 @@ fn workspace_ticket_path(cache_dir: &Path) -> PathBuf {
     cache_dir.join("workspace-ticket")
 }
 
+fn personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {
+    let hash = blake3::derive_key("qos-personal-continuity-v1\0", user_public_key);
+    let mut first8 = [0_u8; 8];
+    first8.copy_from_slice(&hash[..8]);
+    let id = u64::from_le_bytes(first8);
+    if id == 0 { 1 } else { id }
+}
+
 /// Export a transfer-ready home-peer bundle from the workspace this device is
 /// already serving. The ticket is written by `fs serve`, so no terminal ticket
 /// or per-file configuration needs to be copied by hand.
@@ -840,7 +848,7 @@ fn export_home_peer(
     replica_cache_dir: PathBuf,
     status_file: PathBuf,
     principals: Vec<String>,
-    relay_workspace_ids: Vec<u64>,
+    mut relay_workspace_ids: Vec<u64>,
 ) -> Result<()> {
     let ticket_path = workspace_ticket_path(&cache_dir);
     let ticket = std::fs::read_to_string(&ticket_path)
@@ -858,6 +866,11 @@ fn export_home_peer(
     let paths = identity_paths();
     let governor = qos_user_identity::persist::read_signing_key(&paths.user_privkey)
         .context("read workspace governor key")?;
+    relay_workspace_ids.push(personal_continuity_workspace_id(
+        &governor.verifying_key().to_bytes(),
+    ));
+    relay_workspace_ids.sort_unstable();
+    relay_workspace_ids.dedup();
     let authority = WorkspaceAuthorityEnvelope::sign(
         decoded_ticket.workspace_id(),
         1,
