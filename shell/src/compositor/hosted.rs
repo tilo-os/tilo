@@ -12,14 +12,15 @@ use ui::presence::PresenceKey;
 use ui::widget::Widget;
 use ui::{App, State};
 
-/// Boot the shell with legacy v1 behaviour — peer-sync OFF, portals OFF. Thin alias of
-/// [`run_with_options`] for callers that hard-code the no-arg entry point (mainly integration tests).
+/// Boot the hosted test/development shell with optional services disabled.
+/// Production entry points resolve their default-on sync policy before calling
+/// [`run_with_options`].
 pub fn run() {
     run_with_options(false);
 }
 
 /// Aggregated boot-time toggles for the hosted entry point, held by value so a new flag is one
-/// struct-field edit, not a fan-out across `main.rs` and every test fixture. v1: two fields, default OFF.
+/// struct-field edit, not a fan-out across `main.rs` and every test fixture.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HostedOptions {
     pub enable_peer_sync: bool,
