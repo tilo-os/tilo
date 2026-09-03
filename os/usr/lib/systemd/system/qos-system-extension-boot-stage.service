@@ -1,0 +1,43 @@
+[Unit]
+Description=Stage verified boot-bound system extensions for the next deployment
+Documentation=file:///usr/share/doc/qos/system-extensions.md
+After=local-fs.target
+Before=qos-deployment-update.service
+ConditionPathExists=/var/lib/qos/system-extensions/state.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/qos-system-extension-activate boot
+RemainAfterExit=no
+
+# This is a stage request, not a dynamic driver/module installer. It cannot
+# touch /boot, mount an image, or load a kernel module. The deployment builder
+# consumes the atomic marker only after exact digest + ABI revalidation, then
+# normal bootc boot-health and rollback protect the reboot.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @swap @reboot @raw-io @obsolete @cpu-emulation @module @clock @debug @pkey
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/qos/system-extensions
+ReadOnlyPaths=/usr/share/qos/system-extensions
+

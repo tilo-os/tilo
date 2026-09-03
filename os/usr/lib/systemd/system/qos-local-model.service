@@ -1,0 +1,52 @@
+[Unit]
+Description=qOS verified local-model runtime
+Documentation=file:///usr/share/doc/qos/system-extensions.md
+After=qos-system-extension-userspace.service network.target
+Wants=qos-system-extension-userspace.service
+ConditionPathExists=/usr/libexec/qos-local-model-service
+ConditionPathExists=/run/qos/system-extensions/userspace-ready
+
+[Service]
+Type=notify
+# Stable service contract for the local-model service crate. The binary is
+# intentionally not shipped until that crate exists; Conditions make this a
+# clean skip rather than a failed boot. Request data is root-owned verified
+# state, never command-line text from a desktop, MCP tool, or agent.
+ExecStart=/usr/libexec/qos-local-model-service --contract-version 1 --state /var/lib/qos/system-extensions/state.json --catalog /usr/share/qos/system-extensions/catalog.d --runtime-root /var/lib/qos/local-models/verified --activation /var/lib/qos/local-models/activation.json --listen 127.0.0.1
+User=qos-local-model
+Group=qos-local-model
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+
+# The runtime reads verified packs but cannot replace them. It has no home or
+# capabilities. It deliberately shares the host network namespace so its
+# approved loopback endpoint is reachable by the desktop gateway; IP policy
+# denies every non-loopback address, so this is not ambient network access.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=127.0.0.1/32
+IPAddressAllow=::1/128
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @swap @reboot @raw-io @obsolete @cpu-emulation @module @clock @debug @pkey
+SystemCallErrorNumber=EPERM
+ReadOnlyPaths=/var/lib/qos/system-extensions /var/lib/qos/local-models /usr/share/qos/system-extensions
