@@ -448,6 +448,20 @@ pub fn open_continuity_file_reference(
     Some(path)
 }
 
+/// A human label for a continuation file card. The record id is deliberately
+/// never user-facing: it is a transport identity, not a filename.
+pub fn continuity_file_reference_label(
+    reference: &crate::shell::personal_continuity::LaunchIntent,
+) -> String {
+    resolve_continuity_file_reference_in_roots(reference, &file_explorer::model::workspace_roots())
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "File".to_string())
+}
+
 /// Production activation for a synchronized file-reference tab.  Resolution
 /// stays record-id based, then the ordinary document launcher grants the
 /// projected path and chooses the registered app exactly as for a local open.
@@ -471,11 +485,8 @@ fn resolve_continuity_file_reference_in_roots(
     reference: &crate::shell::personal_continuity::LaunchIntent,
     roots: &[PathBuf],
 ) -> Option<PathBuf> {
-    let crate::shell::personal_continuity::LaunchIntent::FileReference {
-        record_id,
-        content_hash,
-        thumbnail_hash,
-    } = reference
+    let crate::shell::personal_continuity::LaunchIntent::FileReference { record_id, .. } =
+        reference
     else {
         return None;
     };
@@ -486,17 +497,9 @@ fn resolve_continuity_file_reference_in_roots(
         .records
         .into_iter()
         .find(|entry| entry.record_id.as_bytes() == &record_id)?;
-    if content_hash.is_some_and(|expected| {
-        file_explorer::model::read_content_hash(&entry.path) != Some(expected)
-    }) {
-        return None;
-    }
-    if thumbnail_hash.is_some_and(|expected| {
-        file_explorer::model::read_thumb_xattr(&entry.path)
-            .is_some_and(|thumbnail| *blake3::hash(&thumbnail).as_bytes() != expected)
-    }) {
-        return None;
-    }
+    // Hashes describe the capture-time content/preview and may seed a cache,
+    // but they must never turn a normal edit into a failed reopen. The stable
+    // collaborative FileRecordId above is the sole routing authority.
     Some(entry.path)
 }
 
@@ -1262,8 +1265,8 @@ mod tests {
         let record = [0x71; 16];
         let content = [0x42; 32];
         let thumbnail = b"projected thumbnail";
-        xattr::set(&path, "user.qos.record-id", record).unwrap();
-        xattr::set(&path, "user.qos.content-hash", content).unwrap();
+        xattr::set(&path, "user.qos.record-id", &record).unwrap();
+        xattr::set(&path, "user.qos.content-hash", &content).unwrap();
         xattr::set(&path, "user.qos.thumb", thumbnail).unwrap();
         let uuid = uuid::Uuid::from_bytes(record);
         let index = serde_json::json!({
@@ -1278,7 +1281,7 @@ mod tests {
         xattr::set(
             root.path(),
             "user.qos.record-index",
-            serde_json::to_vec(&index).unwrap(),
+            &serde_json::to_vec(&index).unwrap(),
         )
         .unwrap();
         let reference = crate::shell::personal_continuity::LaunchIntent::file_reference(
@@ -1287,6 +1290,11 @@ mod tests {
             Some(*blake3::hash(thumbnail).as_bytes()),
         )
         .unwrap();
+
+        // A change after capture must not make the record unopenable: the
+        // FileRecordId, rather than stale content/preview hashes, routes it.
+        xattr::set(&path, "user.qos.content-hash", &[0x43; 32]).unwrap();
+        xattr::set(&path, "user.qos.thumb", b"fresh preview").unwrap();
 
         let previous = std::env::var_os("QOS_WORKSPACE_ROOTS");
         // SAFETY: guarded by the process_env serial group.
@@ -1307,7 +1315,7 @@ mod tests {
         reset_session_state();
         let chrome = chrome_with_workspace();
         {
-            let mut state = chrome.borrow_mut();
+            let state = chrome.borrow_mut();
             state
                 .tree_mut()
                 .continuation_file_references
