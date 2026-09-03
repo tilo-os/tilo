@@ -2934,9 +2934,17 @@ async fn run_mount(
             println!("{}", fs::recipient_mount::RECIPIENT_MOUNT_READY_LINE);
             std::io::stdout().flush()?;
         }
-        match unmount_rx.recv() {
-            Ok(()) => session.umount_and_join(),
-            Err(_) => session.join(),
+        loop {
+            if session.guard.is_finished() {
+                return session.join();
+            }
+            match unmount_rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(()) => return session.umount_and_join(),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return session.join();
+                }
+            }
         }
     });
     println!("Mounting QuickFS at {}", mount_point.display());
