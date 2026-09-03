@@ -35,7 +35,7 @@ use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::WindowEvent;
 
 use ui::ColorCompat;
@@ -72,7 +72,7 @@ const RELEASE_ZERO_H: f64 = 84.0;
 /// A clickable hit-target for one frame. Pure function of the viewport +
 /// state, so `draw` and `handle_event` agree without ordering hazards. The
 /// Customize step's own affordances live inside [`CustomizePanel`], not here.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Hit {
     PickFile,
     Release(usize),
@@ -97,6 +97,7 @@ struct Layout {
     back: Option<Rect>,
     primary: Option<Rect>,
     hits: Vec<(Rect, Hit)>,
+    viewport_content: Rect,
     content: Rect,
 }
 
@@ -140,6 +141,11 @@ pub struct ImagerApp {
     dirty: bool,
     last_mouse: Point,
     hover_target: Option<usize>,
+    /// Vertical offset for the step body. The step rail and footer stay put.
+    scroll_y: f64,
+    /// Keyboard focus for canvas controls. Profile fields retain their focus
+    /// in `CustomizePanel`, using the same Tab sequence.
+    keyboard_hit: Option<Hit>,
     /// The shared guided-customization panel — the one component the write and
     /// install flows both use to collect the install profile. It owns its own
     /// fields (real [`ui::widget::TextInput`]s, the password masked + a11y
@@ -189,6 +195,8 @@ impl ImagerApp {
             dirty: true,
             last_mouse: Point::ZERO,
             hover_target: None,
+            scroll_y: 0.0,
+            keyboard_hit: None,
             customize: CustomizePanel::new(),
             actions: ui::ActionHost::new(),
         }
@@ -223,14 +231,19 @@ impl ImagerApp {
 
     /// Can the flow move forward from `from`? (Also gates the step-indicator.)
     fn can_advance(&self, from: Step) -> bool {
+        self.can_advance_with_writer(from, crate::write::write_available())
+    }
+
+    /// Pure half of the advance gate, split so the live-helper capability is
+    /// covered without mutating process-wide environment variables in UI
+    /// tests that run concurrently.
+    fn can_advance_with_writer(&self, from: Step, writer_available: bool) -> bool {
         match from {
             Step::Source => self.source.is_some(),
             Step::Drive => self.selected.is_some(),
             Step::Customize => true,
             // Confirm advances into the (destructive) write only once armed.
-            Step::Confirm => {
-                self.confirm_matches() && self.image_fits() && crate::write::allow_write()
-            }
+            Step::Confirm => self.confirm_matches() && self.image_fits() && writer_available,
             // Write is in-progress and Done is terminal — neither advances.
             Step::Write | Step::Done => false,
         }
@@ -488,7 +501,7 @@ impl ImagerApp {
         content.width() < 520.0
     }
 
-    fn content_rect(&self) -> Rect {
+    fn content_viewport_rect(&self) -> Rect {
         let v = self.rect;
         let top = CRUMB_TOP + CRUMB_H + 30.0;
         let bottom = v.y1 - FOOTER_H - 10.0;
@@ -497,6 +510,48 @@ impl ImagerApp {
         let w = avail_w.min(CONTENT_MAX_W);
         let x0 = v.x0 + (v.width() - w) / 2.0;
         Rect::new(x0, v.y0 + top, x0 + w, v.y0 + bottom)
+    }
+
+    fn content_extent(&self, viewport: Rect) -> f64 {
+        let compact = Self::compact_content(viewport);
+        let requested = match self.step {
+            Step::Source => 650.0,
+            Step::Drive => {
+                if self.visible_targets().is_empty() {
+                    if compact { 350.0 } else { 320.0 }
+                } else {
+                    (if compact { 94.0 } else { 52.0 })
+                        + self.visible_targets().len() as f64 * 124.0
+                }
+            }
+            Step::Customize => 462.0,
+            Step::Confirm => {
+                if compact {
+                    440.0
+                } else {
+                    360.0
+                }
+            }
+            Step::Write => 410.0,
+            Step::Done => 400.0,
+        };
+        viewport.height().max(requested)
+    }
+
+    fn max_scroll(&self) -> f64 {
+        let viewport = self.content_viewport_rect();
+        (self.content_extent(viewport) - viewport.height()).max(0.0)
+    }
+
+    fn content_rect(&self) -> Rect {
+        let viewport = self.content_viewport_rect();
+        let extent = self.content_extent(viewport);
+        Rect::new(
+            viewport.x0,
+            viewport.y0 - self.scroll_y,
+            viewport.x1,
+            viewport.y0 - self.scroll_y + extent,
+        )
     }
 
     fn compute_layout(&self) -> Layout {
@@ -579,6 +634,7 @@ impl ImagerApp {
             back,
             primary,
             hits,
+            viewport_content: self.content_viewport_rect(),
             content,
         }
     }
@@ -679,6 +735,30 @@ impl ImagerApp {
 // Header + breadcrumb
 // =========================================================================
 impl ImagerApp {
+    fn draw_scrollbar(&self, scene: &mut Scene, theme: &Theme, t: Affine, lay: &Layout) {
+        let max = self.max_scroll();
+        if max <= 0.0 {
+            return;
+        }
+        let viewport = lay.viewport_content;
+        let track = Rect::new(
+            viewport.x1 + 6.0,
+            viewport.y0,
+            viewport.x1 + 9.0,
+            viewport.y1,
+        );
+        let thumb_h = (viewport.height() * viewport.height() / lay.content.height()).max(32.0);
+        let travel = (track.height() - thumb_h).max(0.0);
+        let y = track.y0 + travel * (self.scroll_y / max);
+        Self::fill_rr(
+            scene,
+            t,
+            Rect::new(track.x0, y, track.x1, y + thumb_h),
+            2.0,
+            theme.tokens.colors.neutral[5],
+        );
+    }
+
     fn draw_header(
         &self,
         scene: &mut Scene,
@@ -2191,7 +2271,7 @@ impl ImagerApp {
         }
         // Keep implementation switches out of the product language. Shot mode
         // poses this as ready for documentation, but never enables the backend.
-        let note = if crate::write::allow_write() || self.shot_confirmation_ready {
+        let note = if crate::write::write_available() || self.shot_confirmation_ready {
             "Ready to write. Check the selected device before continuing."
         } else {
             "Writing is disabled in this preview."
@@ -2823,6 +2903,8 @@ impl ImagerApp {
 
     fn goto(&mut self, state: &mut AutoCommit, s: Step) {
         self.step = s;
+        self.scroll_y = 0.0;
+        self.keyboard_hit = None;
         ImagerDoc::set_step(state, s);
         self.confirm_input.set_focus(false);
         self.customize.clear_focus();
@@ -3219,6 +3301,7 @@ impl Widget for ImagerApp {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
+        self.scroll_y = self.scroll_y.min(self.max_scroll());
     }
 
     fn draw(
@@ -3235,6 +3318,13 @@ impl Widget for ImagerApp {
         let tr = text_renderer;
 
         self.draw_header(scene, tr, theme, transform, &lay);
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &lay.viewport_content,
+        );
         match self.step {
             Step::Source => self.draw_source_step(scene, tr, theme, transform, &lay),
             Step::Drive => self.draw_drive_step(scene, tr, theme, transform, &lay),
@@ -3252,7 +3342,21 @@ impl Widget for ImagerApp {
                 self.progress.phase == JobPhase::Success,
             ),
         }
+        scene.pop_layer();
+        self.draw_scrollbar(scene, theme, transform, &lay);
         self.draw_footer(scene, tr, theme, transform, &lay);
+        if let Some(focused) = self.keyboard_hit
+            && let Some((rect, _)) = lay.hits.iter().find(|(_, hit)| *hit == focused)
+        {
+            Self::stroke_rr(
+                scene,
+                transform,
+                rect.inflate(2.0, 2.0),
+                12.0,
+                theme.tokens.colors.border_focus,
+                2.0,
+            );
+        }
 
         if self.export_dialog.is_open() {
             self.export_dialog.layout_in(self.rect, theme, tr);
@@ -3261,6 +3365,10 @@ impl Widget for ImagerApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the canvas wizard routes modal, text-field, profile-panel, pointer, scroll and keyboard capture in one explicitly ordered event transaction"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -3283,6 +3391,12 @@ impl Widget for ImagerApp {
             .export_dialog
             .handle_detached(event, scale_factor, *modifiers, state, path)
         {
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+
+        if self.handle_tab_event(event, *modifiers, &lay) {
             *handled = true;
             self.dirty = true;
             return;
@@ -3357,6 +3471,21 @@ impl Widget for ImagerApp {
             } => {
                 self.handle_left_click(state, &lay, handled);
             }
+            WindowEvent::MouseWheel { delta, .. }
+                if lay.viewport_content.contains(self.last_mouse) =>
+            {
+                use winit::event::MouseScrollDelta;
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 52.0,
+                    MouseScrollDelta::PixelDelta(point) => point.y / scale_factor,
+                };
+                let next = (self.scroll_y - dy).clamp(0.0, self.max_scroll());
+                if (next - self.scroll_y).abs() > f64::EPSILON {
+                    self.scroll_y = next;
+                    self.dirty = true;
+                }
+                *handled = true;
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -3382,7 +3511,7 @@ impl Widget for ImagerApp {
             self.target().map(TargetDrive::dev_path).as_deref(),
             available,
             self.job_rx.is_some(),
-            crate::write::allow_write(),
+            crate::write::write_available(),
         );
         job.actions.push(
             crate::actions::operation_spec(
@@ -3510,7 +3639,7 @@ impl Widget for ImagerApp {
     /// Keep the event loop ticking while a job or file picker is in flight, so
     /// the progress bars animate and the portal result is drained promptly.
     fn needs_animation_frame(&self) -> bool {
-        self.job_rx.is_some() || self.portal_rx.is_some()
+        self.job_rx.is_some() || self.portal_rx.is_some() || self.release_rx.is_some()
     }
 
     fn draw_with_presence(
@@ -3582,6 +3711,7 @@ impl ImagerApp {
     /// A left click in the content area dispatches a hit-tested affordance or,
     /// on empty space, drops the confirm field's focus.
     fn handle_left_click(&mut self, state: &mut AutoCommit, lay: &Layout, handled: &mut bool) {
+        self.keyboard_hit = None;
         let p = self.last_mouse;
         let hit = lay
             .hits
@@ -3607,6 +3737,15 @@ impl ImagerApp {
     ) {
         use winit::keyboard::{Key, NamedKey};
 
+        if matches!(logical_key, Key::Named(NamedKey::Enter))
+            && let Some(hit) = self.keyboard_hit
+        {
+            self.dispatch_hit(state, hit);
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+
         // The Confirm step's typed device-name field (a transient arming
         // gesture, not a profile edit).
         if self.confirm_input.is_focused() && self.step == Step::Confirm {
@@ -3618,6 +3757,96 @@ impl ImagerApp {
             return;
         }
         self.handle_global_shortcut_key(logical_key, state, handled);
+    }
+
+    fn ensure_visible(&mut self, rect: Rect, viewport: Rect) {
+        let padding = 10.0;
+        if rect.y1 > viewport.y1 - padding {
+            self.scroll_y += rect.y1 - (viewport.y1 - padding);
+        } else if rect.y0 < viewport.y0 + padding {
+            self.scroll_y -= viewport.y0 + padding - rect.y0;
+        }
+        self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll());
+    }
+
+    fn handle_tab_event(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+        lay: &Layout,
+    ) -> bool {
+        let WindowEvent::KeyboardInput {
+            event:
+                winit::event::KeyEvent {
+                    logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+                    state: winit::event::ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        self.handle_tab_navigation(modifiers.state().shift_key(), lay);
+        true
+    }
+
+    fn handle_tab_navigation(&mut self, reverse: bool, lay: &Layout) {
+        if self.step == Step::Customize && self.customizable() {
+            const CUSTOM_SLOTS: usize = 7;
+            let back_slot = CUSTOM_SLOTS;
+            let primary_slot = CUSTOM_SLOTS + 1;
+            let current = self.customize.keyboard_slot().or(match self.keyboard_hit {
+                Some(Hit::Back) => Some(back_slot),
+                Some(Hit::Next) => Some(primary_slot),
+                _ => None,
+            });
+            let count = CUSTOM_SLOTS + 2;
+            let next = match (current, reverse) {
+                (Some(0) | None, true) => count - 1,
+                (Some(index), true) => index - 1,
+                (Some(index), false) => (index + 1) % count,
+                (None, false) => 0,
+            };
+            self.customize.clear_focus();
+            self.keyboard_hit = None;
+            if next < CUSTOM_SLOTS {
+                self.customize.focus_keyboard_slot(next);
+                if let Some(rect) = CustomizePanel::keyboard_slot_rect(lay.content, next) {
+                    self.ensure_visible(rect, lay.viewport_content);
+                }
+            } else {
+                self.keyboard_hit = Some(if next == back_slot {
+                    Hit::Back
+                } else {
+                    Hit::Next
+                });
+            }
+            return;
+        }
+
+        let focusable = lay.hits.iter().map(|(_, hit)| *hit).collect::<Vec<_>>();
+        if focusable.is_empty() {
+            return;
+        }
+        let current = self
+            .keyboard_hit
+            .and_then(|selected| focusable.iter().position(|hit| *hit == selected));
+        let next = match (current, reverse) {
+            (Some(0) | None, true) => focusable.len() - 1,
+            (Some(index), true) => index - 1,
+            (Some(index), false) => (index + 1) % focusable.len(),
+            (None, false) => 0,
+        };
+        self.customize.clear_focus();
+        self.confirm_input.set_focus(false);
+        self.keyboard_hit = focusable.get(next).copied();
+        if self.keyboard_hit == Some(Hit::ConfirmField) {
+            self.confirm_input.set_focus(true);
+        }
+        if let Some((rect, _)) = lay.hits.get(next) {
+            self.ensure_visible(*rect, lay.viewport_content);
+        }
     }
 
     fn handle_global_shortcut_key(
@@ -3679,6 +3908,30 @@ mod tests {
             device_id: unsafe { std::mem::zeroed() },
             event: ev,
             is_synthetic: false,
+        }
+    }
+
+    fn named_key_ev(key: winit::keyboard::NamedKey) -> WindowEvent {
+        use winit::event::KeyEvent;
+        use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(key);
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = winit::event::ElementState::Pressed;
+        ev.repeat = false;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn wheel_ev(lines: f32) -> WindowEvent {
+        WindowEvent::MouseWheel {
+            device_id: unsafe { std::mem::zeroed() },
+            delta: winit::event::MouseScrollDelta::LineDelta(0.0, lines),
+            phase: winit::event::TouchPhase::Moved,
         }
     }
 
@@ -3898,6 +4151,49 @@ mod tests {
     }
 
     #[test]
+    fn short_viewport_scrolls_body_without_moving_sticky_footer() {
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
+        app.goto(&mut doc, Step::Customize);
+        let before = app.compute_layout();
+        let footer_before = before.primary.unwrap();
+        assert!(app.max_scroll() > 100.0);
+
+        feed(&mut app, &mut doc, &cursor_ev(160.0, 220.0));
+        feed(&mut app, &mut doc, &wheel_ev(-3.0));
+        assert!(app.scroll_y > 0.0);
+        let after = app.compute_layout();
+        assert!(after.content.y0 < before.content.y0);
+        assert_eq!(after.primary, Some(footer_before));
+        assert_eq!(after.viewport_content, before.viewport_content);
+    }
+
+    #[test]
+    fn tab_reaches_every_profile_control_and_both_footer_actions() {
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
+        app.goto(&mut doc, Step::Customize);
+        let tab = named_key_ev(winit::keyboard::NamedKey::Tab);
+
+        for slot in 0..7 {
+            feed(&mut app, &mut doc, &tab);
+            assert_eq!(app.customize.keyboard_slot(), Some(slot));
+        }
+        assert!(app.scroll_y > 0.0, "lower controls are scrolled into view");
+
+        feed(&mut app, &mut doc, &tab);
+        assert_eq!(app.keyboard_hit, Some(Hit::Back));
+        feed(&mut app, &mut doc, &tab);
+        assert_eq!(app.keyboard_hit, Some(Hit::Next));
+        feed(
+            &mut app,
+            &mut doc,
+            &named_key_ev(winit::keyboard::NamedKey::Enter),
+        );
+        assert_eq!(app.step, Step::Confirm, "focused Continue activates");
+    }
+
+    #[test]
     fn advancing_requires_selections() {
         let (mut app, mut doc) = seeded_app();
         // Source is seeded → can advance to Drive.
@@ -3912,6 +4208,37 @@ mod tests {
         assert_eq!(app.step, Step::Customize);
         app.advance(&mut doc);
         assert_eq!(app.step, Step::Confirm);
+    }
+
+    #[test]
+    fn privileged_helper_capability_enables_confirm_but_disabled_backend_does_not() {
+        let (mut app, mut doc) = seeded_app();
+        app.select_target(&mut doc, 0);
+        app.goto(&mut doc, Step::Confirm);
+        app.confirm_input.set_text("sdb");
+
+        assert!(crate::write::WriteBackend::PrivilegedHelper.is_available());
+        assert!(app.can_advance_with_writer(
+            Step::Confirm,
+            crate::write::WriteBackend::PrivilegedHelper.is_available()
+        ));
+        assert!(!app.can_advance_with_writer(
+            Step::Confirm,
+            crate::write::WriteBackend::Disabled.is_available()
+        ));
+    }
+
+    #[test]
+    fn pending_release_download_keeps_the_event_loop_awake() {
+        let (mut app, _doc) = seeded_app();
+        assert!(!app.needs_animation_frame());
+
+        let (_tx, rx) = std::sync::mpsc::channel();
+        app.release_rx = Some(rx);
+        assert!(app.needs_animation_frame());
+
+        app.release_rx = None;
+        assert!(!app.needs_animation_frame());
     }
 
     #[test]

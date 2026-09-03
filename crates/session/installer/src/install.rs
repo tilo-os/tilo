@@ -72,6 +72,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use zeroize::Zeroizing;
 
+use crate::disks::PartitionExtent;
+
 /// Path to the privileged install backend installed on the live medium.
 pub const INSTALL_BIN: &str = "/usr/libexec/qos-install";
 /// Path to the privileged power backend (reboot / poweroff).
@@ -98,6 +100,20 @@ pub struct InstallOptions {
     pub alongside_efi: String,
     pub alongside_efi_partuuid: String,
     pub alongside_efi_size_bytes: u64,
+    /// Non-zero only for the guided path that appends two partitions inside a
+    /// reviewed unallocated GPT extent. Existing partitions are carried as a
+    /// complete identity/geometry snapshot for privileged revalidation.
+    pub guided_free_start_bytes: u64,
+    pub guided_free_size_bytes: u64,
+    pub guided_efi_start_bytes: u64,
+    pub guided_efi_size_bytes: u64,
+    pub guided_root_start_bytes: u64,
+    pub guided_root_size_bytes: u64,
+    pub disk_partition_table_uuid: String,
+    pub disk_logical_sector_size: u64,
+    pub guided_efi_partuuid: String,
+    pub guided_root_partuuid: String,
+    pub expected_partitions: Vec<PartitionExtent>,
     /// Root filesystem: `btrfs` (default), `ext4`, or `xfs`.
     pub filesystem: String,
     /// Hostname seeded into the installed system.
@@ -139,6 +155,17 @@ impl Default for InstallOptions {
             alongside_efi: String::new(),
             alongside_efi_partuuid: String::new(),
             alongside_efi_size_bytes: 0,
+            guided_free_start_bytes: 0,
+            guided_free_size_bytes: 0,
+            guided_efi_start_bytes: 0,
+            guided_efi_size_bytes: 0,
+            guided_root_start_bytes: 0,
+            guided_root_size_bytes: 0,
+            disk_partition_table_uuid: String::new(),
+            disk_logical_sector_size: 0,
+            guided_efi_partuuid: String::new(),
+            guided_root_partuuid: String::new(),
+            expected_partitions: Vec::new(),
             filesystem: "btrfs".to_string(),
             hostname: "qos".to_string(),
             full_name: String::new(),
@@ -199,7 +226,37 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
     if !opts.locale.trim().is_empty() {
         cmd.arg("--locale").arg(opts.locale.trim());
     }
-    if opts.alongside_root.is_empty() {
+    if opts.guided_free_size_bytes > 0 {
+        cmd.arg("--guided-alongside")
+            .arg("--free-start-bytes")
+            .arg(opts.guided_free_start_bytes.to_string())
+            .arg("--free-size-bytes")
+            .arg(opts.guided_free_size_bytes.to_string())
+            .arg("--efi-start-bytes")
+            .arg(opts.guided_efi_start_bytes.to_string())
+            .arg("--efi-size-bytes")
+            .arg(opts.guided_efi_size_bytes.to_string())
+            .arg("--root-start-bytes")
+            .arg(opts.guided_root_start_bytes.to_string())
+            .arg("--root-size-bytes")
+            .arg(opts.guided_root_size_bytes.to_string())
+            .arg("--expect-disk-ptuuid")
+            .arg(&opts.disk_partition_table_uuid)
+            .arg("--expect-logical-sector-size")
+            .arg(opts.disk_logical_sector_size.to_string())
+            .arg("--new-efi-partuuid")
+            .arg(&opts.guided_efi_partuuid)
+            .arg("--new-root-partuuid")
+            .arg(&opts.guided_root_partuuid)
+            .arg("--confirm-free-space")
+            .arg(disk);
+        for partition in &opts.expected_partitions {
+            cmd.arg("--expect-partition").arg(format!(
+                "{}:{}:{}",
+                partition.part_uuid, partition.start_bytes, partition.size_bytes
+            ));
+        }
+    } else if opts.alongside_root.is_empty() {
         // The graphical UI has already required the person to type this exact
         // device name. Repeat that decision at the privileged boundary so an
         // older or accidentally scripted caller cannot erase with `--yes`
@@ -513,6 +570,52 @@ mod tests {
                 .any(|pair| pair == ["--confirm-root", "/dev/nvme0n1p4"])
         );
         assert!(!args.contains(&"--confirm-erase"));
+    }
+
+    #[test]
+    fn install_command_binds_the_complete_guided_free_space_plan() {
+        let opts = InstallOptions {
+            disk_size_bytes: 200 * 1024 * 1024 * 1024,
+            disk_major_minor: "259:0".into(),
+            disk_serial: "QOS-NVME".into(),
+            guided_free_start_bytes: 100 * 1024 * 1024 * 1024,
+            guided_free_size_bytes: 100 * 1024 * 1024 * 1024 - 1024 * 1024,
+            guided_efi_start_bytes: 100 * 1024 * 1024 * 1024,
+            guided_efi_size_bytes: 2 * 1024 * 1024 * 1024,
+            guided_root_start_bytes: 102 * 1024 * 1024 * 1024,
+            guided_root_size_bytes: 98 * 1024 * 1024 * 1024 - 1024 * 1024,
+            disk_partition_table_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            disk_logical_sector_size: 512,
+            guided_efi_partuuid: "10000000-0000-4000-8000-000000000001".into(),
+            guided_root_partuuid: "20000000-0000-4000-8000-000000000002".into(),
+            expected_partitions: vec![PartitionExtent {
+                part_uuid: "00000000-0000-0000-0000-000000000001".into(),
+                start_bytes: 1024 * 1024,
+                size_bytes: 100 * 1024 * 1024 * 1024 - 1024 * 1024,
+            }],
+            ..InstallOptions::default()
+        };
+        let cmd = install_command("/dev/nvme0n1", "qq", &opts);
+        let args: Vec<&str> = cmd.get_args().map(|arg| arg.to_str().unwrap()).collect();
+        assert!(args.contains(&"--guided-alongside"));
+        assert!(!args.contains(&"--confirm-erase"));
+        for expected in [
+            [
+                "--expect-disk-ptuuid",
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            ],
+            ["--expect-logical-sector-size", "512"],
+            ["--confirm-free-space", "/dev/nvme0n1"],
+            [
+                "--expect-partition",
+                "00000000-0000-0000-0000-000000000001:1048576:107373133824",
+            ],
+        ] {
+            assert!(
+                args.windows(2).any(|pair| pair == expected),
+                "missing guided binding {expected:?}: {args:?}"
+            );
+        }
     }
 
     #[test]
