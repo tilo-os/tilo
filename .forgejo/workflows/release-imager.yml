@@ -187,7 +187,29 @@ jobs:
               ;;
           esac
       - run: cargo test -p imager --lib --locked
-      - run: apps/imager/packaging/package-host.sh
+      - name: Build the complete native Linux package set
+        env:
+          QOS_REQUIRE_NATIVE_PACKAGES: "1"
+        run: apps/imager/packaging/package-host.sh
+      - name: Launch the packaged Linux UI offscreen
+        run: |
+          set -euo pipefail
+          smoke="$(mktemp -d)"
+          trap 'rm -rf "$smoke"' EXIT
+          archive="dist/qos-imager/qos-imager-linux-${{ matrix.arch }}.tar.gz"
+          tar -xzf "$archive" -C "$smoke"
+          "$smoke/qos-imager-linux-${{ matrix.arch }}/qos-imager" \
+            --shots "$smoke/archive.png" --scenario confirm --viewport 1180x820
+          test -s "$smoke/archive.png"
+          appimage="dist/qos-imager/qos-imager-linux-${{ matrix.arch }}.AppImage"
+          if [ -f "$appimage" ]; then
+            APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" \
+              --shots "$smoke/appimage.png" --scenario complete --viewport 1180x820
+            test -s "$smoke/appimage.png"
+          elif [[ "${GITHUB_REF:-}" == refs/tags/imager-v* ]]; then
+            printf 'release AppImage is missing\n' >&2
+            exit 1
+          fi
       # Forgejo does not implement the Artifact API v2 used by v4.
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
@@ -254,8 +276,32 @@ jobs:
           }
       - shell: powershell
         run: cargo test -p imager --lib --locked
-      - shell: powershell
+      - name: Build the complete native Windows package set
+        shell: powershell
+        env:
+          QOS_REQUIRE_NATIVE_PACKAGES: "1"
         run: apps/imager/packaging/package-host.ps1
+      - name: Install and launch the packaged Windows UI offscreen
+        shell: powershell
+        run: |
+          $Smoke = Join-Path $env:RUNNER_TEMP "qos-imager-smoke"
+          $Install = Join-Path $Smoke "installed"
+          New-Item -ItemType Directory -Force -Path $Smoke | Out-Null
+          $Setup = "dist/qos-imager/qos-imager-setup-windows-x86_64.exe"
+          if (Test-Path $Setup) {
+            & $Setup /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$Install"
+            if ($LASTEXITCODE -ne 0) { throw "qOS Imager setup failed" }
+            $Binary = Join-Path $Install "qos-imager.exe"
+          } elseif ($env:GITHUB_REF -like "refs/tags/imager-v*") {
+            throw "release setup executable is missing"
+          } else {
+            $Binary = "dist/qos-imager/qos-imager-windows-x86_64.exe"
+          }
+          $Shot = Join-Path $Smoke "installed.png"
+          & $Binary --shots $Shot --scenario confirm --viewport 1180x820
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $Shot) -or (Get-Item $Shot).Length -eq 0) {
+            throw "packaged qOS Imager did not render its UI"
+          }
       - name: Validate the generated WinGet manifest
         if: startsWith(github.ref, 'refs/tags/imager-v')
         shell: powershell
@@ -350,7 +396,39 @@ jobs:
               ;;
           esac
       - run: cargo test -p imager --lib --locked
-      - run: apps/imager/packaging/package-host.sh
+      - name: Build the complete native macOS package set
+        env:
+          QOS_REQUIRE_NATIVE_PACKAGES: "1"
+        run: apps/imager/packaging/package-host.sh
+      - name: Mount and launch the packaged macOS UI offscreen
+        run: |
+          set -euo pipefail
+          smoke="$(mktemp -d)"
+          mountpoint="$smoke/mount"
+          mkdir -p "$mountpoint"
+          cleanup() {
+            hdiutil detach "$mountpoint" -quiet 2>/dev/null || true
+            rm -rf "$smoke"
+          }
+          trap cleanup EXIT
+          dmg="dist/qos-imager/qos-imager-macos-${{ matrix.arch }}.dmg"
+          if [ -f "$dmg" ]; then
+            hdiutil attach "$dmg" -quiet -nobrowse -readonly -mountpoint "$mountpoint"
+            "$mountpoint/qOS Imager.app/Contents/MacOS/qos-imager" \
+              --shots "$smoke/dmg.png" --scenario complete --viewport 1180x820
+            test -s "$smoke/dmg.png"
+            if [[ "${GITHUB_REF:-}" == refs/tags/imager-v* ]]; then
+              codesign --verify --deep --strict --verbose=2 \
+                "$mountpoint/qOS Imager.app"
+            fi
+          elif [[ "${GITHUB_REF:-}" == refs/tags/imager-v* ]]; then
+            printf 'release DMG is missing\n' >&2
+            exit 1
+          else
+            "dist/qos-imager/qOS Imager.app/Contents/MacOS/qos-imager" \
+              --shots "$smoke/app.png" --scenario complete --viewport 1180x820
+            test -s "$smoke/app.png"
+          fi
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: qos-imager-macos-${{ matrix.arch }}
