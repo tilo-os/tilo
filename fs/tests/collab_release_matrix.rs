@@ -1142,7 +1142,7 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
         .ok()?;
         (!authority
             .handle()
-            .permits(&reader, "/survivor.txt", fs::Access::Read))
+            .permits_peer(&reader, "/survivor.txt", fs::Access::Read))
         .then_some(())
     });
     let revoked_mount = temp.path().join("revoked-reader-mount");
