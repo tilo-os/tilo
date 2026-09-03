@@ -1621,7 +1621,7 @@ impl Workspace {
 
         let (local_tx, local_rx) = mpsc::unbounded_channel();
         let mut tasks = Vec::new();
-        let gossip_sender = if policy.is_none() {
+        let (gossip_sender, reconcile_rx) = if policy.is_none() {
             let topic = TopicId::from_bytes(topic_bytes);
             let gtopic = if boot_ids.is_empty() {
                 gossip.subscribe(topic, vec![]).await?
@@ -1636,13 +1636,13 @@ impl Workspace {
                 namespace.clone(),
                 hydrator.clone(),
             ))));
-            Some(sender)
+            (Some(sender), None)
         } else {
-            // Dropping the receiver makes `broadcast_delta` a cheap no-op.
-            // Authenticated anti-entropy reads the namespace itself and does
-            // not need a second change queue.
-            drop(local_rx);
-            None
+            // Enforced workspaces cannot relay unauthenticated gossip deltas,
+            // but local mutations still wake authenticated anti-entropy. This
+            // avoids making a live NAS wait for a polling tick and provides a
+            // prompt retry after a transient exchange failure.
+            (None, Some(local_rx))
         };
         // Anti-entropy backstop: periodically pull+merge peers' full docs and
         // resolve conflicts, so a missed gossip delta or a mid-join window
@@ -1655,6 +1655,7 @@ impl Workspace {
             identity,
             policy,
             record_plane,
+            reconcile_rx,
         ))));
 
         Ok(Workspace {
@@ -2090,6 +2091,7 @@ async fn reconcile_loop(
     identity: FsTransportIdentity,
     policy: PeerPolicy,
     records: Option<RecordPlane>,
+    mut local_rx: Option<mpsc::UnboundedReceiver<Bytes>>,
 ) {
     let may_write = peer_may_write_whole_workspace(&policy, &identity.user_public_key())
         || peer_may_write_whole_workspace(&policy, &identity.device_public_key());
@@ -2098,7 +2100,18 @@ async fn reconcile_loop(
     // previews once even if the first anti-entropy exchange is clean.
     let mut refresh_thumbnails = true;
     loop {
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        if let Some(receiver) = &mut local_rx {
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_secs(3)) => {}
+                mutation = receiver.recv() => {
+                    if mutation.is_none() {
+                        local_rx = None;
+                    }
+                }
+            }
+        } else {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
 
         for peer in identity.authenticated_peer_addrs() {
             hydrator.add_peer(peer);
@@ -4984,7 +4997,7 @@ mod tests {
         let store_a = Arc::new(ContentStore::memory());
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
         let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
-        let (_ws_a, ticket) = Workspace::host(
+        let (ws_a, ticket) = Workspace::host(
             ep_a.clone(),
             look_a,
             store_a,
@@ -5002,7 +5015,7 @@ mod tests {
         let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
         let store_b = Arc::new(ContentStore::memory());
         let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
-        let _ws_b = Workspace::join(
+        let ws_b = Workspace::join(
             ep_b.clone(),
             look_b,
             store_b,
@@ -5015,23 +5028,31 @@ mod tests {
         .await
         .unwrap();
 
-        ns_b.lock()
-            .unwrap()
-            .create_file(ROOT_INO, "from-b", None, 0, 2)
-            .unwrap();
-        sync_with_peer(&ep_b, ticket.node.clone(), &ns_b, &auth_b)
-            .await
-            .expect("B is authorised to sync into A");
-        assert!(ns_a.lock().unwrap().entry_at("from-b").is_some());
+        let from_b = {
+            let mut namespace = ns_b.lock().unwrap();
+            namespace
+                .create_file(ROOT_INO, "from-b", None, 0, 2)
+                .unwrap();
+            namespace.save_incremental()
+        };
+        ws_b.sync.broadcast_delta(from_b);
+        assert!(
+            wait_until(|| ns_a.lock().unwrap().entry_at("from-b").is_some()).await,
+            "B's authenticated mutation wake must sync into A"
+        );
 
-        ns_a.lock()
-            .unwrap()
-            .create_file(ROOT_INO, "from-a", None, 0, 3)
-            .unwrap();
-        sync_with_peer(&ep_a, ep_b.addr(), &ns_a, &auth_a)
-            .await
-            .expect("A is authorised to sync into B");
-        assert!(ns_b.lock().unwrap().entry_at("from-a").is_some());
+        let from_a = {
+            let mut namespace = ns_a.lock().unwrap();
+            namespace
+                .create_file(ROOT_INO, "from-a", None, 0, 3)
+                .unwrap();
+            namespace.save_incremental()
+        };
+        ws_a.sync.broadcast_delta(from_a);
+        assert!(
+            wait_until(|| ns_b.lock().unwrap().entry_at("from-a").is_some()).await,
+            "A's authenticated mutation wake must sync into B"
+        );
     }
 
     /// The negative on the content plane: a stranger who already knows a
