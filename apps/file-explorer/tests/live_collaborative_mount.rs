@@ -17,7 +17,7 @@ use iroh::endpoint::{Endpoint, presets};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(clippy::too_many_lines)] // Mandatory end-to-end FUSE contract is one lifecycle.
-async fn files_reads_live_projections_and_applies_multi_selection_pin_policy() {
+async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendants() {
     let fuse = std::fs::metadata("/dev/fuse").expect("mandatory test requires /dev/fuse");
     assert!(std::os::unix::fs::FileTypeExt::is_char_device(
         &fuse.file_type()
@@ -33,6 +33,12 @@ async fn files_reads_live_projections_and_applies_multi_selection_pin_policy() {
     let namespace = Arc::new(Mutex::new(
         Namespace::new("files-live-mount").expect("create test namespace"),
     ));
+    let folder_ino = namespace
+        .lock()
+        .unwrap()
+        .create_dir(ROOT_INO, "Offline", 1)
+        .unwrap();
+    let folder_record_id = namespace.lock().unwrap().record_id_for(folder_ino).unwrap();
     let mut expected = Vec::new();
     for (name, body) in [
         ("first.png", b"first live payload".as_slice()),
@@ -66,7 +72,7 @@ async fn files_reads_live_projections_and_applies_multi_selection_pin_policy() {
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if std::fs::read_dir(&mount).is_ok_and(|entries| entries.count() == expected.len()) {
+        if std::fs::read_dir(&mount).is_ok_and(|entries| entries.count() == expected.len() + 1) {
             break;
         }
         assert!(
@@ -80,12 +86,16 @@ async fn files_reads_live_projections_and_applies_multi_selection_pin_policy() {
     unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", &mount) };
     let mut files = FileExplorerWidget::with_persistence(None, None);
     files.navigate(mount.clone());
-    assert_eq!(files.entries().len(), 2);
+    assert_eq!(files.entries().len(), expected.len() + 1);
     for entry in files.entries() {
-        let (_, record_id, hash, bytes) = expected
-            .iter()
-            .find(|(name, ..)| name == &entry.name)
-            .unwrap();
+        let Some((_, record_id, hash, bytes)) =
+            expected.iter().find(|(name, ..)| name == &entry.name)
+        else {
+            assert_eq!(entry.name, "Offline");
+            assert!(entry.is_dir);
+            assert_eq!(entry.record_id, Some(*folder_record_id.0.as_bytes()));
+            continue;
+        };
         assert_eq!(entry.record_id, Some(*record_id.0.as_bytes()));
         assert_eq!(entry.content_hash, Some(*hash.as_bytes()));
         let projection = entry.availability.as_ref().unwrap();
@@ -93,32 +103,96 @@ async fn files_reads_live_projections_and_applies_multi_selection_pin_policy() {
         assert_eq!(projection.residency, Residency::Resident { bytes: *bytes });
     }
 
-    files.debug_select(&[0, 1]);
+    let folder_index = files
+        .entries()
+        .iter()
+        .position(|entry| entry.name == "Offline")
+        .unwrap();
+    files.debug_select(&[folder_index]);
     assert!(files.apply_command(FileCommand::KeepOffline));
-    assert!(files.entries().iter().all(|entry| {
-        entry
-            .availability
-            .as_ref()
-            .is_some_and(|projection| projection.policy == AvailabilityPolicy::Pinned)
-    }));
+    let folder = files
+        .entries()
+        .iter()
+        .find(|entry| entry.name == "Offline")
+        .unwrap();
+    let folder_availability = folder.availability.as_ref().unwrap();
+    assert_eq!(folder_availability.policy, AvailabilityPolicy::Pinned);
+    assert!(!folder_availability.policy_inherited);
+    assert_eq!(
+        xattr::get(&mount.join("Offline"), fs::syncstate::PIN_XATTR)
+            .unwrap()
+            .as_deref(),
+        Some(b"pinned".as_slice())
+    );
+
+    // Create a descendant after the user pins its folder. This crosses the
+    // real FUSE mutation path and proves that Files receives the inherited
+    // policy badge for future entries, rather than only for a pre-seeded
+    // availability record.
+    let later = mount.join("Offline/later.txt");
+    std::fs::write(&later, b"created after folder pin").unwrap();
+    let child_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if std::fs::read_dir(mount.join("Offline")).is_ok_and(|entries| entries.count() == 1) {
+            break;
+        }
+        assert!(
+            Instant::now() < child_deadline,
+            "future descendant did not appear"
+        );
+        tokio::task::yield_now().await;
+    }
+    files.navigate(mount.join("Offline"));
+    let child = files
+        .entries()
+        .iter()
+        .find(|entry| entry.name == "later.txt")
+        .expect("Files sees a descendant created after pinning its folder");
+    let child_availability = child.availability.as_ref().unwrap();
+    assert_eq!(child_availability.policy, AvailabilityPolicy::Pinned);
+    assert!(child_availability.policy_inherited);
+    assert_eq!(
+        child_availability.residency,
+        Residency::Resident { bytes: 24 }
+    );
     {
         let registry = availability.lock().unwrap();
         for (_, record_id, _, _) in &expected {
             assert_eq!(
                 registry.get(*record_id).unwrap().policy,
-                fs::availability::AvailabilityPolicy::Pinned
+                fs::availability::AvailabilityPolicy::Automatic
             );
         }
+        assert_eq!(
+            registry.get(folder_record_id).unwrap().policy,
+            fs::availability::AvailabilityPolicy::Pinned
+        );
         drop(registry);
     }
 
+    files.navigate(mount.clone());
+    files.debug_select(&[folder_index]);
     assert!(files.apply_command(FileCommand::RemoveOfflinePin));
-    assert!(files.entries().iter().all(|entry| {
-        entry
-            .availability
-            .as_ref()
-            .is_some_and(|projection| projection.policy == AvailabilityPolicy::Automatic)
-    }));
+    let folder = files
+        .entries()
+        .iter()
+        .find(|entry| entry.name == "Offline")
+        .unwrap();
+    assert_eq!(
+        folder.availability.as_ref().unwrap().policy,
+        AvailabilityPolicy::Automatic
+    );
+    files.navigate(mount.join("Offline"));
+    let child = files
+        .entries()
+        .iter()
+        .find(|entry| entry.name == "later.txt")
+        .unwrap();
+    assert_eq!(
+        child.availability.as_ref().unwrap().policy,
+        AvailabilityPolicy::Automatic
+    );
+    assert!(!child.availability.as_ref().unwrap().policy_inherited);
 
     drop(files);
     match previous_roots {
