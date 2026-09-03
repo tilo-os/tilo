@@ -8215,6 +8215,34 @@ impl ShellOverlayHost {
                     });
                 }
             }
+            WorkspaceSettingsOutcome::AddAgent => {
+                if is_owner {
+                    // Naming an agent belongs in the command palette's typed
+                    // parameter flow. It keeps setup usable with keyboard,
+                    // pointer, accessibility tools, and automation alike.
+                    self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+                    self.palette.set_query("Invite agent to workspace");
+                    self.last_search_query = "\0agent-onboarding\0".to_string();
+                }
+            }
+            WorkspaceSettingsOutcome::ReviewAgent(agent) => {
+                if is_owner && let Some(chrome) = self.chrome.clone() {
+                    let mut st = chrome.borrow_mut();
+                    let subject_index = st.tree().active_workspace().and_then(|ws| {
+                        crate::shell::workspace_settings::grant_subjects(ws)
+                            .iter()
+                            .position(|subject| {
+                                subject.kind == crate::shell::workspace_settings::SubjectKind::Agent
+                                    && subject.id == agent
+                            })
+                    });
+                    if let Some(subject_index) = subject_index {
+                        st.ws_grant_draft.subject_index = subject_index;
+                        st.open_workspace_settings(WsTab::Permissions);
+                        st.bump();
+                    }
+                }
+            }
             WorkspaceSettingsOutcome::RemoveAgent(agent) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
                     edit_active_workspace_caps(&chrome, move |ws, actor| {
