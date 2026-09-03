@@ -24,6 +24,7 @@ import json
 import os
 import socket
 import sys
+import urllib.parse
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 DEFAULT_SOCKET = "/tmp/nirios.sock"
@@ -181,6 +182,59 @@ TOOLS = [
 ]
 
 
+def action_resource_uri(provider: str, id_: str) -> str:
+    """Stable MCP address for one descriptor, with no screen coordinates."""
+    return "qos://action/{}/{}".format(
+        urllib.parse.quote(provider, safe=""), urllib.parse.quote(id_, safe="")
+    )
+
+
+def list_resources(comp: Compositor) -> dict:
+    """Project the permission-filtered action catalogue as standard MCP resources."""
+    actions = comp.enumerate_actions("").get("actions", [])
+    return {
+        "resources": [
+            {
+                "uri": action_resource_uri(str(action.get("provider", "")), str(action.get("id", ""))),
+                "name": str(action.get("title") or action.get("id") or "qOS action"),
+                "description": str(action.get("subtitle") or "Typed qOS action descriptor"),
+                "mimeType": "application/vnd.qos.action+json",
+            }
+            for action in actions
+            if action.get("provider") and action.get("id")
+        ]
+    }
+
+
+def read_resource(comp: Compositor, uri: str) -> dict:
+    """Read one descriptor after re-enumerating, so revoked actions fail closed."""
+    parsed = urllib.parse.urlparse(uri)
+    parts = [urllib.parse.unquote(part) for part in parsed.path.split("/") if part]
+    if parsed.scheme != "qos" or parsed.netloc != "action" or len(parts) != 2:
+        raise ValueError("unknown qOS resource URI")
+    provider, id_ = parts
+    actions = comp.enumerate_actions("").get("actions", [])
+    descriptor = next(
+        (
+            action
+            for action in actions
+            if action.get("provider") == provider and action.get("id") == id_
+        ),
+        None,
+    )
+    if descriptor is None:
+        raise CompositorError("unknown_action", "resource is unavailable or no longer permitted")
+    return {
+        "contents": [
+            {
+                "uri": uri,
+                "mimeType": "application/vnd.qos.action+json",
+                "text": json.dumps(descriptor, indent=2),
+            }
+        ]
+    }
+
+
 def call_tool(comp: Compositor, name: str, args: dict) -> dict:
     """Run one tool. Returns an MCP tools/call result.
 
@@ -233,7 +287,10 @@ def handle(comp: Compositor, req: dict) -> dict | None:
         version = want if want in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0]
         return _ok(req_id, {
             "protocolVersion": version,
-            "capabilities": {"tools": {}},
+            "capabilities": {
+                "tools": {"listChanged": True},
+                "resources": {"listChanged": True},
+            },
             "serverInfo": SERVER_INFO,
         })
     if method in ("notifications/initialized", "notifications/cancelled"):
@@ -242,6 +299,17 @@ def handle(comp: Compositor, req: dict) -> dict | None:
         return _ok(req_id, {})
     if method == "tools/list":
         return _ok(req_id, {"tools": TOOLS})
+    if method == "resources/list":
+        try:
+            return _ok(req_id, list_resources(comp))
+        except (CompositorError, ConnectionError, OSError, ValueError) as e:
+            return _rpc_error(req_id, -32002, str(e))
+    if method == "resources/read":
+        try:
+            uri = str(((req.get("params") or {}).get("uri") or ""))
+            return _ok(req_id, read_resource(comp, uri))
+        except (CompositorError, ConnectionError, OSError, ValueError) as e:
+            return _rpc_error(req_id, -32002, str(e))
     if method == "tools/call":
         params = req.get("params") or {}
         return _ok(req_id, call_tool(comp, params.get("name", ""), params.get("arguments") or {}))
@@ -253,6 +321,10 @@ def handle(comp: Compositor, req: dict) -> dict | None:
 
 def _ok(req_id, result: dict) -> dict:
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
+
+
+def _rpc_error(req_id, code: int, message: str) -> dict:
+    return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
 
 def serve(comp: Compositor) -> int:

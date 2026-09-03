@@ -17,9 +17,9 @@
 //!   pane's docstring states which parts are live vs. sample.
 
 pub mod about;
-pub mod agent_models;
 pub mod accessibility;
 pub mod accounts;
+pub mod agent_models;
 pub mod appearance;
 pub mod audio;
 pub mod bluetooth;

@@ -187,12 +187,31 @@ impl CollabClient {
         identity: &[u8],
         participant_handle: &str,
     ) -> Result<ChannelHandle, NotAvailable> {
+        self.join_channel_as_kind(channel_id, identity, participant_handle, "person")
+            .await
+    }
+
+    /// Join as an explicitly typed participant. The broker validates an
+    /// agent request against the workspace; this is not a display-name hint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if admission fails or the broker connection
+    /// is unavailable.
+    pub async fn join_channel_as_kind(
+        &self,
+        channel_id: &str,
+        identity: &[u8],
+        participant_handle: &str,
+        participant_kind: &str,
+    ) -> Result<ChannelHandle, NotAvailable> {
         let mut req = self.inner.join_channel_request();
         {
             let mut builder = req.get();
             builder.set_channel_id(channel_id);
             builder.set_identity(identity);
             builder.set_participant_handle(participant_handle);
+            builder.set_participant_kind(participant_kind);
         }
         let reply = req.send().promise.await?;
         let handle = reply.get()?.get_handle()?;

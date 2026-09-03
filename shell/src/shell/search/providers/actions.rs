@@ -1348,7 +1348,8 @@ mod tests {
         (action.apply)(&mut c.borrow_mut(), &args).expect("owner admits agent");
 
         let state = c.borrow();
-        let ws = state.tree().active_workspace().expect("fixture has room");
+        let tree = state.tree();
+        let ws = tree.active_workspace().expect("fixture has room");
         assert_eq!(
             ws.role_of_agent("operator"),
             Some(crate::shell::state::CapRole::Editor),
