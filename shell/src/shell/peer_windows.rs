@@ -486,11 +486,15 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_lands_on_the_tab_as_the_reason() {
+    fn an_ownerless_window_stays_pending_until_room_authority_arrives() {
         let mut ws = room_owned_by("ada");
         ws.owner = None;
         let (mut tree, tab) = tree_with_peer_window(ws);
-        assert!(examine(&mut tree), "an unexamined window must be decided");
+        assert!(
+            !examine(&mut tree),
+            "missing authority is transient and must not become a permanent refusal"
+        );
+        assert!(any_pending(&tree), "the next authority sync must retry it");
         let note = tree.workspaces[0].strips[0].window_groups[0]
             .tabs
             .iter()
@@ -500,10 +504,9 @@ mod tests {
                 other => panic!("expected a peer window, got {other:?}"),
             })
             .expect("the tab is still there");
-        assert!(!note.is_empty(), "a refused window must state its reason");
         assert!(
-            !note.to_ascii_lowercase().contains("coming soon"),
-            "an app that is not here is not coming soon; got {note:?}"
+            note.is_empty(),
+            "a temporary authority race must not leave a stale error card; got {note:?}"
         );
     }
 }
