@@ -135,6 +135,15 @@ pub enum NetCmd {
         ws: WorkspaceId,
         msg: NeighbourMsg,
     },
+    /// Publish live workspace-control traffic over the route selected by the
+    /// canonical device mesh. Direct traffic uses the authenticated workspace
+    /// gossip plane; relayed traffic is sent only to the selected host's
+    /// ephemeral presence plane and is never retained.
+    PublishWorkspaceControl {
+        ws: WorkspaceId,
+        msg: NeighbourMsg,
+        route: WorkspaceControlRoute,
+    },
     /// Publish a shell-tree message that is known to contain the complete
     /// room history. Only the deliberate `HostReady` baseline uses this;
     /// ordinary `SyncResp` messages may be partial anti-entropy responses.
@@ -155,6 +164,13 @@ pub enum NetCmd {
     DisconnectHost {
         id: EndpointId,
     },
+}
+
+/// Concrete data-plane route for one workspace-control session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceControlRoute {
+    Direct { target: EndpointId },
+    Relayed { via: EndpointId },
 }
 
 #[derive(Debug, Clone)]
@@ -407,6 +423,17 @@ impl ActorState {
                     msg,
                     false,
                     gossip_fallback,
+                )
+                .await;
+            }
+            Some(NetCmd::PublishWorkspaceControl { ws, msg, route }) => {
+                publish_workspace_control(
+                    &self.topics,
+                    &self.host_sessions,
+                    &self.peers_seen,
+                    ws,
+                    msg,
+                    route,
                 )
                 .await;
             }
@@ -1011,6 +1038,44 @@ async fn publish(
         };
         if let Err(error) = result {
             tracing::warn!(ws, %error, "workspace host publish failed");
+        }
+    }
+}
+
+async fn publish_workspace_control(
+    topics: &HashMap<WorkspaceId, TopicRuntime>,
+    host_sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
+    peers_seen: &HashMap<(WorkspaceId, EndpointId), Instant>,
+    ws: WorkspaceId,
+    msg: NeighbourMsg,
+    route: WorkspaceControlRoute,
+) {
+    if !matches!(msg, NeighbourMsg::RemoteInput { .. }) {
+        tracing::warn!(ws, "refused non-input workspace-control publication");
+        return;
+    }
+    let Ok(bytes) = postcard::to_allocvec(&msg) else {
+        return;
+    };
+    match route {
+        WorkspaceControlRoute::Direct { target } => {
+            if !peers_seen.contains_key(&(ws, target)) {
+                tracing::warn!(ws, peer = %target, "direct workspace-control route is no longer live");
+                return;
+            }
+            let Some(topic) = topics.get(&ws) else { return };
+            if let Err(error) = topic.sender.broadcast(Bytes::from(bytes)).await {
+                tracing::warn!(ws, peer = %target, %error, "direct workspace-control publish failed");
+            }
+        }
+        WorkspaceControlRoute::Relayed { via } => {
+            let Some(runtime) = host_sessions.get(&(ws, via)) else {
+                tracing::warn!(ws, relay = %via, "workspace-control relay route is no longer live");
+                return;
+            };
+            if let Err(error) = runtime.session.publish_presence(bytes) {
+                tracing::warn!(ws, relay = %via, %error, "relayed workspace-control publish failed");
+            }
         }
     }
 }

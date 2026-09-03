@@ -265,6 +265,24 @@ pub(crate) fn test_number_action_binding() -> qos_actions::ActionBinding<f64> {
 }
 
 pub trait Widget {
+    /// Session-local broker requests emitted by an application widget. These
+    /// are never document mutations; the host drains them onto its already
+    /// authenticated collaboration channel.
+    fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
+        self.children_mut()
+            .into_iter()
+            .flat_map(Widget::take_collab_requests)
+            .collect()
+    }
+
+    /// Receive session-local broker events. The default recursively forwards
+    /// them so only the application owning a session id consumes it.
+    fn handle_collab_event(&mut self, event: &crate::collaboration::CollabEvent) {
+        for child in self.children_mut() {
+            child.handle_collab_event(event);
+        }
+    }
+
     /// Attach native child views after the host window exists. The default
     /// recursively reaches retained descendants; leaf adapters make mounting
     /// idempotent so this can be repeated after a structural rebuild.
