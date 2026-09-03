@@ -9,6 +9,7 @@ helper="$repo/os/usr/libexec/qos-system-extension-activate"
 userspace="$repo/os/usr/lib/systemd/system/qos-system-extension-userspace.service"
 boot="$repo/os/usr/lib/systemd/system/qos-system-extension-boot-stage.service"
 model="$repo/os/usr/lib/systemd/system/qos-local-model.service"
+user_model="$repo/os/usr/lib/systemd/user/qos-model-manager.service"
 socket="$repo/os/usr/lib/systemd/system/qos-system-extension-dispatcher.socket"
 dispatcher="$repo/os/usr/lib/systemd/system/qos-system-extension-dispatcher@.service"
 dispatch_helper="$repo/os/usr/libexec/qos-system-extension-dispatch"
@@ -25,6 +26,7 @@ for source in \
     'os/usr/lib/systemd/system/qos-system-extension-userspace.service /usr/lib/systemd/system/qos-system-extension-userspace.service' \
     'os/usr/lib/systemd/system/qos-system-extension-boot-stage.service /usr/lib/systemd/system/qos-system-extension-boot-stage.service' \
     'os/usr/lib/systemd/system/qos-local-model.service /usr/lib/systemd/system/qos-local-model.service' \
+    'os/usr/lib/systemd/user/qos-model-manager.service /usr/lib/systemd/user/qos-model-manager.service' \
     'os/usr/lib/systemd/system/qos-system-extension-dispatcher.socket /usr/lib/systemd/system/qos-system-extension-dispatcher.socket' \
     'os/usr/lib/systemd/system/qos-system-extension-dispatcher@.service /usr/lib/systemd/system/qos-system-extension-dispatcher@.service' \
     'os/usr/libexec/qos-system-extension-dispatch /usr/libexec/qos-system-extension-dispatch' \
@@ -77,6 +79,13 @@ need "$model" 'IPAddressAllow=::1/128' 'local-model runtime may bind beyond loop
 need "$model" 'PrivateDevices=yes' 'local-model runtime has ambient device access'
 need "$model" 'ReadOnlyPaths=/var/lib/qos/system-extensions /var/lib/qos/local-models /usr/share/qos/system-extensions' 'local-model runtime can replace verified packs'
 [ "$fail" -ne 0 ] || ok 'future local-model service is unprivileged and condition-gated'
+
+need "$user_model" 'ExecStart=/usr/bin/qos-model-manager serve --socket %t/qos/services/models.sock' 'per-user model service does not publish the launcher service socket'
+need "$user_model" 'ProtectSystem=strict' 'per-user model manager can write the immutable root'
+need "$user_model" 'ProtectHome=read-only' 'per-user model manager has broad home access'
+need "$user_model" 'ReadWritePaths=%h/.local/share/qos %h/.local/share/containers %t/qos' 'per-user model manager lacks narrowly writable model/runtime state'
+need "$containerfile" 'systemctl --global enable qos-model-manager.service' 'per-user model manager is not enabled in the image'
+[ "$fail" -ne 0 ] || ok 'Settings reaches a confined per-user model manager through the app-service channel'
 
 need "$socket" 'ListenStream=/run/qos/system-extension-api/request.sock' 'desktop request socket is not fixed-path'
 need "$socket" 'SocketGroup=qos-identity' 'desktop request socket is not group-gated'
