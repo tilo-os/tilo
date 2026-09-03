@@ -3134,7 +3134,10 @@ impl Widget for MailApp {
                                     .map(|(name, action)| {
                                         AccessNode::new(Role::Button)
                                             .with_name(name)
-                                            .with_action_target(format!("mail.reader:{action}"))
+                                            .with_action_target(format!(
+                                                "mail.reader:{}:{action}",
+                                                current.id
+                                            ))
                                             .with_state(AccessState::new().focusable(true))
                                     })
                                     .collect()),
@@ -3219,13 +3222,19 @@ impl Widget for MailApp {
             self.dirty = true;
             return true;
         }
-        if let Some(control) = target.strip_prefix("mail.reader:") {
+        if let Some(raw) = target.strip_prefix("mail.reader:") {
             if !matches!(action, Action::Activate) {
                 return false;
             }
-            let Some(message) = self.shared.borrow().selected else {
+            let Some((message_raw, control)) = raw.split_once(':') else {
                 return false;
             };
+            let Ok(message) = message_raw.parse::<MessageId>() else {
+                return false;
+            };
+            if self.shared.borrow().selected != Some(message) {
+                return false;
+            }
             let action = match control {
                 "reply" => CtxAction::Reply,
                 "archive" => CtxAction::Archive,
@@ -3876,6 +3885,25 @@ mod tests {
         assert_eq!(
             app.shared.borrow().mailbox.get(selected).unwrap().starred,
             !before_star
+        );
+        let other = app
+            .shared
+            .borrow()
+            .list_rows()
+            .into_iter()
+            .map(|(id, _)| id)
+            .find(|id| *id != selected)
+            .expect("second sample message");
+        app.shared.borrow_mut().select_message(&mut doc, other);
+        app.process_intents();
+        assert!(
+            !app.perform_semantic_action(
+                &star_target,
+                &Action::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ),
+            "a stale reader control cannot operate a newly selected message"
         );
 
         app.compose.open_blank();
