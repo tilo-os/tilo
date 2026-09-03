@@ -1,0 +1,27 @@
+[package]
+name = "local-model-service"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Verified, content-addressed local-model runtime service for qOS."
+
+[lib]
+name = "local_model_service"
+path = "src/lib.rs"
+
+[dependencies]
+agent-provider-config = { path = "../provider-config" }
+system-extension = { path = "../../system/system-extension" }
+atomic-file = { path = "../../system/atomic-file" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
