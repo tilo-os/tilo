@@ -59,6 +59,12 @@ fn unix_now_ms() -> u64 {
         })
 }
 
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
 /// Failure modes for `Relay::start`.
 #[derive(Debug, thiserror::Error)]
 pub enum RelayError {
@@ -422,6 +428,7 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
         ));
     }
     let mut collaborators = Vec::new();
+    let now = unix_now_secs();
     for workspace in bundle.workspaces {
         let ticket = fs::Ticket::decode(&workspace.ticket)
             .map_err(|error| RelayError::Identity(format!("invalid home-peer ticket: {error}")))?;
@@ -436,27 +443,43 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
         } else {
             workspace.relay_workspace_ids
         };
+        // An FS authority is deliberately *not* a relay-room membership
+        // list.  In particular, an FsPath grant lets a collaborator read a
+        // path in the global Files namespace; it must never silently give
+        // that person access to every shell room wired to the namespace.
+        // Only a governor-signed, explicit Scope::Room(<relay id>) grant
+        // admits a user to that particular relay topic.
         let mut authority_users = Vec::new();
         let mut governor = None;
-        if let Some(authority) = workspace.authority {
+        if let Some(authority) = workspace.authority.as_ref() {
             governor = Some(authority.governor);
             authority_users.push(hex::encode(authority.governor));
-            for capability in authority.capabilities {
-                if capability.effect == collab_types::Effect::Grant
-                    && let collab_types::Subject::User(user) = capability.subject
-                {
-                    authority_users.push(hex::encode(user.as_bytes()));
-                }
-            }
         }
         authority_users.sort_unstable();
         authority_users.dedup();
         collaborators.extend(authority_users.iter().cloned());
         for id in relay_workspace_ids {
-            let room_users = governor
-                .filter(|governor| id == crate::personal_continuity_workspace_id(governor))
+            let mut room_users = governor
                 .map(|governor| vec![hex::encode(governor)])
-                .unwrap_or_else(|| authority_users.clone());
+                .unwrap_or_default();
+            if let Some(authority) = workspace.authority.as_ref()
+                && id != crate::personal_continuity_workspace_id(&authority.governor)
+            {
+                let room = id.to_string();
+                for capability in &authority.capabilities {
+                    if capability.effect == collab_types::Effect::Grant
+                        && capability.is_live_at(Some(now))
+                        && matches!(&capability.scope, collab_types::Scope::Room(scope) if scope == &room)
+                        && let collab_types::Subject::User(user) = &capability.subject
+                    {
+                        let user = hex::encode(user.as_bytes());
+                        room_users.push(user.clone());
+                        collaborators.push(user);
+                    }
+                }
+            }
+            room_users.sort_unstable();
+            room_users.dedup();
             if !cfg.workspaces.iter().any(|binding| binding.id == id) {
                 cfg.workspaces.push(crate::config::WorkspaceBinding {
                     id,
@@ -640,6 +663,7 @@ fn spawn_home_peer_authority_refresh(
             };
             let mut users = vec![hex::encode(own_user)];
             let mut room_users: HashMap<u64, std::collections::HashSet<[u8; 32]>> = HashMap::new();
+            let now = unix_now_secs();
             let mut valid = true;
             for workspace in bundle.workspaces {
                 let Ok(ticket) = fs::Ticket::decode(&workspace.ticket) else {
@@ -660,27 +684,42 @@ fn spawn_home_peer_authority_refresh(
                     valid = false;
                     break;
                 }
-                let mut workspace_users = std::collections::HashSet::new();
+                // Keep a distinct membership set for every relay room.  A
+                // Files-path capability is not a shell-room invitation.
+                // This is intentionally rebuilt from verified, signed
+                // Scope::Room grants on each refresh so revocation removes
+                // an existing collaborator from the affected topic.
                 if !authority.tombstoned {
                     users.push(hex::encode(authority.governor));
-                    workspace_users.insert(authority.governor);
-                    for capability in authority.capabilities {
-                        if capability.effect == collab_types::Effect::Grant
-                            && let collab_types::Subject::User(user) = capability.subject
-                        {
-                            users.push(hex::encode(user.as_bytes()));
-                            workspace_users.insert(*user.as_bytes());
-                        }
+                    for room in &workspace.relay_workspace_ids {
+                        room_users
+                            .entry(*room)
+                            .or_default()
+                            .insert(authority.governor);
                     }
-                }
-                for room in workspace.relay_workspace_ids {
-                    let admitted =
-                        if room == crate::personal_continuity_workspace_id(&authority.governor) {
-                            std::collections::HashSet::from([authority.governor])
-                        } else {
-                            workspace_users.clone()
+                    for capability in &authority.capabilities {
+                        let collab_types::Scope::Room(room) = &capability.scope else {
+                            continue;
                         };
-                    room_users.entry(room).or_default().extend(admitted);
+                        let Ok(room) = room.parse::<u64>() else {
+                            continue;
+                        };
+                        // A signed authority may contain room grants for a
+                        // different host; they have no force outside this
+                        // bundle's explicit room binding.
+                        if !workspace.relay_workspace_ids.contains(&room)
+                            || room == crate::personal_continuity_workspace_id(&authority.governor)
+                            || capability.effect != collab_types::Effect::Grant
+                            || !capability.is_live_at(Some(now))
+                        {
+                            continue;
+                        }
+                        let collab_types::Subject::User(user) = &capability.subject else {
+                            continue;
+                        };
+                        users.push(hex::encode(user.as_bytes()));
+                        room_users.entry(room).or_default().insert(*user.as_bytes());
+                    }
                 }
             }
             if valid {
@@ -1537,14 +1576,15 @@ mod tests {
     }
 
     #[test]
-    fn collaborator_authority_never_admits_personal_continuity_room() {
-        use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+    fn room_scoped_authority_admits_only_its_signed_room() {
+        use collab_types::{CapOverride, Effect, Expiry, Scope, Subject, Verb};
 
         let temp = tempfile::tempdir().unwrap();
         let status = temp.path().join("status.json");
         let bundle_path = temp.path().join("home-peer.toml");
         let governor = ed25519_dalek::SigningKey::from_bytes(&[0x31; 32]);
-        let collaborator = [0x32; 32];
+        let collaborator_a = [0x32; 32];
+        let path_only_collaborator = [0x33; 32];
         let ticket = fs::Ticket {
             node: EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
             workspace: [9; 32],
@@ -1552,12 +1592,32 @@ mod tests {
         let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
             ticket.workspace_id(),
             1,
-            vec![CapOverride::new(
-                Subject::User(collab_types::Ed25519PublicKey(collaborator)),
-                Scope::FsPath("/".into()),
-                Effect::Grant,
-                Verb::Read,
-            )],
+            vec![
+                // The only capability that maps to a relay topic.
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(collaborator_a)),
+                    Scope::Room("42".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                ),
+                // A Files grant is intentionally insufficient to subscribe
+                // to any room, including unrelated room 43.
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(path_only_collaborator)),
+                    Scope::FsPath("/".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                ),
+                // Expired room grants must not resurrect a former member
+                // merely because the NAS reloads the signed authority.
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(collaborator_a)),
+                    Scope::Room("43".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                )
+                .expiring(Expiry::AtUnix(0)),
+            ],
             false,
             &governor,
         )
@@ -1571,7 +1631,7 @@ mod tests {
                 capability_json: "[]".into(),
                 authority: Some(authority.clone()),
                 principals: Vec::new(),
-                relay_workspace_ids: vec![42, continuity],
+                relay_workspace_ids: vec![42, 43, continuity],
             }],
         };
         std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
@@ -1586,7 +1646,21 @@ mod tests {
             .iter()
             .find(|binding| binding.id == 42)
             .unwrap();
-        assert!(normal.admitted_users.contains(&hex::encode(collaborator)));
+        assert!(normal.admitted_users.contains(&hex::encode(collaborator_a)));
+        assert!(
+            !normal
+                .admitted_users
+                .contains(&hex::encode(path_only_collaborator))
+        );
+        let unrelated = config
+            .workspaces
+            .iter()
+            .find(|binding| binding.id == 43)
+            .unwrap();
+        assert_eq!(
+            unrelated.admitted_users,
+            vec![hex::encode(authority.governor)]
+        );
         let private = config
             .workspaces
             .iter()

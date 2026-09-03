@@ -383,6 +383,89 @@ mod identity_fs_tests {
             }
         }
     }
+
+    #[test]
+    fn filesystem_export_projects_room_membership_per_workspace_and_preserves_revocation() {
+        let temp = tempfile::tempdir().expect("temp");
+        let output = temp.path().join("fs-caps.json");
+        let alice = collab_types::Ed25519PublicKey::from_bytes([0xa1; 32]);
+        let bob = collab_types::Ed25519PublicKey::from_bytes([0xb2; 32]);
+        let mut room_a = Workspace::test_default(WorkspaceId(1), "A");
+        let mut room_b = Workspace::test_default(WorkspaceId(2), "B");
+        let room_a_id = room_a.room;
+        let room_a_scope = room_a.room.to_string();
+        let room_b_scope = room_b.room.to_string();
+        let relay_a = crate::shell::network::room_topic_id(room_a.room).to_string();
+        let relay_b = crate::shell::network::room_topic_id(room_b.room).to_string();
+        room_a.capabilities.extend([
+            CapOverride::new(
+                Subject::User(alice),
+                Scope::Room(room_a_scope),
+                Effect::Grant,
+                Verb::Read,
+            ),
+            // A Files share remains Files authority, not an implicit relay
+            // membership on either room.
+            CapOverride::new(
+                Subject::User(alice),
+                Scope::FsPath("/var/workspace/a".into()),
+                Effect::Grant,
+                Verb::Read,
+            ),
+            CapOverride::new(
+                Subject::User(alice),
+                Scope::Room(room_a.room.to_string()),
+                Effect::Restrict,
+                Verb::Read,
+            ),
+        ]);
+        room_b.capabilities.push(CapOverride::new(
+            Subject::User(bob),
+            Scope::Room(room_b_scope),
+            Effect::Grant,
+            Verb::Read,
+        ));
+        let mut tree = WorkspaceTree::default();
+        tree.fs_acl_path = Some(output.clone());
+        tree.workspaces = vec![room_a, room_b];
+        tree.export_fs_capabilities();
+
+        let exported: Vec<CapOverride> =
+            serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
+        assert!(exported.iter().any(|capability| {
+            capability.subject == Subject::User(alice)
+                && capability.scope == Scope::Room(relay_a.clone())
+                && capability.effect == Effect::Grant
+        }));
+        assert!(exported.iter().any(|capability| {
+            capability.subject == Subject::User(alice)
+                && capability.scope == Scope::Room(relay_a.clone())
+                && capability.effect == Effect::Restrict
+        }));
+        assert!(exported.iter().any(|capability| {
+            capability.subject == Subject::User(bob)
+                && capability.scope == Scope::Room(relay_b.clone())
+        }));
+        assert!(exported.iter().all(|capability| {
+            !(capability.subject == Subject::User(alice)
+                && capability.scope == Scope::Room(relay_b.clone()))
+        }));
+        assert!(exported.iter().any(|capability| {
+            capability.subject == Subject::User(alice)
+                && capability.scope == Scope::FsPath("/var/workspace/a".into())
+        }));
+
+        tree.workspaces[0]
+            .capabilities
+            .retain(|capability| !matches!(&capability.scope, Scope::Room(room) if room == &room_a_id.to_string()));
+        tree.export_fs_capabilities();
+        let after_revoke: Vec<CapOverride> =
+            serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
+        assert!(after_revoke.iter().all(|capability| {
+            !(capability.subject == Subject::User(alice)
+                && capability.scope == Scope::Room(relay_a.clone()))
+        }));
+    }
 }
 
 /// Durable, globally-unique identity of a workspace as a collaboration
@@ -4641,6 +4724,49 @@ impl WorkspaceTree {
         self.export_fs_capabilities();
     }
 
+    /// Turn the room's signed membership authority into the exact numeric
+    /// relay shard it owns.  Files-path grants deliberately do not pass
+    /// through here: filesystem residency is global, while relay admission
+    /// is per room.  A `Workspace` capability is also room authority for its
+    /// containing workspace, so it is projected to that workspace's shard.
+    ///
+    /// The relay authenticates public keys, not display names. A canonical
+    /// hex person id is equivalent to a `Subject::User` in collab-types and
+    /// is converted here; an arbitrary named person cannot be safely made
+    /// into a network principal and is omitted fail-closed.
+    fn relay_room_capability(
+        workspace: &Workspace,
+        capability: &CapOverride,
+    ) -> Option<CapOverride> {
+        let applies_to_workspace = match &capability.scope {
+            Scope::Workspace => true,
+            // Current room documents use the durable UUID. Older shell
+            // mutation paths wrote the local workspace handle instead;
+            // accept it only while exporting that exact workspace, then
+            // normalize to the durable relay shard below.
+            Scope::Room(room) => {
+                room == &workspace.room.to_string() || room == &workspace.id.raw().to_string()
+            }
+            _ => false,
+        };
+        if !applies_to_workspace {
+            return None;
+        }
+        let subject = match &capability.subject {
+            Subject::User(user) => Subject::User(*user),
+            Subject::Principal(Principal::Person(person)) => {
+                let bytes: [u8; 32] = hex::decode(person).ok()?.try_into().ok()?;
+                Subject::User(collab_types::Ed25519PublicKey::from_bytes(bytes))
+            }
+            Subject::Role(_) | Subject::Principal(_) => return None,
+        };
+        let mut projected = capability.clone();
+        projected.subject = subject;
+        projected.scope =
+            Scope::Room(crate::shell::network::room_topic_id(workspace.room).to_string());
+        Some(projected)
+    }
+
     /// Write the capability list the filesystem enforces. The FUSE mount
     /// is a separate process reading a JSON array from the path its
     /// `--acl` names, written atomically so it never reads a half-written
@@ -4710,6 +4836,15 @@ impl WorkspaceTree {
                     caps.push(device_capability);
                 }
             }
+            // Signed room membership is a separate projection from Files
+            // access. Keep all Effects, including Restrict, so a relay
+            // revocation can never be widened by this export.
+            caps.extend(
+                workspace
+                    .capabilities
+                    .iter()
+                    .filter_map(|capability| Self::relay_room_capability(workspace, capability)),
+            );
         }
         let Ok(json) = serde_json::to_vec_pretty(&caps) else {
             return;
