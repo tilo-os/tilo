@@ -325,7 +325,7 @@ impl OnboardingView {
 
     fn build_composition(&self, theme: &Theme, panel_height: f32) -> Box<dyn Widget> {
         if let Some(page) = self.tour_page {
-            return self.build_tour_composition(theme, panel_height, page);
+            return Self::build_tour_composition(theme, panel_height, page);
         }
         let (step, stage) = match self.flow.screen() {
             Screen::Intro => (1, "Choose"),
@@ -376,7 +376,14 @@ impl OnboardingView {
             // desktop outside that scroll region so setup never becomes a
             // visual dead end.
             let footer_height = 56.0;
-            let scroll_height = (panel_height - footer_height).max(120.0);
+            // The outer Column owns `padding_standard * 2` on both edges plus
+            // the gap between the scroll region and footer. Account for those
+            // explicitly; otherwise large text pushes the sticky actions below
+            // a laptop-height viewport even though the panel itself is bounded.
+            let outer_vertical_padding = theme.padding_standard * 4.0;
+            let footer_gap = spacing.s3;
+            let scroll_height =
+                (panel_height - footer_height - footer_gap - outer_vertical_padding).max(120.0);
             return Box::new(
                 Column::new()
                     .with_no_padding()
@@ -387,7 +394,7 @@ impl OnboardingView {
                             .with_content_gutter(spacing.s3)
                             .with_child(Box::new(content)),
                     ))
-                    .push(self.finish_action()),
+                    .push(Self::finish_action()),
             );
         }
         Box::new(
@@ -398,12 +405,7 @@ impl OnboardingView {
         )
     }
 
-    fn build_tour_composition(
-        &self,
-        theme: &Theme,
-        panel_height: f32,
-        page: TourPage,
-    ) -> Box<dyn Widget> {
+    fn build_tour_composition(theme: &Theme, panel_height: f32, page: TourPage) -> Box<dyn Widget> {
         let number = page.number();
         let stage = match page {
             TourPage::Navigate => "Move",
@@ -436,7 +438,7 @@ impl OnboardingView {
             .with_intrinsic_height()
             .with_gap(theme.tokens.spacing.s6)
             .push(Box::new(progress))
-            .push(self.tour_page(theme, page));
+            .push(Self::tour_page(theme, page));
         Box::new(
             Scrollable::new_vertical()
                 .with_height(panel_height)
@@ -445,7 +447,7 @@ impl OnboardingView {
         )
     }
 
-    fn tour_page(&self, theme: &Theme, page: TourPage) -> Box<dyn Widget> {
+    fn tour_page(theme: &Theme, page: TourPage) -> Box<dyn Widget> {
         let (title, intro, cards): (&str, &str, &[(&str, &str)]) = match page {
             TourPage::Navigate => (
                 "Everything is a gesture away",
@@ -803,21 +805,19 @@ impl OnboardingView {
 
     /// Sticky final action, deliberately outside the Done screen's scrollable
     /// backup content so it remains visible at narrow and large-text sizes.
-    fn finish_action(&self) -> Box<dyn Widget> {
-        let finish_label = if self.backup_saved.is_some() {
-            match self.context {
-                OnboardingContext::FullSystem => "Enter qOS",
-                OnboardingContext::HostDesktop => "Open qOS desktop",
-            }
-        } else {
-            "Skip for now"
-        };
-        let mut finish = Button::new("onboarding.finish.button", finish_label, Some(KEY_FINISH))
-            .with_icon(ui::icons::Icon::ArrowRight);
-        if self.backup_saved.is_some() {
-            finish = finish.with_style(ui::widget::ButtonStyle::Primary);
-        }
-        actions(vec![Box::new(finish)])
+    fn finish_action() -> Box<dyn Widget> {
+        // The tour used to have a complete state machine but no UI route into
+        // it. Keep skipping possible, while making the helpful path the clear
+        // primary action at the moment setup hands over to the desktop.
+        let skip = Button::new("onboarding.finish.button", "Skip tour", Some(KEY_FINISH));
+        let tour = Button::new(
+            "onboarding.tour.start.button",
+            "Start tour",
+            Some(KEY_TOUR_START),
+        )
+        .with_icon(ui::icons::Icon::ArrowRight)
+        .with_style(ui::widget::ButtonStyle::Primary);
+        actions(vec![Box::new(skip), Box::new(tour)])
     }
 }
 
@@ -1239,10 +1239,9 @@ impl Widget for OnboardingView {
         if read_bool(state, root, KEY_TOUR_BACK) {
             let _ = state.put(root, KEY_TOUR_BACK, ScalarValue::Boolean(false));
             self.tour_page = match self.tour_page {
-                Some(TourPage::Navigate) => None,
+                Some(TourPage::Navigate) | None => None,
                 Some(TourPage::Organise) => Some(TourPage::Navigate),
                 Some(TourPage::Collaborate) => Some(TourPage::Organise),
-                None => None,
             };
         }
 
@@ -1964,16 +1963,18 @@ mod tests {
             .expect("large-text done layout");
         view.apply_layout(&taffy, node, Point::ZERO);
 
-        let finish = node_map
-            .values()
-            .find_map(|&ptr| unsafe {
-                ((*ptr).test_id() == Some("onboarding.finish.button")).then(|| (*ptr).get_rect())
-            })
-            .expect("Done screen exposes its exit action");
-        assert!(finish.area() > 0.0, "finish={finish:?}");
-        assert!(
-            finish.y0 >= 0.0 && finish.y1 <= 720.0,
-            "the exit action must stay in the viewport, finish={finish:?}"
-        );
+        for id in ["onboarding.finish.button", "onboarding.tour.start.button"] {
+            let action = node_map
+                .values()
+                .find_map(|&ptr| unsafe {
+                    ((*ptr).test_id() == Some(id)).then(|| (*ptr).get_rect())
+                })
+                .unwrap_or_else(|| panic!("Done screen exposes {id}"));
+            assert!(action.area() > 0.0, "action={action:?}");
+            assert!(
+                action.x0 >= 0.0 && action.x1 <= 1000.0 && action.y0 >= 0.0 && action.y1 <= 720.0,
+                "the action must stay fully in the viewport, id={id}, action={action:?}"
+            );
+        }
     }
 }

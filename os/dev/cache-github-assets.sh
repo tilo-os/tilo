@@ -12,6 +12,22 @@ manifest="$repo/os/external-assets/github-assets.tsv"
 cache_dir="${QOS_GITHUB_ASSET_CACHE:-$repo/os/external-assets/cache}"
 mkdir -p "$cache_dir"
 
+wanted() {
+  local candidate="$1" requested
+  [ "$#" -gt 1 ] || return 0
+  shift
+  for requested in "$@"; do
+    [ "$candidate" != "$requested" ] || return 0
+  done
+  return 1
+}
+
+for requested in "$@"; do
+  awk -F '\t' -v n="$requested" \
+    '$1 !~ /^#/ && $2 == n { found=1 } END { exit !found }' "$manifest" \
+    || { printf 'requested asset is not in the manifest: %s\n' "$requested" >&2; exit 1; }
+done
+
 verify() {
   local expected="$1" path="$2" actual
   [ -f "$path" ] || return 1
@@ -21,6 +37,7 @@ verify() {
 
 while IFS=$'\t' read -r expected name url; do
   case "$expected" in ''|'#'*) continue ;; esac
+  wanted "$name" "$@" || continue
   target="$cache_dir/$name"
   if verify "$expected" "$target"; then
     [ ! -e "$target.part" ] || unlink -- "$target.part"

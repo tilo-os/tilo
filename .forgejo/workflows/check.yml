@@ -103,10 +103,13 @@ jobs:
         run: |
           bash os/tests/kernel_hardening_invariants.sh
           bash os/tests/release_security_invariants.sh
+          bash os/tests/selinux_policy_store_invariants.sh
+          bash os/tests/first_boot_service_readiness.sh
           bash os/tests/release_freshness_security.sh
           bash os/tests/installer_target_invariants.sh
           bash os/tests/installer_profile_transport.sh
           bash os/tests/imager_release_invariants.sh
+          bash os/tests/wpe_reproducibility_invariants.sh
           bash os/tests/generation_series_security.sh
 
       - name: Select and balance affected packages

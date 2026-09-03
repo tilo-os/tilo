@@ -29,10 +29,16 @@ QOS_DISK="${QOS_DISK:-$QOS_OUTPUT/qcow2/disk.qcow2}"
 QOS_INSTALLER_IMAGE="${QOS_INSTALLER_IMAGE:-localhost/qos-installer:latest}"
 QOS_INSTALLER_OUTPUT="${QOS_INSTALLER_OUTPUT:-$QOS_OUTPUT/installer}"   # distinct subdir
 QOS_INSTALLER_DISK="${QOS_INSTALLER_DISK:-$QOS_INSTALLER_OUTPUT/qcow2/disk.qcow2}"
+# Writable overlay used by VM install cycles. The live installer needs scratch
+# space for its offline image copy, but a test must never mutate the pristine
+# release artifact it is validating.
+QOS_INSTALLER_WORK_DISK="${QOS_INSTALLER_WORK_DISK:-$QOS_INSTALLER_OUTPUT/test-installer-work.qcow2}"
 
 # Runtime/scratch dir for the VM. MUST be short: AF_UNIX socket paths are capped
-# at 108 bytes, and a deep scratch path overflows it. /tmp/qos-vm is safe.
-QOS_RUN="${QOS_RUN:-/tmp/qos-vm}"
+# at 108 bytes, and a deep scratch path overflows it. Prefer the per-user runtime
+# directory: unlike shared /tmp it is private and cannot consume or inherit an
+# unrelated per-user quota. Fall back to /tmp for non-desktop/CI sessions.
+QOS_RUN="${QOS_RUN:-${XDG_RUNTIME_DIR:-/tmp}/qos-vm}"
 QOS_MON="$QOS_RUN/mon.sock"
 QOS_SERIAL="$QOS_RUN/serial.log"
 QOS_QEMU_LOG="$QOS_RUN/qemu.log"
@@ -364,6 +370,14 @@ swtpm_start() {
   [ "$QOS_TPM" = "1" ] || return 0
   inenv "command -v swtpm >/dev/null || { echo 'swtpm not installed in ${QOS_DISTROBOX:-env}'; exit 1; }" \
     || die "swtpm missing (sudo dnf install swtpm swtpm-tools in ${QOS_DISTROBOX:-the env})"
+
+  # A listening emulator is not enough: swtpm enters permanent TPM failure mode
+  # when its NVRAM backend cannot persist state. Catch full/quota-limited runtime
+  # storage before firmware boots into a misleading PCR-service reboot loop.
+  inenv "mkdir -p '$QOS_TPM_DIR' && \
+    printf 'qOS TPM state preflight\n' >'$QOS_TPM_DIR/.write-test' && \
+    sync '$QOS_TPM_DIR/.write-test' && rm -f '$QOS_TPM_DIR/.write-test'" \
+    || die "cannot persist software-TPM state in $QOS_TPM_DIR (filesystem full or quota exceeded)"
 
   # A leftover swtpm from before this fix would be reused silently and put the
   # unstarted TPM back, so check what is actually listening rather than trusting
