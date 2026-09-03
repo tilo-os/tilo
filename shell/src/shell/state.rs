@@ -5382,6 +5382,87 @@ impl WorkspaceTree {
         true
     }
 
+    /// Materialize another device's continuation as synchronized placeholder
+    /// tabs. This never activates a workspace, strip, or group; the compositor
+    /// opens the matching local apps through its normal authorized launch path.
+    pub fn materialize_continuation_workspace(
+        &mut self,
+        source_device: &str,
+        continuation: &crate::shell::personal_continuity::WorkspaceContinuation,
+    ) -> bool {
+        let Some(workspace) = self
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room == continuation.room)
+        else {
+            return false;
+        };
+        let mut changed = false;
+        let mut apps = continuation.apps.clone();
+        apps.sort_by_key(|app| (app.placement.strip, app.placement.group, app.placement.tab));
+        for app in apps {
+            let crate::shell::personal_continuity::LaunchIntent::App { app_id } = &app.launch
+            else {
+                continue;
+            };
+            // Refresh cold-start state even after this tab has materialized;
+            // the next local launch should use the newest remote progress.
+            if let Some(resume) = app.resume.clone()
+                && let Ok(mut registry) =
+                    crate::shell::personal_continuity_registry::global_registry().lock()
+            {
+                registry.store_remote_resume(continuation.room, app.id, app_id.clone(), resume);
+            }
+            if workspace.strips.iter().any(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .flat_map(|group| &group.tabs)
+                    .any(|tab| tab.id == app.id.0)
+            }) {
+                continue;
+            }
+            while workspace.strips.len() <= app.placement.strip as usize {
+                workspace
+                    .strips
+                    .push(Strip::new(StripId::new(), "Available elsewhere"));
+            }
+            let strip = &mut workspace.strips[app.placement.strip as usize];
+            while strip.window_groups.len() <= app.placement.group as usize {
+                strip.window_groups.push(WindowGroup {
+                    id: next_id(),
+                    tabs: Vec::new(),
+                    active_tab: 0,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                });
+            }
+            let group = &mut strip.window_groups[app.placement.group as usize];
+            let tab = Tab {
+                id: app.id.0,
+                title: app_id.clone(),
+                tile: TileContent::PeerWindow {
+                    app_id: app_id.clone(),
+                    label: format!("Available from {source_device}"),
+                    note: String::new(),
+                },
+            };
+            let index = (app.placement.tab as usize).min(group.tabs.len());
+            group.tabs.insert(index, tab);
+            if group.active_tab == 0 {
+                // This only defines the group's internal default when the
+                // person later enters it; it does not touch tree focus maps.
+                group.active_tab = app.id.0;
+            }
+            changed = true;
+        }
+        if changed {
+            self.seed_doc_from_cache();
+            self.flush_to_disk();
+        }
+        changed
+    }
+
     pub fn set_active(&mut self, id: WorkspaceId) {
         use automerge::{ROOT, ScalarValue, transaction::Transactable};
         if self.workspaces.iter().any(|w| w.id == id) {

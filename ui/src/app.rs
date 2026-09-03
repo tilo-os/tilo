@@ -377,6 +377,9 @@ pub struct App {
     action_registry: qos_actions::ActionRegistry,
     action_transport: Box<dyn qos_actions::ActionTransport>,
     last_published_actions: Option<Vec<qos_actions::ActionDescriptor>>,
+    /// Last app-owned continuation projection sent to the local shell.
+    last_published_continuation: Option<crate::collaboration::ContinuationMetadata>,
+    pending_continuation_restore: Option<crate::collaboration::ContinuationMetadata>,
     /// Background/streaming operations admitted by the retained widget tree.
     /// They remain here until the widget reports exactly one terminal update.
     directed_invocations: std::collections::HashMap<qos_actions::InvocationId, DirectedInvocation>,
@@ -521,6 +524,8 @@ impl App {
             action_registry: qos_actions::ActionRegistry::new(),
             action_transport: Box::new(qos_actions::LocalTransport::new()),
             last_published_actions: None,
+            last_published_continuation: None,
+            pending_continuation_restore: crate::collaboration::continuation_restore_env(),
             directed_invocations: std::collections::HashMap::new(),
             local_invocations: std::collections::HashSet::new(),
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
@@ -1134,6 +1139,38 @@ impl App {
             actions,
         });
         self.last_published_actions = Some(descriptors);
+    }
+
+    /// Publish only a changed, app-declared resume projection. This remains
+    /// deliberately separate from document collaboration: a continuation
+    /// report is private to the local session and cannot make a remote app
+    /// focus itself or start playing media.
+    fn publish_continuation_metadata(&mut self) {
+        if let Some(metadata) = self.pending_continuation_restore.take() {
+            let root = self.state.root.clone();
+            let _ = self.root_widget.restore_continuation_metadata(
+                &metadata,
+                &mut self.state.doc,
+                &root,
+            );
+        }
+        if !self.collab_manager.is_connected() {
+            return;
+        }
+        let metadata = self
+            .root_widget
+            .continuation_metadata(&self.state.doc, &self.state.root);
+        if metadata == self.last_published_continuation {
+            return;
+        }
+        if let Some(metadata) = metadata.clone() {
+            self.collab_manager.send(CollabRequest::ReportContinuation {
+                app_id: crate::collaboration::local_app_id(),
+                schema_version: metadata.schema_version,
+                metadata: metadata.bytes,
+            });
+        }
+        self.last_published_continuation = metadata;
     }
 
     fn invoke_published_action(
@@ -5464,6 +5501,7 @@ impl AppHandler {
         app.broadcast_location_presence();
         app.broadcast_view_presence();
         app.publish_action_surface();
+        app.publish_continuation_metadata();
 
         if let Some(id) = focus_target {
             app.set_focused_node(Some(id));

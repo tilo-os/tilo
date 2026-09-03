@@ -57,6 +57,7 @@ pub mod peer_view;
 pub mod peer_windows;
 pub mod persist;
 pub mod personal_continuity;
+pub mod personal_continuity_registry;
 pub mod placement;
 mod power_menu;
 pub mod projection;
