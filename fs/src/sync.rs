@@ -894,6 +894,12 @@ fn blob_guard(
                         }
                         None => false,
                     };
+                    if !ok {
+                        eprintln!(
+                            "iroh-blobs: refusing unreadable blob {} on connection {}",
+                            msg.inner.request.hash, msg.inner.connection_id
+                        );
+                    }
                     msg.tx
                         .send(if ok {
                             Ok(())
