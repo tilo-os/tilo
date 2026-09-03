@@ -3308,10 +3308,45 @@ mod tests {
 
     #[test]
     fn peer_departure_retains_identity_route_and_cause_before_cleanup() {
+        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let room = tree.read().rooms()[0];
-        let (net, _cmd_rx) = shell_network_for_test(tree, 0xD3E0_7A7E);
+        {
+            let mut tree = tree.write();
+            tree.adopt_roomless_workspaces();
+            let local_user = crate::shell::state::local_user_id();
+            for workspace in &mut tree.workspaces {
+                workspace.set_owner(local_user.clone());
+            }
+        }
+        let (net, _cmd_rx) = shell_network_for_test(tree.clone(), 0xD3E0_7A7E);
+        let authority_key = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
         let peer = iroh::SecretKey::from_bytes(&[83; 32]).public();
+        let mut cert = DeviceCert {
+            user_public_key: authority_key.verifying_key().to_bytes(),
+            device_public_key: *peer.as_bytes(),
+            device_label: "Vera's device".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &authority_key).expect("certificate");
+        let origin = crate::shell::state::PeerOrigin::peer(&peer);
+        let now_ns = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
+            .unwrap_or(u64::MAX);
+        net.peer_identities
+            .insert(origin.clone(), cert.clone(), now_ns)
+            .expect("admitted peer identity");
+        tree.write()
+            .room_peer_names
+            .entry(room)
+            .or_default()
+            .insert(peer.to_string(), "Vera".into());
 
         net.event_tx
             .try_send(NetEvent::PeerLeft {
@@ -3333,8 +3368,13 @@ mod tests {
         );
         assert_eq!(departure.route, CrdtRoute::cluster(room.to_string()));
         assert_eq!(departure.cause, PeerDepartureCause::LivenessTimedOut);
-        assert!(departure.user_public_key.is_none());
+        assert_eq!(departure.user_public_key, Some(cert.user_public_key));
+        assert_eq!(departure.participant_name.as_deref(), Some("Vera"));
         assert!(departure.observed_at <= SystemTime::now());
+        assert!(
+            net.peer_identities.get(&origin).is_none(),
+            "identity cleanup happens only after departure diagnostics are captured"
+        );
     }
 
     #[test]
