@@ -300,10 +300,10 @@ impl Catalog {
         manifests: &[crate::engine::BackupManifest],
     ) -> Self {
         let source_label = source.to_string_lossy().into_owned();
-        let destination_label = destination
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| destination.to_string_lossy().into_owned());
+        let destination_label = destination.file_name().map_or_else(
+            || destination.to_string_lossy().into_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
         let snapshots = manifests
             .iter()
             .map(|manifest| Snapshot {
