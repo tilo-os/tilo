@@ -2050,6 +2050,18 @@ pub struct WorkspaceTree {
     /// that happened to use the same app id.
     #[serde(default)]
     pub continuation_tabs: BTreeSet<TabId>,
+    /// Rooms introduced only by another device's private continuation offer.
+    /// Once a person takes ownership of an offered tab the room becomes local
+    /// and is removed from this set.
+    #[serde(default)]
+    pub continuation_rooms: BTreeSet<RoomId>,
+    /// Offered tabs this device has actively taken over. Kept separately so
+    /// a launch immediately followed by a close still emits a tombstone even
+    /// if no periodic checkpoint ran between those events.
+    #[serde(default)]
+    pub continuation_owned_tabs: HashMap<TabId, RoomId>,
+    #[serde(default)]
+    pub continuation_closed_tabs: HashMap<TabId, RoomId>,
     /// Safe record-only file cards received through personal continuity.
     /// The value has hashes/references only; it intentionally never contains
     /// a local pathname or thumbnail bytes.
@@ -2093,6 +2105,9 @@ impl Default for WorkspaceTree {
             room_records_inbound: Vec::new(),
             room_share_floor: HashMap::new(),
             continuation_tabs: BTreeSet::new(),
+            continuation_rooms: BTreeSet::new(),
+            continuation_owned_tabs: HashMap::new(),
+            continuation_closed_tabs: HashMap::new(),
             continuation_file_references: HashMap::new(),
             peer_salt_override: None,
             persist_path: None,
@@ -4738,6 +4753,9 @@ impl WorkspaceTree {
         workspace: &Workspace,
         capability: &CapOverride,
     ) -> Option<CapOverride> {
+        if !capability.persists_across_restart() {
+            return None;
+        }
         let applies_to_workspace = match &capability.scope {
             Scope::Workspace => true,
             // Current room documents use the durable UUID. Older shell
@@ -4821,11 +4839,9 @@ impl WorkspaceTree {
                     collab_types::crypto::Ed25519PublicKey::from_bytes(profile.user_public_key),
                 )],
             });
-            for capability in workspace
-                .capabilities
-                .iter()
-                .filter(|capability| matches!(capability.scope, Scope::FsPath(_)))
-            {
+            for capability in workspace.capabilities.iter().filter(|capability| {
+                matches!(capability.scope, Scope::FsPath(_)) && capability.persists_across_restart()
+            }) {
                 caps.push(capability.clone());
                 if let (Some(device), Some(actor)) = (device_public_key, identity_actor.as_ref())
                     && capability.subject.matches_actor(actor)
@@ -5790,9 +5806,93 @@ impl WorkspaceTree {
         let mut workspace = Workspace::new(id, "From another device");
         workspace.room = room;
         self.workspaces.push(workspace);
+        self.continuation_rooms.insert(room);
         self.room_authority.insert(room, RoomAuthority::Unpinned);
         self.room_share_floor
             .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
+        self.seed_doc_from_cache();
+        self.flush_to_disk();
+        true
+    }
+
+    /// Turn a synchronized offer into a locally-owned live app. The Wayland
+    /// toplevel adoption handshake is the only caller: merely receiving or
+    /// painting an offer must not make this device echo it.
+    pub fn claim_continuation_tab(&mut self, tab: TabId) -> bool {
+        if !self.continuation_tabs.remove(&tab) {
+            return false;
+        }
+        self.continuation_file_references.remove(&tab);
+        if let Some(room) = self.workspaces.iter().find_map(|workspace| {
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .any(|candidate| candidate.id == tab)
+                .then_some(workspace.room)
+        }) {
+            self.continuation_rooms.remove(&room);
+            self.continuation_closed_tabs.remove(&tab);
+            self.continuation_owned_tabs.insert(tab, room);
+        }
+        true
+    }
+
+    pub fn note_continuation_tab_closed(&mut self, tab: TabId) {
+        if let Some(room) = self.continuation_owned_tabs.remove(&tab) {
+            self.continuation_closed_tabs.insert(tab, room);
+        }
+    }
+
+    /// Remove rooms which exist here solely because of a continuation offer
+    /// and are no longer offered by any device.
+    pub fn reconcile_continuation_rooms(&mut self, desired: &BTreeSet<RoomId>) -> bool {
+        let stale: BTreeSet<_> = self
+            .continuation_rooms
+            .difference(desired)
+            .copied()
+            .collect();
+        if stale.is_empty() {
+            return false;
+        }
+        let stale_tabs: BTreeSet<_> = self
+            .workspaces
+            .iter()
+            .filter(|workspace| stale.contains(&workspace.room))
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .filter(|tab| self.continuation_tabs.contains(tab))
+            .collect();
+        self.workspaces
+            .retain(|workspace| !stale.contains(&workspace.room));
+        self.continuation_rooms.retain(|room| !stale.contains(room));
+        self.continuation_tabs
+            .retain(|tab| !stale_tabs.contains(tab));
+        self.continuation_file_references
+            .retain(|tab, _| !stale_tabs.contains(tab));
+        if let Ok(mut registry) =
+            crate::shell::personal_continuity_registry::global_registry().lock()
+        {
+            for tab in stale_tabs {
+                registry.remove_remote_tab(crate::shell::personal_continuity::AppInstanceId(tab));
+            }
+        }
+        self.room_authority.retain(|room, _| !stale.contains(room));
+        self.room_share_floor
+            .retain(|room, _| !stale.contains(room));
+        if !self
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.id == self.active)
+        {
+            self.active = self
+                .workspaces
+                .first()
+                .map_or_else(WorkspaceId::default, |workspace| workspace.id);
+        }
         self.seed_doc_from_cache();
         self.flush_to_disk();
         true
@@ -5806,6 +5906,7 @@ impl WorkspaceTree {
         _source_device: &str,
         continuation: &crate::shell::personal_continuity::WorkspaceContinuation,
     ) -> bool {
+        let existing_continuation_tabs = self.continuation_tabs.clone();
         let (changed, file_references, file_reference_removals, inserted_continuation_tabs) = {
             let mut file_references = Vec::new();
             let mut file_reference_removals = Vec::new();
@@ -5874,14 +5975,29 @@ impl WorkspaceTree {
                         )
                     }
                 };
-                if workspace.strips.iter().any(|strip| {
+                let exists = workspace.strips.iter().any(|strip| {
                     strip
                         .window_groups
                         .iter()
                         .flat_map(|group| &group.tabs)
                         .any(|tab| tab.id == app.id.0)
-                }) {
+                });
+                if exists && !existing_continuation_tabs.contains(&app.id.0) {
                     continue;
+                }
+                // An offer is a projection of its source placement, not a
+                // one-time insertion. Remove the old projected card before
+                // inserting it at the latest ordinal coordinates. Locally
+                // claimed tabs are excluded above and never moved remotely.
+                if exists {
+                    for strip in &mut workspace.strips {
+                        for group in &mut strip.window_groups {
+                            group.tabs.retain(|tab| tab.id != app.id.0);
+                            if group.active_tab == app.id.0 {
+                                group.active_tab = group.tabs.first().map_or(0, |tab| tab.id);
+                            }
+                        }
+                    }
                 }
                 while workspace.strips.len() <= app.placement.strip as usize {
                     workspace
@@ -5904,7 +6020,9 @@ impl WorkspaceTree {
                     title,
                     tile,
                 };
-                inserted_continuation_tabs.push(app.id.0);
+                if !existing_continuation_tabs.contains(&app.id.0) {
+                    inserted_continuation_tabs.push(app.id.0);
+                }
                 let index = (app.placement.tab as usize).min(group.tabs.len());
                 group.tabs.insert(index, tab);
                 if group.active_tab == 0 {
@@ -9760,6 +9878,145 @@ mod peer_window_merge_tests {
         assert!(tree.continuation_tabs.contains(&0x99));
         assert!(tree.reconcile_continuation_tabs(&BTreeSet::new()));
         assert!(!tree.continuation_tabs.contains(&0x99));
+    }
+
+    #[test]
+    fn claimed_continuation_tab_becomes_local_and_survives_remote_reconciliation() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = RoomId::new();
+        tree.adopt_continuation_room(room, "Laptop");
+        let app = crate::shell::personal_continuity::AppInstanceState::new(
+            crate::shell::personal_continuity::AppInstanceId(0x9a),
+            crate::shell::personal_continuity::TabPlacement {
+                strip: 0,
+                group: 0,
+                tab: 0,
+            },
+            crate::shell::personal_continuity::LaunchIntent::app("dev.qos.browser").unwrap(),
+            None,
+            crate::shell::personal_continuity::ContinuityStamp {
+                counter: 1,
+                device: crate::shell::personal_continuity::DeviceId::new("laptop").unwrap(),
+            },
+        );
+        tree.materialize_continuation_workspace(
+            "Laptop",
+            &crate::shell::personal_continuity::WorkspaceContinuation {
+                room,
+                apps: vec![app],
+            },
+        );
+
+        assert!(tree.claim_continuation_tab(0x9a));
+        assert!(!tree.continuation_tabs.contains(&0x9a));
+        assert!(!tree.continuation_rooms.contains(&room));
+        assert!(!tree.reconcile_continuation_tabs(&BTreeSet::new()));
+        assert!(tree.workspaces.iter().any(|workspace| {
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .any(|tab| tab.id == 0x9a)
+        }));
+    }
+
+    #[test]
+    fn continuation_offer_tracks_live_placement_and_title() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = RoomId::new();
+        tree.adopt_continuation_room(room, "Laptop");
+        let device = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
+        let make = |strip, title_app: &str| {
+            crate::shell::personal_continuity::AppInstanceState::new(
+                crate::shell::personal_continuity::AppInstanceId(0x9b),
+                crate::shell::personal_continuity::TabPlacement {
+                    strip,
+                    group: 0,
+                    tab: 0,
+                },
+                crate::shell::personal_continuity::LaunchIntent::app(title_app).unwrap(),
+                None,
+                crate::shell::personal_continuity::ContinuityStamp {
+                    counter: u64::from(strip) + 1,
+                    device: device.clone(),
+                },
+            )
+        };
+        tree.materialize_continuation_workspace(
+            "Laptop",
+            &crate::shell::personal_continuity::WorkspaceContinuation {
+                room,
+                apps: vec![make(0, "dev.qos.browser")],
+            },
+        );
+        tree.materialize_continuation_workspace(
+            "Laptop",
+            &crate::shell::personal_continuity::WorkspaceContinuation {
+                room,
+                apps: vec![make(1, "dev.qos.music")],
+            },
+        );
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .unwrap();
+        assert!(
+            !workspace.strips[0]
+                .window_groups
+                .iter()
+                .flat_map(|group| &group.tabs)
+                .any(|tab| tab.id == 0x9b)
+        );
+        let moved = workspace.strips[1]
+            .window_groups
+            .iter()
+            .flat_map(|group| &group.tabs)
+            .find(|tab| tab.id == 0x9b)
+            .unwrap();
+        assert!(matches!(
+            &moved.tile,
+            TileContent::PeerWindow { app_id, .. } if app_id == "dev.qos.music"
+        ));
+    }
+
+    #[test]
+    fn vanished_continuation_room_is_removed_but_claimed_room_is_not() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let offered = RoomId::new();
+        let claimed = RoomId::new();
+        tree.adopt_continuation_room(offered, "Laptop");
+        tree.adopt_continuation_room(claimed, "Laptop");
+        tree.continuation_rooms.remove(&claimed);
+
+        assert!(tree.reconcile_continuation_rooms(&BTreeSet::new()));
+        assert!(
+            !tree
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.room == offered)
+        );
+        assert!(
+            tree.workspaces
+                .iter()
+                .any(|workspace| workspace.room == claimed)
+        );
+    }
+
+    #[test]
+    fn relay_authority_never_turns_session_grants_into_timeless_nas_access() {
+        let mut workspace = Workspace::new(WorkspaceId::new(), "Private");
+        workspace.room = RoomId::new();
+        let subject = Subject::User(collab_types::Ed25519PublicKey::from_bytes([7; 32]));
+        for expiry in [Expiry::AfterUse, Expiry::EndOfSession] {
+            let capability =
+                CapOverride::membership(subject.clone(), workspace.room.to_string(), Verb::Read)
+                    .expiring(expiry);
+            assert!(WorkspaceTree::relay_room_capability(&workspace, &capability).is_none());
+        }
+        let persistent = CapOverride::membership(subject, workspace.room.to_string(), Verb::Read);
+        assert!(WorkspaceTree::relay_room_capability(&workspace, &persistent).is_some());
     }
 
     #[test]
