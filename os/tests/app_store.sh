@@ -231,7 +231,7 @@ else
     # image ships the owner and that it binds the launcher's canonical path.
     if [ "$svc" = "collab" ]; then
       native="$REPO/shell/src/compositor/native.rs"
-      if grep -q 'let collab_broker.*=' "$native" \
+      if grep -Eq 'let (mut )?collab_broker.*=' "$native" \
           && grep -q 'spawn_session_collab_broker' "$native" \
           && grep -q 'launcher::services::collab_socket()' "$native"; then
         ok "the native compositor starts 'collab' on the launcher's canonical service socket"
