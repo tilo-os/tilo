@@ -1388,12 +1388,18 @@ impl ShellNetwork {
 
         // Hash a counter-neutral capture so a quiet tree stays quiet. The
         // device counter advances only for a real topology/app change.
-        let neutral = crate::shell::personal_continuity::DeviceContinuationSnapshot::capture(
-            &tree_handle.read(),
-            device.clone(),
-            0,
-        )
-        .snapshot;
+        let reports = crate::shell::personal_continuity_registry::global_registry()
+            .lock()
+            .ok()?
+            .clone();
+        let neutral =
+            crate::shell::personal_continuity::DeviceContinuationSnapshot::capture_with_registry(
+                &tree_handle.read(),
+                device.clone(),
+                0,
+                &reports,
+            )
+            .snapshot;
         let neutral_bytes = postcard::to_allocvec(&neutral).ok()?;
         let fingerprint = *blake3::hash(&neutral_bytes).as_bytes();
 
@@ -1414,11 +1420,13 @@ impl ShellNetwork {
         }
         let mut counter = self.personal_continuity_counter.lock().ok()?;
         *counter = counter.saturating_add(1);
-        let report = crate::shell::personal_continuity::DeviceContinuationSnapshot::capture(
-            &tree_handle.read(),
-            device.clone(),
-            *counter,
-        );
+        let report =
+            crate::shell::personal_continuity::DeviceContinuationSnapshot::capture_with_registry(
+                &tree_handle.read(),
+                device.clone(),
+                *counter,
+                &reports,
+            );
         if report.redacted_foreign_tabs > 0 {
             tracing::debug!(
                 redacted = report.redacted_foreign_tabs,
@@ -1828,6 +1836,18 @@ impl ShellNetwork {
                     .map(move |workspace| (workspace.room, source_device.clone()))
             })
             .collect();
+        let materializations: Vec<_> = incoming
+            .snapshots()
+            .values()
+            .flat_map(|snapshot| {
+                let source_device = snapshot.device.as_str().to_string();
+                snapshot
+                    .workspaces
+                    .iter()
+                    .cloned()
+                    .map(move |workspace| (source_device.clone(), workspace))
+            })
+            .collect();
         let mut changed = false;
         if let Ok(mut continuity) = self.personal_continuity.lock() {
             for snapshot in incoming.snapshots().values() {
@@ -1843,11 +1863,22 @@ impl ShellNetwork {
             let tree_handle = self.replica.lock().ok().map(|replica| replica.tree.clone());
             let adopted = tree_handle.is_some_and(|tree| {
                 let mut tree = tree.write();
-                rooms
-                    .into_iter()
-                    .fold(false, |changed, (room, source_device)| {
-                        tree.adopt_continuation_room(room, &source_device) || changed
-                    })
+                let adopted_rooms =
+                    rooms
+                        .into_iter()
+                        .fold(false, |changed, (room, source_device)| {
+                            tree.adopt_continuation_room(room, &source_device) || changed
+                        });
+                // Materialized tabs are idempotent by durable AppInstanceId.
+                // The frame loop opens them locally without changing the
+                // active workspace or focus.
+                let materialized =
+                    materializations
+                        .into_iter()
+                        .fold(false, |changed, (source, workspace)| {
+                            tree.materialize_continuation_workspace(&source, &workspace) || changed
+                        });
+                adopted_rooms || materialized
             });
             if adopted {
                 // Joining the room topics is demand-driven by these requests;

@@ -41,15 +41,28 @@ pub enum Placement {
 /// When the active workspace has no strips, a default strip is synthesized so the tab always
 /// lands visible — otherwise the foreign surface leaks buffer + shm-pool memory until the client tears the toplevel down on its own.
 pub fn adopt_toplevel(tree: &mut WorkspaceTree, surface_id: u64, app_id: Option<String>) -> TabId {
-    let placement = app_id
+    let pending = app_id
         .as_deref()
-        .and_then(|id| crate::shell::launcher::placement_for_toplevel(id, surface_id))
+        .and_then(|id| crate::shell::launcher::placement_and_instance_for_toplevel(id, surface_id));
+    let placement = pending
+        .map(|(placement, _)| placement)
         .unwrap_or_else(|| crate::shell::placement::placement_for_new_window(tree, None));
     // If this window is what a document open asked for, record that here — the launch and the window it produced meet at this point.
     if let Some(id) = app_id.as_deref() {
         crate::shell::doc_open::claim_surface_for_document(id, surface_id);
     }
-    adopt_toplevel_at(tree, surface_id, app_id, placement)
+    let tab = adopt_toplevel_at(tree, surface_id, app_id, placement);
+    if let Some((_, instance)) = pending
+        && let Some(instance) = instance
+        && let Ok(mut reports) =
+            crate::shell::personal_continuity_registry::global_registry().lock()
+    {
+        reports.bind_tab(
+            crate::shell::personal_continuity::AppInstanceId(tab),
+            crate::shell::personal_continuity::AppInstanceId(instance),
+        );
+    }
+    tab
 }
 
 /// [`adopt_toplevel`] with the placement supplied explicitly, so the placement rule is assertable without staging a launch.
