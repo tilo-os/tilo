@@ -692,7 +692,6 @@ fn admit_blob_caller_with_records(
     if peer_may_read_anything(policy, &peer) || has_record_session {
         Ok(peer)
     } else {
-        eprintln!("iroh-blobs: refusing {id} — it reads nothing in this workspace");
         Err(AbortReason::Permission)
     }
 }
@@ -862,6 +861,14 @@ fn blob_guard(
                         && person.is_some_and(|person| peer_may_read_anything(&policy, &person))
                     {
                         verdict = device.ok_or(AbortReason::Permission);
+                    }
+                    if verdict.is_err() {
+                        eprintln!(
+                            "iroh-blobs: refusing {} — it reads nothing in this workspace",
+                            msg.inner
+                                .endpoint_id
+                                .map_or_else(|| "unnamed peer".into(), |id| id.to_string())
+                        );
                     }
                     if let Ok(peer) = verdict {
                         callers.insert(msg.inner.connection_id, (peer, person));

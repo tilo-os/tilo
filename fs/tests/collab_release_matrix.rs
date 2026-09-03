@@ -1029,7 +1029,7 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
     });
     let updated_manifest = Hash::from(updated_manifest);
     let replica_workspace_cache = replica_cache.join(original.workspace_id().to_string());
-    wait_for(PROCESS_TIMEOUT, || {
+    let replicated_generation = wait_for(PROCESS_TIMEOUT, || {
         if let Some(exit) = nas.child.try_wait().unwrap() {
             panic!(
                 "replica exited {exit}; logs:\n{}",
@@ -1040,16 +1040,13 @@ fn nas_replica_survives_owner_loss_restart_delete_and_denies_ungranted_reader() 
         let namespace = Namespace::from_bytes("nas-generation-barrier", &bytes).ok()?;
         (namespace.entry_at("survivor.txt")?.hash == Some(updated_manifest)
             && namespace.entry_at("deleted.txt").is_none())
-        .then_some(())
+        .then(|| hex::encode(blake3::hash(&bytes).as_bytes()))
     });
-    let prior_status_update = fs::full_replica::load_status(&status)
-        .unwrap()
-        .unwrap()
-        .updated_at_ms;
     wait_for(PROCESS_TIMEOUT, || {
         let current = fs::full_replica::load_status(&status).ok().flatten()?;
-        (current.full_content_replication && current.updated_at_ms > prior_status_update)
-            .then_some(())
+        (current.full_content_replication
+            && current.namespace_generation.as_deref() == Some(&replicated_generation))
+        .then_some(())
     });
     let nas_ticket = fs::Ticket {
         node: nas_endpoint,
