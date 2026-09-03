@@ -4166,6 +4166,21 @@ impl Widget for BackupsApp {
                         Role::Button,
                         AccessState::new().focusable(true),
                     ),
+                    Hit::Setup => (
+                        "Set up backups".into(),
+                        Role::Button,
+                        AccessState::new().focusable(true),
+                    ),
+                    Hit::BackupNow => (
+                        "Back up now".into(),
+                        Role::Button,
+                        AccessState::new().focusable(true),
+                    ),
+                    Hit::Verify => (
+                        "Verify latest backup".into(),
+                        Role::Button,
+                        AccessState::new().focusable(true),
+                    ),
                     Hit::FileRow(_) | Hit::RestoreConfirm | Hit::RestoreCancel => return None,
                 };
                 Some(
