@@ -13,6 +13,15 @@ and system tools are easy to discover without displacing ordinary work. The
 long-term product remains a general-purpose OS, so early technical affordances
 must not harden into a builder-only information architecture.
 
+On a fresh system, the empty Applications palette therefore explains and ranks
+the installed surface instead of presenting one undifferentiated alphabetical
+wall. **Start here** is Browser, Files, Notes, Terminal, Personal Settings, and
+App Store. Everyday communication and planning follow, then Work and Media;
+specialized administration appears under **System tools** but remains fully
+searchable. Typing always ranks by the query rather than these defaults. This is
+presentation, not an edition split: every installed app remains available and
+the ordering can later become personal as usage history exists.
+
 ## Standard apps
 
 - **YouTube client** (Tube) — later also PeerTube et al.
