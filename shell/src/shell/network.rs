@@ -99,15 +99,6 @@ const MAX_HOME_PEERS: usize = 128;
 const MAX_HOME_PEER_LABEL_BYTES: usize = 80;
 const MAX_HOME_PEER_WORKSPACES: usize = 4096;
 
-#[derive(Clone, Debug, Deserialize)]
-struct HomePeerRegistration {
-    device_node_id: String,
-    relay_service_node_id: String,
-    label: String,
-    user_public_key: String,
-    relay_workspace_ids: Vec<u64>,
-}
-
 fn home_peer_registry_path() -> PathBuf {
     std::env::var_os("QOS_HOME_PEERS_PATH")
         .filter(|path| !path.is_empty())
@@ -163,16 +154,16 @@ fn registered_home_peer_addrs(
         tracing::warn!(path = %path.display(), "home-peer registry exceeds its bounded schema");
         return Vec::new();
     }
-    let registrations: Vec<HomePeerRegistration> = match std::fs::read(&path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Vec<HomePeerRegistration>>(&bytes).ok())
-    {
-        Some(registrations) if registrations.len() <= MAX_HOME_PEERS => registrations,
-        _ => {
-            tracing::warn!(path = %path.display(), "home-peer registry is invalid");
-            return Vec::new();
-        }
-    };
+    let registrations: Vec<qos_relay::HomePeerRegistration> =
+        match std::fs::read(&path).ok().and_then(|bytes| {
+            serde_json::from_slice::<Vec<qos_relay::HomePeerRegistration>>(&bytes).ok()
+        }) {
+            Some(registrations) if registrations.len() <= MAX_HOME_PEERS => registrations,
+            _ => {
+                tracing::warn!(path = %path.display(), "home-peer registry is invalid");
+                return Vec::new();
+            }
+        };
     let mut addrs = Vec::new();
     for registration in registrations {
         if registration.label.is_empty()
@@ -615,8 +606,17 @@ impl ShellNetwork {
             relay_workspace_ids.insert(personal_continuity_topic_id(&user));
         }
         let home_peers = registered_home_peer_addrs(personal_continuity_user, &relay_workspace_ids);
-        let mut host_addrs = configured_host_addrs();
-        host_addrs.extend(home_peers.iter().map(|host| host.addr.clone()));
+        let home_peer_ids = home_peers
+            .iter()
+            .map(|host| host.addr.id)
+            .collect::<std::collections::HashSet<_>>();
+        // Enrollment-bound home peers must never race an unpinned connection.
+        // The actor treats the first `(workspace, endpoint)` dial as the active
+        // attempt, and an unpinned attempt deliberately cannot discover Files.
+        let mut host_addrs = configured_host_addrs()
+            .into_iter()
+            .filter(|addr| !home_peer_ids.contains(&addr.id))
+            .collect::<Vec<_>>();
         host_addrs.sort_by_key(|addr| addr.id.to_string());
         host_addrs.dedup_by_key(|addr| addr.id);
         for addr in host_addrs.iter().cloned() {
@@ -626,11 +626,14 @@ impl ShellNetwork {
             });
         }
         for host in home_peers {
+            host_addrs.push(host.addr.clone());
             let _ = cmd_tx.try_send(NetCmd::ConnectHost {
                 addr: host.addr,
                 expectation: Some(host.expectation),
             });
         }
+        host_addrs.sort_by_key(|addr| addr.id.to_string());
+        host_addrs.dedup_by_key(|addr| addr.id);
 
         // Peer id `1` is the replica-side identity for
         // `WorkspaceTreeReplica::handle`'s `_sender` arg; the actor's

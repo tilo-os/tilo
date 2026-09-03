@@ -1,8 +1,8 @@
 # Composite relay and complete filesystem replica for a user-owned qOS home peer.
 #
-# Put a short-lived host enrollment token in enrollment-token.txt, create the
-# identity/config directories, then run `podman compose up -d`. Pair from qOS
-# Settings; identity and the signed home-peer bundle are provisioned over LAN.
+# Create the identity/config directories, then run `podman compose up -d` and
+# approve the nearby server from qOS Settings. Identity and the signed
+# home-peer bundle are provisioned over the LAN without copying a token.
 services:
   qos-relay:
     image: ${QOS_RELAY_IMAGE:-code.sandbox.example/qos/qos-relay:latest}
@@ -10,13 +10,13 @@ services:
     restart: unless-stopped
     environment:
       QOS_DEVICE_NAME: ${QOS_DEVICE_NAME:-Home server}
-    ports:
-      # Keep this aligned with `iroh_listen` in relay.toml.
-      - "${QOS_RELAY_PORT:-4433}:4433/udp"
+    # Enrollment uses authenticated LAN broadcast on UDP 45831. A bridged
+    # container cannot receive/reply on the physical LAN broadcast domain, so
+    # the composite home peer deliberately joins the host network.
+    network_mode: host
     volumes:
       # Enrollment writes the full-sync bundle here on first start.
       - ./config:/etc/qos:Z
-      - ./enrollment-token.txt:/run/secrets/qos-enrollment-token:ro,Z
       # A pre-enrolled, host-capable device identity. Never put a user-root
       # private key in this directory or image.
       - ./identity:/var/lib/qos:Z
