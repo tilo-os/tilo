@@ -1359,6 +1359,22 @@ impl ShellNetwork {
                 .lock()
                 .map(|hosts| hosts.clone())
                 .unwrap_or_default();
+            let pins: Vec<_> = self
+                .personal_continuity_user
+                .map(|user| {
+                    registered_home_peer_addrs(
+                        Some(user),
+                        &std::collections::BTreeSet::from([room_topic_id(ws.room)]),
+                    )
+                    .into_iter()
+                    .map(|host| crate::network::invite::HomeHostPin {
+                        addr: host.addr,
+                        user_public_key: host.expectation.user_public_key,
+                        device_public_key: host.expectation.device_public_key,
+                    })
+                    .collect()
+                })
+                .unwrap_or_default();
             let device_cert = selected_device_cert(ws.room, &self.keypair)?;
             let signed_invitee = recipient_user_public_key.and(invitee);
             let token = crate::network::invite::make_invite_token_with_recipient(
@@ -1366,6 +1382,7 @@ impl ShellNetwork {
                 &ws,
                 &addr,
                 &hosts,
+                &pins,
                 Some(device_cert),
                 role,
                 recipient_user_public_key,
@@ -1582,8 +1599,23 @@ impl ShellNetwork {
             let _ = self.cmd_tx.try_send(NetCmd::Connect {
                 addr: parsed.owner_addr,
             });
+            // Connect identity-pinned home hosts first.  Do not also enqueue
+            // the same endpoint through the legacy, unpinned host list: that
+            // would let an unauthenticated session win the race before the
+            // actor has a chance to verify the enrolled device/root pair.
+            for pin in &parsed.home_host_pins {
+                let _ = self.cmd_tx.try_send(NetCmd::ConnectHost {
+                    addr: pin.addr.clone(),
+                    expectation: Some(crate::network::actor::HomePeerExpectation {
+                        user_public_key: pin.user_public_key,
+                        device_public_key: pin.device_public_key,
+                    }),
+                });
+            }
             for host in parsed.host_addrs {
-                let _ = self.connect_host(host);
+                if !parsed.home_host_pins.iter().any(|pin| pin.addr == host) {
+                    let _ = self.connect_host(host);
+                }
             }
         }
         replica.request_sync();
@@ -4243,6 +4275,80 @@ mod tests {
             cmd_rx.try_recv().is_err(),
             "one room joined is one request — the guest must not ask about \
              anything else",
+        );
+    }
+
+    #[test]
+    fn accepting_a_pinned_home_host_invite_queues_exact_expectation_once() {
+        use crate::network::invite::{HomeHostPin, InviteRole, make_invite_token_with_recipient};
+        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+
+        let owner_root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
+        let owner_device = iroh::SecretKey::from_bytes(&[0x52; 32]);
+        let relay_service = iroh::SecretKey::from_bytes(&[0x53; 32]);
+        let home_device = iroh::SecretKey::from_bytes(&[0x54; 32]);
+        let mut owner_cert = DeviceCert {
+            user_public_key: owner_root.verifying_key().to_bytes(),
+            device_public_key: *owner_device.public().as_bytes(),
+            device_label: "Alice laptop".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut owner_cert, &owner_root).expect("owner certificate");
+
+        let host_workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId::new(),
+            "Alice shared",
+        );
+        let room = host_workspace.room;
+        let owner_addr = iroh::EndpointAddr::new(owner_device.public())
+            .with_ip_addr("127.0.0.1:4510".parse().expect("owner address"));
+        let host_addr = iroh::EndpointAddr::new(relay_service.public())
+            .with_ip_addr("127.0.0.1:4511".parse().expect("relay address"));
+        let pin = HomeHostPin {
+            addr: host_addr.clone(),
+            user_public_key: owner_cert.user_public_key,
+            device_public_key: *home_device.public().as_bytes(),
+        };
+        let token = make_invite_token_with_recipient(
+            &owner_device,
+            &host_workspace,
+            &owner_addr,
+            std::slice::from_ref(&host_addr),
+            std::slice::from_ref(&pin),
+            Some(owner_cert),
+            InviteRole::Editor,
+            None,
+            None,
+            3600,
+        )
+        .expect("Alice issues Bob a pinned invite");
+
+        let mut bob_tree = WorkspaceTree::default();
+        let local = bob_tree.append_empty_workspace("Bob local");
+        let (bob, mut commands) = shell_network_for_test(bob_tree.shared(), 0xB0B);
+        assert_eq!(bob.accept_invite(local, &token).expect("Bob accepts"), room);
+
+        let mut pinned = Vec::new();
+        while let Ok(command) = commands.try_recv() {
+            if let NetCmd::ConnectHost { addr, expectation } = command {
+                pinned.push((addr, expectation));
+            }
+        }
+        assert_eq!(
+            pinned.len(),
+            1,
+            "a pinned host must not also be dialed unpinned"
+        );
+        assert_eq!(pinned[0].0, host_addr);
+        assert_eq!(
+            pinned[0].1,
+            Some(crate::network::actor::HomePeerExpectation {
+                user_public_key: pin.user_public_key,
+                device_public_key: pin.device_public_key,
+            })
         );
     }
 
