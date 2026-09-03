@@ -142,7 +142,7 @@ fn decode_lower_hex_32(value: &str) -> Option<[u8; 32]> {
 /// shell dial another person's host. The relay service key is intentionally
 /// distinct from the device key, preventing a service address from claiming
 /// ordinary peer identity.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct RegisteredHomePeer {
     addr: iroh::EndpointAddr,
     expectation: crate::network::actor::HomePeerExpectation,
