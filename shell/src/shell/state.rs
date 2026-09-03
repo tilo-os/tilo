@@ -5404,106 +5404,108 @@ impl WorkspaceTree {
         source_device: &str,
         continuation: &crate::shell::personal_continuity::WorkspaceContinuation,
     ) -> bool {
-        let mut file_references = Vec::new();
-        let mut inserted_continuation_tabs = Vec::new();
-        let Some(workspace) = self
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.room == continuation.room)
-        else {
-            return false;
-        };
-        let mut changed = false;
-        let mut apps = continuation.apps.clone();
-        apps.sort_by_key(|app| (app.placement.strip, app.placement.group, app.placement.tab));
-        for app in apps {
-            let (title, tile) = match &app.launch {
-                crate::shell::personal_continuity::LaunchIntent::App { app_id } => {
-                    if let Some(resume) = app.resume.clone()
-                        && let Ok(mut registry) =
+        let (changed, file_references, inserted_continuation_tabs) = {
+            let mut file_references = Vec::new();
+            let mut inserted_continuation_tabs = Vec::new();
+            let Some(workspace) = self
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room == continuation.room)
+            else {
+                return false;
+            };
+            let mut changed = false;
+            let mut apps = continuation.apps.clone();
+            apps.sort_by_key(|app| (app.placement.strip, app.placement.group, app.placement.tab));
+            for app in apps {
+                let (title, tile) = match &app.launch {
+                    crate::shell::personal_continuity::LaunchIntent::App { app_id } => {
+                        if let Some(resume) = app.resume.clone()
+                            && let Ok(mut registry) =
+                                crate::shell::personal_continuity_registry::global_registry().lock()
+                        {
+                            registry.store_remote_resume(
+                                continuation.room,
+                                app.id,
+                                app_id.clone(),
+                                resume,
+                                app.record_instance.unwrap_or(app.id),
+                            );
+                        } else if let Ok(mut registry) =
                             crate::shell::personal_continuity_registry::global_registry().lock()
-                    {
-                        registry.store_remote_resume(
-                            continuation.room,
-                            app.id,
+                        {
+                            registry.store_remote_record(
+                                continuation.room,
+                                app.id,
+                                app_id.clone(),
+                                app.record_instance.unwrap_or(app.id),
+                            );
+                        }
+                        (
                             app_id.clone(),
-                            resume,
-                            app.record_instance.unwrap_or(app.id),
-                        );
-                    } else if let Ok(mut registry) =
-                        crate::shell::personal_continuity_registry::global_registry().lock()
-                    {
-                        registry.store_remote_record(
-                            continuation.room,
-                            app.id,
-                            app_id.clone(),
-                            app.record_instance.unwrap_or(app.id),
-                        );
+                            TileContent::PeerWindow {
+                                app_id: app_id.clone(),
+                                label: format!("Available from {source_device}"),
+                                note: String::new(),
+                            },
+                        )
                     }
-                    (
-                        app_id.clone(),
-                        TileContent::PeerWindow {
-                            app_id: app_id.clone(),
-                            label: format!("Available from {source_device}"),
-                            note: String::new(),
-                        },
-                    )
+                    crate::shell::personal_continuity::LaunchIntent::FileReference {
+                        record_id,
+                        ..
+                    } => {
+                        file_references.push((app.id.0, app.launch.clone()));
+                        (
+                            "File reference".to_string(),
+                            TileContent::Stub {
+                                kind: AppKind::FileExplorer,
+                                label: format!("File available from {source_device}: {record_id}"),
+                            },
+                        )
+                    }
+                };
+                if workspace.strips.iter().any(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .flat_map(|group| &group.tabs)
+                        .any(|tab| tab.id == app.id.0)
+                }) {
+                    continue;
                 }
-                crate::shell::personal_continuity::LaunchIntent::FileReference {
-                    record_id,
-                    ..
-                } => {
-                    file_references.push((app.id.0, app.launch.clone()));
-                    (
-                        "File reference".to_string(),
-                        TileContent::Stub {
-                            kind: AppKind::FileExplorer,
-                            label: format!("File available from {source_device}: {record_id}"),
-                        },
-                    )
+                while workspace.strips.len() <= app.placement.strip as usize {
+                    workspace
+                        .strips
+                        .push(Strip::new(StripId::new(), "Available elsewhere"));
                 }
-            };
-            if workspace.strips.iter().any(|strip| {
-                strip
-                    .window_groups
-                    .iter()
-                    .flat_map(|group| &group.tabs)
-                    .any(|tab| tab.id == app.id.0)
-            }) {
-                continue;
+                let strip = &mut workspace.strips[app.placement.strip as usize];
+                while strip.window_groups.len() <= app.placement.group as usize {
+                    strip.window_groups.push(WindowGroup {
+                        id: next_id(),
+                        tabs: Vec::new(),
+                        active_tab: 0,
+                        width: WindowWidth::Normal,
+                        maximized: false,
+                    });
+                }
+                let group = &mut strip.window_groups[app.placement.group as usize];
+                let tab = Tab {
+                    id: app.id.0,
+                    title,
+                    tile,
+                };
+                inserted_continuation_tabs.push(app.id.0);
+                let index = (app.placement.tab as usize).min(group.tabs.len());
+                group.tabs.insert(index, tab);
+                if group.active_tab == 0 {
+                    // This only defines the group's internal default when the
+                    // person later enters it; it does not touch tree focus maps.
+                    group.active_tab = app.id.0;
+                }
+                changed = true;
             }
-            while workspace.strips.len() <= app.placement.strip as usize {
-                workspace
-                    .strips
-                    .push(Strip::new(StripId::new(), "Available elsewhere"));
-            }
-            let strip = &mut workspace.strips[app.placement.strip as usize];
-            while strip.window_groups.len() <= app.placement.group as usize {
-                strip.window_groups.push(WindowGroup {
-                    id: next_id(),
-                    tabs: Vec::new(),
-                    active_tab: 0,
-                    width: WindowWidth::Normal,
-                    maximized: false,
-                });
-            }
-            let group = &mut strip.window_groups[app.placement.group as usize];
-            let tab = Tab {
-                id: app.id.0,
-                title,
-                tile,
-            };
-            inserted_continuation_tabs.push(app.id.0);
-            let index = (app.placement.tab as usize).min(group.tabs.len());
-            group.tabs.insert(index, tab);
-            if group.active_tab == 0 {
-                // This only defines the group's internal default when the
-                // person later enters it; it does not touch tree focus maps.
-                group.active_tab = app.id.0;
-            }
-            changed = true;
-        }
-        drop(workspace);
+            (changed, file_references, inserted_continuation_tabs)
+        };
         self.continuation_tabs.extend(inserted_continuation_tabs);
         for (tab, reference) in file_references {
             self.continuation_file_references.insert(tab, reference);

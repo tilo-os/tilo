@@ -16,13 +16,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use iroh_base::EndpointAddr;
 use serde::{Deserialize, Serialize};
 
 /// Stable certified-device routing key.
 pub type DeviceKey = [u8; 32];
 
 /// Effective, certificate-bounded mesh policy of a running device.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeviceMeshProfile {
     /// Certified device public key.
     pub device: DeviceKey,
@@ -32,6 +34,22 @@ pub struct DeviceMeshProfile {
     pub services: ServiceCapabilities,
     /// Per-workspace residency requests consumed by collaboration and fs.
     pub replication: BTreeMap<u64, ReplicationIntent>,
+    /// Direct endpoints for the authenticated filesystem/blob protocols. This
+    /// is intentionally distinct from the relay endpoint: a client selected
+    /// for content replication must dial one of these addresses.
+    pub filesystem_endpoints: Vec<EndpointAddr>,
+}
+
+impl DeviceMeshProfile {
+    /// Select the direct filesystem endpoint from a verified mesh profile.
+    /// The relay endpoint is deliberately not a fallback: it speaks relay
+    /// ALPN only and cannot serve authenticated blobs while an owner is away.
+    pub fn content_endpoint(&self) -> Option<EndpointAddr> {
+        self.services
+            .full_content_replication
+            .then(|| self.filesystem_endpoints.first().cloned())
+            .flatten()
+    }
 }
 
 /// How a device participates in the personal mesh.

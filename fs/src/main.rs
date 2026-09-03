@@ -15,7 +15,8 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use collab_types::Principal;
 use fs::full_replica::{
-    HomePeerBundle, HomePeerSet, aggregate_status, hydrate_full_workspace, save_status,
+    HomePeerBundle, HomePeerSet, aggregate_status, hydrate_full_workspace,
+    prune_obsolete_workspace_content, save_status,
 };
 use fs::namespace::ROOT_INO;
 use fs::sync::{self, SyncHandle};
@@ -397,6 +398,9 @@ enum Command {
         /// Additional capability principals held by the host identity.
         #[arg(long = "principal")]
         principals: Vec<String>,
+        /// Relay workspace shard backed by this filesystem workspace.
+        #[arg(long = "relay-workspace-id")]
+        relay_workspace_ids: Vec<u64>,
     },
 }
 
@@ -493,6 +497,7 @@ async fn main() -> Result<()> {
             replica_cache_dir,
             status_file,
             principals,
+            relay_workspace_ids,
         } => export_home_peer(
             cache_dir,
             acl,
@@ -500,6 +505,7 @@ async fn main() -> Result<()> {
             replica_cache_dir,
             status_file,
             principals,
+            relay_workspace_ids,
         ),
     }
 }
@@ -717,6 +723,7 @@ fn export_home_peer(
     replica_cache_dir: PathBuf,
     status_file: PathBuf,
     principals: Vec<String>,
+    relay_workspace_ids: Vec<u64>,
 ) -> Result<()> {
     let ticket_path = workspace_ticket_path(&cache_dir);
     let ticket = std::fs::read_to_string(&ticket_path)
@@ -735,6 +742,7 @@ fn export_home_peer(
         cache_dir: replica_cache_dir.join(decoded_ticket.workspace_id().to_string()),
         capability_json,
         principals,
+        relay_workspace_ids,
     };
     let mut bundle = if output.exists() {
         toml::from_str::<HomePeerSet>(&std::fs::read_to_string(&output)?)
@@ -843,7 +851,24 @@ async fn replica_workspace(
         )
         .await?,
     ));
-    let workspace = Workspace::join(
+    // A home peer is a real record replica, not merely a namespace/blob
+    // cache. Keep the signed record repository and its materialized projection
+    // exactly as a normal mounted collaborator does, so replacements,
+    // revocations and signed content revisions converge before hydration.
+    let share_authority = open_share_authority(Some(&bundle.cache_dir))?;
+    let mut record_services = open_record_services(Some(&bundle.cache_dir), share_authority)?
+        .context("home-peer record repository unavailable")?;
+    let history = open_history(Some(&bundle.cache_dir))?;
+    let workspace_id = ticket.workspace_id();
+    let materializer = Arc::new(RecordMaterializer::new(
+        workspace_id,
+        Arc::clone(&namespace),
+        history,
+    ));
+    materializer.reconcile_repository(&record_services.repository)?;
+    record_services.mutation_sink = Some(Arc::clone(&materializer));
+    record_services.materializer = Some(Arc::clone(&materializer));
+    let workspace = Workspace::join_with_records(
         endpoint.clone(),
         lookup,
         store,
@@ -852,8 +877,10 @@ async fn replica_workspace(
         ticket,
         transport_identity,
         Some(acl.0),
+        record_services,
     )
     .await?;
+    materializer.attach_sync(Arc::clone(&workspace.sync));
     let _persist = namespace_path.map(|path| spawn_persist(Arc::clone(&namespace), path));
     println!("Home peer joined workspace; hydrating complete content replica.");
     let mut hydrated_namespace = None;
@@ -872,7 +899,10 @@ async fn replica_workspace(
         let _ = status_tx
             .send((index, fs::full_replica::FullReplicaStatus::syncing()))
             .await;
-        let status = hydrate_full_workspace(&namespace, &hydrator).await;
+        let mut status = hydrate_full_workspace(&namespace, &hydrator).await;
+        if status.full_content_replication {
+            status.filesystem_endpoints.push(endpoint.addr());
+        }
         let after = replica_namespace_fingerprint(&namespace);
         if status.full_content_replication && before != after {
             // A reconciliation landed while blobs were downloading. Start a
@@ -880,6 +910,22 @@ async fn replica_workspace(
             // hybrid of two revisions.
             hydrated_namespace = None;
             continue;
+        }
+        if status.full_content_replication {
+            // The workspace did not change across this hydration pass. Remove
+            // only blobs absent from its current authenticated root set, then
+            // force a fresh pass if a concurrent update arrives.
+            if let Err(error) = prune_obsolete_workspace_content(&namespace, &hydrator).await {
+                status = fs::full_replica::FullReplicaStatus::syncing();
+                status.state = "failed".into();
+                status.error = Some(format!("prune obsolete replica content: {error}"));
+            } else if replica_namespace_fingerprint(&namespace) != after {
+                // A new root arrived while obsolete blobs were being released.
+                // The initial syncing status remains in force; hydrate that
+                // new root before publishing another ready proof.
+                hydrated_namespace = None;
+                continue;
+            }
         }
         let _ = status_tx.send((index, status.clone())).await;
         hydrated_namespace = status.full_content_replication.then_some(after);
