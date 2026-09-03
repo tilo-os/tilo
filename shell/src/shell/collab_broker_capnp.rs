@@ -36,7 +36,7 @@ use collab_types::{
 use runtime_collab::raw::{
     OpKind, action_catalogue_stream, action_input, channel_handle, collab_service, context_stream,
     invocation_stream, presence_event, presence_handle, presence_payload, presence_stream,
-    scrollback_batch, stream,
+    scrollback_batch, stream, task_run_stream,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
@@ -45,7 +45,9 @@ use crate::shell::collab_broker::{
     AuditEntry, BrokerChannels, CrdtRoute, FanoutState, apply_redaction_from_envelope,
 };
 use crate::shell::collab_outbound::PeerPublisher;
-use crate::shell::state::{CapRole, Principal, WorkspaceTree, WorkspaceTreeHandle};
+use crate::shell::state::{
+    CapRole, Principal, WorkspaceTask, WorkspaceTaskStatus, WorkspaceTree, WorkspaceTreeHandle,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct VerifiedJoinIdentity {
@@ -334,6 +336,34 @@ struct InvocationEnvelope {
     action: String,
     argument: Option<String>,
     actor: String,
+    context: Option<qos_actions::ActionContext>,
+}
+
+#[derive(Clone, Debug)]
+struct TaskRunEnvelope {
+    task_id: String,
+    title: String,
+    run_id: u64,
+    lease: String,
+    action_context: qos_actions::ActionContext,
+}
+
+#[derive(Clone, Debug)]
+struct TaskSubscription {
+    agent_id: String,
+    cluster_id: String,
+    tx: mpsc::UnboundedSender<TaskRunEnvelope>,
+}
+
+#[derive(Clone, Debug)]
+struct PendingTaskRun {
+    peer_id: u64,
+    agent_id: String,
+    cluster_id: String,
+    task_id: String,
+    lease: String,
+    action_context: qos_actions::ActionContext,
+    terminal: bool,
 }
 
 /// The application's terminal answer to a directed invocation.
@@ -388,6 +418,14 @@ fn argument_digest(argument: Option<&str>) -> [u8; 32] {
         }
     }
     *hasher.finalize().as_bytes()
+}
+
+fn bounded_task_message(message: &str) -> Result<String, String> {
+    let message = message.trim();
+    if message.is_empty() || message.chars().count() > 280 {
+        return Err("task update message must be between 1 and 280 characters".into());
+    }
+    Ok(message.to_string())
 }
 
 /// One subscription onto the broker fanout. Slot-indexed inside a
@@ -447,6 +485,9 @@ pub struct CapnpBrokerState {
     completed_invocations: Mutex<HashMap<u64, (String, qos_actions::InvocationUpdate)>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
+    task_subscribers: Mutex<HashMap<u64, TaskSubscription>>,
+    pending_task_runs: Mutex<HashMap<u64, PendingTaskRun>>,
+    task_run_id: AtomicU64,
     invocation_id: AtomicU64,
 }
 
@@ -568,6 +609,9 @@ impl CapnpBrokerState {
             completed_invocations: Mutex::new(HashMap::new()),
             confirmation_grants: Mutex::new(HashMap::new()),
             cancellation_requests: Mutex::new(std::collections::HashSet::new()),
+            task_subscribers: Mutex::new(HashMap::new()),
+            pending_task_runs: Mutex::new(HashMap::new()),
+            task_run_id: AtomicU64::new(1),
             invocation_id: AtomicU64::new(1),
         })
     }
@@ -908,6 +952,7 @@ impl CapnpBrokerState {
                 is_agent: false,
             },
             confirmation_token,
+            None,
         )
     }
 
@@ -919,6 +964,7 @@ impl CapnpBrokerState {
         argument: Option<&str>,
         actor: &BrokerActor,
         confirmation_token: Option<&str>,
+        context: Option<qos_actions::ActionContext>,
     ) -> Result<InvocationJob, String> {
         let offered = self
             .surfaces
@@ -1048,6 +1094,7 @@ impl CapnpBrokerState {
                 action: action.to_string(),
                 argument: argument.map(str::to_string),
                 actor: actor.id.clone(),
+                context,
             })
             .is_err()
         {
@@ -1145,6 +1192,238 @@ impl CapnpBrokerState {
             .unwrap_or(false)
     }
 
+    /// Whether this room currently has a subscribed, admitted agent that can
+    /// receive a task lease. Presence or membership alone is not sufficient.
+    pub fn agent_is_live_task_capable(&self, cluster_id: &str, agent_id: &str) -> bool {
+        self.task_subscribers.lock().is_ok_and(|subscribers| {
+            subscribers.values().any(|subscriber| {
+                subscriber.cluster_id == cluster_id && subscriber.agent_id == agent_id
+            })
+        })
+    }
+
+    /// Mint and deliver one live-only task run. No durable/offline queue is
+    /// kept: losing the subscribed agent means Launch remains unavailable.
+    pub fn dispatch_workspace_task(&self, cluster_id: &str, task_id: &str) -> Result<u64, String> {
+        let membership = self
+            .membership
+            .as_ref()
+            .ok_or_else(|| "the task broker has no workspace authority".to_string())?;
+        let (workspace_id, task) = {
+            let tree = membership.read();
+            let workspace = tree
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room.to_string() == cluster_id)
+                .ok_or_else(|| "the task workspace is no longer hosted".to_string())?;
+            let task = workspace
+                .tasks
+                .iter()
+                .find(|task| task.id == task_id)
+                .cloned()
+                .ok_or_else(|| "the task no longer exists".to_string())?;
+            (workspace.id, task)
+        };
+        let agent_id = task
+            .assigned_agent
+            .clone()
+            .filter(|_| task.route != crate::shell::state::WorkspaceTaskRoute::Manual)
+            .ok_or_else(|| "the task has no agent route".to_string())?;
+        if task.status.is_finished() {
+            return Err("a finished task cannot be launched".into());
+        }
+        let (peer_id, tx) = self
+            .task_subscribers
+            .lock()
+            .map_err(|_| "the task subscription registry is unavailable".to_string())?
+            .iter()
+            .find(|(_, subscriber)| {
+                subscriber.cluster_id == cluster_id && subscriber.agent_id == agent_id
+            })
+            .map(|(peer_id, subscriber)| (*peer_id, subscriber.tx.clone()))
+            .ok_or_else(|| "the assigned agent is not live and task-capable".to_string())?;
+        let run_id = self.task_run_id.fetch_add(1, Ordering::Relaxed);
+        let lease = uuid::Uuid::new_v4().to_string();
+        let context = task.action_context();
+        tx.send(TaskRunEnvelope {
+            task_id: task.id.clone(),
+            title: task.title.clone(),
+            run_id,
+            lease: lease.clone(),
+            action_context: context.clone(),
+        })
+        .map_err(|_| "the assigned agent task stream closed".to_string())?;
+        self.pending_task_runs
+            .lock()
+            .map_err(|_| "the task run registry is unavailable".to_string())?
+            .insert(
+                run_id,
+                PendingTaskRun {
+                    peer_id,
+                    agent_id: agent_id.clone(),
+                    cluster_id: cluster_id.to_string(),
+                    task_id: task.id.clone(),
+                    lease,
+                    action_context: context,
+                    terminal: false,
+                },
+            );
+        let mut tree = membership.write();
+        let actor = format!("agent:{agent_id}");
+        let _ = tree.set_workspace_task_status(
+            workspace_id,
+            &task.id,
+            WorkspaceTaskStatus::InProgress,
+            &actor,
+        );
+        let _ = tree.append_workspace_task_audit(
+            workspace_id,
+            &task.id,
+            &actor,
+            format!("Broker dispatched live run {run_id}"),
+        );
+        Ok(run_id)
+    }
+
+    fn task_run_for(
+        &self,
+        peer_id: u64,
+        agent_id: &str,
+        run_id: u64,
+        lease: &str,
+    ) -> Result<PendingTaskRun, String> {
+        self.pending_task_runs
+            .lock()
+            .map_err(|_| "the task run registry is unavailable".to_string())?
+            .get(&run_id)
+            .filter(|run| {
+                run.peer_id == peer_id
+                    && run.agent_id == agent_id
+                    && run.lease == lease
+                    && !run.terminal
+            })
+            .cloned()
+            .ok_or_else(|| {
+                "the task run lease is unknown, expired, or belongs to another agent".to_string()
+            })
+    }
+
+    fn record_task_run_update(
+        &self,
+        peer_id: u64,
+        agent_id: &str,
+        run_id: u64,
+        lease: &str,
+        update: runtime_collab::TaskRunUpdate,
+    ) -> Result<(), String> {
+        let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
+        let (summary, status, terminal) = match update {
+            runtime_collab::TaskRunUpdate::Accepted => {
+                ("Agent accepted run".to_string(), None, false)
+            }
+            runtime_collab::TaskRunUpdate::Progress { message } => (
+                format!("Agent progress · {}", bounded_task_message(&message)?),
+                None,
+                false,
+            ),
+            runtime_collab::TaskRunUpdate::Succeeded { message } => (
+                format!("Agent completed · {}", bounded_task_message(&message)?),
+                Some(WorkspaceTaskStatus::Done),
+                true,
+            ),
+            runtime_collab::TaskRunUpdate::Failed { message } => (
+                format!(
+                    "Agent needs attention · {}",
+                    bounded_task_message(&message)?
+                ),
+                Some(WorkspaceTaskStatus::Waiting),
+                true,
+            ),
+            runtime_collab::TaskRunUpdate::Cancelled { message } => (
+                format!("Agent cancelled · {}", bounded_task_message(&message)?),
+                Some(WorkspaceTaskStatus::Cancelled),
+                true,
+            ),
+        };
+        if terminal {
+            let mut runs = self
+                .pending_task_runs
+                .lock()
+                .map_err(|_| "the task run registry is unavailable".to_string())?;
+            let Some(current) = runs.get_mut(&run_id) else {
+                return Err("the task run disappeared".into());
+            };
+            if current.terminal {
+                return Err("the task run is already terminal".into());
+            }
+            current.terminal = true;
+        }
+        let membership = self
+            .membership
+            .as_ref()
+            .ok_or_else(|| "the task broker has no workspace authority".to_string())?;
+        let mut tree = membership.write();
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == run.cluster_id)
+            .ok_or_else(|| "the task workspace is no longer hosted".to_string())?;
+        let actor = format!("agent:{}", run.agent_id);
+        if let Some(status) = status {
+            let _ = tree.set_workspace_task_status(workspace.id, &run.task_id, status, &actor);
+        }
+        let _ = tree.append_workspace_task_audit(workspace.id, &run.task_id, &actor, summary);
+        Ok(())
+    }
+
+    fn start_task_action(
+        &self,
+        peer_id: u64,
+        agent_id: &str,
+        run_id: u64,
+        lease: &str,
+        target_peer: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+    ) -> Result<InvocationJob, String> {
+        let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
+        let confirmation_required = self
+            .surfaces
+            .lock()
+            .ok()
+            .and_then(|surfaces| surfaces.get(&target_peer).cloned())
+            .and_then(|surface| {
+                (surface.route.cluster_id == run.cluster_id)
+                    .then_some(surface)
+                    .and_then(|surface| {
+                        surface.actions.into_iter().find(|candidate| {
+                            candidate.resource == resource && candidate.action == action
+                        })
+                    })
+            })
+            .ok_or_else(|| "the task action is no longer published in this workspace".to_string())?
+            .contract
+            .confirmation;
+        if !matches!(confirmation_required, qos_actions::ConfirmationPolicy::None) {
+            return Err(
+                "task action requires an interactive confirmation and cannot run unattended".into(),
+            );
+        }
+        self.start_invocation_confirmed_for(
+            target_peer,
+            resource,
+            action,
+            argument,
+            &BrokerActor {
+                id: run.agent_id,
+                is_agent: true,
+            },
+            None,
+            Some(run.action_context),
+        )
+    }
+
     fn remove_connection(&self, peer_id: u64) {
         if let Ok(mut surfaces) = self.surfaces.lock() {
             surfaces.remove(&peer_id);
@@ -1153,6 +1432,9 @@ impl CapnpBrokerState {
             subscribers.remove(&peer_id);
         }
         if let Ok(mut subscribers) = self.action_catalogue_subscribers.lock() {
+            subscribers.remove(&peer_id);
+        }
+        if let Ok(mut subscribers) = self.task_subscribers.lock() {
             subscribers.remove(&peer_id);
         }
         if let Ok(mut pending) = self.pending_invocations.lock() {
@@ -2018,6 +2300,140 @@ impl channel_handle::Server for CapnpChannelHandle {
         Promise::ok(())
     }
 
+    fn subscribe_task_runs(
+        self: Rc<Self>,
+        _params: channel_handle::SubscribeTaskRunsParams,
+        mut results: channel_handle::SubscribeTaskRunsResults,
+    ) -> Promise<(), capnp::Error> {
+        let current = match self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            Ok(current) => current,
+            Err(error) => return Promise::err(error),
+        };
+        let Some(agent_id) = current.agent_id else {
+            return Promise::err(capnp::Error::failed(
+                "only an admitted delegated agent may subscribe to task runs".into(),
+            ));
+        };
+        let (tx, rx) = mpsc::unbounded_channel();
+        if let Ok(mut subscribers) = self.state.task_subscribers.lock() {
+            subscribers.insert(
+                self.peer_id,
+                TaskSubscription {
+                    agent_id,
+                    cluster_id: self.route().cluster_id,
+                    tx,
+                },
+            );
+        } else {
+            return Promise::err(capnp::Error::failed(
+                "task subscription registry unavailable".into(),
+            ));
+        }
+        let client: task_run_stream::Client = capnp_rpc::new_client(TaskRunStreamServer {
+            rx: Rc::new(AsyncMutex::new(rx)),
+        });
+        results.get().set_stream(client);
+        Promise::ok(())
+    }
+
+    fn report_task_run(
+        self: Rc<Self>,
+        params: channel_handle::ReportTaskRunParams,
+        _results: channel_handle::ReportTaskRunResults,
+    ) -> Promise<(), capnp::Error> {
+        let current = match self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            Ok(current) => current,
+            Err(error) => return Promise::err(error),
+        };
+        let Some(agent_id) = current.agent_id else {
+            return Promise::err(capnp::Error::failed(
+                "only an agent may update a task run".into(),
+            ));
+        };
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        Promise::from_future(async move {
+            let request = params.get()?;
+            let lease = request.get_lease()?.to_str()?.to_owned();
+            let update = serde_json::from_str::<runtime_collab::TaskRunUpdate>(
+                request.get_update_json()?.to_str()?,
+            )
+            .map_err(|error| capnp::Error::failed(format!("invalid task update: {error}")))?;
+            state
+                .record_task_run_update(peer_id, &agent_id, request.get_run_id(), &lease, update)
+                .map_err(capnp::Error::failed)
+        })
+    }
+
+    fn invoke_task_action(
+        self: Rc<Self>,
+        params: channel_handle::InvokeTaskActionParams,
+        mut results: channel_handle::InvokeTaskActionResults,
+    ) -> Promise<(), capnp::Error> {
+        let current = match self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            Ok(current) => current,
+            Err(error) => return Promise::err(error),
+        };
+        let Some(agent_id) = current.agent_id else {
+            return Promise::err(capnp::Error::failed(
+                "only an agent may invoke a task action".into(),
+            ));
+        };
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        Promise::from_future(async move {
+            let request = params.get()?;
+            // Interactive confirmations have no safe unattended equivalent.
+            if !request.get_confirmation_json()?.to_str()?.trim().is_empty() {
+                return Err(capnp::Error::failed(
+                    "task action confirmation evidence is not accepted; request human confirmation outside the run".into(),
+                ));
+            }
+            let lease = request.get_lease()?.to_str()?.to_owned();
+            let resource = request.get_resource()?.to_str()?.to_owned();
+            let action = request.get_action()?.to_str()?.to_owned();
+            let argument = request
+                .get_has_argument()
+                .then(|| {
+                    request
+                        .get_argument()
+                        .and_then(|value| value.to_str().map(str::to_owned))
+                })
+                .transpose()?;
+            let job = state
+                .start_task_action(
+                    peer_id,
+                    &agent_id,
+                    request.get_run_id(),
+                    &lease,
+                    request.get_peer_id(),
+                    &resource,
+                    &action,
+                    argument.as_deref(),
+                )
+                .map_err(capnp::Error::failed)?;
+            let update = state.invocation_status(job.id).ok_or_else(|| {
+                capnp::Error::failed("accepted task action has no broker state".into())
+            })?;
+            results.get().set_id(job.id);
+            results.get().set_update_json(
+                &serde_json::to_string(&update)
+                    .map_err(|error| capnp::Error::failed(error.to_string()))?,
+            );
+            drop(job.completion);
+            Ok(())
+        })
+    }
+
     fn complete_invocation(
         self: Rc<Self>,
         params: channel_handle::CompleteInvocationParams,
@@ -2423,6 +2839,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     argument.as_deref(),
                     &actor,
                     None,
+                    None,
                 ),
                 qos_actions::ConfirmationPolicy::Confirm => {
                     if confirmation
@@ -2451,6 +2868,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         argument.as_deref(),
                         &actor,
                         Some(&token),
+                        None,
                     )
                 }
                 qos_actions::ConfirmationPolicy::Phrase { .. } => {
@@ -2471,6 +2889,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         argument.as_deref(),
                         &actor,
                         Some(&token),
+                        None,
                     )
                 }
             }
@@ -3182,6 +3601,10 @@ struct InvocationStreamServer {
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<InvocationEnvelope>>>,
 }
 
+struct TaskRunStreamServer {
+    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<TaskRunEnvelope>>>,
+}
+
 struct ActionCatalogueStreamServer {
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<String>>>,
 }
@@ -3225,6 +3648,46 @@ impl invocation_stream::Server for InvocationStreamServer {
             result.set_argument(invocation.argument.as_deref().unwrap_or(""));
             result.set_has_argument(invocation.argument.is_some());
             result.set_actor(&invocation.actor);
+            let context = invocation
+                .context
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|error| capnp::Error::failed(error.to_string()))?
+                .unwrap_or_default();
+            result.set_context_json(&context);
+            Ok(())
+        })
+    }
+}
+
+impl task_run_stream::Server for TaskRunStreamServer {
+    fn read(
+        self: Rc<Self>,
+        _params: task_run_stream::ReadParams,
+        mut results: task_run_stream::ReadResults,
+    ) -> Promise<(), capnp::Error> {
+        let rx = self.rx.clone();
+        Promise::from_future(async move {
+            let mut guard = rx.lock().await;
+            let run = guard
+                .recv()
+                .await
+                .ok_or_else(|| capnp::Error::disconnected("agent task stream closed".into()))?;
+            drop(guard);
+            let payload = runtime_collab::TaskRunEnvelope {
+                version: 1,
+                task_id: run.task_id,
+                title: run.title,
+                run_id: run.run_id,
+                lease: run.lease,
+                action_context: serde_json::to_value(run.action_context)
+                    .map_err(|error| capnp::Error::failed(error.to_string()))?,
+            };
+            results.get().set_task_json(
+                &serde_json::to_string(&payload)
+                    .map_err(|error| capnp::Error::failed(error.to_string()))?,
+            );
             Ok(())
         })
     }
