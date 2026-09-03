@@ -1307,10 +1307,10 @@ const RESPONSIVE_AUDIT_VIEWPORTS: [(&str, (u32, u32)); 4] = [
 ///
 /// A screenshot may legitimately have a large flat background, so this is a
 /// deliberately loose sanity gate rather than a visual-diff replacement. A
-/// frame fails only when one exact colour occupies more than 98% of its pixels;
-/// that catches empty/first-frame captures while allowing sparse terminals and
-/// honest empty states. Dimensions are checked too, so a stale image cannot
-/// satisfy a different viewport case.
+/// frame fails only when one exact colour occupies more than 99.9% of its
+/// pixels; that catches empty/first-frame captures while allowing deliberately
+/// sparse, centred empty states. Dimensions are checked too, so a stale image
+/// cannot satisfy a different viewport case.
 fn validate_responsive_pngs(mode_root: &Path) -> Result<()> {
     for (viewport_name, expected) in RESPONSIVE_AUDIT_VIEWPORTS {
         let suffix = format!("-{viewport_name}.png");
@@ -1354,7 +1354,7 @@ fn validate_responsive_png(path: &Path, expected: (u32, u32)) -> Result<()> {
     }
     let dominant = colours.values().copied().max().unwrap_or(total);
     anyhow::ensure!(
-        dominant.saturating_mul(100) <= total.saturating_mul(98),
+        dominant.saturating_mul(10_000) <= total.saturating_mul(9_990),
         "{} is effectively blank ({:.2}% one colour)",
         path.display(),
         dominant as f64 * 100.0 / total as f64
@@ -1872,6 +1872,27 @@ mod tests {
         painted.save(&painted_path).expect("write painted PNG");
         validate_responsive_png(&painted_path, (100, 80)).expect("painted frame is useful");
         assert!(validate_responsive_png(&painted_path, (80, 100)).is_err());
+
+        // A sparse but explicit empty state is useful UI. Even a compact
+        // centred title/action treatment occupies little of a desktop frame.
+        let mut sparse = image::RgbaImage::from_pixel(100, 100, image::Rgba([12, 13, 15, 255]));
+        for x in 47..53 {
+            for y in 47..53 {
+                sparse.put_pixel(x, y, image::Rgba([240, 240, 240, 255]));
+            }
+        }
+        let sparse_path = dir.path().join("sparse-empty-state.png");
+        sparse.save(&sparse_path).expect("write sparse PNG");
+        validate_responsive_png(&sparse_path, (100, 100))
+            .expect("explicit sparse empty state is useful");
+
+        let mut near_blank = image::RgbaImage::from_pixel(100, 100, image::Rgba([12, 13, 15, 255]));
+        near_blank.put_pixel(50, 50, image::Rgba([240, 240, 240, 255]));
+        let near_blank_path = dir.path().join("near-blank.png");
+        near_blank
+            .save(&near_blank_path)
+            .expect("write near-blank PNG");
+        assert!(validate_responsive_png(&near_blank_path, (100, 100)).is_err());
     }
 
     #[test]
