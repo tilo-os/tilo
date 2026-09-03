@@ -434,6 +434,31 @@ impl Action {
                 Ok(())
             },
         ),
+        chrome(
+            "identity.home-peer.enroll",
+            "Pair a home server",
+            "Copy a five-minute setup code with always-on full-sync access",
+            |st, _| {
+                let (_, profile) = active_identity(st)?;
+                let now = now_ns_u64();
+                let expires = now.saturating_add(5 * 60 * 1_000_000_000);
+                let token = crate::device_fleet::DeviceFleetStore::from_env()
+                    .and_then(|store| {
+                        store.mint_enrollment(
+                            &profile.id,
+                            qos_user_identity::DeviceCapabilities::host(),
+                            expires,
+                        )
+                    })
+                    .map_err(|error| ActionError::Refused(error.to_string()))?;
+                ui::text_selection::clipboard_copy(&token);
+                st.push_notification(
+                    "Home-server setup code copied",
+                    "It expires in five minutes and grants full workspace replication.",
+                );
+                Ok(())
+            },
+        ),
         Action {
             id: "identity.device.revoke",
             label: "Revoke an identity device",

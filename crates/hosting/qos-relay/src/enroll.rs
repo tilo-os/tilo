@@ -11,8 +11,10 @@ use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
 use clap::{Parser, Subcommand};
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
+use qos_relay::HomePeerRegistration;
 use qos_user_identity::{
-    DeviceCert, IdentityPaths, decode_enrollment_token, sign_device_cert, verify_device_cert,
+    DeviceCapabilities, DeviceCert, IdentityPaths, decode_enrollment_token,
+    encode_enrollment_token, mint_enrollment_token, sign_device_cert, verify_device_cert,
     verify_enrollment_token,
 };
 use rand::RngCore as _;
@@ -21,6 +23,8 @@ use serde::{Deserialize, Serialize};
 const PORT: u16 = 45_831;
 const MAX_PACKET: usize = 60 * 1024;
 const RESPONSE_DOMAIN: &[u8] = b"qos-host-enrollment-response-v1\0";
+const PAIR_DOMAIN: &[u8] = b"qos-nearby-home-peer-offer-v1\0";
+const PAIR_MAGIC: [u8; 8] = *b"QOSPAIR1";
 
 #[derive(Parser)]
 #[command(name = "qos-enroll")]
@@ -31,10 +35,26 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Find one unprovisioned home server broadcasting on this LAN.
+    Discover {
+        #[arg(long, default_value_t = 15)]
+        timeout: u64,
+    },
     /// Join the identity named by TOKEN, discovering its approving device on this LAN.
     Join {
         #[arg(long)]
         token_file: PathBuf,
+        #[arg(long, default_value = "/var/lib/qos")]
+        identity_root: PathBuf,
+        #[arg(long, default_value = "Home server")]
+        label: String,
+        #[arg(long, default_value_t = 270)]
+        timeout: u64,
+        #[arg(long, default_value = "/etc/qos/home-peer.toml")]
+        home_peer_output: PathBuf,
+    },
+    /// Pair with a nearby trusted qOS device without pre-installing a token.
+    Pair {
         #[arg(long, default_value = "/var/lib/qos")]
         identity_root: PathBuf,
         #[arg(long, default_value = "Home server")]
@@ -56,6 +76,10 @@ enum Command {
         acl: PathBuf,
         #[arg(long = "relay-workspace-id")]
         relay_workspace_ids: Vec<u64>,
+        #[arg(long)]
+        expected_device: Option<String>,
+        #[arg(long)]
+        expected_service: Option<String>,
     },
 }
 
@@ -96,6 +120,29 @@ struct EncryptedResponse {
     ciphertext: Vec<u8>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct PairSolicitation {
+    magic: [u8; 8],
+    device_public_key: [u8; 32],
+    relay_service_node_id: [u8; 32],
+    label: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PairCandidate {
+    device_node_id: String,
+    relay_service_node_id: String,
+    label: String,
+    verification_code: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PairOffer {
+    ephemeral_public_key: [u8; 32],
+    nonce: [u8; 12],
+    ciphertext: Vec<u8>,
+}
+
 #[derive(Serialize, Deserialize)]
 struct AckPayload {
     nonce: [u8; 16],
@@ -120,16 +167,6 @@ struct FinalizedPayload {
 struct Finalized {
     payload: FinalizedPayload,
     signature: Vec<u8>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HomePeerRegistration {
-    device_node_id: String,
-    relay_service_node_id: String,
-    label: String,
-    user_public_key: String,
-    relay_workspace_ids: Vec<u64>,
 }
 
 fn register_home_peer(
@@ -162,6 +199,11 @@ fn register_home_peer(
                 || hex::decode(&entry.relay_service_node_id).is_err()
                 || entry.user_public_key.len() != 64
                 || hex::decode(&entry.user_public_key).is_err()
+                || entry.device_cert.as_ref().is_some_and(|cert| {
+                    verify_device_cert(cert).is_err()
+                        || hex::encode(cert.device_public_key) != entry.device_node_id
+                        || hex::encode(cert.user_public_key) != entry.user_public_key
+                })
                 || entry.label.is_empty()
                 || entry.label.len() > 80
                 || entry.relay_workspace_ids.len() > 4096
@@ -172,10 +214,12 @@ fn register_home_peer(
     let device_node_id = hex::encode(cert.device_public_key);
     registrations.retain(|entry| entry.device_node_id != device_node_id);
     registrations.push(HomePeerRegistration {
+        schema_version: HomePeerRegistration::CURRENT_SCHEMA,
         device_node_id,
         relay_service_node_id: hex::encode(relay_service_node_id),
         label: cert.device_label.clone(),
         user_public_key: hex::encode(cert.user_public_key),
+        device_cert: Some(cert.clone()),
         relay_workspace_ids: relay_workspace_ids.to_vec(),
     });
     if registrations.len() > 128 {
@@ -212,6 +256,130 @@ fn verify_response(response: &Response, user_public_key: [u8; 32]) -> anyhow::Re
             &Signature::from_bytes(&signature),
         )
         .context("enrollment response was changed in transit")
+}
+
+fn pairing_code(device_public_key: [u8; 32], relay_service_node_id: [u8; 32]) -> String {
+    let mut input = PAIR_DOMAIN.to_vec();
+    input.extend(device_public_key);
+    input.extend(relay_service_node_id);
+    let digest = blake3::hash(&input);
+    let number = u32::from_le_bytes(digest.as_bytes()[..4].try_into().expect("four bytes"));
+    format!("{:06}", number % 1_000_000)
+}
+
+fn valid_solicitation(solicitation: &PairSolicitation) -> bool {
+    solicitation.magic == PAIR_MAGIC
+        && VerifyingKey::from_bytes(&solicitation.device_public_key).is_ok()
+        && solicitation.relay_service_node_id != [0; 32]
+        && !solicitation.label.trim().is_empty()
+        && solicitation.label.len() <= 80
+}
+
+fn discover(timeout: u64) -> anyhow::Result<()> {
+    let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, PORT))?;
+    socket.set_read_timeout(Some(Duration::from_secs(1)))?;
+    let deadline = std::time::Instant::now() + socket_timeout(timeout);
+    let mut packet = [0_u8; MAX_PACKET];
+    while std::time::Instant::now() < deadline {
+        match socket.recv_from(&mut packet) {
+            Ok((len, _)) => {
+                let Ok(solicitation) = postcard::from_bytes::<PairSolicitation>(&packet[..len])
+                else {
+                    continue;
+                };
+                if !valid_solicitation(&solicitation) {
+                    continue;
+                }
+                println!(
+                    "{}",
+                    serde_json::to_string(&PairCandidate {
+                        device_node_id: hex::encode(solicitation.device_public_key),
+                        relay_service_node_id: hex::encode(solicitation.relay_service_node_id),
+                        label: solicitation.label,
+                        verification_code: pairing_code(
+                            solicitation.device_public_key,
+                            solicitation.relay_service_node_id,
+                        ),
+                    })?
+                );
+                return Ok(());
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    bail!("no unprovisioned qOS home server was found nearby")
+}
+
+fn pair_offer_key(
+    shared: &[u8; 32],
+    recipient: [u8; 32],
+    ephemeral_public_key: [u8; 32],
+) -> [u8; 32] {
+    let mut input = PAIR_DOMAIN.to_vec();
+    input.extend(shared);
+    input.extend(recipient);
+    input.extend(ephemeral_public_key);
+    *blake3::hash(&input).as_bytes()
+}
+
+fn encrypt_pair_offer(token: &str, recipient: [u8; 32]) -> anyhow::Result<Vec<u8>> {
+    let mut seed = [0_u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut seed);
+    let ephemeral = x25519_dalek::StaticSecret::from(seed);
+    let ephemeral_public_key = x25519_dalek::PublicKey::from(&ephemeral).to_bytes();
+    let recipient_public = VerifyingKey::from_bytes(&recipient)?
+        .to_montgomery()
+        .to_bytes();
+    let shared = ephemeral.diffie_hellman(&x25519_dalek::PublicKey::from(recipient_public));
+    let key = pair_offer_key(shared.as_bytes(), recipient, ephemeral_public_key);
+    let mut nonce = [0_u8; 12];
+    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let ciphertext = ChaCha20Poly1305::new((&key).into())
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: token.as_bytes(),
+                aad: &[PAIR_DOMAIN, &recipient].concat(),
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("encrypt nearby pairing offer"))?;
+    postcard::to_stdvec(&PairOffer {
+        ephemeral_public_key,
+        nonce,
+        ciphertext,
+    })
+    .map_err(Into::into)
+}
+
+fn decrypt_pair_offer(
+    bytes: &[u8],
+    recipient: &ed25519_dalek::SigningKey,
+) -> anyhow::Result<String> {
+    let offer: PairOffer = postcard::from_bytes(bytes)?;
+    let recipient_public = recipient.verifying_key().to_bytes();
+    let recipient_secret = x25519_dalek::StaticSecret::from(recipient.to_scalar_bytes());
+    let shared =
+        recipient_secret.diffie_hellman(&x25519_dalek::PublicKey::from(offer.ephemeral_public_key));
+    let key = pair_offer_key(
+        shared.as_bytes(),
+        recipient_public,
+        offer.ephemeral_public_key,
+    );
+    let plaintext = ChaCha20Poly1305::new((&key).into())
+        .decrypt(
+            Nonce::from_slice(&offer.nonce),
+            Payload {
+                msg: &offer.ciphertext,
+                aad: &[PAIR_DOMAIN, &recipient_public].concat(),
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("nearby pairing offer was not encrypted for this server"))?;
+    String::from_utf8(plaintext).context("nearby pairing offer is not text")
 }
 
 fn response_aad(token_nonce: [u8; 16], recipient: [u8; 32]) -> Vec<u8> {
@@ -486,7 +654,22 @@ fn join(
 ) -> anyhow::Result<()> {
     let token_text = std::fs::read_to_string(&token_file)
         .with_context(|| format!("read {}", token_file.display()))?;
-    let token_text = token_text.trim();
+    join_with_token(
+        token_text.trim(),
+        identity_root,
+        label,
+        timeout,
+        home_peer_output,
+    )
+}
+
+fn join_with_token(
+    token_text: &str,
+    identity_root: PathBuf,
+    label: String,
+    timeout: u64,
+    home_peer_output: PathBuf,
+) -> anyhow::Result<()> {
     let token = decode_enrollment_token(token_text).context("decode enrollment token")?;
     verify_enrollment_token(&token, now_ns()?).context("verify enrollment token")?;
     if !token.capabilities.can_act_as_host || !token.capabilities.can_read_all_workspaces {
@@ -598,13 +781,91 @@ fn join(
     bail!("no approving qOS device answered before the enrollment window closed")
 }
 
+fn pair(
+    identity_root: PathBuf,
+    label: String,
+    timeout: u64,
+    home_peer_output: PathBuf,
+) -> anyhow::Result<()> {
+    let paths = IdentityPaths::under(&identity_root);
+    paths.ensure_directories()?;
+    let (device, _) = qos_user_identity::persist::load_or_create_device_key(&paths)?;
+    let relay_service_node_id = qos_relay::daemon::relay_service_node_id(&device);
+    let label: String = label.chars().take(80).collect();
+    if label.trim().is_empty() {
+        bail!("home-server label must not be empty");
+    }
+    let solicitation = postcard::to_stdvec(&PairSolicitation {
+        magic: PAIR_MAGIC,
+        device_public_key: device.verifying_key().to_bytes(),
+        relay_service_node_id,
+        label: label.clone(),
+    })?;
+    let code = pairing_code(device.verifying_key().to_bytes(), relay_service_node_id);
+    println!("Nearby pairing code: {code}");
+    let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
+    socket.set_broadcast(true)?;
+    socket.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, PORT);
+    let deadline = std::time::Instant::now() + socket_timeout(timeout);
+    let mut reply = [0_u8; MAX_PACKET];
+    while std::time::Instant::now() < deadline {
+        socket.send_to(&solicitation, destination)?;
+        match socket.recv_from(&mut reply) {
+            Ok((len, _sender)) => {
+                let Ok(token_text) = decrypt_pair_offer(&reply[..len], &device) else {
+                    continue;
+                };
+                let Ok(token) = decode_enrollment_token(token_text.trim()) else {
+                    continue;
+                };
+                if verify_enrollment_token(&token, now_ns()?).is_err()
+                    || !token.capabilities.can_act_as_host
+                    || !token.capabilities.can_read_all_workspaces
+                {
+                    continue;
+                }
+                println!("Nearby qOS device approved code {code}");
+                return join_with_token(
+                    token_text.trim(),
+                    identity_root,
+                    label,
+                    timeout,
+                    home_peer_output,
+                );
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    bail!("no trusted qOS device approved nearby pairing before the window closed")
+}
+
 fn approve(
     identity_root: PathBuf,
     timeout: u64,
     workspace_cache: PathBuf,
     acl: PathBuf,
     mut relay_workspace_ids: Vec<u64>,
+    expected_device: Option<String>,
+    expected_service: Option<String>,
 ) -> anyhow::Result<()> {
+    let expected: Option<([u8; 32], [u8; 32])> = match (expected_device, expected_service) {
+        (Some(device), Some(service)) => Some((
+            hex::decode(device)?
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("expected device ID has the wrong length"))?,
+            hex::decode(service)?
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("expected service ID has the wrong length"))?,
+        )),
+        (None, None) => None,
+        _ => bail!("expected device and service IDs must be supplied together"),
+    };
     let paths = IdentityPaths::under(&identity_root);
     let root = qos_user_identity::persist::read_signing_key(&paths.user_privkey)
         .context("this device does not hold the identity root needed to approve enrollment")?;
@@ -626,6 +887,7 @@ fn approve(
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
     let mut packet = [0_u8; MAX_PACKET];
     let request_deadline = std::time::Instant::now() + socket_timeout(timeout);
+    let mut selected_nearby: Option<(PairSolicitation, String, Vec<u8>)> = None;
     let (request, request_ephemeral_public_key, token, sender) = loop {
         if std::time::Instant::now() >= request_deadline {
             bail!("no valid nearby home-server request arrived");
@@ -642,6 +904,50 @@ fn approve(
             }
             Err(error) => return Err(error.into()),
         };
+        if let Ok(solicitation) = postcard::from_bytes::<PairSolicitation>(&packet[..len]) {
+            if !valid_solicitation(&solicitation)
+                || expected.is_some_and(|(device, service)| {
+                    solicitation.device_public_key != device
+                        || solicitation.relay_service_node_id != service
+                })
+            {
+                continue;
+            }
+            let selection_matches = selected_nearby.as_ref().is_none_or(|(selected, _, _)| {
+                selected.device_public_key == solicitation.device_public_key
+                    && selected.relay_service_node_id == solicitation.relay_service_node_id
+            });
+            if !selection_matches {
+                continue;
+            }
+            if selected_nearby.is_none() {
+                let mut nonce = [0_u8; 16];
+                rand::rngs::OsRng.fill_bytes(&mut nonce);
+                let expires_at_ns = now_ns()?.saturating_add(5 * 60 * 1_000_000_000);
+                let token = mint_enrollment_token(
+                    user_public_key,
+                    DeviceCapabilities::host(),
+                    expires_at_ns,
+                    nonce,
+                    &device,
+                )?;
+                let token_text = encode_enrollment_token(&token)?;
+                let offer = encrypt_pair_offer(&token_text, solicitation.device_public_key)?;
+                let code = pairing_code(
+                    solicitation.device_public_key,
+                    solicitation.relay_service_node_id,
+                );
+                println!(
+                    "Approving nearby home server '{}' with code {code}",
+                    solicitation.label
+                );
+                selected_nearby = Some((solicitation, token_text, offer));
+            }
+            if let Some((_, _, offer)) = &selected_nearby {
+                socket.send_to(offer, sender)?;
+            }
+            continue;
+        }
         let Ok((request, request_ephemeral_public_key)) = decrypt_request(&packet[..len], &device)
         else {
             continue;
@@ -656,6 +962,15 @@ fn approve(
             || !token.capabilities.can_read_all_workspaces
         {
             continue;
+        }
+        if let Some((selected, selected_token, _)) = &selected_nearby {
+            if request.device_public_key != selected.device_public_key
+                || request.relay_service_node_id != selected.relay_service_node_id
+                || request.label != selected.label
+                || request.token != *selected_token
+            {
+                continue;
+            }
         }
         break (request, request_ephemeral_public_key, token, sender);
     };
@@ -768,6 +1083,7 @@ fn approve(
 
 fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
+        Command::Discover { timeout } => discover(timeout),
         Command::Join {
             token_file,
             identity_root,
@@ -775,18 +1091,28 @@ fn main() -> anyhow::Result<()> {
             timeout,
             home_peer_output,
         } => join(token_file, identity_root, label, timeout, home_peer_output),
+        Command::Pair {
+            identity_root,
+            label,
+            timeout,
+            home_peer_output,
+        } => pair(identity_root, label, timeout, home_peer_output),
         Command::Approve {
             identity_root,
             timeout,
             workspace_cache,
             acl,
             relay_workspace_ids,
+            expected_device,
+            expected_service,
         } => approve(
             identity_root,
             timeout,
             workspace_cache,
             acl,
             relay_workspace_ids,
+            expected_device,
+            expected_service,
         ),
     }
 }
@@ -888,6 +1214,30 @@ mod tests {
         assert_eq!(decrypted.token, request.token);
         let wrong = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
         assert!(decrypt_request(&encrypted, &wrong).is_err());
+    }
+
+    #[test]
+    fn automatic_pair_offer_is_private_to_the_soliciting_server() {
+        let server = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let token = "signed-host-enrollment-token";
+        let encrypted = encrypt_pair_offer(token, server.verifying_key().to_bytes()).unwrap();
+        assert!(
+            !encrypted
+                .windows(token.len())
+                .any(|window| window == token.as_bytes())
+        );
+        assert_eq!(decrypt_pair_offer(&encrypted, &server).unwrap(), token);
+        let other = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+        assert!(decrypt_pair_offer(&encrypted, &other).is_err());
+    }
+
+    #[test]
+    fn nearby_pairing_code_is_stable_and_six_digits() {
+        let code = pairing_code([7; 32], [8; 32]);
+        assert_eq!(code, pairing_code([7; 32], [8; 32]));
+        assert_eq!(code.len(), 6);
+        assert!(code.bytes().all(|byte| byte.is_ascii_digit()));
+        assert_ne!(code, pairing_code([7; 32], [9; 32]));
     }
 
     #[test]

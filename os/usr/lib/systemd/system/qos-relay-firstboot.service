@@ -16,6 +16,8 @@ ExecStart=/usr/libexec/qos-relay-firstboot
 # the console and returns non-zero; systemd will retry on next
 # boot after the operator finishes the OOB handshake.
 TimeoutStartSec=300
+Restart=on-failure
+RestartSec=10
 StandardOutput=journal+console
 StandardError=journal+console
 

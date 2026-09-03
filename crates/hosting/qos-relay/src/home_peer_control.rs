@@ -31,6 +31,10 @@ enum BrokerCommand {
         identity_root: PathBuf,
         #[arg(long = "workspace-id")]
         workspace_ids: Vec<u64>,
+        #[arg(long)]
+        expected_device: Option<String>,
+        #[arg(long)]
+        expected_service: Option<String>,
     },
 }
 
@@ -40,6 +44,7 @@ struct ApplyRequest {
     identity_root: PathBuf,
     role: String,
     workspace_ids: Vec<u64>,
+    replication: String,
     inbound_relay: bool,
     remote_control_relay: bool,
     app_serving: bool,
@@ -84,6 +89,17 @@ fn desired_config(request: &ApplyRequest) -> anyhow::Result<RelayConfig> {
     };
     let serving = config.device_role.can_serve();
     let full = config.device_role == DeviceRole::AlwaysOnServer;
+    let requested_replication = match request.replication.as_str() {
+        "workspace-only" => ReplicationIntent::WorkspaceOnly,
+        "on-demand" => ReplicationIntent::OnDemand,
+        "full" => ReplicationIntent::FullWorkspace,
+        _ => bail!("unknown replication intent"),
+    };
+    let replication = if full {
+        ReplicationIntent::FullWorkspace
+    } else {
+        requested_replication
+    };
     config.services.workspace_replication = serving;
     config.services.full_content_replication = full;
     config.services.inbound_relay = serving && request.inbound_relay;
@@ -95,11 +111,7 @@ fn desired_config(request: &ApplyRequest) -> anyhow::Result<RelayConfig> {
         .map(|id| WorkspaceBinding {
             id,
             pin: serving,
-            replication: if full {
-                ReplicationIntent::FullWorkspace
-            } else {
-                ReplicationIntent::OnDemand
-            },
+            replication: replication.clone(),
             admitted_users: Vec::new(),
         })
         .collect();
@@ -216,7 +228,10 @@ fn restore_service_state(unit: &str, state: ServiceState) -> anyhow::Result<()> 
 const fn service_state_actions(state: ServiceState) -> (&'static str, &'static str) {
     (
         if state.enabled { "enable" } else { "disable" },
-        if state.active { "start" } else { "stop" },
+        // `restart`, not `start`: the unit may still be active with the rejected
+        // configuration after a later unit failed. Restoring bytes alone does
+        // not restore runtime state.
+        if state.active { "restart" } else { "stop" },
     )
 }
 
@@ -303,6 +318,11 @@ fn apply(request: ApplyRequest) -> anyhow::Result<()> {
     if result.is_err() {
         let relay_restore = restore_service_state("qos-relay.service", previous_relay_state);
         let fs_restore = restore_service_state("qos-fs-replica.service", previous_fs_state);
+        if let (Err(relay), Err(filesystem)) = (&relay_restore, &fs_restore) {
+            bail!(
+                "restore previous relay service state: {relay}; restore previous filesystem service state: {filesystem}"
+            );
+        }
         relay_restore.context("restore previous relay service state")?;
         fs_restore.context("restore previous filesystem service state")?;
     }
@@ -348,7 +368,12 @@ fn validate_identity_root(identity_root: &Path, uid: u32, home: &Path) -> anyhow
     Ok(canonical)
 }
 
-fn approve_enrollment(identity_root: PathBuf, workspace_ids: Vec<u64>) -> anyhow::Result<()> {
+fn approve_enrollment(
+    identity_root: PathBuf,
+    workspace_ids: Vec<u64>,
+    expected_device: Option<String>,
+    expected_service: Option<String>,
+) -> anyhow::Result<()> {
     if workspace_ids.len() > 4096 {
         bail!("too many workspaces");
     }
@@ -360,6 +385,21 @@ fn approve_enrollment(identity_root: PathBuf, workspace_ids: Vec<u64>) -> anyhow
         .arg(identity_root);
     for id in workspace_ids {
         command.args(["--relay-workspace-id", &id.to_string()]);
+    }
+    match (expected_device, expected_service) {
+        (Some(device), Some(service)) => {
+            if device.len() != 64
+                || service.len() != 64
+                || hex::decode(&device).is_err()
+                || hex::decode(&service).is_err()
+            {
+                bail!("invalid nearby home-server identity");
+            }
+            command.args(["--expected-device", &device]);
+            command.args(["--expected-service", &service]);
+        }
+        (None, None) => {}
+        _ => bail!("nearby device and service identities must be supplied together"),
     }
     let status = command.stdin(Stdio::null()).status()?;
     if !status.success() {
@@ -375,7 +415,14 @@ fn main() -> anyhow::Result<()> {
         BrokerCommand::ApproveEnrollment {
             identity_root,
             workspace_ids,
-        } => approve_enrollment(identity_root, workspace_ids),
+            expected_device,
+            expected_service,
+        } => approve_enrollment(
+            identity_root,
+            workspace_ids,
+            expected_device,
+            expected_service,
+        ),
     }
 }
 
@@ -389,6 +436,7 @@ mod tests {
             identity_root: PathBuf::from("/var/lib/qos"),
             role: "always-on".into(),
             workspace_ids: vec![9, 2, 9],
+            replication: "full".into(),
             inbound_relay: true,
             remote_control_relay: false,
             app_serving: false,
@@ -451,7 +499,7 @@ mod tests {
                 enabled: false,
                 active: true,
             }),
-            ("disable", "start")
+            ("disable", "restart")
         );
     }
 
@@ -478,6 +526,7 @@ mod tests {
             identity_root: PathBuf::from("/var/lib/qos"),
             role: "always-on".into(),
             workspace_ids: vec![12],
+            replication: "on-demand".into(),
             inbound_relay: true,
             remote_control_relay: false,
             app_serving: false,
