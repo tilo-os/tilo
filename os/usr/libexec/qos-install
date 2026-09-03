@@ -3,7 +3,7 @@
 # installer. The qos-installer UI (a ui::App, run under cage on the live
 # medium) shells out to this with:
 #
-#     /usr/libexec/qos-install --disk <dev> --user <name> --yes
+#     /usr/libexec/qos-install --disk <dev> --confirm-erase <dev> --user <name> --yes
 #
 # and the account password on **stdin** (a single line). Optional flags:
 #
@@ -22,6 +22,8 @@
 #                                     preserve the disk's partition table;
 #                                     format only a prepared empty Linux root
 #                                     and reuse (never format) its existing ESP
+#     --confirm-erase <dev>           required for whole-disk installs and must
+#                                     exactly match --disk
 #
 # An older UI may omit `--encrypt`, but the backend still encrypts. It must
 # provide `--pin`; otherwise installation fails closed. We:
@@ -259,6 +261,7 @@ WANT_FIDO2=0         # --fido2 → also enroll a FIDO2 security key if present
 ALONGSIDE=0
 ROOT_PARTITION=""
 EFI_PARTITION=""
+CONFIRM_ERASE=""
 PIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -277,6 +280,7 @@ while [ $# -gt 0 ]; do
     --alongside) ALONGSIDE=1; shift ;;
     --root-partition) ROOT_PARTITION="${2:-}"; shift 2 ;;
     --efi-partition) EFI_PARTITION="${2:-}"; shift 2 ;;
+    --confirm-erase) CONFIRM_ERASE="${2:-}"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) sed -n '2,49p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -289,9 +293,12 @@ done
 if [ "$ALONGSIDE" -eq 1 ]; then
   [ -n "$ROOT_PARTITION" ] && [ -n "$EFI_PARTITION" ] \
     || die "--alongside requires --root-partition and --efi-partition"
+  [ -z "$CONFIRM_ERASE" ] || die "--confirm-erase cannot be used with --alongside"
 else
   [ -z "$ROOT_PARTITION" ] && [ -z "$EFI_PARTITION" ] \
     || die "partition arguments require --alongside"
+  [ "$CONFIRM_ERASE" = "$DISK" ] \
+    || die "whole-disk install requires --confirm-erase matching --disk"
 fi
 
 # Use the portable Linux login-name subset accepted consistently by useradd
