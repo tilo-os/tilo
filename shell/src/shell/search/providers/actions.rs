@@ -1324,6 +1324,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn setup_profile_is_recorded_but_never_becomes_ambient_authority() {
+        let c = chrome_with_room();
+        let action = Action::ALL
+            .iter()
+            .find(|a| a.id == "agent.invite")
+            .expect("registered");
+        let args = ActionArgs::bind(
+            AGENT_INVITE_PARAMS,
+            [
+                (
+                    "name".to_string(),
+                    crate::shell::search::action_api::ArgValue::Text("Operator".to_string()),
+                ),
+                (
+                    "preset".to_string(),
+                    crate::shell::search::action_api::ArgValue::Text("operator".to_string()),
+                ),
+            ],
+        )
+        .expect("declared setup parameters bind");
+        (action.apply)(&mut c.borrow_mut(), &args).expect("owner admits agent");
+
+        let state = c.borrow();
+        let ws = state.tree().active_workspace().expect("fixture has room");
+        assert_eq!(
+            ws.role_of_agent("operator"),
+            Some(crate::shell::state::CapRole::Editor),
+            "the durable admission marker carries the selected setup intent"
+        );
+        assert!(
+            ws.capabilities
+                .iter()
+                .any(|cap| { cap.id == "agent-member:operator:operator" })
+        );
+        assert!(
+            !ws.allows(
+                &ws.actor_for_agent("operator"),
+                &crate::shell::state::ResourceRef::App("dev.qos.notes".into()),
+                crate::shell::state::Verb::Write,
+            ),
+            "even the Operator profile requires an explicit scoped grant"
+        );
+    }
+
     /// A name typed in any case names one agent. Two spellings would be
     /// two subjects, which reads on screen as a grant that did not take.
     #[test]
