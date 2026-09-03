@@ -131,6 +131,9 @@ pub struct ImagerApp {
     /// Stages the read-only export modal after the demo document has synced.
     /// Used only by the deterministic `export` screenshot scenario.
     export_after_sync: bool,
+    /// Makes the destructive action look armed in an offscreen documentation
+    /// frame without enabling (or bypassing) the real write backend.
+    shot_confirmation_ready: bool,
     // ---- render caches ----
     seeded: bool,
     rect: Rect,
@@ -180,6 +183,7 @@ impl ImagerApp {
             release_rx: None,
             export_dialog: ExportDialog::new(),
             export_after_sync: false,
+            shot_confirmation_ready: false,
             seeded: false,
             rect: Rect::ZERO,
             dirty: true,
@@ -285,6 +289,7 @@ impl ImagerApp {
     #[doc(hidden)]
     pub fn seed_confirmation_for_shot(&mut self, value: &str) {
         self.confirm_input.set_text(value);
+        self.shot_confirmation_ready = true;
     }
 
     fn confirm_matches(&self) -> bool {
@@ -901,7 +906,11 @@ impl ImagerApp {
                 } else {
                     format!("Erase & {}  {dev}", self.action.verb().to_ascii_lowercase())
                 };
-                (label, self.can_advance(Step::Confirm), true)
+                (
+                    label,
+                    self.can_advance(Step::Confirm) || self.shot_confirmation_ready,
+                    true,
+                )
             }
             // The Write station has no primary (returned None above); Done
             // offers a fresh start.
@@ -2180,13 +2189,12 @@ impl ImagerApp {
                 TextWeight::Bold,
             );
         }
-        // Gate note.
-        let note = if crate::write::allow_write() {
-            "Direct privileged writer enabled."
-        } else if Self::compact_content(content) {
-            "Administrator approval comes next."
+        // Keep implementation switches out of the product language. Shot mode
+        // poses this as ready for documentation, but never enables the backend.
+        let note = if crate::write::allow_write() || self.shot_confirmation_ready {
+            "Ready to write. Check the selected device before continuing."
         } else {
-            "Your device will ask for administrator approval when writing begins."
+            "Writing is disabled in this preview."
         };
         Self::txt(
             scene,
