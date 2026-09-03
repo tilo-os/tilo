@@ -1530,28 +1530,39 @@ impl Widget for OnboardingView {
                         let identity_root = std::env::var_os("QOS_IDENTITY_ROOT")
                             .map(PathBuf::from)
                             .unwrap_or_else(|| PathBuf::from("/var/lib/qos"));
-                        match Command::new("pkexec")
-                            .args([
-                                "/usr/libexec/qos-home-peer-control",
-                                "pair-device",
-                                "--identity-root",
-                            ])
-                            .arg(identity_root)
-                            .arg("--identity-dir")
-                            .arg(identity_dir)
-                            .args(["--label", &label, "--status-file"])
-                            .arg(status_path)
-                            .stdin(Stdio::null())
-                            .stdout(Stdio::piped())
-                            .stderr(Stdio::piped())
-                            // pkexec, the privileged broker and qos-enroll must
-                            // share a revocable lifetime.  A dedicated process
-                            // group lets Cancel, Back and compositor teardown
-                            // stop the whole transaction instead of merely
-                            // orphaning a privileged descendant.
-                            .process_group(0)
-                            .spawn()
-                        {
+                        let requester = qos_relay::ProcessLease::capture(std::process::id());
+                        let spawn =
+                            requester
+                                .map_err(|error| error.to_string())
+                                .and_then(|lease| {
+                                    Command::new("pkexec")
+                                        .args([
+                                            "/usr/libexec/qos-home-peer-control",
+                                            "pair-device",
+                                            "--identity-root",
+                                        ])
+                                        .arg(identity_root)
+                                        .arg("--identity-dir")
+                                        .arg(identity_dir)
+                                        .args(["--label", &label, "--status-file"])
+                                        .arg(status_path)
+                                        .arg("--requester-pid")
+                                        .arg(lease.pid().to_string())
+                                        .arg("--requester-start-time")
+                                        .arg(lease.start_time().to_string())
+                                        .stdin(Stdio::null())
+                                        .stdout(Stdio::piped())
+                                        .stderr(Stdio::piped())
+                                        // pkexec, the privileged broker and qos-enroll must
+                                        // share a revocable lifetime.  A dedicated process
+                                        // group lets Cancel, Back and compositor teardown
+                                        // stop the whole transaction instead of merely
+                                        // orphaning a privileged descendant.
+                                        .process_group(0)
+                                        .spawn()
+                                        .map_err(|error| error.to_string())
+                                });
+                        match spawn {
                             Ok(child) => {
                                 self.nearby_child = Some(child);
                                 self.nearby_status =
@@ -2130,9 +2141,11 @@ mod tests {
         assert!(child.is_none());
         let deadline = Instant::now() + Duration::from_secs(1);
         loop {
-            // SAFETY: this is the dedicated process group created above.
-            let result = unsafe { libc::kill(pgid.saturating_neg(), 0) };
-            if result != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            // A killed grandchild can remain as a zombie until the host's PID
+            // 1 reaps it. `kill(-pgid, 0)` reports that inert bookkeeping
+            // entry as present, so inspect procfs and require that the group
+            // has no process capable of executing instead.
+            if !process_group_has_live_member(pgid) {
                 break;
             }
             assert!(
@@ -2141,6 +2154,27 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    fn process_group_has_live_member(pgid: i32) -> bool {
+        std::fs::read_dir("/proc").is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                    return false;
+                };
+                let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+                    return false;
+                };
+                let Some((_, tail)) = stat.rsplit_once(')') else {
+                    return false;
+                };
+                let mut fields = tail.split_whitespace();
+                let state = fields.next();
+                let _parent = fields.next();
+                let process_group = fields.next().and_then(|field| field.parse::<i32>().ok());
+                process_group == Some(pgid) && !matches!(state, Some("Z" | "X"))
+            })
+        })
     }
 
     fn press(doc: &mut AutoCommit, key: &str) {
