@@ -13,7 +13,7 @@ use std::io::{Cursor, Read, Write};
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 
-use crate::model::{Deck, Element, ElementKind, Layout, PaletteKind, Slide, TextAlign};
+use crate::model::{Background, Deck, Element, ElementKind, Layout, PaletteKind, Slide, TextAlign};
 
 const EMU: f64 = 9_525.0;
 
@@ -161,6 +161,34 @@ fn drawing_fill(role: &str) -> String {
     }
 }
 
+/// Emit the model's three slide treatments as a native DrawingML background.
+/// The value deliberately stays theme-relative: an Accent or Deep slide still
+/// tracks the presentation theme when opened in PowerPoint instead of being
+/// flattened to a qOS-specific RGB colour.
+fn drawing_slide_background(background: Background) -> String {
+    let role = match background {
+        Background::Surface => "surface",
+        Background::Accent => "accent",
+        Background::Deep => "deep",
+    };
+    format!(
+        "<p:bg><p:bgPr>{}<a:effectLst/></p:bgPr></p:bg>",
+        drawing_fill(role)
+    )
+}
+
+/// Map the only theme-relative slide backgrounds our model represents. A
+/// literal RGB, gradient, picture, or inherited master background is left at
+/// the neutral model default rather than pretending it survived unchanged.
+fn slide_background_from_color(e: &BytesStart<'_>) -> Option<Background> {
+    (local(e.name().as_ref()) == b"schemeClr").then(|| match attr(e, b"val").as_str() {
+        "lt1" => Some(Background::Surface),
+        "accent1" => Some(Background::Accent),
+        "dk1" => Some(Background::Deep),
+        _ => None,
+    })?
+}
+
 fn drawing_line(role: &str, width: f64) -> String {
     let width = (width.max(0.0) * EMU).round() as i64;
     if role == "none" || width == 0 {
@@ -230,8 +258,10 @@ fn set_pending_color(c: &mut Pending, target: ColorTarget, e: &BytesStart<'_>) {
 
 fn slide_xml(slide: &Slide, pictures: &[&Picture]) -> String {
     let mut s = String::from(
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>"#,
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld>"#,
     );
+    s.push_str(&drawing_slide_background(slide.background));
+    s.push_str(r#"<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>"#);
     for (i, el) in slide.z_sorted().into_iter().enumerate() {
         let id = i + 2;
         let (x, y, w, h) = (emu(el.x), emu(el.y), emu(el.w), emu(el.h));
@@ -320,12 +350,16 @@ fn parse_slide(
     // runs. Keep a tiny amount of ancestor context instead of building a DOM.
     let mut in_line = 0usize;
     let mut in_text_style = 0usize;
+    // `<p:bg>` belongs to the slide rather than a shape. Keep it separate
+    // from fill parsing so a text/shape colour can never overwrite it.
+    let mut in_slide_background = 0usize;
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
                 let name = e.name();
                 let n = local(name.as_ref());
                 match n {
+                    b"bg" => in_slide_background += 1,
                     b"sp" | b"cxnSp" => {
                         cur = Some(Pending {
                             kind: ElementKind::Rect,
@@ -375,7 +409,11 @@ fn parse_slide(
                         in_line += 1;
                     }
                     b"srgbClr" | b"schemeClr" => {
-                        if let Some(c) = cur.as_mut() {
+                        if in_slide_background > 0 {
+                            if let Some(background) = slide_background_from_color(&e) {
+                                slide.background = background;
+                            }
+                        } else if let Some(c) = cur.as_mut() {
                             set_pending_color(c, color_target(in_text_style, in_line), &e);
                         }
                     }
@@ -409,6 +447,12 @@ fn parse_slide(
             Ok(Event::Empty(e)) => {
                 let name = e.name();
                 let n = local(name.as_ref());
+                if in_slide_background > 0
+                    && matches!(n, b"srgbClr" | b"schemeClr")
+                    && let Some(background) = slide_background_from_color(&e)
+                {
+                    slide.background = background;
+                }
                 if let Some(c) = cur.as_mut() {
                     match n {
                         b"off" => {
@@ -448,6 +492,7 @@ fn parse_slide(
                 b"t" => in_text = false,
                 b"rPr" | b"defRPr" => in_text_style = in_text_style.saturating_sub(1),
                 b"ln" => in_line = in_line.saturating_sub(1),
+                b"bg" => in_slide_background = in_slide_background.saturating_sub(1),
                 b"sp" | b"cxnSp" | b"pic" => {
                     if let Some(c) = cur.take() {
                         push_pending(&mut slide, c, rels, zip);
@@ -719,6 +764,36 @@ mod tests {
         assert_eq!(shape.stroke, "danger");
         assert!((shape.stroke_width - 3.5).abs() < 0.01);
         assert_eq!(got.slides[0].elements[1].fill, "success");
+    }
+
+    #[test]
+    fn round_trips_theme_relative_slide_backgrounds() {
+        let mut accent = Slide::new(Layout::Blank);
+        accent.background = Background::Accent;
+        let mut deep = Slide::new(Layout::Blank);
+        deep.background = Background::Deep;
+        let deck = Deck {
+            title: "Background fidelity".into(),
+            palette: PaletteKind::Indigo,
+            slides: vec![accent, deep],
+        };
+
+        let bytes = write_pptx(&deck).expect("pptx export");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).expect("pptx zip");
+        let accent_xml = read_zip_text(&mut archive, "ppt/slides/slide1.xml").expect("slide xml");
+        let deep_xml = read_zip_text(&mut archive, "ppt/slides/slide2.xml").expect("slide xml");
+        assert!(
+            accent_xml.contains("<p:bg><p:bgPr><a:solidFill><a:schemeClr val=\"accent1\""),
+            "accent is a native theme background"
+        );
+        assert!(
+            deep_xml.contains("<p:bg><p:bgPr><a:solidFill><a:schemeClr val=\"dk1\""),
+            "deep is a native theme background"
+        );
+
+        let got = read_pptx(&bytes).expect("pptx import");
+        assert_eq!(got.slides[0].background, Background::Accent);
+        assert_eq!(got.slides[1].background, Background::Deep);
     }
 
     #[test]
