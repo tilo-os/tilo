@@ -22,7 +22,12 @@ cleanup() {
 trap cleanup EXIT
 
 truncate -s 40G "$tmp/disk.img"
-loop="$(run_root losetup --find --show --partscan "$tmp/disk.img")"
+loop_error="$tmp/losetup.error"
+if ! loop="$(run_root losetup --find --show --partscan "$tmp/disk.img" 2>"$loop_error")"; then
+  printf 'SKIP  guided alongside loopback test needs a usable loop device (%s)\n' \
+    "$(tr '\n' ' ' <"$loop_error")"
+  exit 0
+fi
 existing_uuid=00000000-0000-4000-8000-000000000001
 efi_uuid=10000000-0000-4000-8000-000000000002
 root_uuid=20000000-0000-4000-8000-000000000003
