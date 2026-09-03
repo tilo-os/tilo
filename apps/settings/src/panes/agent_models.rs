@@ -180,6 +180,7 @@ impl LocalModelControl for ModelManagerCli {
                 &model.id,
                 "--revision",
                 &model.revision,
+                "--accept-license",
             ])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
