@@ -1493,4 +1493,76 @@ mod tests {
             }
         }
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn host_replays_the_latest_personal_continuity_checkpoint_after_close() {
+        use rand_core::OsRng;
+        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
+        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+        let (relay, _state) = spawn_pinned_relay_for_two_members(
+            &root,
+            a_key.verifying_key().to_bytes(),
+            b_key.verifying_key().to_bytes(),
+        )
+        .await;
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let identity = |key, cert| HostIdentity {
+            device_cert: cert,
+            device_signing_key: key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
+            a,
+            lookup_a,
+            identity(a_key, a_cert),
+            b,
+            lookup_b,
+            identity(b_key, b_cert),
+            &relay,
+        )
+        .await;
+        let checkpoint = |bytes| NeighbourMsg::PersonalContinuityCheckpoint {
+            user_public_key: root.verifying_key().to_bytes(),
+            publisher: 7,
+            snapshot: bytes,
+        };
+        cmd_a
+            .send(NetCmd::PublishCheckpoint {
+                ws: 42,
+                msg: checkpoint(vec![1]),
+            })
+            .await
+            .unwrap();
+        loop {
+            if let Some(NetEvent::Msg {
+                msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
+                ..
+            }) = timeout(Duration::from_secs(10), rx_b.recv()).await.unwrap()
+            {
+                assert_eq!(snapshot, vec![1]);
+                break;
+            }
+        }
+        cmd_a
+            .send(NetCmd::PublishCheckpoint {
+                ws: 42,
+                msg: checkpoint(Vec::new()),
+            })
+            .await
+            .unwrap();
+        loop {
+            if let Some(NetEvent::Msg {
+                msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
+                ..
+            }) = timeout(Duration::from_secs(10), rx_b.recv()).await.unwrap()
+            {
+                assert!(snapshot.is_empty(), "closure replaces live checkpoint");
+                break;
+            }
+        }
+    }
 }
