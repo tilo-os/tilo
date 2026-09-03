@@ -53,6 +53,7 @@ use ui::widget::{
 };
 
 use crate::auth::{AuthUpdate, spawn_auth};
+use crate::local_users::{LoginUser, discover_default_login_user};
 use crate::sessions::{DEFAULT_SESSIONS_DIR, Session, read_sessions};
 
 const USERNAME_PATH: &str = "greeter.username";
@@ -474,7 +475,7 @@ pub enum StatusKind {
     /// Nothing to say. The row is still reserved, so the card keeps its
     /// size and the form does not jump when something appears here.
     None,
-    /// A correctable note about the form itself ("Enter your password").
+    /// A correctable note about the form itself ("Enter your passcode").
     Hint,
     /// The attempt was rejected.
     Error,
@@ -516,6 +517,10 @@ pub enum AuthScenario {
 pub struct GreeterApp {
     sessions: Vec<Session>,
     selected_session: usize,
+    /// The sole eligible interactive local account, when discovery was
+    /// unambiguous. Its username is fixed and the form asks only for the
+    /// passcode; zero/multiple candidates retain the editable username field.
+    login_user: Option<LoginUser>,
     status: String,
     /// How [`GreeterApp::status`] should read — see [`StatusKind`].
     status_kind: StatusKind,
@@ -571,15 +576,28 @@ impl GreeterApp {
     /// Construct a greeter reading sessions from the standard
     /// `/usr/share/wayland-sessions` directory.
     pub fn new() -> Self {
-        Self::with_sessions(read_sessions(std::path::Path::new(DEFAULT_SESSIONS_DIR)))
+        Self::with_sessions_and_login_user(
+            read_sessions(std::path::Path::new(DEFAULT_SESSIONS_DIR)),
+            discover_default_login_user(),
+        )
     }
 
     /// Construct with an explicit session list (used by tests / headless
     /// rendering where the system directory may be absent).
     pub fn with_sessions(sessions: Vec<Session>) -> Self {
+        Self::with_sessions_and_login_user(sessions, None)
+    }
+
+    /// Construct with an already validated local-account discovery result.
+    /// Public for the production entry point and focused UI tests.
+    pub fn with_sessions_and_login_user(
+        sessions: Vec<Session>,
+        login_user: Option<LoginUser>,
+    ) -> Self {
         Self {
             sessions,
             selected_session: 0,
+            login_user,
             status: String::new(),
             status_kind: StatusKind::None,
             detail: String::new(),
@@ -626,7 +644,7 @@ impl GreeterApp {
         match scenario {
             AuthScenario::Form | AuthScenario::LongName => {}
             AuthScenario::Error => {
-                app.status = "Incorrect username or password".to_string();
+                app.status = "Incorrect username or passcode".to_string();
                 app.status_kind = StatusKind::Error;
             }
             AuthScenario::Authenticating => {
@@ -641,7 +659,7 @@ impl GreeterApp {
                 app.caps_lock.observe('A', false);
             }
             AuthScenario::Hint => {
-                app.status = "Enter your password".to_string();
+                app.status = "Enter your passcode".to_string();
                 app.status_kind = StatusKind::Hint;
             }
             AuthScenario::Starting => {
@@ -819,12 +837,50 @@ impl GreeterApp {
         )
     }
 
+    fn build_account_field(&self, busy: bool, theme: &Theme) -> Box<dyn Widget> {
+        if let Some(user) = &self.login_user {
+            let account = if user.display_name == user.username {
+                user.username.clone()
+            } else {
+                format!("{}  ·  {}", user.display_name, user.username)
+            };
+            Box::new(VStack::new(
+                LABEL_GAP,
+                vec![
+                    Box::new(Self::field_label("Account", theme)),
+                    Box::new(
+                        Text::new(&account)
+                            .with_id("greeter.account")
+                            .with_size(15.0),
+                    ),
+                ],
+            ))
+        } else {
+            Box::new(VStack::new(
+                LABEL_GAP,
+                vec![
+                    Box::new(Self::field_label("Username", theme)),
+                    Box::new(
+                        TextInput::new(Vec::new())
+                            .with_id("greeter.username")
+                            .with_on_change_path(USERNAME_PATH)
+                            .with_accessible_name("Username")
+                            .with_placeholder("Your username")
+                            .disabled(busy),
+                    ),
+                ],
+            ))
+        }
+    }
+
     /// Build the composed card subtree from current state.
     ///
     /// Focus continuity contract: the focusable set is, in tree order, the
-    /// username field, the password field, the primary action, the fingerprint
-    /// action, the session picker (present only when there is more than one
-    /// session to choose between), and the two power actions. Labels, the
+    /// optional username field, passcode field, primary action, fingerprint
+    /// action, session picker (present only when there is more than one
+    /// session to choose between), and the two power actions. On an
+    /// unambiguous personal machine the username becomes a static account
+    /// label, making the passcode the first focusable control. Labels, the
     /// Caps-Lock note, the spinner, and the status line are all non-focusable, so an incidental
     /// rebuild (a status change, a Caps-Lock flip, cycling the session)
     /// keeps keyboard focus AND the caret glued in place — see `main.rs`'s
@@ -861,28 +917,17 @@ impl GreeterApp {
         // Persistent labels above each field. Two unlabelled rounded boxes
         // leave the user guessing which one is which; a placeholder alone
         // disappears the moment they start typing.
-        children.push(Box::new(VStack::new(
-            LABEL_GAP,
-            vec![
-                Box::new(Self::field_label("Username", theme)),
-                Box::new(
-                    TextInput::new(Vec::new())
-                        .with_id("greeter.username")
-                        .with_on_change_path(USERNAME_PATH)
-                        .with_placeholder("Your username")
-                        .disabled(busy),
-                ),
-            ],
-        )));
+        children.push(self.build_account_field(busy, theme));
 
         let mut password_group: Vec<Box<dyn Widget>> = vec![
-            Box::new(Self::field_label("Password", theme)),
+            Box::new(Self::field_label("Passcode", theme)),
             Box::new(
                 TextInput::new(Vec::new())
                     .with_id("greeter.password")
                     .with_on_change_path(PASSWORD_PATH)
+                    .with_accessible_name("Passcode")
                     .with_secret(true)
-                    .with_placeholder("Your password")
+                    .with_placeholder("Your passcode")
                     .disabled(busy),
             ),
         ];
@@ -964,7 +1009,10 @@ impl GreeterApp {
 
     fn bootstrap_crdt(&self, state: &mut AutoCommit, root: &ObjId) {
         if state.get(root, USERNAME_PATH).ok().flatten().is_none() {
-            let _ = state.put_object(root, USERNAME_PATH, ObjType::Text);
+            let username = state.put_object(root, USERNAME_PATH, ObjType::Text).ok();
+            if let (Some(username), Some(user)) = (username, self.login_user.as_ref()) {
+                let _ = state.splice_text(&username, 0, 0, &user.username);
+            }
         }
         if state.get(root, PASSWORD_PATH).ok().flatten().is_none() {
             let _ = state.put_object(root, PASSWORD_PATH, ObjType::Text);
@@ -1042,7 +1090,7 @@ impl GreeterApp {
             AuthMethod::Password => {
                 let password = Self::read_text(state, root, PASSWORD_PATH).unwrap_or_default();
                 if password.is_empty() {
-                    Err("Enter your password")
+                    Err("Enter your passcode")
                 } else {
                     Ok(password)
                 }
@@ -1965,6 +2013,85 @@ mod tests {
     }
 
     #[test]
+    fn sole_local_user_gets_a_one_passcode_form_with_passcode_focus_first() {
+        let user = LoginUser {
+            username: "quickuser".into(),
+            display_name: "Quinten Quick".into(),
+        };
+        let mut app = GreeterApp::with_sessions_and_login_user(test_sessions(), Some(user));
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+
+        assert_eq!(
+            GreeterApp::read_text(&doc, &automerge::ROOT, USERNAME_PATH).as_deref(),
+            Some("quickuser"),
+            "the authenticated username is seeded without asking the user to type it"
+        );
+        assert_eq!(
+            focusables(&app),
+            vec![
+                "greeter.password",
+                "greeter.login",
+                "greeter.fingerprint",
+                "greeter.session",
+                "greeter.reboot",
+                "greeter.poweroff",
+            ],
+            "autofocus therefore lands on the passcode field"
+        );
+        let card = card_of(&app);
+        assert_eq!(
+            accessible_name_for(card.as_ref(), "greeter.account").as_deref(),
+            Some("Quinten Quick  ·  quickuser")
+        );
+        assert_eq!(
+            accessible_name_for(card.as_ref(), "greeter.password").as_deref(),
+            Some("Passcode")
+        );
+        assert!(
+            accessible_name_for(card.as_ref(), "greeter.username").is_none(),
+            "an editable username must not remain hidden in the accessibility tree"
+        );
+    }
+
+    #[test]
+    fn one_passcode_autofocus_is_exposed_to_assistive_technology() {
+        let greeter = GreeterApp::with_sessions_and_login_user(
+            test_sessions(),
+            Some(LoginUser {
+                username: "quickuser".into(),
+                display_name: "Quinten Quick".into(),
+            }),
+        );
+        let mut app = ui::App::new(ui::State::new(), Box::new(greeter));
+        app.autofocus_first = true;
+        app.autofocus_on_structure_change = true;
+        app.init_layout();
+        app.refresh_semantic_tree();
+
+        let focused = app
+            .semantic_tree()
+            .iter()
+            .find(|node| node.state.focused)
+            .and_then(|node| node.name.as_deref());
+        assert_eq!(focused, Some("Passcode"));
+    }
+
+    #[test]
+    fn ambiguous_account_discovery_keeps_named_two_field_fallback() {
+        let app = GreeterApp::with_sessions_and_login_user(test_sessions(), None);
+        let card = card_of(&app);
+        assert_eq!(
+            accessible_name_for(card.as_ref(), "greeter.username").as_deref(),
+            Some("Username")
+        );
+        assert_eq!(
+            focusables(&app).first().map(String::as_str),
+            Some("greeter.username")
+        );
+    }
+
+    #[test]
     fn enter_defaults_to_login_only_from_text_fields() {
         let mut app = GreeterApp::with_sessions(test_sessions());
         let mut doc = AutoCommit::new();
@@ -2020,7 +2147,7 @@ mod tests {
         let _ = doc.splice_text(&uobj, 0, 0, "alice");
         let _ = doc.put(&root, SUBMIT_PATH, true);
         app.sync(&mut doc, &root);
-        assert_eq!(app.status, "Enter your password");
+        assert_eq!(app.status, "Enter your passcode");
         assert_eq!(app.status_kind, StatusKind::Hint);
         assert_eq!(app.phase, AuthPhase::Idle);
     }
@@ -2034,7 +2161,7 @@ mod tests {
 
         assert_eq!(
             GreeterApp::auth_secret(&doc, &root, AuthMethod::Password),
-            Err("Enter your password")
+            Err("Enter your passcode")
         );
         assert_eq!(
             GreeterApp::auth_secret(&doc, &root, AuthMethod::Fingerprint),
@@ -2139,12 +2266,12 @@ mod tests {
         for (scenario, message, expected) in [
             (
                 AuthScenario::Hint,
-                "Enter your password",
+                "Enter your passcode",
                 Politeness::Assertive,
             ),
             (
                 AuthScenario::Error,
-                "Incorrect username or password",
+                "Incorrect username or passcode",
                 Politeness::Assertive,
             ),
             (AuthScenario::Starting, STARTING_MESSAGE, Politeness::Polite),
@@ -2226,14 +2353,14 @@ mod tests {
 
         // Worker reports a bad-credentials failure (already user-facing).
         let payload = crate::auth::AuthUpdate::Failed {
-            message: "Incorrect username or password".to_string(),
+            message: "Incorrect username or passcode".to_string(),
             detail: None,
         }
         .encode();
         app.on_external_event(&payload, &mut doc, &root);
 
         assert_eq!(app.phase, AuthPhase::Idle, "back to the form on failure");
-        assert_eq!(app.status, "Incorrect username or password");
+        assert_eq!(app.status, "Incorrect username or passcode");
         // Password cleared, username preserved.
         assert_eq!(
             GreeterApp::read_text(&doc, &root, PASSWORD_PATH).as_deref(),
@@ -2255,7 +2382,7 @@ mod tests {
 
         let mut hint = GreeterApp::with_sessions(test_sessions());
         hint.sync(&mut doc, &root);
-        hint.set_status("Enter your password");
+        hint.set_status("Enter your passcode");
         assert_eq!(hint.status_kind, StatusKind::Hint);
         assert_eq!(
             count_named(card_of(&hint).as_ref(), "IconWidget"),
@@ -2265,7 +2392,7 @@ mod tests {
 
         let mut err = GreeterApp::with_sessions(test_sessions());
         err.sync(&mut doc, &root);
-        err.finish_failure("Incorrect username or password", None, &mut doc, &root);
+        err.finish_failure("Incorrect username or passcode", None, &mut doc, &root);
         assert_eq!(err.status_kind, StatusKind::Error);
         assert_eq!(
             count_named(card_of(&err).as_ref(), "IconWidget"),
@@ -2374,7 +2501,7 @@ mod tests {
         app.selected_session = 1; // pick the other session
         assert_eq!(focus_shape(&app), base, "changing session keeps order");
 
-        app.status = "Incorrect username or password".to_string();
+        app.status = "Incorrect username or passcode".to_string();
         app.status_kind = StatusKind::Error;
         app.detail = "boom".to_string();
         assert_eq!(focus_shape(&app), base, "error + detail keep order");
