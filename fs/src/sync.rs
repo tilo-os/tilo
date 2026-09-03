@@ -2319,6 +2319,217 @@ mod tests {
         drop(collab_identity);
     }
 
+    /// A content request is not trusted merely because its hash is known.
+    /// The collaborator first bootstraps through the authenticated
+    /// filesystem protocol; its subsequent blob request is served by that
+    /// workspace's guarded iroh-blobs handler. Replacing the signed
+    /// authority while that certified relationship is live must deny the
+    /// collaborator's *next* request while preserving governor access.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn signed_targeted_revoke_denies_an_authenticated_collaborator_blob_request() {
+        use crate::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
+        use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
+
+        let temp = tempfile::tempdir().unwrap();
+        let (nas_endpoint, nas_lookup, nas_identity) = bind_certified_endpoint().await;
+        let (owner_endpoint, _owner_lookup, owner_identity, owner_root, _owner_device) =
+            bind_certified_test_endpoint_with_root().await;
+        let (collab_endpoint, _collab_lookup, collab_identity, collab_root, _collab_device) =
+            bind_certified_test_endpoint_with_root().await;
+        let workspace_id = Ticket::workspace_id_for_topic(*nas_endpoint.id().as_bytes());
+        let owner = owner_root.verifying_key().to_bytes();
+        let collaborator = collab_root.verifying_key().to_bytes();
+
+        let authority = Arc::new(
+            WorkspaceAuthority::open(
+                temp.path().join("nas-authority.bin"),
+                workspace_id,
+                owner,
+                collaborator,
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let mut services = record_services(temp.path());
+        services.workspace_authority = Some(authority.clone());
+        let nas_store = Arc::new(ContentStore::memory());
+        let nas_hydrator = Arc::new(Hydrator::new(nas_endpoint.clone(), nas_store.clone()));
+        let nas_namespace = Arc::new(Mutex::new(Namespace::new("nas").unwrap()));
+        let first = b"collaborator is initially entitled";
+        let first_hash = nas_store.write_content(first).await.unwrap().unwrap();
+        nas_namespace
+            .lock()
+            .unwrap()
+            .create_file(
+                ROOT_INO,
+                "before-revoke.txt",
+                Some(&first_hash),
+                first.len() as u64,
+                1,
+            )
+            .unwrap();
+        let (_nas_workspace, ticket) = Workspace::host_with_records(
+            nas_endpoint.clone(),
+            nas_lookup,
+            nas_store.clone(),
+            nas_hydrator,
+            nas_namespace.clone(),
+            nas_identity,
+            Some(authority.handle()),
+            services,
+        )
+        .await
+        .unwrap();
+
+        let grant = WorkspaceAuthorityEnvelope::sign(
+            workspace_id,
+            1,
+            vec![
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(owner)),
+                    Scope::FsPath("/".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                ),
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                    Scope::FsPath("/".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                ),
+            ],
+            false,
+            &owner_root,
+        )
+        .unwrap();
+        assert_eq!(
+            submit_workspace_authority(
+                &owner_endpoint,
+                nas_endpoint.addr(),
+                &owner_identity,
+                workspace_id,
+                Some(grant.clone()),
+            )
+            .await
+            .unwrap(),
+            Some(grant),
+        );
+
+        // Bootstrap over QOS_FS_SYNC_ALPN before the content request. This
+        // gives the server the certificate-to-device association that its
+        // guarded blob protocol requires; a bare hash-only endpoint cannot
+        // obtain that association.
+        let document = tokio::time::timeout(
+            Duration::from_secs(12),
+            fetch_remote_doc(&collab_endpoint, ticket.node.clone(), &collab_identity),
+        )
+        .await
+        .expect("authenticated collaborator bootstrap timed out")
+        .expect("signed collaborator bootstraps through the filesystem protocol");
+        let collab_namespace = Namespace::from_bytes("collab", &document).unwrap();
+        assert!(collab_namespace.entry_at("before-revoke.txt").is_some());
+        let collab_store = Arc::new(ContentStore::memory());
+        let collab_hydrator = Hydrator::new(collab_endpoint.clone(), collab_store.clone());
+        collab_hydrator.add_peer(ticket.node.clone());
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(12),
+                collab_hydrator.read(first_hash, 0, first.len() as u64),
+            )
+            .await
+            .expect("authenticated collaborator blob request timed out")
+            .unwrap()
+            .as_slice(),
+            first,
+        );
+
+        let revoke = WorkspaceAuthorityEnvelope::sign(
+            workspace_id,
+            2,
+            vec![
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(owner)),
+                    Scope::FsPath("/".into()),
+                    Effect::Grant,
+                    Verb::Read,
+                ),
+                CapOverride::new(
+                    Subject::User(collab_types::Ed25519PublicKey(collaborator)),
+                    Scope::FsPath("/".into()),
+                    Effect::Restrict,
+                    Verb::Read,
+                ),
+            ],
+            false,
+            &owner_root,
+        )
+        .unwrap();
+        assert_eq!(
+            submit_workspace_authority(
+                &owner_endpoint,
+                nas_endpoint.addr(),
+                &owner_identity,
+                workspace_id,
+                Some(revoke.clone()),
+            )
+            .await
+            .unwrap(),
+            Some(revoke),
+        );
+
+        let after = b"this remains available only to the owner";
+        let after_hash = nas_store.write_content(after).await.unwrap().unwrap();
+        {
+            let mut namespace = nas_namespace.lock().unwrap();
+            namespace
+                .create_file(
+                    ROOT_INO,
+                    "after-revoke.txt",
+                    Some(&after_hash),
+                    after.len() as u64,
+                    2,
+                )
+                .unwrap();
+            namespace.save_incremental();
+        }
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(12),
+                collab_hydrator.read(after_hash, 0, after.len() as u64),
+            )
+            .await
+            .expect("revoked collaborator blob request timed out")
+            .is_err(),
+            "an already-authenticated collaborator is denied by the revised authority"
+        );
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(12),
+                fetch_remote_doc(&collab_endpoint, ticket.node.clone(), &collab_identity),
+            )
+            .await
+            .expect("revoked collaborator namespace request timed out")
+            .is_err(),
+            "the same authenticated collaborator loses its next namespace request too"
+        );
+
+        let owner_store = Arc::new(ContentStore::memory());
+        let owner_hydrator = Hydrator::new(owner_endpoint.clone(), owner_store);
+        owner_hydrator.add_peer(nas_endpoint.addr());
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(12),
+                owner_hydrator.read(after_hash, 0, after.len() as u64),
+            )
+            .await
+            .expect("owner blob request timed out")
+            .unwrap()
+            .as_slice(),
+            after,
+            "targeted revocation leaves the governor's authenticated content access intact"
+        );
+    }
+
     /// The identity an endpoint authenticates as — the same 32 bytes an ACL
     /// grant names.
     fn identity(endpoint: &Endpoint) -> IdentityKey {
