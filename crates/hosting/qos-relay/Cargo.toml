@@ -68,6 +68,7 @@ iroh-base.workspace = true
 
 # Identity + workspace directory + cert-chain verification.
 qos-user-identity = { path = "../../identity/qos-user-identity" }
+runtime-identity = { path = "../../runtime/runtime-identity" }
 
 # Workspace CRDT (same version as identity + shell).
 automerge.workspace = true
@@ -95,6 +96,7 @@ clap.workspace = true
 toml.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+libc.workspace = true
 
 # Observability.
 tracing.workspace = true

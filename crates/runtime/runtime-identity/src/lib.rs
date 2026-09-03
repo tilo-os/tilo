@@ -1428,6 +1428,34 @@ pub fn load_from_bytes(bytes: &[u8]) -> Result<SigningIdentity, NotAvailable> {
     identity_from_record(record, None)
 }
 
+/// Serialize a public-only identity record for an enrolled member device.
+///
+/// The result identifies the same person principal but intentionally carries
+/// no root signing share. The device authenticates through its separately
+/// installed root-signed device certificate and signing broker.
+pub fn public_member_record(
+    display_name: &str,
+    avatar_color: [u8; 3],
+    group_public_key: [u8; 32],
+) -> io::Result<Vec<u8>> {
+    let record = ondisk::IdentityRecord {
+        display_name: display_name.trim().to_owned(),
+        avatar_color,
+        threshold_identity: ondisk::SerializableIdentity {
+            single_device: false,
+            group_public_key,
+            threshold: 1,
+            total_shares: 1,
+            share_index: 0,
+            secret_bytes: Zeroizing::new(Vec::new()),
+        },
+        created_at: String::new(),
+        schema_version: 1,
+        secret_ref: None,
+    };
+    serde_json::to_vec_pretty(&record).map_err(io::Error::other)
+}
+
 fn parse_record(bytes: &[u8]) -> Result<ondisk::IdentityRecord, NotAvailable> {
     let record: ondisk::IdentityRecord = serde_json::from_slice(bytes)
         .map_err(|e| LoadFailure::JsonMalformed(e).into_not_available())?;

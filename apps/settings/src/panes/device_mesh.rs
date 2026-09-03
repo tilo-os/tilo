@@ -31,6 +31,7 @@ const REMOTE_RELAY_KEY: &str = "device_mesh.remote_control_relay";
 const APP_SERVING_KEY: &str = "device_mesh.app_serving";
 const COMPUTE_KEY: &str = "device_mesh.compute";
 const APPROVE_ENROLLMENT_KEY: &str = "device_mesh.approve_enrollment";
+const APPROVE_PERSONAL_DEVICE_KEY: &str = "device_mesh.approve_personal_device";
 const CONTROL_HELPER: &str = "/usr/libexec/qos-home-peer-control";
 const RELAY_ADMIN: &str = "/usr/bin/qos-relay-admin";
 
@@ -187,6 +188,7 @@ pub struct DeviceMeshPane {
     pairing_child: Option<Child>,
     pairing_discovery: bool,
     pairing_candidate: Option<PairCandidate>,
+    pairing_target: PairingTarget,
     next_status_refresh: Instant,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -204,6 +206,13 @@ struct PairCandidate {
     relay_service_node_id: String,
     label: String,
     verification_code: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PairingTarget {
+    #[default]
+    HomePeer,
+    PersonalDevice,
 }
 
 fn workspace_key(id: u64) -> String {
@@ -387,6 +396,7 @@ impl DeviceMeshPane {
             pairing_child: None,
             pairing_discovery: false,
             pairing_candidate: None,
+            pairing_target: PairingTarget::HomePeer,
             next_status_refresh: Instant::now() + STATUS_REFRESH_INTERVAL,
             composed: None,
             rect: Rect::ZERO,
@@ -513,9 +523,11 @@ impl DeviceMeshPane {
             )
         };
         let pairing = self.pairing_child.is_some();
-        let pair_label = if pairing {
+        let pair_label = if pairing && self.pairing_target == PairingTarget::HomePeer {
             "Pairing…".to_string()
-        } else if let Some(candidate) = &self.pairing_candidate {
+        } else if self.pairing_target == PairingTarget::HomePeer && self.pairing_candidate.is_some()
+        {
+            let candidate = self.pairing_candidate.as_ref().expect("candidate exists");
             format!(
                 "Approve {} · {}",
                 candidate.label, candidate.verification_code
@@ -531,6 +543,37 @@ impl DeviceMeshPane {
             )
             .with_enabled(!pairing),
         );
+        let personal_label = if pairing && self.pairing_target == PairingTarget::PersonalDevice {
+            "Pairing…".to_string()
+        } else if self.pairing_target == PairingTarget::PersonalDevice {
+            self.pairing_candidate.as_ref().map_or_else(
+                || "Add device".to_string(),
+                |candidate| {
+                    format!(
+                        "Approve {} · {}",
+                        candidate.label, candidate.verification_code
+                    )
+                },
+            )
+        } else {
+            "Add device".to_string()
+        };
+        let approve_personal = Box::new(
+            Button::new(
+                "device_mesh.approve_personal_device",
+                &personal_label,
+                Some(APPROVE_PERSONAL_DEVICE_KEY),
+            )
+            .with_enabled(!pairing),
+        );
+        let mut personal_rows = vec![caption(
+            "On the new device, choose Use my existing qOS identity. Compare the nearby six-digit code, then approve it here. Your open workspaces and trusted home peers appear automatically.",
+        )];
+        if self.pairing_target == PairingTarget::PersonalDevice
+            && (pairing || self.pairing_candidate.is_some() || !self.load_status.is_empty())
+        {
+            personal_rows.push(caption(&self.load_status));
+        }
         let mut home_server_rows = vec![caption(
             "Choose Pair home server while your new qOS server is starting. It receives its identity and full-sync setup automatically.",
         )];
@@ -545,6 +588,11 @@ impl DeviceMeshPane {
         }
         let mut sections = vec![
             card("Continue across devices", rows(continuation_rows)),
+            card_with_action(
+                "Add a personal device",
+                approve_personal,
+                rows(personal_rows),
+            ),
             card("Keep everything available", rows(availability_rows)),
             card("Synced workspaces", workspace_rows),
             card_with_action("Home server or NAS", approve, rows(home_server_rows)),
@@ -724,13 +772,18 @@ impl DeviceMeshPane {
         }
     }
 
-    fn approve_enrollment(&mut self) {
+    fn approve_enrollment(&mut self, target: PairingTarget) {
         if self.pairing_child.is_some() {
             return;
         }
         let Some(candidate) = self.pairing_candidate.clone() else {
+            self.pairing_target = target;
+            let discover_command = match target {
+                PairingTarget::HomePeer => "discover",
+                PairingTarget::PersonalDevice => "discover-device",
+            };
             self.load_status = match Command::new("/usr/bin/qos-enroll")
-                .args(["discover", "--timeout", "15"])
+                .args([discover_command, "--timeout", "15"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -739,17 +792,45 @@ impl DeviceMeshPane {
                 Ok(child) => {
                     self.pairing_child = Some(child);
                     self.pairing_discovery = true;
-                    "Looking for your new home server…".into()
+                    match target {
+                        PairingTarget::HomePeer => "Looking for your new home server…".into(),
+                        PairingTarget::PersonalDevice => "Looking for your new device…".into(),
+                    }
                 }
                 Err(error) => format!("Could not start nearby discovery: {error}"),
             };
             self.structure_dirty = true;
             return;
         };
+        if self.pairing_target != target {
+            self.pairing_candidate = None;
+            self.approve_enrollment(target);
+            return;
+        }
         let mut command = Command::new("pkexec");
+        match target {
+            PairingTarget::HomePeer => {
+                command
+                    .args([CONTROL_HELPER, "approve-enrollment", "--identity-root"])
+                    .arg(identity_root());
+            }
+            PairingTarget::PersonalDevice => {
+                let identity_dir = match runtime_identity::identity_dir_from_env() {
+                    Ok(path) => path,
+                    Err(error) => {
+                        self.load_status = format!("Could not find your identity: {error}");
+                        self.structure_dirty = true;
+                        return;
+                    }
+                };
+                command
+                    .args(["/usr/bin/qos-enroll", "approve-device", "--identity-root"])
+                    .arg(identity_root())
+                    .arg("--identity-dir")
+                    .arg(identity_dir);
+            }
+        }
         command
-            .args([CONTROL_HELPER, "approve-enrollment", "--identity-root"])
-            .arg(identity_root())
             .args(["--expected-device", &candidate.device_node_id])
             .args(["--expected-service", &candidate.relay_service_node_id]);
         let ids = if self.config.workspaces.is_empty() {
@@ -764,8 +845,10 @@ impl DeviceMeshPane {
                 .map(|workspace| workspace.id)
                 .collect()
         };
-        for id in ids {
-            command.args(["--workspace-id", &id.to_string()]);
+        if target == PairingTarget::HomePeer {
+            for id in ids {
+                command.args(["--workspace-id", &id.to_string()]);
+            }
         }
         self.load_status = match command
             .stdin(Stdio::null())
@@ -902,7 +985,7 @@ impl DeviceMeshPane {
                     match serde_json::from_str::<PairCandidate>(output.trim()) {
                         Ok(candidate) => {
                             self.load_status = format!(
-                                "Found {}. Confirm code {} on the server, then approve.",
+                                "Found {}. Confirm code {} on both devices, then approve.",
                                 candidate.label, candidate.verification_code
                             );
                             self.pairing_candidate = Some(candidate);
@@ -915,12 +998,15 @@ impl DeviceMeshPane {
                 } else if status.success() {
                     self.registered_home_peers = registered_home_peer_count();
                     self.refresh_runtime_status();
-                    self.load_status = "Home server paired".into();
+                    self.load_status = match self.pairing_target {
+                        PairingTarget::HomePeer => "Home server paired".into(),
+                        PairingTarget::PersonalDevice => "Personal device added".into(),
+                    };
                     self.pairing_candidate = None;
                 } else {
                     self.load_status = format!(
-                        "Home server was not paired: {}. Choose Pair home server to retry.",
-                        child_error(&mut child, "the pairing window closed")
+                        "Device was not paired: {}. Choose the pairing action to retry.",
+                        child_error(&mut child, "the pairing window closed or was cancelled")
                     );
                 }
                 self.pairing_discovery = false;
@@ -928,9 +1014,8 @@ impl DeviceMeshPane {
             }
             Some(Err(error)) => {
                 self.pairing_child = None;
-                self.load_status = format!(
-                    "Home server pairing stopped: {error}. Choose Pair home server to retry."
-                );
+                self.load_status =
+                    format!("Pairing stopped: {error}. Choose the pairing action to retry.");
                 self.structure_dirty = true;
             }
             Some(Ok(None)) | None => {}
@@ -1160,7 +1245,13 @@ impl Widget for DeviceMeshPane {
         if Self::read_bool(state, root, APPROVE_ENROLLMENT_KEY) == Some(true) {
             let _ = state.put(root, APPROVE_ENROLLMENT_KEY, false);
             if self.pairing_child.is_none() {
-                self.approve_enrollment();
+                self.approve_enrollment(PairingTarget::HomePeer);
+            }
+        }
+        if Self::read_bool(state, root, APPROVE_PERSONAL_DEVICE_KEY) == Some(true) {
+            let _ = state.put(root, APPROVE_PERSONAL_DEVICE_KEY, false);
+            if self.pairing_child.is_none() {
+                self.approve_enrollment(PairingTarget::PersonalDevice);
             }
         }
         for peer in self.home_peers.clone() {
@@ -1562,7 +1653,7 @@ mod tests {
         let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
         pane.pairing_child = Some(Command::new("sleep").arg("2").spawn().unwrap());
         let child_id = pane.pairing_child.as_ref().unwrap().id();
-        pane.approve_enrollment();
+        pane.approve_enrollment(PairingTarget::HomePeer);
         assert_eq!(pane.pairing_child.as_ref().unwrap().id(), child_id);
         let mut child = pane.pairing_child.take().unwrap();
         let _ = child.kill();
