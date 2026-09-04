@@ -14,9 +14,9 @@
 #     --keyvariant <xkb-variant>      keyboard variant, e.g. dvorak (default: none)
 #     --encrypt                       accepted for UI compatibility; native qOS
 #                                     always uses LUKS2 full-disk encryption
-#     --pin                           required unlock secret on stdin line 2: a TPM2 PIN
-#                                     only with verified boot + kernel lockdown,
-#                                     otherwise the boot passphrase (requires --encrypt)
+#     --pin                           legacy flag name for the required strong
+#                                     disk passphrase on stdin line 2
+#                                     (requires --encrypt)
 #     --fido2                         also enrol a FIDO2 token (requires --encrypt)
 #     --alongside --root-partition P --efi-partition P
 #                                     preserve the disk's partition table;
@@ -97,50 +97,6 @@ MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824
 log()  { printf '%s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
-
-secure_boot_enabled() {
-  local variable value
-  for variable in /sys/firmware/efi/efivars/SecureBoot-*; do
-    [ -f "$variable" ] || continue
-    value="$(od -An -tu1 -j4 -N1 "$variable" 2>/dev/null | tr -d ' \n')"
-    [ "$value" = "1" ] && return 0
-  done
-  return 1
-}
-
-kernel_lockdown_active() {
-  local state
-  state="$(cat /sys/kernel/security/lockdown 2>/dev/null || true)"
-  case "$state" in
-    *'[integrity]'*|*'[confidentiality]'*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# Securely booting the live medium does not prove that the freshly installed
-# target will boot an equally sealed and trusted UKI. Short-PIN mode is enabled
-# only when a dedicated target-chain preflight exists and verifies that full
-# handoff. It is deliberately absent until installation-time UKI signing,
-# firmware trust enrollment and measured-target validation are integrated.
-target_verified_boot_ready() {
-  local preflight=/usr/libexec/qos-verified-boot-install-preflight
-  [ -x "$preflight" ] && "$preflight" "$@"
-}
-
-verified_tpm() {
-  { [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; } \
-    && secure_boot_enabled \
-    && kernel_lockdown_active \
-    && target_verified_boot_ready --capability
-}
-
-verified_tpm_target() {
-  local target_root="$1"
-  { [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; } \
-    && secure_boot_enabled \
-    && kernel_lockdown_active \
-    && target_verified_boot_ready --prepare-target "$target_root"
-}
 
 # Updates are signature-required only for the official qOS repository in the
 # shipped containers policy. Do not let a live-session environment override
@@ -694,21 +650,14 @@ fi
 # --- read the password (now that we are root) --------------------------------
 IFS= read -r PASSWORD || true
 [ -n "$PASSWORD" ] || die "no password received on stdin"
-# Second stdin line is the disk-encryption PIN (only when --pin). Kept off argv
-# so it never shows in process listings.
+# Second stdin line is the disk-encryption passphrase (when the legacy --pin
+# transport flag is present). Kept off argv so it never shows in process
+# listings.
 if [ "$WANT_PIN" -eq 1 ]; then
   IFS= read -r PIN || true
-  [ -n "$PIN" ] || die "--pin set but no PIN received on stdin (line 2)"
-  if verified_tpm; then
-    case "$PIN" in
-      *[!0-9]*) die "startup PIN must contain only digits" ;;
-    esac
-    [ "${#PIN}" -ge 6 ] && [ "${#PIN}" -le 12 ] \
-      || die "startup PIN must be 6 to 12 digits"
-  else
-    [ "${#PIN}" -ge 12 ] \
-      || die "disk passphrase must contain at least 12 characters without verified TPM2 boot"
-  fi
+  [ -n "$PIN" ] || die "--pin set but no disk passphrase received on stdin (line 2)"
+  [ "${#PIN}" -ge 12 ] \
+    || die "disk passphrase must contain at least 12 characters"
 fi
 
 log "qOS installer"
@@ -878,19 +827,15 @@ udevadm settle 2>/dev/null || true
 
 # --- 2b. multi-factor LUKS enrollment ----------------------------------------
 # The volume currently opens only with the throwaway install key. Layer the real
-# factors on: always a recovery key, then FIDO2 / TPM2(+PIN) or — with no TPM —
-# the supplied passphrase. qos-disk-encrypt aborts rather than leaving a volume
+# factors on: always a recovery key, the supplied strong passphrase, and
+# optionally FIDO2. TPM unlock remains disabled until it is bound to signed,
+# measured qOS artifacts. qos-disk-encrypt aborts rather than leaving a volume
 # whose only factor is one the user cannot reproduce.
 if [ "$ENCRYPT" -eq 1 ]; then
   step "Enrolling disk-encryption factors"
   ENROL_ARGS=()
   [ "$WANT_FIDO2" -eq 1 ] && ENROL_ARGS+=(--fido2)
-  if verified_tpm; then
-    verified_tpm_target "$ENC_MNT" \
-      || die "the installed target did not preserve verified boot; refusing to enroll a short PIN"
-  else
-    ENROL_ARGS+=(--passphrase)
-  fi
+  ENROL_ARGS+=(--passphrase)
   if [ "$WANT_PIN" -eq 1 ]; then
     PIN_FILE=/run/qos-install/pin
     install -d -m 0700 /run/qos-install

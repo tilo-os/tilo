@@ -19,20 +19,17 @@
 //! * a **recovery key** is always generated and shown once during install.
 //!   It is the factor no hardware failure can take away, so every other one
 //!   is layered on top of it;
-//! * with `--pin`, the secret on the **second stdin line** (after the account
-//!   password, never on the command line) becomes a **TPM2+PIN** keyslot only
-//!   when Secure Boot, kernel lockdown, and a dedicated installed-target
-//!   preflight prove a continuous verified-boot boundary, and an ordinary
-//!   passphrase keyslot otherwise;
+//! * with `--pin` (a legacy transport flag name), the strong secret on the
+//!   **second stdin line** becomes an ordinary LUKS passphrase keyslot. TPM
+//!   unlock remains disabled until it is bound to signed, measured qOS boot
+//!   artifacts;
 //! * with `--fido2`, a **FIDO2 security key** is enrolled if a token is
 //!   present (its absence does not abort the install).
 //!
-//! Encryption does **not** require a TPM. With verified TPM2 boot through the
-//! installed target, `--pin` becomes the single startup PIN bound to that TPM;
-//! otherwise it becomes the normal disk-unlock passphrase. The privileged
-//! backend independently checks this boundary and enforces both flags, so an
-//! older or malformed UI fails closed instead of installing plaintext or
-//! weakening the credential policy.
+//! Encryption does **not** require a TPM. The privileged backend independently
+//! enforces the mandatory encryption and strong-passphrase policy, so an older
+//! or malformed UI fails closed instead of installing plaintext or weakening
+//! the credential policy.
 //!
 //! `--yes` is required because the backend has no tty here; the installer's
 //! Review screen is the user's "are you sure" gate. The account password is
@@ -132,13 +129,13 @@ pub struct InstallOptions {
     /// variant; the flag is then omitted.
     pub keyvariant: String,
     /// Mandatory unlock secret, sent as the second stdin line rather than on
-    /// argv. It becomes a TPM2+PIN keyslot only with verified TPM2 boot, and
-    /// the boot passphrase otherwise. The backend rejects an empty value.
+    /// argv. Despite the legacy field name, it is always the strong disk boot
+    /// passphrase in this release. The backend rejects an empty value.
     pub pin: Zeroizing<String>,
     /// Enroll a FIDO2 security key as an extra unlock factor. Only
     /// meaningful alongside mandatory LUKS encryption; maps to `--fido2`. A token must
-    /// be present at install time, but its absence never aborts the
-    /// install. Default `false`.
+    /// be present at install time; failure to enroll an explicitly requested
+    /// factor aborts the install while the temporary key still exists. Default `false`.
     pub fido2: bool,
 }
 
@@ -318,7 +315,7 @@ pub fn power_command(action: PowerAction) -> Command {
 /// iff the child exited `0`.
 ///
 /// `extra_stdin` carries secrets the backend reads after the password (the
-/// TPM2 PIN, when encryption with a PIN was requested) so they never touch
+/// disk passphrase, when requested) so they never touch
 /// the argv or a tty.
 ///
 /// Separated from [`run_install`] so tests can drive it with a stub
@@ -346,7 +343,7 @@ pub fn stream_command<F: FnMut(String)>(
         .stderr(Stdio::piped());
     let mut child = cmd.spawn()?;
 
-    // Feed the password, then any extra secret lines (e.g. the TPM2 PIN),
+    // Feed the password, then any extra secret lines (the disk passphrase),
     // then drop the handle so the child sees EOF.
     {
         if let Some(mut stdin) = child.stdin.take() {
@@ -393,13 +390,13 @@ pub fn stream_command<F: FnMut(String)>(
 }
 
 /// Run the real `qos-install` backend for `disk` + `user` + `opts`, feeding
-/// `password` (and, when an encryption PIN is set, the PIN as a second
+/// `password` (and, when a disk passphrase is set, that secret as a second
 /// stdin line) and relaying every output line to `on_line`.
 ///
 /// # Errors
 ///
 /// Returns `Err` under the same conditions as [`stream_command`]: the
-/// backend fails to spawn, writing the password/PIN to its stdin fails
+/// backend fails to spawn, writing either secret to its stdin fails
 /// (other than a broken pipe), a stdout line can't be read, or waiting on
 /// the child fails.
 pub fn run_install<F: FnMut(String)>(
@@ -409,7 +406,7 @@ pub fn run_install<F: FnMut(String)>(
     opts: &InstallOptions,
     on_line: F,
 ) -> std::io::Result<bool> {
-    // The PIN only travels on stdin; it mirrors the `--pin` flag added by
+    // The disk passphrase only travels on stdin; it mirrors the legacy `--pin` flag added by
     // `install_command`.
     let extra: Vec<&str> = if opts.pin.is_empty() {
         Vec::new()
