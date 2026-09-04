@@ -512,6 +512,12 @@ pub enum AuthScenario {
     Starting,
     /// A username long enough to test the field's overflow behaviour.
     LongName,
+    /// The normal personal-device form: one known local account and an
+    /// enrolled fingerprint, so only the passcode is editable.
+    Personal,
+    /// One known local account but no enrolled fingerprint. The unavailable
+    /// capability must disappear rather than becoming a dead action.
+    PersonalNoFingerprint,
 }
 
 /// Recognise the deliberately small, machine-readable-looking portion of
@@ -702,10 +708,26 @@ impl GreeterApp {
         // login is offered.
         let dir = std::env::var("QOS_GREETER_SESSIONS_DIR")
             .unwrap_or_else(|_| DEFAULT_SESSIONS_DIR.to_string());
-        let mut app =
-            Self::with_sessions(crate::sessions::read_sessions(std::path::Path::new(&dir)));
+        let sessions = crate::sessions::read_sessions(std::path::Path::new(&dir));
+        let personal = matches!(
+            scenario,
+            AuthScenario::Personal | AuthScenario::PersonalNoFingerprint
+        )
+        .then(|| LoginUser {
+            username: "quinten".to_string(),
+            display_name: "Quinten Example".to_string(),
+        });
+        let fingerprint_available = scenario != AuthScenario::PersonalNoFingerprint;
+        let mut app = Self::with_sessions_login_user_and_fingerprint(
+            sessions,
+            personal,
+            fingerprint_available,
+        );
         match scenario {
-            AuthScenario::Form | AuthScenario::LongName => {}
+            AuthScenario::Form
+            | AuthScenario::LongName
+            | AuthScenario::Personal
+            | AuthScenario::PersonalNoFingerprint => {}
             AuthScenario::Error => {
                 app.status = "Incorrect username or passcode".to_string();
                 app.status_kind = StatusKind::Error;
@@ -2775,6 +2797,8 @@ mod tests {
             AuthScenario::Starting,
             AuthScenario::CapsLock,
             AuthScenario::LongName,
+            AuthScenario::Personal,
+            AuthScenario::PersonalNoFingerprint,
         ] {
             let app = GreeterApp::for_shot(scenario);
             let card = card_of(&app);
@@ -2795,6 +2819,20 @@ mod tests {
                 "{scenario:?} must keep the state-specific visible label on the stable action"
             );
         }
+    }
+
+    #[test]
+    fn personal_shot_variants_match_discovered_capabilities() {
+        let with_fingerprint = card_of(&GreeterApp::for_shot(AuthScenario::Personal));
+        let passcode_only = card_of(&GreeterApp::for_shot(AuthScenario::PersonalNoFingerprint));
+        let mut with_ids = Vec::new();
+        let mut passcode_ids = Vec::new();
+        collect_focusables(with_fingerprint.as_ref(), &mut with_ids);
+        collect_focusables(passcode_only.as_ref(), &mut passcode_ids);
+        assert!(!with_ids.contains(&"greeter.username".to_string()));
+        assert!(!passcode_ids.contains(&"greeter.username".to_string()));
+        assert!(with_ids.contains(&"greeter.fingerprint".to_string()));
+        assert!(!passcode_ids.contains(&"greeter.fingerprint".to_string()));
     }
 
     /// A narrow portrait display must keep the complete primary workflow on

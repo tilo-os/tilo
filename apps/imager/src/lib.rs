@@ -94,6 +94,8 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         app.seed_confirmation_for_shot("sdb");
     } else if scenario == "export" {
         app.seed_export_for_shot();
+    } else if scenario == "customize-timezone-open" {
+        app.shot_open_customize_timezone();
     }
     Box::new(app)
 }
@@ -107,6 +109,7 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "drive-empty",
     "drive-internal",
     "customize",
+    "customize-timezone-open",
     "export",
     "confirm",
     "progress",
@@ -231,7 +234,7 @@ fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
             ImagerDoc::set_step(doc, Step::Drive);
             ImagerDoc::set_status(doc, "1 removable, 2 total");
         }
-        "customize" | "export" => {
+        "customize" | "customize-timezone-open" | "export" => {
             ImagerDoc::set_selected(doc, Some(0));
             ImagerDoc::set_action(doc, Action::Flash);
             ImagerDoc::set_step(doc, Step::Customize);
