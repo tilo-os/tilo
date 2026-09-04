@@ -1433,8 +1433,7 @@ impl Session {
     ///
     /// A pure function of what was seen last time and what is seen now, so
     /// the debounce is checkable against an injected clock rather than a
-    /// real wait — the same reason [`crate::model::while_busy`] takes its
-    /// clock as an argument. `watched` is `None` the first time this text
+    /// real wait. `watched` is `None` the first time this text
     /// is seen at all, which is never settled: there is nothing yet to
     /// compare it against.
     fn settled(
