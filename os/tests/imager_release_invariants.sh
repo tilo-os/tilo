@@ -57,6 +57,24 @@ grep -Fq 'id-token: write' "$workflow" \
   && ok 'all credentialed jobs enable Forgejo OIDC with platform-specific brokers' \
   || bad 'short-lived credential path is not wired into every release job'
 
+grep -Fq 'acquire-release-credentials.sh' "$workflow" \
+  && grep -Fq 'Acquire-ReleaseCredentials.ps1' "$workflow" \
+  && [ "$(grep -Fc 'acquire-release-token.sh' "$workflow")" -eq 3 ] \
+  && grep -Fq 'credential output must not preexist' \
+    "$repo/apps/imager/packaging/acquire-release-token.sh" \
+  && grep -Fq 'lease file has an extended' \
+    "$repo/apps/imager/packaging/acquire-release-credentials.sh" \
+  && grep -Fq 'IMAGER_WINDOWS_PUBLISHER' "$workflow" \
+  && grep -Fq 'QOS_WINDOWS_EXPECTED_PUBLISHER' \
+    "$repo/apps/imager/packaging/package-host.ps1" \
+  && grep -Fq 'IMAGER_MAC_TEAM_ID' "$workflow" \
+  && grep -Fq 'IMAGER_MAC_CERT_SHA256' "$workflow" \
+  && grep -Fq 'QOS_MAC_EXPECTED_CERT_SHA256' \
+    "$repo/apps/imager/packaging/package-host.sh" \
+  && [ "$(grep -Fc 'if: always()' "$workflow")" -ge 2 ] \
+  && ok 'release brokers, signer paths, publisher identities, and cleanup fail closed' \
+  || bad 'release credential outputs or signing identities are insufficiently constrained'
+
 grep -Fq 'AppImage.asc' "$workflow" \
   && grep -Fq 'qos-installer-*.asc' "$workflow" \
   && grep -Fq 'qos-installer-catalog-v1.json' "$repo/apps/imager/packaging/verify-linux-release.sh" \
@@ -149,8 +167,8 @@ grep -Fq 'qos/homebrew-qos' "$repo/apps/imager/packaging/publish-homebrew-tap.sh
   && grep -Fq 'microsoft/winget-pkgs/pulls' "$repo/apps/imager/packaging/publish-winget.sh" \
   && grep -Fq -- '--retry 6 --retry-all-errors --retry-max-time 180' "$repo/apps/imager/packaging/publish-winget.sh" \
   && grep -Fq 'state=open&base=master&head=' "$repo/apps/imager/packaging/publish-winget.sh" \
-  && grep -Fq '"$CREDENTIAL_BROKER" homebrew "$token_file"' "$workflow" \
-  && grep -Fq '"$CREDENTIAL_BROKER" winget "$token_file"' "$workflow" \
+  && grep -Fq 'homebrew "$CREDENTIAL_BROKER" "$token_file"' "$workflow" \
+  && grep -Fq 'winget "$CREDENTIAL_BROKER" "$token_file"' "$workflow" \
   && grep -Fq 'ALLOW_STATIC_BOOTSTRAP' "$workflow" \
   && ok 'first-party Homebrew and public WinGet promotion are automated' \
   || bad 'a package-index promotion path is missing'
