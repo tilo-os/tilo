@@ -55,7 +55,7 @@ use crate::model::{
     Action, InstallProfile, JobPhase, Progress, QosRelease, Source, SourceKind, Step, TargetDrive,
     TargetKind, fmt_eta, fmt_rate, fmt_size,
 };
-use crate::write::{WriteRequest, spawn_job};
+use crate::write::{JobControl, WriteRequest, spawn_job};
 
 // ---- layout constants (logical px) -------------------------------------
 const OUTER: f64 = 28.0;
@@ -84,6 +84,7 @@ enum Hit {
     Back,
     Next,
     StartWrite,
+    CancelWrite,
     WriteAnother,
 }
 
@@ -126,6 +127,7 @@ pub struct ImagerApp {
     step: Step,
     // ---- transient job / portal plumbing (not in the doc) ----
     job_rx: Option<std::sync::mpsc::Receiver<Progress>>,
+    job_control: Option<JobControl>,
     portal_rx: Option<PortalChannel>,
     release_rx: Option<std::sync::mpsc::Receiver<Result<Source, String>>>,
     export_dialog: ExportDialog,
@@ -185,6 +187,7 @@ impl ImagerApp {
             status: String::new(),
             step: Step::Source,
             job_rx: None,
+            job_control: None,
             portal_rx: None,
             release_rx: None,
             export_dialog: ExportDialog::new(),
@@ -401,6 +404,7 @@ impl ImagerApp {
             Hit::Back => "imager:hit:back".into(),
             Hit::Next => "imager:hit:next".into(),
             Hit::StartWrite => "imager:hit:start-write".into(),
+            Hit::CancelWrite => "imager:hit:cancel-write".into(),
             Hit::WriteAnother => "imager:hit:write-another".into(),
         }
     }
@@ -414,6 +418,7 @@ impl ImagerApp {
             "back" => Some(Hit::Back),
             "next" => Some(Hit::Next),
             "start-write" => Some(Hit::StartWrite),
+            "cancel-write" => Some(Hit::CancelWrite),
             "write-another" => Some(Hit::WriteAnother),
             _ => {
                 let (kind, value) = suffix.split_once(':')?;
@@ -441,6 +446,10 @@ impl ImagerApp {
                 Step::Confirm | Step::Write | Step::Done => false,
             },
             Hit::StartWrite => self.can_advance(Step::Confirm),
+            Hit::CancelWrite => self
+                .job_control
+                .as_ref()
+                .is_some_and(|control| !control.is_cancelled()),
             Hit::Release(index) => self.releases.get(index).is_some(),
             Hit::Recent(index) => self.recent.get(index).is_some(),
             Hit::Target(index) => self
@@ -627,7 +636,13 @@ impl ImagerApp {
                     },
                     false,
                 ),
-                Step::Write => return controls,
+                Step::Write => (
+                    Hit::CancelWrite,
+                    "Cancel image write".into(),
+                    self.job_control
+                        .as_ref()
+                        .is_none_or(JobControl::is_cancelled),
+                ),
             };
             controls.push(self.a11y_control(ui::a11y::Role::Button, name, rect, hit, disabled));
         }
@@ -1184,7 +1199,7 @@ impl ImagerApp {
         // ---- Footer (Back + primary) ----
         let fy = v.y1 - FOOTER_H;
         let by = fy + (FOOTER_H - 44.0) / 2.0;
-        let (mut back, mut primary) = (None, None);
+        let mut back = None;
         let show_back = matches!(self.step, Step::Drive | Step::Customize | Step::Confirm);
         if show_back {
             let width = if Self::compact_content(content) {
@@ -1196,16 +1211,15 @@ impl ImagerApp {
             hits.push((r, Hit::Back));
             back = Some(r);
         }
-        // The Write station is a live progress screen with no primary action.
-        if let Some(p) = self.primary_button_rect(content, by) {
-            let hit = match self.step {
-                Step::Confirm => Hit::StartWrite,
-                Step::Done => Hit::WriteAnother,
-                _ => Hit::Next,
-            };
-            hits.push((p, hit));
-            primary = Some(p);
-        }
+        let p = self.primary_button_rect(content, by);
+        let hit = match self.step {
+            Step::Confirm => Hit::StartWrite,
+            Step::Write => Hit::CancelWrite,
+            Step::Done => Hit::WriteAnother,
+            _ => Hit::Next,
+        };
+        hits.push((p, hit));
+        let primary = Some(p);
 
         Layout {
             crumbs,
@@ -1218,12 +1232,8 @@ impl ImagerApp {
         }
     }
 
-    /// The primary action button rect, right-aligned in the footer — or `None`
-    /// on the Write station (a live-progress screen with no primary).
-    fn primary_button_rect(&self, content: Rect, by: f64) -> Option<Rect> {
-        if self.step == Step::Write {
-            return None;
-        }
+    /// The primary action button rect, right-aligned in the footer.
+    fn primary_button_rect(&self, content: Rect, by: f64) -> Rect {
         let has_back = matches!(self.step, Step::Drive | Step::Customize | Step::Confirm);
         let w = if has_back && Self::compact_content(content) {
             (content.width() - 12.0) / 2.0
@@ -1234,7 +1244,7 @@ impl ImagerApp {
                 _ => 170.0,
             }
         };
-        Some(Rect::new(content.x1 - w, by, content.x1, by + 44.0))
+        Rect::new(content.x1 - w, by, content.x1, by + 44.0)
     }
 
     fn layout_source(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
@@ -1571,9 +1581,21 @@ impl ImagerApp {
                     true,
                 )
             }
-            // The Write station has no primary (returned None above); Done
-            // offers a fresh start.
-            Step::Write => ("Writing…".to_string(), false, false),
+            Step::Write => (
+                if self
+                    .job_control
+                    .as_ref()
+                    .is_some_and(JobControl::is_cancelled)
+                {
+                    "Stopping…".to_string()
+                } else {
+                    "Cancel write".to_string()
+                },
+                self.job_control
+                    .as_ref()
+                    .is_some_and(|control| !control.is_cancelled()),
+                false,
+            ),
             Step::Done => match self.progress.phase {
                 JobPhase::Failed => ("Review & retry".to_string(), true, false),
                 _ => ("Start over".to_string(), true, false),
@@ -3537,11 +3559,27 @@ impl ImagerApp {
 
     /// One semantic implementation shared by the direct Confirm control and
     /// the resource-operation route.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "write, cancellation, status, and export share one operation-dispatch boundary"
+    )]
     fn perform_operation(
         &mut self,
         operation: &crate::actions::ImagerOperation,
         state: &mut AutoCommit,
     ) -> Result<(), String> {
+        if matches!(operation, crate::actions::ImagerOperation::Cancel) {
+            let Some(control) = self.job_control.clone() else {
+                return Err("No image write is currently running".into());
+            };
+            control.cancel();
+            self.set_status(
+                state,
+                "Stopping safely… Keep the drive connected until cancellation finishes.",
+            );
+            self.dirty = true;
+            return Ok(());
+        }
         let crate::actions::ImagerOperation::Write {
             device,
             confirmation,
@@ -3552,7 +3590,7 @@ impl ImagerApp {
                     "Read-back verification runs automatically after every successful write".into(),
                 ),
                 crate::actions::ImagerOperation::Cancel => {
-                    Err("The raw-device writer cannot yet stop safely between write chunks".into())
+                    Err("No image write is currently running".into())
                 }
                 crate::actions::ImagerOperation::Status => Ok(()),
                 crate::actions::ImagerOperation::ExportConfig => {
@@ -3583,10 +3621,11 @@ impl ImagerApp {
             action: self.action,
             profile: self.profile.clone(),
         };
-        let (start, rx) = spawn_job(req, confirmation);
+        let (start, rx, control) = spawn_job(req, confirmation);
         match start {
             crate::write::JobStart::Started => {
                 self.job_rx = rx;
+                self.job_control = control;
                 self.progress = Progress {
                     phase: JobPhase::Writing,
                     write_frac: 0.0,
@@ -3661,12 +3700,28 @@ impl ImagerApp {
                         self.goto(state, Step::Done);
                     }
                     self.job_rx = None;
+                    self.job_control = None;
                     self.dirty = true;
                     return;
                 }
             }
         }
-        if let Some(p) = latest {
+        if let Some(mut p) = latest {
+            // Cancellation may race with a terminal helper event already in
+            // the pipe. Honour the user's stop request conservatively: never
+            // turn that race into a claim that the medium is ready to use.
+            if p.phase == JobPhase::Success
+                && self
+                    .job_control
+                    .as_ref()
+                    .is_some_and(JobControl::is_cancelled)
+            {
+                p.phase = JobPhase::Failed;
+                p.error = Some(
+                    "Image writing was cancelled. The drive may be incomplete; review and retry before using it."
+                        .into(),
+                );
+            }
             let terminal_phase = p.phase;
             let terminal_error = p.error.clone();
             ImagerDoc::set_progress(state, &p);
@@ -3674,6 +3729,7 @@ impl ImagerApp {
             self.dirty = true;
             if matches!(terminal_phase, JobPhase::Success | JobPhase::Failed) {
                 self.job_rx = None;
+                self.job_control = None;
                 let name = self
                     .source
                     .as_ref()
@@ -3792,6 +3848,9 @@ impl ImagerApp {
             Hit::Back => self.back(state),
             Hit::Next => self.advance(state),
             Hit::StartWrite => self.start_write(state),
+            Hit::CancelWrite => {
+                let _ = self.perform_operation(&crate::actions::ImagerOperation::Cancel, state);
+            }
             Hit::WriteAnother => self.write_another(state),
         }
     }
@@ -5517,6 +5576,54 @@ mod tests {
             "retry requires fresh destructive consent"
         );
         assert_eq!(app.progress.phase, JobPhase::Idle);
+    }
+
+    #[test]
+    fn active_write_cancel_operation_requests_a_safe_stop() {
+        let (mut app, mut doc) = seeded_app();
+        let control = JobControl::new();
+        app.job_control = Some(control.clone());
+        app.goto(&mut doc, Step::Write);
+
+        app.perform_operation(&crate::actions::ImagerOperation::Cancel, &mut doc)
+            .unwrap();
+
+        assert!(control.is_cancelled());
+        assert!(ImagerDoc::status(&doc).contains("Keep the drive connected"));
+        let footer = app.a11y_footer_controls(&app.compute_layout());
+        let cancel = footer
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Cancel image write"))
+            .expect("write screen exposes a cancel button");
+        assert!(cancel.state.disabled);
+    }
+
+    #[test]
+    fn cancel_wins_a_race_with_an_already_queued_success() {
+        let (mut app, mut doc) = seeded_app();
+        let control = JobControl::new();
+        control.cancel();
+        app.job_control = Some(control);
+        app.progress.phase = JobPhase::Verifying;
+        app.goto(&mut doc, Step::Write);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.job_rx = Some(rx);
+        tx.send(Progress {
+            phase: JobPhase::Success,
+            write_frac: 1.0,
+            verify_frac: 1.0,
+            rate_bps: 0,
+            error: None,
+        })
+        .unwrap();
+
+        app.drain_job(&mut doc);
+
+        assert_eq!(app.progress.phase, JobPhase::Failed);
+        assert!(app.progress.error.as_deref().is_some_and(|message| {
+            message.contains("cancelled") && message.contains("incomplete")
+        }));
+        assert_eq!(app.step, Step::Done);
     }
 
     #[test]

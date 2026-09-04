@@ -235,6 +235,8 @@ fn encrypt_description(state: VerifiedBootState) -> &'static str {
 /// worker thread to mark terminal outcomes (anything else is a log line).
 const CTRL_DONE: &str = "\u{1}done";
 const CTRL_FAIL: &str = "\u{1}fail";
+const PREFLIGHT_OK_PREFIX: &str = "\u{1}storage-preflight-ok:";
+const PREFLIGHT_FAIL_PREFIX: &str = "\u{1}storage-preflight-fail:";
 const RECOVERY_KEY_PREFIX: &str = "::qos-recovery-key::";
 
 /// Card geometry (logical px).
@@ -961,6 +963,12 @@ pub struct InstallerApp {
     /// Set once the install worker thread has been spawned, so a stray
     /// extra `begin` can't launch a second install.
     install_launched: bool,
+    /// Read-only prepared-partition probe launched before leaving Disk. The
+    /// request UUID prevents a late result from a previously selected disk
+    /// from affecting the current choice; the backend independently binds the
+    /// probe to disk/root/ESP identities.
+    storage_preflight_request: Option<String>,
+    storage_preflight_passed: bool,
     /// A validated qOS Imager profile supplied the non-secret setup choices.
     preconfigured: bool,
     /// Wired by `main` so the worker thread can pump progress back.
@@ -1040,6 +1048,8 @@ impl InstallerApp {
             rect: Rect::ZERO,
             composed: None,
             install_launched: false,
+            storage_preflight_request: None,
+            storage_preflight_passed: false,
             preconfigured: false,
             proxy_slot: None,
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
@@ -1488,6 +1498,16 @@ impl InstallerApp {
             self.set_status("Alongside needs either one unallocated GPT extent of at least 34 GiB, or a prepared empty Linux root (32 GiB+) and EFI partition (2 GiB+)");
             return;
         }
+        if self.step == Step::Disk
+            && self.install_method == InstallMethod::Alongside
+            && self
+                .selected_disk_ref()
+                .is_some_and(Disk::can_install_alongside)
+            && !self.storage_preflight_passed
+        {
+            self.start_storage_preflight();
+            return;
+        }
         match validate_step(
             self.step,
             self.selected_disk,
@@ -1529,6 +1549,44 @@ impl InstallerApp {
             }
             Err(msg) => self.set_status(&msg),
         }
+    }
+
+    fn start_storage_preflight(&mut self) {
+        if self.storage_preflight_request.is_some() {
+            self.set_status("Checking the prepared EFI partition…");
+            return;
+        }
+        let Some(proxy) = self.event_proxy() else {
+            self.set_status(
+                "The prepared-storage check is unavailable. Refresh disks, then try again.",
+            );
+            return;
+        };
+        let Some(disk) = self.selected_dev() else {
+            self.set_status("Select the prepared qOS disk before checking it.");
+            return;
+        };
+        let opts = self.install_options();
+        let request = uuid::Uuid::new_v4().to_string();
+        self.storage_preflight_request = Some(request.clone());
+        self.set_status("Checking FAT health and free space on the prepared EFI partition…");
+        std::thread::spawn(move || {
+            let mut detail = String::new();
+            let result = crate::install::run_alongside_preflight(&disk, &opts, |line| {
+                if !line.trim().is_empty() {
+                    detail = line;
+                }
+            });
+            let (prefix, message) = match result {
+                Ok(true) => (PREFLIGHT_OK_PREFIX, detail),
+                Ok(false) => (PREFLIGHT_FAIL_PREFIX, detail),
+                Err(error) => (
+                    PREFLIGHT_FAIL_PREFIX,
+                    format!("Could not launch the prepared-storage check: {error}"),
+                ),
+            };
+            let _ = proxy.send_event(UserEvent::External(format!("{prefix}{request}:{message}")));
+        });
     }
 
     /// Step backward. A failed launch may already have formatted the selected
@@ -2817,6 +2875,8 @@ impl InstallerApp {
         self.guided_efi_partuuid = uuid::Uuid::new_v4().to_string();
         self.guided_root_partuuid = uuid::Uuid::new_v4().to_string();
         self.erase_confirmation.clear();
+        self.storage_preflight_request = None;
+        self.storage_preflight_passed = false;
         self.status = if self.disks.is_empty() {
             "Disk list refreshed; no installable disks were found.".to_string()
         } else {
@@ -2918,6 +2978,8 @@ impl InstallerApp {
                         Self::clear_text(state, root, ERASE_CONFIRM_PATH);
                         self.erase_confirmation.clear();
                         self.selected_guided_extent = None;
+                        self.storage_preflight_request = None;
+                        self.storage_preflight_passed = false;
                     }
                     self.selected_disk = Some(i);
                     self.status.clear();
@@ -2939,6 +3001,8 @@ impl InstallerApp {
                     Self::clear_text(state, root, ERASE_CONFIRM_PATH);
                     self.erase_confirmation.clear();
                     self.selected_guided_extent = None;
+                    self.storage_preflight_request = None;
+                    self.storage_preflight_passed = false;
                 }
                 self.install_method = method;
                 self.status.clear();
@@ -3239,6 +3303,31 @@ impl Widget for InstallerApp {
             self.mark_install_done();
         } else if payload == CTRL_FAIL {
             self.mark_install_failed(None);
+        } else if let Some(result) = payload.strip_prefix(PREFLIGHT_OK_PREFIX) {
+            if let Some((request, message)) = result.split_once(':')
+                && self.storage_preflight_request.as_deref() == Some(request)
+            {
+                self.storage_preflight_request = None;
+                self.storage_preflight_passed = true;
+                self.set_status(if message.trim().is_empty() {
+                    "Prepared EFI partition passed its read-only health and free-space check."
+                } else {
+                    message.trim()
+                });
+                self.go_next();
+            }
+        } else if let Some(result) = payload.strip_prefix(PREFLIGHT_FAIL_PREFIX) {
+            if let Some((request, message)) = result.split_once(':')
+                && self.storage_preflight_request.as_deref() == Some(request)
+            {
+                self.storage_preflight_request = None;
+                self.storage_preflight_passed = false;
+                self.set_status(if message.trim().is_empty() {
+                    "The prepared EFI partition failed its read-only health or free-space check."
+                } else {
+                    message.trim()
+                });
+            }
         } else if let Some(key) = payload.strip_prefix(RECOVERY_KEY_PREFIX) {
             if !key.trim().is_empty() {
                 self.recovery_key = Some(key.trim().to_string());
@@ -4149,6 +4238,56 @@ mod tests {
             .is_some(),
             "known ESP failures should be explained before the user leaves storage selection"
         );
+    }
+
+    #[test]
+    fn prepared_preflight_ignores_stale_results_and_advances_only_on_success() {
+        let mut app = InstallerApp::with_disks(sample_disks());
+        app.install_method = InstallMethod::Alongside;
+        app.selected_disk = Some(0);
+        app.step = Step::Disk;
+        app.storage_preflight_request = Some("current".into());
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        app.on_external_event(
+            &format!("{PREFLIGHT_OK_PREFIX}stale:stale result"),
+            &mut doc,
+            &root,
+        );
+        assert_eq!(app.step, Step::Disk);
+        assert!(!app.storage_preflight_passed);
+
+        app.on_external_event(
+            &format!("{PREFLIGHT_FAIL_PREFIX}current:EFI has less than 1 GiB free"),
+            &mut doc,
+            &root,
+        );
+        assert_eq!(app.step, Step::Disk);
+        assert!(app.status.contains("less than 1 GiB"));
+
+        app.storage_preflight_request = Some("retry".into());
+        app.on_external_event(
+            &format!("{PREFLIGHT_OK_PREFIX}retry:prepared storage check passed"),
+            &mut doc,
+            &root,
+        );
+        assert_eq!(app.step, Step::Account);
+        assert!(app.storage_preflight_passed);
+    }
+
+    #[test]
+    fn prepared_preflight_fails_closed_without_an_event_channel() {
+        let mut app = InstallerApp::with_disks(sample_disks());
+        app.install_method = InstallMethod::Alongside;
+        app.selected_disk = Some(0);
+        app.step = Step::Disk;
+
+        app.go_next();
+
+        assert_eq!(app.step, Step::Disk);
+        assert!(!app.storage_preflight_passed);
+        assert!(app.status.contains("prepared-storage check is unavailable"));
     }
 
     #[test]
