@@ -113,6 +113,8 @@ variables:
 | `IMAGER_HOMEBREW_CREDENTIAL_BROKER` | macOS ARM64 | raw Forgejo token file |
 | `IMAGER_WINGET_CREDENTIAL_BROKER` | Linux x86-64 | raw GitHub token file |
 | `IMAGER_SITE_CREDENTIAL_BROKER` | Linux x86-64 | raw Forgejo token file |
+| `QOS_PCR_PREDICTION_SIGNER` | both Linux architectures | direct KMS/HSM signing interface described below |
+| `QOS_EFI_SIGNING_CERT_SHA256` | both Linux architectures | lowercase SHA-256 of the release EFI certificate's DER bytes |
 
 Each value is an absolute executable path appropriate to that host. The
 workflow invokes it as `BROKER PLATFORM OUTPUT`, where `PLATFORM` is `linux`,
@@ -130,6 +132,32 @@ oidc_token="$(curl --fail --silent --show-error \
 # Exchange this JWT with the signing service. Never write the JWT or returned
 # credential to OUTPUT_ENV or an artifact.
 ```
+
+`QOS_PCR_PREDICTION_SIGNER` is a deliberately narrower direct interface. After
+the installer UKI's composefs digest has converged, the medium builder invokes:
+
+```text
+SIGNER sign-sha256-rsa-pkcs1 INPUT OUTPUT_SIGNATURE
+SIGNER sign-efi INPUT_UKI OUTPUT_UKI
+SIGNER export-efi-cert OUTPUT_CERTIFICATE
+```
+
+It receives the Forgejo OIDC request environment, validates the protected
+workflow/ref and native architecture server-side, and asks the KMS/HSM to make
+an RSA PKCS#1 v1.5 SHA-256 signature without exporting the private key. The EFI
+operation obtains the industry/OEM-trusted Authenticode signature required for
+stock-firmware Secure Boot and must omit nondeterministic timestamps. The
+export operation returns its public X.509 signing certificate; CI verifies its
+DER SHA-256 fingerprint against the independently protected
+`QOS_EFI_SIGNING_CERT_SHA256` repository variable and verifies every returned
+UKI against that exact certificate. The two
+inputs are the exact target UKI and `PolicyPCR || generation_be64`; neither is
+secret. The builder verifies both returned signatures against the independently
+pinned identities before adding the sidecars: the fingerprint above for EFI,
+and `/usr/share/qos/tpm2-pcr-signing.public.pem` for PCR authorization.
+The signer and every parent directory must be root-owned and not group/world
+writable, and it must not live in the checkout or runner temporary directory.
+Tagged releases fail closed when this protected variable is absent.
 
 For `linux`, `windows`, and `macos`, the broker configures the native signer and
 writes only these non-secret handles to the environment-file output, one
@@ -256,6 +284,8 @@ administrators):
 | Variable | Required value |
 |---|---|
 | the six `IMAGER_*_CREDENTIAL_BROKER` variables listed above | absolute path on each corresponding golden image |
+| `QOS_PCR_PREDICTION_SIGNER` | absolute root-owned KMS/HSM wrapper path on both native Linux runner images |
+| `QOS_EFI_SIGNING_CERT_SHA256` | independently verified lowercase 64-hex fingerprint of the firmware-trusted release certificate |
 | `IMAGER_LINUX_SIGNING_FINGERPRINT` | uppercase 40- or 64-hex full primary-key fingerprint, independently verified |
 | `IMAGER_WINDOWS_PUBLISHER` | complete expected Authenticode certificate subject, independently verified |
 | `IMAGER_MAC_TEAM_ID` | 10-character Apple Developer team identifier, independently verified |

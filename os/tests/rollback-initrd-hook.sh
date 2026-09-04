@@ -54,7 +54,7 @@ EOF
 chmod 0755 "$work/bin/"*
 mkdir -p "/dev/disk/by-uuid" 2>/dev/null || true
 if PATH="$work/bin:$PATH" QOS_TEST_ARGS="$work/args" QOS_TEST_ASKED="$work/asked" QOS_ROLLBACK_RUNTIME_ROOT="$work/root" \
-     "$helper" "$uuid" \
+     "$helper" "/dev/disk/by-uuid/$uuid" "luks-$uuid" \
    && grep -Fq "unlock --device /dev/disk/by-uuid/$uuid --pin-file $work/root/run/qos-rollback/unlock.pin --output $work/root/run/cryptsetup-keys.d/luks-$uuid.key" "$work/args" \
    && [ ! -e "$work/root/run/qos-rollback/unlock.pin" ]; then
   ok "helper keeps the PIN off argv to qos-rollback and removes its tmpfs file"
@@ -65,7 +65,7 @@ fi
 rm -f "$work/asked" "$work/args"
 if PATH="$work/bin:$PATH" QOS_TEST_TOKEN=0 QOS_TEST_ARGS="$work/args" \
      QOS_TEST_ASKED="$work/asked" QOS_ROLLBACK_RUNTIME_ROOT="$work/no-token-root" \
-     "$helper" "$uuid" \
+     "$helper" "/dev/disk/by-uuid/$uuid" "luks-$uuid" \
    && [ ! -e "$work/asked" ] && [ ! -e "$work/args" ]; then
   ok "passphrase-only volumes do not receive a redundant TPM PIN prompt"
 else
@@ -76,7 +76,7 @@ rm -f "$work/asked" "$work/args"
 failed_key="$work/failure-root/run/cryptsetup-keys.d/luks-$uuid.key"
 if PATH="$work/bin:$PATH" QOS_TEST_FAIL=1 QOS_TEST_ARGS="$work/args" \
      QOS_TEST_ASKED="$work/asked" QOS_ROLLBACK_RUNTIME_ROOT="$work/failure-root" \
-     "$helper" "$uuid" \
+     "$helper" "/dev/disk/by-uuid/$uuid" "luks-$uuid" \
    && [ ! -e "$failed_key" ]; then
   ok "failed TPM unseal removes partial key material and yields to recovery"
 else

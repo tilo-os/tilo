@@ -534,10 +534,14 @@ That leaves two genuinely secure product choices:
    update, firmware-revocation, BitLocker-coexistence and TPM dictionary-attack
    paths then need a physical hardware matrix before this becomes the default.
 
-Until one of those choices is deliberately made and delivered end to end, the
-secure product behaviour is the one enforced above: every machine gets a
-strong startup passphrase. `target_verified_boot_ready` must not be enabled by
-TPM presence, an EFI flag, signed files alone, or a resumable-install marker.
+Tagged release media implements the second choice only when its protected
+`QOS_PCR_PREDICTION_SIGNER` obtains both an industry/OEM-trusted EFI signature
+and PCR-authority signatures without exporting either private key. CI measures
+the exact resealed target with that image's `systemd-measure`, verifies every
+returned signature, and fails the release when the signer is absent. Development
+or custom media without that chain keeps the secure fallback: a strong startup
+passphrase. `target_verified_boot_ready` is never enabled by TPM presence, an
+EFI flag, signed files alone, or a resumable-install marker.
 
 The removed TPM slot bound to **PCR 7 only**, set explicitly rather than inherited.
 PCR 7 is the Secure Boot policy, so the seal would break if the boot policy changed.
@@ -550,11 +554,12 @@ why the generation has to be on a measured command line: without it, a predictio
 the authority signed for one generation would be satisfied by any other.
 
 There is consequently no supported `--reseal` procedure in this release.
-`qos-disk-encrypt enrol --reseal` fails closed until signed measured-boot
-predictions and their initramfs consumer ship together. A replaced motherboard
-or cleared TPM therefore does not alter the current passphrase/recovery-key boot
-path. The recovery key remains mandatory because passphrases and optional
-hardware factors can still be lost.
+`qos-disk-encrypt enrol --reseal` fails closed until a recovery ceremony can
+re-prove the replacement TPM's PCR7 state, exact authorized generation, and a
+working recovery factor before replacing the stale slot. A replaced motherboard
+or cleared TPM therefore falls back to the recovery key instead of creating a
+weaker slot. The recovery key remains mandatory because hardware factors can
+still be lost.
 
 ### An initramfs is required
 

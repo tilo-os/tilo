@@ -3,14 +3,12 @@
 # normal recovery-key/passphrase/FIDO2 agents. This runs only in the initramfs.
 set -uo pipefail
 
-uuid="${1:-}"
-if [[ ! "$uuid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
-  printf 'qos-rollback: invalid LUKS UUID from generator\n' >&2
+device="${1:-}"
+volume="${2:-}"
+if [[ "$device" != /dev/* || ! "$volume" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+  printf 'qos-rollback: invalid device or volume from root discovery\n' >&2
   exit 0
 fi
-
-device="/dev/disk/by-uuid/$uuid"
-volume="luks-$uuid"
 runtime_root="${QOS_ROLLBACK_RUNTIME_ROOT:-}"
 output="$runtime_root/run/cryptsetup-keys.d/$volume.key"
 pin_dir="$runtime_root/run/qos-rollback"
@@ -36,7 +34,7 @@ trap cleanup EXIT
 
 # -n avoids a newline becoming part of the TPM auth value. The PIN is held only
 # in initramfs tmpfs and removed immediately after the unseal attempt.
-if ! systemd-ask-password -n --echo=masked --id="qos-rollback:$uuid" \
+if ! systemd-ask-password -n --echo=masked --id="qos-rollback:$volume" \
      "Enter the qOS disk PIN" >"$pin_file"; then
   printf 'qos-rollback: PIN entry cancelled; offering recovery unlock\n' >&2
   exit 0

@@ -180,8 +180,13 @@ if ! grep -Fq "printf '[qos] pruning stale cached asset %s" \
   printf 'GitHub cache cannot reconcile a prior manifest generation\n' >&2
   fail=1
 fi
+if ! grep -Fq 'chcon -R -t container_file_t -l s0 -- "$cache_dir"' \
+  "$repo/os/dev/cache-github-assets.sh"; then
+  printf 'GitHub cache does not clear private container MCS categories before reuse\n' >&2
+  fail=1
+fi
 if [ "$fail" = 0 ]; then
-  printf 'ok    GitHub inputs reuse prior manifest cache generations\n'
+  printf 'ok    GitHub inputs reuse prior manifest cache generations with shared SELinux labels\n'
 fi
 
 for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do

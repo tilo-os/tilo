@@ -148,5 +148,20 @@ if ! "$QOS_OS_DIR/dev/disk-image.sh" "${DISK_ARGS[@]}"; then
   msg "live installer seal closed in two passes"
 fi
 
+# PCR prediction signatures are produced only after the composefs reseal has
+# converged, so both the TPM policy and detached signature cover the exact UKI
+# that release media will carry. The signer is a protected runner-side broker
+# executable; no private-key bytes enter this process, checkout, or image.
+if [ -n "${QOS_PCR_PREDICTION_SIGNER:-}" ]; then
+  "$QOS_OS_DIR/dev/sign-target-prediction.sh" \
+    "$QOS_INSTALLER_IMAGE" "$QOS_PCR_PREDICTION_SIGNER"
+  rm -rf "$QOS_INSTALLER_OUTPUT/qcow2" "$QOS_INSTALLER_OUTPUT"/manifest* 2>/dev/null || true
+  if ! "$QOS_OS_DIR/dev/disk-image.sh" "${DISK_ARGS[@]}"; then
+    die "adding /boot-only signed PCR prediction sidecars changed or invalidated the converged installer image"
+  fi
+elif [ "${QOS_REQUIRE_PCR_PREDICTION:-0}" = 1 ]; then
+  die "QOS_REQUIRE_PCR_PREDICTION=1 but no protected QOS_PCR_PREDICTION_SIGNER is configured"
+fi
+
 msg "DONE: $QOS_INSTALLER_DISK"
 ls -lh "$QOS_INSTALLER_DISK"

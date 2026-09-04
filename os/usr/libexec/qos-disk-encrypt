@@ -44,6 +44,7 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 # util-linux version.
 GUID_ESP=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
 GUID_LINUX=0FC63DAF-8483-4772-8E79-3D69D8477DE4
+GUID_QOS_ROOT=7A2E8D75-3F01-4E5A-B2C9-51F6ED90B8AB
 
 ESP_SIZE=${QOS_ESP_SIZE:-512M}
 BOOT_SIZE=${QOS_BOOT_SIZE:-1G}
@@ -110,8 +111,8 @@ cmd_prepare_partition() {
     || die "prepare-partition: root and EFI partitions are not on the same disk"
   part_type="$(lsblk -dno PARTTYPE "$part" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
   esp_type="$(lsblk -dno PARTTYPE "$esp" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
-  [ "$part_type" = "${GUID_LINUX,,}" ] \
-    || die "prepare-partition: $part is not typed as a Linux filesystem partition"
+  [ "$part_type" = "${GUID_QOS_ROOT,,}" ] \
+    || die "prepare-partition: $part is not typed as a qOS root partition"
   [ "$esp_type" = "${GUID_ESP,,}" ] \
     || die "prepare-partition: $esp is not an EFI System Partition"
   esp_fs="$(blkid -s TYPE -o value "$esp" 2>/dev/null || true)"
@@ -213,7 +214,7 @@ cmd_prepare() {
 label: gpt
 start=1M, size=$ESP_SIZE, type=$GUID_ESP, name="EFI-SYSTEM"
 size=$BOOT_SIZE, type=$GUID_LINUX, name="boot"
-type=$GUID_LINUX, name="root"
+type=$GUID_QOS_ROOT, name="qOS root"
 EOF
   udevadm settle 2>/dev/null || true
 
@@ -283,14 +284,16 @@ EOF
 }
 
 cmd_enrol() {
-  # PCR 7 authenticates the firmware Secure Boot policy, not the selected qOS
-  # UKI/initramfs. Until signed per-generation predictions and their initramfs
-  # consumer ship together, fail closed to an ordinary strong passphrase.
-  local dev="" key="" pin_file="" want_fido2=0 reseal=0
+  local dev="" key="" pin_file="" want_fido2=0 reseal=0 predictions="" generation="" rollback_state=""
+  local require_tpm_prediction=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --key-file) key="${2:-}"; shift 2 ;;
       --pin-file) pin_file="${2:-}"; shift 2 ;;
+      --predictions) predictions="${2:-}"; shift 2 ;;
+      --generation) generation="${2:-}"; shift 2 ;;
+      --rollback-state) rollback_state="${2:-}"; shift 2 ;;
+      --require-tpm-prediction) require_tpm_prediction=1; shift ;;
       --fido2) want_fido2=1; shift ;;
       # Compatibility flag for callers; passphrase mode is also the default.
       --passphrase) shift ;;
@@ -323,7 +326,7 @@ cmd_enrol() {
   fi
 
   if [ "$reseal" -eq 1 ]; then
-    die "enrol --reseal: TPM enrollment is disabled until qOS unlock is bound to signed measured-boot predictions; keep the recovery key and strong passphrase"
+    die "enrol --reseal: no replacement-TPM recovery ceremony is available; use the verified recovery key and do not create a weaker slot"
   fi
 
   # A private scratch dir for the secrets this function has to hand to
@@ -393,18 +396,33 @@ cmd_enrol() {
     log "  FIDO2 key enrolled."
   fi
 
-  # (3) The startup factor. Always use an ordinary LUKS passphrase until qOS
-  # ships signed measured-boot predictions and a matching early-boot consumer.
-  # Merely finding a TPM or Secure Boot is not sufficient protection for a
-  # short numeric secret.
+  # (3) The startup factor. Use the generation-bound TPM policy only when the
+  # exact release-signed prediction sidecar is present. Otherwise retain the
+  # strong ordinary passphrase path; never silently create a PCR7-only token.
   if [ -n "$pin_file" ]; then
-    log "  TPM unlock is not enabled until it is bound to signed measured-boot predictions; enrolling the supplied strong passphrase as a LUKS key slot."
     # A key file's bytes are the passphrase verbatim, trailing newline included
     # — and a newline is exactly what the boot prompt cannot send. A file
     # written with `echo` would otherwise enrol a secret that nobody can type,
     # so normalise to the bytes the user will actually enter.
     ( umask 0077; printf '%s' "$(cat "$pin_file")" > "$scratch/pin" )
     [ -s "$scratch/pin" ] || die "enrol: the pin file $pin_file is empty"
+    if [ -n "$predictions" ] && [ -n "$generation" ] \
+       && compgen -G "$predictions/generation-$generation*.json" >/dev/null \
+       && { [ -c /dev/tpmrm0 ] || [ -c /dev/tpm0 ]; }; then
+      need qos-rollback
+      log "  enrolling TPM2 + startup PIN against the signed generation $generation prediction…"
+      rollback_args=(--predictions "$predictions")
+      [ -z "$rollback_state" ] || rollback_args+=(--state "$rollback_state")
+      qos-rollback "${rollback_args[@]}" enroll --device "$dev" \
+        --generation "$generation" --recovery-key-file "$scratch/recovery" \
+        --pin-file "$scratch/pin" \
+        || die "signed measured-boot TPM enrollment failed; the recovery key remains valid"
+      log "  TPM2 + PIN enrolled and verified."
+      return 0
+    fi
+    [ "$require_tpm_prediction" -eq 0 ] \
+      || die "verified TPM enrollment prerequisites changed after review; refusing to turn the startup PIN into an ordinary LUKS passphrase"
+    log "  no exact signed target prediction/TPM is available; enrolling the supplied strong passphrase as a LUKS key slot."
     # cryptsetup takes the authorising key as --key-file and the new one as
     # --new-keyfile; with no install key it prompts for the existing secret.
     local addkey=()

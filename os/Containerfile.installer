@@ -54,8 +54,21 @@ RUN printf 'kargs = ["qos.install"]\n' \
     # discovery. qos-install replaces it after the target LUKS UUID exists.
     && /usr/libexec/qos-uki-cmdline append qos.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000 \
     && /usr/libexec/qos-uki-cmdline append qos.install \
+    # Keep a deterministic installed-target UKI outside bootc's EFI scan path.
+    # It seals the same composefs tree but contains no live marker or device UUID.
+    && install -d -m 0755 /boot/qos-target/predictions \
+    && target_uki="$(find /boot/EFI/Linux -type f -name '*.efi' -print -quit)" \
+    && cp "$target_uki" /boot/qos-target/qos-target.efi \
+    && /usr/libexec/qos-uki-cmdline remove qos.root /boot/qos-target/qos-target.efi \
+    && /usr/libexec/qos-uki-cmdline remove qos.luks /boot/qos-target/qos-target.efi \
+    && /usr/libexec/qos-uki-cmdline remove qos.unlock /boot/qos-target/qos-target.efi \
+    && /usr/libexec/qos-uki-cmdline remove qos.install /boot/qos-target/qos-target.efi \
+    && /usr/libexec/qos-uki-cmdline append root=qos-auto /boot/qos-target/qos-target.efi \
+    && /usr/libexec/qos-uki-cmdline append rd.luks.options=tpm2-device=auto,fido2-device=auto /boot/qos-target/qos-target.efi \
     && /usr/libexec/qos-uki-cmdline show | grep -qw qos.mode=normal \
     && /usr/libexec/qos-uki-cmdline show | grep -qw qos.install \
+    && /usr/libexec/qos-uki-cmdline show /boot/qos-target/qos-target.efi | grep -qw root=qos-auto \
+    && ! /usr/libexec/qos-uki-cmdline show /boot/qos-target/qos-target.efi | grep -qw qos.install \
     && systemctl enable qos-firstboot-user.service qos-installer-setup.service qos-live-recovery.service \
     && if [ "$QOS_INSTALLER_DEV_SSH" = 1 ]; then \
          systemctl unmask sshd.service && systemctl enable sshd.service; \
