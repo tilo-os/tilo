@@ -28,21 +28,17 @@
 //! fallback is never silently indistinguishable from a live call.
 
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 use crate::plan::{self, Block, Instruction};
-use crate::providers::{ProviderSelection, ResolvedSecret, SecretResolver};
+use crate::providers::ProviderSelection;
 use crate::surface::Catalogue;
 use crate::tools::{self, Revealed};
 
 /// The model that makes the choice.
 pub const MODEL: &str = "claude-opus-5";
-
-const ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
-const API_VERSION: &str = "2023-06-01";
 
 /// How much of the document the model is shown. A brief is small; the caps
 /// keep a pathological document from making the call slow or expensive.
@@ -136,11 +132,9 @@ pub struct Decision {
     pub route: Route,
 }
 
-/// Resolves the key once, then answers instructions.
+/// Selects the gateway-held profile, then answers instructions.
 pub struct Chooser {
-    key: Option<String>,
-    /// A Settings-selected provider. This takes precedence over the legacy
-    /// demo environment path and is the only route used by normal sessions.
+    /// A Settings-selected provider. Its credential remains in the gateway.
     provider: Option<ProviderConnection>,
     timeout: Duration,
     enabled: bool,
@@ -148,38 +142,24 @@ pub struct Chooser {
 
 struct ProviderConnection {
     selection: ProviderSelection,
-    secret: Option<ResolvedSecret>,
 }
 
 impl Chooser {
     /// `enabled` false forces the keyword vocabulary — for a run that must be
     /// reproducible, and for proving the fallback works.
     pub fn new(enabled: bool, timeout: Duration) -> Self {
-        let key = if enabled { api_key() } else { None };
         Self {
-            key,
             provider: None,
             timeout,
             enabled,
         }
     }
 
-    /// Construct a chooser over a profile selected in Settings. `resolver` is
-    /// injected by the desktop integration and receives a vault reference,
-    /// never a raw key from the settings document.
-    pub fn with_provider(
-        enabled: bool,
-        timeout: Duration,
-        selection: ProviderSelection,
-        resolver: &dyn SecretResolver,
-    ) -> Self {
-        let secret = selection
-            .credential
-            .as_ref()
-            .and_then(|reference| resolver.resolve(reference).ok());
+    /// Construct a chooser over a profile selected in Settings. The profile
+    /// is non-secret metadata; qos-model-gateway owns credential resolution.
+    pub fn with_provider(enabled: bool, timeout: Duration, selection: ProviderSelection) -> Self {
         Self {
-            key: None,
-            provider: Some(ProviderConnection { selection, secret }),
+            provider: Some(ProviderConnection { selection }),
             timeout,
             enabled,
         }
@@ -189,11 +169,7 @@ impl Chooser {
     /// logging at startup so an operator knows before the beat which path
     /// this run will take.
     pub fn is_live(&self) -> bool {
-        self.enabled
-            && self.provider.as_ref().is_some_and(|provider| {
-                provider.selection.credential.is_none() || provider.secret.is_some()
-            })
-            || self.enabled && self.key.is_some()
+        self.enabled && self.provider.is_some() && qos_model_gateway::available()
     }
 
     /// Decide what `rest` asks for, given the document it was written into.
@@ -209,12 +185,10 @@ impl Chooser {
             return fallback(Fallback::Disabled);
         }
         let answer = if let Some(provider) = &self.provider {
-            if provider.selection.credential.is_some() && provider.secret.is_none() {
+            if !qos_model_gateway::available() {
                 return fallback(Fallback::NoKey);
             }
             self.ask_provider(provider, rest, blocks)
-        } else if let Some(key) = self.key.as_deref() {
-            self.ask(key, rest, blocks)
         } else {
             return fallback(Fallback::NoKey);
         };
@@ -267,12 +241,10 @@ impl Chooser {
             return fallback(Fallback::Disabled);
         }
         let answer = if let Some(provider) = &self.provider {
-            if provider.selection.credential.is_some() && provider.secret.is_none() {
+            if !qos_model_gateway::available() {
                 return fallback(Fallback::NoKey);
             }
             self.ask_actions_provider(provider, rest, blocks, catalogue, most_steps)
-        } else if let Some(key) = self.key.as_deref() {
-            self.ask_actions(key, rest, blocks, catalogue, most_steps)
         } else {
             return fallback(Fallback::NoKey);
         };
@@ -290,59 +262,6 @@ impl Chooser {
                 over,
             }),
         }
-    }
-
-    fn ask_actions(
-        &self,
-        key: &str,
-        rest: &str,
-        blocks: &[Block],
-        catalogue: &Catalogue,
-        most_steps: usize,
-    ) -> Result<tools::Answer, AskError> {
-        let began = Instant::now();
-        let remaining = || self.timeout.checked_sub(began.elapsed());
-        let mut revealed = Revealed::new();
-        let mut messages = vec![serde_json::json!({
-            "role": "user",
-            "content": action_user_turn(rest, blocks),
-        })];
-
-        for _ in 0..12 {
-            let body = action_request_body(&messages, &revealed, most_steps);
-            let raw = post(key, &body, &remaining)?;
-            match parse_action_turn(&raw).map_err(AskError::Failed)? {
-                ActionTurn::Plan { input, .. } => {
-                    return tools::read_plan(&input, &revealed, most_steps)
-                        .map_err(AskError::Failed);
-                }
-                ActionTurn::Tools { content, calls } => {
-                    messages.push(serde_json::json!({
-                        "role": "assistant",
-                        "content": content,
-                    }));
-                    let results = calls
-                        .into_iter()
-                        .map(|call| {
-                            let answer =
-                                tools::answer(&call.name, &call.input, catalogue, &mut revealed);
-                            serde_json::json!({
-                                "type": "tool_result",
-                                "tool_use_id": call.id,
-                                "content": answer,
-                            })
-                        })
-                        .collect::<Vec<_>>();
-                    messages.push(serde_json::json!({
-                        "role": "user",
-                        "content": results,
-                    }));
-                }
-            }
-        }
-        Err(AskError::Failed(
-            "the model exhausted the action-discovery turn limit".into(),
-        ))
     }
 
     fn ask_actions_provider(
@@ -390,20 +309,6 @@ impl Chooser {
         ))
     }
 
-    /// One bounded call, retried while the service is asking for that. The
-    /// key travels in the header and nowhere else; no error path here
-    /// carries it into a message, a log, or a document.
-    fn ask(&self, key: &str, rest: &str, blocks: &[Block]) -> Result<Answer, AskError> {
-        let began = Instant::now();
-        // Read afresh before every attempt, so a retry spends what the
-        // *conversation's* deadline has left rather than getting a bound of
-        // its own — see [`while_busy`].
-        let remaining = || self.timeout.checked_sub(began.elapsed());
-        let body = request_body(rest, blocks);
-        let text = post(key, &body, &remaining)?;
-        parse_answer(&text).map_err(AskError::Failed)
-    }
-
     fn ask_provider(
         &self,
         provider: &ProviderConnection,
@@ -435,25 +340,19 @@ enum ActionTurn {
     },
 }
 
-fn action_request_body(messages: &[Value], revealed: &Revealed, most_steps: usize) -> Value {
-    serde_json::json!({
-        "model": MODEL,
-        "max_tokens": 4096,
-        "system": "Drive qOS exclusively through the resource/action tools. Discover before planning. Preserve every argument's declared JSON type. Never invent an operation id or parameter.",
-        "tools": tools::definitions(revealed, most_steps),
-        "messages": messages,
-    })
-}
-
 fn action_request_body_for(
     selection: &ProviderSelection,
     messages: &[Value],
     revealed: &Revealed,
     most_steps: usize,
 ) -> Value {
-    let mut body = action_request_body(messages, revealed, most_steps);
-    body["model"] = Value::String(selection.model.id.clone());
-    body
+    serde_json::json!({
+        "model": selection.model.id,
+        "max_tokens": 4096,
+        "system": "Drive qOS exclusively through the resource/action tools. Discover before planning. Preserve every argument's declared JSON type. Never invent an operation id or parameter.",
+        "tools": tools::definitions(revealed, most_steps),
+        "messages": messages,
+    })
 }
 
 fn parse_action_turn(body: &str) -> Result<ActionTurn, String> {
@@ -524,209 +423,28 @@ fn action_user_turn(rest: &str, blocks: &[Block]) -> String {
     text
 }
 
-/// Post one request, and post it again while the service is asking for
-/// that. A fresh client per attempt, because the timeout each one runs
-/// under is what is left of the deadline at the moment it goes out.
-fn post(
-    key: &str,
-    body: &Value,
-    remaining: &dyn Fn() -> Option<Duration>,
-) -> Result<String, AskError> {
-    while_busy(&RETRIES, remaining, std::thread::sleep, |left| {
-        let client = reqwest::blocking::Client::builder()
-            // Bounded well below the deadline, and separately from it. A DNS
-            // or TCP stall that ate the whole thing would leave nothing for
-            // a second try, while an answer merely slow to arrive is none of
-            // this timeout's business.
-            .connect_timeout(CONNECT_TIMEOUT.min(left))
-            .timeout(left)
-            .build()
-            .map_err(|e| Attempt {
-                error: AskError::Failed(e.to_string()),
-                // A client that cannot be built is this process, not the
-                // network: building it again builds the same one.
-                again: Again::Never,
-            })?;
-        send(&client, key, body)
-    })
-}
-
-/// Send through the provider profile selected for this task. Endpoint and
-/// model identity come from the captured selection, while the bearer value
-/// stays in a zeroising secret owned by the injected resolver.
+/// Send through the profile selected for this task. The gateway resolves the
+/// current profile and its vault-held key; no provider endpoint or bearer
+/// value is used in this process.
 fn post_provider(
     provider: &ProviderConnection,
     body: &Value,
-    remaining: &dyn Fn() -> Option<Duration>,
+    _remaining: &dyn Fn() -> Option<Duration>,
 ) -> Result<String, AskError> {
-    while_busy(&RETRIES, remaining, std::thread::sleep, |left| {
-        let client = reqwest::blocking::Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT.min(left))
-            .timeout(left)
-            .build()
-            .map_err(|error| Attempt {
-                error: AskError::Failed(error.to_string()),
-                again: Again::Never,
-            })?;
-        send_provider(&client, provider, body)
-    })
-}
-
-fn provider_request_url(selection: &ProviderSelection) -> String {
-    let base = selection.endpoint.trim_end_matches('/');
-    match selection.protocol {
-        agent_provider_config::ProviderProtocol::Anthropic => {
-            if base.ends_with("/v1/messages") {
-                base.to_string()
-            } else {
-                format!("{base}/v1/messages")
-            }
-        }
-        agent_provider_config::ProviderProtocol::OpenAiCompatible => {
-            if base.ends_with("/chat/completions") {
-                base.to_string()
-            } else {
-                format!("{base}/chat/completions")
-            }
-        }
-    }
-}
-
-fn send_provider(
-    client: &reqwest::blocking::Client,
-    provider: &ProviderConnection,
-    body: &Value,
-) -> Result<String, Attempt> {
-    let mut request = client
-        .post(provider_request_url(&provider.selection))
-        .header("content-type", "application/json");
-    match provider.selection.protocol {
-        agent_provider_config::ProviderProtocol::Anthropic => {
-            request = request.header("anthropic-version", API_VERSION);
-            if let Some(secret) = &provider.secret {
-                request = request.header("x-api-key", secret.expose());
-            }
-        }
-        agent_provider_config::ProviderProtocol::OpenAiCompatible => {
-            if let Some(secret) = &provider.secret {
-                request = request.bearer_auth(secret.expose());
-            }
-        }
-    }
-    let resp = request.json(body).send().map_err(|error| {
-        if error.is_connect() {
-            Attempt {
-                error: AskError::Failed(strip(&error.to_string())),
-                again: Again::Soon(None),
-            }
-        } else if error.is_timeout() {
-            Attempt {
-                error: AskError::Timeout,
-                again: Again::Soon(None),
-            }
-        } else {
-            Attempt {
-                error: AskError::Failed(strip(&error.to_string())),
-                again: Again::Never,
-            }
-        }
-    })?;
-    let status = resp.status();
-    let retry_after = resp
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-    let text = resp.text().map_err(|error| Attempt {
-        error: AskError::Failed(strip(&error.to_string())),
-        again: Again::Soon(None),
-    })?;
-    if !status.is_success() {
-        return Err(Attempt {
-            error: AskError::Failed(format!(
-                "http {}: {}",
-                status.as_u16(),
-                first_chars(&text, 300)
-            )),
-            again: again_after(status.as_u16(), retry_after.as_deref()),
-        });
-    }
-    Ok(text)
-}
-
-/// Post one Messages request and hand back the body.
-///
-/// One attempt, never more: whether a failure is worth repeating is a
-/// judgement it reports ([`Attempt::again`]) rather than acts on, and
-/// [`while_busy`] is where that judgement is spent against a deadline.
-fn send(client: &reqwest::blocking::Client, key: &str, body: &Value) -> Result<String, Attempt> {
-    let resp = client
-        .post(ENDPOINT)
-        .header("x-api-key", key)
-        .header("anthropic-version", API_VERSION)
-        .header("content-type", "application/json")
-        .json(body)
-        .send()
-        .map_err(|e| {
-            // Asked in this order on purpose. A connection that was never
-            // made is the network rather than the deadline, and worth one
-            // more go; a response that never finished has already spent the
-            // deadline — the client's own timeout *is* what was left of it —
-            // so it is reported as the timeout it is, and the budget check
-            // at the call site declines the retry it would ask for.
-            if e.is_connect() {
-                Attempt {
-                    error: AskError::Failed(strip(&e.to_string())),
-                    again: Again::Soon(None),
-                }
-            } else if e.is_timeout() {
-                Attempt {
-                    error: AskError::Timeout,
-                    again: Again::Soon(None),
-                }
-            } else {
-                Attempt {
-                    error: AskError::Failed(strip(&e.to_string())),
-                    again: Again::Never,
-                }
-            }
-        })?;
-
-    let status = resp.status();
-    // What the service said to wait, if it said anything. Read before the
-    // body, because reading the body is what can fail next.
-    let retry_after = resp
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
-    let text = resp.text().map_err(|e| Attempt {
-        // A body that stopped arriving is the connection, not the request.
-        error: AskError::Failed(strip(&e.to_string())),
-        again: Again::Soon(None),
-    })?;
-    if !status.is_success() {
-        // The body of an error names the problem (bad request, rate limit)
-        // and never contains the key.
-        return Err(Attempt {
-            error: AskError::Failed(format!(
-                "http {}: {}",
-                status.as_u16(),
-                first_chars(&text, 300)
-            )),
-            again: again_after(status.as_u16(), retry_after.as_deref()),
-        });
-    }
-    Ok(text)
+    // The agent has no provider network namespace and cannot resolve a vault
+    // reference. All profile lookup, credential resolution, and egress happen
+    // at the per-user model gateway reached through a launcher-issued FD.
+    qos_model_gateway::plan(
+        &provider.selection.profile_id,
+        &provider.selection.model.id,
+        body.clone(),
+    )
+    .map_err(|error| AskError::Failed(error.to_string()))
 }
 
 // ---------------------------------------------------------------------------
 // Surviving a busy service
 // ---------------------------------------------------------------------------
-
-/// How long a connection may take to be made before that is the network's
-/// answer. See [`post`] for why it is bounded separately from the deadline.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Whether a failed request is worth making again.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1186,72 +904,12 @@ fn parse_answer_json(text: &str) -> Result<Answer, String> {
 }
 
 // ---------------------------------------------------------------------------
-// The key
-// ---------------------------------------------------------------------------
-
-/// The API key, from the environment or from a file the caller names.
-///
-/// `ANTHROPIC_API_KEY` wins; failing that, `ANTHROPIC_ENV_FILE` names a
-/// `KEY=value` file to read it from. Both are explicit: nothing is read from a
-/// location the caller did not ask for. The value is returned and never logged,
-/// printed, or written anywhere.
-pub fn api_key() -> Option<String> {
-    if let Ok(k) = std::env::var("ANTHROPIC_API_KEY") {
-        let k = k.trim().to_string();
-        if !k.is_empty() {
-            return Some(k);
-        }
-    }
-    let path = std::env::var_os("ANTHROPIC_ENV_FILE")?;
-    key_from_env_file(&PathBuf::from(path))
-}
-
-/// Read `ANTHROPIC_API_KEY` out of a `KEY=value` file, ignoring every other
-/// key in it — such a file routinely holds credentials for other services,
-/// and none of them are ours to pick up.
-fn key_from_env_file(path: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let line = line.strip_prefix("export ").unwrap_or(line);
-        let Some((k, v)) = line.split_once('=') else {
-            continue;
-        };
-        if k.trim() != "ANTHROPIC_API_KEY" {
-            continue;
-        }
-        let v = v.trim();
-        let v = v
-            .strip_prefix('"')
-            .and_then(|s| s.strip_suffix('"'))
-            .or_else(|| v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
-            .unwrap_or(v);
-        if !v.is_empty() {
-            return Some(v.to_string());
-        }
-    }
-    None
-}
-
-// ---------------------------------------------------------------------------
 
 fn first_chars(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         return s.to_string();
     }
     s.chars().take(n).collect::<String>() + "…"
-}
-
-/// Belt and braces on anything that becomes a log line: a transport error
-/// should never carry a credential, but nothing is lost by making sure.
-fn strip(msg: &str) -> String {
-    match api_key() {
-        Some(k) if !k.is_empty() && msg.contains(&k) => msg.replace(&k, "<redacted>"),
-        _ => msg.to_string(),
-    }
 }
 
 #[cfg(test)]
@@ -1299,8 +957,7 @@ mod tests {
             held: vec!["calculator"],
         };
         let mut revealed = Revealed::new();
-        let request = action_request_body(&[], &revealed, 4);
-        let encoded = request.to_string();
+        let encoded = serde_json::to_string(&tools::definitions(&revealed, 4)).unwrap();
         assert!(encoded.contains(tools::LIST_OPERATIONS));
         assert!(!encoded.contains("turn the bullets into a table"));
 
@@ -1729,24 +1386,6 @@ mod tests {
     }
 
     #[test]
-    fn an_env_file_yields_only_the_anthropic_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let f = dir.path().join(".env");
-        std::fs::write(
-            &f,
-            "# a comment\nOPENAI_API_KEY=not-ours\nexport ANTHROPIC_API_KEY=\"sk-test-value\"\nGEMINI_API_KEY=also-not-ours\n",
-        )
-        .unwrap();
-        assert_eq!(key_from_env_file(&f), Some("sk-test-value".to_string()));
-
-        // A file without one is simply absent, not an error.
-        let empty = dir.path().join("empty.env");
-        std::fs::write(&empty, "OPENAI_API_KEY=x\nnonsense line\n").unwrap();
-        assert_eq!(key_from_env_file(&empty), None);
-        assert_eq!(key_from_env_file(&dir.path().join("missing.env")), None);
-    }
-
-    #[test]
     fn openai_compatible_profile_uses_its_model_and_chat_envelope() {
         let mut profile = agent_provider_config::ProviderProfile::local_vllm();
         profile
@@ -1756,10 +1395,6 @@ mod tests {
         let body = request_body_for(&selection, "make a title", &[]);
         assert_eq!(body["model"], "local-qwen");
         assert!(body.get("messages").is_some());
-        assert_eq!(
-            provider_request_url(&selection),
-            "http://127.0.0.1:8000/v1/chat/completions"
-        );
     }
 
     #[test]

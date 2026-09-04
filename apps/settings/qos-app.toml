@@ -64,6 +64,7 @@ collab = "optional@1"
 qos-fs = "optional@1"
 tools = "optional@1"
 models = "required@1"
+model-gateway = "required@1"
 
 [entrypoint]
 bin             = "bin/settings"

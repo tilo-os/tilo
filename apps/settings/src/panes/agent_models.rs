@@ -29,6 +29,13 @@ const CONFIRM_KEY: &str = "agent_models.local.confirm";
 const CANCEL_KEY: &str = "agent_models.local.cancel";
 const POLL_INTERVAL: Duration = Duration::from_millis(750);
 
+#[derive(Clone)]
+struct HostedFieldBuffers {
+    label: Arc<Mutex<String>>,
+    endpoint: Arc<Mutex<String>>,
+    model: Arc<Mutex<String>>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HardwareFit {
@@ -789,6 +796,7 @@ impl AgentModelsPane {
                 ProviderProtocol::Anthropic => ProviderProtocol::OpenAiCompatible,
                 ProviderProtocol::OpenAiCompatible => ProviderProtocol::Anthropic,
             };
+            let alternate_protocol_label = format!("Use {}", alternate_protocol.label());
             let enabled_id = profile_id.clone();
             let remove_profile_id = profile_id.clone();
             body.push(Box::new(
@@ -838,7 +846,7 @@ impl AgentModelsPane {
                     .push(Box::new(
                         Button::new(
                             &format!("agent-models-protocol-{profile_id}"),
-                            format!("Use {}", alternate_protocol.label()),
+                            &alternate_protocol_label,
                             None,
                         )
                         .on_effect(move || {
