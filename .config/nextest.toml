@@ -84,3 +84,14 @@ threads-required = "num-cpus"
 [[profile.ci.overrides]]
 filter = 'package(shell) and binary(it) and test(flatpak_share_e2e::session_delivers_30_frames_in_3_seconds_at_bounded_latency)'
 threads-required = "num-cpus"
+
+# These integration binaries each run a production Cap'n Proto broker, two or
+# more SDK shovel runtimes, and (except for the presence-only case) an agent
+# session. Their 3-20 second bounds deliberately detect a stuck collaboration
+# pipeline. When the full shard fills every CPU with thousands of other test
+# processes, all four binaries can instead spend that entire bound waiting to
+# be scheduled. Give only this native-broker set an exclusive CI slot so the
+# deadlines continue to measure the pipeline rather than runner saturation.
+[[profile.ci.overrides]]
+filter = 'package(agent) and (binary(presence_semantics) or binary(relay_roundtrip) or binary(discovered_operations) or binary(concurrent_edit))'
+threads-required = "num-cpus"
