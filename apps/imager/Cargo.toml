@@ -15,6 +15,9 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Host downloads opt into the narrowly elevated raw-media writer. The qpkg
+# deliberately omits this feature because its sandbox has no raw-device portal.
+host-media-writer = []
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }

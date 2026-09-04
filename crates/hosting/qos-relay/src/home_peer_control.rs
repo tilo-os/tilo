@@ -46,6 +46,10 @@ enum BrokerCommand {
         label: String,
         #[arg(long)]
         status_file: PathBuf,
+        #[arg(long)]
+        requester_pid: u32,
+        #[arg(long)]
+        requester_start_time: u64,
     },
     /// Approve an ordinary nearby personal device.
     ApproveDevice {
@@ -505,15 +509,26 @@ fn main() -> anyhow::Result<()> {
             identity_dir,
             label,
             status_file,
+            requester_pid,
+            requester_start_time,
         } => {
             let status_parent = status_file.parent().context("status file has no parent")?;
             if status_parent != identity_dir {
                 bail!("pairing status must be stored in the identity directory");
             }
+            let requester =
+                qos_relay::ProcessLease::from_parts(requester_pid, requester_start_time);
+            requester
+                .validate_owner(invoking_uid()?)
+                .context("pairing requester is no longer the invoking user process")?;
             personal_device_command("pair-device", identity_root, identity_dir, |command| {
                 command
                     .args(["--label", &label, "--status-file"])
-                    .arg(status_file);
+                    .arg(status_file)
+                    .arg("--requester-pid")
+                    .arg(requester_pid.to_string())
+                    .arg("--requester-start-time")
+                    .arg(requester_start_time.to_string());
             })
         }
         BrokerCommand::ApproveDevice {

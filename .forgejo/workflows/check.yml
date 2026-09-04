@@ -93,8 +93,10 @@ jobs:
       # Main can add a required check tool one commit before the weekly builder
       # refresh has published it. Keep that transition self-healing; once the
       # refreshed image contains jq this is an inexpensive no-op.
-      - name: Ensure provenance test tooling
-        run: command -v jq >/dev/null || dnf install -y jq
+      - name: Ensure invariant test tooling
+        run: |
+          command -v jq >/dev/null || dnf install -y jq
+          python3 -c 'import PIL' 2>/dev/null || dnf install -y python3-pillow
 
       # These boundaries are mostly shell, image configuration, and workflow
       # policy, so Cargo's affected-package graph cannot select them. Keep the
@@ -108,10 +110,14 @@ jobs:
           bash os/tests/first_boot_service_readiness.sh
           bash os/tests/release_freshness_security.sh
           bash os/tests/installer_target_invariants.sh
+          bash os/tests/installer_guided_alongside.sh
+          bash os/tests/installer_boot_menu.sh
           bash os/tests/live_recovery.sh
+          bash os/tests/boot_ux_invariants.sh
           bash os/tests/repair_mode.sh
           bash os/tests/installer_profile_transport.sh
           bash os/tests/imager_release_invariants.sh
+          bash os/tests/imager_broker_credentials.sh
           bash os/tests/imager_linux_release_trust.sh
           bash os/tests/wpe_reproducibility_invariants.sh
           bash os/tests/generation_series_security.sh

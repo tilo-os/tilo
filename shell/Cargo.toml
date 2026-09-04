@@ -114,6 +114,10 @@ smithay = { version = "0.7", default-features = false, features = [
 thiserror.workspace = true
 
 ui = { path = "../ui" }
+# `ui::App` publishes ordinary app windows through `accesskit_winit`. The
+# compositor owns no winit application window, so its trusted chrome (including
+# OOBE and the desktop tour) uses AccessKit's native Unix/AT-SPI adapter.
+accesskit_unix = "0.23.0"
 qos-actions = { path = "../crates/collab/actions" }
 # The record/room-index store. The compositor keeps one document per room
 # listing which records that room holds, in the same store shape (atomic

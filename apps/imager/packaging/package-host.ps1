@@ -8,6 +8,9 @@ if ($env:QOS_REQUIRE_SIGNING -eq "1" -and -not $env:QOS_WINDOWS_CERT_PFX -and -n
 if ($env:QOS_WINDOWS_CERT_PFX -and -not $env:QOS_WINDOWS_CERT_PASSWORD) {
     throw "QOS_WINDOWS_CERT_PASSWORD is required when signing"
 }
+if ($env:QOS_REQUIRE_SIGNING -eq "1" -and -not $env:QOS_WINDOWS_EXPECTED_PUBLISHER) {
+    throw "QOS_WINDOWS_EXPECTED_PUBLISHER is required for a release build"
+}
 
 function Invoke-qOSCodeSign([string] $Path) {
     if (-not $env:QOS_WINDOWS_SIGNER -and -not $env:QOS_WINDOWS_CERT_PFX) {
@@ -24,9 +27,17 @@ function Invoke-qOSCodeSign([string] $Path) {
     }
     & $SignTool verify /pa /v $Path
     if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed for $Path" }
+    $Signature = Get-AuthenticodeSignature -LiteralPath $Path
+    if ($Signature.Status -ne 'Valid' -or -not $Signature.SignerCertificate) {
+        throw "Authenticode did not produce a valid signer certificate for $Path"
+    }
+    if ($env:QOS_WINDOWS_EXPECTED_PUBLISHER -and
+        $Signature.SignerCertificate.Subject -cne $env:QOS_WINDOWS_EXPECTED_PUBLISHER) {
+        throw "Authenticode publisher identity does not match protected release policy"
+    }
 }
 
-cargo build --locked --release -p imager
+cargo build --locked --release -p imager --features host-media-writer
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 $Bundle = Join-Path $Out "qos-imager-windows-x86_64"
 New-Item -ItemType Directory -Force -Path $Bundle | Out-Null

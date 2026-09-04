@@ -122,7 +122,7 @@ impl Widget for ShortcutRecorder {
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::length(230.0),
-                height: Dimension::length(HEIGHT as f32),
+                height: Dimension::length(crate::num::f32_of_f64(HEIGHT)),
             },
             ..Default::default()
         });

@@ -56,12 +56,16 @@ mapfile -t imported_fingerprints < <(
   || { printf 'published Linux key does not contain exactly the expected public identity\n' >&2; exit 1; }
 
 verified=0
-for arch in x86_64 aarch64; do
-  for suffix in AppImage tar.gz; do
-    artifact="$(find_one "qos-imager-linux-$arch.$suffix")"
+for name in \
+  qos-imager-linux-x86_64.AppImage \
+  qos-imager-linux-x86_64.tar.gz \
+  qos-imager-linux-aarch64.AppImage \
+  qos-imager-linux-aarch64.tar.gz \
+  qos-installer-linux-x86_64.img.zst \
+  qos-installer-linux-aarch64.img.zst \
+  qos-installer-catalog-v1.json; do
+    artifact="$(find_one "$name")"
     signature="$(find_one "$(basename "$artifact").asc")"
-    [ "$(dirname "$artifact")" = "$(dirname "$signature")" ] \
-      || { printf 'signature is not adjacent to %s\n' "$(basename "$artifact")" >&2; exit 1; }
     verify_digest "$artifact"
     identity="$(GNUPGHOME="$keyring" gpg --batch --status-fd 1 \
       --verify "$signature" "$artifact" 2>/dev/null \
@@ -74,9 +78,9 @@ for arch in x86_64 aarch64; do
       exit 1
     fi
     verified=$((verified + 1))
-  done
 done
 
-[ "$verified" -eq 4 ] \
-  || { printf 'did not verify the complete Linux release matrix\n' >&2; exit 1; }
-printf 'verified %s Linux artifacts with release key %s\n' "$verified" "$expected"
+[ "$verified" -eq 7 ] \
+  || { printf 'did not verify the complete Linux and installer release matrix\n' >&2; exit 1; }
+printf 'verified %s Linux and installer artifacts with release key %s\n' \
+  "$verified" "$expected"

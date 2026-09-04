@@ -87,6 +87,11 @@ const URLBAR_H: f64 = 56.0;
 const TAB_STRIP_H: f64 = 40.0;
 const PAD: f64 = 16.0;
 const JSON_LINE_H: f64 = 20.0;
+const RESPONSE_STATUS_H: f64 = 44.0;
+/// A phone gets a second response-chrome row so status metadata and the view
+/// switch never compete for the same pixels.
+const COMPACT_RESPONSE_STATUS_H: f64 = 76.0;
+const COMPACT_RESPONSE_BREAKPOINT: f64 = 520.0;
 /// CRDT key the method picker's value lives at (a plain verb string).
 const METHOD_PATH: &str = "sel_method";
 /// CRDT key the environment picker's value lives at (the env name, or
@@ -94,6 +99,31 @@ const METHOD_PATH: &str = "sel_method";
 const ENV_PATH: &str = "sel_env";
 /// Label used for the "no environment selected" dropdown option.
 const NO_ENV: &str = "No Environment";
+
+/// A status hint may sit beside request tabs only when it has its own space.
+/// On a phone the tab strip consumes the full row, so painting the hint at the
+/// right edge would overlap the tab labels.
+fn tab_strip_has_room_for_hint(layout: &Layout, hint_width: f64) -> bool {
+    layout.tabs.x1 + 12.0 + hint_width <= layout.main.x1 - PAD
+}
+
+fn response_status_height(width: f64) -> f64 {
+    if width < COMPACT_RESPONSE_BREAKPOINT {
+        COMPACT_RESPONSE_STATUS_H
+    } else {
+        RESPONSE_STATUS_H
+    }
+}
+
+fn response_status_line_center(row: Rect) -> f64 {
+    if row.height() > RESPONSE_STATUS_H {
+        // Compact response chrome reserves the lower part of the region for
+        // the view switcher. Centre status and timing in the first row only.
+        row.y0 + RESPONSE_STATUS_H / 2.0
+    } else {
+        row.center().y
+    }
+}
 
 /// Outcome of the background send worker.
 enum SendOutcome {
@@ -887,11 +917,12 @@ impl ApiTesterApp {
         }
 
         // Response chrome + view switch.
+        let status_h = response_status_height(l.response.width());
         l.resp_status = Rect::new(
             l.response.x0,
             l.response.y0,
             l.response.x1,
-            l.response.y0 + 44.0,
+            l.response.y0 + status_h,
         );
         l.resp_body = Rect::new(
             l.response.x0,
@@ -901,14 +932,26 @@ impl ApiTesterApp {
         );
         l.body_region = l.resp_body;
         if self.response.is_some() {
-            let view_w = 210.0;
-            let cy = l.resp_status.center().y;
-            l.resp_view = Rect::new(
-                l.response.x1 - PAD - view_w,
-                cy - 12.0,
-                l.response.x1 - PAD,
-                cy + 12.0,
-            );
+            if status_h == COMPACT_RESPONSE_STATUS_H {
+                // Keep the switcher a full-width, easy-to-hit control below
+                // the status line. Equal segments remain legible at large
+                // text sizes and the response body starts below both rows.
+                l.resp_view = Rect::new(
+                    l.response.x0 + PAD,
+                    l.resp_status.y1 - 30.0,
+                    l.response.x1 - PAD,
+                    l.resp_status.y1 - 6.0,
+                );
+            } else {
+                let view_w = 210.0;
+                let cy = l.resp_status.center().y;
+                l.resp_view = Rect::new(
+                    l.response.x1 - PAD - view_w,
+                    cy - 12.0,
+                    l.response.x1 - PAD,
+                    cy + 12.0,
+                );
+            }
         }
 
         // --- Sidebar rows ---
@@ -1143,6 +1186,9 @@ impl ApiTesterApp {
             )
         };
         let (hw, _) = tr.measure(&hint, theme.tokens.typography.scale.sm, None);
+        if !tab_strip_has_room_for_hint(l, f64::from(hw)) {
+            return;
+        }
         tr.draw_text(
             scene,
             &hint,
@@ -1644,7 +1690,7 @@ impl ApiTesterApp {
 
         let row = l.resp_status;
         let x0 = area.x0 + PAD;
-        let cy = row.center().y;
+        let cy = response_status_line_center(row);
 
         if let Some(resp) = self.response.clone() {
             let scol = status_color(theme, resp.status_class());
@@ -2649,6 +2695,50 @@ mod tests {
             "sidebar rows are real focusable widgets"
         );
         assert_eq!(a.nav_rows.len(), a.nav_meta.len());
+    }
+
+    #[test]
+    fn compact_tab_strip_reserves_no_overlapping_hint_space() {
+        let mut a = app();
+        a.rect = Rect::new(0.0, 0.0, 400.0, 844.0);
+        let layout = a.compute_layout();
+        assert!(
+            layout.tabs.x1 <= layout.main.x1,
+            "tabs stay inside phone width"
+        );
+        assert!(
+            !tab_strip_has_room_for_hint(&layout, 112.0),
+            "a status hint would overlap the compact request tabs and must be hidden"
+        );
+    }
+
+    #[test]
+    fn compact_response_chrome_gets_a_separate_switcher_row() {
+        let mut a = app();
+        a.response = Some(http::sample_response());
+        a.rect = Rect::new(0.0, 0.0, 400.0, 844.0);
+        let layout = a.compute_layout();
+        assert_eq!(layout.resp_status.height(), COMPACT_RESPONSE_STATUS_H);
+        assert!(layout.resp_view.y0 >= layout.resp_status.y0 + 44.0);
+        assert!(layout.resp_view.y1 <= layout.resp_status.y1);
+        assert_eq!(layout.resp_body.y0, layout.resp_status.y1);
+        assert!(layout.resp_view.x0 >= layout.response.x0 + PAD);
+        assert!(layout.resp_view.x1 <= layout.response.x1 - PAD);
+        assert!(
+            response_status_line_center(layout.resp_status) + 12.0 < layout.resp_view.y0,
+            "status pill must clear the compact view switcher"
+        );
+    }
+
+    #[test]
+    fn wide_response_chrome_keeps_the_inline_switcher() {
+        let mut a = app();
+        a.response = Some(http::sample_response());
+        a.rect = Rect::new(0.0, 0.0, 1024.0, 800.0);
+        let layout = a.compute_layout();
+        assert_eq!(layout.resp_status.height(), RESPONSE_STATUS_H);
+        assert_eq!(layout.resp_view.x1, layout.response.x1 - PAD);
+        assert!(layout.resp_view.y0 < layout.resp_status.y1);
     }
 
     #[test]

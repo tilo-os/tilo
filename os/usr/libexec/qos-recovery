@@ -15,6 +15,7 @@ UMOUNT="${QOS_RECOVERY_UMOUNT:-umount}"
 CRYPTSETUP="${QOS_RECOVERY_CRYPTSETUP:-cryptsetup}"
 SFDISK="${QOS_RECOVERY_SFDISK:-sfdisk}"
 DRY_RUN="${QOS_RECOVERY_DRY_RUN:-0}"
+EFI_ARTIFACTS="${QOS_INSTALL_EFI_ARTIFACTS:-/usr/libexec/qos-install-efi-artifacts}"
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -339,27 +340,38 @@ cmd_remove() {
   # The marker records only images whose embedded kernel command line names
   # this exact root UUID. Resolve the ESP by UUID on the same physical disk and
   # reject every pathname that is not a plain relative EFI/Linux filename.
-  if [ -n "$esp_uuid" ] && [ "${#artifacts[@]}" -gt 0 ]; then
-    esp="$(blkid -U "$esp_uuid" 2>/dev/null || true)"
-    [ -b "$esp" ] && [ "$(parent_disk "$esp")" = "$source_disk" ] \
-      || die "the recorded shared EFI partition is missing or moved; root was not removed"
-    mount_esp="$RUN_ROOT/efi"
-    install -d -m 0700 "$mount_esp"
-    "$MOUNT" -o rw,nosuid,nodev,noexec "$esp" "$mount_esp"
-    trap '"$UMOUNT" "$mount_esp" 2>/dev/null || true' EXIT
-    for artifact in "${artifacts[@]}"; do
-      safe_efi_artifact "$artifact" || die "unsafe EFI artifact in install marker: $artifact"
-      [ ! -L "$mount_esp/$artifact" ] || die "refusing symlinked EFI artifact: $artifact"
-      [ ! -e "$mount_esp/$artifact" ] \
-        || grep -aFq -- "root=UUID=$filesystem_uuid" "$mount_esp/$artifact" \
-        || die "recorded EFI artifact no longer belongs to this qOS root: $artifact"
-    done
-    for artifact in "${artifacts[@]}"; do
-      [ ! -e "$mount_esp/$artifact" ] || rm -f -- "$mount_esp/$artifact"
-    done
-    sync -f "$mount_esp" 2>/dev/null || sync
-    "$UMOUNT" "$mount_esp"; trap - EXIT
-  fi
+  [ -n "$esp_uuid" ] || die "qOS install marker has no EFI filesystem identity; root was not removed"
+  command -v "$EFI_ARTIFACTS" >/dev/null 2>&1 \
+    || die "boot-artifact ownership inspector is missing; root was not removed"
+  esp="$(blkid -U "$esp_uuid" 2>/dev/null || true)"
+  [ -b "$esp" ] && [ "$(parent_disk "$esp")" = "$source_disk" ] \
+    || die "the recorded shared EFI partition is missing or moved; root was not removed"
+  mount_esp="$RUN_ROOT/efi"
+  install -d -m 0700 "$mount_esp"
+  "$MOUNT" -o rw,nosuid,nodev,noexec "$esp" "$mount_esp"
+  trap '"$UMOUNT" "$mount_esp" 2>/dev/null || true' EXIT
+  for artifact in "${artifacts[@]}"; do
+    safe_efi_artifact "$artifact" || die "unsafe EFI artifact in install marker: $artifact"
+  done
+  # Updates may replace the originally recorded UKI. Re-discover the current
+  # bounded EFI/Linux tree, but accept only files whose sealed command line
+  # names the marker-bound root filesystem UUID.
+  mapfile -t artifacts < <("$EFI_ARTIFACTS" "$mount_esp" "$filesystem_uuid")
+  [ "${#artifacts[@]}" -gt 0 ] \
+    || die "no EFI artifact still proves ownership by this qOS root; root was not removed"
+  for artifact in "${artifacts[@]}"; do
+    safe_efi_artifact "$artifact" || die "unsafe owned EFI artifact: $artifact"
+    [ ! -L "$mount_esp/$artifact" ] || die "refusing symlinked EFI artifact: $artifact"
+    [ -f "$mount_esp/$artifact" ] \
+      || die "owned EFI artifact disappeared during removal: $artifact"
+    grep -aFq -- "root=UUID=$filesystem_uuid" "$mount_esp/$artifact" \
+      || die "owned EFI artifact changed during removal: $artifact"
+  done
+  for artifact in "${artifacts[@]}"; do
+    rm -f -- "$mount_esp/$artifact"
+  done
+  sync -f "$mount_esp" 2>/dev/null || sync
+  "$UMOUNT" "$mount_esp"; trap - EXIT
   need "$SFDISK"
   "$SFDISK" --delete "$source_disk" "$part_number"
   command -v udevadm >/dev/null 2>&1 && udevadm settle || true

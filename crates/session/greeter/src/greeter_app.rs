@@ -34,7 +34,7 @@ use taffy::{
     AlignItems, Dimension, Display, FlexDirection, JustifyContent, NodeId, Size, Style, TaffyTree,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, ColorStop, Extend, Fill, Gradient};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::EventLoopProxy;
@@ -53,6 +53,7 @@ use ui::widget::{
 };
 
 use crate::auth::{AuthUpdate, spawn_auth};
+use crate::local_users::{LoginUser, discover_default_login_user};
 use crate::sessions::{DEFAULT_SESSIONS_DIR, Session, read_sessions};
 
 const USERNAME_PATH: &str = "greeter.username";
@@ -77,7 +78,7 @@ enum AuthMethod {
 }
 
 /// Card geometry (logical px).
-const CARD_WIDTH: f32 = 400.0;
+const CARD_WIDTH: f32 = 440.0;
 const CARD_PADDING: f32 = 24.0;
 /// Space between the card's top-level groups (brand, each field, the
 /// primary action, the status row, the power strip).
@@ -100,8 +101,7 @@ const STATUS_HEIGHT: f32 = 20.0;
 /// [`CARD_GAP`], so the feedback reads as belonging to the button you just
 /// pressed rather than floating loose in the card.
 const ACTION_STATUS_GAP: f32 = 10.0;
-/// Space between the wordmark and the line under it. Wide enough to clear
-/// the descender on the `q` at display size.
+/// Space between lines in the compact welcome lockup.
 const BRAND_GAP: f32 = 5.0;
 
 /// A vertical stack with an explicit gap and optional padding, fixed width,
@@ -474,7 +474,7 @@ pub enum StatusKind {
     /// Nothing to say. The row is still reserved, so the card keeps its
     /// size and the form does not jump when something appears here.
     None,
-    /// A correctable note about the form itself ("Enter your password").
+    /// A correctable note about the form itself ("Enter your passcode").
     Hint,
     /// The attempt was rejected.
     Error,
@@ -511,11 +511,52 @@ pub enum AuthScenario {
     Starting,
     /// A username long enough to test the field's overflow behaviour.
     LongName,
+    /// The normal personal-device form: one known local account and an
+    /// enrolled fingerprint, so only the passcode is editable.
+    Personal,
+    /// One known local account but no enrolled fingerprint. The unavailable
+    /// capability must disappear rather than becoming a dead action.
+    PersonalNoFingerprint,
+}
+
+/// Recognise the deliberately small, machine-readable-looking portion of
+/// `fprintd-list`'s output. A successful command alone is insufficient: some
+/// fprintd versions exit successfully while reporting no enrolled prints.
+fn fingerprint_list_has_enrollment(output: &str) -> bool {
+    output.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("- #")
+            || (line.starts_with("- ") && line.trim_end_matches('.').ends_with("-finger"))
+    })
+}
+
+/// Ask fprintd whether `username` has an enrolled factor. Any missing command,
+/// service, reader, permission, non-zero status, malformed output, or empty
+/// enrollment fails closed to `false` so the login screen never offers a
+/// button which can only fail.
+fn enrolled_fingerprint(username: &str) -> bool {
+    let Ok(output) = std::process::Command::new("fprintd-list")
+        .env("LC_ALL", "C")
+        .arg(username)
+        .output()
+    else {
+        return false;
+    };
+    output.status.success()
+        && fingerprint_list_has_enrollment(&String::from_utf8_lossy(&output.stdout))
 }
 
 pub struct GreeterApp {
     sessions: Vec<Session>,
     selected_session: usize,
+    /// The sole eligible interactive local account, when discovery was
+    /// unambiguous. Its username is fixed and the form asks only for the
+    /// passcode; zero/multiple candidates retain the editable username field.
+    login_user: Option<LoginUser>,
+    /// Whether the fixed local account has at least one enrolled fingerprint.
+    /// False on every discovery or probe error, and whenever the username is
+    /// editable: the greeter must not advertise a factor it cannot identify.
+    fingerprint: FingerprintAvailability,
     status: String,
     /// How [`GreeterApp::status`] should read — see [`StatusKind`].
     status_kind: StatusKind,
@@ -561,6 +602,22 @@ pub struct GreeterApp {
     viewport_offset: Rc<Cell<(f32, f32)>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FingerprintAvailability {
+    Unavailable,
+    Enrolled,
+}
+
+impl From<bool> for FingerprintAvailability {
+    fn from(enrolled: bool) -> Self {
+        if enrolled {
+            Self::Enrolled
+        } else {
+            Self::Unavailable
+        }
+    }
+}
+
 impl Default for GreeterApp {
     fn default() -> Self {
         Self::new()
@@ -571,15 +628,44 @@ impl GreeterApp {
     /// Construct a greeter reading sessions from the standard
     /// `/usr/share/wayland-sessions` directory.
     pub fn new() -> Self {
-        Self::with_sessions(read_sessions(std::path::Path::new(DEFAULT_SESSIONS_DIR)))
+        let login_user = discover_default_login_user();
+        let fingerprint_available = login_user
+            .as_ref()
+            .is_some_and(|user| enrolled_fingerprint(&user.username));
+        Self::with_sessions_login_user_and_fingerprint(
+            read_sessions(std::path::Path::new(DEFAULT_SESSIONS_DIR)),
+            login_user,
+            fingerprint_available,
+        )
     }
 
     /// Construct with an explicit session list (used by tests / headless
     /// rendering where the system directory may be absent).
     pub fn with_sessions(sessions: Vec<Session>) -> Self {
+        Self::with_sessions_and_login_user(sessions, None)
+    }
+
+    /// Construct with an already validated local-account discovery result.
+    /// Public for the production entry point and focused UI tests.
+    pub fn with_sessions_and_login_user(
+        sessions: Vec<Session>,
+        login_user: Option<LoginUser>,
+    ) -> Self {
+        // Deterministic constructor for shots and focused UI tests. Production
+        // uses `new`, which probes the fixed account and fails closed.
+        Self::with_sessions_login_user_and_fingerprint(sessions, login_user, true)
+    }
+
+    fn with_sessions_login_user_and_fingerprint(
+        sessions: Vec<Session>,
+        login_user: Option<LoginUser>,
+        fingerprint_available: bool,
+    ) -> Self {
         Self {
             sessions,
             selected_session: 0,
+            login_user,
+            fingerprint: fingerprint_available.into(),
             status: String::new(),
             status_kind: StatusKind::None,
             detail: String::new(),
@@ -621,12 +707,28 @@ impl GreeterApp {
         // login is offered.
         let dir = std::env::var("QOS_GREETER_SESSIONS_DIR")
             .unwrap_or_else(|_| DEFAULT_SESSIONS_DIR.to_string());
-        let mut app =
-            Self::with_sessions(crate::sessions::read_sessions(std::path::Path::new(&dir)));
+        let sessions = crate::sessions::read_sessions(std::path::Path::new(&dir));
+        let personal = matches!(
+            scenario,
+            AuthScenario::Personal | AuthScenario::PersonalNoFingerprint
+        )
+        .then(|| LoginUser {
+            username: "ada".to_string(),
+            display_name: "ada Example".to_string(),
+        });
+        let fingerprint_available = scenario != AuthScenario::PersonalNoFingerprint;
+        let mut app = Self::with_sessions_login_user_and_fingerprint(
+            sessions,
+            personal,
+            fingerprint_available,
+        );
         match scenario {
-            AuthScenario::Form | AuthScenario::LongName => {}
+            AuthScenario::Form
+            | AuthScenario::LongName
+            | AuthScenario::Personal
+            | AuthScenario::PersonalNoFingerprint => {}
             AuthScenario::Error => {
-                app.status = "Incorrect username or password".to_string();
+                app.status = "Incorrect username or passcode".to_string();
                 app.status_kind = StatusKind::Error;
             }
             AuthScenario::Authenticating => {
@@ -641,7 +743,7 @@ impl GreeterApp {
                 app.caps_lock.observe('A', false);
             }
             AuthScenario::Hint => {
-                app.status = "Enter your password".to_string();
+                app.status = "Enter your passcode".to_string();
                 app.status_kind = StatusKind::Hint;
             }
             AuthScenario::Starting => {
@@ -797,34 +899,107 @@ impl GreeterApp {
     }
 
     fn build_auth_actions(&self, busy: bool, theme: &Theme) -> VStack {
-        VStack::new(
-            ACTION_STATUS_GAP,
-            vec![
-                Box::new(
-                    Button::new("greeter.login", self.login_label(), Some(SUBMIT_PATH))
-                        .primary()
-                        .fill_width(ACTION_HEIGHT),
-                ),
-                Box::new(
-                    Button::new(
-                        "greeter.fingerprint",
-                        "Use fingerprint",
-                        Some(FINGERPRINT_PATH),
-                    )
-                    .with_enabled(!busy)
-                    .fill_width(ACTION_HEIGHT),
-                ),
-                Box::new(self.build_status(theme)),
-            ],
-        )
+        let mut actions: Vec<Box<dyn Widget>> = vec![Box::new(
+            Button::new("greeter.login", self.login_label(), Some(SUBMIT_PATH))
+                .primary()
+                .fill_width(ACTION_HEIGHT),
+        )];
+        if self.fingerprint == FingerprintAvailability::Enrolled {
+            actions.push(Box::new(
+                Button::new(
+                    "greeter.fingerprint",
+                    "Use fingerprint",
+                    Some(FINGERPRINT_PATH),
+                )
+                .with_enabled(!busy)
+                .fill_width(ACTION_HEIGHT),
+            ));
+        }
+        actions.push(Box::new(self.build_status(theme)));
+        VStack::new(ACTION_STATUS_GAP, actions)
+    }
+
+    fn build_account_field(&self, busy: bool, theme: &Theme) -> Box<dyn Widget> {
+        if let Some(user) = &self.login_user {
+            Box::new(VStack::new(
+                LABEL_GAP,
+                vec![
+                    Box::new(Self::field_label("Local account", theme)),
+                    Box::new(
+                        Text::new(&user.username)
+                            .with_id("greeter.account")
+                            .with_size(15.0),
+                    ),
+                ],
+            ))
+        } else {
+            Box::new(VStack::new(
+                LABEL_GAP,
+                vec![
+                    Box::new(Self::field_label("Username", theme)),
+                    Box::new(
+                        TextInput::new(Vec::new())
+                            .with_id("greeter.username")
+                            .with_on_change_path(USERNAME_PATH)
+                            .with_accessible_name("Username")
+                            .with_placeholder("Your username")
+                            .disabled(busy),
+                    ),
+                ],
+            ))
+        }
+    }
+
+    /// The greeter's visual introduction. On a personal device the account
+    /// is already known, so the person—not the product wordmark—gets the
+    /// strongest type tier. The ambiguous-account fallback keeps the compact
+    /// product-first lockup because it cannot truthfully greet anyone yet.
+    fn build_brand(&self, theme: &Theme) -> Box<dyn Widget> {
+        let c = &theme.tokens.colors;
+        if let Some(user) = &self.login_user {
+            Box::new(VStack::new(
+                BRAND_GAP,
+                vec![
+                    Box::new(
+                        Text::new("qOS desktop")
+                            .with_role(ui::tokens::typography::TextRole::Label)
+                            .with_color(c.text_dim),
+                    ),
+                    Box::new(
+                        Text::new(&format!("Welcome back, {}", user.display_name))
+                            .with_id("greeter.welcome")
+                            .with_size(28.0),
+                    ),
+                    Box::new(
+                        Text::new("Enter your passcode to open your desktop.")
+                            .with_size(13.0)
+                            .with_color(c.text_dim),
+                    ),
+                ],
+            ))
+        } else {
+            Box::new(VStack::new(
+                BRAND_GAP,
+                vec![
+                    Box::new(Text::new("qOS").with_size(38.0)),
+                    Box::new(
+                        Text::new("Sign in to continue")
+                            .with_size(13.0)
+                            .with_color(c.text_dim),
+                    ),
+                ],
+            ))
+        }
     }
 
     /// Build the composed card subtree from current state.
     ///
     /// Focus continuity contract: the focusable set is, in tree order, the
-    /// username field, the password field, the primary action, the fingerprint
-    /// action, the session picker (present only when there is more than one
-    /// session to choose between), and the two power actions. Labels, the
+    /// optional username field, passcode field, primary action, fingerprint
+    /// action, session picker (present only when there is more than one
+    /// session to choose between), and the two power actions. On an
+    /// unambiguous personal machine the username becomes a static account
+    /// label, making the passcode the first focusable control. Labels, the
     /// Caps-Lock note, the spinner, and the status line are all non-focusable, so an incidental
     /// rebuild (a status change, a Caps-Lock flip, cycling the session)
     /// keeps keyboard focus AND the caret glued in place — see `main.rs`'s
@@ -843,46 +1018,23 @@ impl GreeterApp {
         let mut children: Vec<Box<dyn Widget>> = Vec::new();
 
         // --- brand -------------------------------------------------------
-        // The wordmark plus one quiet line, tight together, so the pair
-        // reads as a single mark rather than two unrelated rows of text.
-        children.push(Box::new(VStack::new(
-            BRAND_GAP,
-            vec![
-                Box::new(Text::new("qOS").with_size(38.0)),
-                Box::new(
-                    Text::new("Sign in to continue")
-                        .with_size(13.0)
-                        .with_color(c.text_dim),
-                ),
-            ],
-        )));
+        children.push(self.build_brand(theme));
 
         // --- credentials -------------------------------------------------
         // Persistent labels above each field. Two unlabelled rounded boxes
         // leave the user guessing which one is which; a placeholder alone
         // disappears the moment they start typing.
-        children.push(Box::new(VStack::new(
-            LABEL_GAP,
-            vec![
-                Box::new(Self::field_label("Username", theme)),
-                Box::new(
-                    TextInput::new(Vec::new())
-                        .with_id("greeter.username")
-                        .with_on_change_path(USERNAME_PATH)
-                        .with_placeholder("Your username")
-                        .disabled(busy),
-                ),
-            ],
-        )));
+        children.push(self.build_account_field(busy, theme));
 
         let mut password_group: Vec<Box<dyn Widget>> = vec![
-            Box::new(Self::field_label("Password", theme)),
+            Box::new(Self::field_label("Passcode", theme)),
             Box::new(
                 TextInput::new(Vec::new())
                     .with_id("greeter.password")
                     .with_on_change_path(PASSWORD_PATH)
+                    .with_accessible_name("Passcode")
                     .with_secret(true)
-                    .with_placeholder("Your password")
+                    .with_placeholder("Your passcode")
                     .disabled(busy),
             ),
         ];
@@ -964,7 +1116,10 @@ impl GreeterApp {
 
     fn bootstrap_crdt(&self, state: &mut AutoCommit, root: &ObjId) {
         if state.get(root, USERNAME_PATH).ok().flatten().is_none() {
-            let _ = state.put_object(root, USERNAME_PATH, ObjType::Text);
+            let username = state.put_object(root, USERNAME_PATH, ObjType::Text).ok();
+            if let (Some(username), Some(user)) = (username, self.login_user.as_ref()) {
+                let _ = state.splice_text(&username, 0, 0, &user.username);
+            }
         }
         if state.get(root, PASSWORD_PATH).ok().flatten().is_none() {
             let _ = state.put_object(root, PASSWORD_PATH, ObjType::Text);
@@ -1042,7 +1197,7 @@ impl GreeterApp {
             AuthMethod::Password => {
                 let password = Self::read_text(state, root, PASSWORD_PATH).unwrap_or_default();
                 if password.is_empty() {
-                    Err("Enter your password")
+                    Err("Enter your passcode")
                 } else {
                     Ok(password)
                 }
@@ -1092,6 +1247,12 @@ impl GreeterApp {
     fn attempt_login(&mut self, state: &mut AutoCommit, root: &ObjId, method: AuthMethod) {
         // Guard: never start a second attempt while one is in flight.
         if self.phase != AuthPhase::Idle {
+            return;
+        }
+        if method == AuthMethod::Fingerprint
+            && self.fingerprint != FingerprintAvailability::Enrolled
+        {
+            self.set_status("No enrolled fingerprint is available for this account");
             return;
         }
 
@@ -1367,6 +1528,23 @@ impl Widget for GreeterApp {
                 ][..],
             );
             scene.fill(Fill::NonZero, transform, &wash, None, &self.rect);
+
+            // Echo the trusted installer/OOBE backdrop with two restrained
+            // accent fields. Their low alpha keeps the passcode card dominant
+            // and remains safe in high-contrast themes because the hue comes
+            // from the active theme rather than a hard-coded brand colour.
+            let accent_soft = Color::from_rgba8(a.r, a.g, a.b, 18);
+            let radius = self.rect.width().min(self.rect.height()) * 0.34;
+            let upper = Circle::new(
+                Point::new(self.rect.x0 - radius * 0.25, self.rect.y0 - radius * 0.2),
+                radius,
+            );
+            let lower = Circle::new(
+                Point::new(self.rect.x1 + radius * 0.45, self.rect.y1 + radius * 0.25),
+                radius * 1.15,
+            );
+            scene.fill(Fill::NonZero, transform, accent_soft, None, &upper);
+            scene.fill(Fill::NonZero, transform, accent_soft, None, &lower);
         }
         if let Some(c) = &mut self.composed {
             c.draw(scene, transform, text_renderer, theme, presence);
@@ -1776,6 +1954,46 @@ mod tests {
         assert_eq!(app.session_label(), "qOS with peer sync");
     }
 
+    #[test]
+    fn fingerprint_enrollment_output_fails_closed() {
+        assert!(fingerprint_list_has_enrollment(
+            "Fingerprints for user tester:\n - #0: right-index-finger\n"
+        ));
+        assert!(fingerprint_list_has_enrollment(
+            "Fingerprints for user tester:\n - right-index-finger\n"
+        ));
+        assert!(!fingerprint_list_has_enrollment(
+            "Fingerprints for user tester:\nnone\n"
+        ));
+        assert!(!fingerprint_list_has_enrollment("right-index-finger"));
+    }
+
+    #[test]
+    fn fingerprint_action_is_hidden_and_rejected_without_enrollment() {
+        let user = LoginUser {
+            username: "tester".into(),
+            display_name: "ada Quick".into(),
+        };
+        let mut app = GreeterApp::with_sessions_login_user_and_fingerprint(
+            test_sessions(),
+            Some(user),
+            false,
+        );
+        assert!(
+            !focusables(&app).contains(&"greeter.fingerprint".to_string()),
+            "an unavailable factor must not appear in the form or focus order"
+        );
+
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        app.attempt_login(&mut doc, &automerge::ROOT, AuthMethod::Fingerprint);
+        assert_eq!(
+            app.status,
+            "No enrolled fingerprint is available for this account"
+        );
+        assert_eq!(app.phase, AuthPhase::Idle);
+    }
+
     /// The greeter must never put the internal desktop id in front of the
     /// user. `nirios` is a `DesktopNames=`/`UseIn=` contract with the
     /// portal, not a name anyone logging in should have to read.
@@ -1965,6 +2183,85 @@ mod tests {
     }
 
     #[test]
+    fn sole_local_user_gets_a_one_passcode_form_with_passcode_focus_first() {
+        let user = LoginUser {
+            username: "tester".into(),
+            display_name: "ada Quick".into(),
+        };
+        let mut app = GreeterApp::with_sessions_and_login_user(test_sessions(), Some(user));
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+
+        assert_eq!(
+            GreeterApp::read_text(&doc, &automerge::ROOT, USERNAME_PATH).as_deref(),
+            Some("tester"),
+            "the authenticated username is seeded without asking the user to type it"
+        );
+        assert_eq!(
+            focusables(&app),
+            vec![
+                "greeter.password",
+                "greeter.login",
+                "greeter.fingerprint",
+                "greeter.session",
+                "greeter.reboot",
+                "greeter.poweroff",
+            ],
+            "autofocus therefore lands on the passcode field"
+        );
+        let card = card_of(&app);
+        assert_eq!(
+            accessible_name_for(card.as_ref(), "greeter.account").as_deref(),
+            Some("tester")
+        );
+        assert_eq!(
+            accessible_name_for(card.as_ref(), "greeter.password").as_deref(),
+            Some("Passcode")
+        );
+        assert!(
+            accessible_name_for(card.as_ref(), "greeter.username").is_none(),
+            "an editable username must not remain hidden in the accessibility tree"
+        );
+    }
+
+    #[test]
+    fn one_passcode_autofocus_is_exposed_to_assistive_technology() {
+        let greeter = GreeterApp::with_sessions_and_login_user(
+            test_sessions(),
+            Some(LoginUser {
+                username: "tester".into(),
+                display_name: "ada Quick".into(),
+            }),
+        );
+        let mut app = ui::App::new(ui::State::new(), Box::new(greeter));
+        app.autofocus_first = true;
+        app.autofocus_on_structure_change = true;
+        app.init_layout();
+        app.refresh_semantic_tree();
+
+        let focused = app
+            .semantic_tree()
+            .iter()
+            .find(|node| node.state.focused)
+            .and_then(|node| node.name.as_deref());
+        assert_eq!(focused, Some("Passcode"));
+    }
+
+    #[test]
+    fn ambiguous_account_discovery_keeps_named_two_field_fallback() {
+        let app = GreeterApp::with_sessions_and_login_user(test_sessions(), None);
+        let card = card_of(&app);
+        assert_eq!(
+            accessible_name_for(card.as_ref(), "greeter.username").as_deref(),
+            Some("Username")
+        );
+        assert_eq!(
+            focusables(&app).first().map(String::as_str),
+            Some("greeter.username")
+        );
+    }
+
+    #[test]
     fn enter_defaults_to_login_only_from_text_fields() {
         let mut app = GreeterApp::with_sessions(test_sessions());
         let mut doc = AutoCommit::new();
@@ -2020,7 +2317,7 @@ mod tests {
         let _ = doc.splice_text(&uobj, 0, 0, "alice");
         let _ = doc.put(&root, SUBMIT_PATH, true);
         app.sync(&mut doc, &root);
-        assert_eq!(app.status, "Enter your password");
+        assert_eq!(app.status, "Enter your passcode");
         assert_eq!(app.status_kind, StatusKind::Hint);
         assert_eq!(app.phase, AuthPhase::Idle);
     }
@@ -2034,7 +2331,7 @@ mod tests {
 
         assert_eq!(
             GreeterApp::auth_secret(&doc, &root, AuthMethod::Password),
-            Err("Enter your password")
+            Err("Enter your passcode")
         );
         assert_eq!(
             GreeterApp::auth_secret(&doc, &root, AuthMethod::Fingerprint),
@@ -2139,12 +2436,12 @@ mod tests {
         for (scenario, message, expected) in [
             (
                 AuthScenario::Hint,
-                "Enter your password",
+                "Enter your passcode",
                 Politeness::Assertive,
             ),
             (
                 AuthScenario::Error,
-                "Incorrect username or password",
+                "Incorrect username or passcode",
                 Politeness::Assertive,
             ),
             (AuthScenario::Starting, STARTING_MESSAGE, Politeness::Polite),
@@ -2226,14 +2523,14 @@ mod tests {
 
         // Worker reports a bad-credentials failure (already user-facing).
         let payload = crate::auth::AuthUpdate::Failed {
-            message: "Incorrect username or password".to_string(),
+            message: "Incorrect username or passcode".to_string(),
             detail: None,
         }
         .encode();
         app.on_external_event(&payload, &mut doc, &root);
 
         assert_eq!(app.phase, AuthPhase::Idle, "back to the form on failure");
-        assert_eq!(app.status, "Incorrect username or password");
+        assert_eq!(app.status, "Incorrect username or passcode");
         // Password cleared, username preserved.
         assert_eq!(
             GreeterApp::read_text(&doc, &root, PASSWORD_PATH).as_deref(),
@@ -2255,7 +2552,7 @@ mod tests {
 
         let mut hint = GreeterApp::with_sessions(test_sessions());
         hint.sync(&mut doc, &root);
-        hint.set_status("Enter your password");
+        hint.set_status("Enter your passcode");
         assert_eq!(hint.status_kind, StatusKind::Hint);
         assert_eq!(
             count_named(card_of(&hint).as_ref(), "IconWidget"),
@@ -2265,7 +2562,7 @@ mod tests {
 
         let mut err = GreeterApp::with_sessions(test_sessions());
         err.sync(&mut doc, &root);
-        err.finish_failure("Incorrect username or password", None, &mut doc, &root);
+        err.finish_failure("Incorrect username or passcode", None, &mut doc, &root);
         assert_eq!(err.status_kind, StatusKind::Error);
         assert_eq!(
             count_named(card_of(&err).as_ref(), "IconWidget"),
@@ -2374,7 +2671,7 @@ mod tests {
         app.selected_session = 1; // pick the other session
         assert_eq!(focus_shape(&app), base, "changing session keeps order");
 
-        app.status = "Incorrect username or password".to_string();
+        app.status = "Incorrect username or passcode".to_string();
         app.status_kind = StatusKind::Error;
         app.detail = "boom".to_string();
         assert_eq!(focus_shape(&app), base, "error + detail keep order");
@@ -2541,6 +2838,8 @@ mod tests {
             AuthScenario::Starting,
             AuthScenario::CapsLock,
             AuthScenario::LongName,
+            AuthScenario::Personal,
+            AuthScenario::PersonalNoFingerprint,
         ] {
             let app = GreeterApp::for_shot(scenario);
             let card = card_of(&app);
@@ -2561,6 +2860,55 @@ mod tests {
                 "{scenario:?} must keep the state-specific visible label on the stable action"
             );
         }
+    }
+
+    #[test]
+    fn personal_shot_variants_match_discovered_capabilities() {
+        let with_fingerprint = card_of(&GreeterApp::for_shot(AuthScenario::Personal));
+        let passcode_only = card_of(&GreeterApp::for_shot(AuthScenario::PersonalNoFingerprint));
+        let mut with_ids = Vec::new();
+        let mut passcode_ids = Vec::new();
+        collect_focusables(with_fingerprint.as_ref(), &mut with_ids);
+        collect_focusables(passcode_only.as_ref(), &mut passcode_ids);
+        assert!(!with_ids.contains(&"greeter.username".to_string()));
+        assert!(!passcode_ids.contains(&"greeter.username".to_string()));
+        assert!(with_ids.contains(&"greeter.fingerprint".to_string()));
+        assert!(!passcode_ids.contains(&"greeter.fingerprint".to_string()));
+    }
+
+    #[test]
+    fn personal_device_greets_the_known_person_before_requesting_passcode() {
+        let app = GreeterApp::with_sessions_and_login_user(
+            test_sessions(),
+            Some(LoginUser {
+                username: "tester".into(),
+                display_name: "ada Quick".into(),
+            }),
+        );
+        let card = card_of(&app);
+        let spoken = spoken(card.as_ref());
+
+        let welcome = spoken
+            .iter()
+            .position(|text| text == "Welcome back, ada Quick")
+            .expect("personal greeter has a named welcome");
+        let passcode = spoken
+            .iter()
+            .position(|text| text == "Passcode")
+            .expect("personal greeter retains its passcode field");
+        assert!(
+            welcome < passcode,
+            "the welcome should establish context before the form: {spoken:?}"
+        );
+        assert_eq!(
+            accessible_name_for(card.as_ref(), "greeter.welcome").as_deref(),
+            Some("Welcome back, ada Quick")
+        );
+        assert_eq!(
+            focusables(&app).first().map(String::as_str),
+            Some("greeter.password"),
+            "visual warmth must not slow keyboard login"
+        );
     }
 
     /// A narrow portrait display must keep the complete primary workflow on
