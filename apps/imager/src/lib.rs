@@ -253,6 +253,7 @@ fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
                     write_frac: 0.62,
                     verify_frac: 0.0,
                     rate_bps: 176_000_000,
+                    error: None,
                 },
             );
             ImagerDoc::set_status(doc, "Writing qOS 1.0 → /dev/sdb");
@@ -267,6 +268,7 @@ fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
                     write_frac: 1.0,
                     verify_frac: 1.0,
                     rate_bps: 0,
+                    error: None,
                 },
             );
             ImagerDoc::set_status(doc, "Done — qOS 1.0 written and verified");
@@ -281,6 +283,7 @@ fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
                     write_frac: 0.4,
                     verify_frac: 0.0,
                     rate_bps: 0,
+                    error: Some("The drive was disconnected while writing.".into()),
                 },
             );
             ImagerDoc::set_status(doc, "Write failed — device disappeared mid-write");
