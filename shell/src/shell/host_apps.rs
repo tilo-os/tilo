@@ -134,6 +134,7 @@ pub(crate) fn build_launch_command(
             launcher::runtime_dir().display().to_string(),
         )],
         service_identity: None,
+        managed_agent_id: None,
     }
 }
 
@@ -170,7 +171,7 @@ pub fn launch_with_document(
     let command = build_launch_command(&app, &launcher_bin, &socket, document, x11.as_ref());
 
     launcher::remember_launch_named(&app.desktop_id, &app.window_identities, &app.name);
-    launcher::spawn_launch(app.desktop_id.clone(), app.name.clone(), command);
+    let _ = launcher::spawn_launch(app.desktop_id.clone(), app.name.clone(), command);
     Ok(app)
 }
 

@@ -19,6 +19,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 # The blocking agent facade delegates to the toolkit's typed
 # `QOS_SVC_COLLAB_FD` client and consumes the same request/event model as a
 # windowed app.
@@ -42,18 +43,21 @@ qos-actions = { path = "../../crates/collab/actions" }
 # something — what `listen`'s `Subject::Carried` reads, so the agent never
 # has to work out what "this" meant on its own.
 qos-reference = { path = "../../crates/collab/reference" }
+# The runner reads the same provider profile Settings writes. Resolving the
+# profile's vault reference remains a desktop-secret-broker operation; no key
+# is linked into this binary through configuration.
+agent-provider-config = { path = "../../crates/agent/provider-config" }
+# The descriptor client for the desktop-owned hosted model gateway. This has
+# no vault access and never exposes a bearer token to the agent process.
+qos-model-gateway = { path = "../../crates/agent/model-gateway" }
 qdoc = { path = "../../crates/doc/qdoc" }
-# The decision — which exported action answers an instruction — is a model
-# call. Blocking, because the agent's loop is a plain blocking loop; rustls so
-# no OS TLS stack is needed inside the image.
-reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 automerge.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -61,7 +65,6 @@ hex.workspace = true
 shell = { path = "../../shell", default-features = false }
 collab-types = { path = "../../crates/collab/collab-types" }
 qos-user-identity = { path = "../../crates/identity/qos-user-identity" }
-runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ed25519-dalek.workspace = true
 

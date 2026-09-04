@@ -1,0 +1,17 @@
+[Unit]
+Description=qOS fixed-verb system-extension request socket
+Documentation=file:///usr/share/doc/qos/system-extensions.md
+After=systemd-tmpfiles-setup.service
+Before=sockets.target
+
+[Socket]
+ListenStream=/run/qos/system-extension-api/request.sock
+SocketUser=root
+SocketGroup=qos-identity
+SocketMode=0660
+DirectoryMode=0750
+Accept=yes
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

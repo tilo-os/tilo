@@ -120,9 +120,11 @@ empty list, no hint that the rest exists.
 
 ## Pointing Claude Code at it
 
-`scripts/qos-mcp-server.py` is an MCP stdio server exposing three tools —
-`qos_enumerate_actions`, `qos_invoke_action`, `qos_state_dump`. Standard library
-only, no SDK.
+`scripts/qos-mcp-server.py` is an MCP stdio server exposing the typed qOS
+tools, plus every currently permitted action descriptor as a standard MCP
+resource at `qos://action/<provider>/<id>`. `resources/read` re-enumerates
+before answering, so a revoked or closed surface cannot be recovered from a
+stale resource URI. Standard library only, no SDK.
 
 Start a compositor, then register the shim:
 

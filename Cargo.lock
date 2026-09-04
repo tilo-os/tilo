@@ -293,6 +293,7 @@ dependencies = [
 name = "agent"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
  "anyhow",
  "automerge",
  "chat",
@@ -304,9 +305,9 @@ dependencies = [
  "qdoc",
  "qos-actions",
  "qos-app",
+ "qos-model-gateway",
  "qos-reference",
  "qos-user-identity",
- "reqwest 0.12.28",
  "runtime-collab",
  "runtime-dylib",
  "runtime-identity",
@@ -317,6 +318,17 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "word-processor",
+]
+
+[[package]]
+name = "agent-provider-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]
@@ -8116,6 +8128,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
+name = "local-model-service"
+version = "0.1.0"
+dependencies = [
+ "agent-provider-config",
+ "atomic-file",
+ "clap",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "libc",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "system-extension",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zstd",
+]
+
+[[package]]
 name = "localzone"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11465,6 +11498,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-model-gateway"
+version = "0.1.0"
+dependencies = [
+ "accounts",
+ "agent-provider-config",
+ "clap",
+ "libc",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
 name = "qos-power"
 version = "0.1.0"
 dependencies = [
@@ -12490,6 +12538,7 @@ dependencies = [
  "postcard",
  "runtime-portal",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-util",
 ]
@@ -13355,6 +13404,7 @@ name = "settings"
 version = "0.1.0"
 dependencies = [
  "accounts",
+ "agent-provider-config",
  "atomic-file",
  "automerge",
  "collab-types",
@@ -13367,6 +13417,7 @@ dependencies = [
  "qos-actions",
  "qos-app",
  "qos-bluez",
+ "qos-model-gateway",
  "qos-relay",
  "qos-user-identity",
  "quick-xml 0.41.0",
@@ -14491,6 +14542,21 @@ dependencies = [
  "pkg-config",
  "toml 1.0.6+spec-1.1.0",
  "version-compare",
+]
+
+[[package]]
+name = "system-extension"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "postcard",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

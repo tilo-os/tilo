@@ -244,6 +244,7 @@ impl SettingsApp {
             Category::DefaultApps => panes::personal_apps::build(),
             Category::Storage => panes::storage::build(),
             Category::ExternalAccounts => panes::accounts::build(),
+            Category::AgentModels => panes::agent_models::build(),
             Category::RegionFormats => panes::region::build(),
             Category::Permissions => panes::permissions::build(),
             Category::Updates => panes::updates::build(),

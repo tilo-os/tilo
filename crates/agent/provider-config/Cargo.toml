@@ -1,0 +1,23 @@
+[package]
+name = "agent-provider-config"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Portable, secret-safe model-provider configuration for qOS agents."
+
+[lib]
+name = "agent_provider_config"
+path = "src/lib.rs"
+
+[dependencies]
+settings-store = { path = "../../system/settings-store" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

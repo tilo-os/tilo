@@ -211,7 +211,10 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::InvokePublishedAction { .. }
             | CollabRequest::PublishedInvocationStatus { .. }
             | CollabRequest::CancelPublishedInvocation { .. }
-            | CollabRequest::LaunchPublishedApplication { .. } => {
+            | CollabRequest::LaunchPublishedApplication { .. }
+            | CollabRequest::ReportTaskRun { .. }
+            | CollabRequest::InvokeTaskAction { .. }
+            | CollabRequest::TaskRunCancellation { .. } => {
                 // Session-local and shell-owned control-plane commands never
                 // fan out through another application's document channel.
             }

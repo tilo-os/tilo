@@ -29,6 +29,7 @@ capnp-rpc.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync"] }
 tokio-util.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 
 [dev-dependencies]

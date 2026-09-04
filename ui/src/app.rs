@@ -2697,6 +2697,9 @@ impl App {
                 // hook; an ordinary application has no local state to apply.
                 CollabEvent::ActionCatalogue { .. }
                 | CollabEvent::PublishedInvocationResult { .. }
+                | CollabEvent::TaskRun(_)
+                | CollabEvent::TaskActionInvocationResult { .. }
+                | CollabEvent::TaskRunCancellation { .. }
                 | CollabEvent::WorkspaceControl { .. } => {}
             }
         }
@@ -2707,6 +2710,12 @@ impl App {
     /// a locally-derived id is recognised in a room-keyed roster) and the
     /// host-assigned name; it never enters the roster itself.
     fn apply_collab_context(&mut self, collaborators: Vec<crate::collaboration::Collaborator>) {
+        for participant in &collaborators {
+            self.presence_ctx.set_participant_kind(
+                &crate::permissions::UserId(participant.id.clone()),
+                participant.is_agent,
+            );
+        }
         if let Some(me) = collaborators.iter().find(|c| c.is_self) {
             self.presence_ctx
                 .set_self_participant(crate::permissions::UserId(me.id.clone()), me.name.clone());

@@ -1283,6 +1283,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     let ws_tab = match st.ws_settings_tab {
         WsTab::General => "general",
         WsTab::Members => "members",
+        WsTab::Agents => "agents",
         WsTab::Permissions => "permissions",
         WsTab::Apps => "apps",
     };
@@ -1320,6 +1321,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         "room_activity_view",
         match host.room_activity().view() {
             shell::shell::room_activity::ActivityView::CatchUp => "catch_up",
+            shell::shell::room_activity::ActivityView::Tasks => "tasks",
             shell::shell::room_activity::ActivityView::Explore => "explore",
             shell::shell::room_activity::ActivityView::Replay => "replay",
         },

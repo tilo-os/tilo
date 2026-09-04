@@ -106,6 +106,7 @@ fn photos_resources(doc: &AutoCommit) -> Vec<Resource> {
 /// Returns the peer's final replica and whether the agent reports having
 /// acted.
 fn run(
+    agent_actions: &[(&str, &str)],
     cfg_of: impl FnOnce(std::path::PathBuf, Uuid) -> Config,
     mut replica: AutoCommit,
     mut poll: impl FnMut(&AutoCommit) -> bool,
@@ -113,7 +114,7 @@ fn run(
 ) -> (AutoCommit, bool, Option<String>) {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("collab.sock");
-    let _broker = typed_peer::spawn(&sock);
+    let _broker = typed_peer::spawn_with_agent_actions(&sock, agent_actions);
     let started = Instant::now();
     while !sock.exists() {
         assert!(
@@ -219,6 +220,7 @@ fn a_discovered_destructive_operation_requires_explicit_confirmation() {
         "Scribe: delete the image, then give this a title, then delete the image again",
     );
     let (mut replica, acted, invocation_actor) = run(
+        &[("dev.qos.word-processor", "delete")],
         |sock, room| Config {
             endpoint: Some(sock),
             endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
@@ -299,6 +301,7 @@ fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let replica = seed_document_with_image("Scribe: insert a table, then insert a table again");
     let (mut replica, acted, invocation_actor) = run(
+        &[("dev.qos.word-processor", "insert-table")],
         |sock, room| Config {
             endpoint: Some(sock),
             endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
@@ -659,6 +662,7 @@ fn without_the_capability_a_discovered_operation_is_never_performed() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let replica = seed_document_with_image("Scribe: delete the image");
     let (replica, acted, invocation_actor) = run(
+        &[],
         |sock, room| Config {
             endpoint: Some(sock),
             endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),

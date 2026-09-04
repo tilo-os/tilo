@@ -30,6 +30,7 @@ path = "junit.xml"
 [test-groups]
 compositor = { max-threads = 2 }
 gpu-golden = { max-threads = 1 }
+agent-collaboration = { max-threads = 1 }
 
 # Golden images must be rendered one at a time across *all* test binaries.
 # A Rust mutex cannot provide that guarantee because nextest launches each
@@ -53,6 +54,22 @@ test-group = "compositor"
 [[profile.ci.overrides]]
 filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or test(wayland_test::))'
 test-group = "compositor"
+
+# These integration binaries each start a production Cap'n Proto broker and
+# several blocking collaboration clients with wall-clock protocol deadlines.
+# nextest runs every test in a separate process, so an in-process lock or
+# serial_test attribute cannot coordinate them across binaries. Keep the real
+# socket tests serialized with one another while allowing the agent's pure
+# unit tests to remain parallel.
+[[profile.default.overrides]]
+filter = 'package(agent) and (binary(presence_semantics) or binary(relay_roundtrip) or binary(discovered_operations) or binary(concurrent_edit))'
+test-group = "agent-collaboration"
+threads-required = "num-cpus"
+
+[[profile.ci.overrides]]
+filter = 'package(agent) and (binary(presence_semantics) or binary(relay_roundtrip) or binary(discovered_operations) or binary(concurrent_edit))'
+test-group = "agent-collaboration"
+threads-required = "num-cpus"
 
 # This is a real-time codec budget test: it must decode at least 30 frames in
 # three wall-clock seconds while keeping every frame below the latency ceiling.

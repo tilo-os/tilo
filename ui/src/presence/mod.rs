@@ -319,6 +319,9 @@ pub struct PresenceUser {
     pub id: String,
     pub name: String,
     pub color: (u8, u8, u8),
+    /// Principal kind supplied by the collaboration context, never guessed
+    /// from the display name.
+    pub is_agent: bool,
 }
 
 /// The kind of participant behind a live presence stream. This comes from
@@ -330,6 +333,18 @@ pub enum ParticipantKind {
     Agent,
 }
 
+impl From<bool> for ParticipantKind {
+    fn from(is_agent: bool) -> Self {
+        if is_agent { Self::Agent } else { Self::Person }
+    }
+}
+
+impl AsRef<UserId> for UserId {
+    fn as_ref(&self) -> &UserId {
+        self
+    }
+}
+
 impl PresenceUser {
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
         let id = id.into();
@@ -338,6 +353,7 @@ impl PresenceUser {
             id,
             name: name.into(),
             color,
+            is_agent: false,
         }
     }
 
@@ -797,18 +813,36 @@ impl PresenceCtx {
     /// Seeded from the collab roster. Overwrites any prior name.
     pub fn set_display_name(&mut self, user: UserId, name: impl Into<String>) {
         let name = name.into();
+        let shown = if self.is_agent(&user) {
+            format!("{name} · Agent")
+        } else {
+            name.clone()
+        };
         // Relabel any already-drawn pill too, in case the pointer arrived first.
         for cursor in &mut self.remote_cursors {
             if cursor.user_id == user.0 {
-                cursor.label.clone_from(&name);
+                cursor.label.clone_from(&shown);
             }
         }
         self.names.insert(user, name);
     }
 
-    /// Seed the authenticated participant kind announced by the room.
-    pub fn set_participant_kind(&mut self, user: UserId, kind: ParticipantKind) {
-        self.participant_kinds.insert(user, kind);
+    /// Seed the authenticated participant kind announced by the room. Both
+    /// the legacy boolean and the typed enum map to the same authenticated
+    /// kind, so changing names never changes a participant's principal kind.
+    pub fn set_participant_kind(
+        &mut self,
+        user: impl AsRef<UserId>,
+        kind: impl Into<ParticipantKind>,
+    ) {
+        let user = user.as_ref().clone();
+        self.participant_kinds.insert(user.clone(), kind.into());
+        let shown = self.display_name(&user);
+        for cursor in &mut self.remote_cursors {
+            if cursor.user_id == user.0 {
+                cursor.label.clone_from(&shown);
+            }
+        }
     }
 
     pub fn participant_kind(&self, user: &UserId) -> ParticipantKind {
@@ -825,10 +859,16 @@ impl PresenceCtx {
     /// The friendly name to show for `user`, falling back to the raw id
     /// when the roster hasn't announced one. Never blank.
     pub fn display_name(&self, user: &UserId) -> String {
-        self.names
+        let name = self
+            .names
             .get(user)
             .cloned()
-            .unwrap_or_else(|| user.0.clone())
+            .unwrap_or_else(|| user.0.clone());
+        if self.is_agent(user) {
+            format!("{name} · Agent")
+        } else {
+            name
+        }
     }
 
     pub fn user(&self, user: &UserId) -> PresenceUser {
@@ -836,6 +876,7 @@ impl PresenceCtx {
             id: user.0.clone(),
             name: self.display_name(user),
             color: self.color_for(user),
+            is_agent: self.is_agent(user),
         }
     }
 
@@ -1596,6 +1637,7 @@ mod string_id_wrapper_tests {
             id: "x".into(),
             name: "x".into(),
             color: (255, 128, 0),
+            is_agent: false,
         };
         let c = u.color_rgba(0.5);
         assert!((c[0] - 1.0).abs() < 1e-6);
@@ -1616,6 +1658,26 @@ mod string_id_wrapper_tests {
         let pu = ctx.user(&alice);
         assert_eq!(pu.name, "Alice Smith");
         assert_eq!(pu.color, user_color("alice"));
+    }
+
+    #[test]
+    fn participant_kind_survives_name_resolution() {
+        let mut ctx = PresenceCtx::empty();
+        let scribe = UserId("agent-scribe".into());
+        ctx.set_display_name(scribe.clone(), "Scribe");
+        ctx.set_participant_kind(&scribe, true);
+        assert!(ctx.is_agent(&scribe));
+        assert!(ctx.user(&scribe).is_agent);
+        assert_eq!(ctx.display_name(&scribe), "Scribe · Agent");
+        ctx.set_display_name(scribe.clone(), "Editorial helper");
+        assert!(
+            ctx.user(&scribe).is_agent,
+            "renaming cannot turn software into a person"
+        );
+        assert_eq!(ctx.display_name(&scribe), "Editorial helper · Agent");
+        ctx.set_participant_kind(&scribe, false);
+        assert!(!ctx.user(&scribe).is_agent);
+        assert_eq!(ctx.display_name(&scribe), "Editorial helper");
     }
 
     /// Labelled with the raw id, never blank and never a stand-in name — a
@@ -2330,7 +2392,7 @@ mod own_identity_tests {
         ctx.set_caret(&PresenceKey::Widget { path: vec![] }, agent.clone(), 4);
 
         assert!(ctx.is_agent(&agent));
-        assert_eq!(ctx.display_name(&agent), "Release assistant");
+        assert_eq!(ctx.display_name(&agent), "Release assistant · Agent");
 
         ctx.unregister_peer(&agent.0);
         assert_eq!(ctx.participant_kind(&agent), ParticipantKind::Person);

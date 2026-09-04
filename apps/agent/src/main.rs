@@ -65,6 +65,11 @@ struct Cli {
     /// Exit after the first instruction has been carried out.
     #[arg(long)]
     once: bool,
+    /// Receive broker-minted Task Center leases instead of watching a
+    /// document. This mode uses only the agent's admitted, permission-
+    /// filtered action catalogue and cannot infer work from room traffic.
+    #[arg(long)]
+    task_runs: bool,
     /// Decide by keyword only, without asking a model. The run is then
     /// reproducible and needs no network — and says so in its log.
     #[arg(long)]
@@ -138,5 +143,9 @@ fn main() -> anyhow::Result<()> {
         permissions,
     };
     let mut session = Session::connect(cfg)?;
-    session.run()
+    if cli.task_runs {
+        session.run_task_runs()
+    } else {
+        session.run()
+    }
 }

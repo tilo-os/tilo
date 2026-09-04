@@ -1345,6 +1345,7 @@ impl ShellOverlayHost {
         &mut self,
         broker: crate::shell::collab_broker::AppActionBroker,
     ) {
+        self.room_activity.attach_task_broker(broker.clone());
         self.search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::LiveAppActionsProvider::new(broker),
         ));
@@ -3753,7 +3754,7 @@ impl ShellOverlayHost {
     /// Turns app-launcher worker-thread failures into notifications (a clean
     /// launch/exit is silent — the window is the feedback). Returns whether
     /// anything was posted, so the caller can mark the frame dirty.
-    pub(crate) fn drain_launch_events(&self) -> bool {
+    pub(crate) fn drain_launch_events(&mut self) -> bool {
         use crate::shell::launcher::LaunchEventKind;
         let events = crate::shell::launcher::drain_events();
         if events.is_empty() {
@@ -3764,6 +3765,10 @@ impl ShellOverlayHost {
         };
         let mut posted = false;
         for event in events {
+            if self.room_activity.observe_agent_launch_event(&event) {
+                chrome_handle.borrow_mut().bump();
+                posted = true;
+            }
             // Only a failure settles the "Opening…" notice here. `Started`
             // doesn't — the window is still seconds away — that's
             // [`Self::retire_notices_for_opened_windows`]'s job; `Exited`
@@ -6535,6 +6540,20 @@ impl ShellOverlayHost {
                 "Saved in this workspace's history, so everyone here sees it.",
             );
         }
+        if outcome.task_changed {
+            let mut state = chrome.borrow_mut();
+            state.bump();
+            state.push_notification(
+                "Task Center updated",
+                "The task and its audit trail are shared with this workspace.",
+            );
+        }
+        if outcome.agent_runtime_changed {
+            // Starting or retrying a process is local, not a durable task
+            // transition. Redraw its factual lifecycle notice without
+            // claiming shared work has begun.
+            chrome.borrow_mut().bump();
+        }
     }
 
     fn open_room_activity_target(chrome: &Chrome, target: &ui::HistoryResourceTarget) {
@@ -8580,6 +8599,41 @@ impl ShellOverlayHost {
                     });
                 }
                 self.workspace_settings_overlay.dismiss_member_sheet();
+            }
+            WorkspaceSettingsOutcome::AddAgent => {
+                if is_owner {
+                    // Naming an agent belongs in the command palette's typed
+                    // parameter flow. It keeps setup usable with keyboard,
+                    // pointer, accessibility tools, and automation alike.
+                    self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+                    self.palette.set_query("Invite agent to workspace");
+                    self.last_search_query = "\0agent-onboarding\0".to_string();
+                }
+            }
+            WorkspaceSettingsOutcome::ReviewAgent(agent) => {
+                if is_owner && let Some(chrome) = self.chrome.clone() {
+                    let mut st = chrome.borrow_mut();
+                    let subject_index = st.tree().active_workspace().and_then(|ws| {
+                        crate::shell::workspace_settings::grant_subjects(ws)
+                            .iter()
+                            .position(|subject| {
+                                subject.kind == crate::shell::workspace_settings::SubjectKind::Agent
+                                    && subject.id == agent
+                            })
+                    });
+                    if let Some(subject_index) = subject_index {
+                        st.ws_grant_draft.subject_index = subject_index;
+                        st.open_workspace_settings(WsTab::Permissions);
+                        st.bump();
+                    }
+                }
+            }
+            WorkspaceSettingsOutcome::RemoveAgent(agent) => {
+                if is_owner && let Some(chrome) = self.chrome.clone() {
+                    edit_active_workspace_caps(&chrome, move |ws, actor| {
+                        crate::shell::workspace_settings::remove_agent(ws, actor, &agent)
+                    });
+                }
             }
             WorkspaceSettingsOutcome::ConfirmRevoke(cap_id) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
@@ -18104,6 +18158,7 @@ mod maximize_harvest_tests {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
+            tasks: Vec::new(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),
@@ -18287,6 +18342,7 @@ mod resync_strips_tests {
             owner: None,
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
+            tasks: Vec::new(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),

@@ -1,0 +1,39 @@
+[Unit]
+Description=Project staged qOS BootPack reboot status
+Documentation=file:///usr/share/doc/qos/system-extensions.md
+After=local-fs.target systemd-tmpfiles-setup.service
+ConditionPathExists=/var/lib/qos/system-extensions/boot-pack-stage.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/qos-system-extension-manager project-status
+
+# The projection can reveal only the extension id, staging generation, and
+# reboot requirement. It does not re-run bootc, download anything, or expose
+# catalog artifacts to the desktop.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @swap @reboot @raw-io @obsolete @cpu-emulation @module @clock @debug @pkey
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/run/qos/system-extension-api
+ReadOnlyPaths=/var/lib/qos/system-extensions

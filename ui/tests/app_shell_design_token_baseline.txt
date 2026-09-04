@@ -114,7 +114,7 @@ apps/weather/src/core.rs white_or_black 3
 apps/word-processor/src/review_overlay.rs literal_color 13
 apps/word-processor/src/style_color_picker.rs white_or_black 1
 apps/word-processor/src/widget.rs literal_color 18
-apps/word-processor/src/widget.rs white_or_black 9
+apps/word-processor/src/widget.rs white_or_black 8
 shell/src/compositor/backend/drm/paint.rs literal_color 1
 shell/src/compositor/backend/headless.rs literal_color 1
 shell/src/compositor/backend/winit.rs literal_color 1

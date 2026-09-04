@@ -44,6 +44,9 @@ members = [
     "crates/system/swipe",
     "crates/system/tts",
     "crates/system/accounts",
+    "crates/agent/provider-config",
+    "crates/agent/model-gateway",
+    "crates/agent/local-model-service",
     "crates/system/app-state",
     "crates/system/desktop-policy",
     "crates/doc/qdoc",
@@ -147,6 +150,7 @@ members = [
     "crates/session/qos-unlock-helper",
     "crates/session/qos-power",
     "crates/system/qos-startup-metrics",
+    "crates/system/system-extension",
     "crates/system/projector",
     "crates/session/installer",
     # Opt-in dynamic build of the runtime SDK. A member (shares lockfile

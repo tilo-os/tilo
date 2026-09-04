@@ -1,0 +1,68 @@
+#!/bin/sh
+# Narrow activation gate for desired qOS system extensions. The Rust
+# system-extension crate verifies pinned signed manifests and receipts; this
+# helper never downloads, mounts, loads modules, invokes a package manager, or
+# accepts a path/URL from a desktop or agent.
+set -eu
+
+state_root=/var/lib/qos/system-extensions
+state_file=$state_root/state.json
+runtime_dir=/run/qos/system-extensions
+userspace_marker=$runtime_dir/userspace-ready
+boot_marker=$state_root/reboot-required
+
+die() { printf '%s\n' "qos-system-extension-activate: $*" >&2; exit 1; }
+
+[ "$#" -eq 1 ] || die "expected exactly one activation class"
+case "$1" in
+    userspace|boot) class=$1 ;;
+    *) die "activation class must be userspace or boot" ;;
+esac
+
+# State is written atomically with mode 0600 by ExtensionStateStore. Refuse a
+# symlink, non-regular file, or broader mode rather than trusting indirection.
+[ -f "$state_file" ] && [ ! -L "$state_file" ] || die "missing safe desired state"
+[ "$(stat -c '%u:%g:%a' "$state_file")" = '0:0:600' ] \
+    || die "desired state must be root:root mode 0600"
+
+# A crash leaves `pending` visible but inert in the Rust protocol.
+grep -Eq '"pending"[[:space:]]*:[[:space:]]*null[[:space:]]*[,}]' "$state_file" \
+    || die "desired state has a pending or malformed transaction"
+revision=$(sed -n 's/^[[:space:]]*"revision"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*,[[:space:]]*$/\1/p' "$state_file")
+[ -n "$revision" ] || die "desired state has no unambiguous revision"
+
+# Markers are tiny, content-free, and atomically replaced. They name neither
+# a package nor a source and are only a hand-off to a future privileged
+# consumer, which must rerun accepted_for against the exact deployment digest
+# and kernel ABI it builds.
+write_marker() {
+    destination=$1
+    parent=$(dirname "$destination")
+    [ -d "$parent" ] && [ ! -L "$parent" ] || die "marker parent is unsafe"
+    tmp=$(mktemp "$parent/.system-extension.XXXXXX") || die "cannot create marker"
+    trap 'rm -f "$tmp"' EXIT HUP INT TERM
+    umask 077
+    {
+        printf 'schema_version=1\n'
+        printf 'revision=%s\n' "$revision"
+        printf 'activation_class=%s\n' "$class"
+    } > "$tmp"
+    chmod 0600 "$tmp"
+    mv -f "$tmp" "$destination"
+    trap - EXIT HUP INT TERM
+}
+
+case "$class" in
+    userspace)
+        grep -Eq '"kind"[[:space:]]*:[[:space:]]*"local_model_runtime"' "$state_file" \
+            || die "no active local-model runtime is declared"
+        write_marker "$userspace_marker"
+        ;;
+    boot)
+        # Kernel and driver packs are never dynamically loaded. The composer
+        # turns this marker into a new immutable deployment and a reboot.
+        grep -Eq '"kind"[[:space:]]*:[[:space:]]*"(kernel_module|gpu_driver_stack)"' "$state_file" \
+            || die "no reboot-bound extension is declared"
+        write_marker "$boot_marker"
+        ;;
+esac

@@ -31,7 +31,8 @@ interface CollabService {
   # because the identity format is collab-types' domain and we
   # don't want this schema to drift every time that crate adds a
   # field.
-  joinChannel @0 (channelId :Text, identity :Data, participantHandle :Text) -> (handle :ChannelHandle);
+  joinChannel @0 (channelId :Text, identity :Data, participantHandle :Text,
+                  participantKind :Text) -> (handle :ChannelHandle);
 }
 
 interface ChannelHandle {
@@ -228,6 +229,23 @@ interface ChannelHandle {
   # endpoint identity. Opening never grants control; the returned stream stays
   # waiting until that target publishes a consented SurfaceStreamStart.
   openWorkspaceControl @27 (targetDevice :Data) -> (handle :WorkspaceControlHandle);
+
+  # A delegated agent subscribes to broker-minted task leases addressed to
+  # its admitted live session. Offline agents are never queued here.
+  subscribeTaskRuns @28 () -> (stream :TaskRunStream);
+  # The agent may report only updates for the exact broker-minted run+lease.
+  # `updateJson` is a versioned TaskRunUpdate envelope.
+  reportTaskRun @29 (runId :UInt64, lease :Text, updateJson :Text) -> ();
+  # Invoke a published action while carrying the leased task's ActionContext.
+  # The broker derives both agent identity and context; no caller-supplied
+  # attribution/context crosses this method.
+  invokeTaskAction @30 (runId :UInt64, lease :Text, peerId :UInt64,
+                        resource :Text, action :Text, argument :Text,
+                        hasArgument :Bool, confirmationJson :Text)
+      -> (id :UInt64, updateJson :Text);
+  # Cooperative cancellation for a leased task. The broker reflects a Task
+  # Center cancellation; it never lets an agent cancel a task by itself.
+  taskRunCancelled @31 (runId :UInt64, lease :Text) -> (cancelled :Bool);
 }
 
 interface WorkspaceControlHandle {
@@ -315,7 +333,13 @@ interface InvocationStream {
   # typed. An attribution, not an authority — the session has already
   # decided this invocation may happen.
   read @0 () -> (id :UInt64, resource :Text, action :Text,
-                 argument :Text, hasArgument :Bool, actor :Text);
+                 argument :Text, hasArgument :Bool, actor :Text,
+                 contextJson :Text);
+}
+
+# Agent-only task work sent by the broker after live-session admission.
+interface TaskRunStream {
+  read @0 () -> (taskJson :Text);
 }
 
 interface ActionStream {

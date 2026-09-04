@@ -56,6 +56,7 @@ pub mod apply;
 pub mod listen;
 pub mod model;
 pub mod plan;
+pub mod providers;
 pub mod session;
 pub mod surface;
 pub mod tools;

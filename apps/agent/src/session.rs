@@ -17,8 +17,75 @@ use word_processor::actions::{self as wp, RegionKind, WordProcessorAction};
 use crate::apply::Editor;
 use crate::model::{Chooser, Route};
 use crate::plan::{self, Block, ConfirmationEvidence, Instruction, Plan};
+use crate::providers::default_selection;
 use crate::surface::{self, AppContract, View};
 use crate::wire::Link;
+
+const TASK_CATALOGUE_WAIT: Duration = Duration::from_secs(2);
+const TASK_ACTION_WAIT: Duration = Duration::from_secs(30);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TaskAction {
+    peer_id: u64,
+    resource: String,
+    action: String,
+    arguments: serde_json::Map<String, serde_json::Value>,
+    label: String,
+}
+
+#[derive(Debug)]
+enum TaskActionStop {
+    Cancelled,
+    Failed(String),
+}
+
+fn validate_task_run(run: &runtime_collab::TaskRunEnvelope) -> Result<(), String> {
+    if run.version != 1 || run.run_id == 0 {
+        return Err("The task envelope has an unsupported version or empty run id".into());
+    }
+    if run.task_id.trim().is_empty()
+        || run.task_id.len() > 256
+        || run.title.trim().is_empty()
+        || run.title.len() > 4 * 1024
+        || run.lease.is_empty()
+        || run.lease.len() > 128
+    {
+        return Err("The task envelope has an invalid id, title, or lease".into());
+    }
+    let context = serde_json::from_value::<qos_actions::ActionContext>(run.action_context.clone())
+        .map_err(|_| "The task has an invalid action context".to_string())?;
+    let valid_group = context.group.as_ref().is_some_and(|group| {
+        group.id == run.task_id && group.label == run.title && group.kind == "task"
+    });
+    if context.purpose.as_deref() != Some(run.title.as_str()) || !valid_group {
+        return Err("The task action context does not bind this task title and id".into());
+    }
+    Ok(())
+}
+
+fn task_action_from_offer(
+    offer: &surface::Offer,
+    arguments: serde_json::Map<String, serde_json::Value>,
+) -> Result<TaskAction, String> {
+    let peer_id = offer
+        .broker_peer_id
+        .ok_or_else(|| "Tasks cannot invoke a local-only action".to_string())?;
+    if !matches!(
+        offer.descriptor.contract.confirmation,
+        qos_actions::ConfirmationPolicy::None
+    ) {
+        return Err("Tasks cannot invoke an action requiring human confirmation".into());
+    }
+    qos_actions::ActionArgs::bind_json(&offer.descriptor.params, &arguments)
+        .map_err(|error| format!("The planned action arguments are invalid: {error}"))?;
+    Ok(TaskAction {
+        peer_id,
+        resource: offer.descriptor.address.resource.clone(),
+        action: offer.descriptor.address.action.clone(),
+        arguments,
+        label: offer.descriptor.action_label.clone(),
+    })
+}
 
 /// Durable evidence collected while one addressed instruction is running.
 /// The task record is written only after the agent reaches a terminal reply
@@ -194,12 +261,15 @@ impl Session {
             name = %cfg.name,
             "joined the room; waiting for the document"
         );
-        let chooser = Chooser::new(cfg.model, cfg.model_timeout);
+        let chooser = default_selection().map_or_else(
+            || Chooser::new(false, cfg.model_timeout),
+            |selection| Chooser::with_provider(cfg.model, cfg.model_timeout, selection),
+        );
         // Said once, at the top of the run: an operator should know which
         // path a recording is going to take before the beat, not after.
         tracing::info!(
             live = chooser.is_live(),
-            model = crate::model::MODEL,
+            model = ?default_selection().map(|selection| selection.model.id),
             timeout_ms = cfg.model_timeout.as_millis() as u64,
             "action choice: {}",
             if chooser.is_live() {
@@ -264,6 +334,317 @@ impl Session {
                 && joined.elapsed() >= self.cfg.await_document
             {
                 anyhow::bail!("{}", self.unanswered());
+            }
+        }
+    }
+
+    /// Run only broker-addressed Task Center leases. This is deliberately a
+    /// separate mode from document listening: a title is not a document
+    /// instruction, and an unattended task may invoke only actions that the
+    /// authenticated broker currently publishes to this agent.
+    pub fn run_task_runs(&mut self) -> Result<()> {
+        tracing::info!(agent = %self.cfg.name, "waiting for broker-addressed task runs");
+        loop {
+            match self.link.recv(Duration::from_millis(100))? {
+                Some(CollabEvent::ActionCatalogue { surfaces }) => {
+                    self.broker_surfaces = surfaces;
+                }
+                Some(CollabEvent::TaskRun(run)) => self.run_task(run)?,
+                Some(_) | None => {}
+            }
+        }
+    }
+
+    fn run_task(&mut self, run: runtime_collab::TaskRunEnvelope) -> Result<()> {
+        if let Err(message) = validate_task_run(&run) {
+            tracing::warn!(run_id = run.run_id, %message, "refused malformed task run");
+            self.report_task(&run, runtime_collab::TaskRunUpdate::Failed { message })?;
+            return Ok(());
+        }
+        self.report_task(&run, runtime_collab::TaskRunUpdate::Accepted)?;
+        self.report_task(
+            &run,
+            runtime_collab::TaskRunUpdate::Progress {
+                message: "Reviewing the permission-filtered action catalogue".into(),
+            },
+        )?;
+        self.wait_for_task_catalogue()?;
+        if self.task_cancelled(&run)? {
+            return self.cancel_task(&run, "Cancelled before planning");
+        }
+        let actions = match self.plan_task(&run) {
+            Ok(actions) if !actions.is_empty() => actions,
+            Ok(_) => {
+                return self.fail_task(&run, "No permitted live action can complete this task");
+            }
+            Err(message) => return self.fail_task(&run, &message),
+        };
+        for (index, action) in actions.iter().enumerate() {
+            if self.task_cancelled(&run)? {
+                return self.cancel_task(&run, "Cancelled before the next action");
+            }
+            self.report_task(
+                &run,
+                runtime_collab::TaskRunUpdate::Progress {
+                    message: format!("Running {}/{} · {}", index + 1, actions.len(), action.label),
+                },
+            )?;
+            match self.invoke_task_action(&run, action)? {
+                Ok(()) => {}
+                Err(TaskActionStop::Cancelled) => {
+                    return self.cancel_task(&run, "Cancelled while an action was running");
+                }
+                Err(TaskActionStop::Failed(message)) => return self.fail_task(&run, &message),
+            }
+        }
+        self.report_task(
+            &run,
+            runtime_collab::TaskRunUpdate::Succeeded {
+                message: format!("Completed {} broker-approved action(s)", actions.len()),
+            },
+        )
+    }
+
+    fn report_task(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        update: runtime_collab::TaskRunUpdate,
+    ) -> Result<()> {
+        self.link.send(&CollabRequest::ReportTaskRun {
+            run_id: run.run_id,
+            lease: run.lease.clone(),
+            update,
+        })
+    }
+
+    fn fail_task(&mut self, run: &runtime_collab::TaskRunEnvelope, message: &str) -> Result<()> {
+        self.report_task(
+            run,
+            runtime_collab::TaskRunUpdate::Failed {
+                message: message.to_string(),
+            },
+        )
+    }
+
+    fn cancel_task(&mut self, run: &runtime_collab::TaskRunEnvelope, message: &str) -> Result<()> {
+        self.report_task(
+            run,
+            runtime_collab::TaskRunUpdate::Cancelled {
+                message: message.to_string(),
+            },
+        )
+    }
+
+    fn wait_for_task_catalogue(&mut self) -> Result<()> {
+        if !self.broker_surfaces.is_empty() {
+            return Ok(());
+        }
+        let deadline = Instant::now() + TASK_CATALOGUE_WAIT;
+        let mut deferred = Vec::new();
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match self.link.recv(remaining.min(Duration::from_millis(100)))? {
+                Some(CollabEvent::ActionCatalogue { surfaces }) => {
+                    self.broker_surfaces = surfaces;
+                    self.link.defer(deferred);
+                    return Ok(());
+                }
+                Some(event) => deferred.push(event),
+                None => {}
+            }
+        }
+        self.link.defer(deferred);
+        Ok(())
+    }
+
+    fn task_cancelled(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<bool> {
+        let request_id = self.next_request_id();
+        self.link.send(&CollabRequest::TaskRunCancellation {
+            request_id,
+            run_id: run.run_id,
+            lease: run.lease.clone(),
+        })?;
+        self.wait_for_task_cancellation(request_id)
+    }
+
+    fn wait_for_task_cancellation(&mut self, request_id: u64) -> Result<bool> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut deferred = Vec::new();
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                self.link.defer(deferred);
+                return Err(anyhow::anyhow!(
+                    "the broker did not answer task cancellation status"
+                ));
+            }
+            match self
+                .link
+                .recv((deadline - now).min(Duration::from_millis(100)))?
+            {
+                Some(CollabEvent::TaskRunCancellation {
+                    request_id: received,
+                    result,
+                }) if received == request_id => {
+                    self.link.defer(deferred);
+                    return result.map_err(anyhow::Error::msg);
+                }
+                Some(CollabEvent::ActionCatalogue { surfaces }) => self.broker_surfaces = surfaces,
+                Some(event) => deferred.push(event),
+                None => {}
+            }
+        }
+    }
+
+    fn plan_task(&self, run: &runtime_collab::TaskRunEnvelope) -> Result<Vec<TaskAction>, String> {
+        let offers = surface::broker_offers(&self.broker_surfaces)
+            .into_iter()
+            .filter(|offer| {
+                offer.broker_peer_id.is_some()
+                    && matches!(
+                        offer.descriptor.contract.confirmation,
+                        qos_actions::ConfirmationPolicy::None
+                    )
+            })
+            .collect::<Vec<_>>();
+        match run.planning {
+            runtime_collab::TaskRunPlanning::RulesOnly => {
+                let (offer, arguments) =
+                    surface::from_verbs(&run.title, &offers).map_err(|error| {
+                        format!("Rules-only planner could not choose an action: {error:?}")
+                    })?;
+                task_action_from_offer(offer, arguments).map(|action| vec![action])
+            }
+            runtime_collab::TaskRunPlanning::Model => {
+                let catalogue = surface::Catalogue {
+                    offers: offers.clone(),
+                    facts: Vec::new(),
+                    held: Vec::new(),
+                };
+                match self.chooser.choose_actions(&run.title, &[], &catalogue, 8) {
+                    Ok(answer) => answer
+                        .actions
+                        .iter()
+                        .zip(&answer.arguments)
+                        .map(|(id, arguments)| {
+                            let instruction =
+                                Instruction::from_answer(id, &run.title, Some(arguments), &offers)
+                                    .map_err(|error| {
+                                        format!("Model selected an unavailable action: {error:?}")
+                                    })?;
+                            let Instruction::Perform {
+                                id,
+                                arguments,
+                                confirmation,
+                            } = instruction
+                            else {
+                                return Err("Model task plans must name broker-published actions"
+                                    .to_string());
+                            };
+                            if !matches!(confirmation, ConfirmationEvidence::None) {
+                                return Err(
+                                    "An unattended task cannot satisfy an interactive confirmation"
+                                        .to_string(),
+                                );
+                            }
+                            let offer = surface::find(&offers, &id).ok_or_else(|| {
+                                "The planned action is no longer published".to_string()
+                            })?;
+                            task_action_from_offer(offer, arguments)
+                        })
+                        .collect(),
+                    Err(route) => {
+                        tracing::info!(reason = %route.detail(), "model unavailable; using rules-only task planning");
+                        let (offer, arguments) =
+                            surface::from_verbs(&run.title, &offers).map_err(|error| {
+                                format!("Model fallback could not choose an action: {error:?}")
+                            })?;
+                        task_action_from_offer(offer, arguments).map(|action| vec![action])
+                    }
+                }
+            }
+        }
+    }
+
+    fn invoke_task_action(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        action: &TaskAction,
+    ) -> Result<Result<(), TaskActionStop>> {
+        let request_id = self.next_request_id();
+        self.link.send(&CollabRequest::InvokeTaskAction {
+            request_id,
+            run_id: run.run_id,
+            lease: run.lease.clone(),
+            peer_id: action.peer_id,
+            resource: action.resource.clone(),
+            action: action.action.clone(),
+            arguments: action.arguments.clone(),
+        })?;
+        let (id, mut update) = match self.wait_for_task_action_result(request_id)? {
+            Ok(result) => result,
+            Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
+        };
+        let deadline = Instant::now() + TASK_ACTION_WAIT;
+        while !update.is_terminal() && Instant::now() < deadline {
+            if self.task_cancelled(run)? {
+                let cancel_request = self.next_request_id();
+                self.link.send(&CollabRequest::CancelPublishedInvocation {
+                    request_id: cancel_request,
+                    id,
+                })?;
+                let _ = self.wait_for_broker_result(cancel_request)?;
+                return Ok(Err(TaskActionStop::Cancelled));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            let request_id = self.next_request_id();
+            self.link
+                .send(&CollabRequest::PublishedInvocationStatus { request_id, id })?;
+            update = match self.wait_for_broker_result(request_id)? {
+                Ok((_, update)) => update,
+                Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
+            };
+        }
+        match update {
+            qos_actions::InvocationUpdate::Succeeded { .. } => Ok(Ok(())),
+            qos_actions::InvocationUpdate::Cancelled { .. } => Ok(Err(TaskActionStop::Cancelled)),
+            qos_actions::InvocationUpdate::Failed { error, .. } => {
+                Ok(Err(TaskActionStop::Failed(error.message)))
+            }
+            _ => Ok(Err(TaskActionStop::Failed(
+                "Task action did not reach a terminal state before its deadline".into(),
+            ))),
+        }
+    }
+
+    fn wait_for_task_action_result(
+        &mut self,
+        request_id: u64,
+    ) -> Result<Result<(u64, qos_actions::InvocationUpdate), String>> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut deferred = Vec::new();
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                self.link.defer(deferred);
+                return Ok(Err(
+                    "the broker did not answer the task action request".into()
+                ));
+            }
+            match self
+                .link
+                .recv((deadline - now).min(Duration::from_millis(100)))?
+            {
+                Some(CollabEvent::TaskActionInvocationResult {
+                    request_id: received,
+                    result,
+                }) if received == request_id => {
+                    self.link.defer(deferred);
+                    return Ok(result);
+                }
+                Some(CollabEvent::ActionCatalogue { surfaces }) => self.broker_surfaces = surfaces,
+                Some(event) => deferred.push(event),
+                None => {}
             }
         }
     }
@@ -490,7 +871,7 @@ impl Session {
         held: &[(&'static AppContract, &automerge::AutoCommit)],
         view: &View,
     ) -> Vec<surface::Offer> {
-        let mut offers = surface::broker_offers(&self.broker_surfaces);
+        let mut offers = Self::document_broker_offers(&self.broker_surfaces, &self.cfg.permissions);
         for local in surface::offers(held, view, &self.cfg.permissions) {
             if !offers
                 .iter()
@@ -500,6 +881,21 @@ impl Session {
             }
         }
         offers
+    }
+
+    /// Broker authorization is necessary but the invitation carried by this
+    /// document session remains an independent upper bound. Task leases use
+    /// the broker catalogue directly; document instructions use the
+    /// intersection so a stale or narrower launch grant cannot be widened by
+    /// a broader workspace catalogue.
+    fn document_broker_offers(
+        surfaces: &[ui::collaboration::BrokerActionSurface],
+        permissions: &PermissionContext,
+    ) -> Vec<surface::Offer> {
+        surface::broker_offers(surfaces)
+            .into_iter()
+            .filter(|offer| surface::permitted_descriptor(permissions, &offer.descriptor))
+            .collect()
     }
 
     /// Where the agent is looking: `focus` on a document, and the
@@ -528,11 +924,55 @@ impl Session {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmation: &ConfirmationEvidence,
     ) -> Result<Result<(), String>> {
-        let offers = surface::broker_offers(&self.broker_surfaces);
-        if let Some(offer) = surface::find(&offers, id).cloned() {
+        if let Some(offer) = self.wait_for_broker_offer(id)? {
             return self.perform_broker(id, &offer, arguments, confirmation);
         }
         self.perform_local(id, arguments, confirmation)
+    }
+
+    /// Give the broker's independently delivered catalogue stream a chance
+    /// to catch up with the document stream before falling back to local
+    /// execution. An app publishes its actions before its snapshot, but the
+    /// two replies travel on separate Cap'n Proto streams and therefore have
+    /// no cross-stream ordering guarantee.
+    fn wait_for_broker_offer(&mut self, id: &str) -> Result<Option<surface::Offer>> {
+        // A broker-prefixed id pins an exact live publisher. Only a local
+        // compatibility offer may be upgraded to the matching broker route;
+        // never silently retarget a vanished broker selection to another app.
+        let wanted = (!id.starts_with("broker:"))
+            .then(|| surface::decode_address(id))
+            .flatten();
+        let permissions = self.cfg.permissions.clone();
+        let find = |surfaces: &[ui::collaboration::BrokerActionSurface]| {
+            let offers = Self::document_broker_offers(surfaces, &permissions);
+            surface::find(&offers, id).cloned().or_else(|| {
+                wanted
+                    .as_ref()
+                    .and_then(|address| offers.into_iter().find(|offer| offer.address() == address))
+            })
+        };
+        if let Some(offer) = find(&self.broker_surfaces) {
+            return Ok(Some(offer));
+        }
+        let deadline = Instant::now() + TASK_CATALOGUE_WAIT;
+        let mut deferred = Vec::new();
+        let mut found = None;
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match self.link.recv(remaining.min(Duration::from_millis(100)))? {
+                Some(CollabEvent::ActionCatalogue { surfaces }) => {
+                    self.broker_surfaces = surfaces;
+                    if let Some(offer) = find(&self.broker_surfaces) {
+                        found = Some(offer);
+                        break;
+                    }
+                }
+                Some(event) => deferred.push(event),
+                None => {}
+            }
+        }
+        self.link.defer(deferred);
+        Ok(found)
     }
 
     fn perform_broker(
@@ -1247,6 +1687,39 @@ fn describe(action: &WordProcessorAction) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn task_run() -> runtime_collab::TaskRunEnvelope {
+        runtime_collab::TaskRunEnvelope {
+            version: 1,
+            task_id: "task:review".into(),
+            title: "Review draft".into(),
+            run_id: 7,
+            lease: "broker-minted-lease".into(),
+            planning: runtime_collab::TaskRunPlanning::RulesOnly,
+            action_context: serde_json::json!({
+                "purpose": "Review draft",
+                "group": {"id": "task:review", "label": "Review draft", "kind": "task"}
+            }),
+        }
+    }
+
+    #[test]
+    fn task_run_requires_broker_bound_task_context() {
+        assert!(validate_task_run(&task_run()).is_ok());
+        let mut mismatched = task_run();
+        mismatched.action_context = serde_json::json!({
+            "purpose": "Review draft",
+            "group": {"id": "different", "label": "Review draft", "kind": "task"}
+        });
+        assert!(validate_task_run(&mismatched).is_err());
+    }
+
+    #[test]
+    fn task_run_rejects_unknown_protocol_version_before_planning() {
+        let mut invalid = task_run();
+        invalid.version = 2;
+        assert!(validate_task_run(&invalid).is_err());
+    }
 
     #[test]
     fn a_zero_settle_never_waits() {

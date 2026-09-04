@@ -90,6 +90,8 @@ pub enum RunError {
     },
     #[error("refusing URI open: {0}")]
     InvalidOpenUri(String),
+    #[error("refusing managed-service launch: {0}")]
+    InvalidServiceLaunch(String),
     #[error("refusing authored launch: identity signing broker could not start ({0})")]
     IdentityBroker(String),
     #[error(
@@ -140,8 +142,9 @@ pub struct RunOptions {
     /// inside bwrap's mount namespace. Requires this binary bind-mounted at
     /// [`SHIM_MOUNT_PATH`]. Default on; off is a logged debug escape hatch.
     pub landlock_enforce: bool,
-    /// Launch mode — GUI (default) or CLI. CLI picks `cli_bin()` (falling
-    /// back to `bin`), forwards argv, and inherits stdio instead of a Wayland surface.
+    /// Launch mode — GUI (default), an interactive CLI command, or a managed
+    /// service. CLI and service modes pick `cli_bin()` (falling back to
+    /// `bin`) and forward argv without requiring a Wayland surface.
     pub mode: LaunchMode,
     /// Debug escape hatch: when a runtime is declared but no bundle resolves,
     /// fall back to `minimal_libs` instead of aborting. Default off.
@@ -250,6 +253,44 @@ fn validate_open_uri(manifest: &MinimalManifest, opts: &RunOptions) -> Result<()
     Ok(())
 }
 
+fn validate_launch_mode(manifest: &MinimalManifest, opts: &RunOptions) -> Result<(), RunError> {
+    if let LaunchMode::Host { desktop_id } = &opts.mode {
+        return Err(RunError::HostAppNotAPackage {
+            desktop_id: desktop_id.clone(),
+        });
+    }
+    if !matches!(&opts.mode, LaunchMode::Service { .. }) {
+        return Ok(());
+    }
+    if manifest.kind != crate::manifest::KIND_SERVICE {
+        return Err(RunError::InvalidServiceLaunch(format!(
+            "{} is `{}`, not a service package",
+            manifest.package_id, manifest.kind
+        )));
+    }
+    if manifest.entrypoint.cli_bin().is_none() {
+        return Err(RunError::InvalidServiceLaunch(format!(
+            "{} has no headless entrypoint",
+            manifest.package_id
+        )));
+    }
+    if opts.wayland_socket.is_some() || opts.open_document.is_some() || opts.open_uri.is_some() {
+        return Err(RunError::InvalidServiceLaunch(
+            "managed services cannot receive a display, document, or URI".into(),
+        ));
+    }
+    if opts
+        .app_id
+        .as_deref()
+        .is_some_and(|app_id| app_id != manifest.package_id)
+    {
+        return Err(RunError::InvalidServiceLaunch(
+            "managed service app id must match its signed manifest".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod resource_claim_tests {
     use super::*;
@@ -286,6 +327,69 @@ mod resource_claim_tests {
                 "accepted {uri:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod managed_service_tests {
+    use super::*;
+
+    fn manifest(kind: &str, entrypoint_type: &str) -> MinimalManifest {
+        toml::from_str(&format!(
+            "[package]\nid = \"dev.qos.worker\"\nversion = \"1\"\nkind = \"{kind}\"\n\
+             [entrypoint]\nbin = \"bin/worker\"\ntype = \"{entrypoint_type}\"\n"
+        ))
+        .unwrap()
+    }
+
+    fn service_options() -> RunOptions {
+        RunOptions {
+            mode: LaunchMode::Service {
+                passthrough_argv: vec!["--serve".into()],
+            },
+            ..RunOptions::default()
+        }
+    }
+
+    #[test]
+    fn managed_service_requires_service_kind_and_headless_entrypoint() {
+        let service = manifest("service", "cli");
+        assert!(validate_launch_mode(&service, &service_options()).is_ok());
+        assert!(matches!(
+            validate_launch_mode(&manifest("app", "cli"), &service_options()),
+            Err(RunError::InvalidServiceLaunch(_))
+        ));
+        assert!(matches!(
+            validate_launch_mode(&manifest("service", "gui"), &service_options()),
+            Err(RunError::InvalidServiceLaunch(_))
+        ));
+    }
+
+    #[test]
+    fn managed_service_cannot_receive_a_display_or_open_resource() {
+        let manifest = manifest("service", "cli");
+        let display = RunOptions {
+            wayland_socket: Some("/run/user/1000/wayland-0".into()),
+            ..service_options()
+        };
+        assert!(validate_launch_mode(&manifest, &display).is_err());
+        let document = RunOptions {
+            open_document: Some("/tmp/document".into()),
+            ..service_options()
+        };
+        assert!(validate_launch_mode(&manifest, &document).is_err());
+    }
+
+    #[test]
+    fn managed_service_cannot_readdress_its_authenticated_identity() {
+        let opts = RunOptions {
+            app_id: Some("dev.qos.other".into()),
+            ..service_options()
+        };
+        assert!(matches!(
+            validate_launch_mode(&manifest("service", "cli"), &opts),
+            Err(RunError::InvalidServiceLaunch(_))
+        ));
     }
 }
 
@@ -661,6 +765,11 @@ pub enum LaunchMode {
         command: String,
         passthrough_argv: Vec<String>,
     },
+    /// A desktop-managed, headless process declared as `kind = "service"`.
+    /// Unlike [`Self::Cli`], this is not a user shell command and therefore
+    /// does not mint a `QOS_CLI_COMMAND`; its exact argv comes from trusted
+    /// desktop code.
+    Service { passthrough_argv: Vec<String> },
     /// An application qOS did not package (a host `.desktop` entry, Flatpak
     /// or otherwise).
     ///
@@ -1426,6 +1535,24 @@ fn build_initial_argv(
                 passthrough_argv.clone(),
             ))
         }
+        LaunchMode::Service { passthrough_argv } => {
+            let entry_bin_owned = manifest
+                .entrypoint
+                .cli_bin()
+                .unwrap_or(&manifest.entrypoint.bin)
+                .to_string();
+            let argv = crate::sandbox::build_bwrap_argv_for_entry(
+                manifest,
+                payload_root,
+                runtime_arg,
+                binds,
+                dbus_plan,
+                identity_arg,
+                &entry_bin_owned,
+                capabilities,
+            );
+            Ok((argv, None, passthrough_argv.clone()))
+        }
         // Refused at the top of `run_with`, before any of the setup above
         // ran. Reaching here would mean that guard was removed; fail the
         // launch instead of trusting it never will.
@@ -1454,12 +1581,9 @@ pub fn run_with(
     validate_open_uri(manifest, opts)?;
     // 0a. A host application has no manifest and no sandbox. Refusing here,
     // before any socket/directory/argv exists, keeps the two launch kinds
-    // from quietly converging.
-    if let LaunchMode::Host { desktop_id } = &opts.mode {
-        return Err(RunError::HostAppNotAPackage {
-            desktop_id: desktop_id.clone(),
-        });
-    }
+    // from quietly converging. Managed-service constraints are shared with
+    // the captured path below: capture must never become a bypass.
+    validate_launch_mode(manifest, opts)?;
 
     // 0. Policy: a manifest naming a filesystem path is refused before
     // anything else exists — silently dropping it would surface as an app
@@ -1693,11 +1817,7 @@ pub fn run_with_captured(
     validate_open_uri(manifest, opts)?;
     // Same refusals as `run_with`: this is a second entry into the sandbox
     // builder, and a policy with one enforced door is a door beside it.
-    if let LaunchMode::Host { desktop_id } = &opts.mode {
-        return Err(RunError::HostAppNotAPackage {
-            desktop_id: desktop_id.clone(),
-        });
-    }
+    validate_launch_mode(manifest, opts)?;
     crate::manifest::enforce_fs_policy(manifest)?;
 
     // Service sockets.

@@ -19,6 +19,7 @@
 pub mod about;
 pub mod accessibility;
 pub mod accounts;
+pub mod agent_models;
 pub mod appearance;
 pub mod audio;
 pub mod bluetooth;

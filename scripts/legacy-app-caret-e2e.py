@@ -184,6 +184,51 @@ def type_with_frame_barriers(control: Control, app_id: str, frame: dict, text: s
     return frame
 
 
+def clipboard_text(control: Control) -> str | None:
+    response = control.send({"op": "clipboard_paste", "primary": False})
+    return response.get("clipboard", {}).get("text")
+
+
+def wait_for_clipboard_text(control: Control, description: str, expected: str) -> str:
+    last_value: str | None = None
+
+    def matching_text() -> str | None:
+        nonlocal last_value
+        value = clipboard_text(control)
+        last_value = value
+        if value is not None and value.strip("\r\n") == expected:
+            return value
+        return None
+
+    try:
+        return wait_until(description, matching_text)
+    except Failure as error:
+        raise Failure(
+            f"{error}; expected {expected!r}, last copied {last_value!r}"
+        ) from error
+
+
+def verify_focus_and_select_probe(control: Control, app_id: str, frame: dict) -> dict:
+    """Prove keyboard focus and leave known document contents selected.
+
+    A fixed delay after Ctrl+A/Backspace is not sufficient for heavyweight
+    clients such as LibreOffice: an unrelated repaint can satisfy the next
+    frame barrier before its document transition finishes. Replace any sample
+    content with a probe, use the real clipboard to acknowledge its selection,
+    and leave it selected so the payload's first character replaces it
+    atomically without a separate empty-document transition.
+    """
+    probe = "qosfocusprobe"
+    control.chord("a")
+    frame = wait_for_frame_after(control, app_id, frame["frame_seq"])
+    frame = type_with_frame_barriers(control, app_id, frame, probe)
+    control.chord("a")
+    frame = wait_for_frame_after(control, app_id, frame["frame_seq"])
+    control.chord("c")
+    wait_for_clipboard_text(control, f"{app_id} focus probe selection", probe)
+    return frame_for(control, app_id) or frame
+
+
 def snapshot(control: Control, destination: Path) -> None:
     control.send({"op": "snapshot", "path": str(destination)})
     wait_until(f"snapshot {destination}", lambda: destination.exists())
@@ -311,10 +356,7 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
             # is never racing that focus handshake (notably LibreOffice).
             control.send({"op": "click_at", "x": click_x, "y": click_y})
             frame = wait_for_frame_after(control, case.app_id, frame["frame_seq"])
-            control.chord("a")
-            control.send({"op": "key", "key": "Backspace"})
-            time.sleep(0.1)
-            frame = frame_for(control, case.app_id) or frame
+            frame = verify_focus_and_select_probe(control, case.app_id, frame)
             frame = type_with_frame_barriers(control, case.app_id, frame, prefix)
             control.send({"op": "pointer_move", "x": 10, "y": SCREEN[1] - 10})
             # Let the pointer-leave commit settle before taking the sequence
@@ -326,19 +368,11 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
             control.chord("a")
             control.chord("c")
 
-            def copied_text():
-                response = control.send({"op": "clipboard_paste", "primary": False})
-                return response.get("clipboard", {}).get("text")
-
-            copied = wait_until(
+            copied = wait_for_clipboard_text(
+                control,
                 f"{case.name} clipboard to contain the typed payload",
-                lambda: (value := copied_text()) and value,
+                expected,
             )
-            if copied.strip("\r\n") != expected:
-                raise Failure(
-                    f"{case.name}: caret/input mismatch after pointer leave; "
-                    f"expected {expected!r}, copied {copied!r}"
-                )
             snapshot(control, case_artifacts / "passed.png")
             (case_artifacts / "result.json").write_text(json.dumps({
                 "app_id": case.app_id,

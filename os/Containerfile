@@ -359,7 +359,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          THIN_EXCLUDES=""; THIN_BROWSER_FEATURE=",browser/wpe"; \
        fi \
     && APP_FEATURES="music/audio,music/streaming,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,chat/live-media,mail/live,disks/live,video_editor/decode,video_editor/gst" \
-    && RELEASE_ARGS="-p shell -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper -p qos-rollback -p qos-cli -p ush -p qos-projector -p pkg-cli -p install -p cli-shim" \
+    && RELEASE_ARGS="-p shell -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper -p qos-rollback -p qos-cli -p ush -p qos-projector -p pkg-cli -p install -p cli-shim -p local-model-service -p qos-model-gateway -p system-extension" \
     && CARGO_PROFILE_RELEASE_LTO=thin \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
        cargo build --release ${RELEASE_ARGS} -p qos-relay --bins ${BROWSER_PKG} \
@@ -368,7 +368,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        cargo build --release -p windows-vm \
          --bin qos-windows-vm-control --bin qos-windows-rail \
     && missing=0 \
-    && for b in shell qos-projector fs qos-relay qos-relay-admin qos-enroll qos-home-peer-control terminal file-explorer settings qos-greeter qos-installer qos-runtime-bundle qos-launcher qos-power qos-unlock-helper qos-rollback qos qos-pkg qos-install qos-cli-shim qos-ush qos-windows-vm-control qos-windows-rail; do \
+    && for b in shell qos-projector fs qos-relay qos-relay-admin qos-enroll qos-home-peer-control terminal file-explorer settings qos-model-manager qos-model-gateway qos-greeter qos-installer qos-runtime-bundle qos-launcher qos-power qos-unlock-helper qos-rollback qos qos-pkg qos-install qos-cli-shim qos-ush qos-system-extension-manager qos-windows-vm-control qos-windows-rail; do \
          [ -x "target/release/$b" ] || missing=1; \
        done \
     && { [ "${QOS_WITH_BROWSER}" = "0" ] || [ -x target/release/browser ] || missing=1; } \
@@ -395,6 +395,9 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/terminal \
           target/release/file-explorer \
           target/release/settings \
+          target/release/qos-model-manager \
+          target/release/qos-model-gateway \
+          target/release/qos-system-extension-manager \
           target/release/qos-greeter \
           target/release/qos-installer \
           target/release/qos-runtime-bundle \
@@ -799,6 +802,11 @@ COPY --from=builder /out/file-explorer /usr/bin/file-explorer
 # keyboard layout, power policy, touchpad — so an image without it is an
 # image where those are unreachable on real hardware.
 COPY --from=builder /out/settings /usr/bin/settings
+COPY --from=builder /out/qos-model-manager /usr/bin/qos-model-manager
+COPY --from=builder /out/qos-model-gateway /usr/bin/qos-model-gateway
+COPY --from=builder /out/qos-system-extension-manager /usr/libexec/qos-system-extension-manager
+COPY os/usr/lib/systemd/user/qos-model-manager.service /usr/lib/systemd/user/qos-model-manager.service
+COPY os/usr/lib/systemd/user/qos-model-gateway.service /usr/lib/systemd/user/qos-model-gateway.service
 COPY --from=builder /out/qos-relay /usr/bin/qos-relay
 COPY --from=builder /out/qos-relay-admin /usr/bin/qos-relay-admin
 COPY --from=builder /out/qos-enroll /usr/bin/qos-enroll
@@ -1061,12 +1069,15 @@ COPY os/usr/lib/systemd/system/systemd-growfs-root.service.d/10-qos-composefs.co
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
 # this is the only sanctioned way to materialise persistent dirs.
 COPY os/usr/lib/tmpfiles.d/qos.conf /usr/lib/tmpfiles.d/qos.conf
+COPY os/usr/lib/user-tmpfiles.d/qos-model-manager.conf /usr/lib/user-tmpfiles.d/qos-model-manager.conf
+COPY os/usr/lib/sysusers.d/qos-local-model.conf /usr/lib/sysusers.d/qos-local-model.conf
 
 # The device-trust group, which must exist before tmpfiles-setup runs so
 # the identity directory can be created with it. See the snippet for why
 # the device key is group-owned rather than owned by one component.
 COPY os/usr/lib/sysusers.d/qos-identity.conf /usr/lib/sysusers.d/qos-identity.conf
-RUN systemd-sysusers /usr/lib/sysusers.d/qos-identity.conf
+RUN systemd-sysusers /usr/lib/sysusers.d/qos-identity.conf \
+ && systemd-sysusers /usr/lib/sysusers.d/qos-local-model.conf
 
 # The user unit that read-only verifies the identity after qos-session's
 # first-login ceremony, `--global` enabled further down.
@@ -1370,6 +1381,8 @@ RUN chmod 0755 /usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-confir
 # sudo rather than failing with a permission error from three layers down.
 COPY --from=builder /out/qos /usr/bin/qos
 COPY os/usr/libexec/qos-deployment /usr/libexec/qos-deployment
+COPY os/usr/libexec/qos-system-extension-activate /usr/libexec/qos-system-extension-activate
+COPY os/usr/libexec/qos-system-extension-dispatch /usr/libexec/qos-system-extension-dispatch
 COPY os/usr/libexec/qos-boot-health /usr/libexec/qos-boot-health
 COPY os/usr/libexec/qos-repair /usr/libexec/qos-repair
 COPY os/usr/libexec/qos-recovery /usr/libexec/qos-recovery
@@ -1381,6 +1394,14 @@ COPY os/usr/lib/systemd/system/qos-repair.target /usr/lib/systemd/system/qos-rep
 COPY os/usr/lib/systemd/system/qos-repair@.service /usr/lib/systemd/system/qos-repair@.service
 COPY os/usr/lib/systemd/system/qos-deployment-rollback.service /usr/lib/systemd/system/qos-deployment-rollback.service
 COPY os/usr/lib/systemd/system/qos-deployment-update.service /usr/lib/systemd/system/qos-deployment-update.service
+COPY os/usr/lib/systemd/system/qos-system-extension-userspace.service /usr/lib/systemd/system/qos-system-extension-userspace.service
+COPY os/usr/lib/systemd/system/qos-system-extension-boot-stage.service /usr/lib/systemd/system/qos-system-extension-boot-stage.service
+COPY os/usr/lib/systemd/system/qos-system-extension-boot-pack-status.service /usr/lib/systemd/system/qos-system-extension-boot-pack-status.service
+COPY os/usr/lib/systemd/system/qos-system-extension-boot-pack-stage.path /usr/lib/systemd/system/qos-system-extension-boot-pack-stage.path
+COPY os/usr/lib/systemd/system/qos-system-extension-boot-pack-stage.service /usr/lib/systemd/system/qos-system-extension-boot-pack-stage.service
+COPY os/usr/lib/systemd/system/qos-local-model.service /usr/lib/systemd/system/qos-local-model.service
+COPY os/usr/lib/systemd/system/qos-system-extension-dispatcher.socket /usr/lib/systemd/system/qos-system-extension-dispatcher.socket
+COPY os/usr/lib/systemd/system/qos-system-extension-dispatcher@.service /usr/lib/systemd/system/qos-system-extension-dispatcher@.service
 COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-qos-boot-entries.conf /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-qos-boot-entries.conf
 COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/20-qos-update-policy.conf /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/20-qos-update-policy.conf
 COPY os/usr/lib/systemd/system/qos-update-policy@.service /usr/lib/systemd/system/qos-update-policy@.service
@@ -1389,12 +1410,14 @@ COPY os/usr/libexec/qos-update-policy-check /usr/libexec/qos-update-policy-check
 # The narrow polkit grant that makes Settings' rollback control and its automatic
 # -updates switch able to do what they say. See the rule for how narrow.
 COPY os/etc/polkit-1/rules.d/49-qos-updates.rules /etc/polkit-1/rules.d/49-qos-updates.rules
+COPY os/usr/share/qos/system-extensions /usr/share/qos/system-extensions
+COPY os/usr/share/doc/qos/system-extensions.md /usr/share/doc/qos/system-extensions.md
 COPY docs/recovery.md /usr/share/doc/qos/recovery.md
 COPY docs/security/repair-mode.md /usr/share/doc/qos/repair-mode.md
 # The boot-side check, bundled so it can be re-run on a live machine. It is the
 # only place several of these facts can be established at all — see its header.
 COPY os/tests/recovery-boot-check.sh /usr/libexec/qos-recovery-boot-check
-RUN chmod 0755 /usr/libexec/qos-deployment /usr/libexec/qos-boot-health \
+RUN chmod 0755 /usr/libexec/qos-deployment /usr/libexec/qos-system-extension-manager /usr/libexec/qos-system-extension-activate /usr/libexec/qos-system-extension-dispatch /usr/libexec/qos-boot-health \
         /usr/libexec/qos-repair /usr/libexec/qos-recovery /usr/libexec/qos-uki-cmdline \
         /usr/libexec/qos-update-policy-set /usr/libexec/qos-update-policy-check \
         /usr/libexec/qos-recovery-boot-check /usr/bin/qos \
@@ -1554,7 +1577,12 @@ RUN systemctl enable greetd.service && \
     systemctl enable shell-firstboot.service && \
     systemctl enable qos-growfs-sysroot.service && \
     systemctl enable fs.service fs-identity.path && \
+    systemctl enable qos-system-extension-dispatcher.socket && \
+    systemctl enable qos-system-extension-boot-pack-status.service && \
+    systemctl enable qos-system-extension-boot-pack-stage.path && \
     systemctl --global enable qos-identity.service && \
+    systemctl --global enable qos-model-manager.service && \
+    systemctl --global enable qos-model-gateway.service && \
     systemctl --global enable qos-ush.service && \
     systemctl --global enable qos-fs-recipient.service && \
     systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service

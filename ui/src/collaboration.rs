@@ -169,6 +169,31 @@ pub enum CollabRequest {
         request_id: u64,
         app_id: String,
     },
+    /// Lifecycle record for a broker-minted task lease. Only an admitted
+    /// agent connection can make this request; the broker checks the lease.
+    ReportTaskRun {
+        run_id: u64,
+        lease: String,
+        update: runtime_collab::TaskRunUpdate,
+    },
+    /// Invoke an already permission-filtered published action under the
+    /// broker-owned task context. `request_id` correlates the async reply.
+    InvokeTaskAction {
+        request_id: u64,
+        run_id: u64,
+        lease: String,
+        peer_id: u64,
+        resource: String,
+        action: String,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    },
+    /// Poll the native Task Center's cooperative cancellation bit for a
+    /// lease. It cannot cancel a task and carries no task state itself.
+    TaskRunCancellation {
+        request_id: u64,
+        run_id: u64,
+        lease: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -357,6 +382,17 @@ pub enum CollabEvent {
     PublishedInvocationResult {
         request_id: u64,
         result: Result<(u64, qos_actions::InvocationUpdate), String>,
+    },
+    /// A run addressed to this admitted agent. The envelope is broker-minted
+    /// and contains a lease, not a caller-selected authority token.
+    TaskRun(runtime_collab::TaskRunEnvelope),
+    TaskActionInvocationResult {
+        request_id: u64,
+        result: Result<(u64, qos_actions::InvocationUpdate), String>,
+    },
+    TaskRunCancellation {
+        request_id: u64,
+        result: Result<bool, String>,
     },
     WorkspaceControl {
         session_id: u64,
@@ -578,6 +614,10 @@ impl SdkConnectSource {
 /// collaboration session.
 struct SdkJoinIdentity {
     presentation: Vec<u8>,
+    /// Requested broker principal kind. The broker only accepts `agent`
+    /// when the named agent is admitted and this certified user may operate
+    /// it; ordinary applications always leave this as `person`.
+    participant_kind: &'static str,
     /// Retained on the shovel thread so document signing stays off the UI
     /// thread and the workspace broker connection is not consumed at join.
     signer: SdkDocumentSigner,
@@ -651,6 +691,7 @@ fn sdk_join_identity(cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal
     })?;
     Ok(SdkJoinIdentity {
         presentation,
+        participant_kind: "person",
         signer: SdkDocumentSigner::Certified(identity),
     })
 }
@@ -691,6 +732,7 @@ impl CollaborationManager {
             record,
             handle,
             None,
+            "person",
         )
     }
 
@@ -717,6 +759,7 @@ impl CollaborationManager {
             record,
             handle,
             None,
+            "person",
         )
     }
 
@@ -743,8 +786,10 @@ impl CollaborationManager {
             handle,
             Some(SdkJoinIdentity {
                 presentation: identity.presentation,
+                participant_kind: "person",
                 signer: SdkDocumentSigner::Harness(identity.device_key),
             }),
+            "person",
         )
     }
 
@@ -755,15 +800,18 @@ impl CollaborationManager {
         record: Option<String>,
         handle: Option<String>,
         endpoint_identity: Option<SdkJoinIdentity>,
+        participant_kind: &'static str,
     ) -> Result<Self, runtime_portal::NotAvailable> {
-        let identity = match endpoint_identity {
+        let mut identity = match endpoint_identity {
             Some(identity) => identity,
             None if matches!(&source, SdkConnectSource::Env) => sdk_join_identity(cluster_id)?,
             None => SdkJoinIdentity {
                 presentation: Vec::new(),
+                participant_kind: "person",
                 signer: harness_document_signer(),
             },
         };
+        identity.participant_kind = participant_kind;
         let sdk = Self::spawn_sdk(source, identity)?;
         let mut manager = Self {
             backend: Backend::Sdk(sdk),
@@ -776,6 +824,72 @@ impl CollaborationManager {
             handle,
         });
         Ok(manager)
+    }
+
+    /// Connect a headless participant as a first-class workspace agent.
+    /// Its friendly id is both the visible handle and the principal whose
+    /// scoped capabilities the broker evaluates.
+    pub fn for_agent_route(
+        app_id: impl Into<String>,
+        cluster_id: Uuid,
+        record: Option<String>,
+        agent_id: impl Into<String>,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        Self::for_route_from(
+            SdkConnectSource::Env,
+            app_id.into(),
+            cluster_id,
+            record,
+            Some(agent_id.into()),
+            None,
+            "agent",
+        )
+    }
+
+    /// Explicit-socket counterpart to [`Self::for_agent_route`]. Production
+    /// still requires a certified endpoint identity; this method merely
+    /// preserves the agent principal kind for diagnostic transports.
+    pub fn for_agent_route_fd(
+        fd: RawFd,
+        app_id: impl Into<String>,
+        cluster_id: Uuid,
+        record: Option<String>,
+        agent_id: impl Into<String>,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        Self::for_route_from(
+            SdkConnectSource::Fd(fd),
+            app_id.into(),
+            cluster_id,
+            record,
+            Some(agent_id.into()),
+            None,
+            "agent",
+        )
+    }
+
+    /// Certified explicit-socket agent connection used by out-of-process
+    /// runtimes that do not inherit the launcher's service descriptor.
+    pub fn for_agent_route_fd_with_identity(
+        fd: RawFd,
+        app_id: impl Into<String>,
+        cluster_id: Uuid,
+        record: Option<String>,
+        agent_id: impl Into<String>,
+        identity: CertifiedEndpointIdentity,
+    ) -> Result<Self, runtime_portal::NotAvailable> {
+        Self::for_route_from(
+            SdkConnectSource::Fd(fd),
+            app_id.into(),
+            cluster_id,
+            record,
+            Some(agent_id.into()),
+            Some(SdkJoinIdentity {
+                presentation: identity.presentation,
+                participant_kind: "agent",
+                signer: SdkDocumentSigner::Harness(identity.device_key),
+            }),
+            "agent",
+        )
     }
 
     /// Connects through `runtime_collab::try_connect()`, entering SDK mode on
@@ -876,6 +990,7 @@ impl CollaborationManager {
             SdkConnectSource::Fd(fd),
             SdkJoinIdentity {
                 presentation: identity_bytes,
+                participant_kind: "person",
                 signer: harness_document_signer(),
             },
         )
@@ -1391,6 +1506,7 @@ async fn drive_shovel(
 ) {
     let SdkJoinIdentity {
         presentation,
+        participant_kind,
         signer,
     } = identity;
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
@@ -1416,6 +1532,7 @@ async fn drive_shovel(
                     &client,
                     &presentation,
                     participant_handle.as_deref(),
+                    participant_kind,
                     &inbound_tx,
                     &mut routes,
                     &spec,
@@ -1437,6 +1554,7 @@ async fn drive_shovel(
                     &client,
                     &presentation,
                     participant_handle.as_deref(),
+                    participant_kind,
                     &inbound_tx,
                     &mut routes,
                     &spec,
@@ -1449,6 +1567,7 @@ async fn drive_shovel(
                     &client,
                     &presentation,
                     participant_handle.as_deref(),
+                    participant_kind,
                     &inbound_tx,
                     &mut routes,
                     &spec,
@@ -1481,6 +1600,7 @@ async fn ensure_sdk_route(
     client: &runtime_collab::CollabClient,
     identity_bytes: &[u8],
     participant_handle: Option<&str>,
+    participant_kind: &str,
     inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
     routes: &mut std::collections::HashMap<String, SdkRoute>,
     spec: &RouteSpec,
@@ -1490,10 +1610,11 @@ async fn ensure_sdk_route(
         return;
     }
     let channel = match client
-        .join_channel_as(
+        .join_channel_as_kind(
             &channel_id,
             identity_bytes,
             participant_handle.unwrap_or(""),
+            participant_kind,
         )
         .await
     {
@@ -1511,6 +1632,10 @@ async fn ensure_sdk_route(
     spawn_action_stream(&channel, inbound_tx).await;
     spawn_invocation_stream(&channel, inbound_tx).await;
     spawn_action_catalogue_stream(&channel, inbound_tx).await;
+    // This intentionally fails quietly for person sessions. An admitted
+    // agent gets a separate broker-addressed queue; a document agent never
+    // has to infer task work from room traffic.
+    spawn_task_run_stream(&channel, inbound_tx).await;
     let presence = spawn_presence_stream(&channel, inbound_tx).await;
 
     routes.insert(
@@ -1592,8 +1717,8 @@ async fn spawn_context_stream(
                         id: collaborator.user_id,
                         name: collaborator.display_name,
                         color: unpack_color(collaborator.color),
-                        is_agent: false,
-                        is_self: false,
+                        is_agent: collaborator.is_agent,
+                        is_self: collaborator.is_self,
                     })
                     .collect();
                 if tx
@@ -1714,6 +1839,29 @@ async fn spawn_action_catalogue_stream(
                     Err(error) => {
                         tracing::warn!(%error, "collab: invalid broker action catalogue");
                     }
+                }
+            }
+        });
+    }
+}
+
+/// Bridge broker-addressed task leases only when this connection is an
+/// admitted agent. The server refuses the subscription for people and for
+/// unadmitted agent identities, leaving their normal collaboration intact.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send and are driven only by the shovel LocalSet"
+)]
+async fn spawn_task_run_stream(
+    channel: &runtime_collab::ChannelHandle,
+    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+) {
+    if let Ok(stream) = channel.subscribe_task_runs().await {
+        let tx = inbound_tx.clone();
+        tokio::task::spawn_local(async move {
+            while let Ok(run) = stream.read().await {
+                if tx.send(CollabEvent::TaskRun(run)).is_err() {
+                    break;
                 }
             }
         });
@@ -2140,6 +2288,61 @@ async fn dispatch_sdk_request(
                         .map_err(|error| error.to_string())
                 });
             let _ = inbound_tx.send(CollabEvent::PublishedInvocationResult { request_id, result });
+        }
+        CollabRequest::ReportTaskRun {
+            run_id,
+            lease,
+            update,
+        } => {
+            if let Err(error) = route.channel.report_task_run(run_id, &lease, &update).await {
+                tracing::warn!(%error, run_id, "collab: reporting task run update failed");
+            }
+        }
+        CollabRequest::InvokeTaskAction {
+            request_id,
+            run_id,
+            lease,
+            peer_id,
+            resource,
+            action,
+            arguments,
+        } => {
+            let argument = format!(
+                "{}{}",
+                qos_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::Value::Object(arguments)
+            );
+            let result = route
+                .channel
+                .invoke_task_action(
+                    run_id,
+                    &lease,
+                    peer_id,
+                    &resource,
+                    &action,
+                    Some(&argument),
+                    "",
+                )
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|(id, update)| {
+                    serde_json::from_str(&update)
+                        .map(|update| (id, update))
+                        .map_err(|error| error.to_string())
+                });
+            let _ = inbound_tx.send(CollabEvent::TaskActionInvocationResult { request_id, result });
+        }
+        CollabRequest::TaskRunCancellation {
+            request_id,
+            run_id,
+            lease,
+        } => {
+            let result = route
+                .channel
+                .task_run_cancelled(run_id, &lease)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = inbound_tx.send(CollabEvent::TaskRunCancellation { request_id, result });
         }
     }
 }

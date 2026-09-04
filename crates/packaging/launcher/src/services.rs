@@ -65,7 +65,21 @@ pub const COLLAB_SERVICE: &str = "collab";
 pub const IDENTITY_SERVICE: &str = "identity";
 pub const SHELL_UI_SERVICE: &str = "shell-ui";
 pub const COMPAT_SERVICE: &str = "compat";
+/// Hosted model planning is performed by this per-user, desktop-owned
+/// gateway. The launcher authenticates the consuming package before handing
+/// it the connected descriptor, so a same-UID process cannot manufacture a
+/// Settings credential operation by merely connecting to the socket.
+pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
 const COMPAT_PROTOCOL_VERSION: u16 = 1;
+/// Length-prefixed launcher handoff consumed before Cap'n Proto starts on a
+/// collaboration descriptor. The broker binds it to `SO_PEERCRED` and a
+/// compositor-created one-shot launch record.
+pub const COLLAB_LAUNCH_PROTOCOL_VERSION: u16 = 1;
+/// Prefix that separates a launcher-authenticated connection from a raw
+/// Cap'n Proto diagnostic client. It is deliberately not an authority: the
+/// broker still verifies the peer process against the compositor's one-shot
+/// record before it accepts the following frame.
+pub const COLLAB_LAUNCH_MAGIC: [u8; 4] = *b"QCL1";
 
 /// One resolved service handoff: the launcher's own end of the
 /// connection, plus the in-sandbox fd number the app should find it at.
@@ -112,6 +126,14 @@ pub enum ServiceError {
     CompatContextMissing,
     #[error("failed to authenticate the launch to compatibility service `{path}`: {source}")]
     CompatHandoffFailed {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("required collaboration service has no authenticated workspace launch context")]
+    CollabContextMissing,
+    #[error("failed to authenticate the launch to collaboration service `{path}`: {source}")]
+    CollabHandoffFailed {
         path: PathBuf,
         #[source]
         source: std::io::Error,
@@ -371,6 +393,26 @@ fn resolve_service_binds_inner(
                 continue;
             }
         };
+        if name == COLLAB_SERVICE {
+            let Some((context, workspace_id)) = context
+                .and_then(|context| context.workspace_id.map(|workspace| (context, workspace)))
+            else {
+                if req.is_required() {
+                    return Err(ServiceError::CollabContextMissing);
+                }
+                tracing::warn!(
+                    "optional collaboration service skipped without authenticated workspace context"
+                );
+                continue;
+            };
+            if let Err(source) = write_collab_handoff(&mut stream, context.app_id, workspace_id) {
+                if req.is_required() {
+                    return Err(ServiceError::CollabHandoffFailed { path, source });
+                }
+                tracing::warn!(%source, "optional collaboration service rejected launch handoff");
+                continue;
+            }
+        }
         if name == COMPAT_SERVICE {
             let Some((context, workspace_id)) = context
                 .and_then(|context| context.workspace_id.map(|workspace| (context, workspace)))
@@ -386,6 +428,25 @@ fn resolve_service_binds_inner(
                     return Err(ServiceError::CompatHandoffFailed { path, source });
                 }
                 tracing::warn!(%source, "optional compatibility service rejected launch handoff");
+                continue;
+            }
+        }
+        if name == MODEL_GATEWAY_SERVICE {
+            let Some(context) = context else {
+                if req.is_required() {
+                    return Err(ServiceError::OpenFailed {
+                        path,
+                        source: std::io::Error::other("model gateway requires launcher context"),
+                    });
+                }
+                tracing::warn!("optional model gateway skipped without launcher context");
+                continue;
+            };
+            if let Err(source) = write_model_gateway_handoff(&mut stream, context.app_id) {
+                if req.is_required() {
+                    return Err(ServiceError::OpenFailed { path, source });
+                }
+                tracing::warn!(%source, "optional model gateway rejected launch handoff");
                 continue;
             }
         }
@@ -413,6 +474,26 @@ fn resolve_service_binds_inner(
     Ok(out)
 }
 
+fn write_collab_handoff(
+    stream: &mut UnixStream,
+    app_id: &str,
+    workspace_id: &str,
+) -> std::io::Result<()> {
+    let value = serde_json::json!({
+        "protocol": COLLAB_LAUNCH_PROTOCOL_VERSION,
+        "app_id": app_id,
+        "workspace_id": workspace_id,
+    });
+    let bytes = serde_json::to_vec(&value)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let length = u32::try_from(bytes.len())
+        .map_err(|_| std::io::Error::other("collaboration handoff is too large"))?;
+    stream.write_all(&COLLAB_LAUNCH_MAGIC)?;
+    stream.write_all(&length.to_le_bytes())?;
+    stream.write_all(&bytes)?;
+    stream.flush()
+}
+
 fn write_compat_handoff(
     stream: &mut UnixStream,
     app_id: &str,
@@ -427,6 +508,19 @@ fn write_compat_handoff(
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     let length = u32::try_from(bytes.len())
         .map_err(|_| std::io::Error::other("compatibility handoff is too large"))?;
+    stream.write_all(&length.to_le_bytes())?;
+    stream.write_all(&bytes)?;
+    stream.flush()
+}
+
+fn write_model_gateway_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "protocol": 1,
+        "app_id": app_id,
+    }))
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let length = u32::try_from(bytes.len())
+        .map_err(|_| std::io::Error::other("model gateway handoff is too large"))?;
     stream.write_all(&length.to_le_bytes())?;
     stream.write_all(&bytes)?;
     stream.flush()
@@ -503,6 +597,56 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
+    fn collab_handoff_is_framed_for_broker_authentication() {
+        use std::io::Read;
+
+        let dir = tempfile::tempdir().expect("runtime");
+        let previous = std::env::var_os("XDG_RUNTIME_DIR");
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let root = ensure_services_root().expect("services root");
+        let listener =
+            std::os::unix::net::UnixListener::bind(root.join("collab.sock")).expect("listen");
+        let reader = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut magic = [0_u8; COLLAB_LAUNCH_MAGIC.len()];
+            stream.read_exact(&mut magic).expect("magic");
+            let mut len = [0_u8; 4];
+            stream.read_exact(&mut len).expect("length");
+            let mut bytes = vec![0_u8; u32::from_le_bytes(len) as usize];
+            stream.read_exact(&mut bytes).expect("payload");
+            (
+                magic,
+                serde_json::from_slice::<serde_json::Value>(&bytes).expect("json"),
+            )
+        });
+        let mut services = BTreeMap::new();
+        services.insert(COLLAB_SERVICE.to_string(), "required@1".to_string());
+        let resolved = resolve_service_binds_for_launch(
+            &services,
+            false,
+            ServiceLaunchContext {
+                app_id: "dev.qos.notes",
+                workspace_id: Some("room-7"),
+            },
+        )
+        .expect("resolve");
+        drop(resolved);
+        let (magic, handoff) = reader.join().expect("reader");
+        assert_eq!(magic, COLLAB_LAUNCH_MAGIC);
+        assert_eq!(handoff["protocol"], COLLAB_LAUNCH_PROTOCOL_VERSION);
+        assert_eq!(handoff["app_id"], "dev.qos.notes");
+        assert_eq!(handoff["workspace_id"], "room-7");
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
     fn optional_service_whose_socket_refuses_is_skipped_not_fatal() {
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
@@ -544,13 +688,14 @@ mod tests {
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
         let root = ensure_services_root().unwrap();
         // Kept alive for the duration of the call, so `connect` succeeds.
-        let _listener = std::os::unix::net::UnixListener::bind(root.join("collab.sock")).unwrap();
+        let _listener =
+            std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "optional@1".to_string());
+        svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
         let out = resolve_service_binds(&svcs, false).expect("a live socket resolves");
         assert_eq!(out.len(), 1, "the one live service must be handed over");
-        assert_eq!(out[0].name, "collab");
+        assert_eq!(out[0].name, "test-lifecycle");
         assert_eq!(
             out[0].child_fd, 17,
             "the app is told to read fd 17, so that is where it must land"
@@ -558,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn shell_ui_connection_is_authenticated_before_child_handoff() {
         use std::io::{BufRead, BufReader};
 
@@ -619,10 +764,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
         let root = ensure_services_root().unwrap();
-        let _listener = std::os::unix::net::UnixListener::bind(root.join("collab.sock")).unwrap();
+        let _listener =
+            std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "optional@1".to_string());
+        svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
 
         let mut handed_out: Vec<String> = Vec::with_capacity(LAUNCHES);
         for _ in 0..LAUNCHES {
@@ -669,10 +815,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
         let root = ensure_services_root().unwrap();
-        let listener = std::os::unix::net::UnixListener::bind(root.join("collab.sock")).unwrap();
+        let listener =
+            std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "optional@1".to_string());
+        svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
         let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
         assert_eq!(
             resolved.len(),
@@ -717,10 +864,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
         let root = ensure_services_root().unwrap();
-        let listener = std::os::unix::net::UnixListener::bind(root.join("collab.sock")).unwrap();
+        let listener =
+            std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "optional@1".to_string());
+        svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
         let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
         let (mut served, _) = listener.accept().expect("the connection has to arrive");
 
@@ -772,10 +920,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
         let root = ensure_services_root().unwrap();
-        let _listener = std::os::unix::net::UnixListener::bind(root.join("collab.sock")).unwrap();
+        let _listener =
+            std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "optional@1".to_string());
+        svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
         let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
         let raw = resolved[0].host_fd();
 

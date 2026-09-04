@@ -31,14 +31,21 @@ const RECORD_BRING_PARAMS: &[ActionParam] = &[
     ),
 ];
 
-/// What `agent.invite` may be told. Optional, because `qos-agent` is
-/// launched with `--name`, defaulting to `Claude`
-/// (`apps/agent/src/main.rs`); a differently-named session passes it.
-const AGENT_INVITE_PARAMS: &[ActionParam] = &[ActionParam::optional(
-    "name",
-    ParamType::Text,
-    "The agent's name, as it was launched with. Defaults to `Claude`.",
-)];
+/// What `agent.invite` may be told. Naming is optional because `qos-agent`
+/// defaults to `Claude`; the profile is optional because the safe Observer
+/// starting point still requires an explicit per-surface review.
+const AGENT_INVITE_PARAMS: &[ActionParam] = &[
+    ActionParam::optional(
+        "name",
+        ParamType::Text,
+        "The agent's name, as it was launched with. Defaults to `Claude`.",
+    ),
+    ActionParam::optional(
+        "preset",
+        ParamType::Text,
+        "Observer, Contributor, Operator, or Custom. Presets never grant access to a surface by themselves.",
+    ),
+];
 
 /// The agent this OS ships. Kept in step with `qos-agent`'s own default by
 /// being the same string, not by being imported — the shell does not
@@ -643,10 +650,11 @@ impl Action {
         Action {
             id: "agent.invite",
             label: "Invite agent to workspace",
-            subtitle: "Add an agent as a collaborator you can remove later",
+            subtitle: "Start a scoped agent setup; choose every surface it may use",
             params: AGENT_INVITE_PARAMS,
             apply: |st, args| {
-                use crate::shell::state::{CapOverride, Subject, Verb};
+                use crate::shell::state::{CapOverride, Subject};
+                use crate::shell::workspace_settings::AgentAuthorityPreset;
                 let name = args.text("name").unwrap_or(DEFAULT_AGENT_NAME).trim();
                 let name = if name.is_empty() {
                     DEFAULT_AGENT_NAME
@@ -656,6 +664,14 @@ impl Action {
                 // Case-folded: `Scribe` and `scribe` are otherwise two
                 // different subjects, half-admitting the agent.
                 let agent = name.to_lowercase();
+                let preset = match args.text("preset") {
+                    Some(value) => AgentAuthorityPreset::parse(value).ok_or_else(|| {
+                        ActionError::Refused(
+                            "choose Observer, Contributor, Operator, or Custom".into(),
+                        )
+                    })?,
+                    None => AgentAuthorityPreset::Observer,
+                };
                 let user = st.active_local_user();
                 let granted = {
                     let mut tree = st.tree_mut();
@@ -668,9 +684,18 @@ impl Action {
                     };
                     // An ordinary grant on the room, through the tree so it
                     // reaches the room document (and other members) and disk.
-                    let cap =
-                        CapOverride::membership(Subject::agent(agent.clone()), room, Verb::Write)
-                            .with_id(format!("agent-member:{agent}"));
+                    // The profile is only an admission marker. The agent's
+                    // actor has no room role, so it receives no implicit
+                    // authority until the owner reviews a concrete surface.
+                    let cap = CapOverride::membership(
+                        Subject::agent(agent.clone()),
+                        room,
+                        preset.admission_verb(),
+                    )
+                    .with_id(format!(
+                        "agent-member:{agent}:{}",
+                        preset.label().to_ascii_lowercase()
+                    ));
                     tree.grant_in_workspace(ws_id, &user, cap)
                 };
                 if granted.is_none() {
@@ -678,9 +703,9 @@ impl Action {
                         "{user} does not administer this workspace, so {agent} was not added"
                     )));
                 }
-                // The roster is where a person reads "they're in the room" —
-                // same move `peer.invite` makes putting its token on screen.
-                st.overlays.collaborators = true;
+                // Land back on the dedicated, clearly non-human roster. The
+                // next visible action is Review access, not a chat prompt.
+                st.open_workspace_settings(crate::shell::chrome_state::WsTab::Agents);
                 Ok(())
             },
         },
@@ -1288,14 +1313,60 @@ mod tests {
             after,
             vec![(
                 DEFAULT_AGENT_NAME.to_lowercase(),
-                crate::shell::state::CapRole::Editor
+                crate::shell::state::CapRole::Viewer
             )],
             "the shipped agent is admitted under its own name, case-folded",
         );
         assert!(
-            c.borrow().overlays.collaborators,
-            "and the roster is shown, so the person who issued the \
-             invitation can see that it took",
+            c.borrow().overlays.ws_settings,
+            "and the dedicated workspace Agents roster is shown so the \
+             person who admitted it can review its scope",
+        );
+    }
+
+    #[test]
+    fn setup_profile_is_recorded_but_never_becomes_ambient_authority() {
+        let c = chrome_with_room();
+        let action = Action::ALL
+            .iter()
+            .find(|a| a.id == "agent.invite")
+            .expect("registered");
+        let args = ActionArgs::bind(
+            AGENT_INVITE_PARAMS,
+            [
+                (
+                    "name".to_string(),
+                    crate::shell::search::action_api::ArgValue::Text("Operator".to_string()),
+                ),
+                (
+                    "preset".to_string(),
+                    crate::shell::search::action_api::ArgValue::Text("operator".to_string()),
+                ),
+            ],
+        )
+        .expect("declared setup parameters bind");
+        (action.apply)(&mut c.borrow_mut(), &args).expect("owner admits agent");
+
+        let state = c.borrow();
+        let tree = state.tree();
+        let ws = tree.active_workspace().expect("fixture has room");
+        assert_eq!(
+            ws.role_of_agent("operator"),
+            Some(crate::shell::state::CapRole::Editor),
+            "the durable admission marker carries the selected setup intent"
+        );
+        assert!(
+            ws.capabilities
+                .iter()
+                .any(|cap| { cap.id == "agent-member:operator:operator" })
+        );
+        assert!(
+            !ws.allows(
+                &ws.actor_for_agent("operator"),
+                &crate::shell::state::ResourceRef::App("dev.qos.notes".into()),
+                crate::shell::state::Verb::Write,
+            ),
+            "even the Operator profile requires an explicit scoped grant"
         );
     }
 

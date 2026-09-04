@@ -156,6 +156,9 @@ struct PackageBlock {
 /// `[package].kind` for something a user opens. Everything else is a
 /// system component, however it starts.
 pub const KIND_APP: &str = "app";
+/// `[package].kind` for a headless component the desktop starts and
+/// supervises. Service packages are never promoted to ordinary app launchers.
+pub const KIND_SERVICE: &str = "service";
 
 impl From<RawManifest> for MinimalManifest {
     fn from(raw: RawManifest) -> Self {
