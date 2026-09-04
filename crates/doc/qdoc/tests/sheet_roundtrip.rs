@@ -17,9 +17,9 @@
 use qdoc::sheet::snapshot::CellType;
 use qdoc::{CellInput, OdsCodec, SheetProvider, Workbook, WorkbookSnapshot, XlsxCodec};
 use std::fmt::Write as _;
-use std::io::{Cursor, Write};
+use std::io::{Cursor, Read, Write};
 use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipWriter};
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 // ---- ZIP helpers -----------------------------------------------------------
 
@@ -180,6 +180,53 @@ fn xlsx_roundtrips_cells_types_and_formulas() {
     let out = XlsxCodec.export(&wb).expect("export xlsx");
     let reopened = imp(&XlsxCodec, &out);
     assert_sample(&reopened.materialize(), "xlsx-reopened", "A1*2", "B1+1");
+}
+
+#[test]
+fn xlsx_keeps_theme_backed_styles_and_declares_minimal_styles() {
+    let mut entries = Vec::new();
+    // Start from a genuine workbook, then add the pair Office uses for
+    // theme-coloured style records. The export must retain both the part and
+    // the relationship — retaining styles.xml alone changes its appearance.
+    let mut source = ZipArchive::new(Cursor::new(sample_xlsx())).unwrap();
+    for i in 0..source.len() {
+        let mut file = source.by_index(i).unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        entries.push((file.name().to_string(), bytes));
+    }
+    entries.push((
+        "xl/styles.xml".into(),
+        br#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><color theme="1"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="1"><xf fontId="0"/></cellXfs></styleSheet>"#.to_vec(),
+    ));
+    entries.push((
+        "xl/theme/theme1.xml".into(),
+        br#"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Brand"><a:themeElements/></a:theme>"#.to_vec(),
+    ));
+    let refs: Vec<(&str, Vec<u8>)> = entries
+        .iter()
+        .map(|(n, b)| (n.as_str(), b.clone()))
+        .collect();
+    let wb = imp(&XlsxCodec, &zip_of(&refs));
+    let out = XlsxCodec.export(&wb).unwrap();
+    let mut exported = ZipArchive::new(Cursor::new(out)).unwrap();
+    assert!(exported.by_name("xl/styles.xml").is_ok());
+    assert!(exported.by_name("xl/theme/theme1.xml").is_ok());
+    let mut rels = String::new();
+    exported
+        .by_name("xl/_rels/workbook.xml.rels")
+        .unwrap()
+        .read_to_string(&mut rels)
+        .unwrap();
+    assert!(rels.contains("relationships/theme"));
+    let mut types = String::new();
+    exported
+        .by_name("[Content_Types].xml")
+        .unwrap()
+        .read_to_string(&mut types)
+        .unwrap();
+    assert!(types.contains("spreadsheetml.styles+xml"));
+    assert!(types.contains("officedocument.theme+xml"));
 }
 
 #[test]

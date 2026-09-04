@@ -212,16 +212,15 @@ pub fn operation_resource(
         ImagerOperation::Cancel,
     )
     .with_contract(ActionContract {
-        permission: PermissionRequirement::Admin,
+        // Cancelling only narrows the authority of an already-authorized,
+        // peer-local job; it must never trigger a second elevation prompt.
+        permission: PermissionRequirement::Write,
         retry: RetryPolicy::Idempotent,
         tags: vec!["storage".into(), "job".into()],
         ..ActionContract::default()
     });
     let cancel = if job_active {
-        cancel.unavailable(
-            "cancel_not_cooperative",
-            "The raw-device writer cannot yet stop safely between write chunks",
-        )
+        cancel
     } else {
         cancel.unavailable("no_active_write", "No image write is currently running")
     };
@@ -731,16 +730,21 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_verify_and_cancel_are_explicitly_unavailable() {
+    fn automatic_verify_is_unavailable_and_active_write_can_be_cancelled() {
         let resource = operation_resource(Some("/dev/sdz"), true, true, true);
-        for id in ["verify", "cancel"] {
-            let action = resource
-                .actions
-                .iter()
-                .find(|action| action.id == id)
-                .unwrap();
-            assert!(!action.contract.availability.is_available(), "{id}");
-        }
+        let verify = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "verify")
+            .unwrap();
+        assert!(!verify.contract.availability.is_available());
+        let cancel = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "cancel")
+            .unwrap();
+        assert!(cancel.contract.availability.is_available());
+        assert_eq!(cancel.contract.permission, PermissionRequirement::Write);
         let status = resource
             .actions
             .iter()
@@ -770,6 +774,8 @@ mod tests {
             size: 1_000_000,
             label: "PLAIN".into(),
             installable: false,
+            identity: None,
+            expected_sha256: None,
         };
         ImagerDoc::set_source(&mut doc, Some(&iso));
         app.sync(&mut doc, &automerge::ROOT);

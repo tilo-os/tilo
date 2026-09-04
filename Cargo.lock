@@ -6830,6 +6830,7 @@ dependencies = [
  "tempfile",
  "tracing-subscriber",
  "ui",
+ "uuid",
  "vello",
  "winit",
  "zeroize",
@@ -11432,6 +11433,7 @@ dependencies = [
  "clap",
  "fluent",
  "fluent-syntax",
+ "image",
  "libc",
  "notify",
  "pkg",
@@ -12214,9 +12216,12 @@ dependencies = [
  "anyhow",
  "automerge",
  "des 0.8.1",
+ "iroh",
  "qos-actions",
  "qos-app",
+ "qos-callstream",
  "qos-relay",
+ "runtime-collab",
  "runtime-dylib",
  "russh",
  "serde",
@@ -13517,6 +13522,7 @@ dependencies = [
 name = "shell"
 version = "0.1.0"
 dependencies = [
+ "accesskit_unix",
  "app-state",
  "atomic-file",
  "automerge",

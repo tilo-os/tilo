@@ -69,12 +69,13 @@ impl ContainersApp {
         theme: &Theme,
         rail: Rect,
         view: &ViewState,
+        compact: bool,
     ) {
         let c = &theme.tokens.colors;
         // `expanded` gates the text labels; the rail keeps its look — the same
         // raised surface, accent wordmark, section pills, and footer — just
         // narrowed to an icon strip while collapsed.
-        let expanded = self.rail_expanded();
+        let expanded = !compact && self.rail_expanded();
         draw::fill_round(scene, rail, 0.0, c.surfaces.raised);
         draw::divider(
             scene,
@@ -93,9 +94,17 @@ impl ContainersApp {
             &border,
         );
 
-        self.draw_rail_toggle(scene, tr, theme, rail, expanded);
-        self.draw_rail_sections(scene, tr, theme, rail, view, expanded);
-        self.draw_rail_footer(scene, tr, theme, rail, expanded);
+        // A compact rail is intentionally fixed: a toggle would only steal
+        // precious content width and make its state unpredictable. Section
+        // icons remain directly reachable, while shortcuts 1–4 remain an
+        // equivalent keyboard route.
+        if !compact {
+            self.draw_rail_toggle(scene, tr, theme, rail, expanded);
+        }
+        self.draw_rail_sections(scene, tr, theme, rail, view, expanded, compact);
+        if !compact {
+            self.draw_rail_footer(scene, tr, theme, rail, expanded);
+        }
     }
 
     /// The collapse/expand chevron at the top of the rail. No app-name
@@ -156,6 +165,7 @@ impl ContainersApp {
         rail: Rect,
         view: &ViewState,
         expanded: bool,
+        compact: bool,
     ) {
         let c = &theme.tokens.colors;
         let items = [
@@ -168,7 +178,7 @@ impl ContainersApp {
                 self.engine.distroboxes.len(),
             ),
         ];
-        let mut y = rail.y0 + 56.0;
+        let mut y = rail.y0 + if compact { 12.0 } else { 56.0 };
         for (section, icon, count) in items {
             let item = Rect::new(rail.x0 + 8.0, y, rail.x1 - 8.0, y + 40.0);
             let active = view.section == section;
@@ -317,11 +327,12 @@ impl ContainersApp {
         action_label: Option<(&str, Hit)>,
     ) -> f64 {
         let c = &theme.tokens.colors;
+        let compact = self.uses_compact_layout(theme);
         let header = Rect::new(
             content.x0,
             content.y0,
             content.x1,
-            content.y0 + crate::app::HEADER_HEIGHT,
+            content.y0 + self.header_height(theme),
         );
         scene.fill(
             Fill::NonZero,
@@ -330,25 +341,33 @@ impl ContainersApp {
             None,
             &header,
         );
-        draw::text(
-            scene,
-            tr,
-            title,
-            theme.tokens.typography.scale.x2l,
-            c.text_primary,
-            Point::new(header.x0 + PAD + 8.0, header.center().y - 14.0),
-            TextWeight::Bold,
-        );
+        let title_x = header.x0 + PAD + 8.0;
+        let title_size = if compact {
+            // At 200% text a compact title remains readable without consuming
+            // the primary-action slot. The exact clipping bound below prevents
+            // it from ever painting underneath that action.
+            theme.tokens.typography.scale.base
+        } else {
+            theme.tokens.typography.scale.x2l
+        };
 
         // Primary action button (right-aligned).
         let mut right = header.x1 - PAD;
         if let Some((label, hit)) = action_label {
-            let bw = 150.0;
+            let bw = if compact { 96.0 } else { 150.0 };
             let btn = Rect::new(
                 right - bw,
-                header.center().y - 17.0,
+                if compact {
+                    header.y0 + 10.0
+                } else {
+                    header.center().y - 17.0
+                },
                 right,
-                header.center().y + 17.0,
+                if compact {
+                    header.y0 + 46.0
+                } else {
+                    header.center().y + 17.0
+                },
             );
             let hov = self.hovered(btn);
             draw::fill_round(
@@ -372,7 +391,7 @@ impl ContainersApp {
             draw::text(
                 scene,
                 tr,
-                label,
+                if compact { "New" } else { label },
                 theme.tokens.typography.scale.base,
                 Color::WHITE,
                 Point::new(btn.x0 + 34.0, btn.center().y - 8.0),
@@ -382,17 +401,45 @@ impl ContainersApp {
             right = btn.x0 - 12.0;
         }
 
+        draw::text_clip(
+            scene,
+            tr,
+            title,
+            &draw::TextStyle {
+                size: title_size,
+                color: c.text_primary,
+                weight: TextWeight::Bold,
+            },
+            Point::new(
+                title_x,
+                if compact {
+                    header.y0 + 16.0
+                } else {
+                    header.center().y - 14.0
+                },
+            ),
+            (right - title_x - if compact { 8.0 } else { 220.0 }).max(40.0),
+        );
+
         // Search launcher — a thin affordance that opens the shared Ctrl+K
         // palette scoped to this app, instead of an inline filter. The search
         // UI and ranking live in one shared toolkit widget, not here.
-        let search_w = (right - (header.x0 + PAD + 8.0) - 220.0).clamp(180.0, 360.0);
-        let sx0 = right - search_w;
-        let search = Rect::new(
-            sx0,
-            header.center().y - 19.0,
-            right,
-            header.center().y + 19.0,
-        );
+        let search = if compact {
+            Rect::new(
+                header.x0 + PAD,
+                header.y0 + 66.0,
+                header.x1 - PAD,
+                header.y0 + 106.0,
+            )
+        } else {
+            let search_w = (right - title_x - 220.0).clamp(180.0, 360.0);
+            Rect::new(
+                right - search_w,
+                header.center().y - 19.0,
+                right,
+                header.center().y + 19.0,
+            )
+        };
         self.draw_search_launcher(scene, tr, theme, search);
 
         // bottom divider
@@ -460,18 +507,28 @@ impl ContainersApp {
         content: Rect,
         view: &ViewState,
     ) {
-        let body_y = self.draw_header(
-            scene,
-            tr,
-            theme,
-            content,
-            "Containers",
-            Some(("New container", Hit::NewContainer)),
-        );
-
-        // Split content into list + optional detail.
+        // Compact surfaces use a conventional drill-in: select a row to open
+        // a full-width detail page, then use its Back control or Escape to
+        // return. Keeping a 240px list beside a 420px detail pane created an
+        // unusable sliver on phones and at 200% text.
         let detail_open = view.selected.is_some();
-        let list_w = if detail_open {
+        let single_pane_detail = self.uses_single_pane_detail(theme);
+        // A selected compact detail owns the page header, including its
+        // explicit Back affordance. Keeping the list's title/search/new row
+        // above it wasted vertical space and made the hierarchy ambiguous.
+        let body_y = if single_pane_detail {
+            content.y0
+        } else {
+            self.draw_header(
+                scene,
+                tr,
+                theme,
+                content,
+                "Containers",
+                Some(("New container", Hit::NewContainer)),
+            )
+        };
+        let list_w = if detail_open && !single_pane_detail {
             (content.width() - crate::app::DETAIL_WIDTH).max(240.0)
         } else {
             content.width()
@@ -485,12 +542,33 @@ impl ContainersApp {
             .cloned()
             .collect();
 
-        let cols = Self::container_columns(list, detail_open);
-        let colhead_bottom =
-            Self::draw_container_list_header(scene, tr, theme, list, detail_open, &cols);
-        let rows_area = Rect::new(list.x0, colhead_bottom, list.x1, list.y1);
-        self.draw_container_rows(scene, tr, theme, rows_area, &rows, &cols, detail_open, view);
-        self.draw_container_detail_pane(scene, tr, theme, content, list, body_y, view);
+        if !single_pane_detail {
+            let list_compact = detail_open || self.uses_compact_layout(theme);
+            let cols = Self::container_columns(list, list_compact);
+            let colhead_bottom =
+                Self::draw_container_list_header(scene, tr, theme, list, list_compact, &cols);
+            let rows_area = Rect::new(list.x0, colhead_bottom, list.x1, list.y1);
+            self.draw_container_rows(
+                scene,
+                tr,
+                theme,
+                rows_area,
+                &rows,
+                &cols,
+                list_compact,
+                view,
+            );
+        }
+        self.draw_container_detail_pane(
+            scene,
+            tr,
+            theme,
+            content,
+            list,
+            body_y,
+            single_pane_detail,
+            view,
+        );
     }
 
     /// The list column header (labels + divider) above the scrollable rows.
@@ -515,7 +593,7 @@ impl ContainersApp {
         // The compact (detail-open) layout drops the image + stats columns,
         // so its header must match — otherwise the labels collide.
         let labels: [&str; 5] = if detail_open {
-            ["NAME", "STATUS", "", "", ""]
+            ["NAME / STATUS", "", "", "", ""]
         } else {
             ["NAME", "IMAGE", "STATUS", "CPU / MEM", ""]
         };
@@ -560,12 +638,13 @@ impl ContainersApp {
         detail_open: bool,
         view: &ViewState,
     ) {
-        let content_h = rows.len() as f64 * crate::app::ROW_HEIGHT;
+        let row_height = self.row_height(theme);
+        let content_h = rows.len() as f64 * row_height;
         let max_scroll = (content_h - rows_area.height()).max(0.0);
         self.clamp_list_scroll(max_scroll);
         let mut y = rows_area.y0 - self.list_scroll;
         for container in rows {
-            let row = Rect::new(rows_area.x0, y, rows_area.x1, y + crate::app::ROW_HEIGHT);
+            let row = Rect::new(rows_area.x0, y, rows_area.x1, y + row_height);
             if row.y1 >= rows_area.y0 && row.y0 <= rows_area.y1 {
                 let info = ContainerRow {
                     row,
@@ -575,7 +654,7 @@ impl ContainersApp {
                 };
                 self.draw_container_row(scene, tr, theme, info, view);
             }
-            y += crate::app::ROW_HEIGHT;
+            y += row_height;
         }
         if rows.is_empty() {
             if self.engine.containers.is_empty() {
@@ -622,10 +701,15 @@ impl ContainersApp {
         content: Rect,
         list: Rect,
         body_y: f64,
+        single_pane_detail: bool,
         view: &ViewState,
     ) {
         if let Some(sel) = &view.selected {
-            let detail = Rect::new(list.x1, body_y, content.x1, content.y1);
+            let detail = if single_pane_detail {
+                Rect::new(content.x0, body_y, content.x1, content.y1)
+            } else {
+                Rect::new(list.x1, body_y, content.x1, content.y1)
+            };
             if let Some(container) = self.engine.find(sel).cloned() {
                 self.draw_detail(scene, tr, theme, detail, &container, view);
             } else {
@@ -692,30 +776,68 @@ impl ContainersApp {
 
         let name_y = row.center().y - 16.0;
         let sub_y = row.center().y + 4.0;
-        // Name + short id
-        draw::text_clip(
-            scene,
-            tr,
-            &container.name,
-            &draw::TextStyle {
-                size: theme.tokens.typography.scale.base,
-                color: c.text_primary,
-                weight: TextWeight::Semibold,
-            },
-            Point::new(info.cols[0] + 8.0, name_y),
-            (info.cols[1] - info.cols[0] - 16.0).max(40.0),
-        );
-        draw::text(
-            scene,
-            tr,
-            container.short_id(),
-            theme.tokens.typography.scale.xs,
-            c.text_dim,
-            Point::new(info.cols[0] + 8.0, sub_y),
-            TextWeight::Regular,
-        );
+        if self.uses_compact_layout(theme) {
+            // In the one-column list, status belongs beneath the name. This
+            // gives a large-text row a stable reading order and reserves the
+            // trailing edge exclusively for lifecycle buttons.
+            let compact_name_y = row.y0 + 14.0;
+            let compact_sub_y = row.y0
+                + if self.row_height(theme) > crate::app::ROW_HEIGHT {
+                    50.0
+                } else {
+                    36.0
+                };
+            let text_width = (row.width() - 138.0).max(64.0);
+            draw::text_clip(
+                scene,
+                tr,
+                &container.name,
+                &draw::TextStyle {
+                    size: theme.tokens.typography.scale.base,
+                    color: c.text_primary,
+                    weight: TextWeight::Semibold,
+                },
+                Point::new(info.cols[0] + 8.0, compact_name_y),
+                text_width,
+            );
+            draw::text_clip(
+                scene,
+                tr,
+                container.status.label(),
+                &draw::TextStyle {
+                    size: theme.tokens.typography.scale.xs,
+                    color: draw::status_color(theme, container.status),
+                    weight: TextWeight::Medium,
+                },
+                Point::new(info.cols[0] + 8.0, compact_sub_y),
+                text_width,
+            );
+        } else {
+            // Name + short id
+            draw::text_clip(
+                scene,
+                tr,
+                &container.name,
+                &draw::TextStyle {
+                    size: theme.tokens.typography.scale.base,
+                    color: c.text_primary,
+                    weight: TextWeight::Semibold,
+                },
+                Point::new(info.cols[0] + 8.0, name_y),
+                (info.cols[1] - info.cols[0] - 16.0).max(40.0),
+            );
+            draw::text(
+                scene,
+                tr,
+                container.short_id(),
+                theme.tokens.typography.scale.xs,
+                c.text_dim,
+                Point::new(info.cols[0] + 8.0, sub_y),
+                TextWeight::Regular,
+            );
 
-        Self::draw_container_row_layout(scene, tr, theme, info, name_y, sub_y);
+            Self::draw_container_row_layout(scene, tr, theme, info, name_y, sub_y);
+        }
 
         // Action buttons cluster on the far right.
         self.draw_row_actions(scene, tr, theme, container, row);
@@ -985,18 +1107,30 @@ impl ContainersApp {
         container: &Container,
     ) -> Rect {
         let c = &theme.tokens.colors;
-        let head = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 56.0);
+        let compact = self.uses_compact_layout(theme);
+        let head = Rect::new(
+            panel.x0,
+            panel.y0,
+            panel.x1,
+            panel.y0 + if compact { 76.0 } else { 56.0 },
+        );
+        let close_label = if compact { "‹ Back" } else { "✕" };
+        let close_w = if compact { 88.0 } else { 24.0 };
         draw::text_clip(
             scene,
             tr,
             &container.name,
             &draw::TextStyle {
-                size: theme.tokens.typography.scale.xl,
+                size: if compact {
+                    theme.tokens.typography.scale.base
+                } else {
+                    theme.tokens.typography.scale.xl
+                },
                 color: c.text_primary,
                 weight: TextWeight::Bold,
             },
             Point::new(head.x0 + PAD, head.y0 + 12.0),
-            head.width() - PAD * 2.0 - 32.0,
+            head.width() - PAD * 2.0 - close_w - 12.0,
         );
         draw::text_clip(
             scene,
@@ -1007,14 +1141,21 @@ impl ContainersApp {
                 color: c.text_dim,
                 weight: TextWeight::Regular,
             },
-            Point::new(head.x0 + PAD, head.y0 + 34.0),
-            head.width() - PAD * 2.0 - 32.0,
+            Point::new(
+                head.x0 + PAD,
+                if compact {
+                    head.y0 + 48.0
+                } else {
+                    head.y0 + 34.0
+                },
+            ),
+            head.width() - PAD * 2.0 - close_w - 12.0,
         );
         let close = Rect::new(
-            head.x1 - 36.0,
-            head.y0 + 12.0,
+            head.x1 - close_w - 12.0,
+            head.y0 + if compact { 10.0 } else { 12.0 },
             head.x1 - 12.0,
-            head.y0 + 36.0,
+            head.y0 + if compact { 42.0 } else { 36.0 },
         );
         if self.hovered(close) {
             draw::fill_round(scene, close, f64::from(theme.tokens.radii.md), c.lift(0.72));
@@ -1022,10 +1163,14 @@ impl ContainersApp {
         draw::text(
             scene,
             tr,
-            "✕",
-            theme.tokens.typography.scale.lg,
+            close_label,
+            if compact {
+                theme.tokens.typography.scale.sm
+            } else {
+                theme.tokens.typography.scale.lg
+            },
             c.text_dim,
-            Point::new(close.x0 + 6.0, close.y0 + 2.0),
+            Point::new(close.x0 + if compact { 6.0 } else { 6.0 }, close.y0 + 2.0),
             TextWeight::Regular,
         );
         self.push_hit(close, Hit::CloseDetail);
@@ -1044,24 +1189,40 @@ impl ContainersApp {
         view: &ViewState,
     ) -> Rect {
         let c = &theme.tokens.colors;
-        let strip = Rect::new(panel.x0, head_bottom, panel.x1, head_bottom + 36.0);
+        let compact = self.uses_compact_layout(theme);
+        let strip = Rect::new(
+            panel.x0,
+            head_bottom,
+            panel.x1,
+            head_bottom + if compact { 40.0 } else { 36.0 },
+        );
         let tab_w = strip.width() / DetailTab::ALL.len() as f64;
         for (i, tab) in DetailTab::ALL.iter().enumerate() {
             let tx0 = strip.x0 + i as f64 * tab_w;
             let trect = Rect::new(tx0, strip.y0, tx0 + tab_w, strip.y1);
             let active = view.tab == *tab;
             let fg = if active { c.text_primary } else { c.text_dim };
-            let (lw, _) = tr.measure_weighted(
-                tab.label(),
-                theme.tokens.typography.scale.sm,
-                None,
-                TextWeight::Semibold,
-            );
+            let label = if compact {
+                match tab {
+                    DetailTab::Logs => "Logs",
+                    DetailTab::Stats => "Stats",
+                    DetailTab::Inspect => "Info",
+                    DetailTab::Terminal => "Shell",
+                }
+            } else {
+                tab.label()
+            };
+            let label_size = if compact {
+                theme.tokens.typography.scale.xs
+            } else {
+                theme.tokens.typography.scale.sm
+            };
+            let (lw, _) = tr.measure_weighted(label, label_size, None, TextWeight::Semibold);
             draw::text(
                 scene,
                 tr,
-                tab.label(),
-                theme.tokens.typography.scale.sm,
+                label,
+                label_size,
                 fg,
                 Point::new(
                     trect.center().x - f64::from(lw) / 2.0,
@@ -1100,6 +1261,7 @@ impl ContainersApp {
         container: &Container,
     ) {
         let c = &theme.tokens.colors;
+        let compact = self.uses_compact_layout(theme);
         let running = container.status.is_running();
         let buttons: Vec<(&str, Icon, Action, Color)> = if running {
             vec![
@@ -1120,13 +1282,20 @@ impl ContainersApp {
         };
         let mut x = toolbar.x0 + PAD;
         for (label, icon, action, color) in buttons {
-            let (lw, _) = tr.measure_weighted(
-                label,
-                theme.tokens.typography.scale.sm,
-                None,
-                TextWeight::Semibold,
-            );
-            let bw = f64::from(lw) + 38.0;
+            let bw = if compact {
+                // Keep all lifecycle actions reachable at large text without
+                // letting their labels collide. Their colour + icon language
+                // is identical to the row actions.
+                40.0
+            } else {
+                let (lw, _) = tr.measure_weighted(
+                    label,
+                    theme.tokens.typography.scale.sm,
+                    None,
+                    TextWeight::Semibold,
+                );
+                f64::from(lw) + 38.0
+            };
             let btn = Rect::new(
                 x,
                 toolbar.center().y - 15.0,
@@ -1163,15 +1332,17 @@ impl ContainersApp {
                 color,
                 1.5,
             );
-            draw::text(
-                scene,
-                tr,
-                label,
-                theme.tokens.typography.scale.sm,
-                c.text_primary,
-                Point::new(btn.x0 + 28.0, btn.center().y - 7.0),
-                TextWeight::Semibold,
-            );
+            if !compact {
+                draw::text(
+                    scene,
+                    tr,
+                    label,
+                    theme.tokens.typography.scale.sm,
+                    c.text_primary,
+                    Point::new(btn.x0 + 28.0, btn.center().y - 7.0),
+                    TextWeight::Semibold,
+                );
+            }
             self.push_hit(
                 btn,
                 Hit::Action {

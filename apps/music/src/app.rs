@@ -4029,6 +4029,52 @@ mod tests {
     }
 
     #[test]
+    fn settled_paused_library_does_not_request_redundant_redraws() {
+        use ui::widget::Widget as _;
+
+        let (mut app, _doc) = app_with_doc();
+        app.pb.playing = false;
+        app.toast = None;
+        app.live_search_pending = None;
+        app.resolve_in_flight = 0;
+        app.downloads.clear();
+        app.mark_drawn();
+        assert!(!app.needs_redraw(), "settled UI does not redraw at vsync");
+        assert!(
+            !app.needs_animation_frame(),
+            "no playback or work in flight means no frame pump"
+        );
+        app.dirty = true;
+        assert!(app.needs_redraw(), "a real visual mutation still repaints");
+    }
+
+    #[test]
+    fn accessibility_transport_routes_to_the_same_playback_reducer() {
+        use ui::a11y::Action as A11yAction;
+        use ui::widget::Widget as _;
+
+        let (mut app, mut doc) = app_with_doc();
+        app.pb.current = Some("tk_g1".into());
+        let tree = app.accessibility().expect("music semantics");
+        assert_eq!(tree.name.as_deref(), Some("Music player"));
+        assert!(
+            tree.children
+                .iter()
+                .any(|node| node.action_target.as_deref() == Some("music.toggle-play"))
+        );
+        assert!(app.perform_semantic_action(
+            "music.toggle-play",
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(
+            app.pb.playing,
+            "semantic action uses the live transport path"
+        );
+    }
+
+    #[test]
     fn repeat_one_restarts_on_auto_advance() {
         let (mut app, _doc) = app_with_doc();
         app.pb.queue = vec!["tk_g1".into(), "tk_g2".into()];

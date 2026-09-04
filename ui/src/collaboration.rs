@@ -128,6 +128,17 @@ pub enum CollabRequest {
     ClearContinuation {
         app_id: String,
     },
+    OpenWorkspaceControl {
+        session_id: u64,
+        target_device: [u8; 32],
+    },
+    WorkspaceControlInput {
+        session_id: u64,
+        event: runtime_collab::WorkspaceControlInput,
+    },
+    CloseWorkspaceControl {
+        session_id: u64,
+    },
     /// Report the terminal result of a directed invocation.
     CompleteInvocation {
         id: u64,
@@ -346,6 +357,10 @@ pub enum CollabEvent {
     PublishedInvocationResult {
         request_id: u64,
         result: Result<(u64, qos_actions::InvocationUpdate), String>,
+    },
+    WorkspaceControl {
+        session_id: u64,
+        event: runtime_collab::WorkspaceControlEvent,
     },
 }
 
@@ -1404,7 +1419,7 @@ async fn drive_shovel(
                     tracing::warn!("collab: request sent before the primary route joined");
                     continue;
                 };
-                if let Some(route) = routes.get(key) {
+                if let Some(route) = routes.get_mut(key) {
                     dispatch_sdk_request(route, request, &signer, &inbound_tx).await;
                 }
             }
@@ -1430,7 +1445,7 @@ async fn drive_shovel(
                     &spec,
                 )
                 .await;
-                if let Some(route) = routes.get(&key) {
+                if let Some(route) = routes.get_mut(&key) {
                     dispatch_sdk_request(route, request, &signer, &inbound_tx).await;
                 }
             }
@@ -1442,6 +1457,7 @@ struct SdkRoute {
     spec: RouteSpec,
     channel: runtime_collab::ChannelHandle,
     presence: Option<runtime_collab::PresenceHandle>,
+    workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,
 }
 
 // Not `Send`: `client`/`channel` wrap capnp-rpc handles, which are
@@ -1494,6 +1510,7 @@ async fn ensure_sdk_route(
             spec: spec.clone(),
             channel,
             presence,
+            workspace_controls: std::collections::HashMap::new(),
         },
     );
 }
@@ -1842,7 +1859,7 @@ async fn send_document_mutation(
     reason = "the request variants share one ordered dispatch boundary onto the SDK route"
 )]
 async fn dispatch_sdk_request(
-    route: &SdkRoute,
+    route: &mut SdkRoute,
     request: CollabRequest,
     signer: &SdkDocumentSigner,
     inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
@@ -1978,6 +1995,54 @@ async fn dispatch_sdk_request(
         CollabRequest::ClearContinuation { app_id } => {
             if let Err(error) = route.channel.clear_continuation(&app_id).await {
                 tracing::warn!(%error, "collab: clearing continuation metadata failed");
+            }
+        }
+        CollabRequest::OpenWorkspaceControl {
+            session_id,
+            target_device,
+        } => match route.channel.open_workspace_control(target_device).await {
+            Ok(handle) => {
+                let reader = handle.clone();
+                let tx = inbound_tx.clone();
+                tokio::task::spawn_local(async move {
+                    while let Ok(event) = reader.read().await {
+                        let terminal =
+                            matches!(event, runtime_collab::WorkspaceControlEvent::Closed(_));
+                        if tx
+                            .send(CollabEvent::WorkspaceControl { session_id, event })
+                            .is_err()
+                            || terminal
+                        {
+                            break;
+                        }
+                    }
+                });
+                route.workspace_controls.insert(session_id, handle);
+            }
+            Err(error) => {
+                let _ = inbound_tx.send(CollabEvent::WorkspaceControl {
+                    session_id,
+                    event: runtime_collab::WorkspaceControlEvent::Closed(
+                        runtime_collab::WorkspaceControlCloseReason::Denied(error.to_string()),
+                    ),
+                });
+            }
+        },
+        CollabRequest::WorkspaceControlInput { session_id, event } => {
+            if let Some(handle) = route.workspace_controls.get(&session_id)
+                && let Err(error) = handle.send_input(&event).await
+            {
+                let _ = inbound_tx.send(CollabEvent::WorkspaceControl {
+                    session_id,
+                    event: runtime_collab::WorkspaceControlEvent::Closed(
+                        runtime_collab::WorkspaceControlCloseReason::Denied(error.to_string()),
+                    ),
+                });
+            }
+        }
+        CollabRequest::CloseWorkspaceControl { session_id } => {
+            if let Some(handle) = route.workspace_controls.remove(&session_id) {
+                let _ = handle.close().await;
             }
         }
         CollabRequest::CompleteInvocation { id, code, message } => {

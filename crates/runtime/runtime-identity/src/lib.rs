@@ -1436,7 +1436,7 @@ pub fn load_from_bytes(bytes: &[u8]) -> Result<SigningIdentity, NotAvailable> {
 ///
 /// # Errors
 ///
-/// Returns an I/O error when the public identity record cannot be serialized.
+/// Returns an I/O error if the public identity record cannot be serialized.
 pub fn public_member_record(
     display_name: &str,
     avatar_color: [u8; 3],

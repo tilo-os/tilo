@@ -14,10 +14,13 @@ Release hosts produce this matrix (architecture is part of every filename):
 
 The protected tag workflow also builds the live installer on native x86-64 and
 ARM64 runners, converts the tested qcow2 to `qos-installer-linux-ARCH.img.zst`,
-and publishes a digest-bound catalog. The catalog is embedded into every signed
-Imager package. Selecting its qOS release downloads the compressed image into a
-per-user cache and verifies both the transport SHA-256 and expanded-image
-SHA-256/size before the raw image is offered to the writer.
+and publishes a digest-bound catalog. Both installer images and the catalog
+receive detached OpenPGP signatures from the independently pinned Linux release
+identity, so direct downloads can be authenticated as well as checksum-checked.
+The catalog is also embedded into every signed Imager package. Selecting its qOS
+release downloads the compressed image into a per-user cache and verifies both
+the transport SHA-256 and expanded-image SHA-256/size before the raw image is
+offered to the writer.
 
 Every package launches the wizard as the signed-in user. Only after the exact
 external device name is typed does it request polkit, macOS administrator, or
@@ -64,6 +67,8 @@ closed unless the platform release credentials are configured:
   only after timestamping.
   `signtool verify` independently checks its result. Bootstrap-only fallback:
   `IMAGER_WINDOWS_CERT_PFX_B64` and `IMAGER_WINDOWS_CERT_PASSWORD`.
+  `IMAGER_WINDOWS_PUBLISHER` pins the complete Authenticode certificate subject;
+  packaging checks the signer of every executable against it.
 - macOS steady state: `IMAGER_MACOS_CREDENTIAL_BROKER` leases the Developer ID
   signing identity and a notarytool keychain profile. Bootstrap-only fallback:
   `IMAGER_MAC_CERT_P12_B64`, `IMAGER_MAC_CERT_PASSWORD`,
@@ -71,6 +76,24 @@ closed unless the platform release credentials are configured:
   `IMAGER_APPLE_TEAM_ID`, and `IMAGER_APPLE_APP_PASSWORD`. The app is signed
   with the hardened runtime; both the app and signed DMG are notarized and
   stapled before publication.
+
+`IMAGER_MAC_TEAM_ID` and `IMAGER_MAC_CERT_SHA256` independently pin the
+ten-character Developer Team ID and complete SHA-256 leaf-certificate
+fingerprint. Packaging extracts the actual app signing certificate and refuses
+either mismatch.
+
+All Unix broker programs and signer wrappers must be canonical absolute,
+root-owned paths outside the checkout and runner temporary directory; neither
+they nor any parent may be group/world writable. A broker creates its output as
+a new regular, non-symlink, runner-owned mode-0600 file without an extended ACL.
+Linux leases contain exactly one `QOS_LINUX_SIGNER` and one
+`QOS_LINUX_VERIFY_KEY`; macOS leases contain exactly one
+`QOS_MAC_SIGNING_IDENTITY` and one `QOS_NOTARY_KEYCHAIN_PROFILE`. Publication
+token brokers write one non-empty token with no newline. Unknown, duplicate,
+empty, control-character, multiline, or malformed output fails the release.
+Windows applies the equivalent protected-ACL and non-reparse-point contract.
+Bootstrap PFX/P12 files, temporary keychains, and notary profiles are removed
+by `always()` cleanup steps, including after a failed build.
 
 The bootstrap credentials are protected Forgejo secrets. Native and promotion
 broker paths are separate protected repository variables because absolute paths
@@ -101,3 +124,17 @@ release SHA-256 values, and runs strict audits. `publish-winget.sh` submits the
 generated three-file manifest to Microsoft's public community index. See
 `docs/imager-release-operations.md` for runner labels, protected variables and
 the Forgejo OIDC design for short-lived signing access.
+
+The landing-page manifest records package-channel state separately from signed
+download availability. Homebrew is marked available only after its native
+install matrix passes. A newly opened WinGet submission is marked `submitted`,
+so the site recommends the signed setup EXE instead of showing a command that
+cannot resolve yet. Re-running the idempotent site promotion after Microsoft
+accepts the exact version detects the public manifest and changes WinGet to
+`available`.
+
+Forgejo releases remain drafts while artifacts are uploaded. Publication reads
+every attachment back and compares its exact bytes, then makes the complete
+release public in one final API update. A failed upload therefore leaves a
+recoverable private draft; an already-public release is immutable and cannot be
+filled in or changed by a rerun.

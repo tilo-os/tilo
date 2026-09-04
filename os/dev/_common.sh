@@ -32,13 +32,37 @@ QOS_INSTALLER_DISK="${QOS_INSTALLER_DISK:-$QOS_INSTALLER_OUTPUT/qcow2/disk.qcow2
 # Writable overlay used by VM install cycles. The live installer needs scratch
 # space for its offline image copy, but a test must never mutate the pristine
 # release artifact it is validating.
-QOS_INSTALLER_WORK_DISK="${QOS_INSTALLER_WORK_DISK:-$QOS_INSTALLER_OUTPUT/test-installer-work.qcow2}"
+# A named cycle isolates every mutable VM artifact while preserving it between
+# boot-installer and boot-target. CI must use a unique value (run id + arch) and
+# remove that exact directory before starting the cycle; stale target, TPM or
+# firmware state must never make a release test pass.
+QOS_VM_CYCLE="${QOS_VM_CYCLE:-}"
+if [ -n "$QOS_VM_CYCLE" ]; then
+  case "$QOS_VM_CYCLE" in
+    *[!a-zA-Z0-9._-]*|.|..)
+      printf 'QOS_VM_CYCLE must contain only letters, digits, dot, underscore or dash\n' >&2
+      exit 1
+      ;;
+  esac
+  QOS_CYCLE_DIR="${QOS_CYCLE_DIR:-$QOS_INSTALLER_OUTPUT/vm-cycles/$QOS_VM_CYCLE}"
+else
+  QOS_CYCLE_DIR="${QOS_CYCLE_DIR:-}"
+fi
+if [ -n "$QOS_CYCLE_DIR" ]; then
+  QOS_INSTALLER_WORK_DISK="${QOS_INSTALLER_WORK_DISK:-$QOS_CYCLE_DIR/installer-work.qcow2}"
+else
+  QOS_INSTALLER_WORK_DISK="${QOS_INSTALLER_WORK_DISK:-$QOS_INSTALLER_OUTPUT/test-installer-work.qcow2}"
+fi
 
 # Runtime/scratch dir for the VM. MUST be short: AF_UNIX socket paths are capped
 # at 108 bytes, and a deep scratch path overflows it. Prefer the per-user runtime
 # directory: unlike shared /tmp it is private and cannot consume or inherit an
 # unrelated per-user quota. Fall back to /tmp for non-desktop/CI sessions.
-QOS_RUN="${QOS_RUN:-${XDG_RUNTIME_DIR:-/tmp}/qos-vm}"
+if [ -n "$QOS_VM_CYCLE" ]; then
+  QOS_RUN="${QOS_RUN:-${XDG_RUNTIME_DIR:-/tmp}/qos-vm-$QOS_VM_CYCLE}"
+else
+  QOS_RUN="${QOS_RUN:-${XDG_RUNTIME_DIR:-/tmp}/qos-vm}"
+fi
 QOS_MON="$QOS_RUN/mon.sock"
 QOS_SERIAL="$QOS_RUN/serial.log"
 QOS_QEMU_LOG="$QOS_RUN/qemu.log"
@@ -51,7 +75,11 @@ QOS_PIDFILE="$QOS_RUN/qemu.pid"
 # filesystem, not QOS_RUN's commonly-tmpfs /tmp directory, or a realistic
 # encrypted install can exhaust RAM-backed storage and surface as guest I/O
 # errors. 40 GiB also matches the installer's supported whole-disk envelope.
-QOS_TARGET_DISK="${QOS_TARGET_DISK:-$QOS_INSTALLER_OUTPUT/test-target.qcow2}"
+if [ -n "$QOS_CYCLE_DIR" ]; then
+  QOS_TARGET_DISK="${QOS_TARGET_DISK:-$QOS_CYCLE_DIR/target.qcow2}"
+else
+  QOS_TARGET_DISK="${QOS_TARGET_DISK:-$QOS_INSTALLER_OUTPUT/test-target.qcow2}"
+fi
 QOS_TARGET_SIZE="${QOS_TARGET_SIZE:-40G}"
 
 # Software TPM 2.0 (swtpm) so encrypted/TPM-bound installs can be booted and
@@ -77,6 +105,18 @@ QOS_SMP="${QOS_SMP:-4}"
 QOS_ACCEL="${QOS_ACCEL:-auto}"
 QOS_BOOT_WAIT_ATTEMPTS="${QOS_BOOT_WAIT_ATTEMPTS:-90}"
 QOS_QEMU_START_ATTEMPTS="${QOS_QEMU_START_ATTEMPTS:-100}"
+
+# Architecture of the guest and its release medium. Native runners leave this
+# unset; cross-architecture diagnostic boots may select a guest explicitly and
+# will naturally fall back to TCG. Keep the normalized value in one place so a
+# lane cannot build an aarch64 medium and accidentally exercise x86 firmware.
+QOS_VM_ARCH="${QOS_VM_ARCH:-$(uname -m)}"
+case "$QOS_VM_ARCH" in
+  x86_64|amd64) QOS_VM_ARCH=x86_64 ;;
+  aarch64|arm64) QOS_VM_ARCH=aarch64 ;;
+  *) die "QOS_VM_ARCH must be x86_64 or aarch64 (got $QOS_VM_ARCH)" ;;
+esac
+QOS_QEMU_SYSTEM="${QOS_QEMU_SYSTEM:-qemu-system-$QOS_VM_ARCH}"
 
 # virtio-gpu resolution (the compositor modesets the connector's preferred
 # mode, which these set). Bigger = more software-render cost.
@@ -138,7 +178,7 @@ hmp() {
 # QEMU before the caller's separate one-second probe sees it.
 start_qemu() {
   local args="$1"
-  inenv "setsid nohup qemu-system-x86_64 $args >'$QOS_QEMU_LOG' 2>&1 &
+  inenv "setsid nohup '$QOS_QEMU_SYSTEM' $args >'$QOS_QEMU_LOG' 2>&1 &
     qemu_pid=\$!
     for _ in \$(seq 1 '$QOS_QEMU_START_ATTEMPTS'); do
       test -S '$QOS_MON' && exit 0
@@ -228,6 +268,7 @@ QOS_SECBOOT_KEYS="${QOS_SECBOOT_KEYS:-none}"
 # measure" refusal can be exercised against a directory holding only the 2 MB
 # build, instead of being a branch nobody ever takes.
 QOS_OVMF_DIRS="${QOS_OVMF_DIRS:-/usr/share/edk2/ovmf /usr/share/OVMF}"
+QOS_AAVMF_DIRS="${QOS_AAVMF_DIRS:-/usr/share/edk2/aarch64 /usr/share/AAVMF /usr/share/qemu-efi-aarch64}"
 
 # Filled in by firmware_setup; read by machine_args/secboot_qemu_args/pflash_args.
 QOS_FW_CODE=""; QOS_FW_VARS=""; QOS_FW_FMT=""; QOS_FW_MEASURES=0; QOS_FW_SMM=0
@@ -251,6 +292,41 @@ firmware_setup() {
   fi
 
   local dir d cands
+  if [ "$QOS_VM_ARCH" = aarch64 ]; then
+    # AAVMF/QEMU_EFI is distributed under different names by Fedora and
+    # Debian-family hosts. Both layouts provide a writable, blank variable-store
+    # template next to the read-only code image. This release cycle deliberately
+    # exercises the strong-passphrase path; do not imply measured boot from an
+    # arbitrary AAVMF build merely because it happens to expose a TPM device.
+    [ "$QOS_TPM" = 0 ] || die "the aarch64 VM cycle has no verified measured-AAVMF profile yet.
+  Run the release-grade ARM installer cycle with --no-tpm; TPM enrollment remains
+  disabled in qOS until signed measured-boot predictions are implemented."
+    [ "$QOS_SECBOOT_KEYS" = none ] || die "aarch64 VM Secure Boot key stores are not verified yet;
+  use QOS_SECBOOT_KEYS=none for the ARM installer cycle"
+    cands=""
+    for d in $QOS_AAVMF_DIRS; do
+      cands="$cands $d/QEMU_EFI-pflash.raw $d/AAVMF_CODE.fd"
+    done
+    # shellcheck disable=SC2086
+    QOS_FW_CODE="$(_env_first_file $cands)"
+    [ -n "$QOS_FW_CODE" ] || die "no AAVMF firmware in ${QOS_DISTROBOX:-the host}.
+  Remedy: install edk2-aarch64 (Fedora) or qemu-efi-aarch64 (Debian/Ubuntu)."
+    dir="$(dirname "$QOS_FW_CODE")"
+    case "$(basename "$QOS_FW_CODE")" in
+      QEMU_EFI-pflash.raw)
+        QOS_FW_VARS="$dir/vars-template-pflash.raw" ;;
+      AAVMF_CODE.fd)
+        QOS_FW_VARS="$dir/AAVMF_VARS.fd" ;;
+      *) die "unsupported AAVMF code image: $QOS_FW_CODE" ;;
+    esac
+    [ -n "$(_env_first_file "$QOS_FW_VARS")" ] || die "AAVMF variable-store template missing: $QOS_FW_VARS"
+    QOS_FW_FMT=raw
+    QOS_FW_MEASURES=0
+    QOS_FW_SMM=0
+    msg "firmware: $(basename "$QOS_FW_CODE") [raw] keys=none measures=unverified smm=0"
+    return
+  fi
+
   cands=""; for d in $QOS_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.secboot.qcow2"; done
   # shellcheck disable=SC2086
   QOS_FW_CODE="$(_env_first_file $cands)"
@@ -319,14 +395,15 @@ firmware_setup() {
 }
 
 # Seed and echo the working variable store for this VM. `none` is re-seeded every
-# boot so a boot is reproducible; every other selection is kept, because an
+# boot for ad-hoc VM use, but is persisted inside a named installation cycle;
+# every other selection is kept, because an
 # enrolment a restart silently threw away is indistinguishable from one that
 # never happened. $1 = run dir (defaults to QOS_RUN).
 firmware_varstore() {
   local run="${1:-$QOS_RUN}" tag out
   tag="$(printf '%s' "$QOS_SECBOOT_KEYS" | tr -c 'a-zA-Z0-9' '-')"
   out="$run/vars-$QOS_FW_FMT-$tag.img"
-  if [ "$QOS_SECBOOT_KEYS" = "none" ]; then
+  if [ "$QOS_SECBOOT_KEYS" = "none" ] && [ -z "$QOS_VM_CYCLE" ]; then
     inenv "mkdir -p '$run' && cp -f '$QOS_FW_VARS' '$out'"
   else
     inenv "mkdir -p '$run' && { test -f '$out' || cp -f '$QOS_FW_VARS' '$out'; }"
@@ -351,10 +428,46 @@ secboot_qemu_args() {
 }
 # q35 machine options; SMM is required by the Secure-Boot firmware.
 machine_args() {
+  if [ "$QOS_VM_ARCH" = aarch64 ]; then
+    printf -- '-machine virt,gic-version=max'
+    return
+  fi
   if [ "$QOS_FW_SMM" = "1" ]; then
-    printf -- '-machine q35,accel=kvm,smm=on'
+    printf -- '-machine q35,smm=on'
   else
-    printf -- '-machine q35,accel=kvm'
+    printf -- '-machine q35'
+  fi
+}
+
+# QEMU's VGA-compatible virtio device is specific to PC machines. ARM's `virt`
+# board uses the PCI virtio-gpu variant, which AAVMF exposes through GOP and the
+# graphical installer can modeset in exactly the same way after ExitBootServices.
+display_qemu_args() {
+  local mode="$1" res="xres=$QOS_XRES,yres=$QOS_YRES" rn
+  case "$mode:$QOS_VM_ARCH" in
+    gl:x86_64)
+      rn="$(detect_rendernode)"
+      printf -- '-device virtio-vga-gl,%s -display egl-headless,rendernode=%s' "$res" "$rn" ;;
+    gl:aarch64)
+      rn="$(detect_rendernode)"
+      printf -- '-device virtio-gpu-gl-pci,%s -display egl-headless,rendernode=%s' "$res" "$rn" ;;
+    window:x86_64)
+      printf -- '-device virtio-vga-gl,%s -display gtk,gl=on' "$res" ;;
+    window:aarch64)
+      printf -- '-device virtio-gpu-gl-pci,%s -display gtk,gl=on' "$res" ;;
+    2d:x86_64)
+      printf -- '-device virtio-vga,%s -display none' "$res" ;;
+    2d:aarch64)
+      printf -- '-device virtio-gpu-pci,%s -display none' "$res" ;;
+    *) die "unsupported display mode/architecture: $mode/$QOS_VM_ARCH" ;;
+  esac
+}
+
+input_qemu_args() {
+  if [ "$QOS_VM_ARCH" = aarch64 ]; then
+    printf -- '-device qemu-xhci -device usb-tablet'
+  else
+    printf -- '-usb -device usb-tablet'
   fi
 }
 

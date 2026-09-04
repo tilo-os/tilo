@@ -46,6 +46,10 @@ pub struct InputHint {
 pub struct InputDeviceGlyph;
 
 impl InputDeviceGlyph {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the branches form one compact vector glyph; splitting them would obscure the shared geometry"
+    )]
     pub fn paint_controller(
         scene: &mut Scene,
         transform: Affine,
@@ -235,6 +239,10 @@ impl InputHint {
     }
 
     /// Paint the same component used by the retained widget at `origin`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the painter keeps scene, geometry, device conventions, renderer, and theme explicit"
+    )]
     pub fn paint_at(
         scene: &mut Scene,
         transform: Affine,
@@ -292,6 +300,10 @@ impl InputHint {
     /// Paint two alternative keyboard chords without repeating their shared
     /// modifiers. Separators are text rather than extra caps, so a pair reads
     /// as `Super + Left or Right`, not as one long row of unrelated keys.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the painter keeps scene, geometry, both choices, device conventions, renderer, and theme explicit"
+    )]
     pub fn paint_keyboard_choice_at(
         scene: &mut Scene,
         transform: Affine,
@@ -311,13 +323,16 @@ impl InputHint {
         let first_rect;
         let second_rect;
         if share_modifiers {
-            let modifier_count = first_labels.len().saturating_sub(1);
+            let modifier_count = first_labels
+                .len()
+                .saturating_sub(1)
+                .min(second_labels.len().saturating_sub(1));
             if modifier_count > 0 {
                 x += Self::paint_keycap_labels_at(
                     scene,
                     transform,
                     Point::new(x, origin.y),
-                    &first_labels[..modifier_count],
+                    first_labels.get(..modifier_count).unwrap_or_default(),
                     text_renderer,
                     theme,
                 );
@@ -335,7 +350,7 @@ impl InputHint {
                 scene,
                 transform,
                 Point::new(x, origin.y),
-                &first_labels[modifier_count..],
+                first_labels.get(modifier_count..).unwrap_or_default(),
                 text_renderer,
                 theme,
             );
@@ -353,7 +368,7 @@ impl InputHint {
                 scene,
                 transform,
                 Point::new(x, origin.y),
-                &second_labels[modifier_count..],
+                second_labels.get(modifier_count..).unwrap_or_default(),
                 text_renderer,
                 theme,
             );
@@ -393,6 +408,10 @@ impl InputHint {
 
     /// Controller counterpart to [`Self::paint_keyboard_choice_at`]. Shared
     /// hold buttons such as Guide/Home are shown once before the alternatives.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the painter keeps scene, geometry, both choices, device conventions, renderer, and theme explicit"
+    )]
     pub fn paint_controller_choice_at(
         scene: &mut Scene,
         transform: Affine,
@@ -658,18 +677,21 @@ impl Widget for InputHint {
             .iter()
             .map(|(label, shape)| match shape {
                 HintShape::RoundButton => {
-                    (label.chars().count() as f64 * 7.0 + CAP_PAD_X).max(HEIGHT)
+                    (crate::num::f64_of_usize(label.chars().count()) * 7.0 + CAP_PAD_X).max(HEIGHT)
                 }
                 HintShape::Keycap | HintShape::Gesture => {
-                    (label.chars().count() as f64 * 7.0 + CAP_PAD_X * 2.0).max(MIN_CAP_WIDTH)
+                    (crate::num::f64_of_usize(label.chars().count()) * 7.0 + CAP_PAD_X * 2.0)
+                        .max(MIN_CAP_WIDTH)
                 }
             })
             .sum::<f64>()
-            + CAP_GAP * self.tokens().len().saturating_sub(1) as f64;
+            + CAP_GAP * crate::num::f64_of_usize(self.tokens().len().saturating_sub(1));
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(approximate as f32),
-                height: Dimension::length(f64::from(theme.tokens.spacing.s6).max(HEIGHT) as f32),
+                width: Dimension::length(crate::num::f32_of_f64(approximate)),
+                height: Dimension::length(crate::num::f32_of_f64(
+                    f64::from(theme.tokens.spacing.s6).max(HEIGHT),
+                )),
             },
             ..Default::default()
         });
@@ -685,15 +707,15 @@ impl Widget for InputHint {
     ) -> Size<f32> {
         let theme = Theme::dark();
         Size {
-            width: Self::measure_width(
+            width: crate::num::f32_of_f64(Self::measure_width(
                 &self.binding,
                 self.platform,
                 self.environment.keyboard_family,
                 self.controller_family(),
                 text_renderer,
                 &theme,
-            ) as f32,
-            height: HEIGHT as f32,
+            )),
+            height: crate::num::f32_of_f64(HEIGHT),
         }
     }
 

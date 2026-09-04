@@ -27,6 +27,88 @@ pub const APPLICATIONS_KIND: &str = "Applications";
 /// (every band in [`match_score`] is at least five points apart).
 const NOT_INSTALLED_TIEBREAK: i32 = 1;
 
+/// Product-owned ordering for the empty Applications palette. Search queries
+/// continue to rank purely by match quality; this only prevents a fresh system
+/// from presenting forty alphabetised tools as though they were equally likely
+/// starting points. The first group is deliberately useful to curious
+/// tinkerers without assuming they are developers.
+fn empty_palette_presentation(package_id: &str) -> (&'static str, i32) {
+    match package_id {
+        "dev.qos.browser" => ("Start here", 90),
+        "dev.qos.file-explorer" => ("Start here", 89),
+        "dev.qos.notes" => ("Start here", 88),
+        "dev.qos.terminal" => ("Start here", 87),
+        "dev.qos.settings" => ("Start here", 86),
+        "dev.qos.store" => ("Start here", 85),
+
+        "dev.qos.calendar" => ("Everyday", 74),
+        "dev.qos.mail" => ("Everyday", 73),
+        "dev.qos.contacts" => ("Everyday", 72),
+        "dev.qos.chat" => ("Everyday", 71),
+        "dev.qos.calculator" => ("Everyday", 70),
+
+        "dev.qos.word-processor" => ("Work", 59),
+        "dev.qos.sheets" => ("Work", 58),
+        "dev.qos.slides" => ("Work", 57),
+        "dev.qos.pdf-viewer" => ("Work", 56),
+        "dev.qos.typst-editor" => ("Work", 55),
+
+        "dev.qos.music" => ("Media", 49),
+        "dev.qos.tube" => ("Media", 48),
+        "dev.qos.video-player" => ("Media", 47),
+        "dev.qos.photos" => ("Media", 46),
+        "dev.qos.camera" => ("Media", 45),
+        "dev.qos.weather" => ("Everyday", 44),
+        "dev.qos.maps" => ("Everyday", 43),
+        "dev.qos.feeds" => ("Everyday", 42),
+        "dev.qos.ebook" => ("Media", 41),
+        "dev.qos.totp" => ("Everyday", 40),
+
+        "dev.qos.monitor" | "dev.qos.disks" | "dev.qos.logs" | "dev.qos.firewall"
+        | "dev.qos.vpn" | "dev.qos.remote" | "dev.qos.backups" | "dev.qos.imager"
+        | "dev.qos.themes" => ("System tools", 25),
+        _ => ("More apps", 10),
+    }
+}
+
+fn presentation_score(needle: &str, package_id: &str, match_score: i32) -> i32 {
+    if needle.is_empty() {
+        empty_palette_presentation(package_id).1
+    } else {
+        match_score
+    }
+}
+
+fn app_detail(needle: &str, app: &InstalledApp) -> String {
+    let metadata = match app.category.as_deref() {
+        Some(category) => format!("{category} · {}", app.package_id),
+        None => format!("{} · {}", app.package_id, app.version),
+    };
+    if needle.is_empty() {
+        format!(
+            "{} · {metadata}",
+            empty_palette_presentation(&app.package_id).0
+        )
+    } else {
+        metadata
+    }
+}
+
+fn catalogue_app_detail(needle: &str, app: &CatalogueApp) -> String {
+    let metadata = match app.category.as_deref() {
+        Some(category) => format!("{category} · {}", app.package_id),
+        None => format!("{} · {}", app.package_id, app.version),
+    };
+    if needle.is_empty() {
+        format!(
+            "{} · {metadata}",
+            empty_palette_presentation(&app.package_id).0
+        )
+    } else {
+        metadata
+    }
+}
+
 pub struct ApplicationsProvider {
     kinds: Vec<ResourceKind>,
 }
@@ -72,10 +154,7 @@ impl ApplicationsProvider {
             let package_id = app.package_id.clone();
             let display_name = app.display_name.clone();
             // A declared category is a more useful second line than the version.
-            let detail = match app.category.as_deref() {
-                Some(cat) => format!("{cat} · {}", app.package_id),
-                None => format!("{} · {}", app.package_id, app.version),
-            };
+            let detail = app_detail(needle, &app);
             // Where the window will land leads the line, since it's the
             // part of a launch row that changes with context.
             let subtitle = format!("{} · {detail}", open_target.result_hint());
@@ -85,7 +164,7 @@ impl ApplicationsProvider {
                 app.package_id.clone(),
                 format!("Open {}", app.display_name),
                 Some(subtitle),
-                score,
+                presentation_score(needle, &app.package_id, score),
                 move |_doc, _root, chrome: &Chrome| {
                     launch_installed_app(chrome, &package_id, &display_name)
                 },
@@ -210,10 +289,7 @@ impl ApplicationsProvider {
             let package_id = app.package_id.clone();
             let display_name = app.display_name.clone();
             // Identical to the installed subtitle, field for field.
-            let detail = match app.category.as_deref() {
-                Some(cat) => format!("{cat} · {}", app.package_id),
-                None => format!("{} · {}", app.package_id, app.version),
-            };
+            let detail = catalogue_app_detail(needle, &app);
             let subtitle = format!("{} · {detail}", open_target.result_hint());
             out.push(SearchResult {
                 kind: ResourceKind::Application,
@@ -221,7 +297,8 @@ impl ApplicationsProvider {
                 id: app.package_id.clone(),
                 title: format!("Open {}", app.display_name),
                 subtitle: Some(subtitle),
-                score: score.saturating_sub(NOT_INSTALLED_TIEBREAK),
+                score: presentation_score(needle, &app.package_id, score)
+                    .saturating_sub(NOT_INSTALLED_TIEBREAK),
                 on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
                     // Captured now, not re-read at launch: the window may be
                     // a minute away and the user's selection can change.
@@ -761,15 +838,57 @@ mod tests {
     }
 
     #[test]
-    fn empty_needle_lists_every_app() {
+    fn empty_needle_lists_every_app_with_a_useful_fresh_system_order() {
         let p = ApplicationsProvider::new();
         let out = p.results_for(
             "",
-            vec![app("dev.qos.hello", "Hello"), app("org.x.zed", "Zed")],
+            vec![
+                app("dev.qos.monitor", "System Monitor"),
+                app("dev.qos.browser", "Browser"),
+                app("dev.qos.notes", "Notes"),
+                app("dev.qos.hello", "Hello"),
+            ],
             OpenTarget::Beside,
         );
-        assert_eq!(out.len(), 2);
-        assert!(out.iter().all(|r| r.score == 0));
+        assert_eq!(out.len(), 4);
+        let score = |id: &str| out.iter().find(|row| row.id == id).unwrap().score;
+        assert!(score("dev.qos.browser") > score("dev.qos.notes"));
+        assert!(score("dev.qos.notes") > score("dev.qos.monitor"));
+        assert!(score("dev.qos.monitor") > score("dev.qos.hello"));
+        assert!(
+            out.iter()
+                .find(|row| row.id == "dev.qos.browser")
+                .and_then(|row| row.subtitle.as_deref())
+                .is_some_and(|subtitle| subtitle.contains("Start here")),
+            "the ordering must also be explained on screen"
+        );
+    }
+
+    #[test]
+    fn typed_search_ignores_default_presentation_tiers() {
+        let p = ApplicationsProvider::new();
+        let out = p.results_for(
+            "monitor",
+            vec![
+                app("dev.qos.browser", "Browser"),
+                app("dev.qos.monitor", "System Monitor"),
+            ],
+            OpenTarget::Beside,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "dev.qos.monitor");
+        assert_eq!(
+            out[0].score, 100,
+            "normal match scoring remains authoritative"
+        );
+        assert!(
+            !out[0]
+                .subtitle
+                .as_deref()
+                .unwrap_or_default()
+                .contains("System tools"),
+            "presentation bands are not search metadata or query noise"
+        );
     }
 
     #[test]

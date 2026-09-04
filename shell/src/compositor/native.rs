@@ -67,6 +67,7 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
+use crate::compositor::accessibility::{NativeAccessibility, Request as AccessibilityRequest};
 use crate::compositor::backend::{
     Backend, BackendEvent, DrmBackend, HeadlessBackend, Output, OutputId, WinitBackend,
     combined_geometry, headless,
@@ -2090,6 +2091,7 @@ fn pump_test_control_conn(
                         // settled per command, not per action: idempotent, and cheap relative to
                         // the round-trip that asked for it.
                         frame_builder.relayout();
+                        frame_builder.reconcile_native_focus(&mut ctx.focus);
                         let state = FrameBuilderControlState {
                             fb: frame_builder,
                             doc: Some((&ctx.doc, &ctx.root_obj)),
@@ -2123,6 +2125,7 @@ fn pump_test_control_conn(
                 if !actions.is_empty() {
                     injected_input = true;
                     frame_builder.relayout();
+                    frame_builder.reconcile_native_focus(&mut ctx.focus);
                 }
                 let resp = match failed {
                     Some(failure) => test_control::Response::Err {
@@ -3854,9 +3857,15 @@ pub fn run() -> ! {
         None => (None, None),
     };
     let mut test_control_conns: Vec<TestControlConn> = Vec::new();
-    // Per-process scratch context for executing PlannedActions off the
-    // test-control socket — the only place a `Modifiers`/`AutoCommit`/focus-cursor lives, since real winit input isn't yet routed to the host.
+    // Per-process input context shared by the physical-seat and optional
+    // test-control paths. Keeping one focus cursor makes injected and real
+    // keyboard traversal exercise the exact same widgets.
     let mut test_control_ctx = TestControlCtx::new();
+    frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
+    // Compositor chrome has no application window for `accesskit_winit` to
+    // attach to. Publish its existing `ui::Widget` semantics directly over
+    // AT-SPI, including the trusted OOBE and desktop tour shown before apps.
+    let mut native_accessibility = NativeAccessibility::new(initial_size);
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
     // `compositor::idle`); transitions become `backend.set_dpms` calls and
@@ -4104,6 +4113,33 @@ pub fn run() -> ! {
         backend.poll_events(&mut |event| pending_events.push(event));
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
+        let mut accessibility_changed = false;
+        for request in native_accessibility.drain() {
+            match request {
+                AccessibilityRequest::InitialTree => accessibility_changed = true,
+                AccessibilityRequest::Action(request) => {
+                    if !session.is_locked()
+                        && let Some(action) = ui::accesskit_bridge::accesskit_action_to_ours(
+                            request.action,
+                            request.data.as_ref(),
+                        )
+                        && frame_builder.dispatch_a11y_action(
+                            request.target_node,
+                            &action,
+                            &mut test_control_ctx.doc,
+                            &test_control_ctx.root_obj,
+                            &mut test_control_ctx.focus,
+                        )
+                    {
+                        session_changed = true;
+                    }
+                    // Even an unsupported or stale action gets a fresh tree:
+                    // the AT can immediately discard the obsolete reference.
+                    accessibility_changed = true;
+                }
+                AccessibilityRequest::Deactivated => {}
+            }
+        }
         // `drain`, not `into_iter`: `pending_events` is declared once outside
         // this loop and reused every tick to avoid a per-frame allocation on
         // this hot path — `into_iter` would consume it, forcing a fresh `Vec` next iteration.
@@ -4370,6 +4406,7 @@ pub fn run() -> ! {
             );
             if combined.0 > 0 && combined.1 > 0 {
                 frame_builder.set_viewport(combined);
+                native_accessibility.set_viewport(combined);
                 state.output_size = size_to_signed(combined);
                 if let Some(pipe) = present_pipe.as_ref() {
                     pipe.resize(combined);
@@ -4806,6 +4843,7 @@ pub fn run() -> ! {
         let content_changed = force_first_paint
             || had_backend_events
             || session_changed
+            || accessibility_changed
             || revision_changed
             || animating
             || apps_changed
@@ -4890,6 +4928,13 @@ pub fn run() -> ! {
             // tab switch, resize) is applied here, right before the scene is built.
             let t_layout_start = Instant::now();
             frame_builder.relayout();
+            frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
+            native_accessibility.set_window_focus(!session.is_locked());
+            if !session.is_locked() {
+                native_accessibility.update_if_active(|| {
+                    frame_builder.build_a11y_tree_update(test_control_ctx.focus, 1.0)
+                });
+            }
             let layout_took = t_layout_start.elapsed();
             metrics.mark_layout(layout_took);
             let t_scene_start = Instant::now();
@@ -5173,6 +5218,7 @@ pub fn run() -> ! {
             // Input was dispatched but the frame deferred — lay out anyway so the *next*
             // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
             frame_builder.relayout();
+            frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
         }
         let t_paint_done = iter_t0.elapsed();
 

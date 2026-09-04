@@ -21,6 +21,7 @@ use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -62,6 +63,13 @@ const RAIL_BREAKPOINT: f64 = 820.0;
 /// Below this width the top-bar chrome compacts (icon-only primary action,
 /// tighter tabs) and multi-column tile/card grids drop toward a single column.
 const NARROW_BREAKPOINT: f64 = 720.0;
+
+/// A closed overlay is positioned mostly outside the content rect. Require a
+/// non-zero eased reveal before painting it; otherwise its off-screen tail can
+/// show as a mysterious sliver at the opposite edge of a phone window.
+fn should_paint_rail(drawer: &SidebarDrawer, rail: Rect) -> bool {
+    rail.width() > 4.0 && drawer.reveal() > 0.001
+}
 
 /// Click/hover targets discovered during `draw` and consumed by
 /// `handle_event`. Cleared and rebuilt every frame.
@@ -413,6 +421,11 @@ impl BackupsApp {
     }
 
     fn drain_effects(&mut self) {
+        self.drain_picker();
+        self.drain_job();
+    }
+
+    fn drain_picker(&mut self) {
         let portal_result =
             self.picker
                 .as_ref()
@@ -452,7 +465,9 @@ impl BackupsApp {
                 ui::portal::PortalOutcome::Failed(error) => self.toast_now(error),
             }
         }
+    }
 
+    fn drain_job(&mut self) {
         loop {
             let event = self
                 .job
@@ -473,7 +488,7 @@ impl BackupsApp {
                         "{} files · {}",
                         progress.files,
                         ui::format::bytes(progress.bytes)
-                    ))
+                    ));
                 }
                 JobEvent::Created(manifest) => {
                     self.job = None;
@@ -612,7 +627,7 @@ impl BackupsApp {
                 self.drawer.draw_scrim(scene, t);
                 self.hits.push((scrim, Hit::CloseRail));
             }
-            if side.width() > 4.0 {
+            if should_paint_rail(&self.drawer, side) {
                 self.draw_rail(scene, t, tr, theme, side);
             }
         }
@@ -930,14 +945,13 @@ impl BackupsApp {
             content.x1,
             cy,
         );
-        let detail = self
-            .job_status
-            .as_deref()
-            .unwrap_or(if self.source_path.is_some() {
+        let detail = self.job_status.as_deref().unwrap_or_else(|| {
+            if self.source_path.is_some() {
                 "Pick another drive or a folder outside the source."
             } else {
                 "Choose a folder. Backups will be checksummed and restorable."
-            });
+            }
+        });
         paint::text_center(
             scene,
             tr,
@@ -4107,6 +4121,121 @@ impl Widget for BackupsApp {
         self.rect
     }
 
+    fn accessibility(&self) -> Option<AccessNode> {
+        let controls = self
+            .hits
+            .iter()
+            .filter_map(|(rect, hit)| {
+                let (name, role, state) = match hit {
+                    Hit::Tab(view) => (
+                        format!("{} view", view.title()),
+                        Role::RadioButton,
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.ui.view == *view),
+                    ),
+                    Hit::Source(Some(id)) => (
+                        format!("Select source {id}"),
+                        Role::Button,
+                        AccessState::new().focusable(true),
+                    ),
+                    Hit::Source(None) => (
+                        "All sources".into(),
+                        Role::Button,
+                        AccessState::new().focusable(true),
+                    ),
+                    Hit::Snap(id) => (
+                        format!("Open snapshot {id}"),
+                        Role::ListItem,
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(self.ui.sel_snapshot.as_deref() == Some(id)),
+                    ),
+                    Hit::Dest(id) => (
+                        format!("Select destination {id}"),
+                        Role::ListItem,
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(self.ui.sel_dest.as_deref() == Some(id)),
+                    ),
+                    Hit::Policy(field, delta) => (
+                        format!(
+                            "{} retention {}",
+                            field.label(),
+                            if *delta > 0 { "increase" } else { "decrease" }
+                        ),
+                        Role::Button,
+                        AccessState::new().focusable(true),
+                    ),
+                    Hit::ToggleRail => (
+                        "Show backup sources".into(),
+                        Role::ToggleButton,
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.drawer.is_open()),
+                    ),
+                    Hit::CloseRail => (
+                        "Close backup sources".into(),
+                        Role::Button,
+                        AccessState::new().focusable(true),
+                    ),
+                    Hit::Setup => (
+                        "Set up backups".into(),
+                        Role::Button,
+                        AccessState::new().focusable(true),
+                    ),
+                    Hit::BackupNow => (
+                        "Back up now".into(),
+                        Role::Button,
+                        AccessState::new().focusable(true),
+                    ),
+                    Hit::Verify => (
+                        "Verify latest backup".into(),
+                        Role::Button,
+                        AccessState::new().focusable(true),
+                    ),
+                    Hit::FileRow(_) | Hit::RestoreConfirm | Hit::RestoreCancel => return None,
+                };
+                Some(
+                    AccessNode::new(role)
+                        .with_name(name)
+                        .with_state(state)
+                        .with_bounds(*rect)
+                        .with_action_target(format!("backups.hit:{hit:?}")),
+                )
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name("Backups")
+                .with_bounds(self.rect)
+                .with_children(controls),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &A11yAction,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if !matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
+            return false;
+        }
+        let hit = self
+            .hits
+            .iter()
+            .find(|(_, hit)| format!("backups.hit:{hit:?}") == target)
+            .map(|(_, hit)| hit.clone());
+        if let Some(hit) = hit {
+            self.dispatch(hit, state, path);
+            true
+        } else {
+            false
+        }
+    }
+
     fn needs_animation_frame(&self) -> bool {
         self.toast.is_some()
             || self.picker.is_some()
@@ -4259,6 +4388,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn closed_overlay_rail_is_not_painted_from_its_offscreen_tail() {
+        let mut drawer = SidebarDrawer::new()
+            .left()
+            .docked_width(RAIL_W)
+            .overlay_width(RAIL_W.max(288.0))
+            .breakpoint(RAIL_BREAKPOINT);
+        let outer = Rect::new(20.0, 66.0, 370.0, 832.0);
+        drawer.resolve(outer);
+        let rail = drawer.sidebar_rect();
+        assert_eq!(drawer.reveal(), 0.0);
+        assert!(rail.x1 <= outer.x0);
+        assert!(!should_paint_rail(&drawer, rail));
+    }
+
     /// A headless harness that drives the **production** widget path: it draws a
     /// real frame (populating the hit map exactly as the live app does), then
     /// synthesises the pointer events a real click produces and feeds them
@@ -4388,6 +4532,20 @@ mod tests {
         // And a second tab confirms it is not a one-shot.
         f.click_hit(|h| matches!(h, Hit::Tab(View::Schedules)));
         assert_eq!(f.view(), View::Schedules);
+    }
+
+    #[test]
+    fn accessibility_tab_activation_reuses_the_hit_dispatcher() {
+        let mut f = Frame::demo();
+        let tree = f.app.accessibility().expect("backups exports a window");
+        assert_eq!(tree.role, Role::Window);
+        assert!(f.app.perform_semantic_action(
+            "backups.hit:Tab(Destinations)",
+            &A11yAction::Activate,
+            &mut f.state.doc,
+            &f.state.root,
+        ));
+        assert_eq!(f.view(), View::Destinations);
     }
 
     #[test]

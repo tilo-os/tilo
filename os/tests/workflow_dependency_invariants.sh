@@ -9,12 +9,21 @@ fail=0
 manifest="$repo/os/external-assets/github-assets.tsv"
 package_workflow="$workflows/package-desktop.yml"
 containerfile="$repo/os/Containerfile"
+nightly_workflow="$workflows/nightly.yml"
+visual_refresh_workflow="$workflows/refresh-visual-baselines.yml"
 github_cache_workflows=(
   "$workflows/build-builder-image.yml"
   "$workflows/build-image.yml"
   "$workflows/package-desktop.yml"
   "$workflows/release-imager.yml"
   "$workflows/snapshot-rpms.yml"
+)
+cosign_workflows=(
+  "$workflows/build-image.yml"
+  "$workflows/build-kernel.yml"
+  "$workflows/qos-relay.yaml"
+  "$workflows/release-imager.yml"
+  "$workflows/snapshot-wpe-buildroot.yml"
 )
 
 while IFS=: read -r file line match; do
@@ -32,6 +41,27 @@ done < <(grep -R -n -o -E 'uses:[[:space:]]*[^[:space:]#]+' "$workflows")
 
 if [ "$fail" = 0 ]; then
   printf 'ok    every remote workflow action is pinned to a full commit SHA\n'
+fi
+
+nightly_visual_image="$({
+  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/qos-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
+    "$nightly_workflow"
+} | head -n 1)"
+refresh_visual_image="$({
+  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/qos-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
+    "$visual_refresh_workflow"
+} | head -n 1)"
+if [[ "$nightly_visual_image" =~ @sha256:[0-9a-f]{64}$ ]] \
+  && [ "$nightly_visual_image" = "$refresh_visual_image" ] \
+  && grep -Fq 'Upload candidates for visual review' "$visual_refresh_workflow" \
+  && grep -Fq 'xargs -0 -r git add -N --' "$visual_refresh_workflow" \
+  && grep -Fq 'sha256sum candidates.patch > candidates.patch.sha256' \
+    "$visual_refresh_workflow" \
+  && ! grep -Fq 'git push origin' "$visual_refresh_workflow"; then
+  printf 'ok    visual verification and reviewed candidates share one immutable builder\n'
+else
+  printf 'visual candidates must use the nightly image and never auto-commit pixels\n' >&2
+  fail=1
 fi
 
 declare -A asset_names=()
@@ -70,6 +100,43 @@ while IFS=$'\t' read -r checksum name url extra; do
 done < "$manifest"
 if [ "$fail" = 0 ]; then
   printf 'ok    external GitHub assets have safe names, immutable revisions, and SHA-256 pins\n'
+fi
+
+declare -A cosign_sha=(
+  [amd64]=bcfeae05557a9f313ee4392d2f335d0ff69ebbfd232019e3736fb04999fe1734
+  [arm64]=2cbcea1873ad76274c3f241ef175d204654e3aac3e73e6ec4504e5227015cb0a
+)
+for arch in amd64 arm64; do
+  name="cosign-v2.5.2-linux-$arch"
+  if ! awk -F '\t' -v n="$name" -v arch="$arch" -v sha="${cosign_sha[$arch]}" \
+    '$1 == sha && $2 == n && $3 == "https://github.com/sigstore/cosign/releases/download/v2.5.2/cosign-linux-" arch { found=1 }
+     END { exit !found }' "$manifest"; then
+    printf 'missing checksum-pinned Cosign input: %s\n' "$name" >&2
+    fail=1
+  fi
+done
+for workflow in "${cosign_workflows[@]}"; do
+  if ! grep -Fq './os/dev/install-cached-cosign.sh' "$workflow"; then
+    printf 'workflow bypasses the checksum-verified Cosign cache: %s\n' \
+      "${workflow#$repo/}" >&2
+    fail=1
+  fi
+  if ! grep -Eq 'github-assets-all-v1-|cosign-v2\.5\.2-' "$workflow"; then
+    printf 'Cosign workflow has no persistent binary cache: %s\n' \
+      "${workflow#$repo/}" >&2
+    fail=1
+  fi
+done
+if grep -R -q 'sigstore/cosign-installer' "$workflows"; then
+  printf 'workflow still downloads Cosign through the installer action\n' >&2
+  fail=1
+fi
+if ! grep -Fq 'cache-github-assets.sh" "$asset"' \
+    "$repo/os/dev/install-cached-cosign.sh"; then
+  printf 'Cosign installer bypasses the checksum-verified persistent cache\n' >&2
+  fail=1
+elif [ "$fail" = 0 ]; then
+  printf 'ok    every Cosign workflow uses cached, checksum-pinned native binaries\n'
 fi
 
 for workflow in "${github_cache_workflows[@]}"; do

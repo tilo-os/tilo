@@ -36,7 +36,7 @@ use collab_types::{
 use runtime_collab::raw::{
     OpKind, action_catalogue_stream, action_input, channel_handle, collab_service, context_stream,
     invocation_stream, presence_event, presence_handle, presence_payload, presence_stream,
-    scrollback_batch, stream,
+    scrollback_batch, stream, workspace_control_handle,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
@@ -394,6 +394,7 @@ pub struct CapnpBrokerState {
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
     invocation_id: AtomicU64,
+    workspace_control_network: Mutex<Option<std::sync::Weak<crate::shell::network::ShellNetwork>>>,
 }
 
 impl CapnpBrokerState {
@@ -515,7 +516,21 @@ impl CapnpBrokerState {
             confirmation_grants: Mutex::new(HashMap::new()),
             cancellation_requests: Mutex::new(std::collections::HashSet::new()),
             invocation_id: AtomicU64::new(1),
+            workspace_control_network: Mutex::new(None),
         })
+    }
+
+    fn attach_workspace_control_network(&self, network: &Arc<crate::shell::network::ShellNetwork>) {
+        if let Ok(mut slot) = self.workspace_control_network.lock() {
+            *slot = Some(Arc::downgrade(network));
+        }
+    }
+
+    fn workspace_control_network(&self) -> Option<Arc<crate::shell::network::ShellNetwork>> {
+        self.workspace_control_network
+            .lock()
+            .ok()
+            .and_then(|network| network.as_ref().and_then(std::sync::Weak::upgrade))
     }
 
     /// Snapshot every action surface currently published by a connected app.
@@ -1247,7 +1262,8 @@ impl CapnpBrokerState {
             | CollabEvent::Invocation { .. }
             | CollabEvent::InvocationCancellation { .. }
             | CollabEvent::ActionCatalogue { .. }
-            | CollabEvent::PublishedInvocationResult { .. } => {
+            | CollabEvent::PublishedInvocationResult { .. }
+            | CollabEvent::WorkspaceControl { .. } => {
                 // Invocation delivery and cooperative cancellation are
                 // point-to-point and never enter route fanout.
             }
@@ -1541,6 +1557,77 @@ impl CapnpChannelHandle {
 }
 
 impl channel_handle::Server for CapnpChannelHandle {
+    fn open_workspace_control(
+        self: Rc<Self>,
+        params: channel_handle::OpenWorkspaceControlParams,
+        mut results: channel_handle::OpenWorkspaceControlResults,
+    ) -> Promise<(), capnp::Error> {
+        let route = self.route();
+        if let Err(error) =
+            revalidate_workspace_control(&self.state, &route, &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let Some(room) = crate::shell::state::RoomId::parse(&route.cluster_id) else {
+            return Promise::err(capnp::Error::failed(
+                "workspace control requires a workspace-scoped channel".into(),
+            ));
+        };
+        let target_bytes = match params.get().and_then(|params| params.get_target_device()) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut target = [0_u8; 32];
+                target.copy_from_slice(bytes);
+                target
+            }
+            _ => {
+                return Promise::err(capnp::Error::failed(
+                    "target device must be an exact 32-byte identity".into(),
+                ));
+            }
+        };
+        let Ok(target) = iroh::EndpointId::from_bytes(&target_bytes) else {
+            return Promise::err(capnp::Error::failed(
+                "invalid target device identity".into(),
+            ));
+        };
+        let Some(network) = self.state.workspace_control_network() else {
+            return Promise::err(capnp::Error::failed(
+                "workspace-control network is not attached".into(),
+            ));
+        };
+        let workspace = crate::shell::network::room_topic_id(room);
+        let session = match network.open_workspace_control(workspace, target) {
+            Ok(session) => session,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
+        let initial_route = match session.route() {
+            crate::network::WorkspaceControlRoute::Direct { .. } => {
+                runtime_collab::WorkspaceControlRoute::Direct
+            }
+            crate::network::WorkspaceControlRoute::Relayed { via } => {
+                runtime_collab::WorkspaceControlRoute::Relayed {
+                    via: *via.as_bytes(),
+                }
+            }
+        };
+        let server = CapnpWorkspaceControlHandle {
+            state: self.state.clone(),
+            route,
+            verified_identity: self.verified_identity.clone(),
+            network: network.clone(),
+            session: Rc::new(AsyncMutex::new(session)),
+            inbound: Rc::new(AsyncMutex::new(network.subscribe_workspace_control())),
+            initial: Rc::new(AsyncMutex::new(Some(
+                runtime_collab::WorkspaceControlEvent::WaitingForConsent {
+                    route: initial_route,
+                },
+            ))),
+        };
+        let client: workspace_control_handle::Client = capnp_rpc::new_client(server);
+        results.get().set_handle(client);
+        Promise::ok(())
+    }
+
     fn send(
         self: Rc<Self>,
         params: channel_handle::SendParams,
@@ -2606,6 +2693,242 @@ impl channel_handle::Server for CapnpChannelHandle {
     }
 }
 
+struct CapnpWorkspaceControlHandle {
+    state: Arc<CapnpBrokerState>,
+    route: CrdtRoute,
+    verified_identity: AdmittedJoinIdentity,
+    network: Arc<crate::shell::network::ShellNetwork>,
+    session: Rc<AsyncMutex<crate::network::WorkspaceControlSession>>,
+    inbound: Rc<
+        AsyncMutex<
+            tokio::sync::mpsc::UnboundedReceiver<
+                crate::shell::network::WorkspaceControlNetworkEvent,
+            >,
+        >,
+    >,
+    initial: Rc<AsyncMutex<Option<runtime_collab::WorkspaceControlEvent>>>,
+}
+
+fn workspace_control_event(
+    update: crate::network::WorkspaceControlUpdate,
+) -> runtime_collab::WorkspaceControlEvent {
+    match update {
+        crate::network::WorkspaceControlUpdate::ConsentGranted {
+            surface,
+            width,
+            height,
+        } => runtime_collab::WorkspaceControlEvent::StreamStarted {
+            surface,
+            width,
+            height,
+        },
+        crate::network::WorkspaceControlUpdate::Frame {
+            surface,
+            encoded_h264,
+            timestamp,
+        } => runtime_collab::WorkspaceControlEvent::Frame {
+            surface,
+            encoded_h264,
+            timestamp,
+        },
+        crate::network::WorkspaceControlUpdate::Closed(reason) => {
+            let reason = match reason {
+                crate::network::WorkspaceControlCloseReason::Denied(message) => {
+                    runtime_collab::WorkspaceControlCloseReason::Denied(message)
+                }
+                crate::network::WorkspaceControlCloseReason::Revoked => {
+                    runtime_collab::WorkspaceControlCloseReason::Revoked
+                }
+                crate::network::WorkspaceControlCloseReason::TargetDisconnected => {
+                    runtime_collab::WorkspaceControlCloseReason::TargetDisconnected
+                }
+                crate::network::WorkspaceControlCloseReason::RelayDisconnected => {
+                    runtime_collab::WorkspaceControlCloseReason::RelayDisconnected
+                }
+                crate::network::WorkspaceControlCloseReason::LocalDisconnect => {
+                    runtime_collab::WorkspaceControlCloseReason::LocalDisconnect
+                }
+            };
+            runtime_collab::WorkspaceControlEvent::Closed(reason)
+        }
+    }
+}
+
+fn closed_workspace_control_event(
+    session: &crate::network::WorkspaceControlSession,
+) -> Option<runtime_collab::WorkspaceControlEvent> {
+    let crate::network::WorkspaceControlStatus::Closed(reason) = session.status() else {
+        return None;
+    };
+    Some(workspace_control_event(
+        crate::network::WorkspaceControlUpdate::Closed(reason.clone()),
+    ))
+}
+
+fn revalidate_workspace_control(
+    state: &CapnpBrokerState,
+    route: &CrdtRoute,
+    identity: &AdmittedJoinIdentity,
+) -> Result<AdmittedJoinIdentity, capnp::Error> {
+    let current = state.revalidate_admission(route, identity)?;
+    if !workspace_control_role_allowed(current.role) {
+        return Err(capnp::Error::failed(
+            "workspace control requires current editor authority".into(),
+        ));
+    }
+    Ok(current)
+}
+
+fn workspace_control_role_allowed(role: collab_types::Role) -> bool {
+    matches!(role, collab_types::Role::Owner | collab_types::Role::Editor)
+}
+
+impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
+    fn read(
+        self: Rc<Self>,
+        _params: workspace_control_handle::ReadParams,
+        mut results: workspace_control_handle::ReadResults,
+    ) -> Promise<(), capnp::Error> {
+        let this = self.clone();
+        Promise::from_future(async move {
+            if let Some(event) = this.initial.lock().await.take() {
+                let bytes = postcard::to_allocvec(&event)
+                    .map_err(|error| capnp::Error::failed(error.to_string()))?;
+                results.get().set_event(&bytes);
+                return Ok(());
+            }
+            loop {
+                let closed = {
+                    let session = this.session.lock().await;
+                    closed_workspace_control_event(&session)
+                };
+                if let Some(event) = closed {
+                    let bytes = postcard::to_allocvec(&event)
+                        .map_err(|error| capnp::Error::failed(error.to_string()))?;
+                    results.get().set_event(&bytes);
+                    return Ok(());
+                }
+                if let Err(error) =
+                    revalidate_workspace_control(&this.state, &this.route, &this.verified_identity)
+                {
+                    let mut session = this.session.lock().await;
+                    let event = workspace_control_event(session.deny(error.to_string()));
+                    let bytes = postcard::to_allocvec(&event)
+                        .map_err(|error| capnp::Error::failed(error.to_string()))?;
+                    results.get().set_event(&bytes);
+                    return Ok(());
+                }
+                let network_event =
+                    match tokio::time::timeout(std::time::Duration::from_millis(250), async {
+                        this.inbound.lock().await.recv().await
+                    })
+                    .await
+                    {
+                        Ok(Some(event)) => event,
+                        Ok(None) => {
+                            return Err(capnp::Error::disconnected(
+                                "workspace-control observer closed".into(),
+                            ));
+                        }
+                        Err(_) => continue,
+                    };
+                let mut session = this.session.lock().await;
+                let update = match network_event {
+                    crate::shell::network::WorkspaceControlNetworkEvent::Message(event)
+                        if event.workspace_topic == session.workspace() =>
+                    {
+                        session.observe_from(event.transport_peer, &event.message)
+                    }
+                    crate::shell::network::WorkspaceControlNetworkEvent::PeerLeft {
+                        workspace_topic,
+                        peer,
+                    } if workspace_topic == session.workspace() => session.peer_departed(peer),
+                    crate::shell::network::WorkspaceControlNetworkEvent::PeerRevoked {
+                        workspace_topic,
+                        peer,
+                    } if workspace_topic == session.workspace() && peer == session.target() => {
+                        Some(session.deny("target device certificate was revoked"))
+                    }
+                    _ => None,
+                };
+                if let Some(update) = update {
+                    let bytes = postcard::to_allocvec(&workspace_control_event(update))
+                        .map_err(|error| capnp::Error::failed(error.to_string()))?;
+                    results.get().set_event(&bytes);
+                    return Ok(());
+                }
+            }
+        })
+    }
+
+    fn send_input(
+        self: Rc<Self>,
+        params: workspace_control_handle::SendInputParams,
+        _results: workspace_control_handle::SendInputResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) =
+            revalidate_workspace_control(&self.state, &self.route, &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let bytes = match params.get().and_then(|params| params.get_event()) {
+            Ok(bytes) => bytes,
+            Err(error) => return Promise::err(error),
+        };
+        let input: runtime_collab::WorkspaceControlInput = match postcard::from_bytes(bytes) {
+            Ok(input) => input,
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        let this = self.clone();
+        Promise::from_future(async move {
+            let session = this.session.lock().await;
+            let input = match input {
+                runtime_collab::WorkspaceControlInput::PointerMotion { x, y } => {
+                    crate::network::InputEvent::PointerMotion { x, y }
+                }
+                runtime_collab::WorkspaceControlInput::PointerButton { button, pressed } => {
+                    crate::network::InputEvent::PointerButton { button, pressed }
+                }
+                runtime_collab::WorkspaceControlInput::Key {
+                    keycode,
+                    pressed,
+                    modifiers,
+                } => crate::network::InputEvent::Key {
+                    keysym: keycode,
+                    pressed,
+                    modifiers,
+                },
+                runtime_collab::WorkspaceControlInput::KeyboardFocus { focused } => {
+                    let surface = match session.status() {
+                        crate::network::WorkspaceControlStatus::Active { surface, .. } => *surface,
+                        _ => {
+                            return Err(capnp::Error::failed(
+                                "target has not granted control".into(),
+                            ));
+                        }
+                    };
+                    crate::network::InputEvent::KeyboardFocus { surface, focused }
+                }
+            };
+            this.network
+                .publish_workspace_control_input(&session, &input)
+                .map_err(capnp::Error::failed)
+        })
+    }
+
+    fn close(
+        self: Rc<Self>,
+        _params: workspace_control_handle::CloseParams,
+        _results: workspace_control_handle::CloseResults,
+    ) -> Promise<(), capnp::Error> {
+        let session = self.session.clone();
+        Promise::from_future(async move {
+            session.lock().await.disconnect();
+            Ok(())
+        })
+    }
+}
+
 /// Apply a signed op arriving via capnp `send`: same validation /
 /// audit / redaction / compaction pipeline, then
 /// fans out via the shared [`FanoutState`].
@@ -3235,6 +3558,7 @@ pub fn spawn(
     publisher: Arc<PeerPublisher>,
     membership: Option<WorkspaceTreeHandle>,
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
+    workspace_control_network: Option<Arc<crate::shell::network::ShellNetwork>>,
     quit: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<()>> {
     let _ = std::fs::remove_file(&socket_path);
@@ -3246,6 +3570,9 @@ pub fn spawn(
         membership,
         trusted_devices,
     );
+    if let Some(network) = workspace_control_network.as_ref() {
+        state.attach_workspace_control_network(network);
+    }
     fanout.attach_capnp(Arc::clone(&state));
 
     // Bind on the caller's thread: from the worker thread, a bind
@@ -3565,6 +3892,34 @@ mod tests {
         assert!(
             verify_join_presentation(&route, &presentation, &expected_root, 2, false, false)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn workspace_control_requires_editor_authority() {
+        assert!(workspace_control_role_allowed(Role::Owner));
+        assert!(workspace_control_role_allowed(Role::Editor));
+        assert!(!workspace_control_role_allowed(Role::Commenter));
+        assert!(!workspace_control_role_allowed(Role::Viewer));
+        assert!(!workspace_control_role_allowed(Role::Denied));
+    }
+
+    #[test]
+    fn closed_workspace_control_session_is_terminal_for_rpc_readers() {
+        let target = iroh::SecretKey::generate().public();
+        let mut session = crate::network::WorkspaceControlSession::new(
+            7,
+            11,
+            target,
+            crate::network::WorkspaceControlRoute::Direct { target },
+        );
+        assert!(closed_workspace_control_event(&session).is_none());
+        session.disconnect();
+        assert_eq!(
+            closed_workspace_control_event(&session),
+            Some(runtime_collab::WorkspaceControlEvent::Closed(
+                runtime_collab::WorkspaceControlCloseReason::LocalDisconnect,
+            ))
         );
     }
 
