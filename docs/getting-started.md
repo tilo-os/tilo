@@ -58,6 +58,12 @@ desktop's extensions or private settings. To switch back, sign out and select
 the previous session. Remove `qos-session` with the same package manager only
 after signing in to another desktop.
 
+Applications already installed by the distribution or Flatpak remain
+available from qOS search and keep using the same home-directory data. They are
+shown as **Host Apps** because qOS does not retroactively sandbox them. Fedora's
+package also installs the rootless Xwayland bridge needed by legacy X11-only
+applications; it is started only inside the add-on qOS session.
+
 ## Route 3: install the complete system
 
 Download qOS Imager on the computer you are using now:

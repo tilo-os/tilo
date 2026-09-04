@@ -42,7 +42,8 @@
 //! ## What *is* controlled
 //!
 //! The environment. See [`desktop_entry::launch`]: the child is spawned
-//! from an explicit allowlist plus the display handoff, so the
+//! from an explicit allowlist plus the Wayland handoff and, when available,
+//! one authenticated rootless-Xwayland fallback, so the
 //! compositor's own `QOS_*` variables don't leak into a process not
 //! subject to them.
 
