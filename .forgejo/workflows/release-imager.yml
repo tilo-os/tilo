@@ -199,6 +199,11 @@ jobs:
           name: qos-installer-catalog
           path: release-catalog
       - run: cp release-catalog/qos-installer-catalog-v1.json apps/imager/release-catalog.json
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        if: startsWith(github.ref, 'refs/tags/imager-v')
+        with:
+          name: qos-installer-medium-${{ matrix.arch }}
+          path: release-medium
       - name: Install native schema compiler
         run: |
           if ! command -v capnp >/dev/null; then
@@ -262,6 +267,18 @@ jobs:
           QOS_REQUIRE_NATIVE_PACKAGES: "1"
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: apps/imager/packaging/package-host.sh
+      - name: Sign the directly downloadable installer payloads
+        if: startsWith(github.ref, 'refs/tags/imager-v')
+        run: |
+          set -euo pipefail
+          medium="release-medium/qos-installer-linux-${{ matrix.arch }}.img.zst"
+          apps/imager/packaging/sign-linux-release-file.sh \
+            "$medium" "dist/qos-imager/$(basename "$medium").asc"
+          if [ "${{ matrix.arch }}" = x86_64 ]; then
+            catalog=release-catalog/qos-installer-catalog-v1.json
+            apps/imager/packaging/sign-linux-release-file.sh \
+              "$catalog" "dist/qos-imager/$(basename "$catalog").asc"
+          fi
       - name: Launch the packaged Linux UI offscreen
         run: |
           set -euo pipefail
@@ -292,6 +309,7 @@ jobs:
             dist/qos-imager/qos-imager-linux-*.AppImage
             dist/qos-imager/qos-imager-linux-*.AppImage.sha256
             dist/qos-imager/qos-imager-linux-*.AppImage.asc
+            dist/qos-imager/qos-installer-*.asc
           if-no-files-found: error
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: matrix.arch == 'x86_64' && startsWith(github.ref, 'refs/tags/imager-v')
@@ -545,18 +563,23 @@ jobs:
             qos-imager-linux-x86_64.tar.gz
             qos-imager-linux-aarch64.tar.gz
             qos-imager-windows-x86_64.exe
+            qos-imager-windows-x86_64.zip
             qos-imager-setup-windows-x86_64.exe
             qos-imager-macos-x86_64.dmg
             qos-imager-macos-aarch64.dmg
+            qos-imager-macos-x86_64.zip
+            qos-imager-macos-aarch64.zip
           )
           for name in "${required[@]}"; do
             path="$(find release-assets -type f -name "$name" -print -quit)"
             test -n "$path" || { printf 'missing release artifact: %s\n' "$name" >&2; exit 1; }
             test -s "$path.sha256" || { printf 'missing release digest: %s.sha256\n' "$name" >&2; exit 1; }
+            (cd "$(dirname "$path")" && sha256sum --check --strict "$(basename "$path").sha256") \
+              || { printf 'invalid release digest: %s.sha256\n' "$name" >&2; exit 1; }
             case "$name" in
               *.img.zst)
-                (cd "$(dirname "$path")" && sha256sum --check "$(basename "$path").sha256") \
-                  || { printf 'invalid installer-medium digest: %s.sha256\n' "$name" >&2; exit 1; }
+                test -s "$(find release-assets -type f -name "$name.asc" -print -quit)" \
+                  || { printf 'missing release signature: %s.asc\n' "$name" >&2; exit 1; }
                 ;;
               *.AppImage|*.tar.gz) test -s "$path.asc" \
                 || { printf 'missing release signature: %s.asc\n' "$name" >&2; exit 1; } ;;
