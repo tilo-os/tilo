@@ -25,7 +25,7 @@ build() {
   export CARGO_HOME="$srcdir/cargo-home"
   cargo build --release --locked -p launcher -p qos-unlock-helper
   export QOS_UNLOCK_HELPER_PATH=/usr/lib/qos/qos-unlock-helper
-  cargo build --release --locked -p shell --no-default-features
+  cargo build --release --locked -p shell --bin shell --no-default-features
   ./dist/stage-payload.sh target/release "$srcdir/payload"
 }
 
