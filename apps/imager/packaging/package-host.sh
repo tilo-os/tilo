@@ -37,7 +37,7 @@ if [ "$require_signing" = 1 ]; then
       ;;
   esac
 fi
-cargo build --locked --release -p imager
+cargo build --locked --release -p imager --features host-media-writer
 mkdir -p "$out"
 
 write_digest() {
