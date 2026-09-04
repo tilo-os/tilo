@@ -2,7 +2,7 @@
 # Socket-activated, fixed-verb extension request boundary.
 #
 # Desktop Settings and agents may connect only to the root-owned Unix socket
-# and submit one of the two literal lines below. No request contains a path,
+# and submit one of the fixed literal lines below. No request contains a path,
 # URL, model id, package tag, command, or restart instruction. The service
 # process is short-lived and backgrounded by systemd's Accept=yes socket unit,
 # so clients enqueue by writing then closing; they do not wait for downloads or
@@ -15,6 +15,12 @@ status=$api_dir/status.json
 die() { printf '%s\n' "qos-system-extension-dispatch: $*" >&2; exit 1; }
 
 IFS= read -r verb || die "missing fixed request verb"
+# Reject a second line before dispatch. This makes a request one fixed verb
+# plus, only for a BootPack, one catalog id — never a protocol tunnel for root
+# argv.
+if IFS= read -r extra; then
+    die "request must contain exactly one line"
+fi
 case "$verb" in
     userspace-stage)
         /usr/libexec/qos-system-extension-activate userspace
@@ -26,14 +32,44 @@ case "$verb" in
         activation_class=boot
         reboot_required=true
         ;;
+    boot-pack-recommend)
+        # The caller supplies no PCI address or vendor string.  Root reads the
+        # local PCI bus and verifies the separate image-owned hardware-policy
+        # signature before returning exact BootPack catalogue ids.
+        exec /usr/libexec/qos-system-extension-manager recommend-pci
+        ;;
+    boot-pack-stage\ *)
+        extension_id=${verb#boot-pack-stage }
+        case "$extension_id" in
+            ''|*[!a-z0-9._-]*|[._-]*|*[._-]) die "invalid BootPack catalog id" ;;
+        esac
+        request=/var/lib/qos/system-extensions/boot-pack-request
+        request_parent=$(dirname "$request")
+        [ -d "$request_parent" ] && [ ! -L "$request_parent" ] || die "BootPack queue parent is unsafe"
+        request_tmp=$(mktemp "$request_parent/.boot-pack-request.XXXXXX") || die "cannot enqueue BootPack"
+        trap 'rm -f "$request_tmp"' EXIT HUP INT TERM
+        umask 077
+        printf '%s\n' "$extension_id" > "$request_tmp"
+        chmod 0600 "$request_tmp"
+        mv -f "$request_tmp" "$request"
+        trap - EXIT HUP INT TERM
+        # A path-activated service owns the only networked bootc operation.
+        # The socket worker returns immediately and cannot turn a client into
+        # a synchronous privileged installer.
+        [ -d "$api_dir" ] && [ ! -L "$api_dir" ] || die "status directory is unsafe"
+        tmp=$(mktemp "$api_dir/.status.XXXXXX") || die "cannot create status"
+        trap 'rm -f "$tmp"' EXIT HUP INT TERM
+        umask 027
+        printf '{"schema_version":1,"activation_class":"boot_pack","state":"queued","extension_id":"%s","stage_generation":0,"reboot_required":false,"error":null}\n' "$extension_id" > "$tmp"
+        chown root:qos-identity "$tmp"
+        chmod 0640 "$tmp"
+        mv -f "$tmp" "$status"
+        trap - EXIT HUP INT TERM
+        printf '{"accepted":true,"state":"queued"}\n'
+        exit 0
+        ;;
     *) die "unsupported fixed request verb" ;;
 esac
-
-# Reject a second line. This makes a request one fixed verb, rather than a
-# convenient protocol tunnel that a later caller could turn into root argv.
-if IFS= read -r extra; then
-    die "request must contain exactly one line"
-fi
 
 marker=/run/qos/system-extensions/userspace-ready
 [ "$activation_class" = boot ] && marker=/var/lib/qos/system-extensions/reboot-required
