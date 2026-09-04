@@ -308,6 +308,62 @@ pub fn power_command(action: PowerAction) -> Command {
     cmd
 }
 
+/// Build the backend's read-only prepared-storage preflight. The same reviewed
+/// disk and partition identities are passed to the final install command; the
+/// backend repeats every check before destructive work.
+pub fn alongside_preflight_command(disk: &str, opts: &InstallOptions) -> Command {
+    let mut cmd = Command::new(INSTALL_BIN);
+    cmd.arg("--preflight-alongside")
+        .arg("--disk")
+        .arg(disk)
+        // Satisfy install-wide input validation with fixed non-secret values;
+        // preflight exits before stdin is read or account work begins.
+        .arg("--user")
+        .arg("preflight")
+        .arg("--pin")
+        .arg("--yes")
+        .arg("--root-partition")
+        .arg(&opts.alongside_root)
+        .arg("--efi-partition")
+        .arg(&opts.alongside_efi)
+        .arg("--confirm-root")
+        .arg(&opts.alongside_root)
+        .arg("--expect-disk-size-bytes")
+        .arg(opts.disk_size_bytes.to_string())
+        .arg("--expect-disk-devnum")
+        .arg(&opts.disk_major_minor)
+        .arg("--expect-root-partuuid")
+        .arg(&opts.alongside_root_partuuid)
+        .arg("--expect-root-size-bytes")
+        .arg(opts.alongside_root_size_bytes.to_string())
+        .arg("--expect-efi-partuuid")
+        .arg(&opts.alongside_efi_partuuid)
+        .arg("--expect-efi-size-bytes")
+        .arg(opts.alongside_efi_size_bytes.to_string());
+    if !opts.disk_wwn.is_empty() {
+        cmd.arg("--expect-disk-wwn").arg(&opts.disk_wwn);
+    }
+    if !opts.disk_serial.is_empty() {
+        cmd.arg("--expect-disk-serial").arg(&opts.disk_serial);
+    }
+    cmd
+}
+
+/// Run the read-only prepared-storage preflight and stream its diagnostics.
+///
+/// # Errors
+///
+/// Returns an error when the preflight helper cannot be started, its streams
+/// cannot be read, or the process cannot be waited on. A completed preflight
+/// that rejects the storage plan is returned as `Ok(false)`.
+pub fn run_alongside_preflight<F: FnMut(String)>(
+    disk: &str,
+    opts: &InstallOptions,
+    on_line: F,
+) -> std::io::Result<bool> {
+    stream_command(alongside_preflight_command(disk, opts), "", &[], on_line)
+}
+
 /// Spawn `cmd`, write `password` (with a trailing newline) to its stdin —
 /// followed by `extra_stdin` lines, each newline-terminated, in order —
 /// then stream stdout line by line into `on_line`. On a non-zero exit any
@@ -432,6 +488,45 @@ pub fn run_power(action: PowerAction) -> std::io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_preflight_binds_every_storage_identity_without_credentials() {
+        let opts = InstallOptions {
+            disk_size_bytes: 500_000_000_000,
+            disk_major_minor: "259:0".into(),
+            disk_wwn: "eui.0011223344556677".into(),
+            disk_serial: "QOS-NVME".into(),
+            alongside_root: "/dev/nvme0n1p3".into(),
+            alongside_root_partuuid: "00000000-0000-0000-0000-000000000003".into(),
+            alongside_root_size_bytes: 64_000_000_000,
+            alongside_efi: "/dev/nvme0n1p4".into(),
+            alongside_efi_partuuid: "00000000-0000-0000-0000-000000000004".into(),
+            alongside_efi_size_bytes: 2_147_483_648,
+            ..InstallOptions::default()
+        };
+        let command = alongside_preflight_command("/dev/nvme0n1", &opts);
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        for expected in [
+            "--preflight-alongside",
+            "/dev/nvme0n1",
+            "259:0",
+            "eui.0011223344556677",
+            "QOS-NVME",
+            "/dev/nvme0n1p3",
+            "00000000-0000-0000-0000-000000000003",
+            "/dev/nvme0n1p4",
+            "00000000-0000-0000-0000-000000000004",
+        ] {
+            assert!(args.iter().any(|arg| arg == expected), "missing {expected}");
+        }
+        assert!(
+            !args.iter().any(|arg| arg == "--guided-alongside"),
+            "prepared preflight must never enter partition creation"
+        );
+    }
 
     #[test]
     fn install_command_builds_expected_argv() {
