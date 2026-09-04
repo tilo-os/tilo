@@ -141,7 +141,7 @@ jobs:
             printf 'unsupported runner OS for installer VM cycle\n' >&2
             exit 1
           fi
-          command -v debugfs mcopy mmd mkfs.ext4 mkfs.ntfs mkfs.vfat ntfscp \
+          command -v debugfs mattrib mcopy mdir mmd mkfs.ext4 mkfs.ntfs mkfs.vfat mtype ntfscp \
             qemu-img "$qemu_binary" sfdisk socat tesseract >/dev/null
           command -v magick >/dev/null || command -v convert >/dev/null
           "$qemu_binary" -display help | grep -Fq egl-headless
@@ -167,6 +167,11 @@ jobs:
               os/output/installer/qcow2/disk.qcow2 \
               --prepared-alongside \
               --out dist/installer-alongside-cycle
+          QOS_VM_CYCLE="${QOS_VM_CYCLE}-guided-alongside" \
+            ./os/dev/test-installer-cycle.sh \
+              os/output/installer/qcow2/disk.qcow2 \
+              --guided-alongside \
+              --out dist/installer-guided-alongside-cycle
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: always()
         with:
@@ -174,6 +179,7 @@ jobs:
           path: |
             dist/installer-cycle
             dist/installer-alongside-cycle
+            dist/installer-guided-alongside-cycle
           if-no-files-found: error
       - name: Verify the installer-medium release payload
         run: |

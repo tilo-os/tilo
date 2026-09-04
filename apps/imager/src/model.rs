@@ -833,6 +833,11 @@ pub enum JobPhase {
     Failed,
 }
 
+/// A persisted active phase cannot prove that a restarted UI still supervises
+/// the privileged writer which produced it. Treat that state as unknown and
+/// potentially incomplete until the user performs a fresh review.
+pub const WRITE_SUPERVISION_LOST: &str = "qOS Imager restarted before the previous write reported completion. Its outcome is unknown and the drive may be incomplete. Keep it connected until any writer activity stops, then rescan and review it before retrying.";
+
 impl JobPhase {
     pub fn key(&self) -> &'static str {
         match self {
@@ -894,6 +899,23 @@ impl Default for Progress {
 }
 
 impl Progress {
+    /// Record that no live supervisor can establish the job's outcome.
+    pub fn mark_supervision_lost(&mut self) {
+        self.phase = JobPhase::Failed;
+        self.rate_bps = 0;
+        self.error = Some(WRITE_SUPERVISION_LOST.into());
+    }
+
+    /// Fail closed when an active progress snapshot has outlived its local
+    /// worker/supervisor. Returns whether a recovery transition was applied.
+    pub fn fail_if_supervision_lost(&mut self) -> bool {
+        if !self.phase.is_active() {
+            return false;
+        }
+        self.mark_supervision_lost();
+        true
+    }
+
     /// Overall fraction across both phases (write counts for the first 85%,
     /// verify the last 15% — the read-back is quicker than the write).
     pub fn overall(&self) -> f64 {
@@ -1233,6 +1255,39 @@ mod tests {
             error: None,
         };
         assert_eq!(done.overall(), 1.0);
+    }
+
+    #[test]
+    fn restored_active_phases_fail_closed_when_supervision_is_lost() {
+        for phase in [JobPhase::Writing, JobPhase::Verifying] {
+            let mut progress = Progress {
+                phase,
+                write_frac: 0.7,
+                verify_frac: 0.2,
+                rate_bps: 42_000_000,
+                error: None,
+            };
+
+            assert!(progress.fail_if_supervision_lost());
+            assert_eq!(progress.phase, JobPhase::Failed);
+            assert_eq!(progress.rate_bps, 0);
+            assert!(progress.error.as_deref().is_some_and(|message| {
+                message.contains("outcome is unknown") && message.contains("incomplete")
+            }));
+            assert_ne!(progress.phase, JobPhase::Success);
+        }
+    }
+
+    #[test]
+    fn supervision_recovery_does_not_rewrite_terminal_or_idle_phases() {
+        for phase in [JobPhase::Idle, JobPhase::Success, JobPhase::Failed] {
+            let mut progress = Progress {
+                phase,
+                ..Progress::default()
+            };
+            assert!(!progress.fail_if_supervision_lost());
+            assert_eq!(progress.phase, phase);
+        }
     }
 
     #[test]
