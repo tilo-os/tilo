@@ -75,10 +75,6 @@ jobs:
     steps:
       - name: Checkout the monorepo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 0
-          # Private repo checkout: reuse the REGISTRY_TOKEN PAT.
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Restore checksum-verified GitHub build inputs
         id: github-assets-cache

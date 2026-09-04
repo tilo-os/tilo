@@ -46,6 +46,8 @@ grep -Fq 'publish-os-payload:' "$desktop" \
 grep -Fq 'with_browser=0' "$os" \
   && grep -Fq 'WITH_BROWSER: ${{ env.QOS_WITH_BROWSER }}' "$os" \
   && grep -Fq 'CONTINUOUS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}' "$os" \
+  && ! grep -Fq 'token: ${{ secrets.REGISTRY_TOKEN }}' "$os" \
+  && ! grep -Fq 'fetch-depth: 0' "$os" \
   && grep -Fq "if: steps.release-mode.outputs.validate == 'true'" "$os" \
   && grep -Fq 'installed OS, desktop, and app integration passed; publication was not requested' "$os" \
   && grep -Fq "if: steps.release-mode.outputs.publish == 'true'" "$os" \
