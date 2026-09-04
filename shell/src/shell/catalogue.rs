@@ -355,6 +355,8 @@ fn push_failure(package_id: &str, display_name: &str, detail: String) {
     launcher::push_event(LaunchEvent {
         package_id: package_id.to_string(),
         display_name: display_name.to_string(),
+        managed_agent_id: None,
+        managed_workspace_id: None,
         kind: LaunchEventKind::SpawnFailed { detail },
     });
 }
