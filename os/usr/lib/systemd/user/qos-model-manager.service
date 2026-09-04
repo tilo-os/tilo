@@ -10,6 +10,14 @@ ExecStart=/usr/bin/qos-model-manager serve --socket %t/qos/services/models.sock
 Restart=on-failure
 RestartSec=2
 UMask=0077
+# Creates `%t/qos` before the daemon binds `services/models.sock`; user
+# tmpfiles creates the persistent model and rootless-Container directories.
+RuntimeDirectory=qos
+RuntimeDirectoryMode=0700
+# User tmpfiles normally runs when the user manager starts. Run this narrowly
+# scoped definition here too, so a first Settings launch has writable model
+# and rootless-Podman state even before that normal timer has fired.
+ExecStartPre=/usr/bin/systemd-tmpfiles --user --create /usr/lib/user-tmpfiles.d/qos-model-manager.conf
 
 # Settings receives only the connected models@1 descriptor. This service owns
 # network transfers, the content-addressed user store, and Podman supervision.

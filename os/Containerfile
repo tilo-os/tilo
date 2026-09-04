@@ -1904,3 +1904,4 @@ RUN --mount=type=cache,target=/var/tmp,sharing=locked \
 # os/dev/disk-image.sh prints, rather than producing something that boots wrong.
 FROM split AS final
 COPY --from=uki /out/*.efi /boot/EFI/Linux/
+COPY os/usr/lib/user-tmpfiles.d/qos-model-manager.conf /usr/lib/user-tmpfiles.d/qos-model-manager.conf
