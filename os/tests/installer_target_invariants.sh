@@ -14,6 +14,7 @@ builder="$repo_root/os/dev/build-custom-installer.sh"
 firstboot_user="$repo_root/os/usr/libexec/qos-firstboot-user"
 profile_extractor="$repo_root/os/usr/libexec/qos-installer-profile-extract"
 preflight="$repo_root/os/usr/libexec/qos-verified-boot-install-preflight"
+secret_policy="$repo_root/os/usr/libexec/qos-startup-secret-policy"
 fail=0
 
 ok() { printf 'ok    %s\n' "$*"; }
@@ -175,10 +176,24 @@ if grep -Fq 'ENCRYPT=1' "$backend" \
    && ! grep -Fq 'if verified_tpm; then' "$backend" \
    && ! grep -Fq 'qos-verified-boot-install-preflight' "$backend" \
    && ! grep -Fq 'startup PIN must be 6 to 12 digits' "$backend" \
-   && grep -Fq 'disk passphrase must contain at least 12 characters' "$backend"; then
+   && grep -Fq 'qos-startup-secret-policy' "$backend"; then
   ok "native qOS requires encryption and a strong passphrase on every machine"
 else
   bad "native qOS installer can bypass encryption or the startup secret"
+fi
+
+if [ -x "$secret_policy" ] \
+   && printf '%s\n' 'correct horse battery' | "$secret_policy" \
+   && printf '%s\n' '12345678901234567890' | "$secret_policy" \
+   && ! printf '%s\n' 'aaaaaaaaaaaa' | "$secret_policy" 2>/dev/null \
+   && ! printf '%s\n' 'password1234' | "$secret_policy" 2>/dev/null \
+   && ! printf '%s\n' 'abcabcabcabc' | "$secret_policy" 2>/dev/null \
+   && ! printf '%s\n' '123456789012' | "$secret_policy" 2>/dev/null \
+   && ! printf '%s\n' 'correct horse' | "$secret_policy" 2>/dev/null \
+   && ! printf '%s\n' ' correct horse battery' | "$secret_policy" 2>/dev/null; then
+  ok "privileged startup-secret policy rejects common, repetitive, and weak numeric secrets"
+else
+  bad "privileged startup-secret policy accepts a cheaply guessed disk secret"
 fi
 
 if [ ! -e "$preflight" ] \
@@ -200,10 +215,9 @@ fi
 
 # Generation-bound TPM enrollment cannot be enabled as a one-line replacement
 # for systemd-cryptenroll. The installer changes measured UKI bytes after the
-# release image is built; the release carries no matching signed prediction, and
-# there is not yet an early-boot consumer for a qos-rollback token. Until all
-# three prerequisites arrive together, retain the honest PCR-7 token plus the
-# independent recovery/FIDO paths and reject any partial enrollment wiring.
+# release image is built, while the release carries no matching signed
+# prediction. The early-boot consumer now ships, but enrollment must remain off
+# until it has a prediction for the exact target bytes it will boot.
 rollback_enrollment_calls="$(
   grep -hE 'qos-rollback[[:space:]]+enroll' "$backend" "$encryptor" 2>/dev/null \
     | grep -vE '^[[:space:]]*#' || true
@@ -211,12 +225,14 @@ rollback_enrollment_calls="$(
 if [ -z "$rollback_enrollment_calls" ] \
    && grep -Fq 'install -d -m 0755 /usr/share/qos/pcr-predictions' "$production_containerfile" \
    && grep -Fq 'the directory ships empty' "$production_containerfile" \
+   && grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth qos-rollback"' "$production_containerfile" \
+   && grep -Fq 'qos-rollback-initrd-unlock' "$production_containerfile" \
    && ! grep -Fq -- '--tpm2-pcrs=' "$encryptor" \
    && grep -Fq -- '--recovery-key "$dev"' "$encryptor" \
    && grep -Fq -- '--fido2-device=auto "$dev"' "$encryptor"; then
-  ok "PCR11 rollback enrollment stays fail-closed until target predictions and initramfs unlock exist"
+  ok "TPM unlock consumer ships while enrollment stays fail-closed until target predictions exist"
 else
-  bad "installer partially enables generation enrollment without its target prediction/unlock prerequisites"
+  bad "installer TPM enrollment/early-unlock prerequisites are inconsistent"
 fi
 
 if grep -Fq 'CONF_TMP="$(mktemp ' "$backend" \
