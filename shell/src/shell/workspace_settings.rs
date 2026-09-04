@@ -876,6 +876,19 @@ pub fn role_label(role: CapRole) -> &'static str {
     }
 }
 
+/// Plain-language consequences shown before changing a person's workspace
+/// role. Keeping this next to the role vocabulary makes the chooser describe
+/// the same authority that [`role_verb`] ultimately writes.
+pub fn role_capability_preview(role: CapRole) -> &'static str {
+    match role {
+        CapRole::Owner => "Can manage people, permissions, and workspace settings.",
+        CapRole::Editor => "Can view, comment on, and edit shared work.",
+        CapRole::Commenter => "Can view shared work and add comments, but cannot edit it.",
+        CapRole::Viewer => "Can view shared work, but cannot comment or edit it.",
+        CapRole::Denied => "Cannot access this workspace.",
+    }
+}
+
 /// The thing a device-scoped capability names.
 fn device_label(device: &str) -> &str {
     match device {
@@ -1655,7 +1668,7 @@ fn draw_member_row(
 }
 
 /// The role chip half of [`draw_member_row`] — its fill, label and the
-/// chevron affording that owners can cycle it.
+/// chevron affording that owners can open the explicit role chooser.
 fn draw_member_role_chip(
     scene: &mut Scene,
     transform: Affine,
@@ -1722,7 +1735,7 @@ fn draw_member_role_chip(
                 gx + glyph,
                 row.role_rect.center().y + glyph / 2.0,
             ),
-            Icon::ChevronRight,
+            Icon::ChevronDown,
             chip_tint,
             LUCIDE_DEFAULT_STROKE_PX,
         );

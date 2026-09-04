@@ -5,9 +5,10 @@
 //! neither app's history can undo the other's. [`groups`](crate::history_source::groups)
 //! names a run *within* one document; this is the record above it.
 //!
-//! It lives in the room document — the compositor's, the only one that sees
-//! every app — which cannot materialise the apps' documents, so a record
-//! holds no content, only references. Undoing is
+//! It lives in the coordinator's collaborative document (often the room
+//! document, or the primary document for a headless agent). That coordinator
+//! cannot materialise every app's document, so a record holds no content,
+//! only references. Undoing is
 //! [`revert_run`](crate::history_source::revert::revert_run) against each
 //! app's own document, performed by the app that owns it.
 //!
@@ -66,6 +67,17 @@ pub struct AgentRun {
     /// Actor hex of whoever's work this is. `None` when the recorder did not
     /// say.
     pub by: Option<String>,
+    /// Actor hex of the person whose edit most recently supplied the
+    /// instruction. This is evidence from the document's causal history,
+    /// rather than a display name the agent guessed from prose.
+    pub issued_by: Option<String>,
+    /// The request without the agent's addressing prefix. Keeping the exact
+    /// wording makes a completed run reviewable after the instruction block
+    /// itself has been removed from the document.
+    pub instruction: Option<String>,
+    /// How the agent selected the work it performed (for example, a model's
+    /// short rationale or an explicit deterministic fallback reason).
+    pub decision: Option<String>,
     pub at: SystemTime,
     /// The per-application steps, in the order they happened.
     pub steps: Vec<RunStep>,
@@ -102,6 +114,24 @@ pub fn record_run(
     by: Option<&str>,
     steps: &[RunStep],
 ) -> Option<String> {
+    record_run_with_details(doc, label, by, None, None, None, steps)
+}
+
+/// Record a run with the task evidence needed for a later review.
+///
+/// [`record_run`] remains the small compatibility entry point for callers
+/// that only have the resulting changes. Agents should use this form: a run
+/// without the instruction, issuer, and decision route is undoable but not
+/// meaningfully explainable.
+pub fn record_run_with_details(
+    doc: &mut AutoCommit,
+    label: &str,
+    by: Option<&str>,
+    issued_by: Option<&str>,
+    instruction: Option<&str>,
+    decision: Option<&str>,
+    steps: &[RunStep],
+) -> Option<String> {
     let first = steps.first()?;
     let key = format!("{RUNS_KEY}{}", hex16(&first.run.start));
     let label: String = label.trim().chars().take(MAX_LABEL_LEN).collect();
@@ -116,6 +146,9 @@ pub fn record_run(
     if let Some(b) = by {
         let _ = doc.put(&rec, "by", b);
     }
+    put_optional(&mut *doc, &rec, "issued_by", issued_by);
+    put_optional(&mut *doc, &rec, "instruction", instruction);
+    put_optional(&mut *doc, &rec, "decision", decision);
     let _ = doc.put(&rec, "at", at);
     let list = doc.put_object(&rec, "steps", ObjType::List).ok()?;
     for (i, s) in steps.iter().enumerate() {
@@ -182,6 +215,9 @@ pub fn read_runs(doc: &AutoCommit) -> Vec<AgentRun> {
             id: key.clone(),
             label,
             by: str_at(doc, &rec, "by"),
+            issued_by: str_at(doc, &rec, "issued_by"),
+            instruction: str_at(doc, &rec, "instruction"),
+            decision: str_at(doc, &rec, "decision"),
             at,
             steps,
         });
@@ -189,6 +225,12 @@ pub fn read_runs(doc: &AutoCommit) -> Vec<AgentRun> {
     // Stable order so two peers with the same document build the same list.
     out.sort_by(|a, b| a.id.cmp(&b.id));
     out
+}
+
+fn put_optional(doc: &mut AutoCommit, rec: &ObjId, key: &str, value: Option<&str>) {
+    if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+        let _ = doc.put(rec, key, value);
+    }
 }
 
 /// Remove a run record. The changes it referenced stay untouched in their own

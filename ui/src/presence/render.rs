@@ -5,7 +5,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use vello::{
     Scene,
-    kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke},
+    kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke},
     peniko::{Color, Fill},
 };
 
@@ -98,6 +98,15 @@ impl PresenceCtx {
     ) {
         let color = color_for(self, user, theme);
         scene.fill(Fill::NonZero, transform, color, None, &rect);
+        if self.is_agent(user) {
+            draw_agent_diamond(
+                scene,
+                transform,
+                Point::new(rect.center().x, rect.y0 - 3.0),
+                4.5,
+                color,
+            );
+        }
     }
 
     pub fn draw_peer_selection(
@@ -202,11 +211,12 @@ impl PresenceCtx {
         let color = color_for(self, user, theme);
         scene.fill(Fill::NonZero, transform, color, None, &caret_rect);
 
-        let (chip_w, chip_h) = peer_pill_size(text_renderer, theme, name);
+        let is_agent = self.is_agent(user);
+        let (chip_w, chip_h) = peer_pill_size_for(text_renderer, theme, name, is_agent);
         let cx = caret_rect.x0;
         let cy = caret_rect.y0 - chip_h - 2.0;
         let chip_rect = Rect::new(cx, cy, cx + chip_w, cy + chip_h);
-        draw_peer_pill(
+        draw_peer_pill_kind(
             scene,
             transform,
             text_renderer,
@@ -214,6 +224,7 @@ impl PresenceCtx {
             chip_rect,
             name,
             color,
+            is_agent,
         );
     }
 
@@ -387,15 +398,25 @@ pub(crate) fn pill_label_size(theme: &Theme) -> f32 {
 
 /// Pill size for `label`, padding included — shared so callers size their
 /// box exactly like the painter.
+#[cfg(test)]
 pub(crate) fn peer_pill_size(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     label: &str,
 ) -> (f64, f64) {
+    peer_pill_size_for(text_renderer, theme, label, false)
+}
+
+fn peer_pill_size_for(
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    label: &str,
+    is_agent: bool,
+) -> (f64, f64) {
     let size = pill_label_size(theme);
     let (tw, _th) = text_renderer.measure(label, size, None);
     (
-        f64::from(tw) + PILL_PAD_X * 2.0,
+        f64::from(tw) + PILL_PAD_X * 2.0 + if is_agent { 14.0 } else { 0.0 },
         f64::from(size) + PILL_PAD_Y * 2.0,
     )
 }
@@ -405,6 +426,9 @@ pub struct PeerCursor {
     pub pos: (f64, f64),
     pub label: String,
     pub color: Color,
+    /// Authenticated participant kind. Agents use diamond pointer geometry
+    /// and an icon-bearing chip, so identity does not depend on reading text.
+    pub is_agent: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -564,13 +588,13 @@ pub fn draw_peer_cursors(
         .iter()
         .map(|p| PillRequest {
             at: p.pos,
-            size: peer_pill_size(text_renderer, theme, &p.label),
+            size: peer_pill_size_for(text_renderer, theme, &p.label, p.is_agent),
         })
         .collect();
     let placements = layout_peer_pills(viewport, &requests);
 
     for p in peers {
-        draw_peer_dot(scene, transform, p.pos, p.color);
+        draw_peer_dot(scene, transform, p.pos, p.color, p.is_agent);
     }
 
     // Tethers — under the pills so a line never crosses a name.
@@ -593,7 +617,7 @@ pub fn draw_peer_cursors(
     }
 
     for (p, place) in peers.iter().zip(&placements) {
-        draw_peer_pill(
+        draw_peer_pill_kind(
             scene,
             transform,
             text_renderer,
@@ -601,6 +625,7 @@ pub fn draw_peer_cursors(
             place.rect,
             &p.label,
             p.color,
+            p.is_agent,
         );
     }
 }
@@ -616,7 +641,13 @@ pub fn draw_peer_cursors(
     clippy::arithmetic_side_effects,
     reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
 )]
-fn draw_peer_dot(scene: &mut Scene, transform: Affine, pos: (f64, f64), peer: Color) {
+fn draw_peer_dot(
+    scene: &mut Scene,
+    transform: Affine,
+    pos: (f64, f64),
+    peer: Color,
+    is_agent: bool,
+) {
     let t = transform * Affine::translate((pos.0, pos.1));
     scene.fill(
         Fill::NonZero,
@@ -632,22 +663,37 @@ fn draw_peer_dot(scene: &mut Scene, transform: Affine, pos: (f64, f64), peer: Co
         None,
         &Circle::new(Point::ORIGIN, RING_R - 0.5),
     );
-    let dot = Circle::new(Point::ORIGIN, DOT_R);
-    scene.fill(Fill::NonZero, t, peer, None, &dot);
-    scene.stroke(&Stroke::new(2.0), t, Color::WHITE, None, &dot);
+    if is_agent {
+        draw_agent_diamond(scene, t, Point::ORIGIN, DOT_R + 1.0, peer);
+    } else {
+        let dot = Circle::new(Point::ORIGIN, DOT_R);
+        scene.fill(Fill::NonZero, t, peer, None, &dot);
+        scene.stroke(&Stroke::new(2.0), t, Color::WHITE, None, &dot);
+    }
 }
 
-/// A peer's name pill, filled in their own colour (not a surface token) so
-/// the pill *is* the swatch — name and cursor match by colour, not by
-/// proximity.
-/// `kurbo::Rect`'s `Add<Vec2>` and `kurbo::Affine`'s `Mul` below are plain
-/// f64 arithmetic with no panic path; `arithmetic_side_effects` flags the
-/// operator overloads anyway.
+fn draw_agent_diamond(
+    scene: &mut Scene,
+    transform: Affine,
+    center: Point,
+    radius: f64,
+    color: Color,
+) {
+    let mut diamond = BezPath::new();
+    diamond.move_to((center.x, center.y - radius));
+    diamond.line_to((center.x + radius, center.y));
+    diamond.line_to((center.x, center.y + radius));
+    diamond.line_to((center.x - radius, center.y));
+    diamond.close_path();
+    scene.fill(Fill::NonZero, transform, color, None, &diamond);
+    scene.stroke(&Stroke::new(1.5), transform, Color::WHITE, None, &diamond);
+}
+
 #[allow(
     clippy::arithmetic_side_effects,
     reason = "kurbo Rect/Affine arithmetic is f64 math; it cannot panic or overflow, unlike integer +/-/*"
 )]
-pub(crate) fn draw_peer_pill(
+fn draw_peer_pill_kind(
     scene: &mut Scene,
     transform: Affine,
     text_renderer: &mut TextRenderer,
@@ -655,6 +701,7 @@ pub(crate) fn draw_peer_pill(
     rect: Rect,
     label: &str,
     peer: Color,
+    is_agent: bool,
 ) {
     let label_size = pill_label_size(theme);
     let radius = f64::from(theme.tokens.radii.sm);
@@ -671,12 +718,40 @@ pub(crate) fn draw_peer_pill(
     );
     let pill = RoundedRect::from_rect(rect, radius);
     scene.fill(Fill::NonZero, transform, peer, None, &pill);
+    let text_x = rect.x0 + PILL_PAD_X + if is_agent { 14.0 } else { 0.0 };
+    if is_agent {
+        // A tiny processor glyph: outlined square, two status dots. Unlike an
+        // "agent" suffix, it remains recognizable when the name is elided.
+        let badge = Rect::new(
+            rect.x0 + 5.0,
+            rect.center().y - 4.5,
+            rect.x0 + 14.0,
+            rect.center().y + 4.5,
+        );
+        let ink = contrast_ink(peer);
+        scene.stroke(
+            &Stroke::new(1.2),
+            transform,
+            ink,
+            None,
+            &RoundedRect::from_rect(badge, 2.0),
+        );
+        for y in [badge.y0 + 3.0, badge.y1 - 3.0] {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                ink,
+                None,
+                &Circle::new((badge.center().x, y), 0.8),
+            );
+        }
+    }
     text_renderer.draw_text(
         scene,
         label,
         label_size,
         contrast_ink(peer),
-        transform * Affine::translate((rect.x0 + PILL_PAD_X, rect.y0 + PILL_PAD_Y)),
+        transform * Affine::translate((text_x, rect.y0 + PILL_PAD_Y)),
         None,
     );
 }
@@ -704,7 +779,7 @@ pub fn draw_remote_cursors(
         .remote_cursors
         .iter()
         .filter(|c| c.painted_by_window())
-        .map(peer_of)
+        .map(|cursor| peer_of(presence, cursor))
         .collect();
     if peers.is_empty() {
         return;
@@ -724,7 +799,7 @@ pub fn draw_remote_cursors(
     clippy::cast_sign_loss,
     reason = "each channel is clamped to 0.0..=1.0 above, so the scaled result is 0.0..=255.0"
 )]
-fn peer_of(cursor: &super::RemoteCursor) -> PeerCursor {
+fn peer_of(ctx: &PresenceCtx, cursor: &super::RemoteCursor) -> PeerCursor {
     PeerCursor {
         pos: (f64::from(cursor.position[0]), f64::from(cursor.position[1])),
         label: cursor.label.clone(),
@@ -734,6 +809,7 @@ fn peer_of(cursor: &super::RemoteCursor) -> PeerCursor {
             (cursor.color[2].clamp(0.0, 1.0) * 255.0) as u8,
             255,
         ),
+        is_agent: ctx.is_agent(&UserId(cursor.user_id.clone())),
     }
 }
 
@@ -1006,7 +1082,7 @@ pub fn draw_remote_presence(
             continue;
         }
         let target = Point::new(f64::from(cursor.position[0]), f64::from(cursor.position[1]));
-        let peer = peer_of(cursor);
+        let peer = peer_of(presence, cursor);
         match super::geom::edge_mist_for(viewport, target) {
             Some(mist) => {
                 draw_edge_mist(
@@ -1124,6 +1200,36 @@ mod tests {
         assert!(
             green > red && green > blue && green > 100,
             "expected charlie's emerald caret (G dominant), got ({red},{green},{blue})"
+        );
+    }
+
+    #[test]
+    fn agent_caret_has_a_non_text_diamond_identity_marker() {
+        let theme = Theme::default();
+        let agent = UserId("peer@agent".to_string());
+        let mut agent_ctx = PresenceCtx::empty();
+        agent_ctx.set_participant_kind(agent.clone(), super::super::ParticipantKind::Agent);
+        let mut person_ctx = PresenceCtx::empty();
+        person_ctx.set_participant_kind(agent.clone(), super::super::ParticipantKind::Person);
+        let caret = Rect::new(30.0, 40.0, 32.0, 60.0);
+
+        let render = |ctx: &PresenceCtx| {
+            let mut scene = Scene::new();
+            ctx.draw_peer_caret(&mut scene, &theme, Affine::IDENTITY, &agent, caret);
+            let mut renderer = OffscreenRenderer::new(80, 80);
+            renderer.render(&scene, Color::BLACK)
+        };
+        let agent_pixels = render(&agent_ctx);
+        let person_pixels = render(&person_ctx);
+
+        // Three pixels above the ordinary caret, only the agent's diamond
+        // marker occupies this point. This remains distinguishable without
+        // colour perception and before any label is painted.
+        let (ar, ag, ab, _) = OffscreenRenderer::sample(&agent_pixels, 80, 31, 37);
+        let (pr, pg, pb, _) = OffscreenRenderer::sample(&person_pixels, 80, 31, 37);
+        assert!(
+            u16::from(ar) + u16::from(ag) + u16::from(ab)
+                > u16::from(pr) + u16::from(pg) + u16::from(pb)
         );
     }
 
@@ -1569,6 +1675,7 @@ mod tests {
                 pos: (60.0, 60.0),
                 label: "bob".into(),
                 color: peer,
+                is_agent: false,
             }],
         );
         let mut r = OffscreenRenderer::new(200, 200);
@@ -1618,6 +1725,7 @@ mod tests {
                     pos: (60.0, 60.0),
                     label: "p".into(),
                     color: peer,
+                    is_agent: false,
                 }],
             );
             let mut r = OffscreenRenderer::new(120, 120);
@@ -2048,6 +2156,7 @@ mod tests {
             pos: (300.0, 60.0),
             label: "Ada".to_string(),
             color: Color::from_rgb8(236, 72, 153),
+            is_agent: false,
         }];
         let mut scene = Scene::new();
         draw_peer_presence(

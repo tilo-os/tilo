@@ -20,6 +20,19 @@ use crate::plan::{self, Block, ConfirmationEvidence, Instruction, Plan};
 use crate::surface::{self, AppContract, View};
 use crate::wire::Link;
 
+/// Durable evidence collected while one addressed instruction is running.
+/// The task record is written only after the agent reaches a terminal reply
+/// or completed plan, so a partially dispatched task cannot masquerade as a
+/// finished one.
+#[derive(Clone, Debug)]
+struct ActiveRun {
+    instruction: String,
+    issued_by: Option<String>,
+    decision: String,
+    group_id: String,
+    steps: Vec<ui::RunStep>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     /// Explicit typed Cap'n Proto endpoint for headless diagnostics outside
@@ -113,6 +126,7 @@ pub struct Session {
     /// contracts remain only for the agent's own editorial state/tools.
     broker_surfaces: Vec<ui::collaboration::BrokerActionSurface>,
     next_broker_request: u64,
+    active_run: Option<ActiveRun>,
 }
 
 /// How often the agent asks again while it still has no document.
@@ -207,6 +221,7 @@ impl Session {
             asked_at: Instant::now(),
             broker_surfaces: Vec::new(),
             next_broker_request: 1,
+            active_run: None,
         })
     }
 
@@ -612,6 +627,7 @@ impl Session {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmation: &ConfirmationEvidence,
     ) -> Result<Result<(), String>> {
+        let context = self.task_context();
         let Some(address) = surface::decode_address(id) else {
             return Ok(Err("that no longer names anything I can find".to_string()));
         };
@@ -631,6 +647,8 @@ impl Session {
             return Ok(Err("that isn't open here, so I can't act on it".to_string()));
         };
         let target_app_id = editor.contract().app_id;
+        editor.set_history_context(context);
+        let before = editor.latest_entry_id();
         let live = editor.resources(&view);
         let Some(descriptor) = qos_actions::door::survey(&live)
             .into_iter()
@@ -651,6 +669,8 @@ impl Session {
         };
         match invoked {
             Ok(Some(delta)) => {
+                let end = editor.latest_entry_id();
+                let record = self.cfg.record.clone().unwrap_or_default();
                 let request = CollabRequest::DocumentIncremental { data: delta };
                 if is_primary {
                     self.link.send(&request)?;
@@ -659,6 +679,11 @@ impl Session {
                         .send_to_route(RouteSpec::app(target_app_id, self.cfg.cluster), &request)?;
                 }
                 tracing::info!(%id, "performed a discovered operation");
+                if let Some(end) = end
+                    && Some(end) != before
+                {
+                    self.capture_step(target_app_id, &record, descriptor.action_label.clone(), end);
+                }
                 std::thread::sleep(self.cfg.pace);
                 Ok(Ok(()))
             }
@@ -745,7 +770,102 @@ impl Session {
         self.handled.insert(ins_id.clone());
 
         let plan = self.decide(&ins_id, &asked, &blocks);
+        let issued_by = self.instruction_issuer();
+        let decision = self
+            .last_route
+            .as_ref()
+            .map_or_else(|| "decision unavailable".to_string(), Route::detail);
+        self.active_run = Some(ActiveRun {
+            instruction: asked.clone(),
+            issued_by,
+            decision,
+            group_id: format!("agent-run:{ins_id}"),
+            steps: Vec::new(),
+        });
         self.run_plan(&ins_id, &plan)
+    }
+
+    /// The latest non-agent author at the instant the instruction was read.
+    /// This is intentionally evidence from the change graph, never a name
+    /// parsed from the request. It is the best truthful issuer available for
+    /// native document instructions, which do not themselves carry an author
+    /// field.
+    fn instruction_issuer(&mut self) -> Option<String> {
+        let editor = self.editor.as_mut()?;
+        let mine = editor.actor_hex();
+        qdoc::history::versions(&mut editor.doc)
+            .into_iter()
+            .rev()
+            .find(|version| {
+                !qdoc::history::is_schema_genesis(version)
+                    && !version.actor_hex.eq_ignore_ascii_case(&mine)
+            })
+            .map(|version| version.actor_hex)
+    }
+
+    fn task_context(&self) -> Option<qos_actions::ActionContext> {
+        let run = self.active_run.as_ref()?;
+        let record = self.cfg.record.as_deref().unwrap_or("active document");
+        let mut context =
+            qos_actions::ActionContext::for_resource("Agent task", record, "document", record)
+                .with_app(&self.cfg.app_id, "Agent")
+                .with_purpose(&run.instruction)
+                .with_group(&run.group_id, &run.instruction, "agent-run");
+        if let Some(issuer) = &run.issued_by {
+            context = context.with_facet(qos_actions::ActionFacet::new("assigned-by", issuer));
+        }
+        Some(context)
+    }
+
+    fn capture_step(&mut self, app: &str, record: &str, summary: String, end: ui::HistoryEntryId) {
+        let Some(run) = self.active_run.as_mut() else {
+            return;
+        };
+        run.steps.push(ui::RunStep {
+            app: app.to_string(),
+            record: record.to_string(),
+            run: ui::ChangeRun::single(end),
+            summary,
+        });
+    }
+
+    /// Commit the durable task record into the primary collaborative
+    /// document. Run records are history markers, so the normal timeline
+    /// remains focused on the work rather than bookkeeping.
+    fn finish_run(&mut self) -> Result<()> {
+        let Some(run) = self.active_run.take() else {
+            return Ok(());
+        };
+        let Some(editor) = self.editor.as_mut() else {
+            return Ok(());
+        };
+        editor.set_history_context(None);
+        if run.steps.is_empty() {
+            return Ok(());
+        }
+        let by = editor.actor_hex();
+        if ui::record_run_with_details(
+            &mut editor.doc,
+            &run.instruction,
+            Some(&by),
+            run.issued_by.as_deref(),
+            Some(&run.instruction),
+            Some(&run.decision),
+            &run.steps,
+        )
+        .is_some()
+        {
+            qdoc::history::commit_stamped(&mut editor.doc);
+            let data = editor.doc.save_incremental();
+            if !data.is_empty() {
+                self.link
+                    .send(&CollabRequest::DocumentIncremental { data })?;
+            }
+        }
+        for editor in self.peers.values_mut() {
+            editor.set_history_context(None);
+        }
+        Ok(())
     }
 
     /// Whether a paragraph's text has stopped changing for long enough to
@@ -850,6 +970,10 @@ impl Session {
     /// the sequence.
     fn run_plan(&mut self, ins_id: &str, plan: &Plan) -> Result<bool> {
         self.dispatched_this_turn.clear();
+        let context = self.task_context();
+        if let Some(editor) = self.editor.as_mut() {
+            editor.set_history_context(context);
+        }
         let blocks = plan::blocks(&self.editor.as_ref().context("no document")?.snapshot()?);
         if let Some(what) = plan.unanswered() {
             tracing::warn!(%what, steps = plan.len(), "refused a sequence whole; nothing was touched");
@@ -861,6 +985,7 @@ impl Session {
                     self.cfg.name
                 ),
             )?;
+            self.finish_run()?;
             return Ok(true);
         }
         for step in &plan.steps {
@@ -920,6 +1045,7 @@ impl Session {
                 }
             };
             if !applied {
+                self.finish_run()?;
                 return Ok(true);
             }
         }
@@ -932,6 +1058,7 @@ impl Session {
         {
             self.edit(ins_id, &wp::remove_blocks_action(vec![ins_id.to_string()]))?;
         }
+        self.finish_run()?;
         Ok(true)
     }
 
@@ -1062,6 +1189,7 @@ impl Session {
     /// Show the caret on `focus`, apply `action`, broadcast the change, and
     /// pause so the room can see it happen.
     fn edit(&mut self, focus: &str, action: &WordProcessorAction) -> Result<()> {
+        let before = self.editor.as_mut().and_then(Editor::latest_entry_id);
         let caret_pos = self
             .editor
             .as_ref()
@@ -1086,6 +1214,13 @@ impl Session {
             self.link
                 .send(&CollabRequest::DocumentIncremental { data })?;
             tracing::info!(block = %focus, "applied {}", describe(action));
+            if let Some(end) = self.editor.as_mut().and_then(Editor::latest_entry_id)
+                && Some(end) != before
+            {
+                let record = self.cfg.record.as_deref().unwrap_or_default().to_string();
+                let app = self.cfg.app_id.clone();
+                self.capture_step(&app, &record, describe(action), end);
+            }
         } else {
             tracing::warn!(block = %focus, "{} changed nothing", describe(action));
         }

@@ -13362,6 +13362,7 @@ dependencies = [
  "qos-app",
  "qos-bluez",
  "qos-relay",
+ "qos-user-identity",
  "quick-xml 0.41.0",
  "runtime-dylib",
  "runtime-fs",

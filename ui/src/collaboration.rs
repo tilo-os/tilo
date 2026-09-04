@@ -386,6 +386,12 @@ pub enum PresencePayload {
     },
     Arrived,
     Left,
+    /// A room-scoped, transient follow relationship announced by the
+    /// authenticated sender. It is a visual presence cue only; the local
+    /// Follow command remains private to the follower's session.
+    Following {
+        target: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -1892,6 +1898,10 @@ async fn dispatch_sdk_request(
                 PresencePayload::Left => {
                     let _ = presence.publish_left(&key_bytes).await;
                 }
+                // Shell chrome originates this authenticated visual cue
+                // directly on the peer-presence route. Apps cannot turn it
+                // into a viewport command through this generic SDK bridge.
+                PresencePayload::Following { .. } => {}
             }
         }
         CollabRequest::FetchScrollback {
@@ -2116,6 +2126,9 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
                     start: usize::try_from(start).unwrap_or(usize::MAX),
                     end: usize::try_from(end).unwrap_or(usize::MAX),
                 },
+                runtime_collab::PresencePayload::Following { target } => {
+                    PresencePayload::Following { target }
+                }
                 runtime_collab::PresencePayload::Arrived => PresencePayload::Arrived,
                 // `Cursor` is fully handled and returned by the outer match, so
                 // it never reaches here; folding it in with `Left` keeps this

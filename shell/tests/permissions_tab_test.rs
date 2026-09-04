@@ -427,7 +427,7 @@ fn a_non_owner_clicking_grant_changes_nothing() {
 // Revoking
 
 #[test]
-fn revoke_click_removes_the_capability_it_was_painted_for() {
+fn revoke_requires_a_deliberate_confirmation_for_the_capability_it_was_painted_for() {
     let tree = tree_with_grants(vec![(
         "firefox",
         vec![
@@ -446,6 +446,16 @@ fn revoke_click_removes_the_capability_it_was_painted_for() {
     assert!(before.iter().any(|c| c.id == target_id));
 
     click(&mut host, target_rect);
+
+    assert!(host.member_sheet_is_open_for_tests());
+    assert_eq!(
+        capabilities(&chrome),
+        before,
+        "opening a revoke confirmation must not mutate a capability"
+    );
+    repaint(&mut host);
+    let confirm = host.member_sheet_option_rects_for_tests()[2];
+    click(&mut host, confirm);
 
     let after = capabilities(&chrome);
     assert!(
@@ -512,7 +522,7 @@ fn the_members_tab_renders_the_roster_with_controls() {
     reason = "st's only use is producing t via tree(); the read-guard's lifetime \
               is tied to st's borrow, so it can't be dropped before t's last use"
 )]
-fn clicking_a_role_chip_changes_what_the_member_may_do() {
+fn role_chip_opens_an_explicit_choice_before_changing_what_the_member_may_do() {
     let tree = tree_with_members();
     let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Members);
     let ada = host
@@ -537,10 +547,29 @@ fn clicking_a_role_chip_changes_what_the_member_may_do() {
         ));
     }
 
-    // Viewer → Commenter → Editor.
+    // Opening the chooser is inert; selecting Editor is the deliberate
+    // mutation. The role options are Viewer / Commenter / Editor.
     click(&mut host, ada.1);
     repaint(&mut host);
-    click(&mut host, ada.1);
+    assert!(host.member_sheet_is_open_for_tests());
+    assert_eq!(
+        host.member_sheet_option_rects_for_tests().len(),
+        3,
+        "the chooser presents all three positive roles at once"
+    );
+    let accessibility = host
+        .accessibility()
+        .expect("shell has an accessibility tree");
+    assert!(
+        accessibility.children.iter().any(|node| {
+            node.role == ui::a11y::Role::Dialog
+                && node.name.as_deref() == Some("Workspace permission decision")
+                && node.state.modal
+        }),
+        "assistive technology must learn that a permission decision now owns focus"
+    );
+    let editor = host.member_sheet_option_rects_for_tests()[2];
+    click(&mut host, editor);
 
     let st = chrome.borrow();
     let t = st.tree();
@@ -588,6 +617,16 @@ fn removing_a_member_takes_their_capabilities_with_them() {
         .expect("ada is in the roster");
 
     click(&mut host, ada.2);
+    assert!(host.member_sheet_is_open_for_tests());
+    assert!(
+        capabilities(&chrome)
+            .iter()
+            .any(|cap| cap.subject == Subject::person("ada")),
+        "the first click only opens the removal confirmation"
+    );
+    repaint(&mut host);
+    let confirm = host.member_sheet_option_rects_for_tests()[2];
+    click(&mut host, confirm);
 
     let st = chrome.borrow();
     let t = st.tree();
