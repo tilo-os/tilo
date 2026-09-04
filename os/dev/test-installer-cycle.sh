@@ -334,8 +334,9 @@ rm -f -- "$profiled_raw"
 [ "$(sha256sum "$medium" | awk '{print $1}')" = "$source_hash_before" ] \
   || die "customization modified the released installer medium"
 export QOS_INSTALLER_DISK="$profiled_medium"
-printf 'medium=%s\ncustomized_medium=%s\narchitecture=%s\nuser=%s\nhostname=cycle-qos\nmode=profiled-no-tpm-passphrase\nstorage=%s\n' \
-  "$medium" "$profiled_medium" "$QOS_VM_ARCH" "$QOS_USER" "$install_mode" > "$out/scenario.txt"
+printf 'medium=%s\ncustomized_medium=%s\narchitecture=%s\nuser=%s\nhostname=cycle-qos\nunlock=no-tpm-passphrase\ninstall_mode=%s\nstorage=%s\n' \
+  "$medium" "$profiled_medium" "$QOS_VM_ARCH" "$QOS_USER" "$install_mode" "$storage" \
+  > "$out/scenario.txt"
 
 "$vm" boot-installer --gl --no-tpm
 wait_screen 01-disk 'Install[[:space:]]+qOS' 120 5 \
@@ -393,6 +394,7 @@ copy_evidence installer
 "$vm" stop >/dev/null 2>&1 || true
 
 phase=target
+target_boot_started="$(date +%s)"
 "$vm" boot-target --gl --no-tpm
 
 # The sealed boot has no serial-console test instrumentation. Type only after
@@ -404,6 +406,9 @@ for attempt in $(seq 1 60); do
     && grep -Eqi 'Welcome[[:space:]]+back|Sign[[:space:]]+in' "$out/target-observe.txt"; then
     cp -f "$image" "$out/07-target-greeter.png"
     cp -f "$out/target-observe.txt" "$out/07-target-greeter.txt"
+    target_greeter_seen="$(date +%s)"
+    printf 'cold_boot_to_greeter_seconds=%s\n' \
+      "$((target_greeter_seen - target_boot_started))" > "$out/boot-timing.txt"
     unlocked=1
     break
   fi

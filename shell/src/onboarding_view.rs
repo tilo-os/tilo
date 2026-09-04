@@ -186,6 +186,7 @@ pub const KEY_BACKUP_BROWSE: &str = "onboarding.backup.browse";
 pub const KEY_TOUR_START: &str = "onboarding.tour.start";
 pub const KEY_TOUR_BACK: &str = "onboarding.tour.back";
 pub const KEY_TOUR_NEXT: &str = "onboarding.tour.next";
+pub const KEY_TOUR_SKIP: &str = "onboarding.tour.skip";
 pub const KEY_FINISH: &str = "onboarding.finish";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -844,8 +845,12 @@ impl OnboardingView {
         };
         actions(vec![
             Box::new(
-                Button::new("onboarding.tour.skip.button", "Skip tour", Some(KEY_FINISH))
-                    .fit_content(40.0),
+                Button::new(
+                    "onboarding.tour.skip.button",
+                    "Skip tour",
+                    Some(KEY_TOUR_SKIP),
+                )
+                .fit_content(40.0),
             ),
             Box::new(
                 Button::new("onboarding.tour.back.button", "Back", Some(KEY_TOUR_BACK))
@@ -1840,6 +1845,21 @@ impl Widget for OnboardingView {
             }
         }
 
+        if read_bool(state, root, KEY_TOUR_SKIP) {
+            let _ = state.put(root, KEY_TOUR_SKIP, ScalarValue::Boolean(false));
+            // This action exists only while a tour page is visible. During
+            // first use, clearing the crash journal is the durable record that
+            // the person deliberately skipped; a reopened tour has no setup
+            // journal and can close immediately.
+            self.finished = self.tour_page.is_some()
+                && (self.tour_only || (self.flow.is_done() && self.finish_persisted_progress()));
+            if self.finished {
+                clear_secret(&self.connect_passphrase);
+                clear_secret(&self.backup_passphrase);
+                clear_secret(&self.backup_confirmation);
+            }
+        }
+
         if read_bool(state, root, KEY_FINISH) {
             let _ = state.put(root, KEY_FINISH, ScalarValue::Boolean(false));
             let at_tour_end = self.tour_page == Some(TourPage::Start);
@@ -1984,7 +2004,7 @@ impl Widget for OnboardingView {
                         && matches!(event.logical_key, Key::Named(NamedKey::Escape))
             )
         {
-            let _ = state.put(path, KEY_FINISH, ScalarValue::Boolean(true));
+            let _ = state.put(path, KEY_TOUR_SKIP, ScalarValue::Boolean(true));
             *handled = true;
             return;
         }
@@ -2673,9 +2693,54 @@ mod tests {
             }
         }
 
-        press(&mut doc, KEY_FINISH);
+        press(&mut doc, KEY_TOUR_SKIP);
         view.sync(&mut doc, &automerge::ROOT);
         assert!(view.finished(), "Skip tour dismisses a reopened tour");
+    }
+
+    #[test]
+    fn first_use_skip_works_on_every_tour_page_and_clears_progress() {
+        for (stage, page) in [
+            (PersistedStage::TourNavigate, TourPage::Navigate),
+            (PersistedStage::TourOrganise, TourPage::Organise),
+            (PersistedStage::TourCollaborate, TourPage::Collaborate),
+            (PersistedStage::TourStart, TourPage::Start),
+        ] {
+            let directory = TempDir::new().expect("progress directory");
+            write_fixture_identity(directory.path());
+            store_progress(directory.path(), stage).expect("tour progress");
+            let mut view = OnboardingView::new(directory.path().to_path_buf());
+            let mut document = AutoCommit::new();
+
+            assert_eq!(view.tour_page, Some(page));
+            press(&mut document, KEY_TOUR_SKIP);
+            view.sync(&mut document, &automerge::ROOT);
+
+            assert!(view.finished(), "Skip tour must work from {page:?}");
+            assert!(
+                !has_pending_progress(directory.path()),
+                "skipping {page:?} must durably complete first use"
+            );
+        }
+    }
+
+    #[test]
+    fn escape_dismisses_a_reopened_tour_from_every_page() {
+        for next_presses in 0..=3 {
+            let mut view = OnboardingView::new_tour();
+            let mut document = AutoCommit::new();
+            for _ in 0..next_presses {
+                press(&mut document, KEY_TOUR_NEXT);
+                view.sync(&mut document, &automerge::ROOT);
+            }
+
+            assert!(dispatch_escape(&mut view, &mut document));
+            view.sync(&mut document, &automerge::ROOT);
+            assert!(
+                view.finished(),
+                "Escape must close a reopened tour after {next_presses} advances"
+            );
+        }
     }
 
     #[test]

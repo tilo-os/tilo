@@ -83,6 +83,7 @@ grep -Fq 'acquire-release-credentials.sh' "$workflow" \
 
 mac_broker="$repo/apps/imager/packaging/acquire-release-credentials.sh"
 homebrew_publish="$repo/apps/imager/packaging/publish-homebrew-tap.sh"
+site_publish="$repo/apps/imager/packaging/publish-site-release.sh"
 if ! grep -Fq 'declare -A' "$mac_broker" \
    && grep -Fq '"$broker" "$platform" "$lease" >/dev/null' "$mac_broker" \
    && grep -Fq '$null = & $Trusted windows $Lease' \
@@ -96,6 +97,18 @@ if ! grep -Fq 'declare -A' "$mac_broker" \
   ok 'native release credential and promotion paths support stock macOS Bash and Windows PowerShell'
 else
   bad 'native release automation exposes broker stdout, depends on Bash 4/GNU sort, or writes a non-UTF-8 Windows environment file'
+fi
+
+source <(sed -n '/^version_is_newer()/,/^}/p' "$site_publish")
+if version_is_newer 1.10.0 1.9.999 \
+   && version_is_newer 10000000000.0.0 9999999999.999.999 \
+   && ! version_is_newer 1.0.0 1.0.0 \
+   && ! version_is_newer 1.2.3 2.0.0 \
+   && ! grep -Fq 'sort -V' "$site_publish" \
+   && grep -Fq 'existing landing-page release has invalid tag' "$site_publish"; then
+  ok 'landing-page promotion validates and compares release versions without numeric truncation'
+else
+  bad 'landing-page promotion can overwrite malformed or newer release state'
 fi
 
 # Load only the side-effect-free comparator, then exercise boundaries which a
@@ -249,6 +262,7 @@ grep -Fq 'key: github-assets-all-v1-' "$workflow" \
 cycle="$repo/os/dev/test-installer-cycle.sh"
 boot_verify="$repo/scripts/perf/qemu-install-boot-verify.sh"
 if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
+  && grep -Fq "if: github.event_name != 'pull_request'" "$workflow" \
   && grep -Fq -- '--prepared-alongside' "$workflow" \
   && grep -Fq -- '--guided-alongside' "$workflow" \
   && grep -Fq 'dist/installer-guided-alongside-cycle' "$workflow" \
@@ -270,6 +284,10 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'profiled live installer did not start at Disk' "$cycle" \
   && grep -Fq 'embedded username did not reach the account screen' "$cycle" \
   && grep -Fq 'customization modified the released installer medium' "$cycle" \
+  && grep -Fq 'install_mode=%s' "$cycle" \
+  && grep -Fq '"$install_mode" "$storage"' "$cycle" \
+  && grep -Fq 'cold_boot_to_greeter_seconds=' "$cycle" \
+  && grep -Fq 'boot-timing.txt' "$cycle" \
   && grep -Fq 'Windows filesystem bytes changed during alongside install' "$cycle" \
   && grep -Fq 'Linux filesystem bytes changed during alongside install' "$cycle" \
   && grep -Fq 'Windows EFI loader bytes changed during alongside install' "$cycle" \
@@ -302,7 +320,7 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq "wait_screen 12-tour-share" "$cycle" \
   && grep -Fq "wait_screen 13-desktop-config" "$cycle" \
   && ! grep -Eq '(^|[[:space:]])(ssh|journal)([[:space:]]|$)|--stub-ui|--shots' "$cycle"; then
-  ok 'every tagged medium must pass erase, prepared-alongside, and guided-alongside graphical install cycles'
+  ok 'trusted main and tagged media must pass erase, prepared-alongside, and guided-alongside graphical install cycles'
 else
   bad 'release media lack a fail-closed native full graphical installation cycle'
 fi

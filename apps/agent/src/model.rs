@@ -64,24 +64,8 @@ pub enum Fallback {
     NoKey,
     /// Switched off for this run (`--no-model`).
     Disabled,
-    /// The call did not answer inside the deadline.
-    Timeout,
     /// Transport, HTTP status, a refusal, or an unreadable body.
     Failed(String),
-    /// The service asked to be tried again, was, and stayed busy.
-    ///
-    /// Its own variant rather than a [`Self::Failed`] with a longer sentence:
-    /// one call that was never repeated and four that were both end on the
-    /// floor, and only the second is the service having an outage rather
-    /// than a spike.
-    Exhausted {
-        /// The last failure's own sentence.
-        why: String,
-        /// How many attempts were made, the first one included.
-        attempts: u32,
-        /// How long they took between them, waits and calls together.
-        over: Duration,
-    },
     /// The answer was not an id the app exports. Refused, not acted on.
     OutOfCatalogue(String),
 }
@@ -108,16 +92,7 @@ impl Route {
             Route::Model { why } => format!("{MODEL}: {why}"),
             Route::Keywords(Fallback::NoKey) => "no api key".to_string(),
             Route::Keywords(Fallback::Disabled) => "switched off".to_string(),
-            Route::Keywords(Fallback::Timeout) => "the call timed out".to_string(),
             Route::Keywords(Fallback::Failed(e)) => format!("the call failed: {e}"),
-            Route::Keywords(Fallback::Exhausted {
-                why,
-                attempts,
-                over,
-            }) => format!(
-                "the call kept failing: {why} ({attempts} attempts over {:.1}s)",
-                over.as_secs_f32()
-            ),
             Route::Keywords(Fallback::OutOfCatalogue(a)) => {
                 format!("answered {a:?}, which the app does not export")
             }
@@ -203,7 +178,7 @@ impl Chooser {
                 // is refused here, before anything is dispatched.
                 None => fallback(Fallback::OutOfCatalogue(answer.action)),
             },
-            Err(AskError(error)) => fallback(Fallback::Failed(error)),
+            Err(AskError::Failed(e)) => fallback(Fallback::Failed(e)),
         }
     }
 
@@ -237,7 +212,7 @@ impl Chooser {
         };
         match answer {
             Ok(answer) => Ok(answer),
-            Err(AskError(error)) => fallback(Fallback::Failed(error)),
+            Err(AskError::Failed(error)) => fallback(Fallback::Failed(error)),
         }
     }
 
@@ -250,7 +225,7 @@ impl Chooser {
         most_steps: usize,
     ) -> Result<tools::Answer, AskError> {
         if provider.selection.protocol != agent_provider_config::ProviderProtocol::Anthropic {
-            return Err(AskError(
+            return Err(AskError::Failed(
                 "OpenAI-compatible action discovery has not been negotiated for this provider"
                     .to_string(),
             ));
@@ -266,9 +241,10 @@ impl Chooser {
             let body =
                 action_request_body_for(&provider.selection, &messages, &revealed, most_steps);
             let raw = post_provider(provider, &body, &remaining)?;
-            match parse_action_turn(&raw).map_err(AskError)? {
+            match parse_action_turn(&raw).map_err(AskError::Failed)? {
                 ActionTurn::Plan { input, .. } => {
-                    return tools::read_plan(&input, &revealed, most_steps).map_err(AskError);
+                    return tools::read_plan(&input, &revealed, most_steps)
+                        .map_err(AskError::Failed);
                 }
                 ActionTurn::Tools { content, calls } => {
                     messages.push(serde_json::json!({ "role": "assistant", "content": content }));
@@ -280,7 +256,7 @@ impl Chooser {
                 }
             }
         }
-        Err(AskError(
+        Err(AskError::Failed(
             "the model exhausted the action-discovery turn limit".into(),
         ))
     }
@@ -295,7 +271,7 @@ impl Chooser {
         let remaining = || self.timeout.checked_sub(began.elapsed());
         let body = request_body_for(&provider.selection, rest, blocks);
         let text = post_provider(provider, &body, &remaining)?;
-        parse_answer_for(provider.selection.protocol, &text).map_err(AskError)
+        parse_answer_for(provider.selection.protocol, &text).map_err(AskError::Failed)
     }
 }
 
@@ -405,22 +381,26 @@ fn action_user_turn(rest: &str, blocks: &[Block]) -> String {
 fn post_provider(
     provider: &ProviderConnection,
     body: &Value,
-    _remaining: &dyn Fn() -> Option<Duration>,
+    remaining: &dyn Fn() -> Option<Duration>,
 ) -> Result<String, AskError> {
     // The agent has no provider network namespace and cannot resolve a vault
     // reference. All profile lookup, credential resolution, and egress happen
     // at the per-user model gateway reached through a launcher-issued FD.
+    let timeout = remaining().ok_or_else(|| AskError::Failed("the call timed out".into()))?;
     qos_model_gateway::plan(
         &provider.selection.profile_id,
         &provider.selection.model.id,
         body.clone(),
+        timeout,
     )
-    .map_err(|error| AskError(error.to_string()))
+    .map_err(|error| AskError::Failed(error.to_string()))
 }
 
-/// A gateway call failed. The gateway owns transport retries and deadline
-/// handling, so the agent receives one bounded, credential-free error.
-struct AskError(String);
+/// Why a call to the model produced nothing.
+enum AskError {
+    /// Transport, HTTP status, a decline, or an unreadable body.
+    Failed(String),
+}
 
 /// The model's answer, before it has been checked against the catalogue.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -856,26 +836,6 @@ mod tests {
         assert_eq!(d.route, Route::Keywords(Fallback::Disabled));
         assert!(!d.route.is_live());
         assert_eq!(d.route.label(), "keywords");
-    }
-
-    /// A call that was retried and never answered lands on the floor like
-    /// every other unhappy path — and is told apart from one that was
-    /// never attempted at all.
-    #[test]
-    fn an_exhausted_call_is_told_apart_from_one_that_never_happened() {
-        let exhausted = Route::Keywords(Fallback::Exhausted {
-            why: "http 529: Overloaded".into(),
-            attempts: 4,
-            over: Duration::from_millis(4_300),
-        });
-        let never = Route::Keywords(Fallback::NoKey);
-        assert!(!exhausted.is_live(), "the floor decided it");
-        assert_eq!(exhausted.label(), "keywords");
-        assert_ne!(exhausted, never);
-        let said = exhausted.detail();
-        assert!(said.contains("4 attempts"), "{said}");
-        assert!(said.contains("4.3s"), "{said}");
-        assert!(said.contains("529"), "{said}");
     }
 
     #[test]

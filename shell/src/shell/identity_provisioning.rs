@@ -271,11 +271,11 @@ pub fn needs_first_run_flow(store: &impl IdentityStore) -> bool {
         Ok(Some(_)) => false,
         Err(e) => {
             // A corrupt, unsafe, or unreadable record is not the same as no
-            // record. Entering creation here could overwrite the only copy of
-            // an existing identity; keep the desktop gated and let the normal
-            // validation path report the repairable error instead.
+            // record. Keep trusted setup in front of the desktop so the user
+            // can connect a valid backup; the creation path still validates
+            // the existing record and refuses to overwrite it.
             tracing::error!("identity store load failed; refusing to replace it: {e}");
-            false
+            true
         }
     }
 }
@@ -398,13 +398,16 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn invalid_existing_identity_is_never_treated_as_missing() {
+    fn invalid_existing_identity_keeps_trusted_setup_in_front_of_the_desktop() {
         let tmp = TmpDir::new("invalid-existing");
         let path = tmp.0.join("primary.json");
         fs::write(&path, b"not an identity").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         let store = DiskIdentityStore::at(path);
-        assert!(!needs_first_run_flow(&store));
+        assert!(
+            needs_first_run_flow(&store),
+            "an invalid identity must not let an identity-less desktop start"
+        );
     }
 
     #[test]

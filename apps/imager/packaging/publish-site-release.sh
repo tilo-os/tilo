@@ -38,11 +38,35 @@ test -f "$manifest"
 # promotion impossible.
 current_tag="$(jq -r '.tag // empty' "$manifest")"
 test -f "$contract"
-current_version="${current_tag#imager-v}"
-if [[ "$current_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-   && [ "$(printf '%s\n%s\n' "$current_version" "$version" | sort -V | tail -1)" != "$version" ]; then
-  printf 'refusing to replace newer landing-page release %s with %s\n' "$current_version" "$version" >&2
-  exit 1
+version_is_newer() {
+  LC_ALL=C awk -v current="$1" -v candidate="$2" '
+    function canonical(value) {
+      sub(/^0+/, "", value)
+      return value == "" ? "0" : value
+    }
+    BEGIN {
+      split(current, old, ".")
+      split(candidate, new, ".")
+      for (i = 1; i <= 3; i++) {
+        left = canonical(old[i])
+        right = canonical(new[i])
+        if (length(left) != length(right))
+          exit length(left) > length(right) ? 0 : 1
+        if (left != right)
+          exit ("x" left) > ("x" right) ? 0 : 1
+      }
+      exit 1
+    }
+  '
+}
+if [ "$(jq -r '.published' "$manifest")" = true ]; then
+  [[ "$current_tag" =~ ^imager-v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || { printf 'existing landing-page release has invalid tag: %s\n' "$current_tag" >&2; exit 1; }
+  current_version="${current_tag#imager-v}"
+  if version_is_newer "$current_version" "$version"; then
+    printf 'refusing to replace newer landing-page release %s with %s\n' "$current_version" "$version" >&2
+    exit 1
+  fi
 fi
 
 # Opening a WinGet submission makes the release reviewable, not installable.

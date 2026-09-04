@@ -214,11 +214,59 @@ pub fn exported_actions(resources: &[Resource]) -> Vec<ExportedAction> {
 ///
 /// Panics if the typed test peer cannot publish to its collaboration broker.
 pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource]) {
+    let actions = exported_actions(resources);
+    let expected: Vec<_> = actions
+        .iter()
+        .map(|action| (action.resource.clone(), action.action.clone()))
+        .collect();
     peer.send(&CollabRequest::PublishActions {
         app_id: app_id.to_string(),
-        actions: exported_actions(resources),
+        actions,
     })
     .unwrap();
+
+    // Publishing and catalogue delivery use separate Cap'n Proto streams.
+    // Observe the level-triggered replacement before a test launches an
+    // agent whose constructor consumes that broker snapshot.
+    let deadline = std::time::Instant::now()
+        .checked_add(Duration::from_secs(5))
+        .expect("five-second catalogue deadline fits in Instant");
+    let mut deferred = Vec::new();
+    while std::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match peer
+            .link
+            .as_mut()
+            .expect("peer announced before publishing actions")
+            .recv(remaining.min(Duration::from_millis(100)))
+            .expect("receive the broker catalogue acknowledgement")
+        {
+            Some(CollabEvent::ActionCatalogue { surfaces })
+                if surfaces.iter().any(|surface| {
+                    surface.app_id == app_id
+                        && expected.iter().all(|(resource, action)| {
+                            surface.actions.iter().any(|published| {
+                                published.resource == resource.as_str()
+                                    && published.action == action.as_str()
+                            })
+                        })
+                }) =>
+            {
+                peer.link
+                    .as_mut()
+                    .expect("peer remains announced")
+                    .defer(deferred);
+                return;
+            }
+            Some(event) => deferred.push(event),
+            None => {}
+        }
+    }
+    peer.link
+        .as_mut()
+        .expect("peer remains announced")
+        .defer(deferred);
+    panic!("broker did not publish {app_id}'s action catalogue in time");
 }
 
 /// Resolve and execute a document invocation through an application's real
