@@ -555,8 +555,15 @@ fn an_app_installed_from_a_registry_keeps_the_services_it_declared() {
         launcher::services::ensure_services_root().expect("create the services dir");
     let _listener = std::os::unix::net::UnixListener::bind(services_root.join("collab.sock"))
         .expect("bind a collab socket for the launcher to dial");
-    let binds = launcher::services::resolve_service_binds(&reached.sandbox.services, false)
-        .expect("resolution must not fail on optional services");
+    let binds = launcher::services::resolve_service_binds_for_launch(
+        &reached.sandbox.services,
+        false,
+        launcher::services::ServiceLaunchContext {
+            app_id: PKG,
+            workspace_id: Some("catalogue-e2e-workspace"),
+        },
+    )
+    .expect("resolution must not fail with authenticated launch context");
     assert!(
         binds.iter().any(|b| b.name == "collab"),
         "the installed app must be handed a collab descriptor; \

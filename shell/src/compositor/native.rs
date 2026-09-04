@@ -5514,8 +5514,15 @@ mod tests {
             launcher::services::COLLAB_SERVICE.to_string(),
             "required@1".to_string(),
         );
-        let resolved = launcher::services::resolve_service_binds(&services, false)
-            .expect("the launcher must find the socket the compositor just bound");
+        let resolved = launcher::services::resolve_service_binds_for_launch(
+            &services,
+            false,
+            launcher::services::ServiceLaunchContext {
+                app_id: "dev.qos.socket-contract-test",
+                workspace_id: Some("socket-contract-workspace"),
+            },
+        )
+        .expect("the launcher must find the socket the compositor just bound");
 
         assert_eq!(
             resolved.len(),
