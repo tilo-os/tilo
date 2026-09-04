@@ -2251,8 +2251,8 @@ name = "cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "runtime",
  "runtime-fs",
+ "runtime-portal",
  "serial_test",
  "tempfile",
 ]

@@ -18,7 +18,7 @@ use collab_types::SignedOp;
 
 use crate::presence::PresenceKey;
 
-use std::os::fd::RawFd;
+use runtime_portal::RawFd;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -607,6 +607,7 @@ impl std::fmt::Debug for CertifiedEndpointIdentity {
 }
 
 enum SdkDocumentSigner {
+    #[cfg(unix)]
     Certified(runtime_identity::SigningIdentity),
     /// Explicit-FD harnesses have no launcher identity service. Their
     /// in-process broker accepts this ephemeral signer; a production broker
@@ -618,6 +619,7 @@ fn harness_document_signer() -> SdkDocumentSigner {
     SdkDocumentSigner::Harness(ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng))
 }
 
+#[cfg(unix)]
 fn sdk_join_identity(cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
     let identity = runtime_identity::load()?;
     let device_certificate = identity.device_certificate().ok_or_else(|| {
@@ -645,6 +647,11 @@ fn sdk_join_identity(cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal
         presentation,
         signer: SdkDocumentSigner::Certified(identity),
     })
+}
+
+#[cfg(not(unix))]
+fn sdk_join_identity(_cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
+    Err(runtime_portal::NotAvailable::ServiceFdMissing)
 }
 
 pub struct CollaborationManager {
@@ -1206,11 +1213,13 @@ fn resolve_local_user_id() -> String {
     if let Some(v) = non_empty_env("QOS_USER_ID") {
         return v;
     }
-    if let Some(id) = runtime_identity::load()
-        .ok()
-        .or_else(|| config_identity_path().and_then(|p| runtime_identity::load_from_path(p).ok()))
+    #[cfg(unix)]
     {
-        return person_id_from_key(id.group_public_key());
+        if let Some(id) = runtime_identity::load().ok().or_else(|| {
+            config_identity_path().and_then(|p| runtime_identity::load_from_path(p).ok())
+        }) {
+            return person_id_from_key(id.group_public_key());
+        }
     }
     if let Ok(bytes) = std::fs::read("/var/lib/qos/user-identity/pubkey.bin")
         && let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice())
@@ -1784,6 +1793,7 @@ async fn send_document_mutation(
     };
     let now = std::time::SystemTime::now();
     let author = match signer {
+        #[cfg(unix)]
         SdkDocumentSigner::Certified(identity) => identity.signing_public_key(),
         SdkDocumentSigner::Harness(key) => key.verifying_key().to_bytes(),
     };
@@ -1804,6 +1814,7 @@ async fn send_document_mutation(
         }
     };
     let signature = match signer {
+        #[cfg(unix)]
         SdkDocumentSigner::Certified(identity) => match identity.sign_collaboration_op(
             &workspace_id,
             &route.spec.app_id,
