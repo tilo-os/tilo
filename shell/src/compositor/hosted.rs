@@ -44,6 +44,10 @@ pub fn run_with_options(enable_peer_sync: bool) {
 }
 
 /// Full options-struct form. New flags land here without changing the legacy `run_with_options(bool)` caller; `main.rs` switches over when wiring multiple flags.
+#[allow(
+    clippy::too_many_lines,
+    reason = "hosted session startup deliberately keeps the ordered ownership, networking, portal, identity-broker, and event-loop lifetimes visible in one orchestration path"
+)]
 pub fn run_with_full_options(opts: HostedOptions) {
     let HostedOptions {
         enable_peer_sync,
@@ -117,6 +121,18 @@ pub fn run_with_full_options(opts: HostedOptions) {
         let dispatcher = broker.follow_dispatcher();
         host.set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
             dispatcher.set(&room.to_string(), peer_id);
+        }));
+    }
+    if let Some(network) = peer_sync.as_ref() {
+        let network = Arc::clone(network);
+        host.set_follow_presence_bridge(std::rc::Rc::new(move |room, target| {
+            let key = ui::presence::PresenceKey::Workspace {
+                id: room.to_string(),
+            };
+            let payload = ui::collaboration::PresencePayload::Following { target };
+            if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
+                network.publish_app_presence("qos-shell".into(), room.to_string(), frame);
+            }
         }));
     }
 

@@ -224,22 +224,37 @@ interface ChannelHandle {
   # private metadata is not retained after serialization or policy changes.
   clearContinuation @26 (appId :Text) -> ();
 
+  # Open a session-local bridge to the shell's existing authenticated surface
+  # stream and input firewall. The target is the exact 32-byte certified Iroh
+  # endpoint identity. Opening never grants control; the returned stream stays
+  # waiting until that target publishes a consented SurfaceStreamStart.
+  openWorkspaceControl @27 (targetDevice :Data) -> (handle :WorkspaceControlHandle);
+
   # A delegated agent subscribes to broker-minted task leases addressed to
   # its admitted live session. Offline agents are never queued here.
-  subscribeTaskRuns @27 () -> (stream :TaskRunStream);
+  subscribeTaskRuns @28 () -> (stream :TaskRunStream);
   # The agent may report only updates for the exact broker-minted run+lease.
   # `updateJson` is a versioned TaskRunUpdate envelope.
-  reportTaskRun @28 (runId :UInt64, lease :Text, updateJson :Text) -> ();
+  reportTaskRun @29 (runId :UInt64, lease :Text, updateJson :Text) -> ();
   # Invoke a published action while carrying the leased task's ActionContext.
   # The broker derives both agent identity and context; no caller-supplied
   # attribution/context crosses this method.
-  invokeTaskAction @29 (runId :UInt64, lease :Text, peerId :UInt64,
+  invokeTaskAction @30 (runId :UInt64, lease :Text, peerId :UInt64,
                         resource :Text, action :Text, argument :Text,
                         hasArgument :Bool, confirmationJson :Text)
       -> (id :UInt64, updateJson :Text);
   # Cooperative cancellation for a leased task. The broker reflects a Task
   # Center cancellation; it never lets an agent cancel a task by itself.
-  taskRunCancelled @30 (runId :UInt64, lease :Text) -> (cancelled :Bool);
+  taskRunCancelled @31 (runId :UInt64, lease :Text) -> (cancelled :Bool);
+}
+
+interface WorkspaceControlHandle {
+  # Postcard-encoded runtime_collab::WorkspaceControlEvent.
+  read @0 () -> (event :Data);
+  # Postcard-encoded runtime_collab::WorkspaceControlInput. Refused until the
+  # target's stream-start consent edge and after any close/revocation edge.
+  sendInput @1 (event :Data) -> ();
+  close @2 () -> ();
 }
 
 interface ActionCatalogueStream {
@@ -485,6 +500,11 @@ struct PresencePayload {
       start @9 :UInt64;
       end  @10 :UInt64;
     }
+
+    # Ephemeral visual relationship presence. The authenticated event sender
+    # is following this participant; an empty value clears the cue. This is
+    # never a request to alter the receiver's viewport.
+    following @11 :Text;
   }
 }
 

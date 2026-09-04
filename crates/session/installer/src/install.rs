@@ -19,20 +19,17 @@
 //! * a **recovery key** is always generated and shown once during install.
 //!   It is the factor no hardware failure can take away, so every other one
 //!   is layered on top of it;
-//! * with `--pin`, the secret on the **second stdin line** (after the account
-//!   password, never on the command line) becomes a **TPM2+PIN** keyslot only
-//!   when Secure Boot, kernel lockdown, and a dedicated installed-target
-//!   preflight prove a continuous verified-boot boundary, and an ordinary
-//!   passphrase keyslot otherwise;
+//! * with `--pin` (a legacy transport flag name), the strong secret on the
+//!   **second stdin line** becomes an ordinary LUKS passphrase keyslot. TPM
+//!   unlock remains disabled until it is bound to signed, measured qOS boot
+//!   artifacts;
 //! * with `--fido2`, a **FIDO2 security key** is enrolled if a token is
 //!   present (its absence does not abort the install).
 //!
-//! Encryption does **not** require a TPM. With verified TPM2 boot through the
-//! installed target, `--pin` becomes the single startup PIN bound to that TPM;
-//! otherwise it becomes the normal disk-unlock passphrase. The privileged
-//! backend independently checks this boundary and enforces both flags, so an
-//! older or malformed UI fails closed instead of installing plaintext or
-//! weakening the credential policy.
+//! Encryption does **not** require a TPM. The privileged backend independently
+//! enforces the mandatory encryption and strong-passphrase policy, so an older
+//! or malformed UI fails closed instead of installing plaintext or weakening
+//! the credential policy.
 //!
 //! `--yes` is required because the backend has no tty here; the installer's
 //! Review screen is the user's "are you sure" gate. The account password is
@@ -72,6 +69,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use zeroize::Zeroizing;
 
+use crate::disks::PartitionExtent;
+
 /// Path to the privileged install backend installed on the live medium.
 pub const INSTALL_BIN: &str = "/usr/libexec/qos-install";
 /// Path to the privileged power backend (reboot / poweroff).
@@ -98,6 +97,20 @@ pub struct InstallOptions {
     pub alongside_efi: String,
     pub alongside_efi_partuuid: String,
     pub alongside_efi_size_bytes: u64,
+    /// Non-zero only for the guided path that appends two partitions inside a
+    /// reviewed unallocated GPT extent. Existing partitions are carried as a
+    /// complete identity/geometry snapshot for privileged revalidation.
+    pub guided_free_start_bytes: u64,
+    pub guided_free_size_bytes: u64,
+    pub guided_efi_start_bytes: u64,
+    pub guided_efi_size_bytes: u64,
+    pub guided_root_start_bytes: u64,
+    pub guided_root_size_bytes: u64,
+    pub disk_partition_table_uuid: String,
+    pub disk_logical_sector_size: u64,
+    pub guided_efi_partuuid: String,
+    pub guided_root_partuuid: String,
+    pub expected_partitions: Vec<PartitionExtent>,
     /// Root filesystem: `btrfs` (default), `ext4`, or `xfs`.
     pub filesystem: String,
     /// Hostname seeded into the installed system.
@@ -116,13 +129,13 @@ pub struct InstallOptions {
     /// variant; the flag is then omitted.
     pub keyvariant: String,
     /// Mandatory unlock secret, sent as the second stdin line rather than on
-    /// argv. It becomes a TPM2+PIN keyslot only with verified TPM2 boot, and
-    /// the boot passphrase otherwise. The backend rejects an empty value.
+    /// argv. Despite the legacy field name, it is always the strong disk boot
+    /// passphrase in this release. The backend rejects an empty value.
     pub pin: Zeroizing<String>,
     /// Enroll a FIDO2 security key as an extra unlock factor. Only
     /// meaningful alongside mandatory LUKS encryption; maps to `--fido2`. A token must
-    /// be present at install time, but its absence never aborts the
-    /// install. Default `false`.
+    /// be present at install time; failure to enroll an explicitly requested
+    /// factor aborts the install while the temporary key still exists. Default `false`.
     pub fido2: bool,
 }
 
@@ -139,6 +152,17 @@ impl Default for InstallOptions {
             alongside_efi: String::new(),
             alongside_efi_partuuid: String::new(),
             alongside_efi_size_bytes: 0,
+            guided_free_start_bytes: 0,
+            guided_free_size_bytes: 0,
+            guided_efi_start_bytes: 0,
+            guided_efi_size_bytes: 0,
+            guided_root_start_bytes: 0,
+            guided_root_size_bytes: 0,
+            disk_partition_table_uuid: String::new(),
+            disk_logical_sector_size: 0,
+            guided_efi_partuuid: String::new(),
+            guided_root_partuuid: String::new(),
+            expected_partitions: Vec::new(),
             filesystem: "btrfs".to_string(),
             hostname: "qos".to_string(),
             full_name: String::new(),
@@ -199,7 +223,37 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
     if !opts.locale.trim().is_empty() {
         cmd.arg("--locale").arg(opts.locale.trim());
     }
-    if opts.alongside_root.is_empty() {
+    if opts.guided_free_size_bytes > 0 {
+        cmd.arg("--guided-alongside")
+            .arg("--free-start-bytes")
+            .arg(opts.guided_free_start_bytes.to_string())
+            .arg("--free-size-bytes")
+            .arg(opts.guided_free_size_bytes.to_string())
+            .arg("--efi-start-bytes")
+            .arg(opts.guided_efi_start_bytes.to_string())
+            .arg("--efi-size-bytes")
+            .arg(opts.guided_efi_size_bytes.to_string())
+            .arg("--root-start-bytes")
+            .arg(opts.guided_root_start_bytes.to_string())
+            .arg("--root-size-bytes")
+            .arg(opts.guided_root_size_bytes.to_string())
+            .arg("--expect-disk-ptuuid")
+            .arg(&opts.disk_partition_table_uuid)
+            .arg("--expect-logical-sector-size")
+            .arg(opts.disk_logical_sector_size.to_string())
+            .arg("--new-efi-partuuid")
+            .arg(&opts.guided_efi_partuuid)
+            .arg("--new-root-partuuid")
+            .arg(&opts.guided_root_partuuid)
+            .arg("--confirm-free-space")
+            .arg(disk);
+        for partition in &opts.expected_partitions {
+            cmd.arg("--expect-partition").arg(format!(
+                "{}:{}:{}",
+                partition.part_uuid, partition.start_bytes, partition.size_bytes
+            ));
+        }
+    } else if opts.alongside_root.is_empty() {
         // The graphical UI has already required the person to type this exact
         // device name. Repeat that decision at the privileged boundary so an
         // older or accidentally scripted caller cannot erase with `--yes`
@@ -254,6 +308,62 @@ pub fn power_command(action: PowerAction) -> Command {
     cmd
 }
 
+/// Build the backend's read-only prepared-storage preflight. The same reviewed
+/// disk and partition identities are passed to the final install command; the
+/// backend repeats every check before destructive work.
+pub fn alongside_preflight_command(disk: &str, opts: &InstallOptions) -> Command {
+    let mut cmd = Command::new(INSTALL_BIN);
+    cmd.arg("--preflight-alongside")
+        .arg("--disk")
+        .arg(disk)
+        // Satisfy install-wide input validation with fixed non-secret values;
+        // preflight exits before stdin is read or account work begins.
+        .arg("--user")
+        .arg("preflight")
+        .arg("--pin")
+        .arg("--yes")
+        .arg("--root-partition")
+        .arg(&opts.alongside_root)
+        .arg("--efi-partition")
+        .arg(&opts.alongside_efi)
+        .arg("--confirm-root")
+        .arg(&opts.alongside_root)
+        .arg("--expect-disk-size-bytes")
+        .arg(opts.disk_size_bytes.to_string())
+        .arg("--expect-disk-devnum")
+        .arg(&opts.disk_major_minor)
+        .arg("--expect-root-partuuid")
+        .arg(&opts.alongside_root_partuuid)
+        .arg("--expect-root-size-bytes")
+        .arg(opts.alongside_root_size_bytes.to_string())
+        .arg("--expect-efi-partuuid")
+        .arg(&opts.alongside_efi_partuuid)
+        .arg("--expect-efi-size-bytes")
+        .arg(opts.alongside_efi_size_bytes.to_string());
+    if !opts.disk_wwn.is_empty() {
+        cmd.arg("--expect-disk-wwn").arg(&opts.disk_wwn);
+    }
+    if !opts.disk_serial.is_empty() {
+        cmd.arg("--expect-disk-serial").arg(&opts.disk_serial);
+    }
+    cmd
+}
+
+/// Run the read-only prepared-storage preflight and stream its diagnostics.
+///
+/// # Errors
+///
+/// Returns an error when the preflight helper cannot be started, its streams
+/// cannot be read, or the process cannot be waited on. A completed preflight
+/// that rejects the storage plan is returned as `Ok(false)`.
+pub fn run_alongside_preflight<F: FnMut(String)>(
+    disk: &str,
+    opts: &InstallOptions,
+    on_line: F,
+) -> std::io::Result<bool> {
+    stream_command(alongside_preflight_command(disk, opts), "", &[], on_line)
+}
+
 /// Spawn `cmd`, write `password` (with a trailing newline) to its stdin —
 /// followed by `extra_stdin` lines, each newline-terminated, in order —
 /// then stream stdout line by line into `on_line`. On a non-zero exit any
@@ -261,7 +371,7 @@ pub fn power_command(action: PowerAction) -> Command {
 /// iff the child exited `0`.
 ///
 /// `extra_stdin` carries secrets the backend reads after the password (the
-/// TPM2 PIN, when encryption with a PIN was requested) so they never touch
+/// disk passphrase, when requested) so they never touch
 /// the argv or a tty.
 ///
 /// Separated from [`run_install`] so tests can drive it with a stub
@@ -289,7 +399,7 @@ pub fn stream_command<F: FnMut(String)>(
         .stderr(Stdio::piped());
     let mut child = cmd.spawn()?;
 
-    // Feed the password, then any extra secret lines (e.g. the TPM2 PIN),
+    // Feed the password, then any extra secret lines (the disk passphrase),
     // then drop the handle so the child sees EOF.
     {
         if let Some(mut stdin) = child.stdin.take() {
@@ -336,13 +446,13 @@ pub fn stream_command<F: FnMut(String)>(
 }
 
 /// Run the real `qos-install` backend for `disk` + `user` + `opts`, feeding
-/// `password` (and, when an encryption PIN is set, the PIN as a second
+/// `password` (and, when a disk passphrase is set, that secret as a second
 /// stdin line) and relaying every output line to `on_line`.
 ///
 /// # Errors
 ///
 /// Returns `Err` under the same conditions as [`stream_command`]: the
-/// backend fails to spawn, writing the password/PIN to its stdin fails
+/// backend fails to spawn, writing either secret to its stdin fails
 /// (other than a broken pipe), a stdout line can't be read, or waiting on
 /// the child fails.
 pub fn run_install<F: FnMut(String)>(
@@ -352,7 +462,7 @@ pub fn run_install<F: FnMut(String)>(
     opts: &InstallOptions,
     on_line: F,
 ) -> std::io::Result<bool> {
-    // The PIN only travels on stdin; it mirrors the `--pin` flag added by
+    // The disk passphrase only travels on stdin; it mirrors the legacy `--pin` flag added by
     // `install_command`.
     let extra: Vec<&str> = if opts.pin.is_empty() {
         Vec::new()
@@ -378,6 +488,45 @@ pub fn run_power(action: PowerAction) -> std::io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_preflight_binds_every_storage_identity_without_credentials() {
+        let opts = InstallOptions {
+            disk_size_bytes: 500_000_000_000,
+            disk_major_minor: "259:0".into(),
+            disk_wwn: "eui.0011223344556677".into(),
+            disk_serial: "QOS-NVME".into(),
+            alongside_root: "/dev/nvme0n1p3".into(),
+            alongside_root_partuuid: "00000000-0000-0000-0000-000000000003".into(),
+            alongside_root_size_bytes: 64_000_000_000,
+            alongside_efi: "/dev/nvme0n1p4".into(),
+            alongside_efi_partuuid: "00000000-0000-0000-0000-000000000004".into(),
+            alongside_efi_size_bytes: 2_147_483_648,
+            ..InstallOptions::default()
+        };
+        let command = alongside_preflight_command("/dev/nvme0n1", &opts);
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        for expected in [
+            "--preflight-alongside",
+            "/dev/nvme0n1",
+            "259:0",
+            "eui.0011223344556677",
+            "QOS-NVME",
+            "/dev/nvme0n1p3",
+            "00000000-0000-0000-0000-000000000003",
+            "/dev/nvme0n1p4",
+            "00000000-0000-0000-0000-000000000004",
+        ] {
+            assert!(args.iter().any(|arg| arg == expected), "missing {expected}");
+        }
+        assert!(
+            !args.iter().any(|arg| arg == "--guided-alongside"),
+            "prepared preflight must never enter partition creation"
+        );
+    }
 
     #[test]
     fn install_command_builds_expected_argv() {
@@ -513,6 +662,52 @@ mod tests {
                 .any(|pair| pair == ["--confirm-root", "/dev/nvme0n1p4"])
         );
         assert!(!args.contains(&"--confirm-erase"));
+    }
+
+    #[test]
+    fn install_command_binds_the_complete_guided_free_space_plan() {
+        let opts = InstallOptions {
+            disk_size_bytes: 200 * 1024 * 1024 * 1024,
+            disk_major_minor: "259:0".into(),
+            disk_serial: "QOS-NVME".into(),
+            guided_free_start_bytes: 100 * 1024 * 1024 * 1024,
+            guided_free_size_bytes: 100 * 1024 * 1024 * 1024 - 1024 * 1024,
+            guided_efi_start_bytes: 100 * 1024 * 1024 * 1024,
+            guided_efi_size_bytes: 2 * 1024 * 1024 * 1024,
+            guided_root_start_bytes: 102 * 1024 * 1024 * 1024,
+            guided_root_size_bytes: 98 * 1024 * 1024 * 1024 - 1024 * 1024,
+            disk_partition_table_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            disk_logical_sector_size: 512,
+            guided_efi_partuuid: "10000000-0000-4000-8000-000000000001".into(),
+            guided_root_partuuid: "20000000-0000-4000-8000-000000000002".into(),
+            expected_partitions: vec![PartitionExtent {
+                part_uuid: "00000000-0000-0000-0000-000000000001".into(),
+                start_bytes: 1024 * 1024,
+                size_bytes: 100 * 1024 * 1024 * 1024 - 1024 * 1024,
+            }],
+            ..InstallOptions::default()
+        };
+        let cmd = install_command("/dev/nvme0n1", "qq", &opts);
+        let args: Vec<&str> = cmd.get_args().map(|arg| arg.to_str().unwrap()).collect();
+        assert!(args.contains(&"--guided-alongside"));
+        assert!(!args.contains(&"--confirm-erase"));
+        for expected in [
+            [
+                "--expect-disk-ptuuid",
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            ],
+            ["--expect-logical-sector-size", "512"],
+            ["--confirm-free-space", "/dev/nvme0n1"],
+            [
+                "--expect-partition",
+                "00000000-0000-0000-0000-000000000001:1048576:107373133824",
+            ],
+        ] {
+            assert!(
+                args.windows(2).any(|pair| pair == expected),
+                "missing guided binding {expected:?}: {args:?}"
+            );
+        }
     }
 
     #[test]

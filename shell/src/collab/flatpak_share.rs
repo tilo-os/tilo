@@ -750,6 +750,14 @@ impl SharedFlatpakSession {
         reg.get(peer, self.surface_id).cloned()
     }
 
+    /// Snapshot the exact recipients currently admitted to this share.
+    pub fn viewer_ids(&self) -> Vec<PeerId> {
+        self.share_registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .peers_for(self.surface_id)
+    }
+
     /// Route an inbound `InputEvent` through the share-registry gate only —
     /// see [`crate::network::streaming::ShareRegistry::route_to`]. A sink
     /// that is the compositor's seat must not be driven from here;

@@ -185,7 +185,24 @@ pub fn pump(relay: &mut MemoryRelay) {
                     });
                 }
             }
-            CollabRequest::Hello { .. }
+            CollabRequest::OpenWorkspaceControl { session_id, .. } => {
+                // This harness has no authenticated shell/network boundary;
+                // mirror production's fail-closed response to the requester
+                // instead of pretending a route or consent exists.
+                if let Some(inbox) = inboxes.get_mut(&from) {
+                    inbox.push_back(CollabEvent::WorkspaceControl {
+                        session_id,
+                        event: runtime_collab::WorkspaceControlEvent::Closed(
+                            runtime_collab::WorkspaceControlCloseReason::Denied(
+                                "memory relay has no workspace-control transport".into(),
+                            ),
+                        ),
+                    });
+                }
+            }
+            CollabRequest::WorkspaceControlInput { .. }
+            | CollabRequest::CloseWorkspaceControl { .. }
+            | CollabRequest::Hello { .. }
             | CollabRequest::PublishActions { .. }
             | CollabRequest::ReportContinuation { .. }
             | CollabRequest::ClearContinuation { .. }
@@ -195,8 +212,8 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::PublishedInvocationStatus { .. }
             | CollabRequest::CancelPublishedInvocation { .. }
             | CollabRequest::LaunchPublishedApplication { .. } => {
-                // Shell-owned control-plane reports are consumed locally and
-                // never fan out to another application's document channel.
+                // Session-local and shell-owned control-plane commands never
+                // fan out through another application's document channel.
             }
         }
     }

@@ -560,6 +560,71 @@ impl Widget for MusicApp {
         "MusicApp"
     }
 
+    /// The music library is custom-painted, including its transport.  Export
+    /// the now-playing state and the four controls that are useful without a
+    /// pointer; activating one calls the exact same local `Action` reducer as
+    /// a rendered button or keyboard shortcut.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let current = self
+            .pb
+            .current
+            .as_ref()
+            .and_then(|id| self.lib.tracks.get(id))
+            .map_or_else(
+                || "Nothing playing".to_string(),
+                |track| track.title.clone(),
+            );
+        let controls = vec![
+            AccessNode::new(Role::Button)
+                .with_name("Previous track")
+                .with_action_target("music.previous"),
+            AccessNode::new(Role::ToggleButton)
+                .with_name("Play or pause")
+                .with_action_target("music.toggle-play")
+                .with_state(AccessState::new().checked(self.pb.playing)),
+            AccessNode::new(Role::Button)
+                .with_name("Next track")
+                .with_action_target("music.next"),
+            AccessNode::new(Role::ToggleButton)
+                .with_name("Mute")
+                .with_action_target("music.toggle-mute")
+                .with_state(AccessState::new().checked(self.pb.volume == 0)),
+        ];
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name("Music player")
+                .with_value(format!("{current}; volume {}%", self.pb.volume))
+                .with_description("Music library and playback controls")
+                .with_state(AccessState::new().focusable(true).busy(self.pb.playing))
+                .with_children(controls),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !matches!(
+            action,
+            ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
+        ) {
+            return false;
+        }
+        let action = match target {
+            "music.previous" => Action::Prev,
+            "music.toggle-play" => Action::TogglePlay,
+            "music.next" => Action::Next,
+            "music.toggle-mute" => Action::ToggleMute,
+            _ => return false,
+        };
+        self.dispatch(action, state);
+        true
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -583,7 +648,11 @@ impl Widget for MusicApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        true
+        // `render_frame` clears this after painting.  Returning `true` here
+        // used to wake an otherwise paused, settled library at display rate,
+        // duplicating the work already requested by `needs_animation_frame`
+        // for playback, downloads, worker results, and transient UI.
+        self.dirty
     }
 
     fn mark_drawn(&mut self) {

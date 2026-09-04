@@ -348,7 +348,7 @@ mod tests {
         assert!(cfg.services.workspace_replication);
         assert!(cfg.services.inbound_relay);
         assert!(!cfg.services.full_content_replication);
-        assert!(!cfg.services.remote_control_relay);
+        assert!(cfg.services.remote_control_relay);
         assert!(!cfg.services.app_serving);
         assert!(!cfg.services.compute);
     }

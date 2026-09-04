@@ -83,6 +83,12 @@ enum Command {
         /// Optional world-readable progress file for the first-run UI.
         #[arg(long)]
         status_file: Option<PathBuf>,
+        /// PID of the compositor that initiated this first-use operation.
+        #[arg(long)]
+        requester_pid: u32,
+        /// `/proc/<pid>/stat` start-time tick, preventing PID-reuse bypass.
+        #[arg(long)]
+        requester_start_time: u64,
     },
     /// Approve one nearby host token issued by this device.
     Approve {
@@ -216,13 +222,16 @@ struct PersonalEnrollmentMarker {
     stage_name: String,
     user_public_key: [u8; 32],
     device_public_key: [u8; 32],
+    /// The exact compositor lifetime that received and confirmed this
+    /// enrollment. Before `commit_ready`, no other requester may authorize it.
+    requester_lease: Option<qos_relay::ProcessLease>,
     /// Set only after the recipient authenticates the approver's Finalized
     /// packet. Prepared-but-unconfirmed transactions must never activate on
     /// a later timeout retry.
     commit_ready: bool,
 }
 
-const PERSONAL_ENROLLMENT_SCHEMA: u32 = 1;
+const PERSONAL_ENROLLMENT_SCHEMA: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PersonalCommitCheckpoint {
@@ -700,6 +709,7 @@ fn stage_personal_enrollment(
     identity_dir: &std::path::Path,
     paths: &IdentityPaths,
     payload: &ResponsePayload,
+    requester_lease: Option<qos_relay::ProcessLease>,
 ) -> anyhow::Result<(PathBuf, PersonalEnrollmentMarker)> {
     let (identity, fleet, peers, registry) =
         checked_personal_projection(identity_root, identity_dir, payload)?;
@@ -727,6 +737,7 @@ fn stage_personal_enrollment(
         stage_name,
         user_public_key: payload.cert.user_public_key,
         device_public_key: payload.cert.device_public_key,
+        requester_lease,
         commit_ready: false,
     };
     let marker_path = personal_marker_path(identity_root, payload.nonce);
@@ -739,7 +750,12 @@ fn stage_personal_enrollment(
 fn authorize_personal_commit(
     marker_path: &std::path::Path,
     marker: &PersonalEnrollmentMarker,
+    requester_lease: Option<qos_relay::ProcessLease>,
 ) -> anyhow::Result<PersonalEnrollmentMarker> {
+    if marker.requester_lease != requester_lease {
+        bail!("personal enrollment requester lease changed before commit");
+    }
+    validate_requester(requester_lease)?;
     let mut marker = marker.clone();
     marker.commit_ready = true;
     atomic_file::write_with_mode(marker_path, &serde_json::to_vec_pretty(&marker)?, 0o600)?;
@@ -779,13 +795,16 @@ fn commit_staged_personal_enrollment(
             .context("identity directory has no parent")?
             .to_path_buf()
     };
+    // The first callback is the requester-liveness gate in production. Keep
+    // it before even creating the user identity directory so a compositor
+    // that died while approval was in flight causes no publication mutation.
+    checkpoint(PersonalCommitCheckpoint::Record)?;
     std::fs::create_dir_all(&marker.identity_dir)?;
     let record = marker.identity_dir.join(format!(
         "identity-{}.json",
         &hex::encode(marker.user_public_key)[..55]
     ));
     let fleet = fleet_path(&marker.identity_dir, marker.user_public_key);
-    checkpoint(PersonalCommitCheckpoint::Record)?;
     atomic_file::write_with_mode(
         &record,
         &std::fs::read(staged(&stage_dir, "record.json"))?,
@@ -848,6 +867,7 @@ fn recover_personal_enrollments(
     identity_root: &std::path::Path,
     identity_dir: &std::path::Path,
     paths: &IdentityPaths,
+    mut checkpoint: impl FnMut(PersonalCommitCheckpoint) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     let directory = enrollment_commit_dir(identity_root);
     let entries = match std::fs::read_dir(directory) {
@@ -869,7 +889,7 @@ fn recover_personal_enrollments(
                 paths,
                 &entry.path(),
                 &marker,
-                |_| Ok(()),
+                &mut checkpoint,
             )?;
         }
     }
@@ -885,8 +905,8 @@ fn install_personal_projection(
     let paths = IdentityPaths::under(identity_root);
     paths.ensure_directories()?;
     let (marker_path, marker) =
-        stage_personal_enrollment(identity_root, identity_dir, &paths, payload)?;
-    let marker = authorize_personal_commit(&marker_path, &marker)?;
+        stage_personal_enrollment(identity_root, identity_dir, &paths, payload, None)?;
+    let marker = authorize_personal_commit(&marker_path, &marker, None)?;
     commit_staged_personal_enrollment(identity_root, &paths, &marker_path, &marker, |_| Ok(()))
 }
 
@@ -1404,6 +1424,15 @@ fn socket_timeout(seconds: u64) -> Duration {
     Duration::from_secs(seconds.clamp(1, 300))
 }
 
+fn validate_requester(lease: Option<qos_relay::ProcessLease>) -> anyhow::Result<()> {
+    if let Some(lease) = lease {
+        lease
+            .validate()
+            .context("the first-use requester exited; nearby pairing was revoked")?;
+    }
+    Ok(())
+}
+
 fn join(
     token_file: PathBuf,
     identity_root: PathBuf,
@@ -1421,9 +1450,11 @@ fn join(
         EnrollmentKind::HomePeer,
         Some(home_peer_output),
         None,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn join_with_token(
     token_text: &str,
     identity_root: PathBuf,
@@ -1432,7 +1463,9 @@ fn join_with_token(
     kind: EnrollmentKind,
     home_peer_output: Option<PathBuf>,
     identity_dir: Option<PathBuf>,
+    requester_lease: Option<qos_relay::ProcessLease>,
 ) -> anyhow::Result<()> {
+    validate_requester(requester_lease)?;
     let token = decode_enrollment_token(token_text).context("decode enrollment token")?;
     verify_enrollment_token(&token, now_ns()?).context("verify enrollment token")?;
     if kind == EnrollmentKind::HomePeer
@@ -1454,6 +1487,7 @@ fn join_with_token(
                 .as_deref()
                 .context("identity directory is required")?,
             &paths,
+            |_| validate_requester(requester_lease),
         )?;
     }
     let (device, _) = qos_user_identity::persist::load_or_create_device_key(&paths)?;
@@ -1472,10 +1506,12 @@ fn join_with_token(
     let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, PORT);
     let mut reply = [0_u8; MAX_PACKET];
     while std::time::Instant::now() < deadline {
+        validate_requester(requester_lease)?;
         socket.send_to(&bytes, destination)?;
         match socket.recv_from(&mut reply) {
             Ok((len, sender)) => {
                 let response_bytes = reply[..len].to_vec();
+                validate_requester(requester_lease)?;
                 let Ok(response) = decrypt_response(
                     &response_bytes,
                     token.nonce,
@@ -1524,6 +1560,7 @@ fn join_with_token(
                             .context("identity directory is required")?,
                         &paths,
                         &response.payload,
+                        requester_lease,
                     )?)
                 } else {
                     None
@@ -1532,6 +1569,7 @@ fn join_with_token(
                 socket.set_read_timeout(Some(Duration::from_millis(300)))?;
                 let completion_deadline = std::time::Instant::now() + Duration::from_secs(10);
                 while std::time::Instant::now() < completion_deadline {
+                    validate_requester(requester_lease)?;
                     socket.send_to(&ack, sender)?;
                     match socket.recv_from(&mut reply) {
                         Ok((final_len, final_sender)) if final_sender == sender => {
@@ -1544,28 +1582,37 @@ fn join_with_token(
                             )
                             .is_ok()
                             {
-                                let record_path = if let Some((marker_path, marker)) =
-                                    staged_personal.as_ref()
-                                {
-                                    let marker = authorize_personal_commit(marker_path, marker)?;
-                                    Some(commit_staged_personal_enrollment(
-                                        &identity_root,
-                                        &paths,
-                                        marker_path,
-                                        &marker,
-                                        |_| Ok(()),
-                                    )?)
-                                } else {
-                                    // The host path has no multi-file member
-                                    // projection, but still waits for
-                                    // Finalized before changing its active
-                                    // identity binding.
-                                    atomic_file::write(
-                                        &paths.user_pubkey,
-                                        &response.payload.cert.user_public_key,
-                                    )?;
-                                    None
-                                };
+                                validate_requester(requester_lease)?;
+                                let record_path =
+                                    if let Some((marker_path, marker)) = staged_personal.as_ref() {
+                                        // This durable marker is the commit point:
+                                        // both Finalized and the exact originating
+                                        // compositor lease are valid. A crash before
+                                        // it publishes nothing; recovery after it may
+                                        // finish this already-authorized transaction.
+                                        let marker = authorize_personal_commit(
+                                            marker_path,
+                                            marker,
+                                            requester_lease,
+                                        )?;
+                                        Some(commit_staged_personal_enrollment(
+                                            &identity_root,
+                                            &paths,
+                                            marker_path,
+                                            &marker,
+                                            |_| validate_requester(requester_lease),
+                                        )?)
+                                    } else {
+                                        // The host path has no multi-file member
+                                        // projection, but still waits for
+                                        // Finalized before changing its active
+                                        // identity binding.
+                                        atomic_file::write(
+                                            &paths.user_pubkey,
+                                            &response.payload.cert.user_public_key,
+                                        )?;
+                                        None
+                                    };
                                 // Publish the default cert as the completion
                                 // marker only after the approver durably registers us,
                                 // authenticates Finalized, and the member projection is
@@ -1648,6 +1695,7 @@ fn join_with_token(
     bail!("no approving qOS device answered before the enrollment window closed")
 }
 
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn pair(
     identity_root: PathBuf,
     label: String,
@@ -1656,7 +1704,12 @@ fn pair(
     home_peer_output: Option<PathBuf>,
     identity_dir: Option<PathBuf>,
     status_file: Option<PathBuf>,
+    requester_lease: Option<qos_relay::ProcessLease>,
 ) -> anyhow::Result<()> {
+    if kind == EnrollmentKind::PersonalDevice && requester_lease.is_none() {
+        bail!("personal-device pairing requires a live first-use requester");
+    }
+    validate_requester(requester_lease)?;
     let paths = IdentityPaths::under(&identity_root);
     paths.ensure_directories()?;
     let (device, _) = qos_user_identity::persist::load_or_create_device_key(&paths)?;
@@ -1695,6 +1748,7 @@ fn pair(
     let deadline = std::time::Instant::now() + socket_timeout(timeout);
     let mut reply = [0_u8; MAX_PACKET];
     while std::time::Instant::now() < deadline {
+        validate_requester(requester_lease)?;
         socket.send_to(&solicitation, destination)?;
         match socket.recv_from(&mut reply) {
             Ok((len, _sender)) => {
@@ -1723,6 +1777,7 @@ fn pair(
                     kind,
                     home_peer_output,
                     identity_dir,
+                    requester_lease,
                 )?;
                 if let Some(path) = &status_file {
                     atomic_file::write_with_mode(
@@ -2061,6 +2116,7 @@ fn main() -> anyhow::Result<()> {
             Some(home_peer_output),
             None,
             None,
+            None,
         ),
         Command::PairDevice {
             identity_root,
@@ -2068,6 +2124,8 @@ fn main() -> anyhow::Result<()> {
             label,
             timeout,
             status_file,
+            requester_pid,
+            requester_start_time,
         } => pair(
             identity_root,
             label,
@@ -2076,6 +2134,10 @@ fn main() -> anyhow::Result<()> {
             None,
             Some(identity_dir),
             status_file,
+            Some(qos_relay::ProcessLease::from_parts(
+                requester_pid,
+                requester_start_time,
+            )),
         ),
         Command::Approve {
             identity_root,
@@ -2357,10 +2419,20 @@ mod tests {
         let before_key = std::fs::read(&paths.user_pubkey).unwrap();
         let before_cert = std::fs::read(&paths.device_cert).unwrap();
 
+        let mut requester = std::process::Command::new("/bin/sh")
+            .args(["-c", "while :; do sleep 1; done"])
+            .spawn()
+            .unwrap();
+        let lease = qos_relay::ProcessLease::capture(requester.id()).unwrap();
         let payload = personal_payload(&root, &member, [9; 16]);
-        let (marker_path, marker) =
-            stage_personal_enrollment(identity_root.path(), identity_dir.path(), &paths, &payload)
-                .unwrap();
+        let (marker_path, marker) = stage_personal_enrollment(
+            identity_root.path(),
+            identity_dir.path(),
+            &paths,
+            &payload,
+            Some(lease),
+        )
+        .unwrap();
         // This models an approval timeout: the recipient has a durable,
         // retryable staging marker but no active identity mutation.
         assert_eq!(std::fs::read(&paths.user_pubkey).unwrap(), before_key);
@@ -2368,11 +2440,17 @@ mod tests {
         assert!(marker_path.exists());
         // A timeout/restart must not turn a merely prepared response into an
         // active enrollment.
-        recover_personal_enrollments(identity_root.path(), identity_dir.path(), &paths).unwrap();
+        recover_personal_enrollments(
+            identity_root.path(),
+            identity_dir.path(),
+            &paths,
+            |_| Ok(()),
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&paths.user_pubkey).unwrap(), before_key);
         assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
 
-        let marker = authorize_personal_commit(&marker_path, &marker).unwrap();
+        let marker = authorize_personal_commit(&marker_path, &marker, Some(lease)).unwrap();
         assert!(
             commit_staged_personal_enrollment(
                 identity_root.path(),
@@ -2380,6 +2458,7 @@ mod tests {
                 &marker_path,
                 &marker,
                 |checkpoint| {
+                    lease.validate()?;
                     if checkpoint == PersonalCommitCheckpoint::DefaultCert {
                         bail!("simulated crash before default certificate")
                     }
@@ -2389,9 +2468,18 @@ mod tests {
             .is_err()
         );
         assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
-        // A subsequent boot/retry observes the marker and completes the
-        // exact staged commit rather than leaving a mixed durable state.
-        recover_personal_enrollments(identity_root.path(), identity_dir.path(), &paths).unwrap();
+        requester.kill().unwrap();
+        requester.wait().unwrap();
+        assert!(lease.validate().is_err());
+        // `commit_ready` is the durable boundary: Finalized and the original
+        // live lease were authenticated before it was written. A subsequent
+        // explicit retry may complete that exact transaction under its own
+        // live lease rather than leaving mixed durable state.
+        let retry_lease = qos_relay::ProcessLease::capture(std::process::id()).unwrap();
+        recover_personal_enrollments(identity_root.path(), identity_dir.path(), &paths, |_| {
+            retry_lease.validate().map_err(Into::into)
+        })
+        .unwrap();
         assert_eq!(
             std::fs::read(&paths.user_pubkey).unwrap(),
             root.verifying_key().to_bytes()
@@ -2402,6 +2490,90 @@ mod tests {
                 .device_public_key,
             member.verifying_key().to_bytes()
         );
+    }
+
+    #[test]
+    fn expired_requester_lease_blocks_personal_identity_publication() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
+        let member = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
+        let identity_root = tempfile::tempdir().unwrap();
+        let identity_parent = tempfile::tempdir().unwrap();
+        let identity_dir = identity_parent.path().join("identities");
+        let paths = IdentityPaths::under(identity_root.path());
+        paths.ensure_directories().unwrap();
+        let mut requester = std::process::Command::new("/bin/sh")
+            .args(["-c", "while :; do sleep 1; done"])
+            .spawn()
+            .unwrap();
+        let lease = qos_relay::ProcessLease::capture(requester.id()).unwrap();
+        let payload = personal_payload(&root, &member, [12; 16]);
+        let (marker_path, marker) = stage_personal_enrollment(
+            identity_root.path(),
+            &identity_dir,
+            &paths,
+            &payload,
+            Some(lease),
+        )
+        .unwrap();
+        let unrelated = qos_relay::ProcessLease::capture(std::process::id()).unwrap();
+        assert!(
+            authorize_personal_commit(&marker_path, &marker, Some(unrelated)).is_err(),
+            "another live requester cannot adopt a prepared enrollment"
+        );
+        requester.kill().unwrap();
+        requester.wait().unwrap();
+
+        assert!(
+            authorize_personal_commit(&marker_path, &marker, Some(lease)).is_err(),
+            "a dead compositor cannot cross the durable commit point"
+        );
+        let mut simulated_ready = marker;
+        simulated_ready.commit_ready = true;
+        assert!(
+            commit_staged_personal_enrollment(
+                identity_root.path(),
+                &paths,
+                &marker_path,
+                &simulated_ready,
+                |_| lease.validate().map_err(Into::into),
+            )
+            .is_err()
+        );
+        assert!(!identity_dir.exists());
+        assert!(!paths.user_pubkey.exists());
+        assert!(!paths.device_cert.exists());
+        assert!(marker_path.exists(), "staging remains retryable");
+    }
+
+    #[test]
+    fn pair_device_rejects_an_expired_requester_before_creating_identity_state() {
+        let mut requester = std::process::Command::new("/bin/sh")
+            .args(["-c", "while :; do sleep 1; done"])
+            .spawn()
+            .unwrap();
+        let lease = qos_relay::ProcessLease::capture(requester.id()).unwrap();
+        requester.kill().unwrap();
+        requester.wait().unwrap();
+
+        let identity_root = tempfile::tempdir().unwrap();
+        let identity_dir = tempfile::tempdir().unwrap();
+        assert!(
+            pair(
+                identity_root.path().to_path_buf(),
+                "New laptop".into(),
+                1,
+                EnrollmentKind::PersonalDevice,
+                None,
+                Some(identity_dir.path().to_path_buf()),
+                None,
+                Some(lease),
+            )
+            .is_err()
+        );
+        let paths = IdentityPaths::under(identity_root.path());
+        assert!(!paths.device_privkey.exists());
+        assert!(!paths.user_pubkey.exists());
+        assert!(!paths.device_cert.exists());
     }
 
     #[test]
@@ -2451,6 +2623,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
         let approver_root = tempfile::tempdir().unwrap();
         let approver_identities = tempfile::tempdir().unwrap();
@@ -2535,6 +2708,7 @@ mod tests {
             .expect("approval listener became ready");
         let new_root = tempfile::tempdir().unwrap();
         let new_identities = tempfile::tempdir().unwrap();
+        let requester = qos_relay::ProcessLease::capture(std::process::id()).unwrap();
         pair(
             new_root.path().to_path_buf(),
             "New laptop".into(),
@@ -2543,6 +2717,7 @@ mod tests {
             None,
             Some(new_identities.path().to_path_buf()),
             None,
+            Some(requester),
         )
         .unwrap();
         approval.join().unwrap().unwrap();

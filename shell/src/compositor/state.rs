@@ -1122,6 +1122,33 @@ impl State {
             });
             if reusable {
                 if let Some(session) = self.active_sessions.get(&surface) {
+                    let removed = session
+                        .viewer_ids()
+                        .into_iter()
+                        .filter(|peer| !recipients.contains(peer))
+                        .collect::<Vec<_>>();
+                    let added = recipients
+                        .iter()
+                        .copied()
+                        .filter(|peer| session.viewer_share(*peer).is_none())
+                        .collect::<Vec<_>>();
+                    if let Some(publish) = &self.legacy_stream_publisher {
+                        for peer in removed {
+                            let _ = publish(crate::network::NeighbourMsg::PermissionGrant {
+                                peer,
+                                capability: format!("workspace-control:{surface}:revoked"),
+                            });
+                        }
+                        for peer in &added {
+                            let _ = publish(crate::network::NeighbourMsg::PermissionGrant {
+                                peer: *peer,
+                                capability: format!("workspace-control:{surface}:granted"),
+                            });
+                        }
+                        if !added.is_empty() {
+                            let _ = publish(session.stream_start_msg());
+                        }
+                    }
                     session.sync_viewers(&recipients);
                 }
                 continue;
@@ -1142,6 +1169,14 @@ impl State {
             };
             let session = Arc::new(session);
             session.sync_viewers(&recipients);
+            if let Some(publish) = &self.legacy_stream_publisher {
+                for peer in &recipients {
+                    let _ = publish(crate::network::NeighbourMsg::PermissionGrant {
+                        peer: *peer,
+                        capability: format!("workspace-control:{surface}:granted"),
+                    });
+                }
+            }
             self.register_share_session(Arc::clone(&session));
 
             if let Some(frame) = crate::compositor::foreign::store().snapshot(surface) {

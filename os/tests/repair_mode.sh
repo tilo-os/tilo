@@ -171,7 +171,7 @@ else
       The TPM keyslot is sealed to PCR 7, which repair mode does not change, so
       the disk is already open and 'the disk is open' is not authentication."
 fi
-for verb in act_rollback act_update act_shell act_logs act_var_rw act_boot_once; do
+for verb in act_rollback act_update act_shell act_logs act_var_rw act_boot_once act_recover_files; do
   if sed -n "/^$verb()/,/^}/p" "$r" | grep -q 'require_auth'; then
     ok "$verb is behind the authentication gate"
   else

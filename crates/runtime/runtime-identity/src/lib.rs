@@ -1433,6 +1433,10 @@ pub fn load_from_bytes(bytes: &[u8]) -> Result<SigningIdentity, NotAvailable> {
 /// The result identifies the same person principal but intentionally carries
 /// no root signing share. The device authenticates through its separately
 /// installed root-signed device certificate and signing broker.
+///
+/// # Errors
+///
+/// Returns an I/O error if the public identity record cannot be serialized.
 pub fn public_member_record(
     display_name: &str,
     avatar_color: [u8; 3],

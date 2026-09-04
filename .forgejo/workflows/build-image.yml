@@ -66,6 +66,8 @@ jobs:
         with:
           path: os/external-assets/cache
           key: github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+          restore-keys: |
+            github-assets-all-v1-
 
       - name: Materialize immutable GitHub build inputs
         run: ./os/dev/cache-github-assets.sh
@@ -95,8 +97,8 @@ jobs:
 
       # Generation selection trusts signed provenance, never registry tag text.
       # Install on build-only runs too so every CI build exercises that check.
-      - name: Install cosign
-        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
+      - name: Install checksum-pinned Cosign from the persistent asset cache
+        run: ./os/dev/install-cached-cosign.sh
 
       # Pin the base image the build starts FROM. It is a mirror in our own
       # registry rather than quay.io because upstream deletes the manifest a

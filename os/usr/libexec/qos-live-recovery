@@ -1,0 +1,48 @@
+#!/usr/bin/bash
+# Physical-console entry point on installer media (tty2).
+set -uo pipefail
+
+tool=/usr/libexec/qos-recovery
+while :; do
+  clear
+  printf '%s\n' 'qOS recovery tools' '==================' ''
+  printf '%s\n' \
+    'Nothing is changed until you choose a copy or removal action.' \
+    'Recovered qOS data is always opened read-only.' '' \
+    '  1  List disks and partitions' \
+    '  2  Open qOS files read-only' \
+    '  3  Copy files to an external disk (guided)' \
+    '  4  Remove an alongside qOS installation' \
+    '  5  Open a root shell (advanced repair)' \
+    '  6  Close the recovery mount' \
+    '  7  Return to the graphical installer'
+  printf '\nChoice: '; read -r choice || continue
+  case "$choice" in
+    1) "$tool" list ;;
+    2)
+      printf 'qOS root partition (for example /dev/nvme0n1p4): '; read -r device
+      "$tool" open --device "$device"
+      ;;
+    3)
+      "$tool" close
+      "$tool" list
+      printf 'qOS root partition: '; read -r device
+      printf 'External destination partition (it will NOT be formatted): '; read -r destination_device
+      "$tool" mount-destination --device "$destination_device" --source-device "$device" || { printf '\nPress Enter to continue.'; read -r _; continue; }
+      printf 'Path below the recovered home (for example alex/Documents, or . for all homes): '; read -r source
+      "$tool" copy --device "$device" --from "$source" --destination /run/qos-recovery/destination
+      "$tool" close-destination
+      ;;
+    4)
+      "$tool" list
+      printf '\nqOS root partition to remove: '; read -r device
+      printf 'Type the exact REMOVE confirmation shown above: '; read -r confirmation
+      "$tool" remove --device "$device" --confirm "$confirmation"
+      ;;
+    5) printf "Type exit to return to recovery tools.\n"; /bin/bash -l ;;
+    6) "$tool" close ;;
+    7) chvt 1 ;;
+    *) printf 'That is not one of the choices.\n' ;;
+  esac
+  printf '\nPress Enter to continue.'; read -r _
+done

@@ -31,21 +31,48 @@ chmod 0700 "$askpass"
 GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone \
   "$GITHUB_SERVER_URL/qos/website.git" "$work/site"
 manifest="$work/site/src/data/imager-release.json"
+contract="$work/site/src/data/install-contract.json"
 test -f "$manifest"
 # A freshly deployed landing page deliberately starts unpublished with a null
 # tag. Treat that as "no previous release" instead of making the first real
 # promotion impossible.
 current_tag="$(jq -r '.tag // empty' "$manifest")"
+test -f "$contract"
 current_version="${current_tag#imager-v}"
 if [[ "$current_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
    && [ "$(printf '%s\n%s\n' "$current_version" "$version" | sort -V | tail -1)" != "$version" ]; then
   printf 'refusing to replace newer landing-page release %s with %s\n' "$current_version" "$version" >&2
   exit 1
 fi
+
+# Opening a WinGet submission makes the release reviewable, not installable.
+# Probe the exact version manifest in Microsoft's accepted index so the landing
+# page exposes the command only when `winget install` can really resolve it.
+# A transient GitHub failure stays fail-safe as "submitted" and a later rerun
+# of this idempotent promotion can advance the same release to "available".
+winget_state=submitted
+winget_manifest="$work/qOS.Imager.yaml"
+winget_url="https://raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/q/qOS/Imager/${version}/qOS.Imager.yaml"
+winget_http="$(curl --silent --show-error --location \
+    --retry 3 --retry-all-errors --retry-max-time 45 \
+    --connect-timeout 10 --max-time 20 \
+    --output "$winget_manifest" --write-out '%{http_code}' "$winget_url" || true)"
+if [ "$winget_http" = 200 ] \
+  && grep -Fxq 'PackageIdentifier: qOS.Imager' "$winget_manifest" \
+  && grep -Fxq "PackageVersion: $version" "$winget_manifest"; then
+  winget_state=available
+fi
+
 jq --arg tag "$GITHUB_REF_NAME" --arg fingerprint "$fingerprint" \
-  '.tag = $tag | .published = true | .linuxSigningFingerprint = $fingerprint' \
+   --arg winget_state "$winget_state" \
+  '.tag = $tag
+   | .published = true
+   | .linuxSigningFingerprint = $fingerprint
+   | .channels.homebrew = "available"
+   | .channels.winget = $winget_state' \
   "$manifest" >"$manifest.next"
 mv "$manifest.next" "$manifest"
+cp docs/install-contract.json "$contract"
 
 npm --prefix "$work/site" ci
 npm --prefix "$work/site" run test:release
@@ -53,7 +80,7 @@ npm --prefix "$work/site" run build
 
 git -C "$work/site" config user.name "qOS release automation"
 git -C "$work/site" config user.email "release-bot@qos.dev"
-git -C "$work/site" add src/data/imager-release.json
+git -C "$work/site" add src/data/imager-release.json src/data/install-contract.json
 if git -C "$work/site" diff --cached --quiet; then
   printf 'landing page already targets %s\n' "$GITHUB_REF_NAME"
   exit 0

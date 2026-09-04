@@ -2055,6 +2055,75 @@ impl Widget for TypstApp {
         "TypstEditor"
     }
 
+    /// Source and preview are custom-painted panes rather than retained child
+    /// widgets. Export both with their current compile state so readers can
+    /// understand the split/compact view without inferring it from pixels.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let source = AccessNode::new(Role::MultilineTextInput)
+            .with_name("Typst source")
+            .with_value(self.source_cache.clone())
+            .with_state(AccessState::new().focusable(true).multiline(true))
+            .with_action_target("typst.source");
+        let preview = AccessNode::new(Role::Canvas)
+            .with_name("Document preview")
+            .with_value(format!(
+                "Page {} of {}; zoom {:.0}%",
+                self.preview.current_page().saturating_add(1),
+                self.preview.page_count(),
+                self.preview.zoom() * 100.0
+            ))
+            .with_description(if self.compact {
+                "Compact layout; use the toolbar to switch between source and preview"
+            } else {
+                "Live rendered preview"
+            })
+            .with_semantic_key("typst.preview")
+            .with_hashed_key("typst.preview");
+        Some(
+            AccessNode::new(Role::Document)
+                .with_name("Typst editor")
+                .with_description("Editable Typst source with a live document preview")
+                .with_state(AccessState::new().focusable(true))
+                .with_children(vec![source, preview]),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        doc: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if target != "typst.source" {
+            return false;
+        }
+        match action {
+            ui::a11y::Action::Focus => {
+                if self.compact {
+                    self.set_compact_view(CompactPane::Editor);
+                }
+                self.editor.focused = true;
+                true
+            }
+            ui::a11y::Action::SetValue(source) => {
+                let source_id = self.ensure_source_obj(doc);
+                ui::doc::splice_text_diffed(doc, &source_id, source);
+                self.source_id = Some(source_id);
+                self.source_cache.clone_from(source);
+                self.editor.set_caret(source.len());
+                self.native_edit_pending = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        ui::widget::semantic_action_bindings(self.accessibility())
+    }
+
     fn needs_commit(&self) -> bool {
         self.native_edit_pending
     }
@@ -3077,5 +3146,38 @@ mod tests {
             !app.status_bubble_right.is_visible(after),
             "right bubble hides after its linger"
         );
+    }
+
+    #[test]
+    fn accessibility_exposes_source_and_preview_state() {
+        use ui::widget::Widget as _;
+
+        let (app, _doc) = fresh();
+        let tree = app.accessibility().expect("Typst semantics");
+        assert_eq!(tree.role, ui::a11y::Role::Document);
+        assert_eq!(tree.children[0].role, ui::a11y::Role::MultilineTextInput);
+        assert_eq!(tree.children[1].role, ui::a11y::Role::Canvas);
+        assert!(
+            tree.children[1]
+                .value
+                .as_deref()
+                .is_some_and(|value| value.contains("Page"))
+        );
+        assert!(tree.children.iter().all(|node| node.semantic_key.is_some()));
+    }
+
+    #[test]
+    fn accessible_source_replaces_the_collaborative_text() {
+        use ui::widget::Widget as _;
+
+        let (mut app, mut doc) = fresh();
+        assert!(app.perform_semantic_action(
+            "typst.source",
+            &ui::a11y::Action::SetValue("= Accessible edit".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.read_source(&doc), "= Accessible edit");
+        assert!(app.needs_commit());
     }
 }

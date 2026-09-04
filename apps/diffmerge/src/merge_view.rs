@@ -15,6 +15,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
@@ -33,6 +34,62 @@ const ACTION_H: f64 = 26.0;
 const FONT_SIZE: f32 = 12.5;
 const PAD_X: f64 = 8.0;
 const GAP: f64 = 6.0;
+/// Below this width, three code panes cease to be readable.  Keep one full
+/// source pane and make switching sources explicit instead of merely squeezing
+/// desktop geometry into a phone.
+const COMPACT_BREAKPOINT: f64 = 640.0;
+
+/// One of the source revisions shown by the compact merge view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourcePane {
+    Base,
+    Ours,
+    Theirs,
+}
+
+impl SourcePane {
+    const ALL: [Self; 3] = [Self::Base, Self::Ours, Self::Theirs];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Base => "Base",
+            Self::Ours => "Ours",
+            Self::Theirs => "Theirs",
+        }
+    }
+
+    fn a11y_id(self) -> &'static str {
+        match self {
+            Self::Base => "diffmerge.source.base",
+            Self::Ours => "diffmerge.source.ours",
+            Self::Theirs => "diffmerge.source.theirs",
+        }
+    }
+
+    fn previous(self) -> Self {
+        match self {
+            Self::Base => Self::Theirs,
+            Self::Ours => Self::Base,
+            Self::Theirs => Self::Ours,
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Self::Base => Self::Ours,
+            Self::Ours => Self::Theirs,
+            Self::Theirs => Self::Base,
+        }
+    }
+}
+
+/// A compact source-switcher hit rect. The same `SourcePane` is used by
+/// pointer input, keyboard shortcuts, and accessibility actions.
+#[derive(Clone, Copy)]
+struct SourceHit {
+    rect: Rect,
+    source: SourcePane,
+}
 
 /// A clickable action chip rect tagged with the hunk + side it takes.
 #[derive(Clone, Copy)]
@@ -53,6 +110,10 @@ pub struct MergeView {
     /// Cached y-extent (in content space) of each hunk row in the source band.
     hunk_spans: Vec<(f64, f64)>,
     action_hits: Vec<ActionHit>,
+    source_hits: Vec<SourceHit>,
+    /// The visible source revision on a narrow display. Wider displays retain
+    /// the simultaneous three-pane comparison.
+    selected_source: SourcePane,
     active_hunk: Option<usize>,
     /// Cursor position cache for click hit-testing.
     cursor: Point,
@@ -84,6 +145,8 @@ impl MergeView {
             scroll_y: 0.0,
             hunk_spans: Vec::new(),
             action_hits: Vec::new(),
+            source_hits: Vec::new(),
+            selected_source: SourcePane::Ours,
             active_hunk: None,
             cursor: Point::ZERO,
             dirty: true,
@@ -115,6 +178,54 @@ impl MergeView {
 
     pub fn model(&self) -> &MergeModel {
         &self.model
+    }
+
+    fn is_compact(&self) -> bool {
+        self.rect.width() < COMPACT_BREAKPOINT
+    }
+
+    fn select_source(&mut self, source: SourcePane) {
+        if self.selected_source != source {
+            self.selected_source = source;
+            self.dirty = true;
+        }
+    }
+
+    /// Compact source selector geometry, shared by painting, hit testing and
+    /// the accessibility export. Empty on tablet/desktop, where all three
+    /// source panes remain visible at once.
+    fn source_selector_rects(&self) -> Vec<SourceHit> {
+        if !self.is_compact() {
+            return Vec::new();
+        }
+        let inset = PAD_X;
+        let gap = 4.0;
+        let available = (self.rect.width() - 2.0 * inset - 2.0 * gap).max(0.0);
+        let width = available / SourcePane::ALL.len() as f64;
+        SourcePane::ALL
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                let x0 = self.rect.x0 + inset + index as f64 * (width + gap);
+                SourceHit {
+                    rect: Rect::new(
+                        x0,
+                        self.rect.y0 + 4.0,
+                        x0 + width,
+                        self.rect.y0 + HEADER_H - 4.0,
+                    ),
+                    source: *source,
+                }
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn compact_source_hits(&self) -> Vec<(Rect, &'static str)> {
+        self.source_selector_rects()
+            .into_iter()
+            .map(|hit| (hit.rect, hit.source.label()))
+            .collect()
     }
 
     /// The resolution-chip hit rects captured by the last `draw`, each with the
@@ -263,7 +374,7 @@ impl MergeView {
 
     /// Column headers (base / ours / theirs) above the source band.
     fn draw_column_headers(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
@@ -271,6 +382,46 @@ impl MergeView {
     ) {
         let c = &theme.tokens.colors;
         let r = self.rect;
+        if self.is_compact() {
+            self.source_hits = self.source_selector_rects();
+            for hit in &self.source_hits {
+                let selected = hit.source == self.selected_source;
+                let accent = match hit.source {
+                    SourcePane::Base => c.text_dim,
+                    SourcePane::Ours => c.semantic.success,
+                    SourcePane::Theirs => c.semantic.info,
+                };
+                let chip = RoundedRect::from_rect(hit.rect, 5.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    if selected {
+                        with_alpha(accent, 210)
+                    } else {
+                        with_alpha(accent, 42)
+                    },
+                    None,
+                    &chip,
+                );
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    with_alpha(accent, if selected { 230 } else { 130 }),
+                    None,
+                    &chip,
+                );
+                tr.draw_text(
+                    scene,
+                    hit.source.label(),
+                    12.0,
+                    if selected { c.surfaces.base } else { accent },
+                    transform * Affine::translate((hit.rect.x0 + 8.0, hit.rect.y0 + 4.0)),
+                    Some((hit.rect.width() - 16.0) as f32),
+                );
+            }
+            return;
+        }
+
         let col_w = r.width() / 3.0;
         let base_col = Rect::new(r.x0, r.y0, r.x0 + col_w, r.y0 + HEADER_H);
         let ours_col = Rect::new(r.x0 + col_w, r.y0, r.x0 + 2.0 * col_w, r.y0 + HEADER_H);
@@ -307,6 +458,9 @@ impl MergeView {
 
     /// Vertical separators between the three source columns.
     fn draw_band_separators(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        if self.is_compact() {
+            return;
+        }
         let c = &theme.tokens.colors;
         let r = self.rect;
         let col_w = r.width() / 3.0;
@@ -339,6 +493,7 @@ impl MergeView {
         theme: &Theme,
         r: Rect,
         col_w: f64,
+        compact_source: Option<SourcePane>,
         y: f64,
         block_h: f64,
         h: &MergeHunk,
@@ -364,13 +519,30 @@ impl MergeView {
             ),
         };
 
-        if let Some(t) = ours_tint {
-            let rect = Rect::new(r.x0 + col_w, y, r.x0 + 2.0 * col_w, y + block_h);
-            scene.fill(Fill::NonZero, transform, t, None, &rect);
-        }
-        if let Some(t) = theirs_tint {
-            let rect = Rect::new(r.x0 + 2.0 * col_w, y, r.x1, y + block_h);
-            scene.fill(Fill::NonZero, transform, t, None, &rect);
+        if let Some(source) = compact_source {
+            let tint = match source {
+                SourcePane::Base => None,
+                SourcePane::Ours => ours_tint,
+                SourcePane::Theirs => theirs_tint,
+            };
+            if let Some(t) = tint {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    t,
+                    None,
+                    &Rect::new(r.x0, y, r.x1, y + block_h),
+                );
+            }
+        } else {
+            if let Some(t) = ours_tint {
+                let rect = Rect::new(r.x0 + col_w, y, r.x0 + 2.0 * col_w, y + block_h);
+                scene.fill(Fill::NonZero, transform, t, None, &rect);
+            }
+            if let Some(t) = theirs_tint {
+                let rect = Rect::new(r.x0 + 2.0 * col_w, y, r.x1, y + block_h);
+                scene.fill(Fill::NonZero, transform, t, None, &rect);
+            }
         }
 
         // Active hunk highlight ring.
@@ -406,6 +578,7 @@ impl MergeView {
         hi: usize,
         h: &MergeHunk,
         action_hits: &mut Vec<ActionHit>,
+        compact: bool,
     ) {
         let c = &theme.tokens.colors;
         let ay = y + block_h + 2.0;
@@ -427,20 +600,52 @@ impl MergeView {
                 ("Both", HunkChoice::Both, c.text_dim),
             ]
         };
-        // Status label on the left.
+        // Status label on the left. On a phone the source switcher already
+        // says which revision is visible, so use short action labels and keep
+        // the whole resolution row inside the one readable pane.
         let status = resolution_label(h.resolution);
+        let status_label = if compact {
+            match h.resolution {
+                Resolution::Conflict => "Conflict",
+                Resolution::Ours | Resolution::TookOurs => "Ours",
+                Resolution::Theirs | Resolution::TookTheirs => "Theirs",
+                Resolution::TookBoth => "Both",
+                Resolution::Unchanged => "",
+            }
+        } else {
+            status.0
+        };
+        let status_x = if compact {
+            r.x0 + PAD_X
+        } else {
+            r.x0 + col_w + PAD_X
+        };
         tr.draw_text(
             scene,
-            status.0,
+            status_label,
             11.5,
             status.1.color(c),
-            transform * Affine::translate((r.x0 + col_w + PAD_X, ay + 5.0)),
+            transform * Affine::translate((status_x, ay + 5.0)),
             None,
         );
 
-        let mut cx = r.x0 + 2.0 * col_w + PAD_X;
+        let mut cx = if compact {
+            r.x0 + 64.0
+        } else {
+            r.x0 + 2.0 * col_w + PAD_X
+        };
         for (label, choice, col) in chips {
-            let w = label.len() as f64 * 7.2 + 16.0;
+            let label = if compact {
+                match choice {
+                    HunkChoice::Ours => "Ours",
+                    HunkChoice::Theirs => "Theirs",
+                    HunkChoice::Both => "Both",
+                }
+            } else {
+                *label
+            };
+            let w = label.len() as f64 * if compact { 6.8 } else { 7.2 }
+                + if compact { 14.0 } else { 16.0 };
             let chip = Rect::new(cx, ay, cx + w, ay + ACTION_H - 6.0);
             let selected = chip_is_selected(h.resolution, *choice);
             let bg = if selected {
@@ -467,7 +672,7 @@ impl MergeView {
                 label,
                 11.5,
                 text_col,
-                transform * Affine::translate((cx + 8.0, ay + 4.0)),
+                transform * Affine::translate((cx + if compact { 7.0 } else { 8.0 }, ay + 4.0)),
                 None,
             );
             action_hits.push(ActionHit {
@@ -475,7 +680,7 @@ impl MergeView {
                 hunk: hi,
                 choice: *choice,
             });
-            cx += w + 6.0;
+            cx += w + if compact { 4.0 } else { 6.0 };
         }
     }
 
@@ -488,6 +693,7 @@ impl MergeView {
     ) {
         let r = self.rect;
         let col_w = r.width() / 3.0;
+        let compact_source = self.is_compact().then_some(self.selected_source);
         let band_top = r.y0 + HEADER_H;
         let band_bot = band_top + self.source_band_height();
 
@@ -513,32 +719,47 @@ impl MergeView {
                 theme,
                 r,
                 col_w,
+                compact_source,
                 y,
                 block_h,
                 h,
                 Some(hi) == self.active_hunk,
             );
 
-            // Lines for each column.
-            draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.base);
-            draw_lines(
-                scene,
-                transform,
-                tr,
-                theme,
-                r.x0 + col_w + PAD_X,
-                y,
-                &h.ours,
-            );
-            draw_lines(
-                scene,
-                transform,
-                tr,
-                theme,
-                r.x0 + 2.0 * col_w + PAD_X,
-                y,
-                &h.theirs,
-            );
+            // Phones show one source at a time; tablets and desktops keep the
+            // aligned three-column comparison.
+            match compact_source {
+                Some(SourcePane::Base) => {
+                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.base)
+                }
+                Some(SourcePane::Ours) => {
+                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.ours)
+                }
+                Some(SourcePane::Theirs) => {
+                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.theirs)
+                }
+                None => {
+                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.base);
+                    draw_lines(
+                        scene,
+                        transform,
+                        tr,
+                        theme,
+                        r.x0 + col_w + PAD_X,
+                        y,
+                        &h.ours,
+                    );
+                    draw_lines(
+                        scene,
+                        transform,
+                        tr,
+                        theme,
+                        r.x0 + 2.0 * col_w + PAD_X,
+                        y,
+                        &h.theirs,
+                    );
+                }
+            }
 
             // Action chips for change hunks.
             if h.is_change {
@@ -554,6 +775,7 @@ impl MergeView {
                     hi,
                     h,
                     &mut self.action_hits,
+                    compact_source.is_some(),
                 );
             }
         }
@@ -582,7 +804,13 @@ impl MergeView {
         );
         let conflicts = self.model.conflict_count();
         let header_label = if conflicts == 0 {
-            "Merged result · all conflicts resolved".to_string()
+            if self.is_compact() {
+                "Merged result · resolved".to_string()
+            } else {
+                "Merged result · all conflicts resolved".to_string()
+            }
+        } else if self.is_compact() {
+            format!("Merged result · {conflicts} conflict(s)")
         } else {
             format!("Merged result · {conflicts} conflict(s) remaining")
         };
@@ -597,7 +825,7 @@ impl MergeView {
             13.0,
             hc,
             transform * Affine::translate((merged.x0 + PAD_X + 4.0, merged.y0 + 7.0)),
-            None,
+            Some((merged.width() - PAD_X * 2.0 - 8.0) as f32),
         );
 
         // Merged buffer body.
@@ -709,6 +937,7 @@ impl Widget for MergeView {
         _presence: &PresenceCtx,
     ) {
         self.action_hits.clear();
+        self.source_hits.clear();
         let c = &theme.tokens.colors;
         let r = self.rect;
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &r);
@@ -773,6 +1002,16 @@ impl Widget for MergeView {
                 button: MouseButton::Left,
                 ..
             } => {
+                if let Some(source) = self
+                    .source_hits
+                    .iter()
+                    .find(|hit| hit.rect.contains(self.cursor))
+                    .map(|hit| hit.source)
+                {
+                    self.select_source(source);
+                    *handled = true;
+                    return;
+                }
                 let hit = self
                     .action_hits
                     .iter()
@@ -780,6 +1019,28 @@ impl Widget for MergeView {
                     .copied();
                 if let Some(a) = hit {
                     self.resolve(a.hunk, a.choice);
+                    *handled = true;
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if self.is_compact() => {
+                let source = match logical_key {
+                    Key::Named(NamedKey::ArrowLeft) => Some(self.selected_source.previous()),
+                    Key::Named(NamedKey::ArrowRight) => Some(self.selected_source.next()),
+                    Key::Character(ch) if ch.eq_ignore_ascii_case("b") => Some(SourcePane::Base),
+                    Key::Character(ch) if ch.eq_ignore_ascii_case("o") => Some(SourcePane::Ours),
+                    Key::Character(ch) if ch.eq_ignore_ascii_case("t") => Some(SourcePane::Theirs),
+                    _ => None,
+                };
+                if let Some(source) = source {
+                    self.select_source(source);
                     *handled = true;
                 }
             }
@@ -796,6 +1057,89 @@ impl Widget for MergeView {
     }
 
     fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        self.source_selector_rects()
+            .into_iter()
+            .map(|hit| {
+                (
+                    format!("merge_source:{}", hit.source.label().to_lowercase()),
+                    hit.rect,
+                )
+            })
+            .collect()
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut node = AccessNode::new(Role::Group).with_name("Three-way merge");
+        if self.is_compact() {
+            let children = SourcePane::ALL
+                .into_iter()
+                .map(|source| {
+                    AccessNode::new(Role::ToggleButton)
+                        .with_name(format!("Show {} source", source.label()))
+                        .with_description("Switch the visible merge source")
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .checked(source == self.selected_source),
+                        )
+                        .with_hashed_key(source.a11y_id())
+                })
+                .collect();
+            node = node
+                .with_description(
+                    "One source is visible at a time. Use Left and Right Arrow to switch source.",
+                )
+                .with_children(children);
+        } else {
+            node = node.with_description("Base, ours, and theirs are shown side by side.");
+        }
+        Some(node)
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let index = *path.first()?;
+        self.source_selector_rects().get(index).map(|hit| hit.rect)
+    }
+
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        let Some(&index) = path.first() else {
+            return false;
+        };
+        let Some(source) = SourcePane::ALL.get(index).copied() else {
+            return false;
+        };
+        self.select_source(source);
+        true
+    }
+
+    fn perform_action_at(
+        &mut self,
+        action: &ui::a11y::Action,
+        key_path: &[u64],
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        use ui::a11y::hash_key;
+        if !self.is_compact()
+            || !matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus)
+        {
+            return false;
+        }
+        let Some(&key) = key_path.first() else {
+            return false;
+        };
+        let Some(source) = SourcePane::ALL
+            .into_iter()
+            .find(|source| hash_key(&source.a11y_id()) == key)
+        else {
+            return false;
+        };
+        self.select_source(source);
         true
     }
 

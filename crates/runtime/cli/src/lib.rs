@@ -58,8 +58,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Result;
-pub use runtime::NotAvailable;
-pub use runtime::is_qos_native;
+pub use runtime_portal::NotAvailable;
+pub use runtime_portal::is_qos_native;
 
 pub mod output;
 pub mod workspace;
@@ -142,11 +142,21 @@ pub fn data_home() -> PathBuf {
     if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
         return PathBuf::from(xdg);
     }
+    #[cfg(windows)]
+    {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(local);
+        }
+        if let Some(profile) = std::env::var_os("USERPROFILE") {
+            return Path::new(&profile).join("AppData/Local");
+        }
+    }
     if let Some(home) = std::env::var_os("HOME") {
         return Path::new(&home).join(".local/share");
     }
-    // Last-ditch /tmp: not persistent, but keeps the CLI alive over HOME unset.
-    PathBuf::from("/tmp")
+    // Last-ditch temporary storage is not persistent, but keeps the CLI alive
+    // when the platform's home/data environment is unavailable.
+    std::env::temp_dir()
 }
 
 /// The XDG data dir fallback for state outside qOS; public so an app can

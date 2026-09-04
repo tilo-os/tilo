@@ -74,22 +74,51 @@ while [ "$index" -lt "${#head_args[@]}" ]; do
 done
 
 target_dir=${CARGO_TARGET_DIR:-$root/target}
+base_target_dir="$target_dir/clippy-diff/$base/base"
+head_target_dir="$target_dir/clippy-diff/$base/head"
 
 run_clippy() {
     local tree=$1
     local output=$2
     local errors=$3
-    shift 3
+    local build_dir=$4
+    shift 4
     (
         cd "$tree" || exit 2
-        CARGO_TARGET_DIR="$target_dir" cargo clippy --locked --all-targets "$@" \
+        # Cargo package IDs do not encode a checkout's source revision. Sharing
+        # one target directory between the detached base and HEAD can therefore
+        # make HEAD link the base revision of a changed workspace dependency,
+        # producing bogus missing-item compiler errors instead of a lint diff.
+        # Keep artifact graphs separate; sccache still reuses identical compiler
+        # work across the two directories.
+        CARGO_TARGET_DIR="$build_dir" cargo clippy --locked --all-targets "$@" \
             --message-format=json -- --cap-lints warn >"$output" 2>"$errors"
     )
 }
 
+print_compiler_errors() {
+    python3 - "$1" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    for line in stream:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if record.get("reason") != "compiler-message":
+            continue
+        message = record.get("message") or {}
+        if message.get("level") == "error":
+            print((message.get("rendered") or message.get("message", "")).rstrip(), file=sys.stderr)
+PY
+}
+
 if [ "$base_package_count" -gt 0 ]; then
-    if ! run_clippy "$base_tree" "$base_json" "$base_stderr" "${base_args[@]}"; then
+    if ! run_clippy "$base_tree" "$base_json" "$base_stderr" "$base_target_dir" "${base_args[@]}"; then
         echo "Clippy comparison base did not compile; refusing a false baseline." >&2
+        print_compiler_errors "$base_json"
         sed -n '1,160p' "$base_stderr" >&2
         exit 2
     fi
@@ -97,8 +126,9 @@ else
     : >"$base_json"
 fi
 
-if ! run_clippy "$root" "$head_json" "$head_stderr" "${head_args[@]}"; then
+if ! run_clippy "$root" "$head_json" "$head_stderr" "$head_target_dir" "${head_args[@]}"; then
     echo "HEAD did not compile under Clippy." >&2
+    print_compiler_errors "$head_json"
     sed -n '1,160p' "$head_stderr" >&2
     exit 1
 fi
