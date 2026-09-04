@@ -398,6 +398,7 @@ impl Fixture {
             &self.runner,
             &ws,
             &self.key_name,
+            &policy::pcr_selection(&self.cfg.pcr_bank, &self.cfg.platform_pcrs),
             generation,
             self.cfg.nv_index,
             operand,
@@ -413,6 +414,7 @@ impl Fixture {
             floor.base,
             &self.cfg.pcr_bank,
             &self.cfg.pcrs,
+            &self.cfg.platform_pcrs,
             pin.is_some(),
             &pu,
             &pr,
@@ -649,6 +651,7 @@ fn a_new_signed_prediction_restores_unlock_after_the_measurements_change() {
         token.nv_base,
         &f.cfg.pcr_bank,
         &f.cfg.pcrs,
+        &f.cfg.platform_pcrs,
         false,
         b"x",
         b"y",
@@ -667,6 +670,49 @@ fn a_new_signed_prediction_restores_unlock_after_the_measurements_change() {
             .as_deref(),
         Some(&secret[..]),
         "a freshly signed prediction must satisfy the existing seal"
+    );
+}
+
+#[test]
+fn a_release_prediction_cannot_authorize_a_changed_device_platform_pcr() {
+    let f = fixture!();
+    let floor = f.floor(0);
+    let secret = b"platform-bound-secret-32-bytes!!!";
+    let before = f.predict(7, &f.sign_priv, "target-uki");
+    let token = f.seal_token(7, floor, &[before], secret, None);
+    assert!(f.try_unseal(&token, None).expect("sanity").is_some());
+
+    assert!(
+        f.raw(
+            "tpm2_pcrextend",
+            &["7:sha256=0000000000000000000000000000000000000000000000000000000000000001"]
+        )
+        .ok()
+    );
+    // Even a newly signed PCR11 statement cannot erase the PCR7 constraint,
+    // because PCR7 is applied after PolicyAuthorize resets the digest.
+    let new_release_prediction = f.predict(7, &f.sign_priv, "same-target-uki");
+    let mut changed = token;
+    changed.predictions = RollbackToken::new(
+        0,
+        7,
+        f.cfg.nv_index,
+        changed.nv_operand,
+        changed.nv_base,
+        &f.cfg.pcr_bank,
+        &f.cfg.pcrs,
+        &f.cfg.platform_pcrs,
+        false,
+        b"x",
+        b"y",
+        &f.key_name,
+        b"z",
+        &[new_release_prediction],
+    )
+    .predictions;
+    assert!(
+        f.try_unseal(&changed, None).is_err(),
+        "changed device PCR7 must remain bound after release authorization"
     );
 }
 

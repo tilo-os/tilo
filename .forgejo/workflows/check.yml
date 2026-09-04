@@ -111,6 +111,8 @@ jobs:
           bash os/tests/release_freshness_security.sh
           bash os/tests/installer_target_invariants.sh
           bash os/tests/rollback-initrd-hook.sh
+          bash os/tests/qos_root_discovery.sh
+          bash os/tests/authenticode_envelope.sh
           bash os/tests/installer_guided_alongside.sh
           bash os/tests/installer_boot_menu.sh
           bash os/tests/live_recovery.sh

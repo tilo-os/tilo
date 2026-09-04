@@ -146,7 +146,7 @@ root_sector=$((ROOT_START / EXPECT_SECTOR))
 root_sectors=$((ROOT_SIZE / EXPECT_SECTOR))
 printf 'start=%s, size=%s, type=%s, uuid=%s, name="qOS EFI"\nstart=%s, size=%s, type=%s, uuid=%s, name="qOS root"\n' \
   "$efi_sector" "$efi_sectors" c12a7328-f81f-11d2-ba4b-00a0c93ec93b "${EFI_UUID,,}" \
-  "$root_sector" "$root_sectors" 0fc63daf-8483-4772-8e79-3d69d8477de4 "${ROOT_UUID,,}" \
+  "$root_sector" "$root_sectors" 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab "${ROOT_UUID,,}" \
   | sfdisk --append --no-reread --lock=no --wipe never --wipe-partitions never "$DISK"
 blockdev --rereadpt "$DISK"
 partx -u "$DISK"
@@ -188,7 +188,7 @@ raise SystemExit(1)
 }
 [ "$(partition_type_by_uuid "$EFI_UUID")" = c12a7328-f81f-11d2-ba4b-00a0c93ec93b ] \
   || die "reviewed EFI partition type changed"
-[ "$(partition_type_by_uuid "$ROOT_UUID")" = 0fc63daf-8483-4772-8e79-3d69d8477de4 ] \
+[ "$(partition_type_by_uuid "$ROOT_UUID")" = 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab ] \
   || die "reviewed root partition type changed"
 findmnt -rn -S "$EFI_PARTITION" >/dev/null 2>&1 && die "reviewed EFI partition is mounted"
 findmnt -rn -S "$ROOT_PARTITION" >/dev/null 2>&1 && die "reviewed root partition is mounted"

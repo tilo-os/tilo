@@ -8,6 +8,8 @@ harden_helper="$repo/os/usr/libexec/qos-rollback-harden"
 fs_unit="$repo/os/usr/lib/systemd/system/fs.service"
 fs_path="$repo/os/usr/lib/systemd/system/fs-identity.path"
 containerfile="$repo/os/Containerfile"
+# shellcheck source=lib/containerfile.sh
+. "$repo/os/tests/lib/containerfile.sh"
 boot_mode_generator="$repo/os/usr/lib/systemd/system-generators/qos-boot-mode-generator"
 fail=0
 
@@ -47,12 +49,30 @@ else
 fi
 
 if exactly_once "$fs_path" 'ConditionKernelCommandLine=!qos.install' \
-   && grep -Fq 'COPY os/usr/lib/systemd/system/fs-identity.path /usr/lib/systemd/system/fs-identity.path' "$containerfile" \
+   && containerfile_has_copy "$containerfile" \
+        'os/usr/lib/systemd/system/fs-identity.path' '/usr/lib/systemd/system/fs-identity.path' \
    && grep -Fq 'systemctl enable fs.service fs-identity.path' "$containerfile" \
    && grep -Fq 'fs-identity.path' "$boot_mode_generator"; then
   ok 'identity activation is shipped, enabled, and quiet on installer/repair boots'
 else
   bad 'identity activation is not wired into the installed image correctly'
+fi
+
+# Every Containerfile instruction becomes a rootfs commit with Podman's layer
+# cache enabled. Keep the adjacent service activations atomic: splitting these
+# no-op-sized filesystem changes into separate RUNs cost 90--120 seconds each
+# on the cycle-6 rootless builder, without creating a useful cache boundary.
+enable_runs="$(sed -n \
+  '/^# Keep service activation in one transaction\./,/^# Boot-time prune\./p' \
+  "$containerfile" | grep -c '^RUN systemctl' || true)"
+if [ "$enable_runs" -eq 1 ] \
+   && exactly_once "$containerfile" '    systemctl enable cups.socket && \' \
+   && grep -Fq 'systemctl enable qos-boot-entries.service qos-boot-health.service' "$containerfile" \
+   && grep -Fq 'systemctl enable bootc-fetch-apply-updates.timer' "$containerfile" \
+   && grep -Fq 'systemctl enable NetworkManager.service' "$containerfile"; then
+  ok 'service activation retains one useful rootfs layer boundary'
+else
+  bad 'service activation is fragmented across expensive rootfs commits or incomplete'
 fi
 
 exit "$fail"

@@ -351,7 +351,7 @@ fi
 mkdir -p "$DEFS"
 printf '[Partition]\nType=esp\nFormat=vfat\nSizeMinBytes=%s\nSizeMaxBytes=%s\n' \
   "$ESP_SIZE" "$ESP_SIZE" > "$DEFS/01-esp.conf"
-printf '[Partition]\nType=root\nFormat=btrfs\nSizeMinBytes=%s\nGrowFileSystem=yes\n' \
+printf '[Partition]\nType=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab\nLabel=qOS root\nFormat=btrfs\nSizeMinBytes=%s\nGrowFileSystem=yes\n' \
   "$ROOT_MIN" > "$DEFS/02-root.conf"
 
 msg "1/4 systemd-repart -> $RAW (ESP $ESP_SIZE + btrfs root >= $ROOT_MIN, disk $SIZE)"

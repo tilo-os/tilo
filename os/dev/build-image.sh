@@ -288,5 +288,18 @@ if ! "$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$OUTDIR" "${disk_args[@]}"; t
   msg "seal closed in two passes (install's expected digest was stable)"
 fi
 
+# Publish the normal update image with the same authority sidecars as installer
+# media. This runs only after the composefs seal converges; adding files under
+# /boot cannot move that digest. A final image pass proves that invariant and
+# ensures future bootc upgrades receive a prediction for their exact UKI.
+if [ -n "${QOS_PCR_PREDICTION_SIGNER:-}" ]; then
+  "$QOS_OS_DIR/dev/sign-target-prediction.sh" "$QOS_IMAGE" "$QOS_PCR_PREDICTION_SIGNER"
+  rm -rf "$QOS_OUTPUT/qcow2" "$QOS_OUTPUT"/manifest* 2>/dev/null || true
+  "$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$OUTDIR" "${disk_args[@]}" \
+    || die "adding /boot-only signed PCR prediction sidecars changed or invalidated the converged qOS image"
+elif [ "${QOS_REQUIRE_PCR_PREDICTION:-0}" = 1 ]; then
+  die "QOS_REQUIRE_PCR_PREDICTION=1 but no protected QOS_PCR_PREDICTION_SIGNER is configured"
+fi
+
 msg "DONE: $QOS_DISK (generation $QOS_GENERATION)"
 ls -lh "$QOS_DISK"

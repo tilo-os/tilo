@@ -310,6 +310,7 @@ pub fn seal_policy(
     runner: &dyn Runner,
     ws: &Workspace,
     key_name: &[u8],
+    platform_selection: &str,
     gen_num: u64,
     nv_index: u32,
     nv_operand: u64,
@@ -344,6 +345,12 @@ pub fn seal_policy(
                 ref_file.as_os_str(),
             ],
             "computing the PolicyAuthorize digest",
+        )?;
+        require(
+            runner,
+            "tpm2_policypcr",
+            &argv!["-S", sess.as_os_str(), "-l", platform_selection],
+            "binding the seal to this machine's platform PCRs",
         )?;
         require(
             runner,
@@ -451,6 +458,7 @@ pub fn satisfy(
     prediction: &Prediction,
     gen_num: u64,
     selection: &str,
+    platform_selection: &str,
     nv_index: u32,
     nv_operand: u64,
     with_pin: bool,
@@ -466,6 +474,7 @@ pub fn satisfy(
         key_name,
         gen_num,
         selection,
+        platform_selection,
         nv_index,
         nv_operand,
         with_pin,
@@ -547,6 +556,7 @@ fn drive_policy_session(
     key_name: &[u8],
     gen_num: u64,
     selection: &str,
+    platform_selection: &str,
     nv_index: u32,
     nv_operand: u64,
     with_pin: bool,
@@ -594,6 +604,17 @@ fn drive_policy_session(
         if !auth.ok() {
             trace_failure("tpm2_policyauthorize", &auth_args, &auth);
             return Ok(None); // wrong prediction for the current state
+        }
+        let platform = runner.run(
+            "tpm2_policypcr",
+            &argv!["-S", sess.as_os_str(), "-l", platform_selection],
+            None,
+        )?;
+        if !platform.ok() {
+            bail!(
+                "reading device-local platform PCRs failed: {}",
+                platform.last_error_line()
+            );
         }
         // Rollback floor.
         let nv = runner.run(
