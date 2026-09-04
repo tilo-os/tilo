@@ -190,9 +190,11 @@ Before creating a release tag, verify all of the following:
   the packaged smoke launch;
 - all six broker-path variables above are protected; the Linux full fingerprint
   is independently set in protected variable
-  `IMAGER_LINUX_SIGNING_FINGERPRINT`; `WINGET_GITHUB_USER` names the CLA-enabled
-  bot; and `SITE_RELEASE_USER` names the Forgejo website bot when it is not
-  `oauth2`;
+  `IMAGER_LINUX_SIGNING_FINGERPRINT`; `IMAGER_WINDOWS_PUBLISHER` pins the full
+  Authenticode certificate subject; `IMAGER_MAC_TEAM_ID` and
+  `IMAGER_MAC_CERT_SHA256` pin the Apple team and leaf signing certificate;
+  `WINGET_GITHUB_USER` names the CLA-enabled bot; and `SITE_RELEASE_USER` names
+  the Forgejo website bot when it is not `oauth2`;
 - a denied dry run proves that a main-branch, pull-request, wrong workflow,
   unprotected tag, expired token, replayed token, and wrong platform receive no
   lease;
@@ -225,6 +227,9 @@ administrators):
 |---|---|
 | the six `IMAGER_*_CREDENTIAL_BROKER` variables listed above | absolute path on each corresponding golden image |
 | `IMAGER_LINUX_SIGNING_FINGERPRINT` | uppercase 40- or 64-hex full primary-key fingerprint, independently verified |
+| `IMAGER_WINDOWS_PUBLISHER` | complete expected Authenticode certificate subject, independently verified |
+| `IMAGER_MAC_TEAM_ID` | 10-character Apple Developer team identifier, independently verified |
+| `IMAGER_MAC_CERT_SHA256` | uppercase 64-hex SHA-256 fingerprint of the expected Developer ID leaf certificate |
 | `WINGET_GITHUB_USER` | dedicated GitHub submission bot login |
 | `SITE_RELEASE_USER` | Forgejo website bot login; omit to use `oauth2` |
 | `IMAGER_WINDOWS_SIGNER` | optional alternative to the Windows broker; absolute OIDC-aware wrapper path |
