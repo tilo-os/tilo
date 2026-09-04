@@ -1454,6 +1454,7 @@ fn join(
     )
 }
 
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn join_with_token(
     token_text: &str,
     identity_root: PathBuf,
@@ -1694,6 +1695,7 @@ fn join_with_token(
     bail!("no approving qOS device answered before the enrollment window closed")
 }
 
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn pair(
     identity_root: PathBuf,
     label: String,
@@ -2525,7 +2527,7 @@ mod tests {
             authorize_personal_commit(&marker_path, &marker, Some(lease)).is_err(),
             "a dead compositor cannot cross the durable commit point"
         );
-        let mut simulated_ready = marker.clone();
+        let mut simulated_ready = marker;
         simulated_ready.commit_ready = true;
         assert!(
             commit_staged_personal_enrollment(
@@ -2621,6 +2623,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
         let approver_root = tempfile::tempdir().unwrap();
         let approver_identities = tempfile::tempdir().unwrap();
