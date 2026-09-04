@@ -27,6 +27,7 @@ use crate::widgets::{El, caption, card, card_with_action, hgap, rows, value_row}
 const SETUP_KEY: &str = "agent_models.local.setup";
 const CONFIRM_KEY: &str = "agent_models.local.confirm";
 const CANCEL_KEY: &str = "agent_models.local.cancel";
+const ACCELERATOR_SETUP_KEY: &str = "agent_models.accelerator.setup";
 const POLL_INTERVAL: Duration = Duration::from_millis(750);
 
 #[derive(Clone)]
@@ -90,9 +91,6 @@ pub enum LocalModelPhase {
         percent: Option<u8>,
         message: String,
     },
-    RestartRequired {
-        reason: String,
-    },
     Ready {
         running: bool,
         /// Exact loopback endpoint published by the supervised model service.
@@ -120,7 +118,6 @@ impl LocalModelPhase {
         match self {
             Self::Downloading { .. } => "Downloading",
             Self::Installing { .. } => "Installing",
-            Self::RestartRequired { .. } => "Restart required",
             Self::Ready { running: true, .. } => "Running",
             Self::Ready { running: false, .. } => "Ready",
             Self::Error { .. } => "Needs attention",
@@ -135,11 +132,40 @@ pub struct InstalledLocalModel {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum AcceleratorSetupState {
+    Available,
+    Queued,
+    Staging,
+    RestartRequired,
+    Active,
+    Error { message: String },
+}
+
+impl AcceleratorSetupState {
+    fn blocks_model_setup(&self) -> bool {
+        !matches!(self, Self::Active)
+    }
+
+    fn is_transient(&self) -> bool {
+        matches!(self, Self::Queued | Self::Staging)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceleratorSetup {
+    pub boot_pack_id: String,
+    pub status: AcceleratorSetupState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalModelSnapshot {
     pub hardware: HardwareRecommendation,
     pub recommendation: Option<LocalModelPackage>,
     #[serde(default)]
     pub models: Vec<InstalledLocalModel>,
+    #[serde(default)]
+    pub accelerator_setup: Option<AcceleratorSetup>,
 }
 
 /// Boundary implemented by qOS' model service. The production adapter is a
@@ -155,7 +181,7 @@ pub trait LocalModelControl: Send + Sync {
     fn start(&self, id: &str) -> Result<(), String>;
     fn stop(&self, id: &str) -> Result<(), String>;
     fn remove(&self, id: &str) -> Result<(), String>;
-    fn restart_device(&self, id: &str) -> Result<(), String>;
+    fn stage_accelerator(&self) -> Result<(), String>;
 }
 
 pub struct ModelManagerCli;
@@ -219,8 +245,17 @@ impl LocalModelControl for ModelManagerCli {
     fn remove(&self, id: &str) -> Result<(), String> {
         Self::command("remove", id)
     }
-    fn restart_device(&self, id: &str) -> Result<(), String> {
-        Self::command("request-restart", id)
+    fn stage_accelerator(&self) -> Result<(), String> {
+        let status = Command::new("qos-model-manager")
+            .arg("stage-accelerator")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .status()
+            .map_err(|error| format!("model service is unavailable: {error}"))?;
+        status
+            .success()
+            .then_some(())
+            .ok_or_else(|| "accelerator setup service refused the request".to_string())
     }
 }
 
@@ -270,6 +305,7 @@ fn fallback_snapshot() -> LocalModelSnapshot {
         },
         recommendation: None,
         models: Vec::new(),
+        accelerator_setup: None,
     }
 }
 
@@ -279,7 +315,6 @@ enum ModelAction {
     Stop,
     Remove,
     Retry,
-    Restart,
 }
 
 fn available_actions(phase: &LocalModelPhase) -> Vec<ModelAction> {
@@ -291,7 +326,6 @@ fn available_actions(phase: &LocalModelPhase) -> Vec<ModelAction> {
             vec![ModelAction::Start, ModelAction::Remove]
         }
         LocalModelPhase::Error { .. } => vec![ModelAction::Retry, ModelAction::Remove],
-        LocalModelPhase::RestartRequired { .. } => vec![ModelAction::Restart],
         LocalModelPhase::Downloading { .. } | LocalModelPhase::Installing { .. } => Vec::new(),
     }
 }
@@ -302,7 +336,6 @@ fn action_label(action: ModelAction) -> &'static str {
         ModelAction::Stop => "Stop",
         ModelAction::Remove => "Remove…",
         ModelAction::Retry => "Retry install",
-        ModelAction::Restart => "Restart device…",
     }
 }
 
@@ -312,7 +345,6 @@ fn action_slug(action: ModelAction) -> &'static str {
         ModelAction::Stop => "stop",
         ModelAction::Remove => "remove",
         ModelAction::Retry => "retry",
-        ModelAction::Restart => "restart",
     }
 }
 
@@ -520,6 +552,84 @@ impl AgentModelsPane {
             .models
             .iter()
             .any(|model| model.phase.is_transient())
+            || self
+                .snapshot
+                .accelerator_setup
+                .as_ref()
+                .is_some_and(|setup| setup.status.is_transient())
+    }
+
+    fn accelerator_card(&self) -> Option<El> {
+        let setup = self.snapshot.accelerator_setup.as_ref()?;
+        let mut body = vec![value_row("Signed hardware match", &setup.boot_pack_id)];
+        let status = match &setup.status {
+            AcceleratorSetupState::Available => {
+                body.push(caption(
+                    "qOS found a signed accelerator stack matched to this device. Setup stages a new immutable system image; it does not install a driver into the running system.",
+                ));
+                body.push(Box::new(
+                    Row::new()
+                        .push(Box::new(Button::new(
+                            "agent-models-accelerator-setup",
+                            "Set up accelerator",
+                            Some(ACCELERATOR_SETUP_KEY),
+                        )))
+                        .push(Box::new(Spacer::new())),
+                ));
+                "Ready to set up"
+            }
+            AcceleratorSetupState::Queued => {
+                body.push(Box::new(
+                    ProgressBar::indeterminate().with_label("Preparing accelerator support"),
+                ));
+                body.push(caption(
+                    "The request is queued. You can leave Settings while qOS verifies and stages the signed system image.",
+                ));
+                "Queued"
+            }
+            AcceleratorSetupState::Staging => {
+                body.push(Box::new(
+                    ProgressBar::indeterminate().with_label("Staging accelerator support"),
+                ));
+                body.push(caption(
+                    "qOS is building the next boot deployment. The current desktop keeps running normally.",
+                ));
+                "Staging"
+            }
+            AcceleratorSetupState::RestartRequired => {
+                body.push(caption(
+                    "Accelerator support is ready for the next boot. Restart from the system power menu when convenient; qOS will verify the booted deployment before calling it active.",
+                ));
+                "Restart required"
+            }
+            AcceleratorSetupState::Active => {
+                body.push(caption(
+                    "The signed accelerator stack is active and local model setup can use it.",
+                ));
+                "Active"
+            }
+            AcceleratorSetupState::Error { message } => {
+                body.push(caption(message));
+                body.push(caption(
+                    "Nothing was installed into the running system. Retry rechecks this device against the signed hardware policy.",
+                ));
+                body.push(Box::new(
+                    Row::new()
+                        .push(Box::new(Button::new(
+                            "agent-models-accelerator-retry",
+                            "Retry accelerator setup",
+                            Some(ACCELERATOR_SETUP_KEY),
+                        )))
+                        .push(Box::new(Spacer::new())),
+                ));
+                "Needs attention"
+            }
+        };
+        Some(card_with_action(
+            "Accelerator support",
+            Box::new(Text::new(status).with_size(12.0)),
+            rows(body),
+        ))
     }
 
     fn recommendation_card(&self) -> El {
@@ -599,7 +709,13 @@ impl AgentModelsPane {
                             Some(SETUP_KEY),
                         )
                         .with_enabled(
-                            self.manager_available && hardware.fit != HardwareFit::Unsupported,
+                            self.manager_available
+                                && hardware.fit != HardwareFit::Unsupported
+                                && self
+                                    .snapshot
+                                    .accelerator_setup
+                                    .as_ref()
+                                    .is_none_or(|setup| !setup.status.blocks_model_setup()),
                         ),
                     ))
                     .push(Box::new(Spacer::new())),
@@ -641,12 +757,6 @@ impl AgentModelsPane {
                         .with_label(format!("Installing {}", model.package.name)),
                 }));
                 body.push(caption(message));
-            }
-            LocalModelPhase::RestartRequired { reason } => {
-                body.push(caption(reason));
-                body.push(caption(
-                    "Your download is complete. Restarting activates the required runtime or driver; no model data is downloaded again.",
-                ));
             }
             LocalModelPhase::Error { message } => {
                 body.push(caption(message));
@@ -990,6 +1100,9 @@ impl AgentModelsPane {
         if let Some(notice) = &self.notice {
             cards.push(card("Local model service", caption(notice)));
         }
+        if let Some(accelerator) = self.accelerator_card() {
+            cards.push(accelerator);
+        }
         cards.push(self.recommendation_card());
         if self.snapshot.models.is_empty() {
             cards.push(card(
@@ -1011,7 +1124,7 @@ impl AgentModelsPane {
         if !self.needs_seed {
             return;
         }
-        for key in [SETUP_KEY, CONFIRM_KEY, CANCEL_KEY] {
+        for key in [SETUP_KEY, CONFIRM_KEY, CANCEL_KEY, ACCELERATOR_SETUP_KEY] {
             let _ = state.put(root, key, false);
         }
         for model in &self.snapshot.models {
@@ -1027,7 +1140,6 @@ impl AgentModelsPane {
             ModelAction::Start => self.control.start(&model.package.id),
             ModelAction::Stop => self.control.stop(&model.package.id),
             ModelAction::Retry => self.control.install(&model.package),
-            ModelAction::Restart => self.control.restart_device(&model.package.id),
             ModelAction::Remove => {
                 if self.remove_confirmation.as_deref() != Some(&model.package.id) {
                     self.remove_confirmation = Some(model.package.id.clone());
@@ -1052,6 +1164,15 @@ impl AgentModelsPane {
     }
 
     fn sync_actions(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if take_bool(state, root, ACCELERATOR_SETUP_KEY) {
+            match self.control.stage_accelerator() {
+                Ok(()) => self.refresh(),
+                Err(error) => {
+                    self.notice = Some(format!("Accelerator setup could not start: {error}"));
+                    self.structure_dirty = true;
+                }
+            }
+        }
         if take_bool(state, root, SETUP_KEY) {
             if let Some(package) = &self.snapshot.recommendation {
                 self.confirmation = Some(package.id.clone());
@@ -1293,6 +1414,7 @@ mod tests {
             models: phase
                 .map(|phase| vec![InstalledLocalModel { package, phase }])
                 .unwrap_or_default(),
+            accelerator_setup: None,
         }
     }
 
@@ -1324,8 +1446,8 @@ mod tests {
             self.calls.lock().unwrap().push(format!("remove:{id}"));
             Ok(())
         }
-        fn restart_device(&self, id: &str) -> Result<(), String> {
-            self.calls.lock().unwrap().push(format!("restart:{id}"));
+        fn stage_accelerator(&self) -> Result<(), String> {
+            self.calls.lock().unwrap().push("stage-accelerator".into());
             Ok(())
         }
     }
@@ -1406,11 +1528,30 @@ mod tests {
             })
             .is_empty()
         );
-        assert_eq!(
-            available_actions(&LocalModelPhase::RestartRequired {
-                reason: "driver".into()
+    }
+
+    #[test]
+    fn accelerator_setup_is_separate_from_model_lifecycle() {
+        let control = Arc::new(MockControl {
+            snapshot: Mutex::new(LocalModelSnapshot {
+                accelerator_setup: Some(AcceleratorSetup {
+                    boot_pack_id: "gpu-stack".into(),
+                    status: AcceleratorSetupState::Available,
+                }),
+                ..snapshot(None)
             }),
-            [ModelAction::Restart]
+            calls: Mutex::new(Vec::new()),
+        });
+        let mut pane = AgentModelsPane::with_control(control.clone());
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+
+        let _ = doc.put(&root, ACCELERATOR_SETUP_KEY, true);
+        pane.sync(&mut doc, &root);
+        assert_eq!(
+            control.calls.lock().unwrap().as_slice(),
+            ["stage-accelerator"]
         );
     }
 
