@@ -1389,6 +1389,10 @@ impl ShellOverlayHost {
         (search_registry, room_records)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "constructor explicitly initializes the host's independent interaction surfaces"
+    )]
     pub fn new(content: Box<dyn Widget>) -> Self {
         // Palette entries come from the search registry on every
         // keystroke. New providers slot in via `SearchRegistry::register`;
@@ -2374,10 +2378,10 @@ impl ShellOverlayHost {
                 let state = chrome.borrow();
                 let local_user = state.local_user_id.clone();
                 let tree = state.tree();
-                let workspace_name = tree
-                    .active_workspace()
-                    .map(|workspace| workspace.name.clone())
-                    .unwrap_or_else(|| "this workspace".to_string());
+                let workspace_name = tree.active_workspace().map_or_else(
+                    || "this workspace".to_string(),
+                    |workspace| workspace.name.clone(),
+                );
                 let room_invitees = tree
                     .active_workspace()
                     .map(|workspace| tree.trusted_identity_projection(workspace.room))
@@ -2397,13 +2401,16 @@ impl ShellOverlayHost {
                             .collect()
                     })
                     .unwrap_or_default();
-                (
+                let snapshot = (
                     InviteContext {
                         workspace_name,
                         inviter_name: local_user,
                     },
                     room_invitees,
-                )
+                );
+                drop(tree);
+                drop(state);
+                snapshot
             },
         );
         self.peer_sync_overlay.set_invite_context(context);
@@ -4373,6 +4380,7 @@ impl ShellOverlayHost {
                 })
             });
             drop(tree);
+            drop(state);
             target
         };
         let Some((strip, group, tab)) = target else {
@@ -4399,36 +4407,42 @@ impl ShellOverlayHost {
             self.follow_transition
                 .set_open(false, Duration::from_millis(140), ui::Curve::EaseOut);
         }
-        let command = self
-            .followed_peer
-            .as_deref()
-            .and_then(|id| {
-                self.chrome.as_ref().and_then(|chrome| {
-                    let state = chrome.borrow();
-                    let tree = state.tree();
-                    let workspace = tree.active_workspace()?;
-                    let room = workspace.room;
+        let active_command = match (self.followed_peer.as_deref(), self.chrome.as_ref()) {
+            (Some(id), Some(chrome)) => {
+                let state = chrome.borrow();
+                let tree = state.tree();
+                let command = tree.active_workspace().map(|workspace| {
                     let target = workspace
                         .collaborators
                         .iter()
                         .find(|participant| participant.id == id)
                         .and_then(|participant| participant.session)
                         .map_or_else(|| id.to_string(), |session| format!("peer@{session}"));
-                    self.followed_room = Some(room);
-                    Some((room, Some(target)))
+                    (workspace.room, Some(target))
+                });
+                drop(tree);
+                drop(state);
+                command
+            }
+            _ => None,
+        };
+        if let Some((room, _)) = &active_command {
+            self.followed_room = Some(*room);
+        }
+        let command = active_command.or_else(|| {
+            previous_room.map(|room| (room, None)).or_else(|| {
+                self.chrome.as_ref().and_then(|chrome| {
+                    let state = chrome.borrow();
+                    let tree = state.tree();
+                    let command = tree
+                        .active_workspace()
+                        .map(|workspace| (workspace.room, None));
+                    drop(tree);
+                    drop(state);
+                    command
                 })
             })
-            .or_else(|| {
-                previous_room.map(|room| (room, None)).or_else(|| {
-                    self.chrome.as_ref().and_then(|chrome| {
-                        let state = chrome.borrow();
-                        state
-                            .tree()
-                            .active_workspace()
-                            .map(|workspace| (workspace.room, None))
-                    })
-                })
-            });
+        });
         if let Some((room, target)) = command {
             if let Some(bridge) = self.follow_bridge.as_ref() {
                 bridge(room, target.clone());
@@ -6914,6 +6928,10 @@ impl ShellOverlayHost {
         true
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "central keyboard dispatcher keeps shortcut precedence visible in one ordered match"
+    )]
     fn handle_shell_keyboard_event(
         &mut self,
         logical_key: &Key,
@@ -8467,6 +8485,10 @@ impl ShellOverlayHost {
         *handled = true;
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "typed settings outcomes are intentionally applied in one exhaustive policy boundary"
+    )]
     fn apply_workspace_settings_outcome(
         &mut self,
         outcome: WorkspaceSettingsOutcome,
@@ -12663,6 +12685,10 @@ impl ShellOverlayHost {
     /// Persistent local follow-mode banner. It says both what is happening
     /// and how control returns to the local user; an explicit Stop button
     /// avoids making an unlabeled slab destructive.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single immediate-mode renderer keeps the animated banner geometry and hit targets aligned"
+    )]
     fn draw_follow_chip(
         &mut self,
         scene: &mut Scene,
@@ -12685,8 +12711,9 @@ impl ShellOverlayHost {
             return;
         };
         self.follow_visual = Some(row.clone());
-        let openness = f64::from(self.follow_transition.value(now));
-        let transform = transform.pre_translate((0.0, (1.0 - openness) * -10.0).into());
+        let openness = self.follow_transition.value(now);
+        let openness_f64 = f64::from(openness);
+        let transform = transform.pre_translate((0.0, (1.0 - openness_f64) * -10.0).into());
         let label = format!("Following {}", row.label);
         // The viewport/control is local; the lightweight relationship cue is
         // intentionally visible to this room, so people understand why the
@@ -12707,15 +12734,15 @@ impl ShellOverlayHost {
             self.follow_chip_rect.x1 - 10.0,
             self.follow_chip_rect.y1 - 10.0,
         );
-        self.follow_stop_rect = self
-            .followed_peer
-            .is_some()
-            .then_some(detach_rect)
-            .unwrap_or(Rect::ZERO);
+        self.follow_stop_rect = if self.followed_peer.is_some() {
+            detach_rect
+        } else {
+            Rect::ZERO
+        };
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
-            openness as f32,
+            openness,
             transform,
             &self.follow_chip_rect,
         );
@@ -12882,14 +12909,14 @@ impl ShellOverlayHost {
             // The follower's own cursor is softly tethered to the target.
             // This stays meaningful even when the compact banner is out of
             // peripheral vision, while avoiding a modal or textual lock.
-            let openness = f64::from(self.follow_transition.value(Instant::now()));
+            let openness = self.follow_transition.value(Instant::now());
             draw_follow_tether(
                 scene,
                 transform,
                 local,
                 *target,
-                color.multiply_alpha(0.22 + 0.3 * openness as f32),
-                1.0 + openness * 0.8,
+                color.multiply_alpha(0.22 + 0.3 * openness),
+                1.0 + f64::from(openness) * 0.8,
             );
         }
         for (id, point, color) in anchors {
@@ -12940,7 +12967,7 @@ impl ShellOverlayHost {
         let Some(pointers) = presence.pointers.get(&key) else {
             return Vec::new();
         };
-        pointers
+        let anchors = pointers
             .iter()
             .filter_map(|(user, (x, y))| {
                 rows.iter()
@@ -12953,7 +12980,10 @@ impl ShellOverlayHost {
                         )
                     })
             })
-            .collect()
+            .collect();
+        drop(tree);
+        drop(state);
+        anchors
     }
 
     fn active_workspace_presence_key(&self) -> Option<PresenceKey> {
@@ -12993,7 +13023,7 @@ impl ShellOverlayHost {
                 roster_id_for_presence.insert(format!("peer@{session}"), participant.id.clone());
             }
         }
-        presence
+        let relationships = presence
             .following_in(&room)
             .into_iter()
             .filter_map(|(follower, target)| {
@@ -13007,7 +13037,10 @@ impl ShellOverlayHost {
                     .then_some(())?;
                 (follower != target).then(|| (follower.clone(), target.clone()))
             })
-            .collect()
+            .collect();
+        drop(tree);
+        drop(state);
+        relationships
     }
 
     /// Exactly the peers [`Self::draw_real_peers`] is about to paint:
@@ -18643,7 +18676,7 @@ mod peer_cursor_tests {
         assert_eq!(
             calls.borrow().as_slice(),
             &[
-                (expected_room.clone(), Some("peer@77".to_string())),
+                (expected_room, Some("peer@77".to_string())),
                 (expected_room, None),
             ],
             "the same workspace's apps are released before the click reaches local content",
@@ -18718,7 +18751,7 @@ mod peer_cursor_tests {
         assert_eq!(
             calls.borrow().as_slice(),
             &[
-                (expected_room.clone(), Some("peer@77".to_string())),
+                (expected_room, Some("peer@77".to_string())),
                 (expected_room, None),
             ],
             "release returns to the room that originally received the Follow command",
