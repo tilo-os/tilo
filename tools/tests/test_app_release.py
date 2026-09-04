@@ -84,6 +84,13 @@ class AppReleaseTests(unittest.TestCase):
             sorted(CATALOG),
         )
 
+    def test_global_change_excludes_os_integrated_apps(self) -> None:
+        catalog = {**CATALOG, "browser": {}}
+        self.assertEqual(
+            app_release.apps_from_changes(["Cargo.lock"], catalog),
+            sorted(CATALOG),
+        )
+
     def test_shared_runtime_change_selects_reverse_dependent_apps(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

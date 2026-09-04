@@ -135,7 +135,7 @@ def apps_from_changes(
     root: Path = ROOT,
 ) -> list[str]:
     if any(path in GLOBAL_INPUTS or path.startswith(GLOBAL_PREFIXES) for path in paths):
-        return sorted(catalog)
+        return sorted(set(catalog).difference(OS_INTEGRATED_APPS))
     selected = {
         parts[1]
         for path in paths
