@@ -220,12 +220,15 @@ cycle="$repo/os/dev/test-installer-cycle.sh"
 boot_verify="$repo/scripts/perf/qemu-install-boot-verify.sh"
 if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq -- '--prepared-alongside' "$workflow" \
+  && grep -Fq -- '--guided-alongside' "$workflow" \
+  && grep -Fq 'dist/installer-guided-alongside-cycle' "$workflow" \
   && grep -Fq 'QOS_INSTALLER_CYCLE_MAX_INSTALL_SECONDS' "$workflow" \
   && grep -Fq 'qemu-system-aarch64' "$workflow" \
   && grep -Fq 'qemu-efi-aarch64 qemu-system-arm' "$workflow" \
   && grep -Fq 'edk2-aarch64 qemu-device-display-virtio-gpu-pci-gl qemu-system-aarch64-core' "$workflow" \
   && grep -Fq 'dosfstools e2fsprogs fdisk imagemagick mtools ntfs-3g' "$workflow" \
   && grep -Fq 'ImageMagick mtools ntfs-3g util-linux' "$workflow" \
+  && grep -Fq 'debugfs mattrib mcopy mdir mmd mkfs.ext4 mkfs.ntfs mkfs.vfat mtype ntfscp' "$workflow" \
   && grep -Fq 'qemu-img "$qemu_binary" sfdisk socat tesseract' "$workflow" \
   && grep -Fq 'name: qos-installer-full-cycle-${{ matrix.arch }}' "$workflow" \
   && grep -Fq '"$vm" boot-installer --gl --no-tpm' "$cycle" \
@@ -239,9 +242,19 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'customization modified the released installer medium' "$cycle" \
   && grep -Fq 'Windows filesystem bytes changed during alongside install' "$cycle" \
   && grep -Fq 'Linux filesystem bytes changed during alongside install' "$cycle" \
+  && grep -Fq 'Windows EFI loader bytes changed during alongside install' "$cycle" \
+  && grep -Fq 'Linux EFI loader bytes changed during alongside install' "$cycle" \
+  && grep -Fq 'foreign shared EFI partition changed during guided alongside install' "$cycle" \
   && grep -Fq 'qos-windows.conf' "$cycle" \
   && grep -Fq 'qos-linux-fedora.conf' "$cycle" \
+  && grep -Fq 'efi /EFI/Microsoft/Boot/bootmgfw.efi' "$cycle" \
+  && grep -Fq 'efi /EFI/Fedora/$linux_loader' "$cycle" \
+  && grep -Fq 'prepared alongside GPT layout changed' "$cycle" \
+  && grep -Fq 'expected five GPT partitions' "$cycle" \
+  && grep -Fq 'guided qOS EFI partition has no architecture-matched systemd-boot binary' "$cycle" \
+  && grep -Fq 'guided qOS EFI partition contains an invalid cross-ESP chainloader shortcut' "$cycle" \
   && grep -Fq 'confirmation=/dev/vdb4' "$cycle" \
+  && grep -Fq 'confirmation=/dev/vdb' "$cycle" \
   && grep -Fq "wait_private_screen 'qOS" "$cycle" \
   && grep -Fq '"$vm" keys ret tab spc tab tab ret' "$cycle" \
   && grep -Fq '"$vm" keys spc tab tab ret' "$cycle" \
@@ -259,7 +272,7 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq "wait_screen 12-tour-share" "$cycle" \
   && grep -Fq "wait_screen 13-desktop-config" "$cycle" \
   && ! grep -Eq '(^|[[:space:]])(ssh|journal)([[:space:]]|$)|--stub-ui|--shots' "$cycle"; then
-  ok 'every tagged medium must pass a profiled graphical install, encrypted boot, login, OOBE, and desktop cycle'
+  ok 'every tagged medium must pass erase, prepared-alongside, and guided-alongside graphical install cycles'
 else
   bad 'release media lack a fail-closed native full graphical installation cycle'
 fi
