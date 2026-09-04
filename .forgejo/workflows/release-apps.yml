@@ -36,6 +36,10 @@ on:
         description: "Named set from release/app-collections.toml."
         required: false
         default: "default"
+      architectures:
+        description: "Native architectures to publish (x86_64, aarch64, or both); empty selects both."
+        required: false
+        default: ""
       publish:
         description: "Publish immutable bundles to the Forgejo package registry."
         type: boolean
@@ -67,6 +71,7 @@ jobs:
         env:
           REQUESTED_APPS: ${{ github.event.inputs.apps }}
           REQUESTED_COLLECTION: ${{ github.event.inputs.collection }}
+          REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
         run: |
           set -euo pipefail
@@ -92,7 +97,17 @@ jobs:
           esac
           python3 tools/app_release.py "${args[@]}" | tee app-release-plan.json
           if [[ $GITHUB_REF == refs/tags/* || ${REQUESTED_PUBLISH:-false} == true ]]; then
-            echo 'matrix={"include":[{"arch":"x86_64","runner":"runner"},{"arch":"aarch64","runner":"runner-arm64"}]' >> "$GITHUB_OUTPUT"
+            architectures=${REQUESTED_ARCHITECTURES//,/ }
+            if [[ $GITHUB_REF == refs/tags/* || -z ${architectures// /} ]]; then
+              architectures='x86_64 aarch64'
+            fi
+            matrix=$(jq -cn --arg architectures "$architectures" '
+              ($architectures | split(" ") | map(select(length > 0)) | unique) as $arches
+              | if ($arches | length) == 0 or any($arches[]; . != "x86_64" and . != "aarch64")
+                then error("architectures must contain only x86_64 and/or aarch64")
+                else {include: ($arches | map({arch: ., runner: (if . == "x86_64" then "runner" else "runner-arm64" end)}))}
+                end')
+            echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
             if [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF != refs/heads/main ]]; then
               printf 'manual app publication is restricted to main\n' >&2
               exit 1

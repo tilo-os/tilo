@@ -43,6 +43,11 @@ checked again, every qpkg must carry the expected publisher identity, and
 tagged OS provenance records the collection digest. Leaving the variables empty
 preserves the source-build fallback for bootstrap work.
 
+Manual app publication normally builds both native architectures. During
+bootstrap, `architectures=x86_64` (or `aarch64`) may publish one architecture
+without waiting for an unavailable native runner; tagged releases always
+enforce the complete `x86_64 aarch64` matrix.
+
 ## App selection and collections
 
 Collections live in `release/app-collections.toml`. `default`, `desktop`, and
