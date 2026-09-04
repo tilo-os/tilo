@@ -82,6 +82,10 @@ matrices without publishing, which makes them safe release rehearsals.
   audiences are stored in `QOS_APP_RELEASE_TAG_AUDIENCE` and
   `QOS_APP_RELEASE_MAIN_AUDIENCE`; no long-lived registry token reaches the
   publication job.
+- Trusted OS builds read the private immutable app collection with a separate
+  read-only Forgejo Actions (Local) integration. Store its audience in
+  `QOS_OS_APP_COLLECTION_AUDIENCE`. Pull-request jobs never receive or use that
+  package capability; main, scheduled, and manual builds test the integration.
 - Keep remote actions pinned to full commit hashes.
 - Use the v3 artifact actions (or Forgejo's patched v4), because upstream v4's
   GitHub Artifact API is not compatible with this instance.

@@ -59,9 +59,13 @@ grep -Fq 'release/app-collections.toml' "$apps" \
   || bad 'app release artifacts cannot be consumed by later component releases'
 
 grep -Fq 'QOS_APP_COLLECTION_SHA256' "$os" \
+  && grep -Fq 'enable-openid-connect: true' "$os" \
+  && grep -Fq 'QOS_OS_APP_COLLECTION_AUDIENCE' "$os" \
+  && grep -Fq '[[ $EVENT_NAME != pull_request ]] || exit 0' "$os" \
+  && grep -Fq 'Authorization: Bearer $jwt' "$os" \
   && grep -Fq 'QOS_PREBUILT_APPS=${{ env.QOS_PREBUILT_APPS }}' "$os" \
   && grep -Fq 'QPKG_DIR=/out/prebuilt-apps' "$repo/os/Containerfile" \
-  && ok 'OS builds can consume a checksum-pinned app collection without rebuilding apps' \
+  && ok 'trusted OS builds consume an OIDC-authenticated pinned app collection without rebuilding apps' \
   || bad 'OS releases are still coupled to app source builds'
 
 python3 "$repo/tools/app_release.py" --collection default > /dev/null \

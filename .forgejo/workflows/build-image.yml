@@ -58,6 +58,7 @@ concurrency:
 jobs:
   build-and-push:
     runs-on: runner
+    enable-openid-connect: true
     steps:
       - name: Checkout the monorepo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -92,13 +93,23 @@ jobs:
 
       - name: Materialize the pinned app collection
         env:
+          COLLECTION_AUDIENCE: ${{ vars.QOS_OS_APP_COLLECTION_AUDIENCE }}
           COLLECTION_URL: ${{ github.event.inputs.app_collection_url || vars.QOS_APP_COLLECTION_URL }}
           COLLECTION_SHA256: ${{ github.event.inputs.app_collection_sha256 || vars.QOS_APP_COLLECTION_SHA256 }}
           COLLECTION_PUBLISHER: ${{ github.event.inputs.app_collection_publisher || vars.QOS_APP_COLLECTION_PUBLISHER }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           echo 'QOS_PREBUILT_APPS=0' >> "$GITHUB_ENV"
+          # Do not expose a package-reading capability to pull-request code.
+          # Main pushes, scheduled builds and explicit dispatches exercise the
+          # immutable app/OS integration boundary instead.
+          [[ $EVENT_NAME != pull_request ]] || exit 0
           [[ -n ${COLLECTION_URL:-} ]] || exit 0
+          [[ -n ${COLLECTION_AUDIENCE:-} ]] || {
+            printf 'the OS app collection Authorized Integration audience is required\n' >&2
+            exit 1
+          }
           [[ $COLLECTION_SHA256 =~ ^[0-9a-fA-F]{64}$ ]] || {
             printf 'a pinned app collection requires its SHA-256\n' >&2
             exit 1
@@ -109,7 +120,13 @@ jobs:
           }
           work=$(mktemp -d)
           trap 'rm -rf "$work"' EXIT
+          jwt=$(curl --fail --silent --show-error \
+            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$COLLECTION_AUDIENCE" \
+            | jq -er .value)
+          echo "::add-mask::$jwt"
           curl --proto '=https' --tlsv1.2 --fail --location --retry 3 \
+            --header "Authorization: Bearer $jwt" \
             "$COLLECTION_URL" -o "$work/apps.tar.gz"
           printf '%s  %s\n' "$COLLECTION_SHA256" "$work/apps.tar.gz" \
             | sha256sum --check --strict
