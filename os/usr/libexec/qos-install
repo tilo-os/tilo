@@ -84,6 +84,7 @@ LOCAL_IMG="localhost/bootc"
 # enrolment). Overridable so it can be driven directly in a test VM.
 DISK_ENCRYPT="${QOS_DISK_ENCRYPT:-/usr/libexec/qos-disk-encrypt}"
 GUIDED_PARTITION="${QOS_GUIDED_PARTITION:-/usr/libexec/qos-guided-partition}"
+EFI_ARTIFACTS="${QOS_INSTALL_EFI_ARTIFACTS:-/usr/libexec/qos-install-efi-artifacts}"
 
 # Alongside installs share a firmware-visible FAT ESP with qOS's retained,
 # staged, and repair UKIs. Six 160 MiB image slots plus filesystem slack need
@@ -1011,11 +1012,8 @@ INSTALL_MODE=full-disk
   if [ "$ALONGSIDE" -eq 1 ]; then
     EFI_UUID="$(blkid -s UUID -o value "$EFI_PARTITION" 2>/dev/null || true)"
     printf 'efi_uuid=%s\n' "$EFI_UUID"
-    while IFS= read -r EFI_FILE; do
-      RELATIVE_EFI="${EFI_FILE#"$MNT/boot/efi/"}"
-      case "$RELATIVE_EFI" in EFI/Linux/*.efi|loader/entries/*.conf) printf 'efi_artifact=%s\n' "$RELATIVE_EFI";; esac
-    done < <(grep -aFl -- "root=UUID=${ROOT_FS_UUID:-no-root-uuid}" \
-      "$MNT"/boot/efi/EFI/Linux/*.efi "$MNT"/boot/efi/loader/entries/*.conf 2>/dev/null || true)
+    "$EFI_ARTIFACTS" "$MNT/boot/efi" "${ROOT_FS_UUID:-no-root-uuid}" \
+      | sed 's/^/efi_artifact=/'
   fi
 } > "$INSTALL_MARKER"
 chmod 0600 "$INSTALL_MARKER"

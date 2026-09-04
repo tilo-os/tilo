@@ -93,6 +93,9 @@ const POWEROFF_PATH: &str = "installer.poweroff";
 /// Rising-edge action that copies the one-time recovery key. The key itself
 /// never enters the CRDT; only this non-secret intent flag does.
 const RECOVERY_COPY_PATH: &str = "installer.recovery_copy";
+/// Post-generation acknowledgement. Unlike the Review-step promise, this can
+/// be raised only after the actual key exists and gates terminal power actions.
+const RECOVERY_SAVED_PATH: &str = "installer.recovery_saved";
 const NETWORK_REFRESH_PATH: &str = "installer.network.refresh";
 const NETWORK_CONNECT_PATH: &str = "installer.network.connect";
 const DISK_REFRESH_PATH: &str = "installer.disk.refresh";
@@ -924,6 +927,9 @@ pub struct InstallerApp {
     /// Whether the visible key has been copied during this installer session.
     /// This is presentation state only; a newly emitted key resets it.
     recovery_key_copied: bool,
+    /// Explicit confirmation made after the concrete recovery key was shown.
+    /// Copying to the live clipboard alone is not evidence of an off-device copy.
+    recovery_key_saved: bool,
     /// Cached account/system fields (mirror their CRDT Text objects) for
     /// the Review display + backend argv.
     username: String,
@@ -1019,6 +1025,7 @@ impl InstallerApp {
             status_lines: Vec::new(),
             recovery_key: None,
             recovery_key_copied: false,
+            recovery_key_saved: false,
             username: String::new(),
             full_name: String::new(),
             password: Arc::new(Mutex::new(String::new())),
@@ -1403,6 +1410,7 @@ impl InstallerApp {
             REBOOT_PATH,
             POWEROFF_PATH,
             RECOVERY_COPY_PATH,
+            RECOVERY_SAVED_PATH,
             RECOVERY_ACK_PATH,
             NETWORK_REFRESH_PATH,
             NETWORK_CONNECT_PATH,
@@ -1627,6 +1635,7 @@ impl InstallerApp {
         )];
         self.recovery_key = None;
         self.recovery_key_copied = false;
+        self.recovery_key_saved = false;
         self.dirty_structure = true;
         self.focus_reset = true;
 
@@ -2378,7 +2387,15 @@ impl InstallerApp {
                 ));
                 self.compose_recovery_key(theme, children);
                 children.push(Box::new(StatusLog::new(friendly_status, STATUS_LOG_HEIGHT)));
-                children.push(finish_row());
+                if !self.status.is_empty() {
+                    children.push(Box::new(
+                        Text::new(&self.status)
+                            .with_size(sm)
+                            .with_color(theme.tokens.colors.semantic.warning)
+                            .with_live(Politeness::Assertive),
+                    ));
+                }
+                children.push(finish_row(!self.recovery_key_saved));
             }
             InstallState::Failed => {
                 children.push(Box::new(
@@ -2394,6 +2411,7 @@ impl InstallerApp {
                         .with_color(dim),
                 ));
                 children.push(Box::new(Text::new("Details").with_size(sm).with_color(dim)));
+                self.compose_recovery_key(theme, children);
                 children.push(Box::new(StatusLog::new(
                     self.status_lines.clone(),
                     STATUS_LOG_HEIGHT,
@@ -2455,6 +2473,16 @@ impl InstallerApp {
             })
             .with_live(Politeness::Polite),
         ));
+        let saved_label = if self.recovery_key_saved {
+            "[x] I saved this key off this computer"
+        } else {
+            "[ ] I saved this key off this computer"
+        };
+        children.push(Box::new(
+            ActionButton::new(saved_label, RECOVERY_SAVED_PATH)
+                .with_test_id("recovery_key_saved")
+                .checkbox(self.recovery_key_saved),
+        ));
     }
 }
 
@@ -2504,13 +2532,17 @@ fn take_secret(buffer: &Arc<Mutex<String>>) -> Zeroizing<String> {
 }
 
 /// The Finish-screen action row: Reboot (primary) + Power off (secondary).
-fn finish_row() -> Box<dyn Widget> {
+fn finish_row(disabled: bool) -> Box<dyn Widget> {
     Box::new(
         Row::new()
             .push(Box::new(
-                ActionButton::new("Reboot now", REBOOT_PATH).primary(),
+                ActionButton::new("Reboot now", REBOOT_PATH)
+                    .primary()
+                    .disabled(disabled),
             ))
-            .push(Box::new(ActionButton::new("Power off", POWEROFF_PATH))),
+            .push(Box::new(
+                ActionButton::new("Power off", POWEROFF_PATH).disabled(disabled),
+            )),
     )
 }
 
@@ -2966,6 +2998,15 @@ impl InstallerApp {
             }
         }
 
+        if Self::read_flag(state, root, RECOVERY_SAVED_PATH) {
+            let _ = state.put(root, RECOVERY_SAVED_PATH, false);
+            if self.recovery_key.is_some() {
+                self.recovery_key_saved = !self.recovery_key_saved;
+                self.status.clear();
+                self.dirty_structure = true;
+            }
+        }
+
         // Back rising edge.
         if Self::read_flag(state, root, BACK_PATH) {
             let _ = state.put(root, BACK_PATH, false);
@@ -2990,13 +3031,25 @@ impl InstallerApp {
         if Self::read_flag(state, root, REBOOT_PATH) {
             let _ = state.put(root, REBOOT_PATH, false);
             if self.step == Step::Install && self.install_state == InstallState::Done {
-                self.run_power(PowerAction::Reboot);
+                if self.recovery_key_saved {
+                    self.run_power(PowerAction::Reboot);
+                } else {
+                    self.set_status(
+                        "Save the recovery key off this computer and confirm it before rebooting",
+                    );
+                }
             }
         }
         if Self::read_flag(state, root, POWEROFF_PATH) {
             let _ = state.put(root, POWEROFF_PATH, false);
             if self.step == Step::Install && self.install_state == InstallState::Done {
-                self.run_power(PowerAction::PowerOff);
+                if self.recovery_key_saved {
+                    self.run_power(PowerAction::PowerOff);
+                } else {
+                    self.set_status(
+                        "Save the recovery key off this computer and confirm it before powering off",
+                    );
+                }
             }
         }
     }
@@ -3186,6 +3239,7 @@ impl Widget for InstallerApp {
             if !key.trim().is_empty() {
                 self.recovery_key = Some(key.trim().to_string());
                 self.recovery_key_copied = false;
+                self.recovery_key_saved = false;
                 self.dirty_structure = true;
             }
         } else {
@@ -4318,6 +4372,48 @@ mod tests {
             !app.recovery_key_copied,
             "a newly emitted key needs its own copy confirmation"
         );
+        assert!(
+            !app.recovery_key_saved,
+            "a newly emitted key needs its own post-generation saved confirmation"
+        );
+    }
+
+    #[test]
+    fn generated_recovery_key_survives_failure_and_power_requires_saved_ack() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.step = Step::Install;
+        app.install_state = InstallState::Running;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+
+        app.on_external_event(
+            &format!("{RECOVERY_KEY_PREFIX}failure-safe-key"),
+            &mut doc,
+            &root,
+        );
+        app.on_external_event(CTRL_FAIL, &mut doc, &root);
+        assert!(has_test_id(
+            app.build_composition(&Theme::dark()).as_ref(),
+            "recovery_key_copy"
+        ));
+        assert!(has_test_id(
+            app.build_composition(&Theme::dark()).as_ref(),
+            "recovery_key_saved"
+        ));
+
+        app.install_state = InstallState::Done;
+        let _ = doc.put(&root, REBOOT_PATH, true);
+        app.sync(&mut doc, &root);
+        assert!(app.status.contains("Save the recovery key"));
+
+        let _ = doc.put(&root, RECOVERY_SAVED_PATH, true);
+        app.sync(&mut doc, &root);
+        assert!(app.recovery_key_saved);
+        assert!(
+            !app.recovery_key_copied,
+            "explicit saved acknowledgement must not be inferred from clipboard state"
+        );
     }
 
     #[test]
@@ -4358,13 +4454,25 @@ mod tests {
     fn terminal_states_and_recovery_actions_have_live_accessible_semantics() {
         let mut done = InstallerApp::for_shot(Step::Install);
         done.shot_finished();
+        done.recovery_key = Some("test-recovery-key".to_string());
         let _ = build(&mut done);
         let success = find_accessible(&done, "qOS is installed").expect("success title");
         assert_eq!(success.live, Some(Politeness::Polite));
         let reboot = find_accessible(&done, "Reboot now").expect("reboot action");
         assert_eq!(reboot.role, ui::a11y::Role::Button);
-        assert!(reboot.state.focusable);
+        assert!(
+            !reboot.state.focusable,
+            "power stays gated until the key is saved"
+        );
         assert!(find_accessible(&done, "Power off").is_some());
+        done.recovery_key_saved = true;
+        let _ = build(&mut done);
+        assert!(
+            find_accessible(&done, "Reboot now")
+                .expect("enabled reboot action")
+                .state
+                .focusable
+        );
 
         let mut failed = InstallerApp::for_shot(Step::Install);
         failed.shot_failed();
