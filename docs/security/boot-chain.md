@@ -317,7 +317,7 @@ bootloader — was available all along and deliberately not taken: a file on the
 outside any signature, editable by anything that can write there, would look like
 compliance and provide none of it.
 
-**The unlock hook — available in shape, with these concrete facts.** An encrypted
+**The unlock hook.** An encrypted
 install made by `qos-disk-encrypt` names the volume `luks-<LUKS-UUID>`, because
 that is what dracut derives from the `rd.luks.uuid=` karg. So the key file the
 hook must write is:
@@ -326,16 +326,18 @@ hook must write is:
 /run/cryptsetup-keys.d/luks-<LUKS-UUID>.key
 ```
 
-`systemd-cryptsetup` consults that path before it tries any token, so a hook that
-writes it takes precedence over token discovery. No TPM fallback currently
-ships; recovery-key, passphrase, and optional FIDO2 paths remain independent.
-Ordering the hook `Before=systemd-cryptsetup@luks-<uuid>.service` inside the
-initramfs is the remaining work, and it needs the `qos-rollback` binary installed
-into the initramfs by a dracut module.
+`systemd-cryptsetup` consults that path before it tries any token. The
+`qos-rollback` dracut module installs the binary, its TPM tools and public policy
+key, plus a systemd generator that orders a per-volume unlock service after the
+LUKS device appears and before its cryptsetup unit. It asks for the PIN only when
+the LUKS header actually contains a `qos-rollback` token. A cancelled or failed
+unseal removes partial key material and returns control to the independent
+recovery-key, passphrase, or FIDO2 prompt instead of making boot an emergency.
 
-The rollback crate and late-boot confirmation services are now shipped, but the
-generation-bound unlock path is deliberately **not enrolled by the installer**.
-Three prerequisites have to land as one tested change before that is safe:
+The rollback crate, early-unlock consumer, and late-boot confirmation services
+are now shipped, but the generation-bound unlock path is deliberately **not
+enrolled by the installer**. The remaining target-prediction prerequisites have
+to land as one tested change before that is safe:
 
 1. The installer rewrites the installed UKI's measured `.cmdline` with the new
    root filesystem UUID, LUKS UUID, token-discovery options, and live-media marker
@@ -345,24 +347,90 @@ Three prerequisites have to land as one tested change before that is safe:
    public key and an empty `/usr/share/qos/pcr-predictions`. Its private key must
    not be copied to installation media. There is therefore no authority present
    that can sign the target-specific PCR 11 prediction during an offline install.
-3. The production initramfs has no `qos-rollback unlock` dracut hook yet. Even a
-   correctly enrolled generation slot would not be offered to
-   `systemd-cryptsetup` on the first installed boot.
-
 Calling `qos-rollback enroll` despite those facts would not add rollback
 protection: sealing against the live installer's PCRs produces an unusable target,
 while omitting PCR 11 silently reduces the policy to the rejected PCR 7-only
 boundary. The current release therefore retains the strong passphrase, mandatory
 recovery key, and optional FIDO2 slot and offers no short-PIN TPM path.
 
-A complete integration must either make the installed UKI independent of
+A complete enrollment integration must either make the installed UKI independent of
 per-device command-line values, so a release-signed prediction remains valid, or
-introduce a machine authority whose public half and predictions are available in
-early userspace and whose update-time custody is no weaker than the owner Secure
-Boot key. It must also add the initramfs unlock hook and enroll every staged
-generation before reboot. The installer invariant test rejects a lone rollback
-enrollment call until those prerequisites exist; this prevents an apparently
-enabled but non-bootable partial deployment.
+introduce a machine authority whose public half and predictions are available at
+enrollment and whose update-time custody is no weaker than the owner Secure Boot
+key. It must enroll every staged generation before reboot. The installer
+invariant test rejects a lone rollback enrollment call until those prerequisites
+exist; this prevents an apparently enabled but non-bootable partial deployment.
+
+### Target-independent enrollment: required atomic change
+
+The preferred completion does not put a prediction private key on the machine.
+It makes the target measurement a release artefact while keeping the platform
+measurement device-bound. All of the following pieces have to land together;
+landing only the installer call is an unbootable or weaker-than-advertised
+configuration.
+
+1. **Discover the target without a UUID in the UKI.** Give the qOS root an
+   architecture-neutral, qOS-owned GPT type GUID. An initramfs generator must
+   resolve `LoaderDevicePartUUID` to the ESP from which systemd-stub booted,
+   inspect only that ESP's physical disk, and require exactly one partition of
+   the qOS type. Zero or multiple matches are a recovery-key failure, never a
+   guess. This is deliberately not generic `root=gpt-auto` or a filesystem/GPT
+   label: a dual-boot Linux root or a removable disk can legitimately collide
+   with either. The generator creates the fixed `root` crypt mapping and
+   `sysroot.mount`; the rollback hook consequently writes
+   `/run/cryptsetup-keys.d/root.key`. The UKI can then carry only constant
+   discovery options.
+2. **Build a target UKI, do not edit one on the target.** The installer image
+   needs two deterministic UKIs over the same installer composefs tree: the live
+   one containing `qos.install`, and an installed-target variant containing the
+   fixed discovery command line. The latter stays outside bootc's scan path
+   while the live medium boots, and installation atomically promotes its bytes
+   into `EFI/Linux`. Owner Secure Boot signing may append an Authenticode
+   certificate; that certificate table is excluded from PCR 11, so it must not
+   alter the predicted section measurements.
+3. **Keep predictions outside the composefs digest.** Populating
+   `/usr/share/qos/pcr-predictions` after calculating PCR 11 changes the root
+   digest, which changes the UKI command line, which changes PCR 11 again. There
+   is no usable hash fixed point. Release-signed prediction sidecars therefore
+   belong under the ESP's qOS-owned directory (or in a UKI section explicitly
+   excluded from its own measurement), are copied into the LUKS token at
+   enrollment, and are verified by the public prediction key already in the
+   image.
+4. **Authorize PCR 11; bind PCR 7 directly.** A release can predict PCR 11 for
+   the deterministic target UKI, but cannot predict a particular machine's PCR
+   7. The TPM policy order must be
+   `PolicyPCR(PCR11) -> PolicyAuthorize(release key, generation) ->
+   PolicyPCR(PCR7) -> PolicyNV -> PolicyAuthValue(PIN)`. The first PCR is
+   replaceable by a release-signed update prediction; the second is read on the
+   device during enrollment and is part of the sealed object's final policy.
+   Putting PCR 7 before `PolicyAuthorize` would be ineffective because
+   `PolicyAuthorize` resets the running policy digest. Removing either PCR is
+   not an acceptable shortcut.
+5. **Stage before reboot.** The update transaction must obtain the startup PIN,
+   verify the currently booted generation still unseals, load the next
+   generation's release-signed PCR 11 sidecar, create and verify its keyslot,
+   and only then make that deployment bootable. The PIN is not retained for the
+   desktop session, so an unattended update cannot silently mint a new
+   PIN-authorized object: the update UI must ask for it when staging needs a new
+   generation. Cancellation leaves the current deployment and floor untouched.
+
+The release gate for enabling the installer's short-PIN choice is correspondingly
+end-to-end, not a source grep:
+
+- an encrypted full-disk VM installs without any target UKI byte rewrite, boots
+  by the boot-ESP/same-disk qOS-type discovery path, and unlocks with the PIN;
+- Windows+qOS and Linux+qOS layouts with other root-like partitions prove that
+  only the qOS type on the boot ESP's disk is selected, while duplicate qOS
+  types and a spoofed removable disk fail closed;
+- changing a measured target-UKI section, PCR 7, the generation-bound
+  prediction signature, or the rollback floor independently refuses TPM
+  unlock and still offers the recovery key;
+- a signed next generation is enrolled and verified before reboot, a missing or
+  corrupt prediction cannot be staged, and cancelling the PIN prompt leaves the
+  previous generation bootable;
+- owner re-signing changes only the PE certificate table and leaves the
+  calculated and boot-event-log-replayed PCR 11 value unchanged on both amd64
+  and arm64.
 
 ## Disk encryption
 
@@ -407,6 +475,16 @@ cannot truthfully manufacture firmware trust without the owner's physical
 ceremony. Even an OEM-provisioned machine remains on the strong-passphrase path
 until qOS additionally ships signed measured-artifact policies and update-safe
 prediction consumption.
+
+The privileged installer enforces the same startup-secret policy shown by the
+graphical installer. It requires at least fifteen characters (the NIST
+single-factor minimum), rejects leading or trailing whitespace, common
+passwords padded with digits or punctuation,
+short numeric-only secrets, and repeated low-diversity patterns. A long numeric
+secret remains possible, and multi-word passphrases do not have to satisfy an
+arbitrary mix of upper case, punctuation, and digits. This check runs again
+after privilege escalation so a modified or non-graphical client cannot bypass
+the UI validation.
 TPM presence with unverified early boot instead
 uses a normal passphrase slot: sealing against a PCR 7 value that merely says
 "Secure Boot is off" would not prevent replacement boot code from capturing the
