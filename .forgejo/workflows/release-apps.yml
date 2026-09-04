@@ -313,7 +313,11 @@ jobs:
             mkdir -p "$qpkg_dir"
             prior_url=
             prior_sha=
-            if [[ $GITHUB_REF == refs/heads/main && $GITHUB_EVENT_NAME == push ]]; then
+            # Both continuous pushes and explicitly publishing manual runs on
+            # main may replace one app in the immutable prior collection.
+            # Tags remain self-contained release boundaries and rebuild their
+            # complete requested set instead of depending on a moving channel.
+            if [[ $GITHUB_REF == refs/heads/main ]]; then
               case "$arch" in
                 x86_64) prior_url=$PRIOR_X86_URL; prior_sha=$PRIOR_X86_SHA256 ;;
                 aarch64) prior_url=$PRIOR_ARM64_URL; prior_sha=$PRIOR_ARM64_SHA256 ;;

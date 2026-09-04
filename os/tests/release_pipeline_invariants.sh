@@ -65,6 +65,7 @@ grep -Fq 'release/app-collections.toml' "$apps" \
   && grep -Fq '$package_api/qos-app-collections/$VERSION/' "$apps" \
   && grep -Fq '$package_api/qos-app-$name/$VERSION/$file' "$apps" \
   && grep -Fq 'PRIOR_X86_URL' "$apps" \
+  && grep -Fq 'if [[ $GITHUB_REF == refs/heads/main ]]; then' "$apps" \
   && grep -Fq 'dist/app-release/runtime/**' "$apps" \
   && grep -Fq 'update_variable QOS_APP_COLLECTION_URL' "$apps" \
   && grep -Fq '$GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main' "$apps" \
