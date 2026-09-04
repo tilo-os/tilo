@@ -49,8 +49,8 @@ pub struct ActionButton {
     /// [`ActionButton::with_test_id`] to stay addressable across rebuilds.
     test_id: Option<String>,
     /// `Some` turns the action into a checkbox with the supplied checked
-    /// state. The visual label may still use the installer's compact `[x]`
-    /// notation, while assistive technology receives native checkbox state.
+    /// state. Legacy callers may include a compact `[x]` prefix; drawing and
+    /// assistive technology both strip it in favour of a real checkbox mark.
     checked: Option<bool>,
     primary: bool,
     disabled: bool,
@@ -317,15 +317,64 @@ impl Widget for ActionButton {
             );
         }
 
-        let (tw, th) = text_renderer.measure(&self.label, LABEL_SIZE, None);
-        let tx = self.rect.center().x - f64::from(tw) / 2.0;
+        let label = self.accessible_label();
+        let (tw, th) = text_renderer.measure(label, LABEL_SIZE, None);
+        let checkbox_width = self.checked.map_or(0.0, |_| 24.0);
+        let group_half_width = f64::midpoint(f64::from(tw) + checkbox_width, 0.0);
+        let tx = self.rect.center().x - group_half_width;
         let ty = self.rect.y0 + (self.rect.height() - f64::from(th)) / 2.0;
+        if let Some(checked) = self.checked {
+            let side = 16.0;
+            let box_rect = Rect::new(
+                tx,
+                self.rect.center().y - side / 2.0,
+                tx + side,
+                self.rect.center().y + side / 2.0,
+            );
+            let box_shape = RoundedRect::from_rect(box_rect, 4.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if checked {
+                    theme.accent_primary
+                } else {
+                    theme.bg_primary
+                },
+                None,
+                &box_shape,
+            );
+            scene.stroke(
+                &Stroke::new(if checked { 1.5 } else { 1.0 }),
+                transform,
+                if checked {
+                    Color::WHITE
+                } else {
+                    theme.border_standard
+                },
+                None,
+                &box_shape,
+            );
+            if checked {
+                let (cw, ch) = text_renderer.measure("✓", 12.0, None);
+                text_renderer.draw_text(
+                    scene,
+                    "✓",
+                    12.0,
+                    Color::WHITE,
+                    transform.pre_translate(Vec2::new(
+                        box_rect.center().x - f64::from(cw) / 2.0,
+                        box_rect.center().y - f64::from(ch) / 2.0,
+                    )),
+                    None,
+                );
+            }
+        }
         text_renderer.draw_text(
             scene,
-            &self.label,
+            label,
             LABEL_SIZE,
             label_color,
-            transform.pre_translate(Vec2::new(tx, ty)),
+            transform.pre_translate(Vec2::new(tx + checkbox_width, ty)),
             None,
         );
     }

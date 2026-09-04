@@ -398,6 +398,19 @@ impl CustomizePanel {
         self.blur();
     }
 
+    /// Stage one chooser open for the deterministic screenshot harness. This
+    /// mutates peer-local widget state only; production opens the same chooser
+    /// through its normal pointer/keyboard event path.
+    pub(crate) fn open_timezone_for_shot(&mut self) {
+        let state = LocalState::new(self.timezone_choice.selected().to_string());
+        self.timezone_choice = Dropdown::from_state(self.timezone_catalog.clone(), &state)
+            .with_id("imager.timezone.choice")
+            .with_accessible_name("Time zone")
+            .with_placeholder("Choose a time zone")
+            .open();
+        self.focused = Some(CzField::Timezone);
+    }
+
     /// Pull each unfocused field's text from the profile so a loaded / peer-
     /// edited value shows. While a field is focused its [`TextInput`] is the
     /// source of truth and writes back through an action, so it is left alone.

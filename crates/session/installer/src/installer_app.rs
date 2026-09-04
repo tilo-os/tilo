@@ -1144,6 +1144,23 @@ impl InstallerApp {
             .push("Installed — remove the medium and reboot.".to_string());
     }
 
+    /// Pose the finish card after the real recovery-key marker has arrived.
+    /// The representative value uses the real eight-group shape closely enough
+    /// to exercise wrapping without ever being a usable secret.
+    pub fn shot_finished_with_recovery(&mut self) {
+        self.shot_finished();
+        self.recovery_key = Some(
+            "aaaa1111-bbbb2222-cccc3333-dddd4444-eeee5555-ffff6666-gggg7777-hhhh8888".to_string(),
+        );
+    }
+
+    /// Pose the post-copy/post-save state, including the enabled power actions.
+    pub fn shot_finished_with_saved_recovery(&mut self) {
+        self.shot_finished_with_recovery();
+        self.recovery_key_copied = true;
+        self.recovery_key_saved = true;
+    }
+
     /// Mutate a `for_shot(Install)` app into the failure screen.
     pub fn shot_failed(&mut self) {
         self.step = Step::Install;
@@ -1151,6 +1168,15 @@ impl InstallerApp {
         self.status_lines = sample_install_log();
         self.status_lines
             .push("error: bootc install to-disk exited non-zero".to_string());
+    }
+
+    /// Pose the failure card after encryption generated a recovery key, proving
+    /// the rescue action remains available even though installation stopped.
+    pub fn shot_failed_with_recovery(&mut self) {
+        self.shot_failed();
+        self.recovery_key = Some(
+            "aaaa1111-bbbb2222-cccc3333-dddd4444-eeee5555-ffff6666-gggg7777-hhhh8888".to_string(),
+        );
     }
 
     /// The selected disk, if any.
