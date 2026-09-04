@@ -10,11 +10,13 @@
 //! directory; `launch` takes no `RoomId` because passing one would
 //! misstate what it's subject to. The palette labels host apps under
 //! [`ResourceKind::HostApplication`] so a user can tell which kind of
-//! app they're looking at.
+//! app they're looking at. Host-desktop sessions also pass the private
+//! rootless-Xwayland display for software that cannot speak Wayland.
 //!
 //! [`ResourceKind::HostApplication`]: crate::shell::search::ResourceKind::HostApplication
 
 use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
 
 use desktop_entry::{DesktopEntry, EntrySource};
 
@@ -34,6 +36,27 @@ pub struct HostApp {
     /// Every string this app's window might announce itself as. See
     /// [`DesktopEntry::window_identities`].
     pub window_identities: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct X11Session {
+    pub display: String,
+    pub authority: PathBuf,
+}
+
+fn x11_slot() -> &'static RwLock<Option<X11Session>> {
+    static SESSION: OnceLock<RwLock<Option<X11Session>>> = OnceLock::new();
+    SESSION.get_or_init(|| RwLock::new(None))
+}
+
+pub(crate) fn set_x11_session(session: Option<X11Session>) {
+    if let Ok(mut slot) = x11_slot().write() {
+        *slot = session;
+    }
+}
+
+fn x11_session() -> Option<X11Session> {
+    x11_slot().read().ok().and_then(|slot| slot.clone())
 }
 
 impl HostApp {
@@ -79,11 +102,12 @@ pub fn find(desktop_id: &str) -> Option<HostApp> {
 /// `--workspace-id` and no `--capabilities`: a host app is in no room
 /// and confined by nothing qOS controls, so passing either would
 /// assert something false. Compare [`launcher::build_launch_command`].
-pub fn build_launch_command(
+pub(crate) fn build_launch_command(
     app: &HostApp,
     launcher_bin: &Path,
     wayland_socket: &Path,
     document: Option<&Path>,
+    x11: Option<&X11Session>,
 ) -> launcher::LaunchCommand {
     let mut args = vec![
         "run-host".to_string(),
@@ -95,6 +119,12 @@ pub fn build_launch_command(
     if let Some(path) = document {
         args.push("--open".to_string());
         args.push(path.display().to_string());
+    }
+    if let Some(x11) = x11 {
+        args.push("--x11-display".to_string());
+        args.push(x11.display.clone());
+        args.push("--x11-authority".to_string());
+        args.push(x11.authority.display().to_string());
     }
     launcher::LaunchCommand {
         program: launcher_bin.to_path_buf(),
@@ -137,7 +167,8 @@ pub fn launch_with_document(
     })?;
     let socket = launcher::wayland_socket().ok_or(LaunchError::NoDisplay)?;
     let launcher_bin = launcher::resolve_launcher_bin()?;
-    let command = build_launch_command(&app, &launcher_bin, &socket, document);
+    let x11 = x11_session();
+    let command = build_launch_command(&app, &launcher_bin, &socket, document, x11.as_ref());
 
     launcher::remember_launch_named(&app.desktop_id, &app.window_identities, &app.name);
     let _ = launcher::spawn_launch(app.desktop_id.clone(), app.name.clone(), command);
@@ -199,6 +230,7 @@ mod tests {
             Path::new("/usr/libexec/qos-launcher"),
             Path::new("/run/user/1000/wayland-1"),
             None,
+            None,
         );
         assert_eq!(cmd.program, PathBuf::from("/usr/libexec/qos-launcher"));
         assert_eq!(
@@ -233,9 +265,37 @@ mod tests {
             Path::new("/usr/libexec/qos-launcher"),
             Path::new("/run/user/1000/wayland-1"),
             Some(Path::new("/home/u/notes.txt")),
+            None,
         );
         assert_eq!(cmd.args[5], "--open");
         assert_eq!(cmd.args[6], "/home/u/notes.txt");
+    }
+
+    #[test]
+    fn an_x11_bridge_rides_to_the_unconfined_launcher() {
+        let app = app("com.valvesoftware.Steam", "Steam", &["steam"]);
+        let x11 = X11Session {
+            display: ":1234".into(),
+            authority: PathBuf::from("/run/user/1000/qos-session/Xauthority-1234"),
+        };
+        let cmd = build_launch_command(
+            &app,
+            Path::new("/usr/bin/qos-launcher"),
+            Path::new("/run/user/1000/wayland-2"),
+            None,
+            Some(&x11),
+        );
+        assert!(
+            cmd.args
+                .windows(2)
+                .any(|pair| pair == ["--x11-display", ":1234"])
+        );
+        assert!(cmd.args.windows(2).any(|pair| {
+            pair == [
+                "--x11-authority",
+                "/run/user/1000/qos-session/Xauthority-1234",
+            ]
+        }));
     }
 
     /// The real scan of this machine, not a fixture.

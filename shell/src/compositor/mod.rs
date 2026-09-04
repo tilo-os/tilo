@@ -43,6 +43,7 @@ pub mod surface_readback;
 pub mod switch_control;
 pub mod tab_binding;
 pub mod test_control;
+mod xwayland;
 
 /// Which run mode the compositor should boot into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
