@@ -160,6 +160,14 @@ jobs:
     name: apps / ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
+    # App feature sets include native media, graphics and portal bindings.
+    # Keep those system headers in the versioned CI builder image instead of
+    # resolving distro packages independently in every release job.
+    container:
+      image: code.podesta.ai/qos/qos-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
