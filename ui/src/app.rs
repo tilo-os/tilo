@@ -348,8 +348,24 @@ type PresenceBroadcastSink = Box<dyn Fn(&PresenceKey, &PresencePayload) + Send +
 type FrameTick = Box<dyn FnMut(&mut PresenceCtx) + Send + Sync>;
 type ResolvedResourceInvocation<'a> = (
     Option<serde_json::Map<String, serde_json::Value>>,
+    &'a qos_actions::Resource,
     &'a qos_actions::ActionSpec,
 );
+
+fn find_action_resource<'a>(
+    resources: &'a [qos_actions::Resource],
+    id: &str,
+) -> Option<&'a qos_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource);
+        }
+        if let Some(found) = find_action_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
 
 /// Runtime audit result for one interactive control.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1346,12 +1362,20 @@ impl App {
         action: String,
         argument: Option<&str>,
         actor: &str,
+        ambient_context: Option<&qos_actions::ActionContext>,
     ) {
         let address = qos_actions::ActionAddress::new(resource, action);
         // Arrival on this directed stream means the broker already performed
         // permission and one-use confirmation-token checks.
         let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        let result = self.invoke_resource_action(&address, argument, actor, true, Some(invocation));
+        let result = self.invoke_resource_action(
+            &address,
+            argument,
+            actor,
+            true,
+            Some(invocation),
+            ambient_context,
+        );
         let update = match result {
             Ok(crate::widget::ResourceOperationStart::Completed(output)) => {
                 qos_actions::InvocationUpdate::Succeeded { invocation, output }
@@ -1393,7 +1417,12 @@ impl App {
                     .map_err(|error| qos_actions::DoorError::InvalidArguments(error.to_string()))
             })
             .transpose()?;
-        let resolved = qos_actions::door::resolve(resources, address)
+        let resource = find_action_resource(resources, &address.resource)
+            .ok_or_else(|| qos_actions::DoorError::Unknown(address.clone()))?;
+        let resolved = resource
+            .actions
+            .iter()
+            .find(|candidate| candidate.id == address.action)
             .ok_or_else(|| qos_actions::DoorError::Unknown(address.clone()))?;
         if !matches!(
             resolved.contract.confirmation,
@@ -1402,7 +1431,7 @@ impl App {
         {
             return Err(qos_actions::DoorError::ConfirmationRequired);
         }
-        Ok((typed_arguments, resolved))
+        Ok((typed_arguments, resource, resolved))
     }
 
     fn encode_resource_action(
@@ -1418,6 +1447,10 @@ impl App {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "document dispatch needs the resolved action, arguments, actor, and ambient provenance"
+    )]
     fn invoke_document_resource_action(
         &mut self,
         resources: &[qos_actions::Resource],
@@ -1425,29 +1458,34 @@ impl App {
         typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
         actor: &str,
+        resource: &qos_actions::Resource,
+        spec: &qos_actions::ActionSpec,
+        ambient_context: Option<&qos_actions::ActionContext>,
     ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
         let before = self.state.doc.get_heads();
-        let dispatched = if let Some(arguments) = typed_arguments {
-            qos_actions::door::invoke_json_confirmed(
-                &mut self.state.doc,
-                resources,
-                address,
-                arguments,
-                actor.as_bytes(),
-                &self.action_registry,
-                self.action_transport.as_mut(),
-            )?
-        } else {
-            qos_actions::door::invoke_confirmed(
-                &mut self.state.doc,
-                resources,
-                address,
-                argument,
-                actor.as_bytes(),
-                &self.action_registry,
-                self.action_transport.as_mut(),
-            )?
-        };
+        let encoded = Self::encode_resource_action(resources, address, typed_arguments, argument)?;
+        let action = self
+            .action_registry
+            .decode(&encoded)
+            .map_err(|_| qos_actions::DoorError::UnregisteredType(encoded.type_id.clone()))?;
+        let mut context = qos_actions::ActionContext::for_resource(
+            &spec.label,
+            resource.id.as_str(),
+            &resource.kind,
+            &resource.label,
+        );
+        if let Some(ambient) = ambient_context {
+            context = context.enriched_by(ambient);
+        }
+        let dispatched = qos_actions::dispatch_by_with_context(
+            &mut self.state.doc,
+            action.as_ref(),
+            encoded,
+            self.action_transport.as_mut(),
+            Some(actor.as_bytes()),
+            context,
+        )
+        .map_err(|error| qos_actions::DoorError::Failed(error.to_string()))?;
         if dispatched.mutated_local() {
             self.state.record_committed_action_authored(
                 before,
@@ -1470,6 +1508,7 @@ impl App {
         actor: &str,
         confirmed_by_broker: bool,
         invocation: Option<qos_actions::InvocationId>,
+        ambient_context: Option<&qos_actions::ActionContext>,
     ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
         let resources = self.collect_resources();
         let resources = if actor == self.local_author.0 {
@@ -1480,9 +1519,15 @@ impl App {
         } else {
             resources
         };
-        let (typed_arguments, resolved) =
+        let (typed_arguments, resource, resolved) =
             Self::resolve_resource_invocation(&resources, address, argument, confirmed_by_broker)?;
         let kind = resolved.kind;
+        if kind == qos_actions::OperationKind::View && actor != self.local_author.0 {
+            return Err(qos_actions::DoorError::Unavailable {
+                code: "private_view".into(),
+                reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into(),
+            });
+        }
         if kind == qos_actions::OperationKind::Document {
             return self.invoke_document_resource_action(
                 &resources,
@@ -1490,6 +1535,9 @@ impl App {
                 typed_arguments.as_ref(),
                 argument,
                 actor,
+                resource,
+                resolved,
+                ambient_context,
             );
         }
         let encoded =
@@ -1594,7 +1642,14 @@ impl App {
                 serde_json::Value::Object(intent.arguments.clone())
             );
             let actor = self.local_author.0.clone();
-            match self.invoke_resource_action(&intent.address, Some(&json), &actor, false, None) {
+            match self.invoke_resource_action(
+                &intent.address,
+                Some(&json),
+                &actor,
+                false,
+                None,
+                None,
+            ) {
                 Ok(_) => dispatched = dispatched.saturating_add(1),
                 Err(error) => tracing::warn!(
                     resource = %intent.address.resource,
@@ -2686,8 +2741,16 @@ impl App {
                     action,
                     argument,
                     actor,
+                    context,
                 } => {
-                    self.invoke_published_action(id, resource, action, argument.as_deref(), &actor);
+                    self.invoke_published_action(
+                        id,
+                        resource,
+                        action,
+                        argument.as_deref(),
+                        &actor,
+                        context.as_ref(),
+                    );
                 }
                 CollabEvent::InvocationCancellation { id } => {
                     self.request_invocation_cancellation(id);
@@ -2712,7 +2775,7 @@ impl App {
     fn apply_collab_context(&mut self, collaborators: Vec<crate::collaboration::Collaborator>) {
         for participant in &collaborators {
             self.presence_ctx.set_participant_kind(
-                &crate::permissions::UserId(participant.id.clone()),
+                crate::permissions::UserId(participant.id.clone()),
                 participant.is_agent,
             );
         }
@@ -2808,7 +2871,15 @@ impl App {
                 action,
                 argument,
                 actor,
-            } => self.invoke_published_action(id, resource, action, argument.as_deref(), &actor),
+                context,
+            } => self.invoke_published_action(
+                id,
+                resource,
+                action,
+                argument.as_deref(),
+                &actor,
+                context.as_ref(),
+            ),
             CollabEvent::InvocationCancellation { id } => {
                 self.request_invocation_cancellation(id);
             }
@@ -2929,12 +3000,36 @@ impl App {
         payload: crate::collaboration::PresencePayload,
     ) {
         use crate::presence::RemotePresenceEffect;
+        let interaction = match &payload {
+            crate::collaboration::PresencePayload::Interaction(update) => Some((**update).clone()),
+            _ => None,
+        };
         match self
             .presence_ctx
             .apply_remote_presence(user_id, key, payload)
         {
             RemotePresenceEffect::None => {}
             RemotePresenceEffect::PeerViewChanged => self.apply_follow(),
+            RemotePresenceEffect::InteractionAdvanced => {
+                if let Some(interaction) = interaction
+                    && let Some(text) = self.presence_ctx.interaction_announcement(&interaction)
+                    && let Some(reader) = self.screen_reader.as_mut()
+                {
+                    let assertive = matches!(
+                        interaction.phase,
+                        qos_actions::InteractionPhase::Failed { .. }
+                    );
+                    reader.announce(
+                        text,
+                        if assertive {
+                            tts::Priority::Important
+                        } else {
+                            tts::Priority::Notification
+                        },
+                        assertive,
+                    );
+                }
+            }
             RemotePresenceEffect::PeerArrived => {
                 let data = self.state.save();
                 if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
@@ -3341,7 +3436,7 @@ impl App {
                 }
                 let actor = crate::collaboration::local_user_id().0;
                 if self
-                    .invoke_resource_action(&address, argument, &actor, false, None)
+                    .invoke_resource_action(&address, argument, &actor, false, None, None)
                     .is_ok()
                 {
                     self.needs_sync = true;
@@ -5144,6 +5239,8 @@ impl AppHandler {
         // `presence::PointerOwner`. Only the *painting* has one
         // owner; the shell threads this same context into its own
         // overlay too.
+        let interaction_now = std::time::Instant::now();
+        app.presence_ctx.prune_interactions(interaction_now);
         crate::presence::draw_remote_presence(
             &mut scene,
             transform,
@@ -5151,6 +5248,64 @@ impl AppHandler {
             &mut app.text_renderer,
             &app.theme,
             &app.presence_ctx,
+        );
+        // Controls and named rows already publish their real accessibility
+        // geometry. Reuse that exact focus/selection outline for semantic
+        // action presence; this decorates the target without changing local
+        // focus, selection, active tab, or scroll position.
+        let visible_interactions = app.presence_ctx.visible_interactions(interaction_now);
+        if !visible_interactions.is_empty() {
+            app.refresh_semantic_tree();
+        }
+        let native_targets = visible_interactions
+            .iter()
+            .filter_map(|interaction| {
+                let exact = match &interaction.anchor {
+                    qos_actions::InteractionAnchor::SemanticControl { id } => app
+                        .semantic_tree()
+                        .node(&crate::a11y_tree::SemanticId(id.clone()))
+                        .and_then(|node| node.bounds),
+                    qos_actions::InteractionAnchor::ListItems { .. }
+                    | qos_actions::InteractionAnchor::Resource => {
+                        let mut matches = app
+                            .semantic_tree()
+                            .iter()
+                            .filter(|node| {
+                                node.name.as_deref() == Some(interaction.resource.label.as_str())
+                            })
+                            .filter_map(|node| node.bounds);
+                        let only = matches.next();
+                        only.filter(|_| matches.next().is_none())
+                    }
+                    _ => None,
+                }?;
+                Some((interaction.clone(), exact))
+            })
+            .collect::<Vec<_>>();
+        for (interaction, rect) in native_targets {
+            let user = crate::permissions::UserId(interaction.actor.id);
+            let label = app.presence_ctx.display_name(&user);
+            app.presence_ctx.draw_peer_outline_labeled(
+                &mut scene,
+                &app.theme,
+                &mut app.text_renderer,
+                transform,
+                &user,
+                &label,
+                rect,
+                f64::from(app.theme.tokens.radii.sm),
+            );
+        }
+        // Action/resource callers have no synthetic pointer. Their truthful
+        // semantic lifecycle is painted as an app-level activity rail until a
+        // domain widget projects the stable anchor into native geometry.
+        app.presence_ctx.draw_interactions(
+            &mut scene,
+            transform,
+            window_rect,
+            &mut app.text_renderer,
+            &app.theme,
+            interaction_now,
         );
 
         // Folds in any `handle_event` time banked since last frame.
@@ -8721,7 +8876,7 @@ mod semantic_tree_app_tests {
     use automerge::{ROOT, ReadDoc, ScalarValue, Value};
     use qos_actions::{
         Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-        PermissionRequirement, Resource,
+        OperationKind, PermissionRequirement, Resource,
     };
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
@@ -8772,6 +8927,17 @@ mod semantic_tree_app_tests {
         };
         Resource::new("test.counter", "test.counter", "Counter")
             .with_action(bump)
+            .with_action(
+                ActionSpec::operation(
+                    "inspect",
+                    "Inspect counter",
+                    OperationKind::View,
+                    COUNTER_TYPE,
+                    &CounterAction::Bump,
+                )
+                .unwrap()
+                .with_contract(qos_actions::ActionContract::view()),
+            )
             .with_action(ActionSpec::prompted(
                 "set-label",
                 "Set label",
@@ -8854,6 +9020,9 @@ mod semantic_tree_app_tests {
         fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
             vec![counter_resource(self.destructive)]
         }
+        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+            &[COUNTER_TYPE]
+        }
     }
 
     fn app() -> App {
@@ -8894,6 +9063,80 @@ mod semantic_tree_app_tests {
         assert_eq!(
             app.control_action_coverage()[0].status,
             ControlBindingStatus::Resolved
+        );
+    }
+
+    #[test]
+    fn directed_task_context_survives_into_action_history() {
+        let mut app = app();
+        let resources = app.collect_resources();
+        assert!(!resources.is_empty(), "test action surface was rejected");
+        let ambient = qos_actions::ActionContext::default()
+            .with_app("org.qos.Agent", "Agent")
+            .with_purpose("Make the opening concrete")
+            .with_group("task:opening", "Rewrite the opening", "task");
+
+        let result = app.invoke_resource_action(
+            &qos_actions::ActionAddress::new("test.counter", "bump"),
+            None,
+            "agent:Scribe",
+            true,
+            Some(qos_actions::InvocationId::new()),
+            Some(&ambient),
+        );
+
+        assert!(result.is_ok(), "the directed action failed: {result:?}");
+        assert_eq!(counter(&app), 1, "the directed action was applied");
+        let changes = app.state.doc.get_changes(&[]);
+        let committed = changes.last().expect("the directed action committed");
+        assert_eq!(committed.actor_id().to_bytes(), b"agent:Scribe");
+        let context = committed
+            .message()
+            .and_then(|message| qos_actions::ActionContext::from_change_message(message))
+            .expect("the action commit retained semantic provenance");
+        assert_eq!(context.action_label, "Bump");
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.as_str()),
+            Some("test.counter"),
+            "the concrete addressed resource stays authoritative"
+        );
+        assert_eq!(context.purpose, ambient.purpose);
+        assert_eq!(context.group, ambient.group);
+        assert_eq!(context.app, ambient.app);
+        assert_eq!(
+            app.state
+                .peek_last_undo()
+                .and_then(|entry| entry.author.as_ref()),
+            Some(&crate::permissions::UserId("agent:Scribe".into())),
+            "undo attribution and durable history use the same actor"
+        );
+    }
+
+    #[test]
+    fn directed_view_action_cannot_steal_the_local_view() {
+        let mut app = app();
+        let invocation = qos_actions::InvocationId::new();
+        let error = app
+            .invoke_resource_action(
+                &qos_actions::ActionAddress::new("test.counter", "inspect"),
+                None,
+                "agent:Scribe",
+                true,
+                Some(invocation),
+                None,
+            )
+            .expect_err("a remote presentation action must be refused");
+
+        assert_eq!(counter(&app), 0, "the private view action never ran");
+        assert!(
+            matches!(
+                error,
+                qos_actions::DoorError::Unavailable { ref code, .. } if code == "private_view"
+            ),
+            "unexpected refusal: {error:?}"
         );
     }
 

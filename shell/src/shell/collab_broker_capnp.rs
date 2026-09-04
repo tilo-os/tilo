@@ -2180,6 +2180,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             channel_id: self.channel_id.clone(),
             peer_id: self.peer_id,
             verified_identity: self.verified_identity.clone(),
+            interaction_sequences: Mutex::new(HashMap::new()),
         };
         let client: presence_handle::Client = capnp_rpc::new_client(handle);
         results.get().set_handle(client);
@@ -3752,6 +3753,9 @@ struct CapnpPresenceHandle {
     channel_id: String,
     peer_id: u64,
     verified_identity: AdmittedJoinIdentity,
+    /// Broker-owned monotonic sequence per invocation. Publishers describe
+    /// phases and targets but cannot reorder or resurrect their visual state.
+    interaction_sequences: Mutex<HashMap<qos_actions::InvocationId, u64>>,
 }
 
 impl CapnpPresenceHandle {
@@ -3920,6 +3924,54 @@ impl presence_handle::Server for CapnpPresenceHandle {
                 capnp::Error::failed("publishTyping: end overflows usize on this platform".into())
             })?;
             self.publish_keyed(&key_bytes, PresencePayload::Typing { start, end });
+            Ok(())
+        })
+    }
+
+    fn publish_interaction(
+        self: Rc<Self>,
+        params: presence_handle::PublishInteractionParams,
+        _results: presence_handle::PublishInteractionResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self.revalidate() {
+            return Promise::err(error);
+        }
+        Promise::from_future(async move {
+            let r = params.get()?;
+            let key_bytes = r.get_key_bytes()?.to_vec();
+            let json = r.get_interaction_json()?.to_str().map_err(|error| {
+                capnp::Error::failed(format!("invalid interaction utf8: {error}"))
+            })?;
+            if json.len() > 64 * 1024 {
+                return Err(capnp::Error::failed(
+                    "interaction payload exceeds 64 KiB".into(),
+                ));
+            }
+            let mut update: qos_actions::SemanticInteraction = serde_json::from_str(json)
+                .map_err(|error| capnp::Error::failed(format!("invalid interaction: {error}")))?;
+            let actor = self.verified_identity.broker_actor();
+            let normalized_actor = qos_actions::InteractionActor {
+                id: CapnpBrokerState::participant_id(&self.verified_identity),
+                kind: if actor.is_agent {
+                    qos_actions::InteractionActorKind::Agent
+                } else {
+                    qos_actions::InteractionActorKind::Person
+                },
+            };
+            let sequence = {
+                let mut sequences = self.interaction_sequences.lock().map_err(|_| {
+                    capnp::Error::failed("interaction sequence registry unavailable".into())
+                })?;
+                let current = sequences.entry(update.invocation).or_insert(0);
+                let next = current.saturating_add(1);
+                *current = next;
+                next
+            };
+            update = update.normalized_by_broker(normalized_actor, sequence);
+            update
+                .validate()
+                .map_err(|error| capnp::Error::failed(format!("invalid interaction: {error}")))?;
+            self.publish_keyed(&key_bytes, PresencePayload::Interaction(Box::new(update)));
             Ok(())
         })
     }
@@ -4153,6 +4205,12 @@ impl presence_stream::Server for PresenceStreamServer {
                 }
                 PresencePayload::Following { target } => {
                     payload.set_following(target.as_deref().unwrap_or(""));
+                }
+                PresencePayload::Interaction(update) => {
+                    let json = serde_json::to_string(&update).map_err(|error| {
+                        capnp::Error::failed(format!("encode semantic interaction: {error}"))
+                    })?;
+                    payload.set_interaction_json(&json);
                 }
                 PresencePayload::Arrived => payload.set_arrived(()),
                 PresencePayload::Left => payload.set_left(()),
