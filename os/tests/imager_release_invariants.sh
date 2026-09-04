@@ -158,7 +158,7 @@ grep -Fq 'qos-installer-medium-${{ matrix.arch }}' "$workflow" \
 grep -Fq 'key: github-assets-all-v1-' "$workflow" \
   && grep -Fq './os/dev/cache-github-assets.sh' "$workflow" \
   && grep -Fq 'podman login code.sandbox.example' "$workflow" \
-  && grep -Fq 'sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9' "$workflow" \
+  && grep -Fq './os/dev/install-cached-cosign.sh' "$workflow" \
   && ok 'installer media restores pinned inputs and can authenticate/verify frozen images' \
   || bad 'installer-media release lane lacks immutable inputs or private-image prerequisites'
 

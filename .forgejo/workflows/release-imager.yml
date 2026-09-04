@@ -18,6 +18,7 @@ on:
       - "rust-toolchain.toml"
       - "os/external-assets/github-assets.tsv"
       - "os/dev/cache-github-assets.sh"
+      - "os/dev/install-cached-cosign.sh"
       - ".forgejo/workflows/release-imager.yml"
       - "docs/install-contract.json"
       - "scripts/check-install-contract.py"
@@ -34,6 +35,7 @@ on:
       - "rust-toolchain.toml"
       - "os/external-assets/github-assets.tsv"
       - "os/dev/cache-github-assets.sh"
+      - "os/dev/install-cached-cosign.sh"
       - ".forgejo/workflows/release-imager.yml"
       - "docs/install-contract.json"
       - "scripts/check-install-contract.py"
@@ -78,8 +80,8 @@ jobs:
         with:
           path: os/external-assets/cache
           key: github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
-      - name: Install the pinned image-signature verifier
-        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
+      - name: Install the checksum-pinned image-signature verifier
+        run: ./os/dev/install-cached-cosign.sh
       - name: Authenticate the native image builder
         env:
           QOS_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
