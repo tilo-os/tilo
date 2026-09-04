@@ -130,9 +130,11 @@ acceptance record.
   action works.
 - Keep deterministic test data and pin time/network inputs before visual
   comparison.
-- Refresh a golden deliberately with `UPDATE_SNAPSHOTS=1`, review it, commit it,
-  then run without the variable to compare it. CI must never silently create a
-  baseline.
+- Render replacement goldens with the manual `refresh-visual-baselines.yml`
+  workflow. Download its `visual-baseline-candidates-*` artifact, inspect the
+  changed PNGs and diff inventory, verify the patch checksum, and apply only
+  accepted paths. Commit that review explicitly, then let nightly compare the
+  result without update variables. CI must never silently commit a baseline.
 - Document scope, source of truth and verification beside every release-affecting
   change. Do not treat an implementation plan as a shipped capability.
 
