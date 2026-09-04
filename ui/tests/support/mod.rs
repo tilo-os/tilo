@@ -201,11 +201,8 @@ pub fn pump(relay: &mut MemoryRelay) {
                 }
             }
             CollabRequest::WorkspaceControlInput { .. }
-            | CollabRequest::CloseWorkspaceControl { .. } => {
-                // Session-local commands never fan out through a document
-                // relay. With no session above, input is deliberately dropped.
-            }
-            CollabRequest::Hello { .. }
+            | CollabRequest::CloseWorkspaceControl { .. }
+            | CollabRequest::Hello { .. }
             | CollabRequest::PublishActions { .. }
             | CollabRequest::ReportContinuation { .. }
             | CollabRequest::ClearContinuation { .. }
@@ -215,8 +212,8 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::PublishedInvocationStatus { .. }
             | CollabRequest::CancelPublishedInvocation { .. }
             | CollabRequest::LaunchPublishedApplication { .. } => {
-                // Shell-owned control-plane reports are consumed locally and
-                // never fan out to another application's document channel.
+                // Session-local and shell-owned control-plane commands never
+                // fan out through another application's document channel.
             }
         }
     }
