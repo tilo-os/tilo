@@ -688,13 +688,14 @@ mod tests {
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
         let root = ensure_services_root().unwrap();
         // Kept alive for the duration of the call, so `connect` succeeds.
-        let _listener = std::os::unix::net::UnixListener::bind(root.join("collab.sock")).unwrap();
+        let _listener =
+            std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "optional@1".to_string());
+        svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
         let out = resolve_service_binds(&svcs, false).expect("a live socket resolves");
         assert_eq!(out.len(), 1, "the one live service must be handed over");
-        assert_eq!(out[0].name, "collab");
+        assert_eq!(out[0].name, "test-lifecycle");
         assert_eq!(
             out[0].child_fd, 17,
             "the app is told to read fd 17, so that is where it must land"
@@ -702,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn shell_ui_connection_is_authenticated_before_child_handoff() {
         use std::io::{BufRead, BufReader};
 
@@ -763,10 +764,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
         let root = ensure_services_root().unwrap();
-        let _listener = std::os::unix::net::UnixListener::bind(root.join("collab.sock")).unwrap();
+        let _listener =
+            std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "optional@1".to_string());
+        svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
 
         let mut handed_out: Vec<String> = Vec::with_capacity(LAUNCHES);
         for _ in 0..LAUNCHES {
@@ -813,10 +815,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
         let root = ensure_services_root().unwrap();
-        let listener = std::os::unix::net::UnixListener::bind(root.join("collab.sock")).unwrap();
+        let listener =
+            std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "optional@1".to_string());
+        svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
         let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
         assert_eq!(
             resolved.len(),
@@ -861,10 +864,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
         let root = ensure_services_root().unwrap();
-        let listener = std::os::unix::net::UnixListener::bind(root.join("collab.sock")).unwrap();
+        let listener =
+            std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "optional@1".to_string());
+        svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
         let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
         let (mut served, _) = listener.accept().expect("the connection has to arrive");
 
@@ -916,10 +920,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
         let root = ensure_services_root().unwrap();
-        let _listener = std::os::unix::net::UnixListener::bind(root.join("collab.sock")).unwrap();
+        let _listener =
+            std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
 
         let mut svcs = BTreeMap::new();
-        svcs.insert("collab".to_string(), "optional@1".to_string());
+        svcs.insert("test-lifecycle".to_string(), "optional@1".to_string());
         let resolved = resolve_service_binds(&svcs, false).expect("a live socket resolves");
         let raw = resolved[0].host_fd();
 
