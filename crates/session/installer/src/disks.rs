@@ -148,6 +148,59 @@ impl Disk {
         )
     }
 
+    /// Explain why discovery cannot select a prepared ESP using only metadata
+    /// available to the unprivileged UI. FAT integrity and free bytes on an
+    /// unmounted filesystem are intentionally absent: the privileged backend
+    /// probes those immediately before installation.
+    pub fn prepared_efi_issue(&self) -> Option<String> {
+        let eligible = self
+            .partitions
+            .iter()
+            .filter(|partition| partition.is_alongside_efi_candidate())
+            .count();
+        if eligible > 1 {
+            return Some(
+                "More than one prepared 2 GiB+ EFI partition is eligible; leave exactly one unmounted qOS EFI destination."
+                    .to_string(),
+            );
+        }
+        if eligible == 1 {
+            return None;
+        }
+
+        let efi_partitions = self
+            .partitions
+            .iter()
+            .filter(|partition| partition.part_type.eq_ignore_ascii_case(EFI_SYSTEM_GUID));
+        for partition in efi_partitions {
+            if !partition.filesystem.eq_ignore_ascii_case("vfat") {
+                return Some(format!(
+                    "{} is an EFI System Partition but is not FAT32.",
+                    partition.name
+                ));
+            }
+            if partition.size_bytes < MIN_ALONGSIDE_ESP_BYTES {
+                return Some(format!(
+                    "{} is too small for qOS boot images; a prepared EFI partition must be at least 2 GiB.",
+                    partition.name
+                ));
+            }
+            if !partition.mountpoint.is_empty() {
+                return Some(format!(
+                    "{} is mounted; unmount the prepared EFI partition, then refresh disks.",
+                    partition.name
+                ));
+            }
+            if partition.part_uuid.is_empty() {
+                return Some(format!(
+                    "{} has no stable GPT partition identity; repair the partition table, then refresh disks.",
+                    partition.name
+                ));
+            }
+        }
+        None
+    }
+
     pub fn can_install_alongside(&self) -> bool {
         self.identity_ready()
             && !self.read_only
@@ -686,6 +739,50 @@ mod tests {
         assert!(p.is_alongside_efi_candidate());
         p.mountpoint = "/boot/efi".into();
         assert!(!p.is_alongside_efi_candidate());
+    }
+
+    #[test]
+    fn prepared_efi_issue_explains_discovery_time_failures() {
+        let mut disk = Disk {
+            name: "/dev/sda".into(),
+            size: "100 GiB".into(),
+            model: String::new(),
+            size_bytes: 100 * 1024 * 1024 * 1024,
+            partition_table: "gpt".into(),
+            partition_table_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
+            logical_sector_size: 512,
+            major_minor: "8:0".into(),
+            wwn: String::new(),
+            serial: "efi-diagnostic".into(),
+            removable: false,
+            read_only: false,
+            is_system: false,
+            partitions: vec![DiskPartition {
+                name: "/dev/sda1".into(),
+                start_bytes: 1024 * 1024,
+                size_bytes: MIN_ALONGSIDE_ESP_BYTES - 1,
+                part_uuid: "00000000-0000-0000-0000-000000000001".into(),
+                filesystem: "vfat".into(),
+                label: "EFI".into(),
+                mountpoint: String::new(),
+                part_type: EFI_SYSTEM_GUID.into(),
+            }],
+        };
+        assert!(disk.prepared_efi_issue().unwrap().contains("too small"));
+
+        disk.partitions[0].size_bytes = MIN_ALONGSIDE_ESP_BYTES;
+        disk.partitions[0].mountpoint = "/mnt/efi".into();
+        assert!(disk.prepared_efi_issue().unwrap().contains("mounted"));
+        disk.partitions[0].mountpoint.clear();
+        disk.partitions[0].filesystem = "ext4".into();
+        assert!(disk.prepared_efi_issue().unwrap().contains("not FAT32"));
+        disk.partitions[0].filesystem = "vfat".into();
+        disk.partitions[0].part_uuid.clear();
+        assert!(
+            disk.prepared_efi_issue()
+                .unwrap()
+                .contains("no stable GPT partition identity")
+        );
     }
 
     #[test]
