@@ -5523,15 +5523,23 @@ mod tests {
             chrome.borrow().collab_unavailable
         );
 
-        // The launcher's real resolver, on a manifest demanding the service —
-        // `resolve_service_binds` returns `RequiredMissing` if it looks where the compositor didn't bind.
+        // The launcher's real resolver, on a manifest demanding the service.
+        // Use the authenticated launch path: collaboration deliberately rejects
+        // a bare socket connection with no app/workspace handoff.
         let mut services = std::collections::BTreeMap::new();
         services.insert(
             launcher::services::COLLAB_SERVICE.to_string(),
             "required@1".to_string(),
         );
-        let resolved = launcher::services::resolve_service_binds(&services, false)
-            .expect("the launcher must find the socket the compositor just bound");
+        let resolved = launcher::services::resolve_service_binds_for_launch(
+            &services,
+            false,
+            launcher::services::ServiceLaunchContext {
+                app_id: "dev.qos.socket-contract-test",
+                workspace_id: Some("socket-contract-workspace"),
+            },
+        )
+        .expect("the launcher must authenticate with the socket the compositor just bound");
 
         assert_eq!(
             resolved.len(),

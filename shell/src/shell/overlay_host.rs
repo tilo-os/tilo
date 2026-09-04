@@ -15370,8 +15370,8 @@ mod palette_dispatch_tests {
         });
         let names = draw_and_collect_peer_sync_buttons(&mut h);
         assert!(
-            names.contains(&"create"),
-            "the face that asks who must offer a way to answer, got {names:?}"
+            names.contains(&"review"),
+            "the recipient composer must offer its explicit review step, got {names:?}"
         );
         h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
             invite_token: Some(SAMPLE_TOKEN.to_string()),

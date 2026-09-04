@@ -1844,7 +1844,10 @@ impl Widget for OnboardingView {
             let _ = state.put(root, KEY_FINISH, ScalarValue::Boolean(false));
             let at_tour_end = self.tour_page == Some(TourPage::Start);
             let skipping_tour = self.tour_page.is_none() && self.flow.is_done();
-            self.finished = (self.tour_only && at_tour_end)
+            // A reopened, tour-only flow exposes “Skip tour” on every page.
+            // Its action is KEY_FINISH, so it must dismiss from every page,
+            // not only from the final hand-off page.
+            self.finished = self.tour_only
                 || ((at_tour_end || skipping_tour)
                     && self.flow.is_done()
                     && self.finish_persisted_progress());

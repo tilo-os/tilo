@@ -91,7 +91,7 @@ rest of the time.
 This is not the qOS operating system image. It installs a session, not a boot
 chain: no FUSE workspace mount, no greeter, and no app registry seeded by the
 image. Existing XDG and Flatpak applications remain available as clearly
-labelled, unconfined host apps; rootless Xwayland keeps legacy X11 apps usable.
+labeled, unconfined host apps; rootless Xwayland keeps legacy X11 apps usable.
 
 %package devel
 Summary:        %{qos_summary} — developer session entry
