@@ -588,6 +588,7 @@ enum SdkCommand {
     Primary(CollabRequest),
     Join(RouteSpec),
     ToRoute(RouteSpec, CollabRequest),
+    PrimaryReady(mpsc::SyncSender<Result<(), String>>),
 }
 
 /// How the shovel thread reaches the broker. `Env` is production: the
@@ -831,7 +832,46 @@ impl CollaborationManager {
             record,
             handle,
         });
+        manager.await_primary_route()?;
         Ok(manager)
+    }
+
+    /// Wait until the shovel has processed the initial `Hello`, admitted its
+    /// primary route, and queued the route's initial action catalogue. Without
+    /// this barrier a caller can publish transient presence immediately after
+    /// construction, before the broker knows where to deliver it.
+    fn await_primary_route(&mut self) -> Result<(), runtime_portal::NotAvailable> {
+        let Backend::Sdk(channel) = &mut self.backend else {
+            return Err(runtime_portal::NotAvailable::ServiceFdMissing);
+        };
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        channel
+            .outbound_tx
+            .send(SdkCommand::PrimaryReady(ready_tx))
+            .map_err(|_| {
+                runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "collaboration setup thread ended before route readiness",
+                ))
+            })?;
+        match ready_rx.recv_timeout(SHOVEL_INIT_TIMEOUT) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(runtime_portal::NotAvailable::ConnectionFailed(
+                std::io::Error::new(std::io::ErrorKind::ConnectionRefused, error),
+            )),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(
+                runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "collaboration primary route did not become ready in time",
+                )),
+            ),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(
+                runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "collaboration setup thread ended before reporting route readiness",
+                )),
+            ),
+        }
     }
 
     /// Connect a headless participant as a first-class workspace agent.
@@ -983,6 +1023,16 @@ impl CollaborationManager {
                     record,
                     handle: presence_handle_env(),
                 });
+                if let Err(error) = manager.await_primary_route() {
+                    tracing::warn!(
+                        ?error,
+                        "collab: primary route unavailable; disabling SDK collaboration"
+                    );
+                    return Self {
+                        backend: Backend::Disabled,
+                        identity: None,
+                    };
+                }
                 manager
             }
             Err(_) => Self {
@@ -1028,6 +1078,9 @@ impl CollaborationManager {
             record: None,
             handle: presence_handle_env(),
         });
+        manager
+            .await_primary_route()
+            .expect("test collaboration primary route becomes ready");
         manager
     }
 
@@ -1506,7 +1559,8 @@ fn run_shovel(
                 return;
             }
         };
-        // Ready. Manager may now hand out `send` / `poll`.
+        // The transport is ready. The manager queues its primary Hello next
+        // and waits for `PrimaryReady` before returning it to the caller.
         let _ = init_tx.send(InitStatus::Ready);
 
         drive_shovel(client, identity, outbound_rx, inbound_tx).await;
@@ -1535,6 +1589,7 @@ async fn drive_shovel(
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
     let mut participant_handle: Option<String> = None;
+    let mut primary_result = Err("primary collaboration route was not announced".to_string());
 
     while let Some(command) = outbound_rx.recv().await {
         match command {
@@ -1551,7 +1606,7 @@ async fn drive_shovel(
                     record,
                 };
                 let key = spec.channel_id();
-                ensure_sdk_route(
+                primary_result = ensure_sdk_route(
                     &client,
                     &presentation,
                     participant_handle.as_deref(),
@@ -1561,7 +1616,7 @@ async fn drive_shovel(
                     &spec,
                 )
                 .await;
-                primary = Some(key);
+                primary = primary_result.is_ok().then_some(key);
             }
             SdkCommand::Primary(request) => {
                 let Some(key) = primary.as_ref() else {
@@ -1573,7 +1628,7 @@ async fn drive_shovel(
                 }
             }
             SdkCommand::Join(spec) => {
-                ensure_sdk_route(
+                let _ = ensure_sdk_route(
                     &client,
                     &presentation,
                     participant_handle.as_deref(),
@@ -1586,7 +1641,7 @@ async fn drive_shovel(
             }
             SdkCommand::ToRoute(spec, request) => {
                 let key = spec.channel_id();
-                ensure_sdk_route(
+                let joined = ensure_sdk_route(
                     &client,
                     &presentation,
                     participant_handle.as_deref(),
@@ -1596,9 +1651,14 @@ async fn drive_shovel(
                     &spec,
                 )
                 .await;
-                if let Some(route) = routes.get_mut(&key) {
+                if joined.is_ok()
+                    && let Some(route) = routes.get_mut(&key)
+                {
                     dispatch_sdk_request(route, request, &signer, &inbound_tx).await;
                 }
+            }
+            SdkCommand::PrimaryReady(reply) => {
+                let _ = reply.send(primary_result.clone());
             }
         }
     }
@@ -1627,10 +1687,10 @@ async fn ensure_sdk_route(
     inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
     routes: &mut std::collections::HashMap<String, SdkRoute>,
     spec: &RouteSpec,
-) {
+) -> Result<(), String> {
     let channel_id = spec.channel_id();
     if routes.contains_key(&channel_id) {
-        return;
+        return Ok(());
     }
     let channel = match client
         .join_channel_as_kind(
@@ -1646,15 +1706,19 @@ async fn ensure_sdk_route(
             tracing::warn!(
                 "collab: joining channel {channel_id} failed ({error}); route unavailable"
             );
-            return;
+            return Err(format!("joining collaboration route failed: {error}"));
         }
     };
 
+    // The catalogue is level-triggered and its first snapshot is the route's
+    // decision baseline. Enqueue it before subscribing to document traffic,
+    // so a backlogged snapshot cannot make an agent decide against stale
+    // local fallback data immediately after construction.
+    spawn_action_catalogue_stream(&channel, inbound_tx).await?;
     spawn_op_stream(&channel, inbound_tx).await;
     spawn_context_stream(&channel, inbound_tx).await;
     spawn_action_stream(&channel, inbound_tx).await;
     spawn_invocation_stream(&channel, inbound_tx).await;
-    spawn_action_catalogue_stream(&channel, inbound_tx).await;
     // This intentionally fails quietly for person sessions. An admitted
     // agent gets a separate broker-addressed queue; a document agent never
     // has to infer task work from room traffic.
@@ -1670,6 +1734,7 @@ async fn ensure_sdk_route(
             workspace_controls: std::collections::HashMap::new(),
         },
     );
+    Ok(())
 }
 
 /// Bridge `channel`'s doc/incremental op stream into [`CollabEvent`]s on
@@ -1858,29 +1923,44 @@ fn parse_invocation_context(id: u64, json: &str) -> Option<qos_actions::ActionCo
 async fn spawn_action_catalogue_stream(
     channel: &runtime_collab::ChannelHandle,
     inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
-) {
-    if let Ok(stream) = channel.subscribe_action_catalogue().await {
-        let tx = inbound_tx.clone();
-        tokio::task::spawn_local(async move {
-            while let Ok(snapshot) = stream.read().await {
-                match serde_json::from_str::<BrokerActionCatalogueWire>(&snapshot) {
-                    Ok(catalogue) => {
-                        if tx
-                            .send(CollabEvent::ActionCatalogue {
-                                surfaces: catalogue.surfaces,
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "collab: invalid broker action catalogue");
+) -> Result<(), String> {
+    let stream = channel
+        .subscribe_action_catalogue()
+        .await
+        .map_err(|error| format!("subscribing to action catalogue failed: {error}"))?;
+    let initial = stream
+        .read()
+        .await
+        .map_err(|error| format!("reading initial action catalogue failed: {error}"))?;
+    let catalogue = serde_json::from_str::<BrokerActionCatalogueWire>(&initial)
+        .map_err(|error| format!("decoding initial action catalogue failed: {error}"))?;
+    inbound_tx
+        .send(CollabEvent::ActionCatalogue {
+            surfaces: catalogue.surfaces,
+        })
+        .map_err(|_| "delivering initial action catalogue failed".to_string())?;
+
+    let tx = inbound_tx.clone();
+    tokio::task::spawn_local(async move {
+        while let Ok(snapshot) = stream.read().await {
+            match serde_json::from_str::<BrokerActionCatalogueWire>(&snapshot) {
+                Ok(catalogue) => {
+                    if tx
+                        .send(CollabEvent::ActionCatalogue {
+                            surfaces: catalogue.surfaces,
+                        })
+                        .is_err()
+                    {
+                        break;
                     }
                 }
+                Err(error) => {
+                    tracing::warn!(%error, "collab: invalid broker action catalogue");
+                }
             }
-        });
-    }
+        }
+    });
+    Ok(())
 }
 
 /// Bridge broker-addressed task leases only when this connection is an
@@ -2507,8 +2587,9 @@ mod tests {
 
     use runtime_collab::PresencePayload as SdkPayload;
     use runtime_collab::raw::{
-        channel_context, channel_handle, collab_service, context_stream, presence_event,
-        presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
+        action_catalogue_stream, channel_context, channel_handle, collab_service, context_stream,
+        presence_event, presence_handle, presence_payload, presence_stream, scrollback_batch,
+        stream,
     };
 
     #[derive(Default)]
@@ -2819,6 +2900,24 @@ mod tests {
         }
     }
 
+    struct FakeActionCatalogueStream {
+        initial: RefCell<Option<String>>,
+    }
+
+    impl action_catalogue_stream::Server for FakeActionCatalogueStream {
+        fn read(
+            self: Rc<Self>,
+            _params: action_catalogue_stream::ReadParams,
+            mut results: action_catalogue_stream::ReadResults,
+        ) -> Promise<(), capnp::Error> {
+            let Some(initial) = self.initial.borrow_mut().take() else {
+                return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
+            };
+            results.get().set_catalogue_json(&initial);
+            Promise::ok(())
+        }
+    }
+
     struct FakeChannel {
         captures: SharedCaptures,
         op_backlog: OpBacklog,
@@ -2893,6 +2992,21 @@ mod tests {
             let client: context_stream::Client = capnp_rpc::new_client(FakeContextStream {
                 backlog: self.context_backlog.clone(),
             });
+            results.get().set_stream(client);
+            Promise::ok(())
+        }
+
+        fn subscribe_action_catalogue(
+            self: Rc<Self>,
+            _params: channel_handle::SubscribeActionCatalogueParams,
+            mut results: channel_handle::SubscribeActionCatalogueResults,
+        ) -> Promise<(), capnp::Error> {
+            let client: action_catalogue_stream::Client =
+                capnp_rpc::new_client(FakeActionCatalogueStream {
+                    initial: RefCell::new(Some(
+                        serde_json::json!({"version": 1, "surfaces": []}).to_string(),
+                    )),
+                });
             results.get().set_stream(client);
             Promise::ok(())
         }

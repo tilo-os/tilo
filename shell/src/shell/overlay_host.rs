@@ -15370,8 +15370,18 @@ mod palette_dispatch_tests {
         });
         let names = draw_and_collect_peer_sync_buttons(&mut h);
         assert!(
+            names.contains(&"review") && names.contains(&"new-recipient"),
+            "the recipient face must offer review and a way to change who, got {names:?}"
+        );
+        h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
+            invite_name: Some("bob".to_string()),
+            invite_review_open: true,
+            ..PeerSyncSnapshot::default()
+        });
+        let names = draw_and_collect_peer_sync_buttons(&mut h);
+        assert!(
             names.contains(&"create"),
-            "the face that asks who must offer a way to answer, got {names:?}"
+            "the reviewed invite face must offer its Create gesture, got {names:?}"
         );
         h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
             invite_token: Some(SAMPLE_TOKEN.to_string()),
