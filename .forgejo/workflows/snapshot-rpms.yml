@@ -99,6 +99,8 @@ jobs:
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
             PACKAGES=${{ env.PACKAGES }}
+          cache-from: type=registry,ref=code.podesta.ai/qos/qos-rpms-buildcache:latest
+          cache-to: type=registry,ref=code.podesta.ai/qos/qos-rpms-buildcache:latest,mode=max
           provenance: false
 
       - name: Report the pinned RPMS_REF to commit
