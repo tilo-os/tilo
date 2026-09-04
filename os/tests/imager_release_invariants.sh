@@ -50,13 +50,14 @@ else
 fi
 
 grep -Fq 'id-token: write' "$workflow" \
-  && [ "$(grep -Fc 'enable-openid-connect: true' "$workflow")" -eq 6 ] \
+  && [ "$(grep -Fc 'enable-openid-connect: true' "$workflow")" -eq 7 ] \
   && grep -Fq 'IMAGER_LINUX_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_WINDOWS_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_MACOS_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_HOMEBREW_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_WINGET_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_SITE_CREDENTIAL_BROKER' "$workflow" \
+  && grep -Fq 'QOS_PCR_PREDICTION_SIGNER' "$workflow" \
   && grep -Fq 'QOS_LINUX_SIGNER' "$repo/apps/imager/packaging/package-host.sh" \
   && grep -Fq 'QOS_NOTARY_KEYCHAIN_PROFILE' "$repo/apps/imager/packaging/package-host.sh" \
   && grep -Fq 'QOS_WINDOWS_SIGNER' "$repo/apps/imager/packaging/package-host.ps1" \

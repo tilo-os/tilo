@@ -24,6 +24,8 @@ use serde_json::Value;
 
 /// GPT type used for an ordinary Linux data/filesystem partition.
 pub const LINUX_FILESYSTEM_GUID: &str = "0fc63daf-8483-4772-8e79-3d69d8477de4";
+/// qOS-owned root GPT type used for target-independent same-disk discovery.
+pub const QOS_ROOT_GUID: &str = "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab";
 /// GPT type used for an EFI System Partition.
 pub const EFI_SYSTEM_GUID: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
 /// Minimum prepared root accepted by the guided alongside flow (32 GiB).
@@ -82,7 +84,8 @@ impl DiskPartition {
             && !self.part_uuid.is_empty()
             && self.filesystem.is_empty()
             && self.mountpoint.is_empty()
-            && self.part_type.eq_ignore_ascii_case(LINUX_FILESYSTEM_GUID)
+            && (self.part_type.eq_ignore_ascii_case(LINUX_FILESYSTEM_GUID)
+                || self.part_type.eq_ignore_ascii_case(QOS_ROOT_GUID))
     }
 
     pub fn is_efi(&self) -> bool {
@@ -926,6 +929,8 @@ mod tests {
         };
         assert!(!root.is_alongside_candidate());
         root.part_uuid = "00000000-0000-0000-0000-000000000003".into();
+        assert!(root.is_alongside_candidate());
+        root.part_type = QOS_ROOT_GUID.into();
         assert!(root.is_alongside_candidate());
     }
 

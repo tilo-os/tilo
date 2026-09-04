@@ -38,5 +38,9 @@ grep -q 'Requires=qos-relay-firstboot.service' "$relay_unit"
 grep -q 'ConditionPathExists=!/var/lib/qos-relay/decommissioned' "$relay_unit"
 grep -q 'ConditionPathExists=!/var/lib/qos-relay/decommissioned' "$replica_unit"
 grep -q 'BindsTo=qos-relay.service' "$replica_unit"
-grep -q 'qos-relay-firstboot.service /usr/lib/systemd/system/qos-relay-firstboot.service' "$root/os/Containerfile"
+# shellcheck source=lib/containerfile.sh
+. "$root/os/tests/lib/containerfile.sh"
+containerfile_has_copy "$root/os/Containerfile" \
+  os/usr/lib/systemd/system/qos-relay-firstboot.service \
+  /usr/lib/systemd/system/qos-relay-firstboot.service
 echo "home-peer setup boundary: ok"

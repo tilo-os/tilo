@@ -15,6 +15,10 @@ firstboot_user="$repo_root/os/usr/libexec/qos-firstboot-user"
 profile_extractor="$repo_root/os/usr/libexec/qos-installer-profile-extract"
 preflight="$repo_root/os/usr/libexec/qos-verified-boot-install-preflight"
 secret_policy="$repo_root/os/usr/libexec/qos-startup-secret-policy"
+prediction_signer="$repo_root/os/dev/sign-target-prediction.sh"
+# shellcheck source=lib/containerfile.sh
+. "$repo_root/os/tests/lib/containerfile.sh"
+os_image_workflow="$repo_root/.forgejo/workflows/build-image.yml"
 fail=0
 
 ok() { printf 'ok    %s\n' "$*"; }
@@ -32,14 +36,15 @@ fi
 
 karg_deletes="$(grep -c -- '--karg-delete qos.install' "$backend" || true)"
 if [ "$karg_deletes" -eq 2 ] \
-   && grep -Fq 'qos.root=0000000000000000000000000000000000000' "$backend" \
-   && grep -Fq 'qos.luks=000000000000000000000000000000000000000000000' "$backend" \
-   && grep -Fq 'qos.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000' "$backend" \
-   && grep -Fq 'rd.luks.options=$LUKS_UUID=tpm2-device=auto,fido2-device=auto' "$backend" \
-   && grep -Fq 'remove qos.install "$TARGET_UKI"' "$backend"; then
-  ok "sealed encrypted installs specialize UUID and hardware-token slots, then remove the live marker"
+   && grep -Fq 'append root=qos-auto /boot/qos-target/qos-target.efi' "$containerfile" \
+   && grep -Fq 'append rd.luks.options=tpm2-device=auto,fido2-device=auto /boot/qos-target/qos-target.efi' "$containerfile" \
+   && grep -Fq 'remove qos.install /boot/qos-target/qos-target.efi' "$containerfile" \
+   && grep -Fq 'install -m 0644 "$TARGET_VARIANT" "$TARGET_UKI.new"' "$backend" \
+   && grep -Fq 'mv -f "$TARGET_UKI.new" "$TARGET_UKI"' "$backend" \
+   && ! grep -Fq 'qos-uki-cmdline set "qos.root=' "$backend"; then
+  ok "encrypted installs atomically promote a target-independent UKI without per-machine measured bytes"
 else
-  bad "sealed target UKI handoff is incomplete (legacy deletions: $karg_deletes)"
+  bad "target-independent UKI handoff is incomplete (legacy deletions: $karg_deletes)"
 fi
 
 if grep -Fq 'qos-uki-cmdline remove systemd.show_status' "$containerfile" \
@@ -173,11 +178,11 @@ fi
 if grep -Fq 'ENCRYPT=1' "$backend" \
    && grep -Fq 'native qOS requires --pin' "$backend" \
    && grep -Fq 'ENROL_ARGS+=(--passphrase)' "$backend" \
-   && ! grep -Fq 'if verified_tpm; then' "$backend" \
-   && ! grep -Fq 'qos-verified-boot-install-preflight' "$backend" \
-   && ! grep -Fq 'startup PIN must be 6 to 12 digits' "$backend" \
+   && grep -Fq 'qos-verified-boot-install-preflight' "$backend" \
+   && grep -Fq 'POLICY_MODE=(--tpm-pin)' "$backend" \
+   && grep -Fq 'ENROL_ARGS+=(--require-tpm-prediction)' "$backend" \
    && grep -Fq 'qos-startup-secret-policy' "$backend"; then
-  ok "native qOS requires encryption and a strong passphrase on every machine"
+  ok "native qOS requires encryption and permits a short PIN only after exact verified-boot preflight"
 else
   bad "native qOS installer can bypass encryption or the startup secret"
 fi
@@ -190,22 +195,54 @@ if [ -x "$secret_policy" ] \
    && ! printf '%s\n' 'abcabcabcabc' | "$secret_policy" 2>/dev/null \
    && ! printf '%s\n' '123456789012' | "$secret_policy" 2>/dev/null \
    && ! printf '%s\n' 'correct horse' | "$secret_policy" 2>/dev/null \
-   && ! printf '%s\n' ' correct horse battery' | "$secret_policy" 2>/dev/null; then
-  ok "privileged startup-secret policy rejects common, repetitive, and weak numeric secrets"
+   && ! printf '%s\n' ' correct horse battery' | "$secret_policy" 2>/dev/null \
+   && printf '%s\n' '804927' | "$secret_policy" --tpm-pin \
+   && ! printf '%s\n' '123456' | "$secret_policy" --tpm-pin 2>/dev/null \
+   && ! printf '%s\n' '111111' | "$secret_policy" --tpm-pin 2>/dev/null; then
+  ok "privileged startup-secret policy separates strong passphrases from nontrivial TPM PINs"
 else
   bad "privileged startup-secret policy accepts a cheaply guessed disk secret"
 fi
 
-if [ ! -e "$preflight" ] \
-   && ! grep -Fq 'COPY os/usr/libexec/qos-verified-boot-install-preflight' "$production_containerfile"; then
-  ok "unsupported PCR-7-only TPM PIN preflight is not shipped"
+if [ -x "$preflight" ] \
+   && containerfile_has_copy "$production_containerfile" \
+        os/usr/libexec/qos-verified-boot-install-preflight \
+        /usr/libexec/qos-verified-boot-install-preflight \
+   && grep -Fq 'openssl dgst -sha256 -verify "$pub" -signature "$prediction.uki.sig" "$uki"' "$preflight" \
+   && grep -Fq "grep -Eq '^signature [1-9][0-9]*\$'" "$preflight" \
+   && grep -Fq 'd.get("pcrs") != [11]' "$preflight"; then
+  ok "TPM PIN preflight verifies both the exact target UKI and its PCR11 policy"
 else
-  bad "image still ships a TPM PIN preflight without measured qOS-artifact binding"
+  bad "TPM PIN preflight does not bind the exact target UKI and PCR11 policy"
+fi
+
+if [ -x "$prediction_signer" ] \
+   && grep -Fq 'systemd-measure "$image"' "$prediction_signer" \
+   && grep -Fq 'policy-digest --json=short --bank=sha256 --phase=enter-initrd' "$prediction_signer" \
+   && grep -Fq '"$signer" sign-efi' "$prediction_signer" \
+   && grep -Fq '"$signer" export-efi-cert' "$prediction_signer" \
+   && grep -Fq 'QOS_EFI_SIGNING_CERT_SHA256' "$prediction_signer" \
+   && grep -Fq -- '--cert /work/efi-signing.crt' "$prediction_signer" \
+   && grep -Fq 'verify-authenticode-envelope.py' "$prediction_signer" \
+   && grep -Fq 'sign-sha256-rsa-pkcs1 "$work/target.efi" "$prediction.uki.sig"' "$prediction_signer" \
+   && grep -Fq 'broker signed the prediction with a key other than qOS' "$prediction_signer" \
+   && ! grep -Eq 'PRIVATE[_-]?KEY|private-key' "$prediction_signer" \
+   && grep -Fq 'QOS_REQUIRE_PCR_PREDICTION' "$repo_root/os/dev/build-custom-installer.sh" \
+   && grep -Fq 'sign-target-prediction.sh" "$QOS_IMAGE"' "$repo_root/os/dev/build-image.sh" \
+   && grep -Fq 'QOS_REQUIRE_PCR_PREDICTION:' "$os_image_workflow" \
+   && grep -Fq 'if [[ -n "$QOS_PCR_PREDICTION_SIGNER" ]]; then' "$os_image_workflow" \
+   && grep -Fq 'sign-target-prediction.sh "$repro_image"' "$os_image_workflow" \
+   && grep -Fq 'enable-openid-connect: true' "$os_image_workflow" \
+   && grep -Fq 'QOS_PCR_PREDICTION_SIGNER: ${{ vars.QOS_PCR_PREDICTION_SIGNER }}' \
+      "$repo_root/.forgejo/workflows/release-imager.yml"; then
+  ok "release prediction path uses systemd-measure and a broker signer without private-key custody"
+else
+  bad "release PCR prediction path can bypass authoritative measurement or protected signing"
 fi
 
 disk_encrypt="$repo_root/os/usr/libexec/qos-disk-encrypt"
-if grep -Fq 'TPM enrollment is disabled until qOS unlock is bound' "$disk_encrypt" \
-   && grep -Fq 'enrolling the supplied strong passphrase as a LUKS key slot' "$disk_encrypt" \
+if grep -Fq 'enrolling the supplied strong passphrase as a LUKS key slot' "$disk_encrypt" \
+   && grep -Fq 'verified TPM enrollment prerequisites changed after review' "$disk_encrypt" \
    && ! grep -Fq -- '--tpm2-pcrs=' "$disk_encrypt" \
    && ! grep -Fq 'force_passphrase=' "$disk_encrypt"; then
   ok "disk helper has no dormant PCR-only TPM path and rejects resealing"
@@ -213,24 +250,17 @@ else
   bad "disk helper can create a PCR-7-only TPM slot"
 fi
 
-# Generation-bound TPM enrollment cannot be enabled as a one-line replacement
-# for systemd-cryptenroll. The installer changes measured UKI bytes after the
-# release image is built, while the release carries no matching signed
-# prediction. The early-boot consumer now ships, but enrollment must remain off
-# until it has a prediction for the exact target bytes it will boot.
-rollback_enrollment_calls="$(
-  grep -hE 'qos-rollback[[:space:]]+enroll' "$backend" "$encryptor" 2>/dev/null \
-    | grep -vE '^[[:space:]]*#' || true
-)"
-if [ -z "$rollback_enrollment_calls" ] \
+if grep -Fq 'qos-rollback "${rollback_args[@]}" enroll --device "$dev"' "$encryptor" \
+   && grep -Fq -- '--require-tpm-prediction' "$encryptor" \
    && grep -Fq 'install -d -m 0755 /usr/share/qos/pcr-predictions' "$production_containerfile" \
-   && grep -Fq 'the directory ships empty' "$production_containerfile" \
    && grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth qos-rollback"' "$production_containerfile" \
    && grep -Fq 'qos-rollback-initrd-unlock' "$production_containerfile" \
+   && grep -Fq 'qos-root-discover' "$production_containerfile" \
+   && grep -Fq 'qos-root-generator' "$production_containerfile" \
    && ! grep -Fq -- '--tpm2-pcrs=' "$encryptor" \
    && grep -Fq -- '--recovery-key "$dev"' "$encryptor" \
    && grep -Fq -- '--fido2-device=auto "$dev"' "$encryptor"; then
-  ok "TPM unlock consumer ships while enrollment stays fail-closed until target predictions exist"
+  ok "signed prediction enrollment and same-disk qOS root unlock ship together and fail closed"
 else
   bad "installer TPM enrollment/early-unlock prerequisites are inconsistent"
 fi
@@ -366,6 +396,8 @@ if [ -x "$guided_partitioner" ] \
    && grep -Fq 'partition map changed after review' "$guided_partitioner" \
    && grep -Fq 'sfdisk --append --no-reread --lock=no --wipe never --wipe-partitions never' "$guided_partitioner" \
    && grep -Fq 'mkfs.vfat -n QOS-EFI "$EFI_PARTITION"' "$guided_partitioner" \
+   && grep -Fq 'sfdisk --part-type "$DISK" "$part_number" 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab' "$backend" \
+   && grep -Fq 'validate_partition_identity "$ROOT_PARTITION"' "$backend" \
    && ! grep -Eq 'sfdisk .*--delete|parted .* (move|resize)|resize2fs|ntfsresize' "$guided_partitioner"; then
   ok "guided alongside locks and revalidates the reviewed GPT map before appending only qOS partitions"
 else

@@ -537,7 +537,7 @@ done < <(findmnt -rn -o SOURCE,TARGET 2>/dev/null)
 validate_alongside() {
   local root_parent efi_parent root_type efi_type efi_fs mountpoints signature_types tool
   local efi_mountpoints efi_probe efi_available
-  for tool in blockdev blkid df fsck.fat lsblk wipefs "mkfs.$FILESYSTEM" mount umount; do
+  for tool in blockdev blkid df fsck.fat lsblk wipefs "mkfs.$FILESYSTEM" mount umount sfdisk partx; do
     command -v "$tool" >/dev/null 2>&1 || die "missing required tool for alongside install: $tool"
   done
   [ -b "$ROOT_PARTITION" ] && [ "$(lsblk -dno TYPE "$ROOT_PARTITION" 2>/dev/null)" = part ] \
@@ -554,8 +554,10 @@ validate_alongside() {
     || die "alongside root and EFI partitions must both belong to $DISK"
   root_type="$(lsblk -dno PARTTYPE "$ROOT_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
   efi_type="$(lsblk -dno PARTTYPE "$EFI_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
-  [ "$root_type" = "0fc63daf-8483-4772-8e79-3d69d8477de4" ] \
-    || die "$ROOT_PARTITION is not explicitly typed as a Linux filesystem partition"
+  case "$root_type" in
+    0fc63daf-8483-4772-8e79-3d69d8477de4|7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab) : ;;
+    *) die "$ROOT_PARTITION is not explicitly typed as a Linux/qOS root partition" ;;
+  esac
   [ "$efi_type" = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ] \
     || die "$EFI_PARTITION is not an EFI System Partition"
   efi_fs="$(blkid -s TYPE -o value "$EFI_PARTITION" 2>/dev/null || true)"
@@ -590,6 +592,28 @@ validate_alongside() {
     || die "could not inspect signatures on $ROOT_PARTITION"
   [ -z "$(printf '%s' "$signature_types" | tr -d '[:space:]')" ] \
     || die "$ROOT_PARTITION contains a filesystem or volume signature; refusing to guess that its data is disposable"
+}
+
+mark_alongside_qos_root() {
+  local root_type part_number
+  root_type="$(lsblk -dno PARTTYPE "$ROOT_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  [ "$root_type" != 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab ] || return 0
+  [ "$root_type" = 0fc63daf-8483-4772-8e79-3d69d8477de4 ] \
+    || die "reviewed root partition type changed before qOS ownership marking"
+  part_number="$(lsblk -dno PARTN "$ROOT_PARTITION" 2>/dev/null | tr -d '[:space:]')"
+  case "$part_number" in ''|*[!0-9]*) die "could not identify reviewed root partition number" ;; esac
+  # The user explicitly selected this empty partition for formatting. Change
+  # only its GPT type to qOS's discovery GUID, retaining its reviewed PARTUUID
+  # and byte geometry; every sibling (Windows/Linux included) stays untouched.
+  sfdisk --part-type "$DISK" "$part_number" 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab \
+    || die "could not mark the reviewed partition as the qOS root"
+  partx -u "$DISK" 2>/dev/null || true
+  udevadm settle 2>/dev/null || true
+  validate_partition_identity "$ROOT_PARTITION" "$EXPECT_ROOT_PARTUUID" \
+    "$EXPECT_ROOT_SIZE_BYTES" "qOS root partition"
+  root_type="$(lsblk -dno PARTTYPE "$ROOT_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  [ "$root_type" = 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab ] \
+    || die "qOS root GPT type did not persist"
 }
 
 # Read-only UI preflight. It intentionally traverses the same disk/partition
@@ -673,7 +697,15 @@ if [ "$WANT_PIN" -eq 1 ]; then
   [ -n "$PIN" ] || die "--pin set but no disk passphrase received on stdin (line 2)"
   SECRET_POLICY=/usr/libexec/qos-startup-secret-policy
   [ -x "$SECRET_POLICY" ] || die "startup-secret policy helper is missing"
-  POLICY_ERROR="$(printf '%s\n' "$PIN" | "$SECRET_POLICY" 2>&1)" \
+  POLICY_MODE=()
+  REQUIRE_TPM_PREDICTION=0
+  if [ -x /usr/libexec/qos-verified-boot-install-preflight ] \
+     && /usr/libexec/qos-verified-boot-install-preflight >/dev/null 2>&1 \
+     && { [ -c /dev/tpmrm0 ] || [ -c /dev/tpm0 ]; }; then
+    POLICY_MODE=(--tpm-pin)
+    REQUIRE_TPM_PREDICTION=1
+  fi
+  POLICY_ERROR="$(printf '%s\n' "$PIN" | "$SECRET_POLICY" "${POLICY_MODE[@]}" 2>&1)" \
     || die "$POLICY_ERROR"
 fi
 
@@ -718,6 +750,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
   exec 3>&1
   if [ "$ALONGSIDE" -eq 1 ]; then
     validate_alongside
+    mark_alongside_qos_root
     PREP="$("$DISK_ENCRYPT" prepare-partition "$ROOT_PARTITION" --efi "$EFI_PARTITION" --filesystem "$FILESYSTEM" 2>&3)"
   else
     PREP="$("$DISK_ENCRYPT" prepare "$DISK" --filesystem "$FILESYSTEM" 2>&3)"
@@ -764,36 +797,28 @@ if [ "$ENCRYPT" -eq 1 ]; then
       --skip-finalize \
       /target
 
-  # A sealed UKI cannot accept bootc --karg/--karg-delete arguments. The live
-  # UKI carries fixed-width, signed UUID placeholders; specialize only those
-  # bytes on the installed ESP, then remove its live-only marker. Verified
-  # TPM mode subsequently re-signs and validates this exact target UKI.
+  # Promote the deterministic installed-target UKI. It was built over this
+  # exact composefs tree and uses boot-ESP/same-disk qOS root discovery, so no
+  # per-machine bytes enter PCR 11.
   TARGET_UKI="$(find "$ENC_MNT/boot/efi/EFI/Linux" -type f \
     -path '*/bootc/bootc_composefs-*.efi' -print -quit)"
   [ -n "$TARGET_UKI" ] || die "installed target has no bootc UKI on its ESP"
-  LUKS_UUID="$(cryptsetup luksUUID "$ENC_LUKS")"
-  [ -n "$LUKS_UUID" ] || die "could not read the installed LUKS UUID"
-  /usr/libexec/qos-uki-cmdline replace \
-    qos.root=0000000000000000000000000000000000000 \
-    "root=UUID=$ENC_ROOT_UUID" "$TARGET_UKI"
-  /usr/libexec/qos-uki-cmdline replace \
-    qos.luks=000000000000000000000000000000000000000000000 \
-    "rd.luks.uuid=luks-$LUKS_UUID" "$TARGET_UKI"
-  # systemd-cryptenroll stores the TPM2/FIDO2 material in LUKS2 JSON metadata,
-  # but the initramfs still needs the matching auto-discovery options before it
-  # can use either token. This placeholder is signed into the installer UKI and
-  # replaced without changing the PE section geometry; verified-boot installs
-  # re-sign the resulting target below.
-  UNLOCK_PLACEHOLDER=qos.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000
-  UNLOCK_OPTIONS="rd.luks.options=$LUKS_UUID=tpm2-device=auto,fido2-device=auto"
-  [ "${#UNLOCK_PLACEHOLDER}" -eq "${#UNLOCK_OPTIONS}" ] \
-    || die "internal error: encrypted-boot option does not fit its sealed UKI slot"
-  /usr/libexec/qos-uki-cmdline replace \
-    "$UNLOCK_PLACEHOLDER" "$UNLOCK_OPTIONS" "$TARGET_UKI"
-  /usr/libexec/qos-uki-cmdline remove qos.install "$TARGET_UKI"
+  TARGET_VARIANT="$ENC_MNT/boot/efi/qos-target/qos-target.efi"
+  [ -f "$TARGET_VARIANT" ] || die "installed image has no deterministic target UKI"
+  /usr/libexec/qos-uki-cmdline show "$TARGET_VARIANT" | grep -qw root=qos-auto \
+    || die "target UKI lacks qOS root discovery"
+  ! /usr/libexec/qos-uki-cmdline show "$TARGET_VARIANT" | grep -qw qos.install \
+    || die "target UKI still contains the live installer marker"
+  install -m 0644 "$TARGET_VARIANT" "$TARGET_UKI.new"
+  mv -f "$TARGET_UKI.new" "$TARGET_UKI"
+  install -d -m 0755 "$ENC_MNT/boot/efi/EFI/qos/pcr-predictions"
+  find "$ENC_MNT/boot/efi/qos-target/predictions" -maxdepth 1 -type f \
+    \( -name '*.json' -o -name '*.json.uki.sig' \) \
+    -exec install -m 0644 {} "$ENC_MNT/boot/efi/EFI/qos/pcr-predictions/" \;
   BOOT_ESP_ROOT="$ENC_MNT/boot/efi"
 elif [ "$ALONGSIDE" -eq 1 ]; then
   validate_alongside
+  mark_alongside_qos_root
   step "Formatting only $ROOT_PARTITION for qOS; preserving every other partition"
   case "$FILESYSTEM" in
     btrfs) mkfs.btrfs -f -L root "$ROOT_PARTITION" >/dev/null ;;
@@ -845,8 +870,8 @@ udevadm settle 2>/dev/null || true
 # --- 2b. multi-factor LUKS enrollment ----------------------------------------
 # The volume currently opens only with the throwaway install key. Layer the real
 # factors on: always a recovery key, the supplied strong passphrase, and
-# optionally FIDO2. TPM unlock remains disabled until it is bound to signed,
-# measured qOS artifacts. qos-disk-encrypt aborts rather than leaving a volume
+# optionally FIDO2. On verified TPM2 systems the PIN is bound to the signed,
+# measured qOS artifact and this machine's PCR7 state. qos-disk-encrypt aborts rather than leaving a volume
 # whose only factor is one the user cannot reproduce.
 if [ "$ENCRYPT" -eq 1 ]; then
   step "Enrolling disk-encryption factors"
@@ -858,6 +883,12 @@ if [ "$ENCRYPT" -eq 1 ]; then
     install -d -m 0700 /run/qos-install
     ( umask 0077; printf '%s' "$PIN" > "$PIN_FILE" )
     ENROL_ARGS+=(--pin-file "$PIN_FILE")
+    QOS_GENERATION="$(cat /usr/lib/qos/generation 2>/dev/null || true)"
+    case "$QOS_GENERATION" in ''|*[!0-9]*) die "installed image has no valid generation" ;; esac
+    ENROL_ARGS+=(--predictions "$ENC_MNT/boot/efi/qos-target/predictions")
+    ENROL_ARGS+=(--generation "$QOS_GENERATION")
+    ENROL_ARGS+=(--rollback-state "$ENC_MNT/var/lib/qos/rollback/state.json")
+    [ "${REQUIRE_TPM_PREDICTION:-0}" -eq 0 ] || ENROL_ARGS+=(--require-tpm-prediction)
   fi
   # The helper logs to stderr; fold it into our stdout so the UI sees the
   # recovery key it has to show the user.
