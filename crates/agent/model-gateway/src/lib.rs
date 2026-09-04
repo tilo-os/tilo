@@ -114,6 +114,12 @@ pub fn request(request: Request) -> Result<Response, ClientError> {
     }
 }
 
+/// Ask the isolated model gateway to plan against one configured provider.
+///
+/// # Errors
+///
+/// Returns [`ClientError`] when the gateway is unavailable, rejects the
+/// request, returns a malformed response, or the provider request fails.
 pub fn plan(
     profile_id: &str,
     model_id: &str,
