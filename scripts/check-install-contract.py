@@ -35,8 +35,8 @@ assert """            dist/qos-installer/qos-installer-linux-${{ matrix.arch }}.
             dist/qos-installer/catalog-${{ matrix.arch }}.json
           if-no-files-found: error
 """ in imager_workflow
-assert """              *.img.zst)
-                (cd "$(dirname "$path")" && sha256sum --check "$(basename "$path").sha256")""" in imager_workflow
+assert """            (cd "$(dirname "$path")" && sha256sum --check --strict "$(basename "$path").sha256")""" in imager_workflow
+assert 'qos-installer-*.asc' in imager_workflow
 for host in ("linux", "windows", "macos"):
     assert f"  {host}:" in imager_workflow
 

@@ -14,6 +14,7 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
   "$repo/apps/imager/packaging/package-install-medium.sh" \
   "$repo/apps/imager/packaging/build-release-catalog.sh" \
   "$repo/apps/imager/packaging/verify-linux-release.sh" \
+  "$repo/apps/imager/packaging/sign-linux-release-file.sh" \
   "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
   "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   "$repo/apps/imager/packaging/publish-site-release.sh" \
@@ -57,6 +58,8 @@ grep -Fq 'id-token: write' "$workflow" \
   || bad 'short-lived credential path is not wired into every release job'
 
 grep -Fq 'AppImage.asc' "$workflow" \
+  && grep -Fq 'qos-installer-*.asc' "$workflow" \
+  && grep -Fq 'qos-installer-catalog-v1.json' "$repo/apps/imager/packaging/verify-linux-release.sh" \
   && grep -Fq 'qos-release-key.asc' "$workflow" \
   && grep -Fq 'IMAGER_LINUX_SIGNING_FINGERPRINT' "$workflow" \
   && grep -Fq 'verify-linux-release.sh release-assets' "$workflow" \
@@ -65,6 +68,18 @@ grep -Fq 'AppImage.asc' "$workflow" \
   && ! grep -Fqi 'qos-imager-linux-*.flatpak' "$workflow" \
   && ok 'Linux signatures, release key, and protected fingerprint are a fail-closed publication gate' \
   || bad 'Linux release trust bundle is incomplete or bypassable'
+
+for artifact in \
+  qos-imager-windows-x86_64.zip \
+  qos-imager-macos-x86_64.zip \
+  qos-imager-macos-aarch64.zip; do
+  grep -Fq "            $artifact" "$workflow" \
+    && ok "$artifact is an explicit publication prerequisite" \
+    || bad "$artifact is linked by the website but absent from the publication gate"
+done
+grep -Fq 'sha256sum --check --strict "$(basename "$path").sha256"' "$workflow" \
+  && ok 'every required release sidecar is validated before publication' \
+  || bad 'release digest sidecars are checked for existence but not content'
 
 grep -Fq 'bash os/tests/imager_linux_release_trust.sh' \
     "$repo/.forgejo/workflows/check.yml" \
