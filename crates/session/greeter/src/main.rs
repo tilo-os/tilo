@@ -13,7 +13,8 @@
 //     snapshot for CI / visual inspection (identical output to the live
 //     binary). Scenarios: `form`, `hint`, `error`, `authenticating`,
 //     `fingerprint`, `starting`, `caps`, `longname`, `personal`, and
-//     `personal-no-fingerprint`. Defaults to `form`.
+//     `personal-no-fingerprint`, and personal-device transient variants.
+//     Defaults to `form`.
 
 #![cfg_attr(
     test,
@@ -169,6 +170,11 @@ fn parse_scenario_arg(args: &[String]) -> Option<AuthScenario> {
         "starting" => Some(AuthScenario::Starting),
         "longname" | "long-name" | "long" => Some(AuthScenario::LongName),
         "personal" => Some(AuthScenario::Personal),
+        "personal-error" => Some(AuthScenario::PersonalError),
+        "personal-authenticating" => Some(AuthScenario::PersonalAuthenticating),
+        "personal-caps" | "personal-caps-lock" => Some(AuthScenario::PersonalCapsLock),
+        "personal-hint" => Some(AuthScenario::PersonalHint),
+        "personal-starting" => Some(AuthScenario::PersonalStarting),
         "personal-no-fingerprint" | "personal-passcode" => {
             Some(AuthScenario::PersonalNoFingerprint)
         }
@@ -186,7 +192,10 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
         // The first frame anyone ever sees: both fields empty.
         AuthScenario::Form | AuthScenario::Personal | AuthScenario::PersonalNoFingerprint => None,
         // The whole point of the hint state is the *missing* password.
-        AuthScenario::Hint => Some(("ada", "")),
+        AuthScenario::Hint
+        | AuthScenario::Error
+        | AuthScenario::PersonalHint
+        | AuthScenario::PersonalError => Some(("ada", "")),
         // Long enough to overrun the field, so the snapshot proves how it
         // degrades rather than leaving it to chance.
         AuthScenario::LongName => Some(("bartholomew.featherstonehaugh-worthington", "hunter2")),
@@ -338,6 +347,25 @@ mod tests {
             assert_eq!(
                 parse_text_scale_arg(&args(&["qos-greeter", "--text-scale", value])),
                 None
+            );
+        }
+    }
+
+    #[test]
+    fn personal_transient_scenarios_are_additive_cli_options() {
+        for (name, expected) in [
+            ("personal-error", AuthScenario::PersonalError),
+            (
+                "personal-authenticating",
+                AuthScenario::PersonalAuthenticating,
+            ),
+            ("personal-caps", AuthScenario::PersonalCapsLock),
+            ("personal-hint", AuthScenario::PersonalHint),
+            ("personal-starting", AuthScenario::PersonalStarting),
+        ] {
+            assert_eq!(
+                parse_scenario_arg(&args(&["qos-greeter", "--scenario", name])),
+                Some(expected)
             );
         }
     }
