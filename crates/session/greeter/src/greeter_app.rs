@@ -34,7 +34,7 @@ use taffy::{
     AlignItems, Dimension, Display, FlexDirection, JustifyContent, NodeId, Size, Style, TaffyTree,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, ColorStop, Extend, Fill, Gradient};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::EventLoopProxy;
@@ -78,7 +78,7 @@ enum AuthMethod {
 }
 
 /// Card geometry (logical px).
-const CARD_WIDTH: f32 = 400.0;
+const CARD_WIDTH: f32 = 440.0;
 const CARD_PADDING: f32 = 24.0;
 /// Space between the card's top-level groups (brand, each field, the
 /// primary action, the status row, the power strip).
@@ -101,8 +101,7 @@ const STATUS_HEIGHT: f32 = 20.0;
 /// [`CARD_GAP`], so the feedback reads as belonging to the button you just
 /// pressed rather than floating loose in the card.
 const ACTION_STATUS_GAP: f32 = 10.0;
-/// Space between the wordmark and the line under it. Wide enough to clear
-/// the descender on the `q` at display size.
+/// Space between lines in the compact welcome lockup.
 const BRAND_GAP: f32 = 5.0;
 
 /// A vertical stack with an explicit gap and optional padding, fixed width,
@@ -922,17 +921,12 @@ impl GreeterApp {
 
     fn build_account_field(&self, busy: bool, theme: &Theme) -> Box<dyn Widget> {
         if let Some(user) = &self.login_user {
-            let account = if user.display_name == user.username {
-                user.username.clone()
-            } else {
-                format!("{}  ·  {}", user.display_name, user.username)
-            };
             Box::new(VStack::new(
                 LABEL_GAP,
                 vec![
-                    Box::new(Self::field_label("Account", theme)),
+                    Box::new(Self::field_label("Local account", theme)),
                     Box::new(
-                        Text::new(&account)
+                        Text::new(&user.username)
                             .with_id("greeter.account")
                             .with_size(15.0),
                     ),
@@ -950,6 +944,48 @@ impl GreeterApp {
                             .with_accessible_name("Username")
                             .with_placeholder("Your username")
                             .disabled(busy),
+                    ),
+                ],
+            ))
+        }
+    }
+
+    /// The greeter's visual introduction. On a personal device the account
+    /// is already known, so the person—not the product wordmark—gets the
+    /// strongest type tier. The ambiguous-account fallback keeps the compact
+    /// product-first lockup because it cannot truthfully greet anyone yet.
+    fn build_brand(&self, theme: &Theme) -> Box<dyn Widget> {
+        let c = &theme.tokens.colors;
+        if let Some(user) = &self.login_user {
+            Box::new(VStack::new(
+                BRAND_GAP,
+                vec![
+                    Box::new(
+                        Text::new("qOS desktop")
+                            .with_role(ui::tokens::typography::TextRole::Label)
+                            .with_color(c.text_dim),
+                    ),
+                    Box::new(
+                        Text::new(&format!("Welcome back, {}", user.display_name))
+                            .with_id("greeter.welcome")
+                            .with_size(28.0),
+                    ),
+                    Box::new(
+                        Text::new("Enter your passcode to open your desktop.")
+                            .with_size(13.0)
+                            .with_color(c.text_dim),
+                    ),
+                ],
+            ))
+        } else {
+            Box::new(VStack::new(
+                BRAND_GAP,
+                vec![
+                    Box::new(Text::new("qOS").with_size(38.0)),
+                    Box::new(
+                        Text::new("Sign in to continue")
+                            .with_size(13.0)
+                            .with_color(c.text_dim),
                     ),
                 ],
             ))
@@ -982,19 +1018,7 @@ impl GreeterApp {
         let mut children: Vec<Box<dyn Widget>> = Vec::new();
 
         // --- brand -------------------------------------------------------
-        // The wordmark plus one quiet line, tight together, so the pair
-        // reads as a single mark rather than two unrelated rows of text.
-        children.push(Box::new(VStack::new(
-            BRAND_GAP,
-            vec![
-                Box::new(Text::new("qOS").with_size(38.0)),
-                Box::new(
-                    Text::new("Sign in to continue")
-                        .with_size(13.0)
-                        .with_color(c.text_dim),
-                ),
-            ],
-        )));
+        children.push(self.build_brand(theme));
 
         // --- credentials -------------------------------------------------
         // Persistent labels above each field. Two unlabelled rounded boxes
@@ -1504,6 +1528,23 @@ impl Widget for GreeterApp {
                 ][..],
             );
             scene.fill(Fill::NonZero, transform, &wash, None, &self.rect);
+
+            // Echo the trusted installer/OOBE backdrop with two restrained
+            // accent fields. Their low alpha keeps the passcode card dominant
+            // and remains safe in high-contrast themes because the hue comes
+            // from the active theme rather than a hard-coded brand colour.
+            let accent_soft = Color::from_rgba8(a.r, a.g, a.b, 18);
+            let radius = self.rect.width().min(self.rect.height()) * 0.34;
+            let upper = Circle::new(
+                Point::new(self.rect.x0 - radius * 0.25, self.rect.y0 - radius * 0.2),
+                radius,
+            );
+            let lower = Circle::new(
+                Point::new(self.rect.x1 + radius * 0.45, self.rect.y1 + radius * 0.25),
+                radius * 1.15,
+            );
+            scene.fill(Fill::NonZero, transform, accent_soft, None, &upper);
+            scene.fill(Fill::NonZero, transform, accent_soft, None, &lower);
         }
         if let Some(c) = &mut self.composed {
             c.draw(scene, transform, text_renderer, theme, presence);
@@ -2171,7 +2212,7 @@ mod tests {
         let card = card_of(&app);
         assert_eq!(
             accessible_name_for(card.as_ref(), "greeter.account").as_deref(),
-            Some("ada Quick  ·  tester")
+            Some("tester")
         );
         assert_eq!(
             accessible_name_for(card.as_ref(), "greeter.password").as_deref(),
@@ -2833,6 +2874,41 @@ mod tests {
         assert!(!passcode_ids.contains(&"greeter.username".to_string()));
         assert!(with_ids.contains(&"greeter.fingerprint".to_string()));
         assert!(!passcode_ids.contains(&"greeter.fingerprint".to_string()));
+    }
+
+    #[test]
+    fn personal_device_greets_the_known_person_before_requesting_passcode() {
+        let app = GreeterApp::with_sessions_and_login_user(
+            test_sessions(),
+            Some(LoginUser {
+                username: "tester".into(),
+                display_name: "ada Quick".into(),
+            }),
+        );
+        let card = card_of(&app);
+        let spoken = spoken(card.as_ref());
+
+        let welcome = spoken
+            .iter()
+            .position(|text| text == "Welcome back, ada Quick")
+            .expect("personal greeter has a named welcome");
+        let passcode = spoken
+            .iter()
+            .position(|text| text == "Passcode")
+            .expect("personal greeter retains its passcode field");
+        assert!(
+            welcome < passcode,
+            "the welcome should establish context before the form: {spoken:?}"
+        );
+        assert_eq!(
+            accessible_name_for(card.as_ref(), "greeter.welcome").as_deref(),
+            Some("Welcome back, ada Quick")
+        );
+        assert_eq!(
+            focusables(&app).first().map(String::as_str),
+            Some("greeter.password"),
+            "visual warmth must not slow keyboard login"
+        );
     }
 
     /// A narrow portrait display must keep the complete primary workflow on
