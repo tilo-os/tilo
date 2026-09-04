@@ -226,8 +226,10 @@ administrators):
 The live-medium builder separately needs protected secret `REGISTRY_TOKEN` for
 `code.podesta.ai`. Give its service account pull access to frozen inputs and
 only the minimum image-write access required by `build-image.sh`; rotate it
-independently of signing. Forgejo provides the tag-release upload token as
-`github.token` and no additional release-upload secret is required.
+independently of signing. The WPE buildroot snapshot workflow does **not** use
+that persistent token in steady state; its broker setup is described below.
+Forgejo provides the tag-release upload token as `github.token` and no
+additional release-upload secret is required.
 
 Do not configure any of the following in steady state:
 `IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP`, `IMAGER_LINUX_SIGNING_KEY_B64`,
@@ -237,6 +239,83 @@ Do not configure any of the following in steady state:
 `IMAGER_APPLE_TEAM_ID`, `IMAGER_APPLE_APP_PASSWORD`, `HOMEBREW_TAP_TOKEN`,
 `WINGET_GITHUB_TOKEN`, or `SITE_RELEASE_TOKEN`. They exist solely to unblock a
 time-bounded first bootstrap and should be deleted immediately afterward.
+
+## WPE buildroot snapshot credentials
+
+`snapshot-wpe-buildroot.yml` is a separate main-branch trust boundary. Set the
+protected repository variable `WPE_SNAPSHOT_CREDENTIAL_BROKER` to an absolute,
+root-owned executable on both native Linux golden images. Both snapshot jobs
+enable Forgejo OIDC. They invoke the broker as:
+
+```text
+BROKER resolve-x86_64 OUTPUT
+BROKER resolve-aarch64 OUTPUT
+BROKER publish-x86_64 OUTPUT
+BROKER publish-aarch64 OUTPUT
+BROKER promote OUTPUT
+```
+
+The broker must fail if `OUTPUT` exists, create it as a regular mode-0600 file
+owned by the runner account, and write exactly one newline-terminated
+`NAME=value` per line. Resolve and promotion leases contain
+`QOS_REGISTRY_USERNAME`, `QOS_REGISTRY_PASSWORD`,
+and `QOS_LEASE_EXPIRES_AT`. Publish leases also contain `QOS_WPE_SIGNER`. The
+expiry is a Unix timestamp no more than 15 minutes in the future. CI acquires a
+read lease to resolve the base image, builds without pushing, logs out, then
+acquires a fresh write/signing lease immediately before push and signing;
+a signing handle is never left to expire during the long Fedora transaction.
+The helper rejects duplicate, malformed, or additional settings, uses the
+registry password only for `docker login`, removes the response, and logs out
+after the job. No registry password is copied to `GITHUB_ENV` or an artifact.
+
+The helper deliberately never handles the JWT itself: it verifies that
+Forgejo injected `ACTIONS_ID_TOKEN_REQUEST_URL` and
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN`, then invokes the trusted broker with both
+still present in its environment. The broker must request the audience
+`qos-wpe-buildroot-snapshot` from that URL, validate and exchange the returned
+JWT server-side, and must never copy either OIDC value into `OUTPUT`, logs, or
+an artifact. A broker which merely trusts the requested mode or other process
+environment without validating the signed JWT is not conforming.
+
+`QOS_WPE_SIGNER` must resolve to an executable, non-symlink, root-owned path
+outside the checkout and job temporary directory. It receives one argument:
+the immutable
+`code.podesta.ai/qos/qos-wpe-buildroot@sha256:...` reference. The wrapper must
+hold or acquire a non-exportable KMS/HSM signing lease, reject every other
+repository/reference shape, sign at most once for its build lease, upload the
+transparency-log entry, and return only after signing succeeds. CI immediately
+verifies the result with `keys/cosign.pub`; the broker cannot rotate the trusted
+identity by returning another public key.
+
+Configure this broker with a dedicated audience such as
+`qos-wpe-buildroot-snapshot` and the same JWT signature/time/replay checks
+described above, but with a policy specific to this workflow:
+
+- `repository == qos/qos` and the pinned immutable repository ID;
+- `event_name` is `push` or an authorized `workflow_dispatch`, `ref_type` is
+  `branch`, `ref == refs/heads/main`, and main is protected;
+- `workflow == snapshot-wpe-buildroot.yml`, with `workflow_ref` in `qos/qos`;
+- the requested mode is exactly one of the two `resolve-*`, two `publish-*`, or
+  `promote` modes above, and `(run_id, run_attempt, mode)` has not already
+  received a lease.
+
+Give resolve-mode registry leases pull access, publish-mode leases push access,
+and promotion-mode leases pull access only to `qos/qos-wpe-buildroot`. The
+promotion job explicitly gives `actions/checkout` Forgejo's job-scoped
+`github.token` for its atomic main-branch pin commit, so the broker does not
+mint a repository PAT.
+Its `contents: write` permission exists only on that promotion job; native build
+jobs have `contents: read`.
+
+For initial bring-up only, set `WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP=1` and
+set `WPE_STATIC_BOOTSTRAP_EXPIRES_AT` to an absolute Unix timestamp no more than
+24 hours away. Only while both conditions hold does CI expose protected
+`REGISTRY_TOKEN`, `COSIGN_PRIVATE_KEY`, and `COSIGN_PASSWORD` to the isolated
+bootstrap steps. An absent, expired, or overlong window fails closed. After the
+first broker-backed snapshot, delete the flag, expiry, `COSIGN_PRIVATE_KEY`, and
+`COSIGN_PASSWORD`; remove WPE snapshot write scope from the shared
+`REGISTRY_TOKEN` (which other live-medium jobs may still require). Do not
+refresh the expiry as a steady-state operating procedure.
 
 ## Package indexes
 

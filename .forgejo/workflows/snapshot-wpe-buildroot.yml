@@ -22,6 +22,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    enable-openid-connect: true
     strategy:
       fail-fast: true
       matrix:
@@ -35,42 +36,84 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Load the mirrored Fedora base
         run: grep '^BASE_REF=' os/base-snapshot.env >> "$GITHUB_ENV"
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: code.podesta.ai
-          username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Acquire a short-lived base-image read lease
+        if: vars.WPE_SNAPSHOT_CREDENTIAL_BROKER != ''
+        env:
+          WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
+        run: os/dev/acquire-wpe-snapshot-credentials.sh "resolve-${{ matrix.arch }}"
+      - name: Use explicitly expiring static credentials to read the base image
+        if: vars.WPE_SNAPSHOT_CREDENTIAL_BROKER == ''
+        env:
+          WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP: ${{ vars.WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP }}
+          WPE_STATIC_BOOTSTRAP_EXPIRES_AT: ${{ vars.WPE_STATIC_BOOTSTRAP_EXPIRES_AT }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: os/dev/acquire-wpe-snapshot-credentials.sh "resolve-${{ matrix.arch }}"
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - name: Resolve, build, and push the native buildroot
-        id: image
+      - name: Resolve and build the native buildroot locally
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: os/Containerfile.wpe-buildroot
-          push: true
+          push: false
+          load: true
           provenance: false
           no-cache: true
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
           tags: code.podesta.ai/qos/qos-wpe-buildroot:${{ matrix.arch }}-${{ github.sha }}
+      - name: Revoke the base-image read lease
+        run: docker logout code.podesta.ai || true
       - uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
-      - name: Audit and sign the immutable buildroot
+      - name: Acquire a fresh short-lived publish and signing lease
+        if: vars.WPE_SNAPSHOT_CREDENTIAL_BROKER != ''
         env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-          DIGEST: ${{ steps.image.outputs.digest }}
+          WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
+        run: os/dev/acquire-wpe-snapshot-credentials.sh "publish-${{ matrix.arch }}"
+      - name: Renew explicitly expiring static credentials for bootstrap publication
+        if: vars.WPE_SNAPSHOT_CREDENTIAL_BROKER == ''
+        env:
+          WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP: ${{ vars.WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP }}
+          WPE_STATIC_BOOTSTRAP_EXPIRES_AT: ${{ vars.WPE_STATIC_BOOTSTRAP_EXPIRES_AT }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: os/dev/acquire-wpe-snapshot-credentials.sh "publish-${{ matrix.arch }}"
+      - name: Publish and audit the immutable buildroot
         run: |
           set -euo pipefail
-          test -n "$COSIGN_PRIVATE_KEY"
-          test -n "$COSIGN_PASSWORD"
+          tag="code.podesta.ai/qos/qos-wpe-buildroot:${{ matrix.arch }}-${{ github.sha }}"
+          docker push "$tag"
+          digest_ref="$(docker image inspect --format '{{index .RepoDigests 0}}' "$tag")"
+          DIGEST="${digest_ref##*@}"
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           ref="code.podesta.ai/qos/qos-wpe-buildroot@$DIGEST"
           actual_arch="$(docker run --rm --entrypoint cat "$ref" /usr/lib/qos/wpe-buildroot-arch)"
           test "$actual_arch" = '${{ matrix.arch }}'
           docker run --rm --entrypoint sh "$ref" -c \
             'test -s /usr/lib/qos/wpe-buildroot-packages.txt && ! find /etc/yum.repos.d -type f -print -quit | grep -q .'
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY \
-            "$ref"
+          printf 'QOS_WPE_REF=%s\n' "$ref" >> "$GITHUB_ENV"
+      - name: Sign through the non-exportable leased key
+        if: vars.WPE_SNAPSHOT_CREDENTIAL_BROKER != ''
+        run: |
+          set -euo pipefail
+          test -n "${QOS_WPE_SIGNER:-}"
+          "$QOS_WPE_SIGNER" "$QOS_WPE_REF"
+      - name: Sign with the explicitly expiring bootstrap key
+        if: vars.WPE_SNAPSHOT_CREDENTIAL_BROKER == '' && vars.WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP == '1'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          WPE_STATIC_BOOTSTRAP_EXPIRES_AT: ${{ vars.WPE_STATIC_BOOTSTRAP_EXPIRES_AT }}
+        run: |
+          set -euo pipefail
+          test "${QOS_WPE_STATIC_BOOTSTRAP:-}" = 1
+          [[ "$WPE_STATIC_BOOTSTRAP_EXPIRES_AT" =~ ^[0-9]+$ ]]
+          (( WPE_STATIC_BOOTSTRAP_EXPIRES_AT > $(date +%s) ))
+          test -n "$COSIGN_PRIVATE_KEY" && test -n "$COSIGN_PASSWORD"
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$QOS_WPE_REF"
+      - name: Verify the signature and record the immutable reference
+        run: |
+          set -euo pipefail
+          ref="$QOS_WPE_REF"
+          cosign verify --key keys/cosign.pub "$ref" >/dev/null
           mkdir -p refs
           case '${{ matrix.arch }}' in
             x86_64) key=WPE_BUILDROOT_X86_64_REF ;;
@@ -82,26 +125,38 @@ jobs:
         with:
           name: wpe-buildroot-${{ matrix.arch }}
           path: refs/${{ matrix.arch }}.env
+      - name: Revoke local registry credentials
+        if: always()
+        run: docker logout code.podesta.ai || true
 
   promote:
     needs: build
     runs-on: runner
     permissions:
       contents: write
+      id-token: write
+    enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
+          token: ${{ github.token }}
           fetch-depth: 0
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: refs
       - uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: code.podesta.ai
-          username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Acquire a short-lived registry lease
+        if: vars.WPE_SNAPSHOT_CREDENTIAL_BROKER != ''
+        env:
+          WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
+        run: os/dev/acquire-wpe-snapshot-credentials.sh promote
+      - name: Use an explicitly expiring static registry credential for initial bootstrap
+        if: vars.WPE_SNAPSHOT_CREDENTIAL_BROKER == ''
+        env:
+          WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP: ${{ vars.WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP }}
+          WPE_STATIC_BOOTSTRAP_EXPIRES_AT: ${{ vars.WPE_STATIC_BOOTSTRAP_EXPIRES_AT }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: os/dev/acquire-wpe-snapshot-credentials.sh promote
       - name: Verify signatures and advance both architecture pins atomically
         run: |
           set -euo pipefail
@@ -142,3 +197,6 @@ jobs:
             exit 1
           fi
           git push origin HEAD:main
+      - name: Revoke local registry credentials
+        if: always()
+        run: docker logout code.podesta.ai || true
