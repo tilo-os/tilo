@@ -1154,7 +1154,7 @@ impl InstallerApp {
             return None;
         }
         let disk = self.selected_disk_ref()?;
-        if disk.can_install_alongside() {
+        if disk.can_install_alongside() && disk.pending_guided.is_none() {
             return None;
         }
         let plans = disk.guided_alongside_plans();
@@ -1171,7 +1171,7 @@ impl InstallerApp {
             return Vec::new();
         }
         self.selected_disk_ref()
-            .filter(|disk| !disk.can_install_alongside())
+            .filter(|disk| disk.pending_guided.is_some() || !disk.can_install_alongside())
             .map_or_else(Vec::new, Disk::guided_alongside_plans)
     }
 
@@ -1179,7 +1179,7 @@ impl InstallerApp {
         self.install_method == InstallMethod::Alongside
             && self
                 .selected_disk_ref()
-                .is_some_and(|disk| !disk.can_install_alongside())
+                .is_some_and(|disk| disk.pending_guided.is_some() || !disk.can_install_alongside())
             && self.guided_alongside_plan().is_some()
     }
 
@@ -1233,9 +1233,13 @@ impl InstallerApp {
         match self.install_method {
             InstallMethod::Erase => self.selected_dev(),
             InstallMethod::Alongside => self.selected_disk_ref().and_then(|disk| {
-                disk.alongside_root()
-                    .map(|partition| partition.name.clone())
-                    .or_else(|| self.guided_alongside_plan().map(|_| disk.name.clone()))
+                if disk.pending_guided.is_some() {
+                    Some(disk.name.clone())
+                } else {
+                    disk.alongside_root()
+                        .map(|partition| partition.name.clone())
+                        .or_else(|| self.guided_alongside_plan().map(|_| disk.name.clone()))
+                }
             }),
         }
     }
@@ -1270,7 +1274,9 @@ impl InstallerApp {
     fn install_options(&self) -> InstallOptions {
         let layout = self.layout();
         let disk = self.selected_disk_ref();
-        let (root, efi) = if self.install_method == InstallMethod::Alongside {
+        let (root, efi) = if self.install_method == InstallMethod::Alongside
+            && disk.is_some_and(|disk| disk.pending_guided.is_none())
+        {
             disk.map_or((None, None), |disk| {
                 (disk.alongside_root(), disk.efi_partition())
             })
@@ -1304,10 +1310,28 @@ impl InstallerApp {
             disk_partition_table_uuid: disk
                 .map_or_else(String::new, |disk| disk.partition_table_uuid.clone()),
             disk_logical_sector_size: disk.map_or(0, |disk| disk.logical_sector_size),
-            guided_efi_partuuid: self.guided_efi_partuuid.clone(),
-            guided_root_partuuid: self.guided_root_partuuid.clone(),
+            guided_efi_partuuid: guided
+                .as_ref()
+                .filter(|plan| !plan.efi_partuuid.is_empty())
+                .map_or_else(
+                    || self.guided_efi_partuuid.clone(),
+                    |plan| plan.efi_partuuid.clone(),
+                ),
+            guided_root_partuuid: guided
+                .as_ref()
+                .filter(|plan| !plan.root_partuuid.is_empty())
+                .map_or_else(
+                    || self.guided_root_partuuid.clone(),
+                    |plan| plan.root_partuuid.clone(),
+                ),
             expected_partitions: if guided.is_some() {
-                disk.and_then(Disk::occupied_extents).unwrap_or_default()
+                guided.as_ref().map_or_else(Vec::new, |plan| {
+                    if plan.efi_partuuid.is_empty() {
+                        disk.and_then(Disk::occupied_extents).unwrap_or_default()
+                    } else {
+                        plan.expected_partitions.clone()
+                    }
+                })
             } else {
                 Vec::new()
             },
@@ -1913,14 +1937,15 @@ impl InstallerApp {
             && self.uses_guided_alongside()
             && let Some(plan) = self.guided_alongside_plan()
         {
+            let pending = !plan.efi_partuuid.is_empty();
             children.push(Box::new(
-                Text::new(&format!(
-                    "Ready to use {} GiB of unallocated space: a new 2 GiB qOS EFI partition and a new {} GiB encrypted root. Existing partitions will not be changed.",
-                    plan.free_size_bytes / (1024 * 1024 * 1024),
-                    plan.root_size_bytes / (1024 * 1024 * 1024)
-                ))
-                .with_size(sm)
-                .with_color(theme.status_success),
+                Text::new(&self.guided_status_message(&plan))
+                    .with_size(sm)
+                    .with_color(if pending {
+                        danger
+                    } else {
+                        theme.status_success
+                    }),
             ));
         }
         children.push(nav_row(
@@ -1929,6 +1954,24 @@ impl InstallerApp {
             "Next",
             self.selected_disk.is_none() || unavailable,
         ));
+    }
+
+    fn guided_status_message(&self, plan: &GuidedAlongsidePlan) -> String {
+        if plan.efi_partuuid.is_empty() {
+            format!(
+                "Ready to use {} GiB of unallocated space: a new 2 GiB qOS EFI partition and a new {} GiB encrypted root. Existing partitions will not be changed.",
+                plan.free_size_bytes / (1024 * 1024 * 1024),
+                plan.root_size_bytes / (1024 * 1024 * 1024)
+            )
+        } else {
+            format!(
+                "Interrupted qOS setup found on this disk: the paired partitions span bytes {}–{} (2 GiB EFI + {} GiB root). Their two matching recovery records and the complete earlier GPT map agree. This is not automatic authorization: continue to Review and type {} again before formatting resumes.",
+                plan.free_start_bytes,
+                plan.free_start_bytes.saturating_add(plan.free_size_bytes),
+                plan.root_size_bytes / (1024 * 1024 * 1024),
+                self.selected_dev().as_deref().unwrap_or("the disk name")
+            )
+        }
     }
 
     fn compose_guided_extent_choices(
@@ -2194,11 +2237,19 @@ impl InstallerApp {
                 children.push(summary_row(
                     theme,
                     "Partition plan",
-                    &format!(
-                        "Create 2 GiB qOS EFI + {} GiB qOS root in {} GiB unallocated space",
-                        plan.root_size_bytes / (1024 * 1024 * 1024),
-                        plan.free_size_bytes / (1024 * 1024 * 1024)
-                    ),
+                    &if plan.efi_partuuid.is_empty() {
+                        format!(
+                            "Create 2 GiB qOS EFI + {} GiB qOS root in {} GiB unallocated space",
+                            plan.root_size_bytes / (1024 * 1024 * 1024),
+                            plan.free_size_bytes / (1024 * 1024 * 1024)
+                        )
+                    } else {
+                        format!(
+                            "Resume interrupted pair at bytes {}–{} after fresh confirmation",
+                            plan.free_start_bytes,
+                            plan.free_start_bytes.saturating_add(plan.free_size_bytes)
+                        )
+                    },
                 ));
                 children.push(summary_row(
                     theme,
@@ -2525,6 +2576,7 @@ fn sample_disks() -> Vec<Disk> {
                     part_type: EFI_SYSTEM_GUID.to_string(),
                 },
             ],
+            pending_guided: None,
         },
         Disk {
             name: "/dev/nvme0n1".to_string(),
@@ -2541,6 +2593,7 @@ fn sample_disks() -> Vec<Disk> {
             read_only: false,
             is_system: false,
             partitions: Vec::new(),
+            pending_guided: None,
         },
     ]
 }
@@ -3919,6 +3972,88 @@ mod tests {
 
         app.go_next();
         assert_eq!(app.step, Step::Account);
+    }
+
+    #[test]
+    fn restarted_ui_uses_receipt_identities_but_requires_fresh_exact_consent() {
+        let mut disk = sample_disks().remove(1);
+        let gib = 1024_u64 * 1024 * 1024;
+        let original_efi = "10000000-0000-4000-8000-000000000002".to_string();
+        let original_root = "20000000-0000-4000-8000-000000000003".to_string();
+        // Even when a large pre-existing ESP would make the unfinished root
+        // look like an expert prepared target, the receipt-associated pair
+        // must win; silently pairing that root with the old ESP loses the
+        // reviewed transaction boundary.
+        disk.partitions = vec![
+            DiskPartition {
+                name: "/dev/nvme0n1p1".into(),
+                start_bytes: 1024 * 1024,
+                size_bytes: 2 * gib,
+                part_uuid: "00000000-0000-4000-8000-000000000001".into(),
+                filesystem: "vfat".into(),
+                label: "existing ESP".into(),
+                mountpoint: String::new(),
+                part_type: EFI_SYSTEM_GUID.into(),
+            },
+            DiskPartition {
+                name: "/dev/nvme0n1p2".into(),
+                start_bytes: 4 * gib,
+                size_bytes: 2 * gib,
+                part_uuid: original_efi.clone(),
+                filesystem: String::new(),
+                label: String::new(),
+                mountpoint: String::new(),
+                part_type: EFI_SYSTEM_GUID.into(),
+            },
+            DiskPartition {
+                name: "/dev/nvme0n1p3".into(),
+                start_bytes: 6 * gib,
+                size_bytes: disk.size_bytes - 7 * gib,
+                part_uuid: original_root.clone(),
+                filesystem: String::new(),
+                label: String::new(),
+                mountpoint: String::new(),
+                part_type: LINUX_FILESYSTEM_GUID.into(),
+            },
+        ];
+        disk.pending_guided = Some(GuidedAlongsidePlan {
+            free_start_bytes: 4 * gib,
+            free_size_bytes: disk.size_bytes - 5 * gib,
+            efi_start_bytes: 4 * gib,
+            efi_size_bytes: 2 * gib,
+            root_start_bytes: 6 * gib,
+            root_size_bytes: disk.size_bytes - 7 * gib,
+            efi_partuuid: original_efi.clone(),
+            root_partuuid: original_root.clone(),
+            expected_partitions: vec![crate::disks::PartitionExtent {
+                part_uuid: "00000000-0000-4000-8000-000000000001".into(),
+                start_bytes: 1024 * 1024,
+                size_bytes: 2 * gib,
+            }],
+        });
+        let mut restarted = InstallerApp::with_disks(vec![disk]);
+        restarted.step = Step::Review;
+        restarted.install_method = InstallMethod::Alongside;
+        restarted.selected_disk = Some(0);
+
+        assert_ne!(restarted.guided_efi_partuuid, original_efi);
+        assert_ne!(restarted.guided_root_partuuid, original_root);
+        assert!(restarted.erase_confirmation.is_empty());
+        assert!(!restarted.destructive_confirmation_ready());
+        assert!(restarted.uses_guided_alongside());
+        let options = restarted.install_options();
+        assert!(options.alongside_root.is_empty());
+        assert_eq!(options.guided_efi_partuuid, original_efi);
+        assert_eq!(options.guided_root_partuuid, original_root);
+
+        restarted.erase_confirmation = "/dev/wrong".into();
+        assert!(!restarted.destructive_confirmation_ready());
+        restarted.erase_confirmation = "/dev/nvme0n1".into();
+        assert!(restarted.destructive_confirmation_ready());
+
+        restarted.refresh_disks_with(Vec::new());
+        assert!(restarted.erase_confirmation.is_empty());
+        assert!(!restarted.destructive_confirmation_ready());
     }
 
     #[test]
