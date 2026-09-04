@@ -36,6 +36,10 @@ pub struct PeerPresence {
     cursor: Arc<Mutex<Option<(f64, f64)>>>,
     /// Inbound presence from other hosts, filled by [`ShellNetwork::tick`].
     inbound: Arc<Mutex<Vec<crate::shell::network::InboundPresence>>>,
+    /// Relationship cues arrive through the authenticated typed-presence
+    /// route rather than the legacy desktop cursor queue. They are drained
+    /// into the same render-only [`PresenceCtx`] projection in [`Self::pump`].
+    follow_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>>,
     subscription: Arc<RoomSubscription>,
     /// The rooms this session is in, mirrored from [`Self::set_rooms`]
     /// so a room this session has left stops being remembered below.
@@ -100,9 +104,28 @@ impl PeerPresence {
         let net_for_desktop = Arc::clone(&net);
 
         let sink_cursor = Arc::clone(&cursor);
+        let follow_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let sink_follow = Arc::clone(&follow_inbound);
         let subscription = broker.subscribe_rooms(
             rooms,
             Box::new(move |event, route| {
+                if let CollabEvent::RemotePresenceUpdate {
+                    user_id,
+                    key,
+                    payload: payload @ PresencePayload::Following { .. },
+                } = event
+                {
+                    // Follow markers must carry the room they were routed to;
+                    // otherwise a forged application key could pin a cue in
+                    // an unrelated workspace.
+                    if matches!(key, PresenceKey::Workspace { id } if id == &route.cluster_id)
+                        && let Ok(mut queue) = sink_follow.lock()
+                    {
+                        queue.push((user_id.clone(), key.clone(), payload.clone()));
+                    }
+                    return;
+                }
                 // Only a pointer says where someone is; carets/selections
                 // are the document's business, not the desktop's.
                 let CollabEvent::RemotePresenceUpdate {
@@ -137,6 +160,7 @@ impl PeerPresence {
         Self {
             cursor,
             inbound,
+            follow_inbound,
             subscription,
             rooms: Mutex::new(rooms_mirror),
             last_published: Mutex::new(HashMap::new()),
@@ -227,9 +251,20 @@ impl PeerPresence {
         };
         let net = Arc::clone(&self.net);
         let mine: Vec<String> = self.rooms.lock().map(|g| g.clone()).unwrap_or_default();
-        fold_inbound(drained, presence, &|room| net.peer_labels(room), &|room| {
-            mine.iter().any(|r| r == room)
-        })
+        let cursor_changed =
+            fold_inbound(drained, presence, &|room| net.peer_labels(room), &|room| {
+                mine.iter().any(|r| r == room)
+            });
+        let relationships = self
+            .follow_inbound
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue))
+            .unwrap_or_default();
+        let relationship_changed = !relationships.is_empty();
+        for (user, key, payload) in relationships {
+            presence.apply_remote_presence(user, key, payload);
+        }
+        cursor_changed || relationship_changed
     }
 
     /// Write the active workspace's room's people into the tree, where

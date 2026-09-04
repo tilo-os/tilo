@@ -1,4 +1,6 @@
 # sha256<TAB>filename<TAB>versioned upstream URL
+bcfeae05557a9f313ee4392d2f335d0ff69ebbfd232019e3736fb04999fe1734	cosign-v2.5.2-linux-amd64	https://github.com/sigstore/cosign/releases/download/v2.5.2/cosign-linux-amd64
+2cbcea1873ad76274c3f241ef175d204654e3aac3e73e6ec4504e5227015cb0a	cosign-v2.5.2-linux-arm64	https://github.com/sigstore/cosign/releases/download/v2.5.2/cosign-linux-arm64
 138ce4b8843608a257d4bee88191ca78a989778bcefd8abb3c1d1aaac3ac6fb8	umu-launcher-1.4.0.tar	https://github.com/Open-Wine-Components/umu-launcher/releases/download/1.4.0/umu-launcher-1.4.0-zipapp.tar
 62e99e029a18fa313e6fa63d42390918101730a940e3491c54d9d58cab887c69	umu-proton-10.0-4.tar.gz	https://github.com/Open-Wine-Components/umu-proton/releases/download/UMU-Proton-10.0-4/UMU-Proton-10.0-4.tar.gz
 87271019d53a13299b495287ef45def9078a0d654e5f53f99f67b82fffa034a8	umu-database-8297d420.csv	https://raw.githubusercontent.com/Open-Wine-Components/umu-database/8297d420143bf722387b572fa1b81b5fa22746ac/umu-database.csv

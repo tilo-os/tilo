@@ -57,10 +57,10 @@ pub enum AuthError {
 impl AuthError {
     /// Primary, user-facing one-liner. Deliberately never a raw PAM
     /// string — bad credentials always read "Incorrect username or
-    /// password" so we leak nothing about which field failed.
+    /// passcode" so we leak nothing about which field failed.
     pub fn user_message(&self) -> String {
         match self {
-            AuthError::BadCredentials => "Incorrect username or password".to_string(),
+            AuthError::BadCredentials => "Incorrect username or passcode".to_string(),
             AuthError::Greetd(_) => "Could not start the session".to_string(),
             AuthError::Transport(_) => "Could not reach the login service".to_string(),
         }
@@ -561,7 +561,7 @@ mod tests {
         assert_eq!(result, Err(AuthError::BadCredentials));
         // The raw PAM string must NOT leak into the user-facing message.
         let err = result.unwrap_err();
-        assert_eq!(err.user_message(), "Incorrect username or password");
+        assert_eq!(err.user_message(), "Incorrect username or passcode");
         assert_eq!(err.detail(), None);
     }
 
@@ -696,7 +696,7 @@ mod tests {
         assert_eq!(result, Err(AuthError::BadCredentials));
         assert_eq!(
             result.unwrap_err().user_message(),
-            "Incorrect username or password"
+            "Incorrect username or passcode"
         );
     }
 
@@ -706,7 +706,7 @@ mod tests {
     fn auth_error_message_mapping() {
         assert_eq!(
             AuthError::BadCredentials.user_message(),
-            "Incorrect username or password"
+            "Incorrect username or passcode"
         );
         assert_eq!(AuthError::BadCredentials.detail(), None);
 

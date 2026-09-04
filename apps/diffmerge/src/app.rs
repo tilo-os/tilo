@@ -472,6 +472,10 @@ impl DiffMergeApp {
         self.tool_hits.clear();
         let c = &theme.tokens.colors;
         let r = self.rect;
+        // A single toolbar row remains deliberately compact on phones. Keep
+        // both modes and every action reachable, but trade desktop prose for
+        // familiar short labels so controls never paint over each other.
+        let compact = r.width() < 640.0;
         let bar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
         scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &bar);
         scene.stroke(
@@ -490,15 +494,20 @@ impl DiffMergeApp {
         // mode control claims the reclaimed left slot.
         let seg_y = r.y0 + 10.0;
         let seg_h = 28.0;
-        let mode_labels: [&str; 2] = ["Diff", "3-way merge"];
+        let mode_labels: [&str; 2] = if compact {
+            ["Diff", "Merge"]
+        } else {
+            ["Diff", "3-way merge"]
+        };
         let mode_actions = [Action::ModeDiff, Action::ModeMerge];
         let selected = usize::from(self.mode == Mode::Merge);
         let mut mode_rects: Vec<Rect> = Vec::with_capacity(mode_labels.len());
-        let mut x = r.x0 + 16.0;
+        let mut x = r.x0 + if compact { 8.0 } else { 16.0 };
         for label in mode_labels {
-            let w = label.len() as f64 * 7.4 + 22.0;
+            let w = label.len() as f64 * if compact { 7.0 } else { 7.4 }
+                + if compact { 18.0 } else { 22.0 };
             mode_rects.push(Rect::new(x, seg_y, x + w, seg_y + seg_h));
-            x += w + 6.0;
+            x += w + if compact { 4.0 } else { 6.0 };
         }
         let hovered = mode_rects.iter().position(|rr| rr.contains(self.cursor));
         ToggleGroup::paint(
@@ -519,14 +528,25 @@ impl DiffMergeApp {
         }
 
         // Right-aligned action buttons.
-        let mut rx = r.x1 - 16.0;
-        for (label, action) in [
-            ("Open files", Action::Open),
-            ("Load sample", Action::LoadSample),
-            ("Next ›", Action::NextChange),
-            ("‹ Prev", Action::PrevChange),
-        ] {
-            let w = label.len() as f64 * 7.2 + 20.0;
+        let mut rx = r.x1 - if compact { 8.0 } else { 16.0 };
+        let actions: &[(&str, Action)] = if compact {
+            &[
+                ("Open", Action::Open),
+                ("Sample", Action::LoadSample),
+                ("›", Action::NextChange),
+                ("‹", Action::PrevChange),
+            ]
+        } else {
+            &[
+                ("Open files", Action::Open),
+                ("Load sample", Action::LoadSample),
+                ("Next ›", Action::NextChange),
+                ("‹ Prev", Action::PrevChange),
+            ]
+        };
+        for (label, action) in actions {
+            let w = label.len() as f64 * if compact { 6.8 } else { 7.2 }
+                + if compact { 16.0 } else { 20.0 };
             let btn = Rect::new(rx - w, seg_y, rx, seg_y + seg_h);
             Button::paint(
                 scene,
@@ -539,8 +559,11 @@ impl DiffMergeApp {
                     .weight(TextWeight::Regular)
                     .hovered(btn.contains(self.cursor)),
             );
-            self.tool_hits.push(ToolHit { rect: btn, action });
-            rx -= w + 8.0;
+            self.tool_hits.push(ToolHit {
+                rect: btn,
+                action: *action,
+            });
+            rx -= w + if compact { 4.0 } else { 8.0 };
         }
     }
 
@@ -1017,6 +1040,24 @@ impl Widget for DiffMergeApp {
         "DiffMergeApp"
     }
 
+    // The toolbar is immediate-mode chrome, while the active comparison view
+    // owns its own semantic controls. Exposing that live child is what lets the
+    // compact source switcher reach the actual qOS accessibility tree rather
+    // than only being available to pointer users.
+    fn children(&self) -> Vec<&dyn Widget> {
+        match self.mode {
+            Mode::Diff => vec![&self.diff],
+            Mode::Merge => vec![&self.merge],
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        match self.mode {
+            Mode::Diff => vec![&mut self.diff],
+            Mode::Merge => vec![&mut self.merge],
+        }
+    }
+
     /// Publish the open merge + its hunks so the host's Ctrl+K action palette
     /// scopes to them. Delegates to the
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
@@ -1401,6 +1442,182 @@ mod tests {
         app.apply_layout(&taffy, child, Point::ORIGIN);
         let mut scene = Scene::new();
         app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    fn keyboard_event(key: Key) -> WindowEvent {
+        use winit::event::{DeviceId, KeyEvent};
+        use winit::keyboard::{KeyLocation, PhysicalKey};
+
+        // `KeyEvent` has an opaque platform payload. The public fields below
+        // are exactly the ones the widget reads; this mirrors the toolkit's
+        // own headless keyboard helpers.
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = key;
+        event.physical_key =
+            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        event.location = KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        event.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: DeviceId::dummy(),
+            event,
+            is_synthetic: false,
+        }
+    }
+
+    fn selected_compact_source(app: &DiffMergeApp) -> String {
+        let node = Widget::accessibility(&app.merge).expect("merge is exposed to assistive tech");
+        node.children
+            .iter()
+            .find(|child| child.state.checked == Some(true))
+            .and_then(|child| child.name.clone())
+            .expect("one compact source is selected")
+    }
+
+    /// At phone width, a three-way merge intentionally presents one full-width
+    /// source pane plus an explicit Base/Ours/Theirs switcher. This guards
+    /// against a future layout change quietly restoring three unreadable
+    /// columns at 390px.
+    #[test]
+    fn phone_merge_uses_a_full_width_source_switcher() {
+        let mut app = DiffMergeApp::new_demo();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        draw_merge_frame(&mut app, (390.0, 760.0));
+
+        let hits = app.merge.compact_source_hits();
+        assert_eq!(hits.len(), 3, "phone has Base/Ours/Theirs source controls");
+        assert_eq!(
+            hits.iter().map(|(_, name)| *name).collect::<Vec<_>>(),
+            vec!["Base", "Ours", "Theirs"]
+        );
+        for (rect, _) in &hits {
+            assert!(
+                rect.width() >= 110.0,
+                "each source target stays finger-sized: {rect:?}"
+            );
+            assert!(
+                rect.x0 >= 0.0 && rect.x1 <= 390.0,
+                "source target stays onscreen: {rect:?}"
+            );
+        }
+        assert!(hits.windows(2).all(|pair| pair[0].0.x1 <= pair[1].0.x0));
+
+        let semantic = Widget::accessibility(&app.merge).expect("merge semantics");
+        assert_eq!(semantic.children.len(), 3);
+        assert_eq!(selected_compact_source(&app), "Show Ours source");
+
+        // At tablet width the selector disappears because all three panes are
+        // deliberately visible side by side.
+        draw_merge_frame(&mut app, (800.0, 760.0));
+        assert!(app.merge.compact_source_hits().is_empty());
+        assert!(
+            Widget::accessibility(&app.merge)
+                .expect("merge semantics")
+                .children
+                .is_empty()
+        );
+    }
+
+    /// The compact source switcher is only useful when the surrounding chrome
+    /// is usable too. Keep the complete one-row phone toolbar on screen and
+    /// non-overlapping (both modes, file open/sample, and change navigation).
+    #[test]
+    fn phone_toolbar_keeps_every_control_visible_without_overlap() {
+        let mut app = DiffMergeApp::new_demo();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        draw_merge_frame(&mut app, (390.0, 760.0));
+
+        assert_eq!(app.tool_hits.len(), 6, "two modes and four actions");
+        let mut rects: Vec<_> = app.tool_hits.iter().map(|hit| hit.rect).collect();
+        rects.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+        assert!(rects.iter().all(|rect| rect.x0 >= 0.0 && rect.x1 <= 390.0));
+        assert!(rects.windows(2).all(|pair| pair[0].x1 <= pair[1].x0));
+    }
+
+    /// Pointer, keyboard, and assistive activation all select the same compact
+    /// source state. The test drives the real event/semantic routes rather
+    /// than calling the selection helper directly.
+    #[test]
+    fn compact_source_switcher_has_pointer_keyboard_and_a11y_parity() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{DeviceId, Modifiers};
+
+        let mut app = DiffMergeApp::new_demo();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        draw_merge_frame(&mut app, (390.0, 760.0));
+        let theirs = app
+            .merge
+            .compact_source_hits()
+            .into_iter()
+            .find(|(_, name)| *name == "Theirs")
+            .expect("Theirs selector")
+            .0
+            .center();
+        let mods = Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        app.handle_event(
+            &WindowEvent::CursorMoved {
+                device_id: DeviceId::dummy(),
+                position: PhysicalPosition::new(theirs.x, theirs.y),
+            },
+            1.0,
+            &mods,
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+        app.handle_event(
+            &WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            1.0,
+            &mods,
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+        assert!(handled);
+        assert_eq!(selected_compact_source(&app), "Show Theirs source");
+
+        handled = false;
+        app.handle_event(
+            &keyboard_event(Key::Named(NamedKey::ArrowLeft)),
+            1.0,
+            &mods,
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+        assert!(handled);
+        assert_eq!(selected_compact_source(&app), "Show Ours source");
+
+        let theirs_key = ui::a11y::hash_key(&"diffmerge.source.theirs");
+        assert!(Widget::perform_action_at(
+            &mut app.merge,
+            &ui::a11y::Action::Activate,
+            &[theirs_key],
+            &mut state.doc,
+            &state.root,
+        ));
+        assert_eq!(selected_compact_source(&app), "Show Theirs source");
     }
 
     /// Clicking a resolution chip at its drawn pixel position resolves *that*

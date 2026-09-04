@@ -1,9 +1,9 @@
 //! qOS-device session route adapter.
 //!
 //! Discovery remains owned by the device-mesh runtime. Remote accepts a
-//! verified snapshot, delegates direct/relay selection to `qos-relay`, and
-//! reports the decision to session setup. It never turns configuration into a
-//! reachability claim.
+//! verified snapshot and delegates route selection to `qos-relay`. Only an
+//! exact-target route is accepted for control; a workspace-wide relay is
+//! reported as unavailable rather than leaking input through fan-out.
 
 use qos_relay::{RemoteControlRoute, ServerAdvertisement, route_remote_control};
 
@@ -15,7 +15,8 @@ pub type DeviceKey = [u8; 32];
 pub enum QosRouteDecision {
     /// Direct device-to-device reachability is live.
     Direct,
-    /// The encrypted connection must tunnel through this always-on device.
+    /// A relay candidate, retained for callers that need to explain why the
+    /// route was rejected for exact-target control.
     Relayed { via: DeviceKey },
 }
 
@@ -82,7 +83,10 @@ impl QosRouteProvider for MeshQosRouteProvider {
             &self.snapshot.servers,
         ) {
             RemoteControlRoute::Direct { .. } => Ok(QosRouteDecision::Direct),
-            RemoteControlRoute::Relayed { via, .. } => Ok(QosRouteDecision::Relayed { via }),
+            RemoteControlRoute::Relayed { .. } => Err(
+                "Workspace control needs an exact-target route; the available relay is workspace-wide"
+                    .to_string(),
+            ),
             RemoteControlRoute::Unavailable => Err(
                 "No direct path or eligible online server is available for this workspace"
                     .to_string(),
@@ -146,10 +150,11 @@ mod tests {
     }
 
     #[test]
-    fn remote_uses_real_relay_fallback() {
-        assert_eq!(
-            provider(false, vec![server(3)]).route("studio-node"),
-            Ok(QosRouteDecision::Relayed { via: [3; 32] })
+    fn workspace_wide_relay_is_not_a_control_route() {
+        assert!(
+            provider(false, vec![server(3)])
+                .route("studio-node")
+                .is_err()
         );
     }
 

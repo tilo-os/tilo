@@ -324,6 +324,27 @@ pub struct PresenceUser {
     pub is_agent: bool,
 }
 
+/// The kind of participant behind a live presence stream. This comes from
+/// the authenticated room context, never from a display-name convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ParticipantKind {
+    #[default]
+    Person,
+    Agent,
+}
+
+impl From<bool> for ParticipantKind {
+    fn from(is_agent: bool) -> Self {
+        if is_agent { Self::Agent } else { Self::Person }
+    }
+}
+
+impl AsRef<UserId> for UserId {
+    fn as_ref(&self) -> &UserId {
+        self
+    }
+}
+
 impl PresenceUser {
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
         let id = id.into();
@@ -427,6 +448,9 @@ pub struct PresenceCtx {
     pointer_seen: HashMap<(PresenceKey, UserId), Instant>,
     pub selections: HashMap<PresenceKey, Vec<(UserId, SelectionRange)>>,
     pub carets: HashMap<PresenceKey, Vec<(UserId, usize)>>,
+    /// Ephemeral visual relationships, keyed by `(room, follower)`. They
+    /// never affect document state or anyone's local viewport.
+    following: HashMap<(PresenceKey, UserId), UserId>,
     pub remote_cursors: Vec<RemoteCursor>,
     /// Seeded by the shell from [`Collaborator::cursor_color`]; falls
     /// through to [`user_color`] via [`PresenceCtx::color_for`] when unset.
@@ -435,9 +459,10 @@ pub struct PresenceCtx {
     /// (`CollabEvent::Context`). A peer with no entry falls back to its raw
     /// id via [`PresenceCtx::display_name`], so a caret chip is never blank.
     pub names: HashMap<UserId, String>,
-    /// Participants whose signed collaboration context identifies them as
-    /// agents. Kept separately from names so renaming cannot erase kind.
-    agents: std::collections::HashSet<UserId>,
+    /// Authenticated participant kind from `CollabEvent::Context`. Renderers
+    /// use this in addition to colour so an agent cannot be mistaken for a
+    /// person when names are hidden, elided, or inaccessible.
+    participant_kinds: HashMap<UserId, ParticipantKind>,
     /// Per-user "just typed" highlight spans, keyed by presence scope and
     /// faded out by [`PresenceCtx::active_typing`] over [`TYPING_FADE`].
     /// Not serialised — purely a local render effect.
@@ -802,14 +827,17 @@ impl PresenceCtx {
         self.names.insert(user, name);
     }
 
-    /// Preserve the principal kind carried by `CollabEvent::Context`.
-    pub fn set_participant_kind(&mut self, user: &UserId, is_agent: bool) {
-        if is_agent {
-            self.agents.insert(user.clone());
-        } else {
-            self.agents.remove(user);
-        }
-        let shown = self.display_name(user);
+    /// Seed the authenticated participant kind announced by the room. Both
+    /// the legacy boolean and the typed enum map to the same authenticated
+    /// kind, so changing names never changes a participant's principal kind.
+    pub fn set_participant_kind(
+        &mut self,
+        user: impl AsRef<UserId>,
+        kind: impl Into<ParticipantKind>,
+    ) {
+        let user = user.as_ref().clone();
+        self.participant_kinds.insert(user.clone(), kind.into());
+        let shown = self.display_name(&user);
         for cursor in &mut self.remote_cursors {
             if cursor.user_id == user.0 {
                 cursor.label.clone_from(&shown);
@@ -817,8 +845,15 @@ impl PresenceCtx {
         }
     }
 
+    pub fn participant_kind(&self, user: &UserId) -> ParticipantKind {
+        self.participant_kinds
+            .get(user)
+            .copied()
+            .unwrap_or_default()
+    }
+
     pub fn is_agent(&self, user: &UserId) -> bool {
-        self.agents.contains(user)
+        self.participant_kind(user) == ParticipantKind::Agent
     }
 
     /// The friendly name to show for `user`, falling back to the raw id
@@ -968,6 +1003,15 @@ impl PresenceCtx {
             .iter()
             .find(|c| c.user_id == user_id)
             .map(|c| c.position)
+    }
+
+    /// Every live `(follower, target)` relationship announced in `key`.
+    /// This is deliberately a render-only projection of transient presence.
+    pub fn following_in(&self, key: &PresenceKey) -> Vec<(&UserId, &UserId)> {
+        self.following
+            .iter()
+            .filter_map(|((scope, follower), target)| (scope == key).then_some((follower, target)))
+            .collect()
     }
 
     /// Returns the id of the peer whose off-screen mist band (the strips
@@ -1147,7 +1191,7 @@ impl PresenceCtx {
         payload: crate::collaboration::PresencePayload,
     ) -> RemotePresenceEffect {
         use crate::collaboration::PresencePayload::{
-            Arrived, Caret, Left, Pointer, Selection, Typing,
+            Arrived, Caret, Following, Left, Pointer, Selection, Typing,
         };
 
         // A frame this session published, handed back: another app the same
@@ -1234,6 +1278,19 @@ impl PresenceCtx {
                     Instant::now(),
                 );
             }
+            Following { target } => {
+                // A follow relationship is only meaningful within a room.
+                // Reject narrower scopes rather than letting a document or
+                // widget frame imply control of that content.
+                if matches!(key, PresenceKey::Workspace { .. }) {
+                    let follower = UserId(user_id);
+                    if let Some(target) = target.filter(|target| !target.trim().is_empty()) {
+                        self.following.insert((key, follower), UserId(target));
+                    } else {
+                        self.following.remove(&(key, follower));
+                    }
+                }
+            }
             Arrived => {
                 let uid = UserId(user_id.clone());
                 self.register_peer_at(user_id, key.clone());
@@ -1267,6 +1324,7 @@ impl PresenceCtx {
     /// which is just the pointer leaving the viewport — see the arm above).
     pub fn unregister_peer(&mut self, user_id: &str) {
         let uid = UserId(user_id.to_owned());
+        self.participant_kinds.remove(&uid);
         for list in self.here.values_mut() {
             list.retain(|u| u != &uid);
         }
@@ -1281,9 +1339,10 @@ impl PresenceCtx {
             list.retain(|(u, _)| u != &uid);
         }
         self.typing.retain(|(u, _), _| u != &uid);
+        self.following
+            .retain(|(_, follower), target| follower != &uid && target != &uid);
         self.views.remove(&uid);
         self.names.remove(&uid);
-        self.agents.remove(&uid);
         self.remove_remote_cursor(user_id);
     }
 }
@@ -1479,6 +1538,7 @@ mod remote_cursor_tests {
 #[cfg(test)]
 mod string_id_wrapper_tests {
     use super::*;
+    use crate::collaboration::PresencePayload;
 
     #[test]
     fn set_remote_caret_writes_to_carets_map() {
@@ -1950,6 +2010,58 @@ mod string_id_wrapper_tests {
     }
 
     #[test]
+    fn follow_relationship_is_room_scoped_ephemeral_and_releasable() {
+        let mut ctx = PresenceCtx::empty();
+        let room = PresenceKey::Workspace {
+            id: "studio".into(),
+        };
+        let other_room = PresenceKey::Workspace {
+            id: "elsewhere".into(),
+        };
+        ctx.apply_remote_presence(
+            "alice".into(),
+            room.clone(),
+            PresencePayload::Following {
+                target: Some("bob".into()),
+            },
+        );
+        let relationships: Vec<_> = ctx
+            .following_in(&room)
+            .into_iter()
+            .map(|(follower, target)| (follower.clone(), target.clone()))
+            .collect();
+        assert_eq!(
+            relationships,
+            vec![(UserId("alice".into()), UserId("bob".into()))],
+            "observers learn only the follower-target relation in this room"
+        );
+        assert!(ctx.following_in(&other_room).is_empty());
+
+        ctx.apply_remote_presence(
+            "alice".into(),
+            room.clone(),
+            PresencePayload::Following { target: None },
+        );
+        assert!(
+            ctx.following_in(&room).is_empty(),
+            "stop clears the visual cue"
+        );
+
+        ctx.apply_remote_presence(
+            "alice".into(),
+            room.clone(),
+            PresencePayload::Following {
+                target: Some("bob".into()),
+            },
+        );
+        ctx.unregister_peer("bob");
+        assert!(
+            ctx.following_in(&room).is_empty(),
+            "disconnecting either endpoint removes the ephemeral relationship"
+        );
+    }
+
+    #[test]
     fn unregister_peer_leaves_other_users_alone() {
         // Removing alice must not collateral-damage bob.
         let mut ctx = PresenceCtx::empty();
@@ -2267,6 +2379,23 @@ mod own_identity_tests {
         // And it comes back the instant it says something again.
         ctx.set_pointer_at(&room, claude.clone(), (10.0, 20.0), t1);
         assert_eq!(ctx.pointer_for(&room, &claude), Some((10.0, 20.0)));
+    }
+
+    #[test]
+    fn authenticated_participant_kind_survives_presence_and_clears_on_disconnect() {
+        let mut ctx = PresenceCtx::empty();
+        let agent = UserId("peer@agent-7".into());
+
+        assert_eq!(ctx.participant_kind(&agent), ParticipantKind::Person);
+        ctx.set_participant_kind(agent.clone(), ParticipantKind::Agent);
+        ctx.set_display_name(agent.clone(), "Release assistant");
+        ctx.set_caret(&PresenceKey::Widget { path: vec![] }, agent.clone(), 4);
+
+        assert!(ctx.is_agent(&agent));
+        assert_eq!(ctx.display_name(&agent), "Release assistant");
+
+        ctx.unregister_peer(&agent.0);
+        assert_eq!(ctx.participant_kind(&agent), ParticipantKind::Person);
     }
 
     /// A workspace-scoped pointer registers its peer as present; a

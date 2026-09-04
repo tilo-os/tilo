@@ -4,7 +4,7 @@
 //! and pointer hit map. `CalendarApp` keeps the navigation policy: it applies
 //! the small [`Action`] values emitted here to the current view and anchor.
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
@@ -340,7 +340,11 @@ fn switcher_fits(content_width: f64, leading: LeadingControl) -> bool {
 
 fn period_title_variants(view: View, anchor: NaiveDate) -> Vec<String> {
     match view {
-        View::Month => vec![date::month_title(anchor)],
+        View::Month => vec![
+            date::month_title(anchor),
+            date::month_title_short(anchor),
+            anchor.year().to_string(),
+        ],
         View::Week => {
             let week = date::week_days(anchor);
             let first = week.first().copied().unwrap_or(anchor);
@@ -398,6 +402,39 @@ mod tests {
         );
         assert_eq!(variants.len(), 2);
         assert!(variants[1].contains('–'));
+    }
+
+    #[test]
+    fn month_title_has_compact_variants_before_it_can_clip_into_new() {
+        let anchor = NaiveDate::from_ymd_opt(2026, 9, 3).expect("valid test date");
+        let variants = period_title_variants(View::Month, anchor);
+        assert_eq!(variants, vec!["September 2026", "Sep 2026", "2026"]);
+
+        let mut bar = Topbar::new();
+        bar.layout(Rect::new(0.0, 0.0, 390.0, 844.0), LeadingControl::None);
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let hits = bar.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            View::Month,
+            anchor,
+            Point::ZERO,
+        );
+        let new = hits
+            .iter()
+            .find(|(_, action)| *action == Action::NewEvent)
+            .map(|(rect, _)| *rect)
+            .expect("new event hit target");
+        let title_right = new.x0 - 12.0;
+        let title_x = 16.0 + 74.0 + 60.0 + 14.0;
+        let chosen = variants
+            .iter()
+            .find(|title| f64::from(text.measure(title, 19.0, None).0) <= title_right - title_x)
+            .expect("a compact month title fits before New");
+        assert_eq!(chosen, "Sep 2026");
     }
 
     #[test]

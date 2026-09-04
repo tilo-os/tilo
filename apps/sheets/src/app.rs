@@ -3790,6 +3790,47 @@ impl Widget for SheetsApp {
         "SheetsApp"
     }
 
+    /// The worksheet is a custom-painted cell canvas, so surface the active
+    /// cell, current selection and sheet tabs rather than exporting an opaque
+    /// drawing surface to assistive technology.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let active = self.grid.active();
+        let active_name = crate::model::addr_to_a1(active.0, active.1);
+        let tabs = self
+            .sheet_names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                AccessNode::new(Role::Tab)
+                    .with_name(name.clone())
+                    .with_position(index + 1, self.sheet_names.len())
+                    .with_state(AccessState::new().selected(index == self.active_sheet))
+            })
+            .collect();
+        let sheet = AccessNode::new(Role::Table)
+            .with_name("Worksheet")
+            .with_value(format!("Selected range {}", self.grid.selection_label()))
+            .with_children(vec![AccessNode::new(Role::Row).with_children(vec![
+                    AccessNode::new(Role::Cell)
+                        .with_name(active_name)
+                        .with_value(self.grid.active_display_raw())
+                        .with_state(AccessState::new().selected(true)),
+                ])]);
+        Some(
+            AccessNode::new(Role::Document)
+                .with_name("Spreadsheet")
+                .with_description("Editable workbook with formula bar and sheet tabs")
+                .with_state(AccessState::new().focusable(true))
+                .with_children(vec![
+                    AccessNode::new(Role::TabBar)
+                        .with_name("Sheets")
+                        .with_children(tabs),
+                    sheet,
+                ]),
+        )
+    }
+
     fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
         self.palette.take_control_invocation()
     }
@@ -6233,5 +6274,21 @@ mod tests {
         let before = SheetsDoc::sheet_count(&mut doc);
         app.dispatch_command(&mut doc, "new_sheet", None);
         assert_eq!(SheetsDoc::sheet_count(&mut doc), before + 1);
+    }
+
+    #[test]
+    fn accessibility_exposes_active_cell_and_selected_sheet() {
+        use ui::widget::Widget as _;
+
+        let (mut app, _doc) = seeded_app();
+        app.grid.select_only((1, 1));
+        let tree = app.accessibility().expect("spreadsheet semantics");
+        assert_eq!(tree.role, ui::a11y::Role::Document);
+        let tabs = &tree.children[0];
+        assert_eq!(tabs.role, ui::a11y::Role::TabBar);
+        assert!(tabs.children.iter().any(|tab| tab.state.selected));
+        let cell = &tree.children[1].children[0].children[0];
+        assert_eq!(cell.name.as_deref(), Some("B2"));
+        assert!(cell.state.selected);
     }
 }

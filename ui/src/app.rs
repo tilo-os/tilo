@@ -2616,10 +2616,14 @@ impl App {
     /// Shared by the per-frame tick and the headless test path. Returns
     /// `true` iff at least one event was processed.
     pub fn pump_collab_presence(&mut self) -> bool {
+        for request in self.root_widget.take_collab_requests() {
+            self.collab_manager.send(request);
+        }
         let events = self.collab_manager.poll();
         let mut any = false;
         for event in events {
             any = true;
+            self.root_widget.handle_collab_event(&event);
             match event {
                 CollabEvent::Context { collaborators, .. } => {
                     self.apply_collab_context(collaborators);
@@ -2692,7 +2696,8 @@ impl App {
                 // widgets such as Agent through their collaboration event
                 // hook; an ordinary application has no local state to apply.
                 CollabEvent::ActionCatalogue { .. }
-                | CollabEvent::PublishedInvocationResult { .. } => {}
+                | CollabEvent::PublishedInvocationResult { .. }
+                | CollabEvent::WorkspaceControl { .. } => {}
             }
         }
         any
@@ -2722,6 +2727,14 @@ impl App {
             }
             self.presence_ctx
                 .set_display_name(crate::permissions::UserId(c.id.clone()), c.name.clone());
+            self.presence_ctx.set_participant_kind(
+                crate::permissions::UserId(c.id),
+                if c.is_agent {
+                    crate::presence::ParticipantKind::Agent
+                } else {
+                    crate::presence::ParticipantKind::Person
+                },
+            );
         }
     }
 
@@ -2753,6 +2766,7 @@ impl App {
     /// `MemoryRelay`.
     #[doc(hidden)]
     pub fn apply_collab_event_for_test(&mut self, event: CollabEvent) {
+        self.root_widget.handle_collab_event(&event);
         match event {
             CollabEvent::RemotePresenceUpdate {
                 user_id,
@@ -2782,6 +2796,9 @@ impl App {
                 Some(peer_id) => self.follow(peer_id),
                 None => self.unfollow(),
             },
+            CollabEvent::Context { collaborators, .. } => {
+                self.apply_collab_context(collaborators);
+            }
             CollabEvent::Invocation {
                 id,
                 resource,

@@ -1,8 +1,9 @@
 # Remote Desktop — qOS application manifest.
 #
-# SSH and VNC are available behind the explicit live-session developer
-# switch. RDP and qOS Relay profiles remain readable but are not offered for
-# creation until their transports are implemented.
+# SSH and VNC are available behind the explicit live-session switch. qOS
+# device control is production-on through the shell's authenticated exact-target
+# route; workspace-wide relay fan-out is refused. RDP profiles remain readable
+# but are not offered for creation until that transport is implemented.
 #
 # Pack and install:
 #

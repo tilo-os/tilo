@@ -1,9 +1,9 @@
 # Disk Imager — qOS application manifest.
 #
 # The sandboxed qpkg uses the host file chooser and keeps destructive writing
-# behind the application's allow-gate; without a future narrow raw-device
-# portal it remains in simulation mode. The separately packaged Linux,
-# Windows, and macOS host downloads perform real privileged media writes.
+# behind the application's allow-gate. Without a narrow raw-device portal the
+# qpkg does not expose writing at all. The separately packaged Linux, Windows,
+# and macOS host downloads compile in the short-lived privileged writer.
 #
 # Pack and install:
 #

@@ -67,9 +67,11 @@ to infer present product behaviour.
 
 ## Capability honesty
 
-- Remote Desktop offers only SSH and VNC when creating a connection. Existing
-  RDP and qOS Relay profiles are preserved and editable, but visibly
-  unavailable; qOS does not present a dead Connect action.
+- Remote Desktop offers SSH, VNC, and qOS device connections. qOS sessions use
+  the shell's authenticated exact-target device route, stay waiting until the
+  target shares a workspace surface, and fail closed on unavailable relays,
+  denial, revocation, or route loss. Existing RDP profiles remain
+  preserved and editable, but visibly unavailable.
 - Device pairing is manual-copy today: the screen asks for the code and pairing
   payload supplied by the existing device. It does not advertise a scanner that
   is absent.
@@ -128,9 +130,11 @@ acceptance record.
   action works.
 - Keep deterministic test data and pin time/network inputs before visual
   comparison.
-- Refresh a golden deliberately with `UPDATE_SNAPSHOTS=1`, review it, commit it,
-  then run without the variable to compare it. CI must never silently create a
-  baseline.
+- Render replacement goldens with the manual `refresh-visual-baselines.yml`
+  workflow. Download its `visual-baseline-candidates-*` artifact, inspect the
+  changed PNGs and diff inventory, verify the patch checksum, and apply only
+  accepted paths. Commit that review explicitly, then let nightly compare the
+  result without update variables. CI must never silently commit a baseline.
 - Document scope, source of truth and verification beside every release-affecting
   change. Do not treat an implementation plan as a shipped capability.
 

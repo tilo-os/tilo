@@ -5,11 +5,11 @@
 //   * default — build an `InstallerApp`, hand it to `ui::App`, run the
 //     live winit event loop. Launched off the live media under `cage`:
 //         cage -s -- /usr/bin/qos-installer
-//   * `--shots <PATH> [--step <name>]` — render one screen into a PNG at
+//   * `--shots <PATH> [--step <name>] [--viewport <WIDTH>x<HEIGHT>]` — render one screen into a PNG at
 //     `<PATH>` and exit. No window, no event loop. Headless snapshot for
 //     CI / visual inspection (output identical to the live binary's first
 //     frame). `<name>` ∈ {network, disk, account, keyboard, options, options-open,
-//     review, install, finish, failed} (with `user`/`confirm` accepted as
+//     review, install, finish, finish-recovery, failed, failed-recovery} (with `user`/`confirm` accepted as
 //     legacy aliases); `options-open` renders the Options step with the
 //     time-zone dropdown popped open; `keyboard` renders the keyboard step
 //     seeded with a non-default (German) layout so the visual preview shows
@@ -59,11 +59,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
         let name = parse_step_arg(&args).unwrap_or_else(|| "disk".to_string());
+        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        let text_scale = parse_text_scale_arg(&args);
         let Some((widget, seed)) = build_shot(&name) else {
             eprintln!("qos-installer: unknown --step '{name}'");
             std::process::exit(2);
         };
-        render_shot_to_png(widget, DEFAULT_SHOTS_VIEWPORT, &out, seed)?;
+        render_shot_to_png(widget, viewport, text_scale, &out, seed)?;
         return Ok(());
     }
 
@@ -86,6 +88,40 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     Ok(())
+}
+
+/// Returns the optional logical-pixel viewport supplied to the headless
+/// renderer. Malformed or zero-sized values are ignored, preserving the
+/// stable default used by existing visual baselines.
+fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
+    let mut iter = args.iter().skip(1);
+    let raw = loop {
+        let arg = iter.next()?;
+        if arg == "--viewport" {
+            break iter.next()?.as_str();
+        }
+        if let Some(rest) = arg.strip_prefix("--viewport=") {
+            break rest;
+        }
+    };
+    let (width, height) = raw.split_once(['x', 'X'])?;
+    let viewport = (width.parse().ok()?, height.parse().ok()?);
+    (viewport.0 > 0 && viewport.1 > 0).then_some(viewport)
+}
+
+fn parse_text_scale_arg(args: &[String]) -> Option<f32> {
+    let mut iter = args.iter().skip(1);
+    let raw = loop {
+        let arg = iter.next()?;
+        if arg == "--text-scale" {
+            break iter.next()?.as_str();
+        }
+        if let Some(rest) = arg.strip_prefix("--text-scale=") {
+            break rest;
+        }
+    };
+    let scale: f32 = raw.parse().ok()?;
+    (scale.is_finite() && (0.75..=2.0).contains(&scale)).then_some(scale)
 }
 
 /// Build the widget for a `--shots --step <name>` render, plus whether to
@@ -115,6 +151,22 @@ fn build_shot(name: &str) -> Option<(Box<dyn Widget>, bool)> {
     if name == "keyboard" {
         let mut app = InstallerApp::for_shot(Step::Keyboard);
         app.shot_keymap("German (QWERTZ)");
+        return Some((Box::new(app), true));
+    }
+
+    if name == "finish-recovery" {
+        let mut app = InstallerApp::for_shot(Step::Install);
+        app.shot_finished_with_recovery();
+        return Some((Box::new(app), true));
+    }
+    if name == "finish-recovery-saved" {
+        let mut app = InstallerApp::for_shot(Step::Install);
+        app.shot_finished_with_saved_recovery();
+        return Some((Box::new(app), true));
+    }
+    if name == "failed-recovery" {
+        let mut app = InstallerApp::for_shot(Step::Install);
+        app.shot_failed_with_recovery();
         return Some((Box::new(app), true));
     }
 
@@ -183,13 +235,14 @@ fn parse_step_arg(args: &[String]) -> Option<String> {
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
+    text_scale: Option<f32>,
     out: &std::path::Path,
     seed_creds: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use automerge::{ObjType, transaction::Transactable};
 
     let (w, h) = viewport;
-    let theme = Theme::dark();
+    let theme = text_scale.map_or_else(Theme::dark, |scale| Theme::dark().with_text_scale(scale));
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -270,4 +323,61 @@ fn render_shot_to_png(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("qos-installer: wrote shot to {}", out.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn viewport_accepts_separate_and_equals_forms() {
+        assert_eq!(
+            parse_viewport_arg(&args(&["qos-installer", "--viewport", "640x480"])),
+            Some((640, 480))
+        );
+        assert_eq!(
+            parse_viewport_arg(&args(&["qos-installer", "--viewport=360X640"])),
+            Some((360, 640))
+        );
+    }
+
+    #[test]
+    fn viewport_rejects_malformed_or_empty_dimensions() {
+        for raw in ["", "640", "x480", "640x", "0x480", "640x0", "-1x480"] {
+            assert_eq!(
+                parse_viewport_arg(&args(&["qos-installer", "--viewport", raw])),
+                None,
+                "accepted malformed viewport {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shot_text_scale_accepts_only_bounded_finite_values() {
+        assert_eq!(
+            parse_text_scale_arg(&args(&["qos-installer", "--text-scale=1.3"])),
+            Some(1.3)
+        );
+        for value in ["NaN", "0.5", "2.1", "not-a-number"] {
+            assert_eq!(
+                parse_text_scale_arg(&args(&["qos-installer", "--text-scale", value])),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_visual_states_are_renderable() {
+        for scenario in [
+            "finish-recovery",
+            "finish-recovery-saved",
+            "failed-recovery",
+        ] {
+            assert!(build_shot(scenario).is_some(), "missing {scenario}");
+        }
+    }
 }

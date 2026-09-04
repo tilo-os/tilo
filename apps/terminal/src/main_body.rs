@@ -30,13 +30,15 @@ use ui::{
 use unicode_width::UnicodeWidthChar;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::{BlendMode, Color, Fill};
 use vte::{Parser, Perform};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
 
-use crate::graphics::{GraphicsScanner, StreamEvent, TerminalImagePlacement, parse_kitty};
+use crate::graphics::{
+    GraphicsScanner, StreamEvent, TerminalImagePlacement, decode_for_rendering, parse_kitty,
+};
 
 /// Cell coordinate within the terminal buffer. `row` is an **absolute** index
 /// into the full `grid` (scrollback included), not a viewport-local row — the
@@ -506,6 +508,10 @@ pub struct TerminalWidget {
     /// blob substrate; only immutable hashes and cell placement ride Automerge.
     images_id: Option<ObjId>,
     image_placements: Vec<TerminalImagePlacement>,
+    /// Decoded images are deliberately local GPU-side state. The CRDT contains
+    /// only immutable content addresses; each peer validates and decodes bytes
+    /// on demand when a placement comes into view.
+    image_cache: HashMap<String, ui::widget::Image>,
     graphics_scanner: GraphicsScanner,
 
     /// Stable per-instance id used to scope this terminal's collaboration
@@ -609,6 +615,7 @@ impl TerminalWidget {
             current_link_id: 0,
             images_id: None,
             image_placements: Vec::new(),
+            image_cache: HashMap::new(),
             graphics_scanner: GraphicsScanner::default(),
             pane_id: uuid::Uuid::new_v4().to_string(),
             waker: Arc::new(Mutex::new(None)),
@@ -809,8 +816,8 @@ impl TerminalWidget {
     }
 
     /// Shared, content-addressed graphics placements discovered in the output
-    /// stream. Rendering is deliberately separate: callers can resolve `hash`
-    /// through qdoc's blob store once a decoder/renderer is available.
+    /// stream. Visible supported placements are decoded locally and painted on
+    /// the cell grid; callers can also inspect the collaborative descriptors.
     pub fn image_placements(&self) -> &[TerminalImagePlacement] {
         &self.image_placements
     }
@@ -1583,6 +1590,13 @@ impl Widget for TerminalWidget {
             return;
         }
 
+        // Images sit beneath selections and glyphs: text printed over a Kitty
+        // placement remains legible, and selecting cells still has the same
+        // visible feedback as plain terminal content. Their row anchors are
+        // buffer-absolute, so scrollback and history retention move them with
+        // the corresponding rows rather than pinning them to the viewport.
+        self.draw_terminal_images(scene, transform, theme, grid_rect, start_y, visible_rows);
+
         // Paint the selection BEFORE the cell text so glyphs read on top of
         // the highlight.
         self.draw_selection_highlight(
@@ -1730,12 +1744,23 @@ impl Widget for TerminalWidget {
             .map(|row| row.trim_end())
             .collect::<Vec<_>>()
             .join("\n");
+        let graphics = self
+            .image_placements
+            .iter()
+            .filter(|placement| placement.alternate_screen == self.alt_active)
+            .count();
+        let description = if graphics == 0 {
+            "Interactive terminal session; output is shared with collaborators".to_string()
+        } else {
+            format!(
+                "Interactive terminal session; output is shared with collaborators; \
+                 {graphics} graphical placement(s) are visible when their image blobs are available"
+            )
+        };
         Some(
             AccessNode::new(Role::MultilineTextInput)
                 .with_name(self.title.clone())
-                .with_description(
-                    "Interactive terminal session; output is shared with collaborators",
-                )
+                .with_description(description)
                 .with_value(value)
                 .with_state(AccessState {
                     focusable: true,
@@ -2285,6 +2310,12 @@ impl TerminalWidget {
                 rows: scalar_u64(&id, "rows")
                     .and_then(|value| u32::try_from(value).ok())
                     .unwrap_or(0),
+                pixel_width: scalar_u64(&id, "pixel_width")
+                    .and_then(|value| u32::try_from(value).ok())
+                    .unwrap_or(0),
+                pixel_height: scalar_u64(&id, "pixel_height")
+                    .and_then(|value| u32::try_from(value).ok())
+                    .unwrap_or(0),
                 protocol_id: scalar_u64(&id, "protocol_id")
                     .and_then(|value| u32::try_from(value).ok()),
                 alternate_screen: scalar_bool(&id, "alternate_screen").unwrap_or(false),
@@ -2350,6 +2381,94 @@ impl TerminalWidget {
             let band = Rect::new(x0, py, x1, py + self.char_h);
             scene.fill(Fill::NonZero, transform, sel_color, None, &band);
         }
+    }
+
+    /// Decode and paint graphics only when their buffer rows are visible.  The
+    /// cache holds successful decodes only: a blob which has not arrived at a
+    /// collaborator yet is retried on a later frame, rather than being latched
+    /// as permanently absent.  Images are clipped to the grid so a malformed
+    /// placement cannot paint over terminal chrome or another tile.
+    fn draw_terminal_images(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        grid_rect: Rect,
+        start_y: usize,
+        visible_rows: usize,
+    ) {
+        const MAX_DECODE_CACHE_ENTRIES: usize = 128;
+        let placements: Vec<_> = self
+            .image_placements
+            .iter()
+            .filter(|placement| placement.alternate_screen == self.alt_active)
+            .cloned()
+            .collect();
+        if placements.is_empty() || visible_rows == 0 {
+            return;
+        }
+
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &grid_rect,
+        );
+        let viewport_end = start_y.saturating_add(visible_rows);
+        for placement in placements {
+            let rows = usize::try_from(placement.rows.clamp(1, 1024)).unwrap_or(1);
+            let columns = usize::try_from(placement.columns.clamp(1, 1024)).unwrap_or(1);
+            let placement_end = placement.row.saturating_add(rows);
+            if placement.col >= self.width
+                || placement_end <= start_y
+                || placement.row >= viewport_end
+            {
+                continue;
+            }
+            let left = grid_rect.x0 + self.last_padding_x + placement.col as f64 * self.char_w;
+            let top = grid_rect.y0 + placement.row.saturating_sub(start_y) as f64 * self.char_h;
+            let right = (left + columns as f64 * self.char_w).min(grid_rect.x1);
+            let bottom = (top + rows as f64 * self.char_h).min(grid_rect.y1);
+            let rect = Rect::new(left, top, right, bottom);
+            if rect.width() <= 0.0 || rect.height() <= 0.0 {
+                continue;
+            }
+
+            // The MIME and dimensions form part of this local cache key: raw
+            // Kitty payloads have no self-describing header, and a replicated
+            // descriptor must not reuse a decoded image under altered metadata.
+            let cache_key = format!(
+                "{}:{}:{}:{}",
+                placement.hash, placement.mime, placement.pixel_width, placement.pixel_height
+            );
+            if !self.image_cache.contains_key(&cache_key) {
+                if self.image_cache.len() >= MAX_DECODE_CACHE_ENTRIES {
+                    self.image_cache.clear();
+                }
+                if let Some(bytes) = qdoc::blobstore::get(&placement.hash)
+                    && placement.byte_len == u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+                    && let Some(image) = decode_for_rendering(&placement, &bytes)
+                {
+                    self.image_cache.insert(cache_key.clone(), image);
+                }
+            }
+            if let Some(image) = self.image_cache.get_mut(&cache_key) {
+                image.paint_at(scene, transform, rect);
+            } else {
+                // Honest fallback for an unavailable blob or unsupported /
+                // invalid image.  It reserves the promised cells without
+                // pretending an image rendered successfully.
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    transform,
+                    theme.text_tertiary.with_alpha_factor(0.55),
+                    None,
+                    &rect,
+                );
+            }
+        }
+        scene.pop_layer();
     }
 
     /// Paint every visible row's cell text as colour runs (consecutive cells
@@ -3596,10 +3715,9 @@ impl Perform for TerminalPerformer<'_> {
 
 impl TerminalPerformer<'_> {
     /// Persist a complete direct Kitty transmission as a content-addressed blob
-    /// plus a lightweight CRDT placement descriptor. There is intentionally no
-    /// success reply yet: accepting bytes is not the same promise as rendering
-    /// them, and applications must not be told graphics are visible until the
-    /// decode/paint path exists.
+    /// plus a lightweight CRDT placement descriptor. The local renderer
+    /// validates and paints this subset, but no protocol success reply is sent:
+    /// clients must not infer broad Kitty support from an acknowledgement.
     fn kitty_graphics(&mut self, payload: &[u8]) {
         self.flush_print_buf();
         let Some(image) = parse_kitty(payload) else {
@@ -3627,6 +3745,12 @@ impl TerminalPerformer<'_> {
             .state
             .put(&placement, "columns", u64::from(image.columns));
         let _ = self.state.put(&placement, "rows", u64::from(image.rows));
+        let _ = self
+            .state
+            .put(&placement, "pixel_width", u64::from(image.pixel_width));
+        let _ = self
+            .state
+            .put(&placement, "pixel_height", u64::from(image.pixel_height));
         let _ = self
             .state
             .put(&placement, "alternate_screen", *self.alt_active);

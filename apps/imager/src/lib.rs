@@ -94,6 +94,8 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         app.seed_confirmation_for_shot("sdb");
     } else if scenario == "export" {
         app.seed_export_for_shot();
+    } else if scenario == "customize-timezone-open" {
+        app.shot_open_customize_timezone();
     }
     Box::new(app)
 }
@@ -107,6 +109,7 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "drive-empty",
     "drive-internal",
     "customize",
+    "customize-timezone-open",
     "export",
     "confirm",
     "progress",
@@ -157,6 +160,8 @@ fn demo_iso_source() -> crate::model::Source {
         size: 2_113_929_216,
         label: "Fedora-WS-Live-42-1-1".into(),
         installable: false,
+        identity: None,
+        expected_sha256: None,
     }
 }
 
@@ -229,7 +234,7 @@ fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
             ImagerDoc::set_step(doc, Step::Drive);
             ImagerDoc::set_status(doc, "1 removable, 2 total");
         }
-        "customize" | "export" => {
+        "customize" | "customize-timezone-open" | "export" => {
             ImagerDoc::set_selected(doc, Some(0));
             ImagerDoc::set_action(doc, Action::Flash);
             ImagerDoc::set_step(doc, Step::Customize);
@@ -251,6 +256,7 @@ fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
                     write_frac: 0.62,
                     verify_frac: 0.0,
                     rate_bps: 176_000_000,
+                    error: None,
                 },
             );
             ImagerDoc::set_status(doc, "Writing qOS 1.0 → /dev/sdb");
@@ -265,6 +271,7 @@ fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
                     write_frac: 1.0,
                     verify_frac: 1.0,
                     rate_bps: 0,
+                    error: None,
                 },
             );
             ImagerDoc::set_status(doc, "Done — qOS 1.0 written and verified");
@@ -279,6 +286,7 @@ fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
                     write_frac: 0.4,
                     verify_frac: 0.0,
                     rate_bps: 0,
+                    error: Some("The drive was disconnected while writing.".into()),
                 },
             );
             ImagerDoc::set_status(doc, "Write failed — device disappeared mid-write");

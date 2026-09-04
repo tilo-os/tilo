@@ -81,17 +81,22 @@ impl SheetProvider for XlsxCodec {
         let mut pkg = SheetPackage { parts: Vec::new() };
 
         let styles_xml = wb.preserved_part("xlsx/part/xl/styles.xml");
-        let has_styles = styles_xml.is_some();
+        // Styles routinely refer to `theme/theme1.xml` (notably for font and
+        // fill colours). Keeping the theme part *and its OPC relationship*
+        // avoids turning a styled workbook into Office's default palette on a
+        // content edit.
+        let theme_xml = wb.preserved_part("xlsx/part/xl/theme/theme1.xml");
+        let has_theme = theme_xml.is_some();
 
         pkg.set(
             "[Content_Types].xml",
-            content_types_xml(snap.sheets.len(), has_styles).into_bytes(),
+            content_types_xml(snap.sheets.len(), has_theme).into_bytes(),
         );
         pkg.set("_rels/.rels", root_rels_xml().into_bytes());
         pkg.set("xl/workbook.xml", workbook_xml(&snap).into_bytes());
         pkg.set(
             "xl/_rels/workbook.xml.rels",
-            workbook_rels_xml(snap.sheets.len(), has_styles).into_bytes(),
+            workbook_rels_xml(snap.sheets.len(), has_theme).into_bytes(),
         );
         for (i, sheet) in snap.sheets.iter().enumerate() {
             pkg.set(
@@ -104,6 +109,9 @@ impl SheetProvider for XlsxCodec {
             "xl/styles.xml",
             styles_xml.unwrap_or_else(|| minimal_styles_xml().into_bytes()),
         );
+        if let Some(theme) = theme_xml {
+            pkg.set("xl/theme/theme1.xml", theme);
+        }
         pkg.set(
             "docProps/core.xml",
             core_props_xml(&snap.properties).into_bytes(),
@@ -392,7 +400,7 @@ fn import_core_props(xml: &[u8], wb: &mut Workbook) {
     }
 }
 
-fn content_types_xml(nsheets: usize, has_styles: bool) -> String {
+fn content_types_xml(nsheets: usize, has_theme: bool) -> String {
     let mut overrides = String::new();
     overrides.push_str(r#"<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>"#);
     for i in 0..nsheets {
@@ -402,8 +410,12 @@ fn content_types_xml(nsheets: usize, has_styles: bool) -> String {
             i.saturating_add(1)
         );
     }
-    if has_styles {
-        overrides.push_str(r#"<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>"#);
+    // `styles.xml` is always emitted (including the minimal default), so it
+    // must always be declared and related. Omitting it made style IDs appear
+    // invalid to strict consumers when an imported file lacked that part.
+    overrides.push_str(r#"<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>"#);
+    if has_theme {
+        overrides.push_str(r#"<Override PartName="/xl/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>"#);
     }
     overrides.push_str(r#"<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>"#);
     format!(
@@ -433,7 +445,7 @@ fn workbook_xml(snap: &crate::sheet::WorkbookSnapshot) -> String {
     )
 }
 
-fn workbook_rels_xml(nsheets: usize, has_styles: bool) -> String {
+fn workbook_rels_xml(nsheets: usize, has_theme: bool) -> String {
     let mut rels = String::new();
     for i in 0..nsheets {
         let n = i.saturating_add(1);
@@ -442,8 +454,9 @@ fn workbook_rels_xml(nsheets: usize, has_styles: bool) -> String {
             r#"<Relationship Id="rIdSheet{n}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{n}.xml"/>"#,
         );
     }
-    if has_styles {
-        rels.push_str(r#"<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>"#);
+    rels.push_str(r#"<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>"#);
+    if has_theme {
+        rels.push_str(r#"<Relationship Id="rIdTheme" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>"#);
     }
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

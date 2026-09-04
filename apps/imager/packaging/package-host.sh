@@ -37,7 +37,7 @@ if [ "$require_signing" = 1 ]; then
       ;;
   esac
 fi
-cargo build --locked --release -p imager
+cargo build --locked --release -p imager --features host-media-writer
 mkdir -p "$out"
 
 write_digest() {
@@ -138,6 +138,26 @@ case "$host" in
       codesign --force --options runtime --timestamp \
         --sign "$QOS_MAC_SIGNING_IDENTITY" "$app"
       codesign --verify --deep --strict --verbose=2 "$app"
+      expected_team="${QOS_MAC_EXPECTED_TEAM_ID:-}"
+      expected_cert="${QOS_MAC_EXPECTED_CERT_SHA256:-}"
+      if [ "$require_signing" = 1 ]; then
+        [[ "$expected_team" =~ ^[A-Z0-9]{10}$ ]] \
+          || { printf 'QOS_MAC_EXPECTED_TEAM_ID is required for a release build\n' >&2; exit 1; }
+        [[ "$expected_cert" =~ ^[A-F0-9]{64}$ ]] \
+          || { printf 'QOS_MAC_EXPECTED_CERT_SHA256 is required for a release build\n' >&2; exit 1; }
+      fi
+      actual_team="$(codesign -dvv "$app" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+      [ -z "$expected_team" ] || [ "$actual_team" = "$expected_team" ] \
+        || { printf 'macOS Team ID does not match protected release policy\n' >&2; exit 1; }
+      actual_cert="$(
+        cert_tmp="$(mktemp -d)"
+        trap 'rm -rf "$cert_tmp"' EXIT
+        codesign -d --extract-certificates "$cert_tmp/cert" "$app"
+        openssl x509 -inform DER -in "$cert_tmp/cert0" -noout -fingerprint -sha256 \
+          | sed 's/^[^=]*=//; s/://g'
+      )"
+      [ -z "$expected_cert" ] || [ "$actual_cert" = "$expected_cert" ] \
+        || { printf 'macOS signing certificate fingerprint does not match protected release policy\n' >&2; exit 1; }
     elif [ "$require_signing" = 1 ]; then
       printf 'QOS_MAC_SIGNING_IDENTITY is required for a release build\n' >&2
       exit 1
@@ -217,7 +237,7 @@ case "$host" in
     cp apps/imager/packaging/linux/qos-imager.desktop \
       "$appdir/usr/share/applications/org.qos.Imager.desktop"
     cp apps/imager/packaging/linux/org.qos.Imager.metainfo.xml \
-      "$appdir/usr/share/metainfo/"
+      "$appdir/usr/share/metainfo/org.qos.Imager.appdata.xml"
     cp apps/imager/packaging/linux/AppRun "$appdir/AppRun"
     cp apps/imager/packaging/linux/qos-imager.svg "$appdir/qos-imager.svg"
     cp apps/imager/packaging/linux/qos-imager.svg "$appdir/.DirIcon"

@@ -14,7 +14,7 @@
 //! governance act with another one rather than rewinding it.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
@@ -28,9 +28,10 @@ use ui::widget::{
     ArtifactKind, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
 };
 use ui::{
-    ActivityBrief, ActivityDigest, ActivityTimeline, AuthorDirectory, BandUndoRequest, ChangeRun,
-    ColorCompat, GroupNameRequest, HistoryComparison, HistoryFacetIndex, HistorySelectionDetail,
-    HistorySource, NamedRange, NarrativeRequest, RecordStore, Theme, Widget, format_relative_time,
+    ActivityBrief, ActivityDigest, ActivityTimeline, AgentRun, AuthorDirectory, BandUndoRequest,
+    ChangeRun, ColorCompat, GroupNameRequest, HistoryComparison, HistoryFacetIndex,
+    HistorySelectionDetail, HistorySource, NamedRange, NarrativeRequest, RecordId, RecordStore,
+    StepState, Theme, Widget, format_relative_time,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -92,6 +93,7 @@ impl ActivityView {
 enum LensSelection {
     #[default]
     All,
+    AgentTasks,
     App(String),
     ResourceKind(String),
     Resource(String),
@@ -194,6 +196,7 @@ enum DetailAction {
     Open,
     Compare,
     Undo,
+    UndoTask,
     Split,
     Merge,
 }
@@ -204,10 +207,19 @@ impl DetailAction {
             Self::Open => "Open",
             Self::Compare => "Compare",
             Self::Undo => "Undo",
+            Self::UndoTask => "Undo whole task",
             Self::Split => "Split",
             Self::Merge => "Merge",
         }
     }
+}
+
+/// A durable agent-run marker and the record whose document carries it.
+/// `None` is reserved for a marker in the workspace tree itself.
+#[derive(Clone, Debug, PartialEq)]
+struct IndexedAgentRun {
+    source_record: Option<RecordId>,
+    run: AgentRun,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -250,6 +262,23 @@ fn at(transform: Affine, dx: f64, dy: f64) -> Affine {
 )]
 fn text_width(width: f64) -> f32 {
     width.max(0.0) as f32
+}
+
+fn humanize_app_id(app_id: &str) -> String {
+    app_id
+        .rsplit(['.', '/'])
+        .next()
+        .unwrap_or(app_id)
+        .split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().collect::<String>() + chars.as_str()
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Number of complete rows that fit in a non-negative pixel extent.
@@ -467,6 +496,11 @@ pub struct RoomActivityPane {
     replay_forward_rect: Rect,
     narrative: Option<ui::GroundedNarrative>,
     narrative_request: Option<NarrativeRequest>,
+    /// Task receipts live beside the records they describe. They are indexed
+    /// here so selecting any affected change can explain the whole task.
+    agent_runs: Vec<IndexedAgentRun>,
+    agent_undo_notice: Option<(String, String)>,
+    open_agent_records: HashSet<RecordId>,
 }
 
 impl Default for RoomActivityPane {
@@ -599,6 +633,9 @@ impl RoomActivityPane {
             replay_forward_rect: Rect::ZERO,
             narrative: None,
             narrative_request: None,
+            agent_runs: Vec::new(),
+            agent_undo_notice: None,
+            open_agent_records: HashSet::new(),
         }
     }
 
@@ -853,6 +890,105 @@ impl RoomActivityPane {
             origin = Some(next);
         }
         Some(detail)
+    }
+
+    fn selected_agent_run(&self) -> Option<&IndexedAgentRun> {
+        let selected = self.selected_ids();
+        self.agent_runs.iter().find(|indexed| {
+            indexed.run.steps.iter().any(|step| {
+                selected
+                    .iter()
+                    .any(|id| self.agent_step_contains(indexed, step, id))
+            })
+        })
+    }
+
+    fn agent_step_contains(
+        &self,
+        indexed: &IndexedAgentRun,
+        step: &ui::RunStep,
+        selected: &HistoryEntryId,
+    ) -> bool {
+        let projected = self.projected_origins.get(selected);
+        let origin = projected.map(|item| &item.origin);
+        // Timeline ids are collision-safe projections across every open
+        // record. Agent receipts address the underlying document change, so
+        // compare and order through the origin index rather than mixing those
+        // two namespaces.
+        let selected_change = projected.map_or(*selected, |item| item.change);
+        let origin_matches = match origin {
+            Some(crate::shell::workspace_history::HistoryOrigin::Record { id, .. }) => {
+                step.record.is_empty() || id.as_str() == step.record
+            }
+            Some(crate::shell::workspace_history::HistoryOrigin::WorkspaceTree) | None => {
+                indexed.source_record.is_none()
+            }
+        };
+        if !origin_matches {
+            return false;
+        }
+        if selected_change == step.run.start || selected_change == step.run.end {
+            return true;
+        }
+
+        // History IDs are hashes, not sortable sequence numbers. Determine
+        // membership from this origin's causal timeline order instead.
+        let ids = self
+            .history_index
+            .entries()
+            .iter()
+            .filter(|entry| match (&entry.id.origin, origin) {
+                (
+                    crate::shell::workspace_history::HistoryOrigin::Record { id: a, .. },
+                    Some(crate::shell::workspace_history::HistoryOrigin::Record { id: b, .. }),
+                ) => a == b,
+                (
+                    crate::shell::workspace_history::HistoryOrigin::WorkspaceTree,
+                    Some(crate::shell::workspace_history::HistoryOrigin::WorkspaceTree) | None,
+                ) => true,
+                _ => false,
+            })
+            .map(|entry| entry.id.change)
+            .collect::<Vec<_>>();
+        let Some(at) = ids.iter().position(|id| *id == selected_change) else {
+            return false;
+        };
+        let (Some(start), Some(end)) = (
+            ids.iter().position(|id| *id == step.run.start),
+            ids.iter().position(|id| *id == step.run.end),
+        ) else {
+            return false;
+        };
+        (start.min(end)..=start.max(end)).contains(&at)
+    }
+
+    /// The reviewable task associated with the selected history change.
+    /// Kept small and read-only for integration tests and future deep links.
+    pub fn selected_agent_task(&self) -> Option<&AgentRun> {
+        self.selected_agent_run().map(|indexed| &indexed.run)
+    }
+
+    fn agent_name(&self, run: &AgentRun) -> String {
+        run.by.as_deref().map_or_else(
+            || "Agent".to_string(),
+            |actor| self.source.authors().resolve(actor).name,
+        )
+    }
+
+    fn issuer_name(&self, run: &AgentRun) -> String {
+        run.issued_by.as_deref().map_or_else(
+            || "Unknown collaborator".to_string(),
+            |actor| self.source.authors().resolve(actor).name,
+        )
+    }
+
+    fn can_undo_agent_run(&self) -> bool {
+        let Some(indexed) = self.selected_agent_run() else {
+            return false;
+        };
+        indexed.run.steps.iter().all(|step| {
+            RecordId::parse(&step.record).is_some_and(|id| self.open_agent_records.contains(&id))
+        })
     }
 
     fn selected_ids(&self) -> Vec<HistoryEntryId> {
@@ -1117,6 +1253,18 @@ impl RoomActivityPane {
         }
         match &self.lens {
             LensSelection::All => {}
+            LensSelection::AgentTasks => {
+                filter
+                    .work_groups
+                    .extend(self.agent_runs.iter().map(|indexed| {
+                        indexed
+                            .run
+                            .instruction
+                            .as_ref()
+                            .unwrap_or(&indexed.run.label)
+                            .clone()
+                    }));
+            }
             LensSelection::App(app) => filter.apps.push(app.clone()),
             LensSelection::ResourceKind(kind) => filter.resource_kinds.push(kind.clone()),
             LensSelection::Resource(resource) => filter.resources.push(resource.clone()),
@@ -1369,9 +1517,13 @@ impl RoomActivityPane {
             let Some(heads) = ui::heads_for_entry(&mut baseline.doc, &entry.id) else {
                 continue;
             };
-            let Ok(doc) = baseline.doc.fork_at(&heads) else {
-                continue;
-            };
+            // Automerge 0.8's `fork_at` collector can traverse a valid merged
+            // graph in non-topological order and panic on a dependency that
+            // appears later. Clone the complete graph, then constrain reads to
+            // the historical clock; the replay snapshot is discarded after
+            // this frame is materialised.
+            let mut doc = baseline.doc.fork();
+            doc.isolate(&heads);
             let mut snapshot = baseline.clone();
             snapshot.doc = doc;
             snapshot.resync_cache_from_doc();
@@ -1527,6 +1679,7 @@ impl RoomActivityPane {
             self.timeline
                 .set_named_ranges(self.history_index.origin_safe_named_ranges(&self.named));
         }
+        self.refresh_agent_runs(tree, records, local);
 
         let workspace = tree.active.raw();
         let passive_frontier = self
@@ -1555,6 +1708,64 @@ impl RoomActivityPane {
             .collect();
         self.digest = ActivityDigest::from_entries(&catchup_rows, SystemTime::UNIX_EPOCH, 5);
         self.reset_narrative();
+    }
+
+    fn refresh_agent_runs(
+        &mut self,
+        tree: &WorkspaceTree,
+        records: &RecordStore,
+        local: Option<&dyn crate::shell::workspace_history::PersistedRecordHistory>,
+    ) {
+        self.open_agent_records = records
+            .open_records()
+            .into_iter()
+            .map(|checkout| checkout.id)
+            .collect();
+        let mut indexed = ui::read_runs(&tree.doc)
+            .into_iter()
+            .map(|run| IndexedAgentRun {
+                source_record: None,
+                run,
+            })
+            .collect::<Vec<_>>();
+
+        let rooms: HashSet<_> = match self.scope {
+            RoomScope::ThisRoom => tree
+                .active_workspace()
+                .map(|workspace| [workspace.room].into_iter().collect())
+                .unwrap_or_default(),
+            RoomScope::AllWorkspaces => tree
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.room)
+                .collect(),
+        };
+        let record_ids: BTreeSet<RecordId> = rooms
+            .into_iter()
+            .filter_map(|room| tree.room_records_held.get(&room))
+            .flat_map(|held| held.keys())
+            .filter_map(|id| RecordId::parse(id))
+            .collect();
+        for id in record_ids {
+            let runs = records
+                .read(&id, ui::read_runs)
+                .or_else(|| {
+                    local.and_then(|source| source.load_record(&id).map(|doc| ui::read_runs(&doc)))
+                })
+                .unwrap_or_default();
+            indexed.extend(runs.into_iter().map(|run| IndexedAgentRun {
+                source_record: Some(id.clone()),
+                run,
+            }));
+        }
+        indexed.sort_by(|a, b| {
+            b.run
+                .at
+                .cmp(&a.run.at)
+                .then_with(|| a.run.id.cmp(&b.run.id))
+        });
+        indexed.dedup_by(|a, b| a.source_record == b.source_record && a.run.id == b.run.id);
+        self.agent_runs = indexed;
     }
 
     pub fn feed_coverage(&self) -> &FeedCoverage {
@@ -1938,6 +2149,10 @@ impl RoomActivityPane {
         );
         if let Some(detail) = self.selection_detail() {
             let width = text_width(bounds.width() - 24.0);
+            if let Some(indexed) = self.selected_agent_run().cloned() {
+                self.draw_agent_task_detail(scene, transform, tr, theme, bounds, width, &indexed);
+                return;
+            }
             tr.draw_text(
                 scene,
                 &detail.title,
@@ -1954,8 +2169,15 @@ impl RoomActivityPane {
                 at(transform, bounds.x0 + 12.0, bounds.y0 + 88.0),
                 Some(width),
             );
-            let actions_bottom =
-                self.draw_detail_actions(scene, transform, tr, theme, bounds, &detail);
+            let actions_bottom = self.draw_detail_actions(
+                scene,
+                transform,
+                tr,
+                theme,
+                bounds,
+                &detail,
+                bounds.y0 + 170.0,
+            );
             self.draw_detail_comparison(
                 scene,
                 transform,
@@ -1986,6 +2208,152 @@ impl RoomActivityPane {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "one immediate-mode detail renderer keeps the agent task narrative and actions spatially coherent"
+    )]
+    fn draw_agent_task_detail(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        bounds: Rect,
+        width: f32,
+        indexed: &IndexedAgentRun,
+    ) {
+        let run = &indexed.run;
+        let size = theme.tokens.typography.scale.sm;
+        let x = bounds.x0 + 12.0;
+        let mut y = bounds.y0 + 40.0;
+        tr.draw_text_weighted(
+            scene,
+            "Agent task",
+            theme.tokens.typography.scale.base,
+            theme.tokens.colors.accent[4],
+            at(transform, x, y),
+            None,
+            ui::text_render::TextWeight::Medium,
+        );
+        y += 26.0;
+        let instruction = run.instruction.as_deref().unwrap_or(&run.label);
+        tr.draw_text(
+            scene,
+            instruction,
+            theme.tokens.typography.scale.base,
+            theme.tokens.colors.text_primary,
+            at(transform, x, y),
+            Some(width),
+        );
+        y += 52.0;
+        tr.draw_text(
+            scene,
+            &format!(
+                "Assigned by {}  ·  Run by {}",
+                self.issuer_name(run),
+                self.agent_name(run)
+            ),
+            size,
+            theme.tokens.colors.text_dim,
+            at(transform, x, y),
+            Some(width),
+        );
+        y += 38.0;
+        tr.draw_text_weighted(
+            scene,
+            "Why this work",
+            size,
+            theme.tokens.colors.text_primary,
+            at(transform, x, y),
+            None,
+            ui::text_render::TextWeight::Medium,
+        );
+        y += 20.0;
+        tr.draw_text(
+            scene,
+            run.decision
+                .as_deref()
+                .unwrap_or("No decision route was recorded."),
+            size,
+            theme.tokens.colors.text_dim,
+            at(transform, x, y),
+            Some(width),
+        );
+        y += 48.0;
+        tr.draw_text_weighted(
+            scene,
+            "Affected records",
+            size,
+            theme.tokens.colors.text_primary,
+            at(transform, x, y),
+            None,
+            ui::text_render::TextWeight::Medium,
+        );
+        y += 22.0;
+        for step in &run.steps {
+            let app = crate::shell::launcher::display_name_for_app_id(&step.app)
+                .unwrap_or_else(|| humanize_app_id(&step.app));
+            let record = RecordId::parse(&step.record)
+                .and_then(|id| id.file_path())
+                .and_then(|path| {
+                    path.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                })
+                .unwrap_or_else(|| step.record.clone());
+            tr.draw_text_weighted(
+                scene,
+                &format!("{app}  ·  {record}"),
+                size,
+                theme.tokens.colors.text_primary,
+                at(transform, x, y),
+                Some(width),
+                ui::text_render::TextWeight::Medium,
+            );
+            y += 18.0;
+            tr.draw_text(
+                scene,
+                &step.summary,
+                size,
+                theme.tokens.colors.text_dim,
+                at(transform, x + 10.0, y),
+                Some((width - 10.0).max(0.0)),
+            );
+            y += 28.0;
+        }
+        if !self.can_undo_agent_run() {
+            tr.draw_text(
+                scene,
+                "Open every affected document to undo this task together.",
+                size,
+                theme.tokens.colors.text_dim,
+                at(transform, x, y),
+                Some(width),
+            );
+            y += 38.0;
+        }
+        if let Some((id, notice)) = &self.agent_undo_notice
+            && id == &run.id
+        {
+            tr.draw_text(
+                scene,
+                notice,
+                size,
+                theme.tokens.colors.text_dim,
+                at(transform, x, y),
+                Some(width),
+            );
+            y += 38.0;
+        }
+        if let Some(detail) = self.selection_detail() {
+            let _ = self.draw_detail_actions(scene, transform, tr, theme, bounds, &detail, y);
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "immediate-mode action row needs shared scene, typography, theme, bounds, and selection context"
+    )]
     fn draw_detail_actions(
         &mut self,
         scene: &mut Scene,
@@ -1994,21 +2362,24 @@ impl RoomActivityPane {
         theme: &Theme,
         bounds: Rect,
         detail: &HistorySelectionDetail,
+        start_y: f64,
     ) -> f64 {
         let mut x = bounds.x0 + 12.0;
-        let mut y = bounds.y0 + 170.0;
+        let mut y = start_y;
         let compared = self.comparison_attempted;
         for action in [
             DetailAction::Open,
             DetailAction::Compare,
             DetailAction::Undo,
+            DetailAction::UndoTask,
             DetailAction::Split,
             DetailAction::Merge,
         ] {
             let enabled = match action {
                 DetailAction::Open => !detail.resources.is_empty(),
                 DetailAction::Compare => detail.can_compare,
-                DetailAction::Undo => detail.can_undo,
+                DetailAction::Undo => detail.can_undo && self.selected_agent_run().is_none(),
+                DetailAction::UndoTask => self.can_undo_agent_run(),
                 DetailAction::Split => self.split_candidate().is_some(),
                 DetailAction::Merge => self.merge_candidate().is_some(),
             };
@@ -2273,6 +2644,12 @@ impl RoomActivityPane {
 
     fn lens_candidates(&self) -> Vec<(LensSelection, String)> {
         let mut rows = vec![(LensSelection::All, "Everything".to_string())];
+        if !self.agent_runs.is_empty() {
+            rows.push((
+                LensSelection::AgentTasks,
+                format!("Agent tasks  {}", self.agent_runs.len()),
+            ));
+        }
         rows.extend(self.facet_index.apps.iter().map(|(label, count)| {
             (
                 LensSelection::App(label.clone()),
@@ -3670,10 +4047,68 @@ impl RoomActivityPane {
                     outcome.undo_partial = applied.partial;
                 }
             }
+            DetailAction::UndoTask => {
+                let applied = self.undo_selected_agent_run(records);
+                outcome.reverted = applied.wrote;
+                outcome.undo_partial = applied.partial;
+            }
             DetailAction::Split => outcome.named = self.split_selection_group(tree),
             DetailAction::Merge => outcome.named = self.merge_selection_groups(tree),
         }
         outcome
+    }
+
+    fn undo_selected_agent_run(&mut self, records: Option<&RecordStore>) -> UndoApply {
+        let Some(indexed) = self.selected_agent_run().cloned() else {
+            return UndoApply::default();
+        };
+        let Some(records) = records else {
+            return UndoApply::default();
+        };
+        // This is the all-or-nothing reachability check from `undo_run`,
+        // adapted to RecordStore's one-document-at-a-time borrow API. Nothing
+        // is touched unless every referenced document is live here.
+        if !indexed.run.steps.iter().all(|step| {
+            RecordId::parse(&step.record).is_some_and(|id| records.read(&id, |_| ()).is_some())
+        }) {
+            self.agent_undo_notice = Some((
+                indexed.run.id,
+                "Nothing changed. Open every affected document first.".to_string(),
+            ));
+            return UndoApply::default();
+        }
+
+        let authors = self.source.authors().clone();
+        let mut wrote = false;
+        let mut partial = false;
+        for step in &indexed.run.steps {
+            let Some(id) = RecordId::parse(&step.record) else {
+                return UndoApply::default();
+            };
+            let state = records
+                .with(&id, |doc| {
+                    let outcome = ui::undo_step(doc, step, None, &authors);
+                    if matches!(
+                        outcome.state,
+                        StepState::Undone { .. } | StepState::KeptSome { .. }
+                    ) {
+                        let _ = qdoc::history::commit_stamped(doc);
+                    }
+                    outcome.state
+                })
+                .unwrap_or(StepState::Unreachable);
+            wrote |= matches!(state, StepState::Undone { .. } | StepState::KeptSome { .. });
+            partial |= !state.is_clean();
+        }
+        let notice = if wrote && partial {
+            "Task partly undone; later collaborator edits were kept."
+        } else if wrote {
+            "Whole task undone as a new history entry."
+        } else {
+            "The task's effects were already gone."
+        };
+        self.agent_undo_notice = Some((indexed.run.id, notice.to_string()));
+        UndoApply { wrote, partial }
     }
 
     fn selection_undo_request(&self) -> Option<BandUndoRequest> {
@@ -4111,6 +4546,11 @@ impl RoomActivityPane {
                     outcome.undo_partial = applied.partial;
                 }
             }
+            ActivityFocus::Detail(DetailAction::UndoTask) => {
+                let applied = self.undo_selected_agent_run(records);
+                outcome.reverted = applied.wrote;
+                outcome.undo_partial = applied.partial;
+            }
             ActivityFocus::Detail(DetailAction::Split) => {
                 outcome.named = self.split_selection_group(tree);
             }
@@ -4192,6 +4632,7 @@ impl RoomActivityPane {
             ActivityFocus::TaskCancelCompose => Some("Cancel task creation".to_string()),
             ActivityFocus::TaskAction(action) => Some(action.label().to_string()),
             ActivityFocus::Lens(LensSelection::All) => Some("Everything".to_string()),
+            ActivityFocus::Lens(LensSelection::AgentTasks) => Some("Agent tasks".to_string()),
             ActivityFocus::Lens(LensSelection::Facet(key, value)) => {
                 Some(format!("{key}: {value}"))
             }
@@ -4210,6 +4651,10 @@ impl RoomActivityPane {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "exhaustive focus-to-accessibility mapping is clearest beside the focus enum variants"
+    )]
     fn access_control(&self, focus: &ActivityFocus) -> Option<AccessControl> {
         use ui::a11y::Role;
 
@@ -4319,6 +4764,12 @@ impl RoomActivityPane {
             ActivityFocus::MoreLenses => {
                 control(Role::Button, false, None, "Show more history lenses")
             }
+            ActivityFocus::Detail(DetailAction::UndoTask) => control(
+                Role::Button,
+                false,
+                None,
+                "Undo every affected record in this agent task; later collaborator edits are kept",
+            ),
             ActivityFocus::Detail(_) => {
                 control(Role::Button, false, None, "Selected history action")
             }
@@ -4456,6 +4907,30 @@ impl RoomActivityPane {
                         if detail.entry_ids.len() == 1 { "" } else { "s" },
                         detail.authors.join(", ")
                     )),
+            );
+        }
+        if let Some(indexed) = self.selected_agent_run() {
+            let run = &indexed.run;
+            let mut description = format!(
+                "Instruction: {}; assigned by {}; run by {}; reason: {}",
+                run.instruction.as_deref().unwrap_or(&run.label),
+                self.issuer_name(run),
+                self.agent_name(run),
+                run.decision.as_deref().unwrap_or("not recorded")
+            );
+            for step in &run.steps {
+                let _ = write!(
+                    description,
+                    "; {} in {}: {}",
+                    humanize_app_id(&step.app),
+                    step.record,
+                    step.summary
+                );
+            }
+            root.children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Agent task review")
+                    .with_description(description),
             );
         }
         root
@@ -6027,6 +6502,8 @@ mod tests {
 
     use super::*;
     use crate::shell::state::{WorkspaceId, WorkspaceTree};
+    use automerge::ActorId;
+    use automerge::transaction::{CommitOptions, Transactable};
     use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     use ui::widget::op_class_is_revertible;
 
@@ -6076,6 +6553,187 @@ mod tests {
         pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.refresh(tree);
         pane
+    }
+
+    fn agent_task_fixture() -> (WorkspaceTree, RecordStore, RoomActivityPane, RecordId) {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let room = tree.active_workspace().expect("workspace").room;
+        let records = RecordStore::in_memory();
+        let record = RecordId::for_file("campaign-brief.qdoc");
+        let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("document"));
+        assert!(records.open_record(&checkout));
+        let agent = ActorId::from(b"writing-agent".as_slice());
+        let issuer = ActorId::from(b"ada-identity".as_slice());
+        let agent_hex = agent.to_hex_string();
+        let issuer_hex = issuer.to_hex_string();
+        records.with(&record, |doc| {
+            ui::record::init(doc, &record, &checkout.kind, &room.to_string());
+            doc.set_actor(agent);
+            for (time, field, value, action) in [
+                (20, "intro", "A concrete opening", "Rewrite opening"),
+                (21, "body", "A clearer launch story", "Clarify launch story"),
+                (22, "outro", "Keep the pricing table", "Preserve pricing"),
+            ] {
+                doc.put(automerge::ROOT, field, value).unwrap();
+                let context = ui::qos_actions::ActionContext::for_resource(
+                    action,
+                    record.as_str(),
+                    "document",
+                    "Campaign brief",
+                )
+                .with_app("org.qos.Writer", "Writer")
+                .with_purpose("Make the opening concrete")
+                .with_group(
+                    "agent-run:test",
+                    "Rewrite the opening and preserve the pricing table",
+                    "agent-run",
+                );
+                doc.commit_with(
+                    CommitOptions::default()
+                        .with_time(time)
+                        .with_message(context.change_message().unwrap()),
+                );
+            }
+            let change = ui::latest_run_by(doc, &agent_hex).expect("agent change");
+            ui::record_run_with_details(
+                doc,
+                "Rewrite the opening and preserve the pricing table",
+                Some(&agent_hex),
+                Some(&issuer_hex),
+                Some("Rewrite the opening and preserve the pricing table"),
+                Some("The opening was vague; the pricing table was already correct."),
+                &[ui::RunStep {
+                    app: "org.qos.Writer".to_string(),
+                    record: record.to_string(),
+                    run: change,
+                    summary: "Rewrote the launch story".to_string(),
+                }],
+            )
+            .expect("task receipt");
+            qdoc::history::commit_stamped_at(doc, 23);
+        });
+        tree.room_records_held
+            .entry(room)
+            .or_default()
+            .insert(record.to_string(), checkout.kind.to_string());
+
+        let mut pane = RoomActivityPane::new();
+        pane.set_view(ActivityView::Explore);
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        pane.authors_mut().register(
+            &agent_hex,
+            ui::widget::HistoryAuthor::new("Quill", 210.0, "agent"),
+        );
+        pane.authors_mut().register(
+            &issuer_hex,
+            ui::widget::HistoryAuthor::new("Ada", 120.0, "ada"),
+        );
+        pane.refresh(&mut tree);
+        pane.refresh_records(&mut tree, &records);
+        let end = pane.agent_runs[0].run.steps[0].run.end;
+        let selected = pane
+            .timeline
+            .entries()
+            .iter()
+            .position(|entry| {
+                pane.projected_origins
+                    .get(&entry.id)
+                    .is_some_and(|origin| origin.change == end)
+            })
+            .expect("affected history entry");
+        pane.timeline.set_selection(Some((selected, selected)));
+        pane.explorer_pane = ExplorerPane::Details;
+        (tree, records, pane, record)
+    }
+
+    #[test]
+    fn selecting_agent_work_exposes_the_real_task_receipt_and_named_people() {
+        let (_tree, _records, mut pane, _record) = agent_task_fixture();
+        let run = pane.agent_runs[0].run.steps[0].run.clone();
+        let middle = pane
+            .timeline
+            .entries()
+            .iter()
+            .position(|entry| {
+                pane.projected_origins.get(&entry.id).is_some_and(|item| {
+                    item.change != run.start
+                        && item.change != run.end
+                        && matches!(
+                            item.origin,
+                            crate::shell::workspace_history::HistoryOrigin::Record { .. }
+                        )
+                }) && entry.context.as_ref().is_some_and(|context| {
+                    context
+                        .group
+                        .as_ref()
+                        .is_some_and(|group| group.kind == "agent-run")
+                })
+            })
+            .expect("three-change task has an interior history entry");
+        pane.timeline.set_selection(Some((middle, middle)));
+        let task = pane.selected_agent_task().expect("selected task receipt");
+        assert_eq!(
+            task.instruction.as_deref(),
+            Some("Rewrite the opening and preserve the pricing table")
+        );
+        assert_eq!(pane.agent_name(task), "Quill");
+        assert_eq!(pane.issuer_name(task), "Ada");
+        assert_eq!(task.steps[0].summary, "Rewrote the launch story");
+        assert!(
+            pane.lens_candidates().iter().any(
+                |(lens, label)| *lens == LensSelection::AgentTasks && label == "Agent tasks  1"
+            ),
+            "Browse exposes a first-class agent-task lens"
+        );
+
+        let a11y = pane.accessibility_snapshot();
+        let review = a11y
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Agent task review"))
+            .expect("agent task has a semantic review group");
+        let description = review.description.as_deref().unwrap_or_default();
+        assert!(description.contains("Ada"));
+        assert!(description.contains("Quill"));
+        assert!(description.contains("pricing table"));
+        assert!(description.contains("Rewrote the launch story"));
+    }
+
+    #[test]
+    fn agent_task_undo_is_one_keyboard_reachable_safe_action() {
+        let (mut tree, records, mut pane, record) = agent_task_fixture();
+        paint(&mut pane);
+        assert!(pane.can_undo_agent_run());
+        assert!(
+            pane.focus_order()
+                .contains(&ActivityFocus::Detail(DetailAction::UndoTask))
+        );
+        pane.keyboard_focus = Some(ActivityFocus::Detail(DetailAction::UndoTask));
+        let outcome = pane.handle_event_with_records(
+            &key_press(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Enter,
+            )),
+            1.0,
+            &Modifiers::default(),
+            None,
+            &mut tree,
+            Some(&records),
+        );
+        assert!(outcome.reverted);
+        assert!(!outcome.undo_partial);
+        assert_eq!(
+            records.read(&record, |doc| doc
+                .get(automerge::ROOT, "body")
+                .ok()
+                .flatten()
+                .is_some()),
+            Some(false)
+        );
+        assert!(
+            pane.agent_undo_notice
+                .as_ref()
+                .is_some_and(|(_, notice)| notice.contains("Whole task undone"))
+        );
     }
 
     #[test]
@@ -7718,6 +8376,7 @@ mod tests {
         assert!(
             pane.lens_rects.iter().any(|(lens, _)| match lens {
                 LensSelection::All => label == "Everything",
+                LensSelection::AgentTasks => label == "Agent tasks",
                 LensSelection::App(value)
                 | LensSelection::ResourceKind(value)
                 | LensSelection::Resource(value)

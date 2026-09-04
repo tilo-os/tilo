@@ -136,21 +136,22 @@ of which someone diagnosing the machine needs before they can decide what to try
 
 ### Why a gate at all, when the disk is already open
 
-Because it is. The TPM keyslot `qos-disk-encrypt` enrols is sealed to **PCR 7**,
-the Secure Boot policy register, which repair mode does not change — a different
-kernel command line moves PCR 11, not PCR 7. So a repair-mode boot unlocks the
-disk exactly the way a normal boot does, and *the disk being open is not evidence
-about who is at the keyboard*. Without the gate, repair mode would be a
-physical-access root shell on an encrypted machine: strictly worse than the
-status quo, where the same person faces a login prompt.
+Because an open mapper proves that some unlock factor was supplied earlier; it
+does not prove that the same person is still at the keyboard. qOS currently
+ships no TPM auto-unlock slot: normal and repair boots use the strong passphrase,
+recovery key, or an explicitly enrolled FIDO2 token. Without a fresh gate,
+repair mode would become an unattended physical-access root shell after any of
+those factors opened the disk: strictly worse than the normal session, where
+privileged actions still require authentication.
 
 With the gate, repair mode grants exactly what knowing a disk secret already
 grants. The gate is not defeated by the disk being open, because it does not ask
 the disk whether it is open — it asks the LUKS header whether this is a key.
 
-### Why not simply refuse to auto-unlock in repair mode
+### Why generation-bound unlock is still stronger
 
-That would be better, and it is what the bounded-rollback design gets to:
+The bounded-rollback design will additionally ensure an optional future TPM
+factor cannot auto-unlock repair mode:
 `qos-rollback` seals against **PCR 7 and 11** with a signed prediction, and a
 repair-mode command line produces a different PCR 11, so its keyslot would not
 open and the recovery key would be the only way in. That path is not live —
@@ -200,9 +201,10 @@ Stated plainly, because the gate above is easy to over-read:
 
 - **Secure Boot not enrolled.** Owner enrolment is a deliberate act
   (`qos-secureboot enroll`), and until it happens anyone can boot their own kernel
-  on this machine. Since the TPM keyslot is bound to PCR 7 and PCR 7 reflects "Secure
-  Boot off" in that state, a foreign kernel unlocks the disk. Repair mode neither
-  causes nor worsens this; it is the reason enrolment is worth doing.
+  on this machine. There is no TPM slot for that kernel to auto-unlock, but it can
+  imitate the genuine prompt and capture a passphrase the owner enters. Repair
+  mode neither causes nor worsens this; it is the reason verified boot remains
+  worth completing.
 - **A disk removed from the machine.** The LUKS passphrase is the boundary there,
   as it always was.
 - **Someone who knows the recovery key.** They are the owner as far as the disk is
