@@ -1156,7 +1156,7 @@ COPY docs/security/rollback.md /usr/share/doc/qos/rollback.md
 # qos-secureboot-sign.path already watches /boot/EFI/Linux for a newly staged one.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         systemd-boot-unsigned \
-    && rpm -qa | grep -E '^(shim-x64|grub2-)' | xargs -r rpm -e --nodeps \
+    && rpm -qa | grep -E '^(shim-(x64|aa64)|grub2-)' | xargs -r rpm -e --nodeps \
     && rpm -e --nodeps bootupd \
     && rm -rf /usr/lib/bootupd /usr/lib/ostree-boot \
     && dnf clean all && ${FINALIZE_RPMDB}

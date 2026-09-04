@@ -219,12 +219,19 @@ grep -Fq 'key: github-assets-all-v1-' "$workflow" \
 cycle="$repo/os/dev/test-installer-cycle.sh"
 if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'QOS_INSTALLER_CYCLE_MAX_INSTALL_SECONDS' "$workflow" \
-  && grep -Fq 'if: always() && matrix.arch == '\''x86_64'\''' "$workflow" \
-  && grep -Fq 'qos-installer-full-cycle-x86_64' "$workflow" \
+  && grep -Fq 'qemu-system-aarch64' "$workflow" \
+  && grep -Fq 'qemu-efi-aarch64 qemu-system-arm' "$workflow" \
+  && grep -Fq 'edk2-aarch64 qemu-device-display-virtio-gpu-pci-gl qemu-system-aarch64-core' "$workflow" \
+  && grep -Fq 'name: qos-installer-full-cycle-${{ matrix.arch }}' "$workflow" \
   && grep -Fq '"$vm" boot-installer --gl --no-tpm' "$cycle" \
   && grep -Fq '"$vm" boot-target --gl --no-tpm' "$cycle" \
   && grep -Fq '"$vm" login --passcode-only "$QOS_PASS"' "$cycle" \
   && grep -Fq '"$vm" init-cycle' "$cycle" \
+  && grep -Fq 'cargo run -q -p imager --locked --example embed-profile' "$cycle" \
+  && grep -Fq 'truncate -s "+$((64 * 1024))" "$profiled_raw"' "$cycle" \
+  && grep -Fq 'profiled live installer did not start at Disk' "$cycle" \
+  && grep -Fq 'embedded username did not reach the account screen' "$cycle" \
+  && grep -Fq 'customization modified the released installer medium' "$cycle" \
   && grep -Fq "wait_private_screen 'qOS" "$cycle" \
   && grep -Fq '"$vm" keys ret tab spc tab tab ret' "$cycle" \
   && grep -Fq '"$vm" keys spc tab tab ret' "$cycle" \
@@ -238,9 +245,9 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq "wait_screen 09-oobe-ready" "$cycle" \
   && grep -Fq "wait_screen 10-desktop-config" "$cycle" \
   && ! grep -Eq '(^|[[:space:]])(ssh|journal)([[:space:]]|$)|--stub-ui|--shots' "$cycle"; then
-  ok 'tagged x86 medium must pass a user-driven encrypted install, boot, login, OOBE, and desktop cycle'
+  ok 'every tagged medium must pass a profiled graphical install, encrypted boot, login, OOBE, and desktop cycle'
 else
-  bad 'release medium lacks a fail-closed full graphical installation cycle'
+  bad 'release media lack a fail-closed native full graphical installation cycle'
 fi
 
 [ "$(grep -Fc '      - "os/**"' "$workflow")" -eq 2 ] \
