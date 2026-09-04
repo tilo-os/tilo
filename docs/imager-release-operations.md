@@ -209,6 +209,12 @@ after it is green should a maintainer create a protected semantic tag such as
 verification, Homebrew installation on four hosts, WinGet PR creation, and the
 landing-page production build in that order.
 
+The Forgejo release is created as a draft. CI uploads and reads back every
+required attachment, including signed installer images, the signed installer
+catalog, Windows portable zip, and both macOS app zips, before making that draft
+public. Reruns may resume a draft, but never add to or replace files in an
+already-public release.
+
 ### Forgejo configuration inventory
 
 Steady state has no exported signing-key secret in Forgejo. Create these
