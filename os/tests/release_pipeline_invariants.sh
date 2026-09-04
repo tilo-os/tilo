@@ -36,6 +36,7 @@ grep -Fq 'branches: ["main", "codex/package-desktop-release"]' "$desktop" \
 
 grep -Fq 'publish-os-payload:' "$desktop" \
   && grep -Fq 'QOS_DESKTOP_RELEASE_AUDIENCE' "$desktop" \
+  && grep -Fq '"with_browser":"1","publish":"true"' "$desktop" \
   && grep -Fq 'QOS_DESKTOP_PAYLOAD_URL_X86_64' "$os" \
   && grep -Fq 'QOS_PREBUILT_DESKTOP=${{ env.QOS_PREBUILT_DESKTOP }}' "$os" \
   && grep -Fq 'DESKTOP_RELEASE_ARGS=""' "$repo/os/Containerfile" \
