@@ -96,9 +96,29 @@ run_clippy() {
     )
 }
 
+print_compiler_errors() {
+    python3 - "$1" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    for line in stream:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if record.get("reason") != "compiler-message":
+            continue
+        message = record.get("message") or {}
+        if message.get("level") == "error":
+            print((message.get("rendered") or message.get("message", "")).rstrip(), file=sys.stderr)
+PY
+}
+
 if [ "$base_package_count" -gt 0 ]; then
     if ! run_clippy "$base_tree" "$base_json" "$base_stderr" "$base_target_dir" "${base_args[@]}"; then
         echo "Clippy comparison base did not compile; refusing a false baseline." >&2
+        print_compiler_errors "$base_json"
         sed -n '1,160p' "$base_stderr" >&2
         exit 2
     fi
@@ -108,17 +128,8 @@ fi
 
 if ! run_clippy "$root" "$head_json" "$head_stderr" "$head_target_dir" "${head_args[@]}"; then
     echo "HEAD did not compile under Clippy." >&2
+    print_compiler_errors "$head_json"
     sed -n '1,160p' "$head_stderr" >&2
-    python3 - "$head_json" <<'PY' >&2
-import json, sys
-for line in open(sys.argv[1], encoding="utf-8"):
-    try:
-        message = json.loads(line).get("message", {})
-    except json.JSONDecodeError:
-        continue
-    if message.get("level") == "error":
-        print(message.get("rendered") or message.get("message", ""))
-PY
     exit 1
 fi
 
