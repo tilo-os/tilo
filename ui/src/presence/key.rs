@@ -35,6 +35,13 @@ pub enum PresenceKey {
     Pointer {
         space: PointerSpace,
     },
+    /// Stable action resource scope. It deliberately carries no pixels: the
+    /// receiving app resolves `id` against its own live layout.
+    Resource {
+        app: String,
+        id: String,
+        kind: String,
+    },
 }
 
 /// The coordinate space a pointer position is measured in.
@@ -125,6 +132,18 @@ impl PresenceKey {
     /// is the only honest thing an app can say about them.
     pub fn local_surface_pointer() -> Self {
         Self::surface_pointer(crate::local_surface_id())
+    }
+
+    pub fn resource(
+        app: impl Into<String>,
+        id: impl Into<String>,
+        kind: impl Into<String>,
+    ) -> Self {
+        Self::Resource {
+            app: app.into(),
+            id: id.into(),
+            kind: kind.into(),
+        }
     }
 
     /// The coordinate space a pointer arriving under this key is measured

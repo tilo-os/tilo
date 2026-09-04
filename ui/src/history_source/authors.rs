@@ -75,11 +75,15 @@ impl AuthorDirectory {
     pub fn resolve(&self, actor_hex: &str) -> HistoryAuthor {
         let key = actor_hex.to_lowercase();
         if let Some(a) = self.by_actor.get(&key) {
-            return a.clone();
+            let mut presented = a.clone();
+            presented.name = participant_display_label(&presented.name);
+            return presented;
         }
         let short = short_id(&key);
         match actor_handle(&key) {
-            Some(handle) => HistoryAuthor::new(handle, stable_hue(&key), short),
+            Some(handle) => {
+                HistoryAuthor::new(participant_display_label(&handle), stable_hue(&key), short)
+            }
             None => HistoryAuthor::new(UNKNOWN_AUTHOR_NAME, stable_hue(&key), short),
         }
     }
@@ -99,6 +103,29 @@ impl AuthorDirectory {
     pub fn is_empty(&self) -> bool {
         self.by_actor.is_empty()
     }
+}
+
+/// Turn a durable collaboration principal into copy suitable for people-facing
+/// history and audit UI.
+///
+/// Agent principals deliberately remain stored and transported as
+/// `agent:<id>`: the prefix is part of the authorization boundary. Rendering
+/// that wire identifier verbatim, however, makes the UI look unfinished and
+/// obscures the important fact that the actor was software. This projection
+/// removes only the protocol prefix and adds a persistent, readable kind
+/// label. Human names and other identifiers pass through unchanged.
+pub fn participant_display_label(principal: &str) -> String {
+    let principal = principal.trim();
+    let Some(agent) = principal.strip_prefix("agent:") else {
+        return principal.to_string();
+    };
+    let name = agent.trim();
+    let name = if name.is_empty() {
+        "Unknown agent"
+    } else {
+        name
+    };
+    format!("{name} · Agent")
 }
 
 /// Build a [`HistoryAuthor`] from the qOS identity on disk, if there is one.
@@ -260,6 +287,29 @@ mod tests {
 
         let dir = AuthorDirectory::new();
         assert_eq!(dir.resolve(&hex).name, "alice");
+    }
+
+    #[test]
+    fn agent_principals_are_presented_as_named_agents_not_wire_ids() {
+        assert_eq!(participant_display_label("agent:scribe"), "scribe · Agent");
+        assert_eq!(
+            participant_display_label("agent:opaque-runtime-id"),
+            "opaque-runtime-id · Agent"
+        );
+        assert_eq!(participant_display_label("agent:"), "Unknown agent · Agent");
+        assert_eq!(participant_display_label("ada"), "ada");
+
+        let actor = automerge::ActorId::from("agent:scribe".as_bytes());
+        let resolved = AuthorDirectory::new().resolve(&actor.to_hex_string());
+        assert_eq!(resolved.name, "scribe · Agent");
+        assert!(!resolved.name.contains("agent:"));
+
+        let mut registered = AuthorDirectory::new();
+        registered.register(
+            "aabbccdd",
+            HistoryAuthor::new("agent:reviewer", 42.0, "aabbccdd"),
+        );
+        assert_eq!(registered.resolve("aabbccdd").name, "reviewer · Agent");
     }
 
     /// A 32-byte public key is not a handle. It must not be rendered as

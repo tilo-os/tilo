@@ -6441,6 +6441,75 @@ impl WordProcessorWidget {
                 presence.draw_peer_selection(scene, theme, ctf, &sel.user, *r);
             }
         }
+        // Action-driven collaborators publish stable block/range anchors,
+        // not fake mouse coordinates. Resolve those anchors through the same
+        // shaped layouts as a person's selection and decorate the resulting
+        // geometry with the authenticated actor label.
+        let now = std::time::Instant::now();
+        for interaction in presence.interactions_for_resource("word-processor.document", now) {
+            let ranges = match &interaction.anchor {
+                qos_actions::InteractionAnchor::Text { ranges, .. } => ranges
+                    .iter()
+                    .map(|range| {
+                        (
+                            range.block.as_str(),
+                            usize::try_from(range.start).unwrap_or(usize::MAX),
+                            usize::try_from(range.end).unwrap_or(usize::MAX),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                qos_actions::InteractionAnchor::Objects { ids } => ids
+                    .iter()
+                    .filter_map(|id| {
+                        self.blocks
+                            .iter()
+                            .find(|block| block.id == *id)
+                            .map(|block| (id.as_str(), 0, block.text.chars().count()))
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let mut rects = Vec::new();
+            for (block, start, end) in ranges {
+                let Some(l) = self.laid.iter().find(|laid| laid.id == block) else {
+                    continue;
+                };
+                let Some((_, layout)) = self.layout_cache.get(block) else {
+                    continue;
+                };
+                rects.extend(layout.selection_rects(start, end).into_iter().map(
+                    |(x0, y0, x1, y1)| {
+                        Rect::new(
+                            l.text_x + f64::from(x0),
+                            l.y_top + f64::from(y0),
+                            l.text_x + f64::from(x1),
+                            l.y_top + f64::from(y1),
+                        )
+                    },
+                ));
+            }
+            let user = UserId(interaction.actor.id.clone());
+            for rect in &rects {
+                presence.draw_peer_selection(scene, theme, ctf, &user, *rect);
+            }
+            if let Some(bounds) = rects
+                .iter()
+                .copied()
+                .reduce(|bounds, rect| bounds.union(rect))
+            {
+                let label = presence.display_name(&user);
+                presence.draw_peer_outline_labeled(
+                    scene,
+                    theme,
+                    text_renderer,
+                    ctf,
+                    &user,
+                    &label,
+                    bounds,
+                    3.0,
+                );
+            }
+        }
         for c in &remote_carets {
             presence.draw_peer_caret_labeled(
                 scene,
