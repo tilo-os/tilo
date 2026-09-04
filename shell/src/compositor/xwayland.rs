@@ -8,7 +8,9 @@
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::fs::{
+    FileTypeExt as _, MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _,
+};
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -124,7 +126,7 @@ fn wait_until_ready(child: &mut Child, display: u16) -> Result<(), String> {
             Ok(None) => {}
             Err(error) => return Err(format!("checking xwayland-satellite: {error}")),
         }
-        if socket.exists() {
+        if x_socket_ready(&socket) {
             return Ok(());
         }
         if started.elapsed() >= STARTUP_TIMEOUT {
@@ -135,6 +137,16 @@ fn wait_until_ready(child: &mut Child, display: u16) -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// Refuse a symlink, regular file, or another user's socket at the globally
+/// shared X11 path. The display number is reserved inside this user's runtime
+/// directory, but `/tmp/.X11-unix` is intentionally shared by every login.
+fn x_socket_ready(path: &Path) -> bool {
+    // SAFETY: `geteuid` is a side-effect-free process credential query.
+    let current_uid = unsafe { libc::geteuid() };
+    fs::symlink_metadata(path)
+        .is_ok_and(|metadata| metadata.file_type().is_socket() && metadata.uid() == current_uid)
 }
 
 impl Drop for SessionXwayland {
@@ -220,6 +232,7 @@ fn push_u16(buffer: &mut Vec<u8>, value: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixListener;
 
     #[test]
     fn compatibility_is_confined_to_add_on_desktop_sessions() {
@@ -241,5 +254,18 @@ mod tests {
                 .windows(b"MIT-MAGIC-COOKIE-1".len())
                 .any(|window| window == b"MIT-MAGIC-COOKIE-1")
         );
+    }
+
+    #[test]
+    fn readiness_requires_an_owned_unix_socket() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("X1234");
+        fs::write(&path, b"not a socket").unwrap();
+        assert!(!x_socket_ready(&path));
+        fs::remove_file(&path).unwrap();
+
+        let listener = UnixListener::bind(&path).unwrap();
+        assert!(x_socket_ready(&path));
+        drop(listener);
     }
 }
