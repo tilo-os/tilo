@@ -51,7 +51,10 @@ if env QOS_ROOT_LOADER_PARTUUID=11111111-2222-3333-4444-555555555555 \
   QOS_ROOT_ALLOW_NONBLOCK=1 "$repo/os/usr/libexec/qos-root-discover" 2>"$work/error"; then
   echo 'duplicate qOS roots were accepted' >&2; exit 1
 fi
-grep -q 'expected exactly one qOS root.*found 2' "$work/error"
+if ! grep -q 'expected exactly one qOS root.*found 2' "$work/error"; then
+  cat "$work/error" >&2
+  exit 1
+fi
 echo 'ok: duplicate same-disk qOS roots fail closed'
 
 # A boot ESP on another disk must never authorize the first disk's qOS root.
