@@ -867,13 +867,18 @@ impl JobPhase {
 }
 
 /// Live progress of the current job (0..1 each phase).
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Progress {
     pub phase: JobPhase,
     pub write_frac: f64,
     pub verify_frac: f64,
     /// Bytes per second of the active phase, for the ETA line.
     pub rate_bps: u64,
+    /// Actionable terminal failure detail from the writer/helper. Kept on the
+    /// progress event so the privileged boundary cannot collapse a useful
+    /// device, authorization, or verification error into a generic failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 impl Default for Progress {
@@ -883,6 +888,7 @@ impl Default for Progress {
             write_frac: 0.0,
             verify_frac: 0.0,
             rate_bps: 0,
+            error: None,
         }
     }
 }
@@ -1214,6 +1220,7 @@ mod tests {
             write_frac: 0.5,
             verify_frac: 0.0,
             rate_bps: 100,
+            error: None,
         };
         assert!((writing.overall() - 0.425).abs() < 1e-9);
         // Half of a 1000-byte image left at 100 B/s → ~5s.
@@ -1223,6 +1230,7 @@ mod tests {
             write_frac: 1.0,
             verify_frac: 1.0,
             rate_bps: 0,
+            error: None,
         };
         assert_eq!(done.overall(), 1.0);
     }

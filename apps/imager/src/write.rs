@@ -543,6 +543,7 @@ fn run_job_paths_bound(
                 write_frac: (bytes as f64 / total as f64).min(1.0),
                 verify_frac: 0.0,
                 rate_bps: 0,
+                error: None,
             });
         },
     );
@@ -557,6 +558,7 @@ fn run_job_paths_bound(
             write_frac: 1.0,
             verify_frac: (bytes as f64 / written.max(1) as f64).min(1.0),
             rate_bps: 0,
+            error: None,
         });
     });
     match verify {
@@ -576,29 +578,47 @@ fn run_job_paths_bound(
 fn run_system_job(req: &WriteRequest, mut on_progress: impl FnMut(Progress)) -> JobResult {
     let src = std::path::PathBuf::from(&req.source.path);
     let dst = std::path::PathBuf::from(req.target.dev_path());
-    if let Err(error) = revalidate_target(&req.target) {
-        return JobResult::WriteFailed(format!("target changed since confirmation: {error}"));
+    let mut prepared = false;
+    let mut result = if let Err(error) = revalidate_target(&req.target) {
+        JobResult::WriteFailed(format!(
+            "the selected drive changed or was disconnected: {error}"
+        ))
+    } else if let Err(error) = prepare_target(&req.target) {
+        JobResult::WriteFailed(format!(
+            "the drive is still in use and could not be prepared: {error}"
+        ))
+    } else {
+        prepared = true;
+        run_job_paths_bound(
+            &src,
+            &dst,
+            req.source.size,
+            req.source.identity,
+            req.source.expected_sha256.as_deref(),
+            &mut on_progress,
+        )
+    };
+    if prepared {
+        if result.is_success()
+            && req.source.installable
+            && let Err(error) = write_profile_block(&dst, req.target.size, &req.profile)
+        {
+            result = JobResult::VerifyFailed(format!(
+                "could not embed and verify the setup profile: {error}"
+            ));
+        }
+        finish_target(&req.target);
     }
-    if let Err(error) = prepare_target(&req.target) {
-        return JobResult::WriteFailed(format!("could not safely unmount target: {error}"));
-    }
-    let mut result = run_job_paths_bound(
-        &src,
-        &dst,
-        req.source.size,
-        req.source.identity,
-        req.source.expected_sha256.as_deref(),
-        &mut on_progress,
-    );
-    if result.is_success()
-        && req.source.installable
-        && let Err(error) = write_profile_block(&dst, req.target.size, &req.profile)
-    {
-        result = JobResult::VerifyFailed(format!(
-            "could not embed and verify installation profile: {error}"
-        ));
-    }
-    finish_target(&req.target);
+    let error = match &result {
+        JobResult::Verified => None,
+        JobResult::WriteFailed(message) => Some(format!("Could not write the drive: {message}")),
+        JobResult::VerifyMismatch(offset) => Some(format!(
+            "Verification found different data at byte {offset}. The drive may be faulty."
+        )),
+        JobResult::VerifyFailed(message) => {
+            Some(format!("Could not verify the finished drive: {message}"))
+        }
+    };
     on_progress(Progress {
         phase: if result.is_success() {
             JobPhase::Success
@@ -612,6 +632,7 @@ fn run_system_job(req: &WriteRequest, mut on_progress: impl FnMut(Progress)) -> 
             1.0
         },
         rate_bps: 0,
+        error,
     });
     result
 }
@@ -719,9 +740,12 @@ fn create_progress_output(path: &Path) -> io::Result<std::fs::File> {
 
 fn spawn_privileged_helper(req: WriteRequest, tx: &Sender<Progress>) {
     let result = run_privileged_helper(req, tx);
-    if result.is_err() {
+    if let Err(error) = result {
         let _ = tx.send(Progress {
             phase: JobPhase::Failed,
+            error: Some(format!(
+                "Could not start the authorized writer: {error}. Check the authorization prompt and try again."
+            )),
             ..Progress::default()
         });
     }
@@ -773,6 +797,13 @@ fn relay_helper_progress(
                 if let Some(status) = child.try_wait()? {
                     let _ = tx.send(Progress {
                         phase: JobPhase::Failed,
+                        error: Some(if status.success() {
+                            "The writer stopped before reporting progress. Please try again."
+                                .into()
+                        } else {
+                            "Authorization was cancelled or the writer could not start. Please try again."
+                                .into()
+                        }),
                         ..Progress::default()
                     });
                     return if status.success() {
@@ -808,9 +839,18 @@ fn relay_helper_progress(
                 }
                 line.clear();
             }
-            if !terminal || !status.success() {
+            // A helper that reported a detailed Failed terminal event exits
+            // non-zero by design. Do not overwrite that useful explanation
+            // with a second generic event merely because of its exit status.
+            if !terminal {
                 let _ = tx.send(Progress {
                     phase: JobPhase::Failed,
+                    error: Some(if status.success() {
+                        "The writer stopped before reporting completion. Please try again.".into()
+                    } else {
+                        "Authorization was cancelled or the writer stopped unexpectedly. Please try again."
+                            .into()
+                    }),
                     ..Progress::default()
                 });
             }
@@ -1403,6 +1443,26 @@ mod tests {
         assert_eq!(phases, vec![JobPhase::Writing, JobPhase::Verifying]);
         assert!((last.write_frac - 1.0).abs() < 1e-9);
         assert!((last.verify_frac - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn target_revalidation_failure_still_reports_an_actionable_terminal_event() {
+        let mut request = req();
+        request.target.name = "qos-test-device-that-cannot-exist".into();
+        let mut updates = Vec::new();
+
+        let result = run_system_job(&request, |progress| updates.push(progress));
+
+        assert!(matches!(result, JobResult::WriteFailed(_)));
+        let terminal = updates.last().expect("terminal progress event");
+        assert_eq!(terminal.phase, JobPhase::Failed);
+        assert!(
+            terminal.error.as_deref().is_some_and(|message| {
+                message.contains("changed or was disconnected")
+                    && message.contains("Could not write")
+            }),
+            "the UI receives a useful cause even when writing never starts"
+        );
     }
 
     #[test]

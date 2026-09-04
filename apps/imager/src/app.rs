@@ -615,7 +615,7 @@ impl ImagerApp {
                 Step::Done => (
                     Hit::WriteAnother,
                     if self.progress.phase == JobPhase::Failed {
-                        "Try again".into()
+                        "Review and retry".into()
                     } else {
                         "Start over".into()
                     },
@@ -793,8 +793,14 @@ impl ImagerApp {
                     .with_name(if self.progress.phase == JobPhase::Success {
                         "Write completed and verified"
                     } else {
-                        "Write failed"
+                        "Write failure details"
                     })
+                    .with_value(
+                        self.progress
+                            .error
+                            .clone()
+                            .unwrap_or_else(|| self.status.clone()),
+                    )
                     .with_hashed_key("write-result")
                     .with_live(if self.progress.phase == JobPhase::Success {
                         Politeness::Polite
@@ -1495,7 +1501,7 @@ impl ImagerApp {
             // offers a fresh start.
             Step::Write => ("Writing…".to_string(), false, false),
             Step::Done => match self.progress.phase {
-                JobPhase::Failed => ("Try again".to_string(), true, false),
+                JobPhase::Failed => ("Review & retry".to_string(), true, false),
                 _ => ("Start over".to_string(), true, false),
             },
         };
@@ -3015,7 +3021,25 @@ impl ImagerApp {
         if ok {
             Self::draw_write_done_ok_hero(scene, tr, theme, t, content, cyp, install);
         } else {
-            Self::draw_write_done_failed_hero(scene, tr, theme, t, content, cyp, install);
+            let headline = if install {
+                "Install failed"
+            } else {
+                "Write failed"
+            };
+            let reason = self
+                .progress
+                .error
+                .as_deref()
+                .unwrap_or("The drive may be incomplete. Review the plan before trying again.");
+            Self::draw_write_done_failed_hero(
+                scene,
+                tr,
+                theme,
+                t,
+                content,
+                cyp,
+                (headline, reason),
+            );
         }
         self.draw_write_done_summary(scene, tr, theme, t, content, ok);
     }
@@ -3102,7 +3126,7 @@ impl ImagerApp {
         t: Affine,
         content: Rect,
         cyp: f64,
-        install: bool,
+        copy: (&str, &str),
     ) {
         let c = &theme.tokens.colors;
         let cxp = f64::midpoint(content.x0, content.x1);
@@ -3124,15 +3148,10 @@ impl ImagerApp {
             cyp - 34.0,
             TextWeight::Bold,
         );
-        let headline = if install {
-            "Install failed"
-        } else {
-            "Write failed"
-        };
         Self::txt_center(
             scene,
             tr,
-            headline,
+            copy.0,
             26.0,
             c.text_primary,
             cxp,
@@ -3142,7 +3161,7 @@ impl ImagerApp {
         if compact {
             for (line, y) in [
                 ("The drive may be incomplete.", cyp + 100.0),
-                ("Retry before using it.", cyp + 120.0),
+                ("Review the plan before trying again.", cyp + 120.0),
             ] {
                 Self::txt_center(
                     scene,
@@ -3159,7 +3178,7 @@ impl ImagerApp {
             Self::txt_center(
                 scene,
                 tr,
-                "Writing did not verify. The drive may be incomplete; retry before using it.",
+                copy.1,
                 14.0,
                 c.text_dim,
                 cxp,
@@ -3511,6 +3530,7 @@ impl ImagerApp {
                     write_frac: 0.0,
                     verify_frac: 0.0,
                     rate_bps: 0,
+                    error: None,
                 };
                 ImagerDoc::set_progress(state, &self.progress);
                 self.set_status(
@@ -3567,8 +3587,15 @@ impl ImagerApp {
                     // treat a non-success as a failure.
                     if self.progress.phase.is_active() {
                         self.progress.phase = JobPhase::Failed;
+                        self.progress.error = Some(
+                            "The writer stopped unexpectedly. Reconnect the drive, then review and retry."
+                                .into(),
+                        );
                         ImagerDoc::set_progress(state, &self.progress);
-                        self.set_status(state, "Write ended unexpectedly.");
+                        self.set_status(
+                            state,
+                            "The writer stopped unexpectedly. Reconnect the drive, then review and retry.",
+                        );
                         self.goto(state, Step::Done);
                     }
                     self.job_rx = None;
@@ -3578,20 +3605,27 @@ impl ImagerApp {
             }
         }
         if let Some(p) = latest {
-            self.progress = p;
+            let terminal_phase = p.phase;
+            let terminal_error = p.error.clone();
             ImagerDoc::set_progress(state, &p);
+            self.progress = p;
             self.dirty = true;
-            if matches!(p.phase, JobPhase::Success | JobPhase::Failed) {
+            if matches!(terminal_phase, JobPhase::Success | JobPhase::Failed) {
                 self.job_rx = None;
                 let name = self
                     .source
                     .as_ref()
                     .map(|s| s.name.clone())
                     .unwrap_or_default();
-                let msg = if p.phase == JobPhase::Success {
+                let msg = if terminal_phase == JobPhase::Success {
                     format!("Done — {name} {} and verified", self.action.past())
                 } else {
-                    format!("{} failed.", self.action.title())
+                    terminal_error.unwrap_or_else(|| {
+                        format!(
+                            "{} failed. Reconnect the drive, then review and retry.",
+                            self.action.title()
+                        )
+                    })
                 };
                 self.set_status(state, &msg);
                 // Terminal phase → show the outcome station.
@@ -3601,6 +3635,20 @@ impl ImagerApp {
     }
 
     fn write_another(&mut self, state: &mut AutoCommit) {
+        if self.progress.phase == JobPhase::Failed {
+            // Preserve the reviewed source, target, and customized setup. A
+            // retry still requires a fresh peer-local destructive confirmation
+            // and passes every target/source validation again in the helper.
+            self.progress = Progress::default();
+            ImagerDoc::set_progress(state, &self.progress);
+            self.confirm_input.set_text("");
+            self.goto(state, Step::Confirm);
+            self.set_status(
+                state,
+                "Review the image and drive, then confirm the target again to retry.",
+            );
+            return;
+        }
         self.progress = Progress::default();
         ImagerDoc::set_progress(state, &self.progress);
         self.confirm_input.set_text("");
@@ -4768,6 +4816,7 @@ mod tests {
             write_frac: 1.0,
             verify_frac: 0.4,
             rate_bps: 1,
+            error: None,
         };
 
         let tree = app.accessibility_tree();
@@ -5284,9 +5333,62 @@ mod tests {
             write_frac: 1.0,
             verify_frac: 1.0,
             rate_bps: 0,
+            error: None,
         };
         app.write_another(&mut doc);
         assert_eq!(app.step, Step::Source);
+        assert_eq!(app.progress.phase, JobPhase::Idle);
+    }
+
+    #[test]
+    fn failed_write_keeps_its_cause_and_returns_to_a_fresh_review() {
+        let (mut app, mut doc) = seeded_app();
+        app.select_target(&mut doc, 0);
+        app.goto(&mut doc, Step::Write);
+        app.progress = Progress {
+            phase: JobPhase::Writing,
+            write_frac: 0.4,
+            verify_frac: 0.0,
+            rate_bps: 0,
+            error: None,
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.job_rx = Some(rx);
+        tx.send(Progress {
+            phase: JobPhase::Failed,
+            write_frac: 0.4,
+            verify_frac: 0.0,
+            rate_bps: 0,
+            error: Some("Could not write the drive: the selected drive was disconnected.".into()),
+        })
+        .unwrap();
+
+        app.drain_job(&mut doc);
+        assert_eq!(app.step, Step::Done);
+        assert_eq!(app.progress.phase, JobPhase::Failed);
+        assert!(
+            ImagerDoc::status(&doc).contains("disconnected"),
+            "the privileged writer's actionable cause reaches the UI"
+        );
+        let tree = app.accessibility_tree();
+        let result =
+            accessible_named(&tree, "Write failure details").expect("accessible terminal result");
+        assert!(
+            result
+                .value
+                .as_deref()
+                .is_some_and(|value| value.contains("disconnected"))
+        );
+
+        app.confirm_input.set_text("sdb");
+        app.write_another(&mut doc);
+        assert_eq!(app.step, Step::Confirm, "failure returns to review");
+        assert!(app.source.is_some(), "the verified source is preserved");
+        assert_eq!(app.selected, Some(0), "the selected drive is preserved");
+        assert!(
+            app.confirm_input.value().is_empty(),
+            "retry requires fresh destructive consent"
+        );
         assert_eq!(app.progress.phase, JobPhase::Idle);
     }
 }
