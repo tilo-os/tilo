@@ -13,7 +13,7 @@
     )
 )]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -188,27 +188,37 @@ enum Cmd {
     /// Runs the entry's own command line UNCONFINED — no qOS sandbox, no
     /// room. A Flatpak brings its own sandbox; a distribution binary has no
     /// manifest to build one from. See the `launcher::host` module docs.
-    RunHost {
-        /// Desktop-file id, as printed by `qos-desktop-scan`
-        /// (`com.spotify.Client`, `org.gnome.TextEditor`).
-        #[arg(long)]
-        desktop_id: String,
-        /// Host path of the compositor's Wayland socket. `WAYLAND_DISPLAY` and
-        /// `XDG_RUNTIME_DIR` are both derived from it.
-        #[arg(long)]
-        wayland_socket: Option<PathBuf>,
-        /// A file to open. Expands the entry's `%f`/`%F` field codes (and
-        /// `%u`/`%U` as a `file://` URL).
-        #[arg(long)]
-        open: Option<PathBuf>,
-        /// A URL for the application to open. Expands `%u`/`%U`.
-        #[arg(long)]
-        open_url: Option<String>,
-        /// Print the resolved argv and environment and exit without running
-        /// anything.
-        #[arg(long)]
-        dry_run: bool,
-    },
+    RunHost(RunHostArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct RunHostArgs {
+    /// Desktop-file id, as printed by `qos-desktop-scan`
+    /// (`com.spotify.Client`, `org.gnome.TextEditor`).
+    #[arg(long)]
+    desktop_id: String,
+    /// Host path of the compositor's Wayland socket. `WAYLAND_DISPLAY` and
+    /// `XDG_RUNTIME_DIR` are both derived from it.
+    #[arg(long)]
+    wayland_socket: Option<PathBuf>,
+    /// Rootless Xwayland display supplied by the compositor for legacy
+    /// X11 applications.
+    #[arg(long, requires = "x11_authority")]
+    x11_display: Option<String>,
+    /// Xauthority file paired with `--x11-display`.
+    #[arg(long, requires = "x11_display")]
+    x11_authority: Option<PathBuf>,
+    /// A file to open. Expands the entry's `%f`/`%F` field codes (and
+    /// `%u`/`%U` as a `file://` URL).
+    #[arg(long)]
+    open: Option<PathBuf>,
+    /// A URL for the application to open. Expands `%u`/`%U`.
+    #[arg(long)]
+    open_url: Option<String>,
+    /// Print the resolved argv and environment and exit without running
+    /// anything.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 /// Fold an `i32` exit code (from [`std::process::ExitStatus::code`] or
@@ -311,19 +321,7 @@ fn main() -> ExitCode {
             allow_missing_runtime,
             allow_unsigned_runtime,
         ),
-        Cmd::RunHost {
-            desktop_id,
-            wayland_socket,
-            open,
-            open_url,
-            dry_run,
-        } => run_host(
-            &desktop_id,
-            wayland_socket,
-            open.as_deref(),
-            open_url,
-            dry_run,
-        ),
+        Cmd::RunHost(args) => run_host(args),
     }
 }
 
@@ -660,22 +658,28 @@ fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
 }
 
 /// Launch a host application. Unconfined — see [`launcher::host`].
-fn run_host(
-    desktop_id: &str,
-    wayland_socket: Option<PathBuf>,
-    open: Option<&Path>,
-    open_url: Option<String>,
-    dry_run: bool,
-) -> ExitCode {
+fn run_host(args: RunHostArgs) -> ExitCode {
+    let RunHostArgs {
+        desktop_id,
+        wayland_socket,
+        x11_display,
+        x11_authority,
+        open,
+        open_url,
+        dry_run,
+    } = args;
     let env = LaunchEnv {
         wayland_socket,
+        x11_display,
+        x11_authority,
         files: open
-            .map(|p| vec![p.display().to_string()])
+            .as_deref()
+            .map(|path| vec![path.display().to_string()])
             .unwrap_or_default(),
         urls: open_url.into_iter().collect(),
     };
     if dry_run {
-        return match launcher::host::plan_host(desktop_id, &env) {
+        return match launcher::host::plan_host(&desktop_id, &env) {
             Ok(plan) => {
                 println!("desktop-id : {}", plan.desktop_id);
                 println!("name       : {}", plan.display_name);
@@ -695,7 +699,7 @@ fn run_host(
             }
         };
     }
-    match launcher::host::run_host(desktop_id, &env) {
+    match launcher::host::run_host(&desktop_id, &env) {
         Ok(status) => exit_code(status.code().unwrap_or(1)),
         Err(e) => {
             eprintln!("qos-launcher: {e}");
