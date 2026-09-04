@@ -101,9 +101,9 @@ impl Widget for ExportConfigBody {
         // baseline. Drawing upward preserves the established card rhythm.
         let compact = self.rect.width() < 360.0;
         let subtitle = if compact {
-            "Exact embedded profile; secrets are referenced, not embedded."
+            "Exact embedded profile; secrets are collected on the device."
         } else {
-            "qos-install.conf — the same options this wizard sets; secrets are referenced, not embedded."
+            "Embedded setup profile (JSON) — these choices are applied by the installer; secrets are collected on the device."
         };
         let text_width = (self.rect.width() - 8.0).max(0.0) as f32;
         text_renderer.draw_text_weighted(
