@@ -100,7 +100,8 @@ impl AdmittedJoinIdentity {
         BrokerActor {
             id: self
                 .agent_id
-                .clone()
+                .as_ref()
+                .map(|agent| format!("agent:{agent}"))
                 .unwrap_or_else(|| self.principal_id.clone()),
             is_agent: self.agent_id.is_some(),
         }
@@ -712,7 +713,7 @@ impl CapnpBrokerState {
             .clone();
         drop(tree);
         let caller = if actor.is_agent {
-            workspace.actor_for_agent(&actor.id)
+            workspace.actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
         } else {
             workspace.actor_for_person(&actor.id)
         };
@@ -1034,7 +1035,7 @@ impl CapnpBrokerState {
             .find(|workspace| workspace.room.to_string() == offered.0.route.cluster_id)
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
         let caller = if actor.is_agent {
-            workspace.actor_for_agent(&actor.id)
+            workspace.actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
         } else {
             workspace.actor_for_person(&actor.id)
         };
@@ -4862,7 +4863,7 @@ mod tests {
             .expect("the owner is admitted before delegation");
         admit_agent_delegation(&tree, &route, &mut admitted, "scribe")
             .expect("the owner may operate an admitted agent");
-        assert_eq!(admitted.broker_actor().id, "scribe");
+        assert_eq!(admitted.broker_actor().id, "agent:scribe");
         assert!(admitted.broker_actor().is_agent);
         assert_eq!(admitted.role, CapRole::Commenter);
         assert!(

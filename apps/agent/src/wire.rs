@@ -88,6 +88,37 @@ impl Link {
         })
     }
 
+    /// Connect a certified human peer to an explicit diagnostic endpoint.
+    ///
+    /// The agent integration harness hosts real application peers alongside
+    /// the agent. Keeping this constructor distinct prevents those app peers
+    /// from being misrepresented as delegated agents during admission.
+    #[doc(hidden)]
+    pub fn connect_person_endpoint(
+        path: &Path,
+        app_id: &str,
+        cluster_id: uuid::Uuid,
+        record: Option<String>,
+        handle: Option<String>,
+        identity: CertifiedEndpointIdentity,
+    ) -> Result<Self> {
+        let stream = UnixStream::connect(path)
+            .with_context(|| format!("connect to typed endpoint at {}", path.display()))?;
+        let manager = CollaborationManager::for_route_fd_with_identity(
+            stream.into_raw_fd(),
+            app_id,
+            cluster_id,
+            record,
+            handle,
+            identity,
+        )
+        .context("start typed collaboration client")?;
+        Ok(Self {
+            manager,
+            pending: VecDeque::new(),
+        })
+    }
+
     /// Write one request. Blocking: a full-document snapshot can be large
     /// and must not be truncated by a would-block.
     ///
