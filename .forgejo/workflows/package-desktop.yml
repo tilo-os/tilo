@@ -95,9 +95,9 @@ jobs:
   package:
     needs: validate
     name: package lane / ${{ matrix.arch }}
-    # AX52 exposes this label at capacity one so native package builds cannot
-    # overlap each other or crowd the general-purpose check runners.
-    runs-on: qos-package
+    # This class retains measured headroom for the single shipped fat-LTO
+    # shell binary without reserving memory for the unshipped `shots` binary.
+    runs-on: qos-package-optimized
     timeout-minutes: 600
     # Forgejo 16 starts every matrix entry despite both max-parallel and job
     # concurrency groups. Model the capacity bound as one sequential lane that
