@@ -72,10 +72,9 @@ enum Action {
         #[arg(long)]
         model: String,
     },
-    RequestRestart {
-        #[arg(long)]
-        model: String,
-    },
+    /// Ask the root-owned hardware policy for this machine's exact signed
+    /// BootPack and enqueue it for immutable deployment staging.
+    StageAccelerator,
     #[command(hide = true)]
     Worker {
         #[arg(long)]
@@ -121,9 +120,7 @@ enum RpcAction {
     Remove {
         model: String,
     },
-    RequestRestart {
-        model: String,
-    },
+    StageAccelerator,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -217,11 +214,46 @@ struct InstalledLocalModel {
     package: LocalModelPackage,
     phase: LocalModelPhase,
 }
+#[derive(Clone, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum AcceleratorSetupState {
+    Available,
+    Queued,
+    Staging,
+    RestartRequired,
+    Active,
+    Error { message: String },
+}
+#[derive(Serialize)]
+struct AcceleratorSetup {
+    boot_pack_id: String,
+    status: AcceleratorSetupState,
+}
 #[derive(Serialize)]
 struct LocalModelSnapshot {
     hardware: HardwareRecommendation,
     recommendation: Option<LocalModelPackage>,
     models: Vec<InstalledLocalModel>,
+    accelerator_setup: Option<AcceleratorSetup>,
+}
+
+const SYSTEM_EXTENSION_SOCKET: &str = "/run/qos/system-extension-api/request.sock";
+const SYSTEM_EXTENSION_STATUS: &str = "/run/qos/system-extension-api/status.json";
+
+#[derive(Deserialize)]
+struct BootPackRecommendations {
+    schema_version: u16,
+    recommendations: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct BootPackStatus {
+    schema_version: u16,
+    activation_class: String,
+    state: String,
+    extension_id: String,
+    reboot_required: bool,
+    error: Option<String>,
 }
 
 fn load_catalog(path: &PathBuf, keys: &PathBuf) -> Result<CatalogPayload, String> {
@@ -877,9 +909,7 @@ fn rpc_action(command: &Action) -> Result<RpcAction, String> {
         Action::Remove { model } => Ok(RpcAction::Remove {
             model: model.clone(),
         }),
-        Action::RequestRestart { model } => Ok(RpcAction::RequestRestart {
-            model: model.clone(),
-        }),
+        Action::StageAccelerator => Ok(RpcAction::StageAccelerator),
         Action::Worker { .. } | Action::WorkerStart { .. } | Action::Serve { .. } => {
             Err("internal model manager action cannot be proxied".into())
         }
@@ -994,7 +1024,7 @@ fn cli_for_rpc(action: RpcAction) -> Cli {
         RpcAction::Start { model } => Action::Start { model },
         RpcAction::Stop { model } => Action::Stop { model },
         RpcAction::Remove { model } => Action::Remove { model },
-        RpcAction::RequestRestart { model } => Action::RequestRestart { model },
+        RpcAction::StageAccelerator => Action::StageAccelerator,
     };
     Cli {
         root: None,
@@ -1118,6 +1148,117 @@ fn allocate_loopback_port() -> Result<u16, String> {
         .map_err(|error| error.to_string())
 }
 
+fn system_extension_request(request: &str) -> Result<Vec<u8>, String> {
+    if request.contains(['\n', '\r']) {
+        return Err("system extension request must be one line".into());
+    }
+    let mut stream = UnixStream::connect(SYSTEM_EXTENSION_SOCKET)
+        .map_err(|error| format!("accelerator setup service is unavailable: {error}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|error| error.to_string())?;
+    stream
+        .write_all(format!("{request}\n").as_bytes())
+        .map_err(|error| error.to_string())?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .map_err(|error| error.to_string())?;
+    let mut response = Vec::new();
+    stream
+        .take(64 * 1024)
+        .read_to_end(&mut response)
+        .map_err(|error| error.to_string())?;
+    if response.is_empty() {
+        return Err("accelerator setup service returned no response".into());
+    }
+    Ok(response)
+}
+
+fn recommended_boot_packs() -> Result<Vec<String>, String> {
+    let response: BootPackRecommendations = serde_json::from_slice(&system_extension_request(
+        "boot-pack-recommend",
+    )?)
+    .map_err(|error| format!("accelerator setup service returned invalid status: {error}"))?;
+    if response.schema_version != 1 {
+        return Err("accelerator setup service returned an unsupported schema".into());
+    }
+    Ok(response.recommendations)
+}
+
+fn accelerator_setup_snapshot() -> Option<AcceleratorSetup> {
+    if let Ok(bytes) = std::fs::read(SYSTEM_EXTENSION_STATUS)
+        && let Ok(status) = serde_json::from_slice::<BootPackStatus>(&bytes)
+        && status.schema_version == 1
+        && status.activation_class == "boot_pack"
+        && !status.extension_id.is_empty()
+    {
+        let state = match status.state.as_str() {
+            "queued" => AcceleratorSetupState::Queued,
+            "staging" => AcceleratorSetupState::Staging,
+            "staged" if status.reboot_required => AcceleratorSetupState::RestartRequired,
+            "active" if !status.reboot_required => AcceleratorSetupState::Active,
+            "failed" => AcceleratorSetupState::Error {
+                message: status.error.unwrap_or_else(|| {
+                    "The signed accelerator deployment could not be staged.".into()
+                }),
+            },
+            _ => AcceleratorSetupState::Error {
+                message: "The accelerator setup service returned an inconsistent state.".into(),
+            },
+        };
+        return Some(AcceleratorSetup {
+            boot_pack_id: status.extension_id,
+            status: state,
+        });
+    }
+
+    match recommended_boot_packs() {
+        Ok(mut recommendations) if recommendations.len() == 1 => Some(AcceleratorSetup {
+            boot_pack_id: recommendations.remove(0),
+            status: AcceleratorSetupState::Available,
+        }),
+        Ok(recommendations) if recommendations.len() > 1 => Some(AcceleratorSetup {
+            boot_pack_id: "multiple-devices".into(),
+            status: AcceleratorSetupState::Error {
+                message: "This device needs more than one accelerator BootPack; this release cannot compose them safely yet.".into(),
+            },
+        }),
+        _ => None,
+    }
+}
+
+fn stage_recommended_accelerator() -> Result<(), String> {
+    let mut recommendations = recommended_boot_packs()?;
+    if recommendations.len() != 1 {
+        return Err(if recommendations.is_empty() {
+            "No signed accelerator BootPack matches this device.".into()
+        } else {
+            "More than one accelerator BootPack matches this device; automatic staging is intentionally disabled.".into()
+        });
+    }
+    let id = recommendations.remove(0);
+    if id.is_empty()
+        || id.starts_with(['.', '_', '-'])
+        || id.ends_with(['.', '_', '-'])
+        || !id.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || ".-_".contains(character)
+        })
+    {
+        return Err("hardware policy returned an invalid BootPack id".into());
+    }
+    let response = system_extension_request(&format!("boot-pack-stage {id}"))?;
+    let accepted = serde_json::from_slice::<serde_json::Value>(&response)
+        .ok()
+        .and_then(|value| value.get("accepted").and_then(serde_json::Value::as_bool))
+        .unwrap_or(false);
+    if !accepted {
+        return Err("accelerator setup service did not accept the staging request".into());
+    }
+    Ok(())
+}
+
 fn run_local(cli: Cli) -> Result<Option<String>, String> {
     let (root, catalog_path, key_path) = paths(&cli)?;
     if let Action::Snapshot { format } = &cli.command {
@@ -1155,6 +1296,7 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
             hardware: recommendation(&hardware, runtime, recommended.is_some()),
             recommendation: recommended,
             models,
+            accelerator_setup: accelerator_setup_snapshot(),
         };
         return Ok(Some(
             serde_json::to_string(&payload).map_err(|error| error.to_string())?,
@@ -1221,11 +1363,7 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
         Action::Remove { model } => {
             service.remove(&model).map_err(|error| error.to_string())?;
         }
-        Action::RequestRestart { model: _ } => {
-            return Err(
-                "restart requests must be performed by the authorized system update service".into(),
-            );
-        }
+        Action::StageAccelerator => stage_recommended_accelerator()?,
         Action::Worker { model, revision } => {
             let release = catalog
                 .models
