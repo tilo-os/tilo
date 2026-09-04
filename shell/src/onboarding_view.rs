@@ -809,14 +809,13 @@ impl OnboardingView {
             ("Continue", KEY_TOUR_NEXT)
         };
         actions(vec![
-            Box::new(Button::new(
-                "onboarding.tour.skip.button",
-                "Skip tour",
-                Some(KEY_FINISH),
-            )),
+            Box::new(
+                Button::new("onboarding.tour.skip.button", "Skip tour", Some(KEY_FINISH))
+                    .fit_content(40.0),
+            ),
             Box::new(
                 Button::new("onboarding.tour.back.button", "Back", Some(KEY_TOUR_BACK))
-                    .with_icon(ui::icons::Icon::ArrowLeft),
+                    .fit_content(40.0),
             ),
             Box::new(
                 Button::new(
@@ -824,7 +823,7 @@ impl OnboardingView {
                     primary_label,
                     Some(primary_key),
                 )
-                .with_icon(ui::icons::Icon::ArrowRight)
+                .fit_content(40.0)
                 .with_style(ui::widget::ButtonStyle::Primary),
             ),
         ])
@@ -3057,7 +3056,12 @@ mod tests {
                 .expect("narrow large-text tour layout");
             view.apply_layout(&taffy, node, Point::ZERO);
 
-            for id in ["onboarding.tour.back.button", "onboarding.tour.next.button"] {
+            let mut action_rects = Vec::new();
+            for id in [
+                "onboarding.tour.skip.button",
+                "onboarding.tour.back.button",
+                "onboarding.tour.next.button",
+            ] {
                 let action = node_map
                     .values()
                     .find_map(|&ptr| unsafe {
@@ -3075,7 +3079,14 @@ mod tests {
                         && action.y1 <= f64::from(HEIGHT),
                     "sticky tour action must stay in the viewport, page={next_presses}, id={id}, action={action:?}"
                 );
+                action_rects.push(action);
             }
+            assert!(
+                action_rects
+                    .windows(2)
+                    .all(|pair| pair[0].x1 <= pair[1].x0 && (pair[0].y0 - pair[1].y0).abs() < 1.0),
+                "compact tour actions must remain one ordered row, page={next_presses}, rects={action_rects:?}"
+            );
         }
     }
 }
