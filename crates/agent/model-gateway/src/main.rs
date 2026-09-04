@@ -155,7 +155,7 @@ fn handle(app_id: &str, request: Request) -> Response {
         } if app_id == AGENT_APP => plan(
             &profile_id,
             &model_id,
-            body,
+            &body,
             Duration::from_millis(timeout_ms),
         )
         .map(|output| Response {
@@ -276,7 +276,7 @@ struct ProviderFailure {
 fn plan(
     profile_id: &str,
     model_id: &str,
-    body: serde_json::Value,
+    body: &serde_json::Value,
     requested_timeout: Duration,
 ) -> Result<String, String> {
     let profile = configured_profile(profile_id)?;
@@ -298,7 +298,7 @@ fn plan(
     let result = while_busy(
         || timeout.checked_sub(began.elapsed()),
         std::thread::sleep,
-        |budget| provider_attempt(&client, &profile, &endpoint, secret.as_str(), &body, budget),
+        |budget| provider_attempt(&client, &profile, &endpoint, secret.as_str(), body, budget),
     );
     secret.zeroize();
     result
@@ -390,12 +390,12 @@ where
         (Some(start), None) => start,
         _ => Duration::ZERO,
     };
-    let mut made = 0;
+    let mut made = 0_u32;
     loop {
         let Some(budget) = left().filter(|budget| !budget.is_zero()) else {
             return Err("provider request timed out".into());
         };
-        made += 1;
+        made = made.saturating_add(1);
         let ProviderFailure { why, again } = match attempt(budget) {
             Ok(output) => return Ok(output),
             Err(failure) => failure,
@@ -417,7 +417,7 @@ where
             return Err(give_up());
         }
         let waiting = retry_wait(made, asked_for);
-        if left().is_none_or(|remaining| remaining < waiting + ROOM_TO_ANSWER) {
+        if left().is_none_or(|remaining| remaining < waiting.saturating_add(ROOM_TO_ANSWER)) {
             return Err(give_up());
         }
         wait(waiting);
@@ -485,8 +485,8 @@ mod tests {
             },
             |_budget| {
                 let mut fake = fake.borrow_mut();
-                let index = fake.calls.min(outcomes.len() - 1);
-                fake.calls += 1;
+                let index = fake.calls.min(outcomes.len().saturating_sub(1));
+                fake.calls = fake.calls.saturating_add(1);
                 fake.left = fake.left.saturating_sub(Duration::from_millis(200));
                 match outcomes[index] {
                     Ok(output) => Ok(output.to_string()),
