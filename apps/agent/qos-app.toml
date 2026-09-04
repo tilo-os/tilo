@@ -39,25 +39,22 @@ claim     = "deadbeef"
 signature = ""
 
 [sandbox]
-# `net` is present because deciding which exported action answers an
-# instruction is a model call, and that call leaves the device.
+# Hosted provider egress and credentials live only in model-gateway. The
+# agent itself has no outbound network namespace.
 namespaces = [
     "user",
     "pid",
     "uts",
     "ipc",
     "mount",
-    "net",
 ]
 seccomp    = "qos-default"
 landlock   = "strict"
 
 [sandbox.net]
-# The one host the agent talks to: `ENDPOINT` in src/model.rs.
+# The agent has no direct egress; model-gateway owns the provider allowlist.
 mode  = "allowlist"
-hosts = [
-    "api.anthropic.com",
-]
+hosts = []
 
 [sandbox.portals]
 
@@ -65,6 +62,7 @@ hosts = [
 # Required, not optional: with no broker there is no document to join
 # and the agent has nothing to do.
 collab = "required@1"
+model-gateway = "required@1"
 
 [entrypoint]
 bin  = "bin/qos-agent"
