@@ -691,6 +691,7 @@ fn draw_agent_diamond(
 
 #[allow(
     clippy::arithmetic_side_effects,
+    clippy::too_many_arguments,
     reason = "kurbo Rect/Affine arithmetic is f64 math; it cannot panic or overflow, unlike integer +/-/*"
 )]
 fn draw_peer_pill_kind(

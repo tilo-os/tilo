@@ -908,6 +908,10 @@ impl PeerSyncOverlay {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "immediate-mode renderer keeps scene, theme, typography, and card geometry in one pass"
+    )]
     fn draw_recipient_choices(
         &mut self,
         scene: &mut Scene,
@@ -966,6 +970,10 @@ impl PeerSyncOverlay {
         choice.y1 + 12.0
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "immediate-mode renderer keeps scene, theme, typography, and card geometry in one pass"
+    )]
     fn draw_role_choices(
         &mut self,
         scene: &mut Scene,
@@ -988,14 +996,18 @@ impl PeerSyncOverlay {
         );
         y += f64::from(body) + 7.0;
         let options = [
-            (crate::network::invite::InviteRole::Viewer, "Viewer"),
-            (crate::network::invite::InviteRole::Commenter, "Commenter"),
-            (crate::network::invite::InviteRole::Editor, "Editor"),
+            (crate::network::invite::InviteRole::Viewer, "Viewer", 0.0),
+            (
+                crate::network::invite::InviteRole::Commenter,
+                "Commenter",
+                1.0,
+            ),
+            (crate::network::invite::InviteRole::Editor, "Editor", 2.0),
         ];
         let gap = 6.0;
         let width = (rect.width() - pad * 2.0 - gap * 2.0) / 3.0;
-        for (index, (role, label)) in options.into_iter().enumerate() {
-            let x0 = rect.x0 + pad + (width + gap) * index as f64;
+        for (role, label, column) in options {
+            let x0 = rect.x0 + pad + (width + gap) * column;
             let choice = Rect::new(x0, y, x0 + width, y + 32.0);
             self.draw_choice(
                 scene,
@@ -1012,8 +1024,12 @@ impl PeerSyncOverlay {
         y + 32.0
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "immediate-mode renderer keeps scene, theme, typography, and card geometry in one pass"
+    )]
     fn draw_invite_review(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
@@ -1044,8 +1060,7 @@ impl PeerSyncOverlay {
             format!("Access · {}", self.state.invite_role.label()),
             format!(
                 "Bound identity · {}",
-                key.map(identity_fingerprint)
-                    .unwrap_or_else(|| "missing".to_string())
+                key.map_or_else(|| "missing".to_string(), identity_fingerprint)
             ),
         ];
         for (index, line) in lines.iter().enumerate() {
