@@ -507,7 +507,7 @@ jobs:
         run: |
           ./os/dev/release-provenance.sh provenance.json
           cosign attest --yes \
-            --predicate provenance.json --type slsaprovenance \
+            --predicate provenance.json --type slsaprovenance1 \
             --key "$COSIGN_KEY_REF" \
             "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
 
@@ -538,7 +538,7 @@ jobs:
           cosign verify-attestation --key keys/cosign.pub \
             --type spdxjson "$image" >/dev/null
           cosign verify-attestation --key keys/cosign.pub \
-            --type slsaprovenance "$image" >/dev/null
+            --type slsaprovenance1 "$image" >/dev/null
           freshness="$(cosign verify-attestation --key keys/cosign.pub \
             --type https://qos.dev/security/release-freshness/v1 "$image")"
           now="$(date -u +%s)"

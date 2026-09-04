@@ -58,6 +58,8 @@ fi
 
 grep -Fq 'verify_signed_generation "$current"' "$repo/os/dev/next-generation.sh" \
   && grep -Fq 'latest does not point at signed gen$current' "$repo/os/dev/next-generation.sh" \
+  && grep -Fq -- '--type slsaprovenance1' "$repo/os/dev/next-generation.sh" \
+  && grep -Fq -- '--predicate provenance.json --type slsaprovenance1' "$workflow" \
   && ok 'generation allocation authenticates provenance and the latest channel' \
   || bad 'generation allocation still trusts registry tags alone'
 
