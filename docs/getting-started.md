@@ -77,14 +77,15 @@ secret.
 Boot the USB in UEFI mode and test the hardware. The live installer offers:
 
 - **Erase disk**, which removes every partition from the named destination.
-- **Install alongside**, which uses an empty, unmounted Linux root partition of
-  at least 32 GiB and a healthy FAT EFI partition on the same disk of at least
-  2 GiB with 1 GiB free. The root is formatted; the EFI partition is not.
+- **Install alongside**, which can create a dedicated 2 GiB qOS EFI partition
+  and encrypted root inside one unallocated GPT extent of at least 34 GiB.
+  Existing partitions are not resized, moved, deleted, or formatted. The expert
+  path can instead use a prepared empty Linux root and healthy 2 GiB FAT ESP.
 
-Prepare alongside partitions before booting the qOS installer. qOS does not
-shrink NTFS or another Linux filesystem. On Windows, save the BitLocker
-recovery key, disable Fast Startup, shrink Windows with Windows-aware tooling,
-and create the required typed partitions with a trusted GPT partition editor.
+qOS does not shrink NTFS or another Linux filesystem. On Windows, save the
+BitLocker recovery key, disable Fast Startup, and shrink Windows with Windows
+Disk Management, leaving at least 34 GiB unallocated. The qOS installer safely
+creates its own partitions there after showing the exact plan.
 
 The final review names the disk and every partition that will change. Create a
 fresh startup secret on the target computer, save the generated recovery key

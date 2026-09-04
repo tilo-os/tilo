@@ -278,6 +278,10 @@ impl ChannelHandle {
     /// Report a bounded, inert continuation projection to the local shell.
     /// The broker binds `app_id` to this certified channel rather than trusting
     /// the caller's claim, and never relays this report to collaboration peers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker request fails.
     pub async fn report_continuation(
         &self,
         app_id: &str,
@@ -296,6 +300,10 @@ impl ChannelHandle {
     /// Clear this application's previously reported continuation projection.
     /// The broker binds the request to the certified channel route exactly as
     /// it does for [`Self::report_continuation`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker request fails.
     pub async fn clear_continuation(&self, app_id: &str) -> Result<(), NotAvailable> {
         let mut req = self.inner.clear_continuation_request();
         req.get().set_app_id(app_id);

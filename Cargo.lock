@@ -6830,6 +6830,7 @@ dependencies = [
  "tempfile",
  "tracing-subscriber",
  "ui",
+ "uuid",
  "vello",
  "winit",
  "zeroize",
