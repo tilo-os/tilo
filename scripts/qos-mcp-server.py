@@ -10,6 +10,14 @@ The point of the shim is that a model drives the OS *semantically*: it asks
 which actions exist and invokes one by its stable `(provider, id)` address.
 Nothing here screenshots, hit-tests or synthesises input.
 
+MCP resources are deliberately lazy. `resources/list` exposes applications,
+not the entire action catalogue. Reading an application exposes its current
+objects with their full action descriptors nested beneath them. This mirrors
+qOS's application -> resource -> action ownership and keeps unrelated
+applications' schemas out of the model's context. Every read rebuilds the
+permission-filtered catalogue, so nesting does not turn a stale or revoked
+descriptor into authority.
+
 Honesty contract: this shim never invents an action, a result or a success.
 If the compositor is unreachable, or answers `{"err": ...}`, the caller gets
 that fact -- with the compositor's own error code and message -- as a tool
@@ -182,54 +190,108 @@ TOOLS = [
 ]
 
 
-def action_resource_uri(provider: str, id_: str) -> str:
-    """Stable MCP address for one descriptor, with no screen coordinates."""
-    return "qos://action/{}/{}".format(
-        urllib.parse.quote(provider, safe=""), urllib.parse.quote(id_, safe="")
-    )
+APPLICATION_MIME = "application/vnd.qos.application+json"
+
+
+def _segment(value: str) -> str:
+    return urllib.parse.quote(value, safe="")
+
+
+def _location(action: dict) -> tuple[str, tuple[str, str, str], str]:
+    """Return application, object identity, operation for one descriptor.
+
+    Canonical app actions receive explicit hierarchy fields from the shell.
+    Palette-only providers do not own qOS resource trees, so each of their
+    entries remains one object with one invokable operation under the provider.
+    That fallback preserves reach without pretending dot-separated display ids
+    are an application resource protocol.
+    """
+    provider = str(action.get("provider") or "")
+    id_ = str(action.get("id") or "")
+    application = action.get("application")
+    resource = action.get("resource")
+    operation = action.get("operation")
+    if all(isinstance(value, str) and value for value in (application, resource, operation)):
+        return (
+            application,
+            (str(action.get("room") or ""), str(action.get("record") or ""), resource),
+            operation,
+        )
+    return provider, ("", "", id_), "invoke"
+
+
+def application_resource_uri(application: str) -> str:
+    return f"qos://application/{_segment(application)}"
+
+
+def _catalogue(comp: Compositor) -> list[dict]:
+    return [
+        action
+        for action in comp.enumerate_actions("").get("actions", [])
+        if action.get("provider") and action.get("id")
+    ]
 
 
 def list_resources(comp: Compositor) -> dict:
-    """Project the permission-filtered action catalogue as standard MCP resources."""
-    actions = comp.enumerate_actions("").get("actions", [])
+    """List only application roots; descendants are revealed by reads."""
+    applications: dict[str, int] = {}
+    for action in _catalogue(comp):
+        application, _object, _operation = _location(action)
+        applications[application] = applications.get(application, 0) + 1
     return {
         "resources": [
             {
-                "uri": action_resource_uri(str(action.get("provider", "")), str(action.get("id", ""))),
-                "name": str(action.get("title") or action.get("id") or "qOS action"),
-                "description": str(action.get("subtitle") or "Typed qOS action descriptor"),
-                "mimeType": "application/vnd.qos.action+json",
+                "uri": application_resource_uri(application),
+                "name": application,
+                "description": (
+                    f"qOS application surface; read to list its objects "
+                    f"({count} available action{'s' if count != 1 else ''})"
+                ),
+                "mimeType": APPLICATION_MIME,
             }
-            for action in actions
-            if action.get("provider") and action.get("id")
+            for application, count in sorted(applications.items())
         ]
     }
 
 
 def read_resource(comp: Compositor, uri: str) -> dict:
-    """Read one descriptor after re-enumerating, so revoked actions fail closed."""
+    """Read one lazy hierarchy node from a freshly filtered catalogue."""
     parsed = urllib.parse.urlparse(uri)
     parts = [urllib.parse.unquote(part) for part in parsed.path.split("/") if part]
-    if parsed.scheme != "qos" or parsed.netloc != "action" or len(parts) != 2:
+    if parsed.scheme != "qos" or parsed.netloc != "application" or len(parts) != 1:
         raise ValueError("unknown qOS resource URI")
-    provider, id_ = parts
-    actions = comp.enumerate_actions("").get("actions", [])
-    descriptor = next(
-        (
-            action
-            for action in actions
-            if action.get("provider") == provider and action.get("id") == id_
-        ),
-        None,
-    )
-    if descriptor is None:
-        raise CompositorError("unknown_action", "resource is unavailable or no longer permitted")
+    application = parts[0]
+    actions = [action for action in _catalogue(comp) if _location(action)[0] == application]
+    if not actions:
+        raise CompositorError(
+            "unknown_application", "application is unavailable or no longer permitted"
+        )
+
+    objects: dict[tuple[str, str, str], list[dict]] = {}
+    for action in actions:
+        _application, object_key, operation = _location(action)
+        descriptor = dict(action)
+        descriptor.setdefault("operation", operation)
+        objects.setdefault(object_key, []).append(descriptor)
+    payload = {
+        "type": "application",
+        "application": application,
+        "objects": [
+            {
+                "resource": object_key[2],
+                "room": object_key[0] or None,
+                "record": object_key[1] or None,
+                "actions": object_actions,
+            }
+            for object_key, object_actions in sorted(objects.items())
+        ],
+    }
     return {
         "contents": [
             {
                 "uri": uri,
-                "mimeType": "application/vnd.qos.action+json",
-                "text": json.dumps(descriptor, indent=2),
+                "mimeType": APPLICATION_MIME,
+                "text": json.dumps(payload, indent=2),
             }
         ]
     }
