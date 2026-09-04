@@ -228,7 +228,9 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
     // Publishing and catalogue delivery use separate Cap'n Proto streams.
     // Observe the level-triggered replacement before a test launches an
     // agent whose constructor consumes that broker snapshot.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = std::time::Instant::now()
+        .checked_add(Duration::from_secs(5))
+        .expect("five-second catalogue deadline fits in Instant");
     let mut deferred = Vec::new();
     while std::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
