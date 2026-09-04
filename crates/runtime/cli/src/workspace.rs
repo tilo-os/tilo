@@ -80,15 +80,32 @@ pub fn resolve_workspace_path(rel: &str) -> Result<PathBuf> {
 /// the FS client (`None` standalone) for direct RPC vs. plain `std::fs`.
 pub struct WorkspaceHandle {
     pub root: PathBuf,
-    pub fs: Option<runtime_fs::FsClient>,
+    #[cfg(unix)]
+    fs: Option<runtime_fs::FsClient>,
+}
+
+impl WorkspaceHandle {
+    /// Whether this process received the launcher's optional filesystem
+    /// capability. This stays available on every host even though the
+    /// capability transport itself is Unix-only.
+    pub fn has_filesystem_service(&self) -> bool {
+        #[cfg(unix)]
+        {
+            self.fs.is_some()
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
 }
 
 impl std::fmt::Debug for WorkspaceHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WorkspaceHandle")
-            .field("root", &self.root)
-            .field("fs", &self.fs.as_ref().map(|_| "<connected>"))
-            .finish()
+        let mut debug = f.debug_struct("WorkspaceHandle");
+        debug.field("root", &self.root);
+        debug.field("fs", &self.has_filesystem_service());
+        debug.finish()
     }
 }
 
@@ -108,8 +125,13 @@ where
 {
     let root = workspace_root().unwrap_or_else(|| standalone_state_dir(&package_id()));
     ensure_dir(&root)?;
-    let fs = runtime_fs::try_connect().ok();
-    let handle = WorkspaceHandle { root, fs };
+    #[cfg(unix)]
+    let handle = WorkspaceHandle {
+        root,
+        fs: runtime_fs::try_connect().ok(),
+    };
+    #[cfg(not(unix))]
+    let handle = WorkspaceHandle { root };
     f(handle).await
 }
 

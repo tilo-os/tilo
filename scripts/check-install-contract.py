@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +40,13 @@ assert """            (cd "$(dirname "$path")" && sha256sum --check --strict "$(
 assert 'qos-installer-*.asc' in imager_workflow
 for host in ("linux", "windows", "macos"):
     assert f"  {host}:" in imager_workflow
+
+# Imager's native Windows release includes `ui`. The Wayland clipboard backend
+# consumes Unix file descriptors, so it must never enter non-Linux builds.
+ui_manifest = tomllib.loads((ROOT / "ui/Cargo.toml").read_text())
+assert "smithay-clipboard" not in ui_manifest["dependencies"]
+linux_ui_dependencies = ui_manifest["target"]['cfg(target_os = "linux")']["dependencies"]
+assert "smithay-clipboard" in linux_ui_dependencies
 
 session_workflow = (ROOT / ".forgejo/workflows/package-desktop.yml").read_text()
 assert "Restore the ARM64 include only when" in session_workflow
