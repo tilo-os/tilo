@@ -4695,6 +4695,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "host-media-writer"))]
     fn click_ev() -> WindowEvent {
         WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
@@ -4725,16 +4726,19 @@ mod tests {
 
     /// Click at a point: move the pointer there (so hover state settles), then
     /// press — exactly the real winit sequence the compositor delivers.
+    #[cfg(not(feature = "host-media-writer"))]
     fn click_at(app: &mut ImagerApp, doc: &mut AutoCommit, p: Point) {
         feed(app, doc, &cursor_ev(p.x, p.y));
         feed(app, doc, &click_ev());
     }
 
+    #[cfg(not(feature = "host-media-writer"))]
     fn center(r: Rect) -> Point {
         Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
     }
 
     /// The rect of the first hit matching `pred`, from this frame's layout.
+    #[cfg(not(feature = "host-media-writer"))]
     fn hit_rect(app: &ImagerApp, pred: impl Fn(&Hit) -> bool) -> Rect {
         app.compute_layout()
             .hits
@@ -5225,6 +5229,7 @@ mod tests {
     /// on-screen targets: walk Source → Drive → Customize → Confirm. Every transition
     /// goes through the actual hit-testing + dispatch path, not a shortcut.
     #[test]
+    #[cfg(not(feature = "host-media-writer"))]
     fn clicking_through_the_wizard_refuses_a_fake_write_when_backend_is_disabled() {
         let (mut app, mut doc) = seeded_app();
         app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
@@ -5315,6 +5320,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "host-media-writer"))]
     fn matching_confirmation_does_not_simulate_a_disabled_write() {
         if crate::write::allow_write() {
             return;

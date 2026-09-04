@@ -37,7 +37,7 @@ function Invoke-qOSCodeSign([string] $Path) {
     }
 }
 
-cargo build --locked --release -p imager
+cargo build --locked --release -p imager --features host-media-writer
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 $Bundle = Join-Path $Out "qos-imager-windows-x86_64"
 New-Item -ItemType Directory -Force -Path $Bundle | Out-Null

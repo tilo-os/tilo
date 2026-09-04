@@ -108,6 +108,16 @@ linux_launcher="$repo/apps/imager/packaging/linux/qos-imager"
 mac_launcher="$repo/apps/imager/packaging/macos/qos-imager"
 windows_launcher="$repo/apps/imager/packaging/windows/Start-qOS-Imager.ps1"
 writer="$repo/apps/imager/src/write.rs"
+if grep -Fq 'host-media-writer = []' "$repo/apps/imager/Cargo.toml" \
+  && grep -Fq 'cfg!(feature = "host-media-writer")' "$writer" \
+  && grep -Fq -- '--features host-media-writer' \
+    "$repo/apps/imager/packaging/package-host.sh" \
+  && grep -Fq -- '--features host-media-writer' \
+    "$repo/apps/imager/packaging/package-host.ps1"; then
+  ok 'every host package compiles in the real short-lived media writer'
+else
+  bad 'a host package can ship with its media writer disabled'
+fi
 if grep -Fq 'exec pkexec' "$linux_launcher" \
   || grep -Fq 'with administrator privileges' "$mac_launcher" \
   || grep -Fq -- '-Verb RunAs' "$windows_launcher"; then
