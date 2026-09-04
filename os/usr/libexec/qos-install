@@ -234,6 +234,7 @@ WANT_PIN=0           # --pin is mandatory; secret arrives on stdin line 2.
 WANT_FIDO2=0         # --fido2 → also enroll a FIDO2 security key if present
 ALONGSIDE=0
 GUIDED_ALONGSIDE=0
+PREFLIGHT_ALONGSIDE=0
 ROOT_PARTITION=""
 EFI_PARTITION=""
 CONFIRM_ERASE=""
@@ -274,6 +275,7 @@ while [ $# -gt 0 ]; do
     --pin) WANT_PIN=1; shift ;;
     --fido2) WANT_FIDO2=1; shift ;;
     --alongside) ALONGSIDE=1; shift ;;
+    --preflight-alongside) ALONGSIDE=1; PREFLIGHT_ALONGSIDE=1; shift ;;
     --guided-alongside) ALONGSIDE=1; GUIDED_ALONGSIDE=1; shift ;;
     --root-partition) ROOT_PARTITION="${2:-}"; shift 2 ;;
     --efi-partition) EFI_PARTITION="${2:-}"; shift 2 ;;
@@ -577,6 +579,7 @@ validate_alongside() {
   case "$efi_available" in *[!0-9]*|'') die "could not read available space on $EFI_PARTITION" ;; esac
   [ "$efi_available" -ge "$MIN_ALONGSIDE_ESP_FREE_BYTES" ] \
     || die "$EFI_PARTITION has less than 1 GiB available for qOS boot images"
+  ALONGSIDE_EFI_AVAILABLE_BYTES="$efi_available"
   [ "$(blockdev --getsize64 "$ROOT_PARTITION")" -ge 34359738368 ] \
     || die "$ROOT_PARTITION is smaller than the 32 GiB alongside minimum"
   mountpoints="$(lsblk -nro MOUNTPOINT "$ROOT_PARTITION")" \
@@ -588,6 +591,18 @@ validate_alongside() {
   [ -z "$(printf '%s' "$signature_types" | tr -d '[:space:]')" ] \
     || die "$ROOT_PARTITION contains a filesystem or volume signature; refusing to guess that its data is disposable"
 }
+
+# Read-only UI preflight. It intentionally traverses the same disk/partition
+# identity and live-medium checks above and the same prepared-partition
+# validator used again immediately before destructive installation. The
+# reviewed confirmation argument is still required, but this mode exits before
+# reading credentials, staging an image, formatting, or changing firmware.
+if [ "$PREFLIGHT_ALONGSIDE" -eq 1 ]; then
+  [ "$GUIDED_ALONGSIDE" -eq 0 ] || die "prepared-storage preflight does not apply to guided alongside"
+  validate_alongside
+  log "Prepared storage check passed: the EFI partition is clean FAT32 with $ALONGSIDE_EFI_AVAILABLE_BYTES bytes free."
+  exit 0
+fi
 
 if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
   step "Creating qOS partitions in the reviewed unallocated space (existing partitions are preserved)"
