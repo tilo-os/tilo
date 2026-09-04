@@ -1033,16 +1033,16 @@ impl ShellDriver {
                         );
                     }
                 }
-                // Merge the complete peer replica rather than treating its
-                // latest changes as a flat packet. The replay proof later
-                // forks every historical head, so dropping even one causal
-                // predecessor here leaves a parked Automerge change which
-                // only explodes when a person asks to restore history.
-                // `merge` is the same dependency-closed synchronization
-                // primitive used by an ordinary replica round.
-                if tree.doc.merge(&mut peer).is_ok() {
-                    tree.resync_cache_from_doc();
-                }
+                // Synchronise through the same dependency-closed delta path
+                // used by ordinary peers. Merging the synthetic full replica
+                // directly can leave a parked dependency that only surfaces
+                // when replay asks Automerge to walk every historical head.
+                let changes: Vec<Vec<u8>> = peer
+                    .get_changes(&tree.doc.get_heads())
+                    .into_iter()
+                    .map(|change| change.raw_bytes().to_vec())
+                    .collect();
+                let _ = tree.apply_changes(&changes);
             }
         }
         self.with_chrome(|st| st.overlays.room_activity = true);
