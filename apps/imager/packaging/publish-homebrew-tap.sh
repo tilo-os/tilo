@@ -49,12 +49,42 @@ printf '#!/bin/sh\nprintf "%%s" "$HOMEBREW_TAP_TOKEN"\n' > "$askpass"
 chmod 0700 "$askpass"
 GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone \
   "${GITHUB_SERVER_URL}/qos/homebrew-qos.git" "$work/tap"
-current_version="$(sed -n 's/^[[:space:]]*version "\([0-9][0-9.]*\)"/\1/p' \
-  "$work/tap/Formula/qos-imager.rb" 2>/dev/null | head -1)"
-if [ -n "$current_version" ] \
-   && [ "$(printf '%s\n%s\n' "$current_version" "$version" | sort -V | tail -1)" != "$version" ]; then
-  printf 'refusing to replace newer Homebrew release %s with %s\n' "$current_version" "$version" >&2
-  exit 1
+formula="$work/tap/Formula/qos-imager.rb"
+current_version=
+if [ -f "$formula" ]; then
+  current_version="$(sed -n 's/^[[:space:]]*version "\([^"]*\)".*/\1/p' \
+    "$formula" | head -1)"
+  [ -n "$current_version" ] \
+    || { printf 'existing Homebrew formula has no parseable version\n' >&2; exit 1; }
+fi
+version_is_newer() {
+  LC_ALL=C awk -v current="$1" -v candidate="$2" '
+    function canonical(value) {
+      sub(/^0+/, "", value)
+      return value == "" ? "0" : value
+    }
+    BEGIN {
+      split(current, old, ".")
+      split(candidate, new, ".")
+      for (i = 1; i <= 3; i++) {
+        left = canonical(old[i])
+        right = canonical(new[i])
+        if (length(left) != length(right))
+          exit length(left) > length(right) ? 0 : 1
+        if (left != right)
+          exit ("x" left) > ("x" right) ? 0 : 1
+      }
+      exit 1
+    }
+  '
+}
+if [ -n "$current_version" ]; then
+  [[ "$current_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || { printf 'existing Homebrew release has an invalid version: %s\n' "$current_version" >&2; exit 1; }
+  if version_is_newer "$current_version" "$version"; then
+    printf 'refusing to replace newer Homebrew release %s with %s\n' "$current_version" "$version" >&2
+    exit 1
+  fi
 fi
 mkdir -p "$work/tap/Formula" "$work/tap/Casks"
 
