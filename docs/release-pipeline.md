@@ -7,7 +7,7 @@ does not fan out into unrelated builds:
 |---|---|---|---|
 | Apps | A relevant `main` change, `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Changed apps once per enabled native architecture | Independently versioned qpkgs and immutable collection bundles |
 | Desktop session | A relevant `main` change or `desktop-vX.Y.Z` | Native host packages; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload on `main` |
-| OS | `vX.Y.Z`, or a manual **Release / OS** run from `main` | Bootc image, sealed-image reproducibility and VM gates | Signed generation image, SBOM and provenance |
+| OS | `vX.Y.Z`, or a manual **Release / OS** run from `main` with `publish` | Bootc image, sealed-image reproducibility and VM gates | Signed generation image, SBOM and provenance |
 | Imager | `imager-vX.Y.Z` | Native host packages and signed installer media | Linux, Windows and macOS downloads |
 
 Kernel, base-image, RPM and WPE buildroot snapshots remain input-promotion
@@ -110,6 +110,11 @@ channel-promotion path used by explicit releases. It does not introduce a
 weaker fast-publish path. A successful desktop payload publication requests
 that OS integration run only when the switch is enabled; standalone app
 updates continue to publish only their qpkg/collection boundary.
+
+A manual **Release / OS** dispatch is also build-only by default. Enable its
+`publish` input only from `main` to allocate and promote a signed generation.
+This makes the same image, reproducibility, and VM gates available as a safe
+integration rehearsal while the production signing key is unavailable.
 
 ## Forgejo-specific rules
 

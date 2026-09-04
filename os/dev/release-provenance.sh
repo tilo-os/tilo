@@ -37,6 +37,12 @@ if [ -n "$app_collection" ]; then
     && case "$app_collection" in *[!0-9a-f]*) false ;; *) true ;; esac \
     || { printf 'release provenance: invalid QOS_APP_COLLECTION_SHA256\n' >&2; exit 1; }
 fi
+desktop_payload="${QOS_DESKTOP_PAYLOAD_SHA256:-}"
+if [ -n "$desktop_payload" ]; then
+  [ "${#desktop_payload}" -eq 64 ] \
+    && case "$desktop_payload" in *[!0-9a-f]*) false ;; *) true ;; esac \
+    || { printf 'release provenance: invalid QOS_DESKTOP_PAYLOAD_SHA256\n' >&2; exit 1; }
+fi
 
 jq -n \
   --arg source "git+ssh://code.podesta.ai/qos/qos@$GITHUB_SHA" \
@@ -45,6 +51,7 @@ jq -n \
   --arg rpms "$RPMS_REF" \
   --arg kernel "$KERNEL_RPMS_REF" \
   --arg app_collection "$app_collection" \
+  --arg desktop_payload "$desktop_payload" \
   --arg generation "$QOS_GENERATION" \
   --arg epoch "$SOURCE_DATE_EPOCH" \
   '{
@@ -59,6 +66,9 @@ jq -n \
         [{uri: $source}, {uri: $base}, {uri: $rpms}, {uri: $kernel}]
         + if $app_collection == "" then []
           else [{uri: ("qos-app-collection:sha256:" + $app_collection)}]
+          end
+        + if $desktop_payload == "" then []
+          else [{uri: ("qos-desktop-payload:sha256:" + $desktop_payload)}]
           end
       )
     },

@@ -5,9 +5,9 @@ name: Release / OS
 # (verify it builds + is reproducible — no registry churn or queue flooding).
 # Cargo changes are already compiled by check.yml and nightly.yml; rebuilding
 # the complete bootc image for every source-only commit duplicates that work.
-# The signed image is
-# pushed to code.podesta.ai/qos/qos:latest ONLY on a version tag (v*) or a
-# manual run, so `bootc upgrade` tracks deliberate releases, not every commit.
+# The signed image is pushed to code.podesta.ai/qos/qos:latest ONLY on a
+# version tag (v*), an explicitly publishing manual run from main, or an opted-in
+# continuous release, so `bootc upgrade` tracks deliberate releases.
 
 on:
   schedule:
@@ -32,6 +32,11 @@ on:
       - ".forgejo/workflows/build-image.yml"
   workflow_dispatch:
     inputs:
+      publish:
+        description: "Publish a signed OS release (main only); leave disabled for an integration build"
+        type: boolean
+        required: false
+        default: false
       with_browser:
         description: "Include the browser + WPE WebKit engine stage (0 = omit, ~45min faster)"
         required: false
@@ -250,6 +255,7 @@ jobs:
             "$work/qos-unlock-helper" os/desktop-artifacts/
           cp "$work/manifest.json" os/desktop-artifacts/
           echo 'QOS_PREBUILT_DESKTOP=1' >> "$GITHUB_ENV"
+          echo "QOS_DESKTOP_PAYLOAD_SHA256=${PAYLOAD_SHA256,,}" >> "$GITHUB_ENV"
           echo '::notice::using pinned prebuilt desktop payload'
 
       # Log in on EVERY build: the build installs from the private, digest-pinned
@@ -341,10 +347,12 @@ jobs:
         id: release-mode
         env:
           CONTINUOUS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}
+          REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
         run: |
           publish=false
           if [[ $GITHUB_REF == refs/tags/v* \
-                || ( $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main ) \
+                || ( $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
+                     && ${REQUESTED_PUBLISH:-false} == true ) \
                 || ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main \
                      && ${CONTINUOUS_RELEASE:-0} == 1 ) ]]; then
             publish=true
