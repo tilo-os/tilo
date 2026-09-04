@@ -44,10 +44,10 @@ on:
         default: "1"
 
 concurrency:
-  # Generations are a single dense security series. Two tag/manual jobs must
-  # never both observe N and publish different images as N+1.
-  group: qos-os-image-series
-  cancel-in-progress: false
+  # Publication is serialized because two publishers must not derive the same
+  # generation. Build-only validation is ref-local and superseded immediately.
+  group: qos-os-image-${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) && 'publication' || github.ref }}
+  cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) }}
 
 jobs:
   build-and-push:

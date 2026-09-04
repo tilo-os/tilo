@@ -29,6 +29,20 @@ on:
   push:
     branches: ["main", "codex/package-desktop-release"]
     tags: ["v*"]
+    paths:
+      - "dist/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".cargo/config.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "shell/**"
+      - "crates/packaging/launcher/**"
+      - "crates/session/qos-unlock-helper/**"
+      - ".forgejo/workflows/package-desktop.yml"
+      - "docs/install-contract.json"
+      - "scripts/check-install-contract.py"
   workflow_dispatch:
 
 concurrency:

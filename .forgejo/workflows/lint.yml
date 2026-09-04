@@ -10,7 +10,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: lint-${{ github.ref }}
+  # A branch push and its pull_request synchronization describe the same head.
+  # Normalize both event shapes so the later event cancels duplicate work.
+  group: lint-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
